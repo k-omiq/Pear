@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 
@@ -88,5 +88,25 @@ describe('zooming moves no text against the page', () => {
     // There is a shift to hold: the block is not already centred on its ink.
     expect(Math.abs(shifts[4])).toBeGreaterThan(0.1);
     for (const s of shifts) expect(s).toBeCloseTo(shifts[4], 9);
+  });
+
+  it('the ink is drawn to the whole pixels its canvas has, which CSS stretches to the zoomed box', async () => {
+    const root = await mounted({ ink: { on: true, strokes: [{ size: 8, color: '#000000', opacity: 1, pts: [[20, 20, 1], [80, 40, 1], [160, 30, 1]] }] } });
+    const el = root.querySelector('canvas.inkl');
+    const ctx = el.getContext('2d');
+    for (const z of [0.37, 1.013, 2.71]) {
+      ctx.scale = vi.fn();
+      setZoom(z);
+      flushSync();
+      expect(ctx.scale).toHaveBeenCalled();
+      const [kx, ky] = ctx.scale.mock.calls[0];
+      // The scale the page px are drawn at, times the box's page size, is the
+      // canvas's pixel size: the drawing fills the canvas exactly, and the
+      // canvas fills its CSS box exactly.
+      const pw = parseFloat(el.style.width) / z;
+      const ph = parseFloat(el.style.height) / z;
+      expect(kx * pw).toBeCloseTo(el.width, 6);
+      expect(ky * ph).toBeCloseTo(el.height, 6);
+    }
   });
 });
