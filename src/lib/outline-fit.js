@@ -54,7 +54,25 @@ const W = {
   tall: 2, // the block filling more than 85% of the outline's height
   line: 0.04,
   hyphen: 3,
+  weak: 0.6, // a line ending on a word that leans on the next ("a", "the", "and")
+  phrase: 0.25, // taken off for a line ending on a comma or a stop
 };
+
+// Words a line should not end on: they belong with what follows.
+const WEAK_END = new Set(['a', 'an', 'the', 'i', 'and', 'but', 'or', 'so', 'of', 'to', 'in', 'on', 'at', 'for', 'with', 'my', 'your', 'his', 'her', 'our', 'their', 'its', 'is', 'am', 'are', 'was', 'be', 'if', 'as', 'that', 'this', 'from', 'by', 'not', "i'm", "it's", "don't", "can't", 'very', 'just', 'what']);
+const lastWord = (ln) => (ln.trim().split(/\s+/).pop() ?? '').toLowerCase();
+
+// The phrasing of a breaking: lines ending on a leaning word cost, lines
+// ending on punctuation earn a little back. The last line is free.
+function phrasing(lines) {
+  let c = 0;
+  for (let i = 0; i < lines.length - 1; i++) {
+    const w = lastWord(lines[i]);
+    if (/[,.!?;:\u2026]$|\.\.\.$/u.test(w)) c -= W.phrase;
+    else if (WEAK_END.has(w.replace(/[^\p{L}']/gu, ''))) c += W.weak;
+  }
+  return c;
+}
 
 const upToGrid = (v, st) => Math.ceil(v / st - 1e-9) * st;
 const downToGrid = (v, st) => Math.floor(v / st + 1e-9) * st;
@@ -198,6 +216,7 @@ function score(ctx, lines, size, rooms, measure, axisOf) {
   s += (W.centre * Math.abs(axisOf - ctx.cx)) / size;
   s += W.line * L;
   s += W.hyphen * addedHyphens(lines, ctx.text);
+  s += phrasing(lines);
   return s;
 }
 
