@@ -12,7 +12,7 @@ import { defineTool, ToolError, nearest } from '../registry.js';
 import { selectBoxes } from '../select.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
-import { checksFor } from './check.js';
+import { checksFor, fitsOf } from './check.js';
 import {
   app,
   allFonts,
@@ -423,8 +423,9 @@ export function matchesOf(ids) {
   return ms;
 }
 
-// The checks for the changed (and created) boxes.
+// The checks for the changed (and created) boxes, and their fit in numbers.
 export const checksOf = (ids) => (ids.length ? checksFor(matchesOf(ids)) : []);
+export const fitsFor = (ids) => (ids.length ? fitsOf(matchesOf(ids)) : []);
 
 defineTool({
   name: 'edit',
@@ -441,7 +442,11 @@ defineTool({
     if (!pages.length) return { ops: compiled.map(() => ({ matched: 0, changed: [] })), note: 'nothing matched; fix the where and call again' };
     const results = ctx.write(pages, () => compiled.map(runOp));
     return {
-      ops: results.map((r) => ({ ...r, checks: checksOf([...r.changed, ...(r.created ?? [])]) })),
+      ops: results.map((r) => {
+        const ids = [...r.changed, ...(r.created ?? [])];
+        const fit = fitsFor(ids);
+        return { ...r, checks: checksOf(ids), ...(fit.length ? { fit } : null) };
+      }),
     };
   },
 });

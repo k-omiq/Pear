@@ -8,7 +8,7 @@
 
 import { defineTool, ToolError } from '../registry.js';
 import { parsePages } from '../select.js';
-import { matchesOf, checksOf } from './edit.js';
+import { matchesOf, checksOf, fitsFor } from './edit.js';
 import { validateStylePatch } from '../style-schema.js';
 import { app, measureForPlace, commitPlace, addBoxAt, isTranslateMode, placeableDetectedLines, lineByN } from '../../store.svelte.js';
 import { hasRawImage } from '../../page-images.js';
@@ -51,6 +51,7 @@ defineTool({
       pages: per,
       ...(r.changed ? { changedWhileFitting: r.changed, hint: 'those pages changed while being measured; call place again' } : {}),
       checks: checksOf(ids),
+      fit: fitsFor(ids),
     };
   },
 });
@@ -91,7 +92,7 @@ defineTool({
     }
     const b = ctx.write([p], () => addBoxAt(p, { lineN: line ?? null, text: text ?? null, x: at?.[0], y: at?.[1], rect, style }));
     if (typeof b === 'string') throw new ToolError(b);
-    return { id: b.id, page: n, rect: [b.x, b.y, b.w, b.h].map(Math.round), checks: checksOf([b.id]) };
+    return { id: b.id, page: n, rect: [b.x, b.y, b.w, b.h].map(Math.round), checks: checksOf([b.id]), fit: fitsFor([b.id]) };
   },
 });
 
