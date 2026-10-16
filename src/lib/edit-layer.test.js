@@ -94,6 +94,28 @@ describe('editBoxes', () => {
     expect(p.boxes.map((b) => [b.x, b.text])).toEqual([[25, 'NEW'], [315, 'NEW']]);
   });
 
+  it('the bulk panel\'s apply stays one bulk entry, carrying lastStyle, when the fit moves a box', () => {
+    const p = page();
+    const before = copy(p.boxes);
+    editBoxes([{ page: p, box: p.boxes[0] }], (b) => {
+      b.style = cloneStyle({ ...b.style, italic: true });
+      b.w += 40;
+    }, { always: true, lastStyleBefore: { size: 1 }, lastStyleAfter: { size: 2 } });
+    const [e] = peekStack().undo;
+    expect(e).toMatchObject({ t: 'bulk', lastStyleBefore: { size: 1 }, lastStyleAfter: { size: 2 } });
+    undo();
+    expect(copy(p.boxes)).toEqual(before);
+  });
+
+  it('reads a free box\'s text off its own page, not the one on screen', () => {
+    const p2 = app.pages[1];
+    p2.lines.push({ n: -1, jp: '', en: 'free words' });
+    p2.boxes.push(box('f', -1, { x: 400 }));
+    const changed = editBoxes([{ page: p2, box: p2.boxes[1] }], (b, pg) => setBoxText(b, 'new words', pg, { fit: false }));
+    expect(changed).toHaveLength(1);
+    expect(peekStack().undo.at(-1)).toMatchObject({ t: 'text', pageId: 2, before: 'free words', after: 'new words' });
+  });
+
   it('leaves out a box the mutation declines, and records nothing for no change', () => {
     const p = page();
     expect(editBoxes([{ page: p, box: p.boxes[0] }], () => false)).toEqual([]);

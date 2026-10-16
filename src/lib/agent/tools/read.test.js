@@ -208,7 +208,7 @@ describe('box', () => {
     expect(result).toMatchObject({
       id: 'b1', page: 1, rect: [10.4, 20.6, 100.2, 70.5], rotation: 15,
       text: { untrusted: longText }, style: { font: 'Anime Ace', size: 30, bold: true }, lineN: 1,
-      line: { n: 1, jp: { untrusted: payload }, en: { untrusted: longText }, tags: ['narration'], speaker: 'mk' },
+      line: { n: 1, jp: { untrusted: payload }, en: { untrusted: longText }, tags: ['narration'], speaker: { untrusted: 'mk' } },
       outline: { source: 'manual', approved: 'user', confidence: 0.8, note: { untrusted: payload } }, fit: 'rect', flags: [],
     });
     expect(Object.keys(result.style)).toEqual(Object.keys(app.pages[0].boxes[0].style));

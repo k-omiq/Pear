@@ -78,7 +78,18 @@ describe('guide', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it('refuses to change or remove a term the user locked', async () => {
+    const before = copy(guide);
+    for (const args of [{ action: 'set', removeTerms: ['makoto'] }, { action: 'set', updateTerms: [{ id: 'makoto', locked: false }] }]) {
+      const reply = await call(args);
+      expect(reply.ok).toBe(false);
+      expect(reply.error).toMatch(/locked/);
+    }
+    expect(copy(guide)).toEqual(before);
+  });
+
   it('validates, sanitizes and changes all requested fields inside one revertible writeGuide', async () => {
+    guide.glossary[0].locked = false;
     const before = copy(guide);
     const pages = copy(app.pages);
     const reply = await call({

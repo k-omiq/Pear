@@ -9,7 +9,7 @@
 // client off until the user pastes the new line.
 import { isTauri } from '../importer.js';
 import { listTools, callTool } from './registry.js';
-import { callContext, noteCall } from './run.svelte.js';
+import { callContext, noteCall, stopRun } from './run.svelte.js';
 import { INSTRUCTIONS } from './instructions.js';
 import './tools/index.js';
 
@@ -73,12 +73,17 @@ export function toMcpResult(r) {
 // One call from the door. Never throws: a failure is an error result.
 export async function answerCall(payload) {
   const { name, args } = payload ?? {};
+  if (!door.on) return toMcpResult({ ok: false, error: 'the user turned the AI door off' });
   noteCall();
   let r;
   try {
     r = await callTool(name, args, callContext('mcp'));
   } catch (err) {
     r = { ok: false, error: `the app failed: ${err?.message ?? err}` };
+  } finally {
+    // The quiet time that ends a run counts from the end of a call, so a
+    // long one (place, detect) is not taken for silence.
+    noteCall();
   }
   return toMcpResult(r);
 }
@@ -136,6 +141,8 @@ async function apply() {
 
 export async function setDoorOn(on) {
   door.on = !!on;
+  // Off stops a run going on: a call already in the app writes nothing more.
+  if (!door.on) stopRun();
   persist();
   await apply();
 }

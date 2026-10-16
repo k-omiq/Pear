@@ -97,8 +97,44 @@ describe('Stop', () => {
     expect(p.boxes[0].style.italic).toBe(true);
     expect(() => write(ctx, p, (b) => void (b.x += 1))).toThrow(ToolError);
     vi.advanceTimersByTime(IDLE_MS + 1);
-    write(ctx, p, (b) => void (b.x += 1));
+    write(callContext("mcp"), p, (b) => void (b.x += 1));
     expect(aiRun.active).toBe(true);
+  });
+});
+
+describe('a call that began before a Stop, a Revert or a door turned off', () => {
+  it('writes nothing after it, and says so between its steps', () => {
+    const ctx = callContext('mcp');
+    const p = pageById(1);
+    write(ctx, p, italic);
+    expect(ctx.stillPinned()).toBe(true);
+    revertRun();
+    expect(ctx.stillPinned()).toBe(false);
+    expect(() => write(ctx, p, (b) => void (b.x += 1))).toThrow(/stopped or reverted/);
+    expect(aiRun.active).toBe(false);
+  });
+
+  it('a user edit still settling stays the user\'s own step', async () => {
+    const { nudgeBox } = await import('../store.svelte.js');
+    const p = pageById(1);
+    nudgeBox('a', 5, 0);
+    write(callContext('mcp'), p, italic);
+    expect(peekStack().undo.map((e) => e.t)).toEqual(['move', 'group']);
+  });
+});
+
+describe('Revert after detection', () => {
+  it('puts the page\'s detection back too', () => {
+    const p = pageById(1);
+    const ctx = callContext('mcp');
+    ctx.write([p], () => {});
+    p.detect = { boxes: [{ n: 1, box: [0, 0, 10, 10] }] };
+    p.lines = [{ n: 1, jp: 'x', en: '' }];
+    revertRun();
+    expect(p.detect).toBe(null);
+    expect(p.lines).toEqual([]);
+    undo();
+    expect(p.detect.boxes).toHaveLength(1);
   });
 });
 

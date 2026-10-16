@@ -5,12 +5,19 @@
   // work back from every page it touched. After the run it stays as long as
   // the run can still be reverted, so the user can look first and decide
   // after; the close button puts it away until the next run.
-  import { aiRun, stopRun, revertRun } from '../agent/run.svelte.js';
+  import { aiRun, stopRun, revertRun, checkPin } from '../agent/run.svelte.js';
+  import { app } from '../store.svelte.js';
 
   let dismissed = $state(false);
   // A new run brings the bar back.
   $effect(() => {
     if (aiRun.active) dismissed = false;
+  });
+
+  // Another chapter: the run ends, and its Revert goes with it.
+  $effect(() => {
+    void app.chapterRef;
+    checkPin();
   });
 
   const shown = $derived(aiRun.active || (aiRun.canRevert && !dismissed));

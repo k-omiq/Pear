@@ -160,6 +160,15 @@ describe('edit', () => {
     expect(pageById(1).boxes[0].outline.approved).toBe('ai');
   });
 
+  it('approve_outline leaves an outline the user approved as theirs', async () => {
+    const a = pageById(1).boxes[0];
+    a.fit = { kind: 'rect', x: 10, y: 10, w: 160, h: 60 };
+    a.outline = { source: 'manual', confidence: 1, approved: 'user' };
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'approve_outline' }] });
+    expect(r.result.ops[0].changed).toEqual([]);
+    expect(a.outline.approved).toBe('user');
+  });
+
   it('Stop refuses the next edit; Revert puts the pages back', async () => {
     const start = copy(app.pages.map((p) => p.boxes));
     await call({ ops: [{ where: { pages: 'all' }, set: { style: { bold: true } } }] });

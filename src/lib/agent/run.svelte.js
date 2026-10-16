@@ -42,11 +42,17 @@ let current = null; // { id, seq, door, kept: Map(pageId -> page copy), guideBef
 let seqCounter = 0;
 let idleT = null;
 let stoppedUntilQuiet = false;
+// Bumped by Stop, Revert and a chapter change. A call that began before a bump
+// writes nothing after it - a slow tool (place, detect) included.
+let epoch = 0;
 
+// What Revert puts back: the boxes, the lines and the detection (a run's
+// `detect` writes both).
 const keep = (p) => ({
   boxes: $state.snapshot(p.boxes ?? []),
   lines: $state.snapshot(p.lines ?? []),
   activeLineN: p.activeLineN ?? null,
+  detect: p.detect ? $state.snapshot(p.detect) : null,
 });
 
 function sync() {
@@ -93,6 +99,7 @@ export function noteCall() {
 
 export function stopRun() {
   if (!current?.active) return false;
+  epoch++;
   stoppedUntilQuiet = true;
   endRun();
   // Still counted from here, so the agent's next call keeps the Stop up.
@@ -106,9 +113,28 @@ function pinned(run) {
   return run.seq === chapterOpenSeq() && !!app.chapterRef;
 }
 
+// The chapter changed under the run: it ends, and what it did can no longer
+// be reverted from here. Called by the AI bar whenever the open chapter moves.
+export function checkPin() {
+  if (current && current.seq !== chapterOpenSeq()) {
+    epoch++;
+    endRun();
+  }
+  sync();
+}
+
+const STOPPED = 'the user stopped this AI run. Do not continue; tell the user what was done.';
+
+// Whether a call may change anything: not after a Stop, a Revert or a chapter
+// change that came since it began, and not while the user's Stop stands.
+function guard(since) {
+  if (since !== epoch) throw new ToolError('the user stopped or reverted the AI run, or the chapter changed, while this call ran. Nothing more was changed.');
+  if (stoppedUntilQuiet) throw new ToolError(STOPPED);
+}
+
 // The run a write joins: the one going on, or a new one.
-function runForWrite(door) {
-  if (stoppedUntilQuiet) throw new ToolError('the user stopped this AI run. Do not continue; tell the user what was done.');
+function runForWrite(door, since) {
+  guard(since);
   if (!app.chapterRef || !app.pages.length) throw new ToolError('no chapter is open in the app');
   if (current?.active && !pinned(current)) {
     endRun();
@@ -122,13 +148,19 @@ function runForWrite(door) {
 // page before its first change, and runs `fn` - synchronous, store calls
 // only - with its history folded into the run's group on each page.
 export function callContext(door) {
+  const since = epoch;
   return {
     door,
+    // For a write that is not chapter data (Settings): the same refusals.
+    guard: () => guard(since),
     write(pages, fn) {
-      const run = runForWrite(door);
+      const run = runForWrite(door, since);
       for (const p of pages ?? []) {
         if (p && !run.kept.has(p.id)) run.kept.set(p.id, keep(p));
       }
+      // The user's own edit still settling is recorded now, as theirs, before
+      // the run's group opens.
+      settleEdits();
       const out = inRun(run.id, () => quietly(fn));
       run.edits++;
       sync();
@@ -136,7 +168,7 @@ export function callContext(door) {
     },
     // The series guide is part of a run too (`guide(set)`).
     writeGuide(fn) {
-      const run = runForWrite(door);
+      const run = runForWrite(door, since);
       if (!guideBound()) throw new ToolError('no series is open, so there is no guide to change');
       if (run.guideBefore == null) run.guideBefore = $state.snapshot(guide);
       const out = quietly(fn);
@@ -146,6 +178,7 @@ export function callContext(door) {
     },
     // A long tool (detection, the chapter placer) asks between its steps.
     stillPinned() {
+      if (since !== epoch || stoppedUntilQuiet) return false;
       return !current?.active || pinned(current);
     },
   };
@@ -160,6 +193,7 @@ export function revertRun() {
     sync();
     return 0;
   }
+  epoch++;
   if (run.active) endRun();
   settleEdits();
   let n = 0;
@@ -167,10 +201,17 @@ export function revertRun() {
     const p = pageById(pageId);
     if (!p) continue;
     const before = keep(p);
-    recordEdit({ t: 'restore', pageId, before, after: kept });
+    const after = { ...kept };
+    // The detection rides along only when the run changed it.
+    if (JSON.stringify(before.detect) === JSON.stringify(kept.detect)) {
+      delete before.detect;
+      delete after.detect;
+    }
+    recordEdit({ t: 'restore', pageId, before, after });
     p.boxes = structuredClone(kept.boxes);
     p.lines = structuredClone(kept.lines);
     p.activeLineN = kept.activeLineN;
+    if ('detect' in after) p.detect = after.detect ? structuredClone(after.detect) : null;
     n++;
   }
   if (run.guideBefore) restoreGuide(run.guideBefore);
@@ -187,5 +228,6 @@ export function __resetRun() {
   idleT = null;
   current = null;
   stoppedUntilQuiet = false;
+  epoch = 0;
   sync();
 }

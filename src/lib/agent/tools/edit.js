@@ -314,8 +314,9 @@ function writeDo(d, matches) {
     const byPage = new Map();
     for (const m of matches) byPage.set(m.page, [...(byPage.get(m.page) ?? []), m.box]);
     for (const [p, boxes] of byPage) {
-      const ids = boxes.filter((b) => b.fit && b.outline?.approved !== 'ai').map((b) => b.id);
-      if (approveBoxes(p, boxes, 'ai')) changed.push(...ids);
+      // An outline the user approved stays theirs.
+      const mine = boxes.filter((b) => b.fit && !b.outline?.approved);
+      if (approveBoxes(p, mine, 'ai')) changed.push(...mine.map((b) => b.id));
     }
     return { changed, created, deleted };
   }

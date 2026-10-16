@@ -23,7 +23,7 @@ globalThis.localStorage = {
 };
 vi.mock('../importer.js', () => ({ isTauri: () => tauri }));
 
-const { door, initDoor, setDoorOn, setDoorPort, rotateToken, toMcpResult, DEFAULT_PORT } = await import('./door.svelte.js');
+const { door, initDoor, setDoorOn, setDoorPort, rotateToken, toMcpResult, answerCall, DEFAULT_PORT } = await import('./door.svelte.js');
 
 beforeEach(() => {
   calls.length = 0;
@@ -60,6 +60,15 @@ describe('the MCP door, webview side', () => {
     expect(cmd).toBe('agent_result');
     expect(args.id).toBe(7);
     expect(args.result.isError).toBe(true);
+  });
+
+  it('refuses a call that arrives after the door was turned off', async () => {
+    await initDoor();
+    await setDoorOn(true);
+    await setDoorOn(false);
+    const r = await answerCall({ id: 1, name: 'context', args: {} });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/turned the AI door off/);
   });
 
   it('a new token or port restarts it; off stops it', async () => {

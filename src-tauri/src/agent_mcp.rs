@@ -194,7 +194,11 @@ impl AgentDoor {
     if token.len() < MIN_TOKEN_LEN {
       return Err("the token is too short".into());
     }
-    self.stop();
+    // The old listener must be gone before the port is bound again (a new
+    // token restarts on the same port): abort it and wait for it to drop.
+    if let Some(old) = self.stop() {
+      let _ = old.await;
+    }
     // 127.0.0.1, never 0.0.0.0: nothing off this machine can reach it.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
       .await
@@ -219,7 +223,11 @@ impl AgentDoor {
 
     let accept = tauri::async_runtime::spawn(async move {
       loop {
-        let Ok((stream, peer)) = listener.accept().await else { continue };
+        let Ok((stream, peer)) = listener.accept().await else {
+          // Out of file handles, say: back off rather than spin.
+          tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+          continue;
+        };
         // Belt to the bind: only loopback peers are served at all.
         if !peer.ip().is_loopback() {
           continue;
@@ -251,13 +259,17 @@ impl AgentDoor {
     Ok(port)
   }
 
-  fn stop(&self) {
+  // Returns the aborted accept task, for a caller that must wait for its
+  // listener to close.
+  fn stop(&self) -> Option<tauri::async_runtime::JoinHandle<()>> {
     self.inner.live.store(0, Ordering::SeqCst);
-    if let Some(r) = self.inner.running.lock().unwrap().take() {
+    let old = self.inner.running.lock().unwrap().take().map(|r| {
       r.accept.abort();
-    }
+      r.accept
+    });
     // Calls waiting on the webview are answered as dropped.
     self.inner.pending.lock().unwrap().clear();
+    old
   }
 
   fn port(&self) -> Option<u16> {
@@ -372,6 +384,9 @@ mod tests {
       if let Some(ip) = local_non_loopback_ip() {
         assert!(tokio::net::TcpStream::connect((ip, port)).await.is_err(), "reachable on {ip}");
       }
+      // A new token restarts on the same port at once.
+      let again = door.start(port, format!("{TOKEN}x")).await.unwrap();
+      assert_eq!(again, port);
       assert!(door.start(0, "short".into()).await.is_err());
       door.stop();
       assert_eq!(door.port(), None);
