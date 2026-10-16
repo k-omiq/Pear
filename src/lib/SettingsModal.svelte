@@ -34,6 +34,8 @@
     formatCombo,
   } from './shortcuts.svelte.js';
   import { createRebindCapture } from './rebind-capture.js';
+  import { door, setDoorOn, setDoorPort, rotateToken, DEFAULT_PORT } from './agent/door.svelte.js';
+  import { connectLines, doorUrl } from './agent/connect.js';
   import { getVersion } from '@tauri-apps/api/app';
   import { checkForUpdate } from './updater.js';
   import UpdateDialog from './home/UpdateDialog.svelte';
@@ -49,6 +51,7 @@
     { id: 'typesetting', label: 'Typesetting', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7V4h16v3" /><path d="M9 20h6" /><path d="M12 4v16" /></svg>' },
     { id: 'project', label: 'Project', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2z" /><path d="M4 21V5" /><path d="M8 7h6" /></svg>' },
     { id: 'shortcuts', label: 'Shortcuts', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" /></svg>' },
+    { id: 'ai', label: 'AI', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" /><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" /></svg>' },
     { id: 'system', label: 'System', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></svg>' },
   ];
 
@@ -336,6 +339,46 @@
     } finally {
       clearing = false;
     }
+  }
+
+  // ---------- AI ----------
+  // The MCP door (agent/door.svelte.js): off by default, 127.0.0.1 only, and
+  // every request needs the token. The token shows only inside the lines to
+  // paste - it is the user's own, for their own clients.
+  const lines = $derived(connectLines(door.port, door.token));
+  const connectBlocks = $derived([
+    { id: 'claude', name: 'Claude Code', lines: [{ text: lines.claude, label: 'Claude Code line' }] },
+    {
+      id: 'codex',
+      name: 'Codex',
+      lines: [
+        { text: lines.codexEnv, label: 'Codex token line', note: 'Put this line in your shell profile (~/.zshrc or ~/.bashrc), then open a new terminal.' },
+        { text: lines.codex, label: 'Codex line', note: 'Then run this once.' },
+      ],
+    },
+    { id: 'agy', name: 'Antigravity', lines: [{ text: lines.agy, label: 'Antigravity config', note: 'Goes in ~/.gemini/config/mcp_config.json.' }] },
+  ]);
+
+  async function copyLine(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Copied');
+    } catch (e) {
+      toastError(`Could not copy: ${e?.message ?? e}`);
+    }
+  }
+
+  async function onDoorPort(e) {
+    const input = e.currentTarget;
+    const raw = String(input.value).trim();
+    await setDoorPort(raw === '' ? DEFAULT_PORT : +raw);
+    // Out of range or not a number: setDoorPort keeps the old port, so show it.
+    input.value = String(door.port);
+  }
+
+  async function onNewToken() {
+    await rotateToken();
+    toast('New token made');
   }
 
   // Reset floating panel layout.
@@ -871,6 +914,88 @@
           <b>arrows</b> nudge the selected box - or turn the page when nothing
           is selected. Hold <b>Shift</b> with an arrow for a bigger nudge.
         </div>
+      </div>
+      </div>
+      {/if}
+
+      {#if tab === 'ai'}
+      <div class="set-pane" role="tabpanel" id="set-pane-ai" aria-labelledby="set-tab-ai">
+      <div class="settings-section ts-section">
+        <div class="settings-title">AI AGENTS{@render scope('you')}</div>
+        <div class="field">
+          <span>Let AI agents use this app</span>
+          {@render toggle('agentDoor', 'Let AI agents use this app', door.on, !isTauri(), (on) => setDoorOn(on))}
+        </div>
+        <div class="qhint ai-lead">Claude Code, Codex or Antigravity can then typeset through the app. It listens on 127.0.0.1 only, and every request needs the token.</div>
+
+        <div class="srow ai-status">
+          <span class="slabel">Status</span>
+          <span class="dot {isTauri() && door.running ? 'ok' : isTauri() && door.error ? 'err' : 'off'}"></span>
+          <span class="sval">
+            {#if !isTauri()}Needs the desktop app
+            {:else if door.running}Listening on {doorUrl(door.port)}
+            {:else if door.on && !door.error}Starting…
+            {:else}Off{/if}
+          </span>
+        </div>
+        {#if isTauri() && door.error}
+          <div class="sc-err ai-err">{door.error}</div>
+        {/if}
+
+        <div class="field">
+          <span>Port</span>
+          <input
+            class="ts-num ai-port"
+            type="number"
+            min="1024"
+            max="65535"
+            step="1"
+            aria-label="Port"
+            placeholder={String(DEFAULT_PORT)}
+            value={door.port}
+            onchange={onDoorPort}
+          />
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">CONNECT</div>
+        {#each connectBlocks as b (b.id)}
+          <div class="model-card ai-card">
+            <div class="mc-name">{b.name}</div>
+            {#each b.lines as l (l.label)}
+              {#if l.note}<div class="qhint ai-note">{l.note}</div>{/if}
+              <div class="ai-line-row">
+                <pre class="ai-line" aria-label={l.label}>{l.text}</pre>
+                <button class="btn tiny" aria-label="Copy {l.label}" onclick={() => copyLine(l.text)}>Copy</button>
+              </div>
+            {/each}
+          </div>
+        {/each}
+
+        <div class="model-card ai-card ai-warn" role="note">
+          <div class="mc-name">Keep Claude Code to our tools</div>
+          <p class="mc-desc ai-warn-desc">
+            Page text (OCR and translations) can carry instructions, and a
+            Claude Code session can run commands.
+          </p>
+          <div class="ai-line-row">
+            <pre class="ai-line" aria-label="Safe Claude Code start">{lines.claudeSafe}</pre>
+            <button class="btn tiny" aria-label="Copy Safe Claude Code start" onclick={() => copyLine(lines.claudeSafe)}>Copy</button>
+          </div>
+          <div class="qhint ai-note">Start Claude Code this way so our tools are all it has.</div>
+        </div>
+      </div>
+
+      <div class="settings-section ts-section">
+        <div class="settings-title">TOKEN</div>
+        <div class="field">
+          <span>Make a new token</span>
+          <div class="field-actions">
+            <button class="btn tiny" onclick={onNewToken}>New token</button>
+          </div>
+        </div>
+        <div class="qhint ai-note">Every connected agent must paste its line again.</div>
       </div>
       </div>
       {/if}
@@ -1569,6 +1694,65 @@
   }
   .scope-chip.chapter {
     border-style: dashed;
+  }
+
+  /* AI tab. The lines are what the user pastes, token and all, so they wrap
+     rather than scroll: the whole line is always in sight, and the pane never
+     grows sideways. */
+  .ai-lead {
+    margin-top: 0;
+    margin-bottom: 14px;
+  }
+  .ai-status .sval {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .ai-err {
+    margin: -8px 0 12px;
+  }
+  .ai-port {
+    width: 76px;
+  }
+  .ai-card .mc-name {
+    margin-bottom: 8px;
+  }
+  .ai-note {
+    margin: 8px 0 6px;
+  }
+  .ai-line-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .ai-line {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+  }
+  .ai-line-row .btn {
+    flex: none;
+  }
+  .ai-warn {
+    border-color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 8%, var(--panel2));
+  }
+  .ai-warn .mc-name {
+    color: var(--warn);
+  }
+  .ai-warn-desc {
+    margin: 0 0 4px;
   }
 
   /* Project tab. */

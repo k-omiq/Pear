@@ -10,7 +10,7 @@
 // `project` is shown only while a chapter is open, because what it edits is the
 // open chapter's project; asked for with none open, Settings opens on General
 // (see `shownSettingsTab`).
-export const SETTINGS_TABS = ['general', 'typesetting', 'project', 'shortcuts', 'system'];
+export const SETTINGS_TABS = ['general', 'typesetting', 'project', 'shortcuts', 'ai', 'system'];
 
 export const settingsView = $state({ open: false, tab: 'general' });
 
