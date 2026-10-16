@@ -487,17 +487,20 @@ function wideWord(ctx, t) {
 // ink is still outside, as it does for any box an edit overfills. Never below
 // `minSize`, never a column. A locked position still lets it grow: the ladder
 // grows a box about the same anchor `frame` holds it by. A locked width or
-// height does not.
+// height does not - so with either, the box is not cut to the band either: a
+// cut nothing grows back would leave a box shorter than its text, and a box
+// whose outline is its own rectangle shorter again at every solve.
 function bestEffort(ctx, size) {
   const widths = widthsAt(ctx, size);
   const t = trial(ctx, size, Math.max(...widths));
   const { R, lk } = ctx;
-  const c0 = R?.shape && !lk.height && t.c.h > R.height ? frame(ctx, t.c, R.height) : t.c;
+  const grows = !(lk.width || lk.height);
+  const c0 = R?.shape && grows && t.c.h > R.height ? frame(ctx, t.c, R.height) : t.c;
   const r = fitBox(c0, {
     page: ctx.opts.page,
     strip: ctx.opts.strip,
     minSize: size,
-    geometry: !(lk.width || lk.height),
+    geometry: grows,
   });
   const c = { ...c0, x: r.x, y: r.y, w: r.w, h: r.h };
   const place = placeBlock(c, NO_CACHE);
