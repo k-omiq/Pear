@@ -75,6 +75,7 @@
 import {
   applyCase,
   layoutLines,
+  brokenLines,
   lineWidth,
   balloonWidthsFor,
   lineIndents,
@@ -111,8 +112,10 @@ export const CONTAIN_TOL = 0.5;
 const NO_CACHE = { cache: false };
 
 // A box as the functions below take it.
+// `breaks` are the lines an outline fit chose (`auto.breaks`), drawn while
+// they are for this text, face and size (`brokenLines` in measure.js).
 export function boxCandidate(box, text) {
-  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null };
+  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: box.auto?.breaks ?? null };
 }
 
 // Glyph-by-glyph text - SFX lettering, the bezier path, the closed ring, the arc
@@ -221,7 +224,7 @@ export function placeBlock(cand, opts) {
   // the field is one line height to every reader rather than 0 to one of them.
   const lineH = size * (s.lineHeight > 0 ? s.lineHeight : 1);
   const rows = balloonWidthsFor(cand, s, size);
-  const lines = layoutLines(text, s, size, contentWidth(cand.w, s), rows, opts);
+  const lines = brokenLines(text, s, size, cand.breaks) ?? layoutLines(text, s, size, contentWidth(cand.w, s), rows, opts);
   if (lines === null) return null;
   const { inks, shift } = blockInk(lines, s, size);
   const blockH = lines.length * lineH;

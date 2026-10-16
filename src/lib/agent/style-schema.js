@@ -130,6 +130,7 @@ export const STYLE_SCHEMA = {
   shape: choice('line-breaking shape', ['auto', 'oval', 'rect', 'off']),
   minOrphan: number('minimum solo-word letters'),
   hyphenate: boolean('split words that fit no line'),
+  margin: { ...number('outline fit: air from ink to the bubble outline in em (0.5 is a letter); null is the older layout', 0, 2), nullable: true },
   balloon: boolean('lay out to box.fit balloon'),
   autoHeight: boolean('text height at valign'),
 };
@@ -180,6 +181,7 @@ export function validateStylePatch(patch) {
 
   function check(value, entry, path) {
     if (entry.readOnly) return fail(path, entry.desc);
+    if (value === null && entry.nullable) return;
     switch (entry.type) {
       case 'number':
       case 'integer': {

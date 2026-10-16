@@ -29,6 +29,7 @@ export const FIT_RULES = Object.freeze({
   tightMargin: 0.25, // em below which the text crowds its outline
   hourglassDip: 0.12, // an interior line this much narrower than the widest on both sides
   ovalGood: 0.75, // oval score a round block should reach
+  ovalEnds: 0.85, // the top and bottom lines of an oval, at most, of its widest
   offCentre: 0.3, // em of centre offset a reader notices (and never under 3 px)
   minOrphan: 3,
 });
@@ -56,7 +57,12 @@ export function orphanCount(lines, min = FIT_RULES.minOrphan) {
   }).length;
 }
 
-// The line-width profile, judged. `ws` are ink widths, top to bottom.
+// The line-width profile, judged. `ws` are ink widths, top to bottom. The
+// oval score is the fit to `ovalProfile`, a line narrower than the profile
+// costing half what a wider one does (a diamond is as good as an oval). The
+// kind: an oval rises to its widest line and falls from it, with both ends
+// short; a dip below the lines on both sides of it is lumpy (`ragged`), and a
+// deep one an hourglass.
 export function shapeOf(ws, rules = FIT_RULES) {
   const n = ws.length;
   const max = Math.max(0, ...ws);
@@ -64,16 +70,21 @@ export function shapeOf(ws, rules = FIT_RULES) {
   const want = ovalProfile(n);
   const top = Math.max(...want);
   let sum = 0;
-  ws.forEach((w, i) => (sum += (w / max - want[i] / top) ** 2));
+  ws.forEach((w, i) => {
+    const d = w / max - want[i] / top;
+    sum += (d < 0 ? d / 2 : d) ** 2;
+  });
   const oval = Math.max(0, 1 - 2 * Math.sqrt(sum / n));
   let hourglass = false;
+  let dip = 0;
   for (let i = 1; i < n - 1; i++) {
-    const above = Math.max(...ws.slice(0, i));
-    const below = Math.max(...ws.slice(i + 1));
-    if (ws[i] < (1 - rules.hourglassDip) * Math.min(above, below)) hourglass = true;
+    const side = Math.min(Math.max(...ws.slice(0, i)), Math.max(...ws.slice(i + 1)));
+    if (ws[i] < (1 - rules.hourglassDip) * side) hourglass = true;
+    dip = Math.max(dip, (side - ws[i]) / max);
   }
   const widest = ws.indexOf(max);
   const even = ws.every((w) => w >= 0.88 * max);
+  const ends = Math.max(ws[0], ws[n - 1]) / max;
   const kind = hourglass
     ? 'hourglass'
     : even
@@ -82,10 +93,10 @@ export function shapeOf(ws, rules = FIT_RULES) {
         ? 'funnel'
         : widest === n - 1
           ? 'pyramid'
-          : oval >= rules.ovalGood
+          : dip <= 0.04 && ends <= rules.ovalEnds
             ? 'oval'
             : 'ragged';
-  return { kind, oval: Math.round(oval * 100) / 100, hourglass, widest };
+  return { kind, oval: Math.round(oval * 100) / 100, hourglass, widest, dip: Math.round(Math.max(0, dip) * 100) / 100, ends: Math.round(ends * 100) / 100 };
 }
 
 // The outline's clearance above and below an ink rectangle, sampled across it:
