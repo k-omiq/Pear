@@ -276,6 +276,23 @@ describe('the scale the picture is painted at', () => {
     expect(c.top).toBeCloseTo(-f.oy * 1.37, 9);
   });
 
+  it('is not snapped while a zoom gesture is moving, so it scales with the page', async () => {
+    // The picture is only stretched during the gesture, so there is no texel
+    // on a device pixel to keep; a snap worked out again at every step would
+    // only move the letters against the art.
+    _setDisplayScale(2);
+    const m = await mounted('straight', { zoom: 1 });
+    const f = footprint(m.box, m.pg);
+    setZoomLive(true);
+    for (const z of [1.013, 1.37, 2.71]) {
+      setZoom(z);
+      flushSync();
+      const c = css(m.canvas());
+      expect(c.left).toBeCloseTo(-f.ox * z, 9);
+      expect(c.top).toBeCloseTo(-f.oy * z, 9);
+    }
+  });
+
   it('caps one box at the pixel budget by lowering its scale, and still shows it at its size', async () => {
     _setDisplayScale(2);
     const m = await mounted('huge', { zoom: 2 });
