@@ -320,22 +320,7 @@ impl DetectEngine {
             }
         }
         if want_ocr && !s.ocr.contains_key(&model) {
-            let recognizer = match model {
-                OcrModel::MangaOcr => Recognizer::Japanese(
-                    OcrEngine::load(&dir.join("manga-ocr"))
-                        .map_err(|e| format!("failed to load the Japanese OCR models: {e}"))?,
-                ),
-                _ => {
-                    let file = model
-                        .paddle_file()
-                        .expect("non-Japanese models have one file");
-                    Recognizer::Paddle(
-                        PaddleOcrEngine::load(&dir.join(file.rel))
-                            .map_err(|e| format!("failed to load the selected OCR model: {e}"))?,
-                    )
-                }
-            };
-            s.ocr.insert(model, recognizer);
+            s.ocr.insert(model, load_recognizer(dir, model)?);
         }
 
         let Sessions {
@@ -360,6 +345,60 @@ impl DetectEngine {
             language.code(),
         )
     }
+}
+
+impl DetectEngine {
+    /// Reads one drawn character or short string (OCR-6) with the project's
+    /// recognizer. The drawing is the whole crop: no detection runs.
+    fn read_drawing_blocking(&self, bytes: &[u8], model: OcrModel) -> Result<OcrReading, String> {
+        let img = flatten_on_white(decode_image(bytes)?);
+        let dir = &self.0.models_dir;
+        let (mut s, recovered) = self.lock_sessions();
+        if recovered {
+            return Err("the detection engine panicked earlier and has been reset; try again".to_string());
+        }
+        if !s.ocr.contains_key(&model) {
+            s.ocr.insert(model, load_recognizer(dir, model)?);
+        }
+        let recognizer = s.ocr.get_mut(&model).expect("loaded above");
+        recognizer
+            .ocr_with_confidence(&img)
+            .map_err(|e| format!("could not read the drawing: {e}"))
+    }
+}
+
+/// Loads the recognizer for one OCR model from the model cache.
+fn load_recognizer(dir: &Path, model: OcrModel) -> Result<Recognizer, String> {
+    Ok(match model {
+        OcrModel::MangaOcr => Recognizer::Japanese(
+            OcrEngine::load(&dir.join("manga-ocr"))
+                .map_err(|e| format!("failed to load the Japanese OCR models: {e}"))?,
+        ),
+        _ => {
+            let file = model.paddle_file().expect("non-Japanese models have one file");
+            Recognizer::Paddle(
+                PaddleOcrEngine::load(&dir.join(file.rel))
+                    .map_err(|e| format!("failed to load the selected OCR model: {e}"))?,
+            )
+        }
+    })
+}
+
+/// A canvas PNG keeps its transparent pixels as transparent black, and the
+/// recognizers drop alpha, so a drawing is composited onto white first.
+fn flatten_on_white(img: image::DynamicImage) -> image::DynamicImage {
+    if !img.color().has_alpha() {
+        return img;
+    }
+    let mut rgba = img.to_rgba8();
+    for p in rgba.pixels_mut() {
+        let a = p[3] as u32;
+        for c in 0..3 {
+            p[c] = ((p[c] as u32 * a + 255 * (255 - a) + 127) / 255) as u8;
+        }
+        p[3] = 255;
+    }
+    image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(rgba).to_rgb8())
 }
 
 /// Unique per-download scratch path to prevent collisions between concurrent processes.
@@ -639,6 +678,36 @@ pub async fn detect_analyze(
     .map_err(|e| format!("analyze task failed: {e}"))?
 }
 
+/// What a drawing read as (OCR-6).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DrawingReading {
+    pub text: String,
+    pub confidence: f32,
+}
+
+/// Read a drawn character or short string with the project's recognizer.
+#[tauri::command]
+pub async fn detect_read_drawing(
+    state: tauri::State<'_, DetectEngine>,
+    image: Vec<u8>,
+    language: Option<String>,
+    ocr_model: Option<String>,
+) -> Result<DrawingReading, String> {
+    let engine = state.inner().clone();
+    let language = OcrLanguage::from_code(language.as_deref());
+    let model = OcrModel::from_code(language, ocr_model.as_deref());
+    match model.paddle_file() {
+        Some(file) => engine.ensure(&[file]).await?,
+        None => engine.ensure(&JAPANESE_OCR_FILES.iter().collect::<Vec<_>>()).await?,
+    }
+    let reading = tauri::async_runtime::spawn_blocking(move || {
+        engine.read_drawing_blocking(&image, model)
+    })
+    .await
+    .map_err(|e| format!("read task failed: {e}"))??;
+    Ok(DrawingReading { text: reading.text, confidence: reading.confidence })
+}
+
 /// On-disk size + location of the downloaded model weights (Settings panel).
 #[tauri::command]
 pub async fn detect_models_cache(
@@ -704,6 +773,16 @@ pub async fn detect_health(state: tauri::State<'_, DetectEngine>) -> Result<Heal
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drawing_is_flattened_onto_white_before_reading() {
+        let mut rgba = image::RgbaImage::new(2, 1);
+        rgba.put_pixel(0, 0, image::Rgba([0, 0, 0, 0]));
+        rgba.put_pixel(1, 0, image::Rgba([0, 0, 0, 255]));
+        let flat = flatten_on_white(image::DynamicImage::ImageRgba8(rgba)).to_rgb8();
+        assert_eq!(flat.get_pixel(0, 0).0, [255, 255, 255]);
+        assert_eq!(flat.get_pixel(1, 0).0, [0, 0, 0]);
+    }
 
     #[test]
     fn project_language_selects_its_recognizer_and_reading_direction() {
