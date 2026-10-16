@@ -74,6 +74,8 @@ at commit `d9be51e`:
   `src/lib/ocrConsensus.ts`.
 - `src/lib/strip-reslice.js`: the clean-gutter rule and tail balancing from
   `src/lib/server/reslice.ts` and `src/lib/reslice.ts`.
+- `src/lib/page-prep.js`: the spread split, auto-crop and auto-align planners
+  from `src/lib/server/pageEdit.ts` and `src/lib/server/spreadGutter.ts`.
 
 Komatose is MIT licensed:
 
