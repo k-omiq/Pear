@@ -238,10 +238,11 @@ export const PICTURE_OFF = 'e|off';
  * The ink block is not stringified here - it is the heaviest part of a style
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
-export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts }) {
+export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '' }) {
   const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
-    `${lines ? lines.join('\n') : ''}|${indents ? indents.join(',') : ''}|${scale}|${fonts}`
+    `${lines ? lines.join('\n') : ''}|${indents ? indents.join(',') : ''}|${scale}|${fonts}` +
+    (tiles ? `|${tiles}` : '')
   );
 }

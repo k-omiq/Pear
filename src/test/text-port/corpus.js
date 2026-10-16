@@ -1,6 +1,6 @@
 // data.js and its brush geometry dependency are pure: keep the frozen corpus
 // tied to the app's real schema without importing measurement or a host.
-import { defaultStyle, normalizeFit, PATTERN_KINDS } from '../../lib/data.js';
+import { defaultStyle, normalizeFit, CANVAS_PATTERN_KINDS } from '../../lib/data.js';
 
 export const sizes = [8, 11, 12, 14.5, 16, 18, 22, 22.5, 26, 30, 33.3, 40, 64, 96];
 const strings = [
@@ -136,7 +136,7 @@ export function pixelsCases(list) {
     ['band-alpha', { strokes: [stroke(3, '#000000', 0.5)] }],
     ...[0, 90].map((angle) => [`linear-${angle}`, { gradient: { on: true, angle } }]),
     ['radial', { gradient: { on: true, kind: 'radial' } }], ['line-gradient', { gradient: { on: true, scope: 'line' } }],
-    ...PATTERN_KINDS.map((kind) => [`pattern-${kind}`, { pattern: { on: true, kind } }]),
+    ...CANVAS_PATTERN_KINDS.map((kind) => [`pattern-${kind}`, { pattern: { on: true, kind } }]),
     ['shadow', { shadows: [sh] }], ['shadow-blur', { shadows: [{ ...sh, blur: 3 }] }],
     ['shadows', { shadows: [sh, { ...sh, x: -4, y: -3 }] }],
     ['shadows-blur', { shadows: [{ ...sh, blur: 3 }, { ...sh, x: -4, y: -3, blur: 5 }] }],

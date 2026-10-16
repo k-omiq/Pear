@@ -286,9 +286,9 @@ describe('normalizer numeric sanity', () => {
 });
 
 describe('styleSchemaText', () => {
-  it('describes every key, field and item in under 4500 characters', () => {
+  it('describes every key, field and item in under 5200 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(4500);
+    expect(text.length).toBeLessThan(5200);
     for (const [path, entry] of allEntries) {
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }

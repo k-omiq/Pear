@@ -7,8 +7,9 @@
 // The engine turns a job into pixels (text-engine/js/paint.mjs); this file's
 // whole work is to hand it what only the page has - the canvas's transform and
 // the pattern tiles - and to put the pixels it gives back onto the canvas.
-import { drawsPatternTiles, paintBox as paintBoxJob, paintJob, paintsBoxes, patternTile } from '../../../text-engine/js/paint.mjs';
-import { patternTileCanvas, patternTilePx, TILE_SS } from '../text-paint.js';
+import { drawsPatternTiles, drawsScreens, paintBox as paintBoxJob, paintJob, paintsBoxes, patternTile } from '../../../text-engine/js/paint.mjs';
+import { canvasPatternKind, patternTileCanvas, patternTilePx, TILE_SS } from '../text-paint.js';
+import { pickedTile } from '../pattern-tiles.svelte.js';
 
 // A synthesised bold is drawn the way it is measured (text-engine/RULES.md):
 // WebKit's wider advance belongs to WebKit's second glyph a step to the right,
@@ -41,7 +42,8 @@ export function createRustGlyphPainter(rust, options = {}) {
   const tilePixels = (style) => {
     if (ownTiles) {
       const tile = patternTilePx(style);
-      return patternTile(rust.low, style?.pattern, Math.max(2, Math.round(tile * TILE_SS)), Math.max(1, tile * 0.12) / tile);
+      const pattern = { ...style?.pattern, kind: canvasPatternKind(style?.pattern?.kind) };
+      return patternTile(rust.low, pattern, Math.max(2, Math.round(tile * TILE_SS)), Math.max(1, tile * 0.12) / tile);
     }
     const cnv = patternTileCanvas(style, TILE_SS);
     return cnv ? cnv.getContext('2d').getImageData(0, 0, cnv.width, cnv.height) : null;
@@ -51,6 +53,9 @@ export function createRustGlyphPainter(rust, options = {}) {
   // same pattern sends it once and the next job does not draw it again.
   const tiles = new Map();
   const tile = (fill) => {
+    // A picked tile of a procedural fill: the page's own pixels, read from the
+    // chapter's patterns/ folder once and held decoded (`pickedTile`).
+    if (fill.kind === 'screen') return pickedTile(fill.pattern?.src);
     const key = `${patternTilePx(fill.style)}|${JSON.stringify(fill.style?.pattern ?? null)}`;
     if (tiles.has(key)) return tiles.get(key);
     const pixels = tilePixels(fill.style);
@@ -169,6 +174,9 @@ export function createRustGlyphPainter(rust, options = {}) {
   // `roughen` says the same of a job's roughening (`roughenInJob`).
   // `box` says this painter paints a whole box in one job (`boxInJob`), which
   // it does when the wasm it was handed has that call.
+  // `screen` says a pattern is painted per pixel from its kind and controls
+  // (`screenInJob`), which this wasm does when it has the call.
   const box = paintsBoxes(rust.low);
-  return { id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box };
+  const screen = drawsScreens(rust.low);
+  return { id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen };
 }
