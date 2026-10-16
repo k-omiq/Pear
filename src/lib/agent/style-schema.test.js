@@ -136,12 +136,20 @@ describe('validateStylePatch', () => {
   });
 
   it('does not invent slider bounds for values passed through by normalizeStyle', () => {
-    const patch = { size: 1000, lineHeight: 4, letterSpacing: -100, curve: 200, opacity: 2, roughen: { amount: 100 } };
+    const patch = { lineHeight: 4, letterSpacing: -100, curve: 200, roughen: { amount: 100 } };
     expect(validateStylePatch(patch)).toEqual([]);
     const normalized = normalizeStyle({ ...defaultStyle(), ...patch });
     for (const key of Object.keys(patch)) {
       expect(normalized[key]).toEqual(key === 'roughen' ? { ...defaultStyle().roughen, ...patch.roughen } : patch[key]);
     }
+  });
+
+  // The exceptions: ranges the normalizer does not clamp, set so a model's
+  // slip is refused rather than drawn.
+  it('bounds size and opacity, and names the alignments', () => {
+    expect(validateStylePatch({ size: 1000, opacity: 2 }).map((e) => e.path)).toEqual(['size', 'opacity']);
+    expect(validateStylePatch({ align: 'justify' })[0].error).toContain('center');
+    expect(validateStylePatch({ size: 400, opacity: 1, align: 'right', valign: 'bottom' })).toEqual([]);
   });
 
   it('lists every allowed value for each enum', () => {
@@ -278,9 +286,9 @@ describe('normalizer numeric sanity', () => {
 });
 
 describe('styleSchemaText', () => {
-  it('describes every key, field and item in under 4000 characters', () => {
+  it('describes every key, field and item in under 4500 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(4000);
+    expect(text.length).toBeLessThan(4500);
     for (const [path, entry] of allEntries) {
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }
