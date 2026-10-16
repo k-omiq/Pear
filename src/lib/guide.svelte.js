@@ -94,6 +94,15 @@ export function unbindGuide() {
 
 export const guideBound = () => saver != null;
 
+// The whole guide put back as it was (an AI run's Revert), and saved.
+export function restoreGuide(stored) {
+  if (!saver) return false;
+  Object.assign(guide, sanitizeGuide(stored));
+  save();
+  onTypeset?.();
+  return true;
+}
+
 function save() {
   if (!saver) return;
   try {

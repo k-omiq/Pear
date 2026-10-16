@@ -165,6 +165,18 @@ export function migrateEntry(e, plain = false) {
     return style === b.style ? b : { ...b, style };
   };
 
+  // A revert's two sides are whole pages of boxes.
+  if (e.t === 'restore') {
+    const side = (v) => {
+      if (!v || !Array.isArray(v.boxes)) return v;
+      const boxes = v.boxes.map(forwardBox);
+      return boxes.every((x, i) => x === v.boxes[i]) ? v : { ...v, boxes };
+    };
+    const before = side(e.before);
+    const after = side(e.after);
+    return before === e.before && after === e.after ? e : { ...e, before, after };
+  }
+
   // `place` / `delete`: a whole box, restored verbatim. The one that crashed.
   const box = forwardBox(e.box);
   if (box !== e.box) put('box', box);
@@ -293,6 +305,11 @@ export function rescaleEntry(entry, sx, sy) {
   if (!entry || typeof entry !== 'object') return entry;
   // A group's items are entries of their own (history.svelte.js `group`).
   if (entry.t === 'group') return { ...entry, items: (entry.items ?? []).map((it) => rescaleEntry(it, sx, sy)) };
+  // A revert's two sides are whole pages of boxes.
+  if (entry.t === 'restore') {
+    const side = (v) => (v && Array.isArray(v.boxes) ? { ...v, boxes: v.boxes.map((b) => scaleRecordedBox(b, sx, sy)) } : v);
+    return { ...entry, before: side(entry.before), after: side(entry.after) };
+  }
   const e = { ...entry };
   if (e.box) e.box = scaleRecordedBox(e.box, sx, sy);
   if (e.t === 'move' || e.t === 'resize') {

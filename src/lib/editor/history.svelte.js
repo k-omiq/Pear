@@ -442,6 +442,21 @@ const KINDS = {
       }
     },
   },
+  // A whole page's boxes and lines put back (an AI run's Revert, run.svelte.js):
+  // each side is the page's `boxes`, `lines` and queue position as they were.
+  restore: {
+    label: 'that revert',
+    apply(e, dir) {
+      const p = pageById(e.pageId);
+      if (!p) throw new Error('the page is gone');
+      const side = dir === 'undo' ? e.before : e.after;
+      p.boxes = structuredClone(side?.boxes ?? []);
+      p.lines = structuredClone(side?.lines ?? []);
+      p.activeLineN = side?.activeLineN ?? null;
+      if (app.selectedId && !p.boxes.some((b) => b.id === app.selectedId)) app.selectedId = null;
+      recheck(p, p.boxes);
+    },
+  },
   // Several entries on one page taken back as one step: an edit that reached
   // many boxes in different ways (`editBoxes`), or everything one AI run did
   // on the page (`run`, see "runs" below). Walked through the kinds above,
