@@ -242,6 +242,27 @@ describe('box', () => {
   });
 });
 
+describe('page notes and SFX meanings', () => {
+  it('context carries this page\'s note fenced and lists the pages with notes', async () => {
+    app.pages[0].note = payload;
+    app.pages[1].note = 'second';
+    const r = await read('context');
+    expect(r.pageNote).toEqual({ untrusted: payload });
+    expect(r.pagesWithNotes).toEqual([1, 2]);
+  });
+
+  it('box gives the meaning of a known sound on an sfx line, its source fenced', async () => {
+    app.pages[1].lines = [{ n: 1, jp: 'ドキドキ', en: '', tags: ['sfx'] }];
+    app.pages[1].boxes[0].lineN = 1;
+    const r = await read('box', { id: 'b2' });
+    expect(r.sfxMeanings.length).toBeGreaterThan(0);
+    expect(isFenced(r.sfxMeanings[0].source)).toBe(true);
+    expect(r.sfxMeanings[0].meanings.length).toBeGreaterThan(0);
+    const plain = await read('box', { id: 'b1' });
+    expect(plain.sfxMeanings).toBeUndefined();
+  });
+});
+
 describe('catalogues', () => {
   it('finds exact, substring and fuzzy font names with renderer source priority', async () => {
     expect((await read('fonts', { match: 'anime ace' })).fonts[0]).toEqual({ name: 'Anime Ace', source: 'user' });
