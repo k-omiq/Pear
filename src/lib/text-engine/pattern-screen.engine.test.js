@@ -138,4 +138,103 @@ describe('procedural screen fills', () => {
     expect(ink(0, 24)).toBeGreaterThan(ink(24, 48));
   });
 
+  it('normalizes picked-tone luminance and applies the density gamma', () => {
+    const tile = { width: 3, height: 1, data: new Uint8Array([64, 64, 64, 255, 128, 128, 128, 255, 192, 192, 192, 255]) };
+    for (const [density, want] of [[0.25, 191], [0.5, 128], [0.75, 75]]) {
+      const f = screen('picked', { density }, { basis: [3, 0, 0, 1] });
+      const r = swatch(f, { tiles: () => tile });
+      expect([...r.data.slice(0, 4)]).toEqual([0, 0, 0, 255]);
+      expect(Math.abs(r.data[4] - want)).toBeLessThanOrEqual(1);
+      expect([...r.data.slice(8, 12)]).toEqual([255, 255, 255, 255]);
+    }
+    const f = screen('picked', {}, { basis: [3, 0, 0, 1], fade: { x0: 0, y0: 0, x1: 48, y1: 0 } });
+    const r = swatch(f, { tiles: () => tile });
+    const dark = (from, to) => {
+      let sum = 0;
+      for (let x = from; x < to; x++) sum += 255 - r.data[x * 4];
+      return sum;
+    };
+    expect(dark(0, 24)).toBeGreaterThan(dark(24, 48));
+    expect(patternKinds(engine)).not.toContain('picked');
+    expect(patternTile(engine, { kind: 'picked' }, 16, 0.12)).toBeNull();
+  });
+
+  it('measures straight Rec. 709 colour and leaves flat picked tones on the ground', () => {
+    const tile = { width: 3, height: 1, data: new Uint8Array([255, 0, 0, 128, 0, 255, 0, 64, 0, 0, 255, 255]) };
+    const f = screen('picked', {}, { basis: [3, 0, 0, 1] });
+    const r = swatch(f, { tiles: () => tile });
+    expect(Math.abs(r.data[0] - 56)).toBeLessThanOrEqual(1);
+    expect(r.data[4]).toBe(255);
+    expect(r.data[8]).toBe(0);
+    const flat = { width: 2, height: 1, data: new Uint8Array([96, 96, 96, 255, 96, 96, 96, 128]) };
+    for (const density of [0, 0.5, 1]) {
+      const r = swatch(screen('picked', { density }), { tiles: () => flat });
+      expect(r.data.every((v) => v === 255)).toBe(true);
+    }
+  });
+
+  const imageTile = () => ({ width: 3, height: 2, data: new Uint8Array([
+    255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255,
+    255, 255, 0, 255, 255, 255, 255, 255, 0, 0, 0, 0,
+  ]) });
+
+  it('wraps rectangular picked images and folds only pattern opacity into their alpha', () => {
+    const tile = imageTile();
+    const f = screen('picked', { mode: 'image', fg: '#123456', fgOpacity: 0.5, bg: '#00ff00', density: 0 }, { basis: [3, 0, 0, 2] });
+    const tiles = vi.fn((received) => { expect(received).toBe(f); return tile; });
+    const a = swatch(f, { tiles });
+    expect(tiles).toHaveBeenCalledTimes(1);
+    expect([...a.data.slice(0, 12)]).toEqual([255, 0, 0, 128, 0, 255, 0, 64, 0, 0, 255, 128]);
+    expect(a.data.slice(0, 12)).toEqual(a.data.slice(12, 24));
+    expect(a.data.slice(0, 48 * 4)).toEqual(a.data.slice(2 * 48 * 4, 3 * 48 * 4));
+    const changed = screen('picked', { ...f.pattern, density: 1, bgOpacity: 0 }, { basis: f.basis, fade: { x0: 0, y0: 0, x1: 1, y1: 1 } });
+    expect(swatch(changed, { tiles: () => tile }).data).toEqual(a.data);
+    expect(swatch(screen('picked', { mode: 'image', fgOpacity: 0 }), { tiles: () => tile }).data.every((v) => v === 0)).toBe(true);
+  });
+
+  it('filters picked-image colours in premultiplied space across the wrapping edge', () => {
+    const tile = imageTile();
+    const f = screen('picked', { mode: 'image', fgOpacity: 0.5, ox: 1 / 6 }, { basis: [3, 0, 0, 2] });
+    const r = swatch(f, { tiles: () => tile });
+    expect([...r.data.slice(0, 4)]).toEqual([170, 85, 0, 96]);
+    const atEdge = screen('picked', { mode: 'image', ox: -1 / 6 }, { basis: [3, 0, 0, 2] });
+    expect([...swatch(atEdge, { tiles: () => tile }).data.slice(0, 4)]).toEqual([128, 0, 128, 255]);
+  });
+
+  it('uses the fallback when a picked tile is absent, including image mode', () => {
+    for (const mode of ['tone', 'image']) {
+      const f = screen('picked', { mode, fgOpacity: 0 });
+      for (const tiles of [undefined, () => null, () => ({ width: 0, height: 0, data: [] })]) {
+        const r = swatch(f, { tiles });
+        expect([...r.data.slice(0, 4)]).toEqual([18, 52, 86, 255]);
+      }
+    }
+    const bytes = encodeJob({ font, size: 40, job: job(screen('picked')) }).slice();
+    const wire = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(wire.getUint32(116, true)).toBe(255);
+    expect(wire.getUint32(120, true)).toBe(0xffffffff);
+  });
+
+  it('paints picked screens in a job and sends a shared tile only once', () => {
+    const tile = imageTile();
+    const f = screen('picked', { mode: 'image' }, { basis: [3, 0, 0, 2] });
+    const j = job(f);
+    j.runs[0].fill = f;
+    const tiles = vi.fn(() => tile);
+    const bytes = encodeJob({ font, size: 40, job: j, tiles }).slice();
+    const wire = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(tiles).toHaveBeenCalledTimes(2);
+    expect(wire.getUint32(116, true)).toBe(255);
+    expect(wire.getUint32(120, true)).toBe(0);
+    expect(wire.getUint32(124, true)).toBe(1);
+    expect(wire.getUint32(bytes.length - tile.data.length - 12, true)).toBe(1);
+    const raster = paintJob(engine, { font, size: 40, job: j, tiles });
+    expect(raster.data.some((v, i) => i % 4 === 3 && v > 0)).toBe(true);
+    const colours = new Set();
+    for (let i = 0; i < raster.data.length; i += 4) {
+      if (raster.data[i + 3]) colours.add(`${raster.data[i]},${raster.data[i + 1]},${raster.data[i + 2]}`);
+    }
+    expect(colours.size).toBeGreaterThan(3);
+  });
+
 });

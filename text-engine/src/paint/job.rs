@@ -430,11 +430,14 @@ impl<'a> Reader<'a> {
 ///   2 linear:  f64 x0, y0, x1, y1, stops
 ///   3 radial:  f64 cx, cy, r, stops
 ///   4 pattern: u32 tile, f64 pitch, f64 ax, ay, rgba fallback
-///   5 screen: u32 kind, tile (0xffffffff for none), mode (0 tone, 1 image), seed;
+///   5 screen: u32 kind (0..30 built-in, 255 picked), tile (0xffffffff for none),
+///     mode (0 tone, 1 image), seed;
 ///     f64 ax, ay, bx, by (basis columns), ox, oy (origin), angle (radians),
 ///     aspect (> 0), su, sv (offset in tiles), density (0..1), line (tile share);
 ///     rgba fg, bg, fallback; f64 cx, cy (centre), reach (> 0);
 ///     u32 fade: 0 none, 1 then f64 x0, y0, x1, y1 (job units).
+///     Tile and mode apply only to picked screens. Image mode preserves the
+///     tile colours, multiplied by fg alpha; tone mode recolours with fg/bg.
 ///     The basis must be nonsingular and all numbers finite. The aspect is
 ///     applied along local x before the canvas turn about the origin.
 /// mesh: u32 cols, 0 for a job with no mesh; else

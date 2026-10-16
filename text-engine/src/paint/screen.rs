@@ -47,7 +47,7 @@ impl Screen {
     /// distance, a fade projection or a colour conversion.
     pub fn sound(&self) -> bool {
         let points = [self.a, self.b, self.origin, self.offset, self.centre];
-        self.kind <= 30
+        (self.kind <= 30 || self.kind == 255)
             && self.mode <= 1
             && points.iter().all(|p| p.x.is_finite() && p.y.is_finite())
             && [self.angle, self.aspect, self.density, self.line, self.reach]
@@ -71,6 +71,18 @@ fn premul(c: Rgba) -> Premul {
         c.0[2] as f32 / 255.0 * a,
         a,
     ]
+}
+
+/// Rec. 709 luminance of straight colour. Image interpolation stays
+/// premultiplied, so recover the colour only when measuring its luminance.
+/// A fully transparent texel has no recoverable colour and reads as black.
+fn luminance(c: Premul) -> f64 {
+    let a = f64::from(c[3]);
+    if a > 0.0 {
+        (0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2])) / a
+    } else {
+        0.0
+    }
 }
 
 /// One rule for every screen. At one half the original shape is retained;
@@ -524,7 +536,7 @@ fn new_edge(s: &Screen, u: f64, v: f64, q: Pt, rays: f64, d: f64) -> Edge {
     }
 }
 
-pub struct ScreenShader {
+pub struct ScreenShader<'a> {
     screen: Screen,
     to_frame: Affine,
     to_tile: Affine,
@@ -533,10 +545,12 @@ pub struct ScreenShader {
     taps: u32,
     fg: Premul,
     bg: Premul,
+    tile: Option<&'a Tile>,
+    luminance_range: (f64, f64),
 }
 
-impl ScreenShader {
-    pub fn new(s: &Screen, frame: &Affine) -> Option<Self> {
+impl<'a> ScreenShader<'a> {
+    pub fn new(s: &Screen, frame: &Affine, tiles: &'a [Tile]) -> Option<Self> {
         if !s.sound() {
             return None;
         }
@@ -574,7 +588,30 @@ impl ScreenShader {
             _ => 1.0,
         };
         let footprint = a.hypot(b).max(c.hypot(d)) * frequency;
-        let taps = if footprint <= 0.25 {
+        let tile = if s.kind == 255 {
+            tiles.get(s.tile as usize).filter(|t| !t.is_empty())
+        } else {
+            None
+        };
+        // The extrema belong to the source tile, not to a particular crop
+        // or scale of its preview. Scan once, never in the pixel loop.
+        let luminance_range = tile.filter(|_| s.mode == 0).map_or((0.0, 0.0), |tile| {
+            tile.texels
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &c| {
+                    let l = luminance(c);
+                    (lo.min(l), hi.max(l))
+                })
+        });
+        let taps = if let Some(tile) = tile {
+            // An image can hold many texels even when its lattice is large.
+            // Use its texel footprint, as Shader::Pattern does, while leaving
+            // a tile at its own resolution on the exact bilinear sample.
+            let w = tile.width as f64;
+            let h = tile.height as f64;
+            let step = (a * w).hypot(b * h).max((c * w).hypot(d * h));
+            (step - 0.25).ceil().clamp(1.0, 8.0) as u32
+        } else if s.kind == 255 || footprint <= 0.25 {
             1
         } else {
             (footprint * 4.0).ceil().clamp(2.0, 8.0) as u32
@@ -588,6 +625,8 @@ impl ScreenShader {
             taps,
             fg: premul(s.fg),
             bg: premul(s.bg),
+            tile,
+            luminance_range,
         })
     }
 
@@ -614,21 +653,46 @@ impl ScreenShader {
 
     fn sample(&self, p: Pt, jac: &Affine) -> Premul {
         let q = self.to_tile.apply(p);
-        let d = self.density(self.to_frame.apply(p));
-        let ink = if d <= 0.0 {
-            0.0
-        } else if d >= 1.0 {
-            1.0
+        let ink = if self.screen.kind == 255 {
+            let Some(tile) = self.tile else {
+                return premul(self.screen.fallback);
+            };
+            let texel = tile.sample(Pt::new(q.x * tile.width as f64, q.y * tile.height as f64));
+            if self.screen.mode == 1 {
+                // Image mode keeps the sampled colour and alpha. Density,
+                // fade and foreground RGB do not change an image's pixels.
+                return texel.map(|v| v * self.fg[3]);
+            }
+            let (lo, hi) = self.luminance_range;
+            // Premultiplication can leave a few f32 rounding bits between
+            // two identical straight colours with different source alpha.
+            let ink = if hi - lo > 1e-6 {
+                1.0 - ((luminance(texel) - lo) / (hi - lo)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let d = self.density(self.to_frame.apply(p));
+            // Picked tones use the specified gamma rather than changing a
+            // geometric boundary. A flat tile remains background at every
+            // density, and the tile's darkest/lightest colours remain its ends.
+            ink.powf(2.0_f64.powf((0.5 - d) * 4.0))
         } else {
-            new_edge(
-                &self.screen,
-                q.x,
-                q.y,
-                self.to_centre.apply(p),
-                self.rays,
-                d,
-            )
-            .cover(jac)
+            let d = self.density(self.to_frame.apply(p));
+            if d <= 0.0 {
+                0.0
+            } else if d >= 1.0 {
+                1.0
+            } else {
+                new_edge(
+                    &self.screen,
+                    q.x,
+                    q.y,
+                    self.to_centre.apply(p),
+                    self.rays,
+                    d,
+                )
+                .cover(jac)
+            }
         } as f32;
         let under = 1.0 - self.fg[3] * ink;
         core::array::from_fn(|k| self.fg[k] * ink + self.bg[k] * under)
@@ -909,7 +973,7 @@ mod tests {
         skew.aspect = 1.7;
         skew.origin = Pt::new(2.0, -3.0);
         skew.offset = Pt::new(0.2, -0.1);
-        let shader = ScreenShader::new(&skew, &Affine::IDENTITY).unwrap();
+        let shader = ScreenShader::new(&skew, &Affine::IDENTITY, &[]).unwrap();
         let uv = Pt::new(0.3, 0.7);
         let local = skew.basis().apply(uv.minus(skew.offset));
         let (sin, cos) = skew.angle.sin_cos();
@@ -958,7 +1022,7 @@ mod tests {
             .collect();
         assert!(strips.windows(2).all(|w| w[0] > w[1]), "{strips:?}");
         s.fade = Some((Pt::new(48.0, 0.0), Pt::new(48.0, 0.0)));
-        let shader = ScreenShader::new(&s, &Affine::IDENTITY).unwrap();
+        let shader = ScreenShader::new(&s, &Affine::IDENTITY, &[]).unwrap();
         assert_eq!(shader.density(Pt::new(47.0, 0.0)), 0.5);
         assert_eq!(shader.density(Pt::new(48.0, 0.0)), 0.0);
         s.fade = None;
@@ -1044,5 +1108,187 @@ mod tests {
             s.angle = PI / 2.0;
             assert_ne!(pixels(&s), a);
         }
+    }
+    #[test]
+    fn picked_tone_stretches_source_luminance_and_applies_density_gamma() {
+        let _budget = budget::Scope::new();
+        let tiles = [Tile::from_rgba(
+            3,
+            1,
+            &[64, 64, 64, 255, 128, 128, 128, 255, 192, 192, 192, 255],
+        )
+        .unwrap()];
+        let mut s = screen(255, 3.0);
+        s.tile = 0;
+        s.b = Pt::new(0.0, 1.0);
+        let render = |s: &Screen| swatch(3, 1, Some(&Fill::Screen(s.clone())), &tiles).unwrap();
+        for (density, want) in [(0.25, 191u8), (0.5, 128), (0.75, 75)] {
+            s.density = density;
+            let p = render(&s);
+            assert_eq!(&p[..4], &[0, 0, 0, 255]);
+            assert!(p[4].abs_diff(want) <= 1, "density {density}: {:?}", p);
+            assert_eq!(&p[8..], &[255; 4]);
+        }
+        let mut previous = 0.0;
+        for step in 0..=20 {
+            s.density = step as f64 / 20.0;
+            let got = ink(&render(&s));
+            assert!(got >= previous);
+            previous = got;
+        }
+        s.density = 0.5;
+        s.bg = Rgba([0; 4]);
+        s.fg = Rgba([255, 0, 0, 128]);
+        let p = render(&s);
+        assert_eq!(&p[..4], &[255, 0, 0, 128]);
+        assert_eq!(&p[8..], &[0; 4]);
+        assert!(p[7].abs_diff(64) <= 1);
+    }
+
+    #[test]
+    fn picked_tone_uses_straight_rec709_and_flat_tiles_have_no_ink() {
+        let _budget = budget::Scope::new();
+        let mut s = screen(255, 3.0);
+        s.tile = 0;
+        s.b = Pt::new(0.0, 1.0);
+        let tiles =
+            [Tile::from_rgba(3, 1, &[255, 0, 0, 128, 0, 255, 0, 64, 0, 0, 255, 255]).unwrap()];
+        let p = swatch(3, 1, Some(&Fill::Screen(s.clone())), &tiles).unwrap();
+        // Blue is the darkest source colour and green the lightest,
+        // irrespective of their alpha. Red lies between them by Rec. 709.
+        let red = ((0.2126_f64 - 0.0722) / (0.7152 - 0.0722) * 255.0).round() as u8;
+        assert!(p[0].abs_diff(red) <= 1, "{p:?}");
+        assert_eq!(&p[4..8], &[255; 4]);
+        assert_eq!(&p[8..], &[0, 0, 0, 255]);
+        let flat = [Tile::from_rgba(2, 1, &[96, 96, 96, 255, 96, 96, 96, 128]).unwrap()];
+        for density in [0.0, 0.5, 1.0] {
+            s.density = density;
+            let p = swatch(12, 4, Some(&Fill::Screen(s.clone())), &flat).unwrap();
+            assert!(
+                p.chunks_exact(4).all(|p| p == [255; 4]),
+                "flat at {density}"
+            );
+        }
+    }
+
+    #[test]
+    fn picked_images_wrap_bilinearly_and_only_foreground_alpha_changes_them() {
+        let _budget = budget::Scope::new();
+        let tiles = [Tile::from_rgba(
+            3,
+            2,
+            &[
+                255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 255, 255, 0, 255, 255, 255, 255,
+                255, 0, 0, 0, 0,
+            ],
+        )
+        .unwrap()];
+        let mut s = screen(255, 3.0);
+        s.tile = 0;
+        s.mode = 1;
+        s.b = Pt::new(0.0, 2.0);
+        s.fg = Rgba([19, 27, 35, 128]);
+        s.bg = Rgba([99, 88, 77, 255]);
+        let p = swatch(6, 4, Some(&Fill::Screen(s.clone())), &tiles).unwrap();
+        assert_eq!(&p[..4], &[255, 0, 0, 128]);
+        assert_eq!(&p[4..8], &[0, 255, 0, 64]);
+        assert_eq!(&p[8..12], &[0, 0, 255, 128]);
+        assert_eq!(&p[..12], &p[12..24]);
+        assert_eq!(&p[..48], &p[48..96]);
+        s.density = 0.0;
+        s.fade = Some((Pt::new(0.0, 0.0), Pt::new(1.0, 0.0)));
+        assert_eq!(
+            p,
+            swatch(6, 4, Some(&Fill::Screen(s.clone())), &tiles).unwrap()
+        );
+        s.offset.x = 0.5 / 3.0;
+        let blended = swatch(6, 4, Some(&Fill::Screen(s.clone())), &tiles).unwrap();
+        // Halfway between opaque red and half-transparent green, then
+        // pattern opacity: blend premultiplied, never darken the RGB twice.
+        assert!(blended[0].abs_diff(170) <= 1 && blended[1].abs_diff(85) <= 1);
+        assert_eq!(blended[3], 96);
+    }
+
+    #[test]
+    fn picked_tiles_follow_a_skewed_rotated_basis_and_minify_without_aliasing() {
+        let _budget = budget::Scope::new();
+        let tiles = [Tile::from_rgba(
+            2,
+            2,
+            &[
+                0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+            ],
+        )
+        .unwrap()];
+        let mut s = screen(255, 12.0);
+        s.tile = 0;
+        s.mode = 1;
+        s.a = Pt::new(9.0, 2.0);
+        s.b = Pt::new(3.0, 11.0);
+        s.angle = 0.37;
+        s.aspect = 1.8;
+        s.origin = Pt::new(-2.0, 5.0);
+        s.offset = Pt::new(0.3, -0.2);
+        let shader = ScreenShader::new(&s, &Affine::IDENTITY, &tiles).unwrap();
+        assert_eq!(shader.taps, 1);
+        for (x, y) in [(0, 0), (13, 7), (31, 29), (-9, 25)] {
+            let p = Pt::new(x as f64 + 0.5, y as f64 + 0.5).minus(s.origin);
+            let (sin, cos) = s.angle.sin_cos();
+            let local = Affine::rotate(cos, -sin).apply(p);
+            let q = s
+                .basis()
+                .invert()
+                .unwrap()
+                .apply(Pt::new(local.x / s.aspect, local.y))
+                .plus(s.offset);
+            let want = tiles[0].sample(q.scale(2.0));
+            assert!(shader
+                .at(x as f64 + 0.5, y as f64 + 0.5)
+                .iter()
+                .zip(want)
+                .all(|(a, b)| (a - b).abs() < 1e-6));
+        }
+        s.a = Pt::new(0.1, 0.0);
+        s.b = Pt::new(0.0, 0.1);
+        s.angle = 0.0;
+        s.aspect = 1.0;
+        let p = swatch(12, 12, Some(&Fill::Screen(s)), &tiles).unwrap();
+        assert!((ink(&p) - 0.5).abs() < 0.02);
+    }
+
+    #[test]
+    fn missing_picked_tiles_fall_back_and_picked_wire_reads_the_tile_table() {
+        let _budget = budget::Scope::new();
+        let mut s = screen(255, 12.0);
+        for mode in [0, 1] {
+            s.mode = mode;
+            let p = pixels(&s);
+            assert!(p.chunks_exact(4).all(|p| p == s.fallback.0));
+            s.tile = 0;
+            let empty = [Tile::from_rgba(0, 0, &[]).unwrap()];
+            assert!(swatch(3, 3, Some(&Fill::Screen(s.clone())), &empty)
+                .unwrap()
+                .chunks_exact(4)
+                .all(|p| p == s.fallback.0));
+        }
+        s.mode = 0;
+        let mut b = swatch_wire(&s);
+        b.truncate(b.len() - 4);
+        for v in [1, 2, 1] {
+            u(&mut b, v);
+        }
+        b.extend([0, 0, 0, 255, 255, 255, 255, 255]);
+        let (_, _, fill, tiles) = job::decode_swatch(&b).unwrap();
+        assert_eq!(fill, Some(Fill::Screen(s.clone())));
+        assert_eq!(tiles.len(), 1);
+        assert_ne!(
+            swatch(24, 24, fill.as_ref(), &tiles).unwrap(),
+            swatch(24, 24, fill.as_ref(), &[]).unwrap()
+        );
+        s.mode = 2;
+        assert!(job::decode_swatch(&swatch_wire(&s)).is_err());
+        s.mode = 0;
+        s.kind = 254;
+        assert!(job::decode_swatch(&swatch_wire(&s)).is_err());
     }
 }
