@@ -489,14 +489,20 @@
   // strokes themselves are drawn on the brush board and placed here whole; a
   // box never takes a stroke from the pointer directly.
   function paintInk(el, tips) {
-    const w = Math.max(1, Math.round((box.w + inkPad.l + inkPad.r) * z));
-    const h = Math.max(1, Math.round((box.h + inkPad.t + inkPad.b) * z));
+    const pw = box.w + inkPad.l + inkPad.r;
+    const ph = box.h + inkPad.t + inkPad.b;
+    const w = Math.max(1, Math.round(pw * z));
+    const h = Math.max(1, Math.round(ph * z));
     if (el.width !== w) el.width = w;
     if (el.height !== h) el.height = h;
     const ctx = el.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    ctx.scale(z, z);
+    // Scaled to the whole pixels the canvas has, not by the zoom: the canvas
+    // is stretched to its CSS size (`pw * z`), so ink drawn at the zoom alone
+    // landed up to half a pixel off at the far edge, by an amount that changed
+    // with every zoom it was repainted at.
+    ctx.scale(pw > 0 ? w / pw : z, ph > 0 ? h / ph : z);
     ctx.translate(inkPad.l, inkPad.t);
     drawInk(ctx, s.ink, undefined, tips, s);
     // The whole-text filters, over the ink as the exporter runs them over its
