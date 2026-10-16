@@ -30,6 +30,8 @@ import { settleBoxTips } from './brush-tips.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
 import { planStripCuts, SLICE_H_DEFAULT } from './editor/strip-cuts.js';
+import { cleanRowFlags, cleanRowBands } from './strip-reslice.js';
+import { PREP_CANVAS_SIDE, PREP_CHUNK_H, prepCanvas, releasePrepCanvas } from './prep-images.js';
 // The detected-text JSON serialiser lives in a leaf module so the library can
 // write that document on every autosave without importing this file - see the
 // note at the top of text-json.js. Re-exported here because this is where every
@@ -1297,6 +1299,74 @@ export async function measureStrip(pages, check = null) {
   return { tops, total, width: maxPageWidth(pages) || PAGE_W };
 }
 
+// Cuts are needed before any output slice is drawn, so its pixels cannot feed
+// the planner. Read the same cleaned-or-raw artwork in a separate bounded pass:
+// one pinned source at a time, 1024px canvas chunks, one byte per strip row.
+// White side padding and page scaling match renderStripSliceCanvas. Lettering
+// is excluded here and protected separately by the planner's painted bounds.
+export async function stripCleanBands(pages, check = null) {
+  const { tops, total } = stripOffsets(pages);
+  const width = Math.round(maxPageWidth(pages) || PAGE_W);
+  if (!(total > 0) || width > PREP_CANVAS_SIDE) return [];
+  const rows = new Uint8Array(Math.round(total));
+  let canvas = null;
+  let ctx = null;
+  let readable = true;
+  try {
+    for (let i = 0; i < pages.length; i++) {
+      check?.();
+      const p = pages[i];
+      const start = Math.round(tops[i]);
+      const end = Math.round(tops[i] + Math.max(0, p.h ?? 0));
+      if (end <= start) continue;
+      await withExportPageImages(p, async () => {
+        check?.();
+        const base = p.cleaned ?? p.raw;
+        if (!base) {
+          rows.fill(1, start, end); // missing art renders as white, too
+          return;
+        }
+        let image;
+        try {
+          image = await loadImage(base);
+        } catch {
+          return; // an unreadable image is not evidence of a clean gutter
+        }
+        check?.();
+        if (!canvas) {
+          try {
+            canvas = prepCanvas(width, Math.min(PREP_CHUNK_H, rows.length));
+            ctx = canvas.getContext('2d');
+            ctx.imageSmoothingQuality = 'high';
+          } catch {
+            readable = false;
+            return;
+          }
+        }
+        for (let y = start; y < end; y += PREP_CHUNK_H) {
+          check?.();
+          const height = Math.min(PREP_CHUNK_H, end - y);
+          try {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, width, canvas.height);
+            ctx.drawImage(image, Math.round((width - p.w) / 2), tops[i] - y, p.w, p.h);
+            rows.set(cleanRowFlags(ctx.getImageData(0, 0, width, height)), y);
+          } catch {
+            readable = false;
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      });
+      if (!readable) return []; // pixel reads are optional; retain text-safe cuts
+    }
+    check?.();
+    return cleanRowBands(rows);
+  } finally {
+    if (canvas) releasePrepCanvas(canvas);
+  }
+}
+
 
 // Pin several pages' images for the duration of one call. Nesting rather than
 // looping because `withPageImages` releases in its own `finally` - the pins have
@@ -1435,7 +1505,8 @@ const RASTER = new Set(['PNG', 'JPG', 'WebP']);
 async function exportStripImages(fmt, held, chapter, pages) {
   const { tops, total } = await measureStrip(pages, () => chapterHeld(chapter));
   const target = app.stripSliceH > 0 ? app.stripSliceH : SLICE_H_DEFAULT;
-  const { cuts, warnings } = planStripCuts(pages, target);
+  const cleanRows = await stripCleanBands(pages, () => { enginesHeld(held); chapterHeld(chapter); });
+  const { cuts, warnings } = planStripCuts(pages, target, undefined, cleanRows);
   if (!(total > 0) || cuts.length < 2) {
     toast('Nothing to export: this chapter has no page art to slice.');
     return false;

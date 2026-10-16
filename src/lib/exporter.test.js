@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createCanvas, Image as RasterImage } from '@napi-rs/canvas';
 import { fsx } from './fsx.js';
 import { setChapterImageDirs, setResidentWindow, releasePageImages, releaseAllPageImages } from './page-images.js';
 import { app, loadProjectPages } from './store.svelte.js';
@@ -11,6 +12,7 @@ import {
   exportImages,
   stripPageSuffix,
   sanitizeExportName,
+  stripCleanBands,
 } from './exporter.js';
 import { PAGE_W, PAGE_H, normalizeStyle } from './data.js';
 import { arcLayout, layoutLines, BOX_PAD, textInset, balloonWidthsFor, setTypesetEnabled, baselineInLine } from './measure.js';
@@ -1662,5 +1664,113 @@ describe('an export name is reduced to a filename every platform accepts', () =>
     expect(sanitizeExportName('///')).toBe('page');
     expect(sanitizeExportName('...')).toBe('page');
     expect(sanitizeExportName('   ')).toBe('page');
+  });
+});
+
+describe('clean gutters from the strip artwork', () => {
+  let canvases;
+  let outputHeights;
+  function useRasterCanvases() {
+    canvases = [];
+    outputHeights = [];
+    const create = document.createElement;
+    document.createElement = (tag) => {
+      if (tag !== 'canvas') return create(tag);
+      const canvas = createCanvas(1, 1);
+      canvas.toBlob = (cb) => {
+        outputHeights.push(canvas.height);
+        cb(new Blob([canvas.toBuffer('image/png')]));
+      };
+      canvases.push({ width: vi.spyOn(canvas, 'width', 'set'), height: vi.spyOn(canvas, 'height', 'set') });
+      return canvas;
+    };
+    globalThis.Image = RasterImage;
+  }
+  function raster(width, height, gutters = [], colour = null) {
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = colour ?? '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    if (!colour) {
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, width / 2, height);
+      ctx.fillStyle = '#ffffff';
+      for (const [top, bottom] of gutters) ctx.fillRect(0, top, width, bottom - top);
+    }
+    return canvas.toDataURL('image/png');
+  }
+
+  it('reads cleaned pixels, joins gutters across source seams, and centres narrower pages on white', async () => {
+    useRasterCanvases();
+    const bands = await stripCleanBands([
+      { id: 1, w: 8, h: 1000, raw: raster(8, 1000), cleaned: raster(8, 1000, [[990, 1000]]) },
+      { id: 2, w: 8, h: 1000, raw: raster(8, 1000, [[0, 11]]) },
+      { id: 3, w: 4, h: 1000, raw: raster(4, 1000, [], '#000000') },
+    ]);
+    // The export's high-quality filter colours one boundary row on each side.
+    expect(bands).toEqual([{ top: 991, bottom: 1010 }]);
+    expect(canvases).toHaveLength(1);
+    expect(canvases[0].width).toHaveBeenLastCalledWith(0);
+    expect(canvases[0].height).toHaveBeenLastCalledWith(0);
+  });
+
+  it('analyses scaled artwork in bounded chunks at its strip dimensions', async () => {
+    useRasterCanvases();
+    const read = [];
+    const create = document.createElement;
+    document.createElement = (tag) => {
+      const canvas = create(tag);
+      if (tag === 'canvas') {
+        const ctx = canvas.getContext('2d');
+        const get = ctx.getImageData.bind(ctx);
+        ctx.getImageData = (...args) => { read.push(args[3]); return get(...args); };
+      }
+      return canvas;
+    };
+    const bands = await stripCleanBands([{ id: 1, w: 16, h: 6000, raw: raster(8, 3000, [[1000, 1020]]) }]);
+    // Filter resampling may colour the boundary pixels; the interior stays clean.
+    expect(bands).toHaveLength(1);
+    expect(bands[0].top).toBeGreaterThanOrEqual(2000);
+    expect(bands[0].top).toBeLessThan(2005);
+    expect(bands[0].bottom).toBeGreaterThan(2035);
+    expect(bands[0].bottom).toBeLessThanOrEqual(2040);
+    expect(Math.max(...read)).toBe(1024);
+    expect(read.reduce((sum, h) => sum + h, 0)).toBe(6000);
+  });
+
+  it('uses the analysed gutter in whole-chapter raster export', async () => {
+    useRasterCanvases();
+    app.projectLayout = 'longstrip';
+    app.stripSliceH = 1000;
+    loadProjectPages([{ id: 1, w: 8, h: 3000, raw: raster(8, 3000, [[1090, 1111]]), lines: [], boxes: [] }]);
+    expect(await exportImages('PNG', 'all')).toBe(true);
+    expect(outputHeights).toEqual([1100, 1000, 900]);
+    expect(downloaded).toHaveLength(3);
+  });
+
+  it('falls back to the text-safe planner when canvas pixel reads fail', async () => {
+    useRasterCanvases();
+    const create = document.createElement;
+    document.createElement = (tag) => {
+      const canvas = create(tag);
+      if (tag === 'canvas') canvas.getContext('2d').getImageData = () => { throw new Error('read refused'); };
+      return canvas;
+    };
+    app.projectLayout = 'longstrip';
+    app.stripSliceH = 1000;
+    loadProjectPages([{ id: 1, w: 8, h: 3000, raw: raster(8, 3000, [[1090, 1111]]), lines: [], boxes: [] }]);
+    expect(await exportImages('PNG', 'all')).toBe(true);
+    expect(outputHeights).toEqual([1000, 1000, 1000]);
+  });
+
+  it('does not swallow cancellation during the extra pixel pass and releases the canvas', async () => {
+    useRasterCanvases();
+    const stop = new Error('chapter changed');
+    await expect(stripCleanBands([{ id: 1, w: 8, h: 3000, raw: raster(8, 3000) }], () => {
+      if (canvases.length) throw stop;
+    })).rejects.toBe(stop);
+    expect(canvases).toHaveLength(1);
+    expect(canvases[0].width).toHaveBeenLastCalledWith(0);
+    expect(canvases[0].height).toHaveBeenLastCalledWith(0);
   });
 });

@@ -130,6 +130,49 @@ function bandAt(bands, y) {
   return null;
 }
 
+// Clean row bands are half-open, but lettering band edges themselves are safe
+// cut positions. Keep only whole-pixel positions that satisfy both rules.
+function clearGutters(cleanRows, bands) {
+  const clear = [];
+  for (const row of cleanRows ?? []) {
+    let top = Math.ceil(row.top);
+    const bottom = Math.ceil(row.bottom) - 1;
+    if (!Number.isFinite(top) || !Number.isFinite(bottom) || top > bottom) continue;
+    for (const band of bands) {
+      if (band.bottom <= top) continue;
+      if (band.top >= bottom) break;
+      const edge = Math.min(bottom, Math.floor(band.top));
+      if (top <= edge) clear.push({ top, bottom: edge });
+      top = Math.max(top, Math.ceil(band.bottom));
+      if (top > bottom) break;
+    }
+    if (top <= bottom) clear.push({ top, bottom });
+  }
+  return clear;
+}
+
+// A quarter-target window keeps gutter preference local to the lettering-safe
+// decision. Already-clean cuts stand; otherwise use the middle of the nearest
+// available gutter portion, clipped to the window and legal slice lengths.
+function preferGutter(y, gutters, bands, prev, target, end) {
+  const cut = Math.round(y);
+  const min = prev + target * MIN_SLICE_RATIO;
+  const max = prev + target * MAX_SLICE_RATIO;
+  if (bandAt(bands, cut) || cut < min || cut > max || cut >= end) return y;
+  if (gutters.some((band) => cut >= band.top && cut <= band.bottom)) return cut;
+  const lo = Math.max(Math.ceil(y - target * 0.25), Math.ceil(min), prev + 1);
+  const hi = Math.min(Math.floor(y + target * 0.25), Math.floor(max), end - 1);
+  let best = null;
+  for (const band of gutters) {
+    const top = Math.max(lo, band.top);
+    const bottom = Math.min(hi, band.bottom);
+    if (top > bottom) continue;
+    const candidate = Math.round((top + bottom) / 2);
+    if (best === null || Math.abs(candidate - y) < Math.abs(best - y)) best = candidate;
+  }
+  return best ?? y;
+}
+
 // Plan the whole chapter's cuts.
 //
 // Returns `{ cuts, warnings }` where `cuts` is the boundaries of the output
@@ -158,7 +201,9 @@ function bandAt(bands, y) {
 //     a run of boxes packed close enough to fuse into 3000px of band: either way
 //     there is no clear pixel to cut at, so the ideal position is taken and the
 //     caller is told, by name, that this one file has a seam through its text.
-export function planStripCuts(pages, targetHeight, pad = CUT_PAD) {
+// Optional `cleanRows` contains half-open clean row bands in strip pixels.
+// Lettering avoidance remains authoritative; absent bands preserve the old walk.
+export function planStripCuts(pages, targetHeight, pad = CUT_PAD, cleanRows) {
   const { total } = stripOffsets(pages);
   const warnings = [];
   if (!(total > 0)) return { cuts: [], warnings };
@@ -168,6 +213,7 @@ export function planStripCuts(pages, targetHeight, pad = CUT_PAD) {
   }
 
   const bands = forbiddenBands(pages, pad);
+  const gutters = cleanRows ? clearGutters(cleanRows, bands) : null;
   const minSlice = targetHeight * MIN_SLICE_RATIO;
   const maxSlice = targetHeight * MAX_SLICE_RATIO;
   const cuts = [0];
@@ -180,7 +226,8 @@ export function planStripCuts(pages, targetHeight, pad = CUT_PAD) {
   // is what guarantees the walk terminates when a rounded cut would otherwise
   // land back on the one before it.
   const push = (y) => {
-    const v = Math.max(Math.round(y), prev + 1);
+    const preferred = gutters ? preferGutter(y, gutters, bands, prev, targetHeight, Math.round(total)) : y;
+    const v = Math.max(Math.round(preferred), prev + 1);
     cuts.push(v);
     prev = v;
   };
