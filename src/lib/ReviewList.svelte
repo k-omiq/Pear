@@ -19,6 +19,7 @@
     ['font', 'Font missing'],
     ['glossary', 'Glossary term missing'],
     ['rules', 'Text rule broken'],
+    ['ocr', 'OCR readers disagree'],
     ['english', 'No English yet'],
     ['unplaced', 'Line not placed'],
   ];
@@ -32,7 +33,7 @@
       const pg = app.pages[it.pageIndex];
       if (!pg) continue;
       const b = it.boxId != null ? pg.boxes.find((x) => x.id === it.boxId) : null;
-      const text = it.reason === 'english' ? lineByN(pg, it.lineN)?.jp : b ? boxText(b, pg) : lineText(lineByN(pg, it.lineN));
+      const text = it.reason === 'english' || it.reason === 'ocr' ? lineByN(pg, it.lineN)?.jp : b ? boxText(b, pg) : lineText(lineByN(pg, it.lineN));
       const row = {
         key: `${it.reason}:${it.pageId}:${it.boxId ?? 'l' + it.lineN}`,
         it,
@@ -57,6 +58,7 @@
     if (it.reason === 'font') return it.font;
     if (it.reason === 'glossary') return `Wants ${it.terms.join(', ')}`;
     if (it.reason === 'rules') return it.breaks.join(' · ');
+    if (it.reason === 'ocr') return `Other reading: ${it.alt}`;
     if (it.reason === 'english' || it.reason === 'unplaced') return `Line ${it.lineN}`;
     return '';
   }

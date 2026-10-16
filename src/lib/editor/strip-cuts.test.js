@@ -198,3 +198,67 @@ describe('planStripCuts', () => {
     for (const c of cuts) expect(Number.isInteger(c)).toBe(true);
   });
 });
+
+describe('clean gutters for export', () => {
+  it('keeps the old plan without clean bands, including emergency warnings', () => {
+    const pages = [page(6000, [box(0, 3000)])];
+    const original = planStripCuts(pages, 1000, 48);
+    expect(planStripCuts(pages, 1000, 48, undefined)).toEqual(original);
+    expect(planStripCuts(pages, 1000, 48, null)).toEqual(original);
+    expect(planStripCuts(pages, 1000, 48, [])).toEqual(original);
+  });
+
+  it('moves a clear cut to the middle of the nearest clean band', () => {
+    const { cuts, warnings } = planStripCuts([page(3000)], 1000, 0, [
+      { top: 890, bottom: 911 }, { top: 1190, bottom: 1211 },
+    ]);
+    expect(cuts[1]).toBe(900);
+    expect(warnings).toEqual([]);
+  });
+
+  it('leaves a cut already in a clean band alone and ignores distant gutters', () => {
+    expect(planStripCuts([page(3000)], 1000, 0, [{ top: 950, bottom: 1050 }]).cuts[1]).toBe(1000);
+    expect(planStripCuts([page(3000)], 1000, 0, [{ top: 1260, bottom: 1280 }]).cuts[1]).toBe(1000);
+  });
+
+  it('rejects a closer gutter through padded lettering, including rotated paint', () => {
+    const pages = [page(3000, [box(1200, 50, { style: { rotation: 90 } })])];
+    const bands = forbiddenBands(pages, 48);
+    const { cuts } = planStripCuts(pages, 1000, 48, [
+      { top: 1090, bottom: 1111 }, { top: 790, bottom: 811 },
+    ]);
+    expect(cuts[1]).toBe(800);
+    expect(clearsEveryBand(cuts, bands)).toBe(true);
+  });
+
+  it('can use the clear portion of a gutter crossed by a lettering band', () => {
+    const pages = [page(3000, [box(1200, 150)])];
+    const { cuts } = planStripCuts(pages, 1000, 0, [{ top: 1100, bottom: 1300 }]);
+    expect(cuts[1]).toBe(1148); // middle of 1100..1196, clear of the paint's AA pad
+    expect(clearsEveryBand(cuts, forbiddenBands(pages, 0))).toBe(true);
+  });
+
+  it('looks near the text-safe position after the original cut dodges lettering', () => {
+    const pages = [page(3000, [box(950, 100)])];
+    const { cuts } = planStripCuts(pages, 1000, 50, [{ top: 790, bottom: 811 }]);
+    expect(cuts[1]).toBe(800); // original cut was moved up to 900 first
+    expect(clearsEveryBand(cuts, forbiddenBands(pages, 50))).toBe(true);
+  });
+
+  it('keeps gutter moves within MIN/MAX ratios and never moves an emergency cut through text', () => {
+    const short = [page(3000, [box(300, 900)])];
+    expect(planStripCuts(short, 1000, 0, [{ top: 100, bottom: 200 }]).cuts[1]).toBe(planStripCuts(short, 1000, 0).cuts[1]);
+    const long = [page(6000, [box(100, 1800)])];
+    expect(planStripCuts(long, 1000, 0, [{ top: 2050, bottom: 2100 }]).cuts[1]).toBe(planStripCuts(long, 1000, 0).cuts[1]);
+    const impossible = [page(6000, [box(0, 3000)])];
+    expect(planStripCuts(impossible, 1000, 0, [{ top: 900, bottom: 1100 }])).toEqual(planStripCuts(impossible, 1000, 0));
+  });
+
+  it('maps gutters in strip space and keeps all new cut coordinates on whole pixels', () => {
+    const pages = [page(500), page(2500, [box(690.4, 100)])];
+    const { cuts } = planStripCuts(pages, 1000, 10.3, [{ top: 1090.2, bottom: 1210.7 }]);
+    expect(cuts[1]).toBe(1136);
+    expect(cuts.every(Number.isInteger)).toBe(true);
+    expect(clearsEveryBand(cuts, forbiddenBands(pages, 10.3))).toBe(true);
+  });
+});

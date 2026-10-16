@@ -517,6 +517,29 @@ describe('a whole chapter.json from the last release', () => {
     expect(pageById(2).detect).toEqual({ panels: [[0, 0, 100, 100]], boxes: [] });
   });
 
+  it('reads a detect saved before text masks as having no mask, and drops a bad one', () => {
+    expect('mask' in pageById(2).detect).toBe(false);
+    loadProjectPages([
+      { id: 11, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [], mask: { file: '001.jpg.png', w: 800, h: 1200 } } },
+      { id: 12, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [], mask: { file: '../x.png', w: 800, h: 1200 } } },
+      { id: 13, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [], mask: { file: 'a.png' } } },
+    ]);
+    expect(pageById(11).detect.mask).toEqual({ file: '001.jpg.png', w: 800, h: 1200 });
+    expect('mask' in pageById(12).detect).toBe(false);
+    expect('mask' in pageById(13).detect).toBe(false);
+  });
+
+  it('keeps the second detector’s kind on a detected box, and an old box has none', () => {
+    expect(pageById(2).detect.boxes).toEqual([]);
+    loadProjectPages([{ id: 14, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [
+      { n: 1, box: [0, 0, 10, 10], vertical: true, font_size: 9 },
+      { n: 2, box: [20, 0, 30, 10], vertical: true, font_size: 9, kind: 'free' },
+    ] } }]);
+    const [a, b] = pageById(14).detect.boxes;
+    expect('kind' in a).toBe(false);
+    expect(b.kind).toBe('free');
+  });
+
   it('reads a page with no detect at all as having none', () => {
     expect(pageById(3).detect).toBeNull();
   });
@@ -576,6 +599,17 @@ describe('a whole chapter.json from the last release', () => {
     const [a, b] = pageById(9).lines;
     expect(a.speaker).toBe('g1');
     expect('speaker' in b).toBe(false);
+  });
+
+  it('gives a line saved before the second reader no other reading, and drops one of the wrong type', () => {
+    const [l1, l2] = pageById(1).lines;
+    expect('jp2' in l1).toBe(false);
+    expect('jp2' in l2).toBe(false);
+    loadProjectPages([{ id: 10, w: 0, h: 0, lines: [{ n: 1, jp: '猫', en: '', jp2: '描' }, { n: 2, jp: 'a', en: '', jp2: 4 }, { n: 3, jp: 'b', en: '', jp2: '' }], boxes: [] }]);
+    const [a, b, c] = pageById(10).lines;
+    expect(a.jp2).toBe('描');
+    expect('jp2' in b).toBe(false);
+    expect('jp2' in c).toBe(false);
   });
 });
 

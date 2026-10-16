@@ -84,6 +84,14 @@ export const prefs = $state({
   // Recognition quality/size is a preference of this installation, separate
   // for each project language. Project files continue to store only language.
   ocrModels: normalizeOcrModels(null),
+  // Keep Latin lettering on the raw in the detection queue as well.
+  keepEnglish: false,
+  // Japanese pages read again with PP-OCRv6 (OCR-1): about twice the OCR
+  // time and a one-off model download, so off until asked for.
+  secondReader: false,
+  // A second detector (DTC-2, RT-DETR) votes with the first and says which
+  // text sits in a bubble. A 168 MB download, so off until asked for.
+  secondDetector: false,
   // Who measures text: 'browser', as the app always has, or 'rust', the Rust
   // text engine on the user's own font files (engine-switch.svelte.js). Off by
   // default while the port is being checked against the browser. A machine
@@ -101,7 +109,7 @@ const cleanNames = (v) =>
 
 // The box defaults, split by what a value of theirs may be. Named once so the
 // setter's validation and the loader's validation cannot drift apart.
-const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'inheritBoxStyle'];
+const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector'];
 const NUM_KEYS = { defaultMinOrphan: [1, 8], minFontSize: [4, 48] };
 const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'] };
 
@@ -154,6 +162,9 @@ function persist() {
         hiddenBuiltinFonts: $state.snapshot(prefs.hiddenBuiltinFonts),
         shownSystemFonts: $state.snapshot(prefs.shownSystemFonts),
         ocrModels: $state.snapshot(prefs.ocrModels),
+        keepEnglish: prefs.keepEnglish,
+        secondReader: prefs.secondReader,
+        secondDetector: prefs.secondDetector,
         textEngine: prefs.textEngine,
         legacyTypeset,
       }),

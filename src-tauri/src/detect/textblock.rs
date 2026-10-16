@@ -44,6 +44,7 @@ pub struct TextBlock {
     pub vertical: bool,
     pub font_size: f64,
     pub angle: i32,
+    pub score: f32,
     /// Perpendicular distance from line center to reading origin (TR for vertical, TL otherwise).
     pub distance: Vec<f64>,
     /// Primary writing direction vector summed across lines.
@@ -62,6 +63,7 @@ impl TextBlock {
             vertical: false,
             font_size: -1.0,
             angle: 0,
+            score: 1.0,
             distance: Vec::new(),
             vec: (0.0, 0.0),
             norm: -1.0,
@@ -425,6 +427,19 @@ pub fn group_output(
     mask: &GrayImage,
     lang: &str,
 ) -> Vec<TextBlock> {
+    group_output_scored(blks, lines, im_w, im_h, mask, lang, &[])
+}
+
+/// Group the same geometry while retaining the original proposal confidence.
+pub fn group_output_scored(
+    blks: &[([i32; 4], usize)],
+    lines: &[Quad],
+    im_w: i32,
+    im_h: i32,
+    mask: &GrayImage,
+    lang: &str,
+    scores: &[f32],
+) -> Vec<TextBlock> {
     const BBOX_SCORE_THRESH: f64 = 0.4;
     const MASK_SCORE_THRESH: f64 = 0.1;
 
@@ -434,7 +449,12 @@ pub fn group_output(
 
     let mut blk_list: Vec<TextBlock> = blks
         .iter()
-        .map(|&(bbox, cls)| TextBlock::new(bbox, Language::from_class(cls)))
+        .enumerate()
+        .map(|(i, &(bbox, cls))| {
+            let mut block = TextBlock::new(bbox, Language::from_class(cls));
+            block.score = scores.get(i).copied().unwrap_or(1.0);
+            block
+        })
         .collect();
     let mut scattered_ver: Vec<TextBlock> = Vec::new();
     let mut scattered_hor: Vec<TextBlock> = Vec::new();
@@ -705,6 +725,8 @@ pub fn split_by_regions(
                 font_size: tb.font_size,
                 angle: tb.angle,
                 language: tb.language,
+                score: blk.score,
+                kind: blk.kind.clone(),
             });
         }
     }
@@ -738,6 +760,22 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].lines.len(), 1);
         assert_eq!(out[0].language, Language::Ja);
+    }
+
+    #[test]
+    fn grouping_retains_proposal_scores_and_defaults_line_only_blocks_to_one() {
+        let proposals = [([100, 100, 200, 300], 1)];
+        let lines = [hline(110, 110, 30, 120), hline(400, 110, 30, 120)];
+        let mask = mask_full(800, 600);
+        let scored = group_output_scored(&proposals, &lines, 800, 600, &mask, "ja", &[0.45]);
+        let original = group_output(&proposals, &lines, 800, 600, &mask, "ja");
+        assert_eq!(scored.len(), original.len());
+        assert_eq!(scored.len(), 2);
+        for (a, b) in scored.iter().zip(&original) {
+            assert_eq!((a.xyxy, &a.lines, a.font_size, a.angle, a.vertical),
+                (b.xyxy, &b.lines, b.font_size, b.angle, b.vertical));
+            assert_eq!(a.score, if a.xyxy[0] < 300 { 0.45 } else { 1.0 });
+        }
     }
 
     #[test]
@@ -969,10 +1007,15 @@ mod tests {
             font_size: 15.0,
             angle: 0,
             language: Language::Eng,
+            score: 0.45,
+            kind: Some("bubble".into()),
+            ..Default::default()
         };
         let regions = [[100, 100, 280, 220], [300, 100, 480, 220]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");
         assert_eq!(out.len(), 2);
+
+        assert!(out.iter().all(|b| b.score == 0.45 && b.kind.as_deref() == Some("bubble")));
 
         assert_eq!(out[0].xyxy, [110, 120, 270, 200]);
         assert_eq!(out[0].lines.len(), 2);
@@ -1000,6 +1043,7 @@ mod tests {
             font_size: 30.0,
             angle: 0,
             language: Language::Eng,
+            ..Default::default()
         };
         let regions = [[100, 100, 280, 220]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");
@@ -1022,6 +1066,7 @@ mod tests {
             font_size: 30.0,
             angle: 0,
             language: Language::Eng,
+            ..Default::default()
         };
         let regions = [[100, 100, 200, 200], [400, 100, 500, 200]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");
@@ -1043,6 +1088,7 @@ mod tests {
             font_size: 30.0,
             angle: 0,
             language: Language::Eng,
+            ..Default::default()
         };
         let regions = [[100, 100, 200, 200], [400, 100, 500, 200]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");
@@ -1068,6 +1114,7 @@ mod tests {
             font_size: 30.0,
             angle: 0,
             language: Language::Ja,
+            ..Default::default()
         };
         let regions = [[95, 105, 215, 235], [178, 108, 212, 232]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");
@@ -1092,6 +1139,7 @@ mod tests {
             font_size: 30.0,
             angle: 0,
             language: Language::Ja,
+            ..Default::default()
         };
         let regions = [[130, 100, 220, 450], [130, 100, 220, 250], [130, 300, 220, 450]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");
@@ -1115,6 +1163,7 @@ mod tests {
             font_size: 30.0,
             angle: 0,
             language: Language::Ja,
+            ..Default::default()
         };
         let regions = [[130, 100, 220, 250], [130, 300, 220, 450]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");

@@ -48,6 +48,9 @@ fn main() {
                     Some(&mut ocr as &mut dyn TextRecognizer),
                     ReadingDirection::Rtl,
                     "ja",
+                    false,
+                    None,
+                    None,
                 )
             });
         let line = match result {

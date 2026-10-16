@@ -54,6 +54,7 @@ pub fn run() {
     .manage(detect::engine::DetectEngine::new(detect::engine::default_models_dir()))
     .invoke_handler(tauri::generate_handler![
       detect::engine::detect_analyze,
+      detect::engine::detect_read_drawing,
       detect::engine::detect_models_cache,
       detect::engine::detect_models_cache_clear,
       detect::engine::detect_health,
