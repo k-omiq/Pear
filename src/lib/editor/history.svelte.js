@@ -443,7 +443,8 @@ const KINDS = {
     },
   },
   // A whole page's boxes and lines put back (an AI run's Revert, run.svelte.js):
-  // each side is the page's `boxes`, `lines` and queue position as they were.
+  // each side is the page's `boxes`, `lines` and queue position as they were,
+  // and its `detect` when the run changed it.
   restore: {
     label: 'that revert',
     apply(e, dir) {
@@ -453,6 +454,8 @@ const KINDS = {
       p.boxes = structuredClone(side?.boxes ?? []);
       p.lines = structuredClone(side?.lines ?? []);
       p.activeLineN = side?.activeLineN ?? null;
+      // Only a run that ran detection carries the page's detection.
+      if (side && 'detect' in side) p.detect = side.detect ? structuredClone(side.detect) : null;
       if (app.selectedId && !p.boxes.some((b) => b.id === app.selectedId)) app.selectedId = null;
       recheck(p, p.boxes);
     },

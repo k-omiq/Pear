@@ -16,6 +16,7 @@ const read = () => ({
 
 defineTool({
   name: 'settings',
+  write: true,
   description: 'Read or set the person’s app preferences for new text boxes: auto height, hyphenation, balloon fit, block shape and minimum orphan length. get returns values and allowed types/enums/ranges. set validates the entire values patch before applying it. These preferences persist locally, apply to future boxes and may be overridden by the series guide. Use guide for series defaults. This tool writes no chapter files and exposes no other app preferences.',
   input: {
     type: 'object', additionalProperties: false, required: ['action'],
@@ -24,7 +25,7 @@ defineTool({
       values: { type: 'object', additionalProperties: false, properties: allowed },
     },
   },
-  run(args) {
+  run(args, ctx) {
     for (const key of Object.keys(args)) {
       if (!['action', 'values'].includes(key)) throw new ToolError(`Unknown settings argument "${key}".`, `Close keys: ${nearest(key, ['action', 'values']).join(', ')}.`);
     }
@@ -43,6 +44,7 @@ defineTool({
         throw new ToolError(`Invalid value for ${key}.`, hint);
       }
     }
+    ctx?.guard?.();
     for (const [key, value] of Object.entries(values)) setPref(key, value);
     return read();
   },

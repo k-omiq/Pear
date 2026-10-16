@@ -122,7 +122,7 @@ defineTool({
       line: line ? {
         n: line.n, jp: untrusted(line.jp), en: untrusted(lineText(line)),
         tags: [...lineTags(line)], ...(line.type ? { type: line.type } : {}),
-        ...(line.speaker ? { speaker: line.speaker } : {}),
+        ...(line.speaker ? { speaker: untrusted(line.speaker) } : {}),
       } : null,
       outline,
       fit: b.fit?.kind ?? null,

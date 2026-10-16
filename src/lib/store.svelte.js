@@ -722,9 +722,9 @@ export function boxEdited(b, p = page()) {
 // rectangle, the balloon fit a typed X or Y moves, and the solver's record, which an edit there can change (a typed
 // size becomes the reference and is locked, a width is locked) and which the
 // solve it runs rewrites.
-export const boxSnap = (b) => ({
+export const boxSnap = (b, p = page()) => ({
   style: cloneStyle(b.style),
-  text: boxOwnText(b),
+  text: boxOwnText(b, p),
   x: b.x,
   y: b.y,
   w: b.w,
@@ -794,11 +794,11 @@ export function editBoxes(targets, mutate, { always = false, ...extra } = {}) {
     const pg = t?.page;
     const b = t?.box;
     if (!pg || !b) continue;
-    const before = boxSnap(b);
+    const before = boxSnap(b, pg);
     const geomBefore = fitGeom(b);
     if (mutate(b, pg) === false) continue;
     autoFitBox(b, pg);
-    const after = boxSnap(b);
+    const after = boxSnap(b, pg);
     const entries = boxEditRecords({ pageId: pg.id, boxId: b.id }, before, after, true);
     if (!entries.length && !always) continue;
     let bucket = byPage.get(pg.id);
@@ -808,7 +808,9 @@ export function editBoxes(targets, mutate, { always = false, ...extra } = {}) {
     changed.push(t);
   }
   for (const [pageId, { items, entries }] of byPage) {
-    if (entries.every((e) => e.t === 'style')) recordEdit({ t: 'bulk', pageId, items, ...extra });
+    // The bulk panel's apply is always its `bulk` kind, which walks the
+    // geometry back with the style and carries `lastStyle` both ways.
+    if (always || entries.every((e) => e.t === 'style')) recordEdit({ t: 'bulk', pageId, items, ...extra });
     else if (entries.length === 1) recordEdit(entries[0]);
     else recordEdit({ t: 'group', pageId, items: entries });
   }

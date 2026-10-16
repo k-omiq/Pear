@@ -57,7 +57,7 @@ function readGuide() {
 defineTool({
   name: 'guide',
   write: true,
-  description: 'Read or update the whole series guide: glossary terms, characters (terms marked character), dash/ellipsis rules, notes and series typesetting defaults. Ask the user before changing the guide unless they said to remember something. get fences source/target text, aliases and notes. set accepts partial rules/typeset, notes, addTerms, updateTerms by id and removeTerms ids. Validate the entire request before one writeGuide call; unknown ids/keys/values return hints. Term text is trimmed and capped by the glossary sanitizer; notes are capped at 20000 characters. typeset is merged with existing series overrides; typesetDefaults reports the effective defaults for new boxes.',
+  description: 'Read or update the whole series guide: glossary terms, characters (terms marked character), dash/ellipsis rules, notes and series typesetting defaults. Ask the user before changing the guide unless they said to remember something. Locked terms cannot be changed or removed. get fences source/target text, aliases and notes. set accepts partial rules/typeset, notes, addTerms, updateTerms by id and removeTerms ids. Validate the entire request before one writeGuide call; unknown ids/keys/values return hints. Term text is trimmed and capped by the glossary sanitizer; notes are capped at 20000 characters. typeset is merged with existing series overrides; typesetDefaults reports the effective defaults for new boxes.',
   input: {
     type: 'object', additionalProperties: false, required: ['action'],
     properties: {
@@ -105,6 +105,8 @@ defineTool({
       if (typeof id !== 'string' || !terms.has(id)) throw new ToolError('Unknown glossary term id.', `Nearest ids: ${nearest(id, [...terms.keys()]).join(', ') || '(no terms)'}. Use guide get to read term ids.`);
       if (touched.has(id)) throw new ToolError('A term may be updated or removed only once per call.', 'Combine its changes in one updateTerms entry; do not also remove it.');
       touched.add(id);
+      // A locked term is the user's: no AI edit changes or removes it.
+      if (terms.get(id).locked) throw new ToolError(`Term ${id} is locked by the user.`, 'Leave it as it is, or ask the user to unlock it.');
       return terms.get(id);
     };
     const additions = (args.addTerms ?? []).map((fields) => validateTerm(fields));
