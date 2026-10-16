@@ -10,28 +10,8 @@ beforeAll(async () => {
   font = engine.addFont(fixtureFont('ComicNeue-Regular.ttf'));
 });
 
-const names = [...PATTERN_KINDS,
-  'halftone-fade',
-  'square-dots',
-  'diamond-dots',
-  'line-tone',
-  'sand',
-  'stipple',
-  'speed-lines',
-  'burst',
-  'rings',
-  'waves',
-  'zigzag',
-  'bricks',
-  'scales',
-  'hex',
-  'triangles',
-  'plus',
-  'stars',
-  'hearts',
-  'kakeami',
-  'glitch',
-];
+// The app's list is the engine's whole list, in wire order.
+const names = PATTERN_KINDS;
 const screen = (kind = 'dots', pattern = {}, rest = {}) => ({
   kind: 'screen', pattern: { kind, ...pattern }, basis: [12, 0, 0, 12],
   x: 0, y: 0, cx: 24, cy: 16, reach: 29, line: 0.12, fade: null, color: '#123456', ...rest,
@@ -46,7 +26,8 @@ describe('procedural screen fills', () => {
     expect(patternKinds(engine)).toEqual(names);
     expect(patternKinds(engine)).toHaveLength(31);
     expect(patternTile(engine, { kind: 'waves' }, 16, 0.12)).toBeNull();
-    expect(patternKinds(engine).slice(0, 11)).toEqual(PATTERN_KINDS);
+    // The app's own list (data.js) is the engine's, in the same order.
+    expect(patternKinds(engine)).toEqual(PATTERN_KINDS);
     expect(patternKinds({ exports: {} })).toBeNull();
     expect(drawsScreens({ exports: {} })).toBe(false);
     expect(patternSwatch({ exports: {} }, {})).toBeNull();

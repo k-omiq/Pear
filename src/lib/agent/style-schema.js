@@ -1,5 +1,5 @@
 import {
-  GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS,
+  GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_FLOWS, SFX_MAX_MOVES,
 } from '../data.js';
 
@@ -53,6 +53,24 @@ export const STYLE_SCHEMA = {
     fg: color('tile ink'),
     bg: color('tile background'),
     scale: number('tile/font scale', 0.25, 4),
+    angle: number('turn degrees'),
+    density: alpha('ink; 0.5=designed'),
+    aspect: number('x stretch', 0.25, 4),
+    ox: alpha('x offset, tiles'),
+    oy: alpha('y offset, tiles'),
+    fgOpacity: alpha('ink alpha'),
+    bgOpacity: alpha('ground alpha'),
+    fade: object('ink fades across box', {
+      on: boolean('enable fade'),
+      angle: number('CSS degrees'),
+      from: alpha('full until'),
+      to: alpha('none from'),
+    }),
+    anchor: choice('tile origin', PATTERN_ANCHORS),
+    seed: integer('random kinds seed', 1, 9999),
+    src: readOnly('set through Pick from page'),
+    cell: readOnly('set through Pick from page'),
+    mode: choice('picked: recolour or keep', PATTERN_MODES),
   }),
   noFill: boolean('hollow glyphs; overrides fills'),
   strokes: array('bands, inner first', object('stroke', {

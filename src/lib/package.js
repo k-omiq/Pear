@@ -11,6 +11,7 @@
 //   translations.json               derived text JSON (nothing reads it back)
 //   raws/<file>                     byte-for-byte
 //   cleaned/<file>                  byte-for-byte, only pages that have one
+//   patterns/<hash>.png             picked pattern tiles the boxes name
 //   fonts/<family>/<slot>/<file>    user font faces; built-ins are named only
 //
 // Rasters and fonts are stored, not deflated - PNG/JPG/WebP/TTF/OTF/WOFF2 are
@@ -19,6 +20,7 @@
 
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { sanitizeTagEntry } from './tags.svelte.js';
+import { patternSrcsUsed } from './data.js';
 
 export const PACKAGE_FORMAT = 'manga-typesetter/chapter';
 export const PACKAGE_VERSION = 1;
@@ -53,6 +55,8 @@ const familySegment = (name) => String(name).replace(/[\\/]+/g, '_').trim() || '
 //   project       { name, layout, ocrLanguage }
 //   raws          Map<fileName, Uint8Array>   every page.file must be present
 //   cleaned       Map<fileName, Uint8Array>   every page.cleaned must be present
+//   patterns      Map<fileName, Uint8Array>   picked pattern tiles; only the ones
+//                                             a box names are packed
 //   fonts         [{ name, faces: { slot: { file, data } | null } }]  user fonts only
 //   tags          [{ name, style, size, minSize }]
 //   app           version string
@@ -63,6 +67,7 @@ export function buildChapterPackage({
   project = {},
   raws = new Map(),
   cleaned = new Map(),
+  patterns = new Map(),
   fonts = [],
   tags = [],
   app = '',
@@ -84,6 +89,13 @@ export function buildChapterPackage({
       if (!cl) throw new Error(`Missing cleaned image "${pg.cleaned}"`);
       files[`cleaned/${pg.cleaned}`] = store(cl);
     }
+  }
+
+  // A tile named by a box but not handed over is left out: the box paints
+  // the default pattern on the other side, as it does here.
+  for (const name of patternSrcsUsed(record.pages)) {
+    const bytes = patterns.get(name);
+    if (bytes) files[`patterns/${name}`] = store(bytes);
   }
 
   const manifestFonts = [];
@@ -146,7 +158,7 @@ function parseJson(entries, name) {
 }
 
 // Returns
-//   { manifest, record, translations, raws: Map, cleaned: Map,
+//   { manifest, record, translations, raws: Map, cleaned: Map, patterns: Map,
 //     fonts: [{ name, faces: { slot: { file, data } | null } }], tags: [...] }
 // Throws on anything that is not a package this build can import. Every file
 // name is checked to be plain before it is handed to anything that writes.
@@ -180,6 +192,13 @@ export function readChapterPackage(bytes) {
     }
   });
 
+  // Only the tiles a box names, under names `patternSrcsUsed` has checked.
+  const patterns = new Map();
+  for (const name of patternSrcsUsed(record.pages)) {
+    const bytes = entries[`patterns/${name}`];
+    if (bytes) patterns.set(name, bytes);
+  }
+
   const fonts = [];
   for (const f of Array.isArray(manifest.fonts) ? manifest.fonts : []) {
     if (typeof f?.name !== 'string' || !f.name.trim()) continue;
@@ -209,7 +228,7 @@ export function readChapterPackage(bytes) {
 
   const translations = entries['translations.json'] ? strFromU8(entries['translations.json']) : null;
 
-  return { manifest, record, translations, raws, cleaned, fonts, tags };
+  return { manifest, record, translations, raws, cleaned, patterns, fonts, tags };
 }
 
 // The pages `createChapterFromPages` takes, built from a read package.

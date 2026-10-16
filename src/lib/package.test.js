@@ -248,3 +248,41 @@ describe('packageFileName', () => {
     expect(packageFileName('', 2)).toBe('chapter-ch2.mtchapter');
   });
 });
+
+describe('picked pattern tiles in a package', () => {
+  const src = '0123456789abcdef0123456789abcdef.png';
+  const other = 'ffffffffffffffffffffffffffffffff.png';
+  function withPicked() {
+    const input = sampleInput();
+    input.record.pages[0].boxes[0].style.pattern = { on: true, kind: 'picked', src, cell: [6, 0, 0, 6] };
+    input.patterns = new Map([
+      [src, bytes(137, 80, 78, 71)],
+      [other, bytes(1)],
+    ]);
+    return input;
+  }
+
+  it('packs the tiles a box names, and only those, and reads them back', () => {
+    const zip = buildChapterPackage(withPicked());
+    const entries = unzipSync(zip);
+    expect(entries[`patterns/${src}`]).toEqual(bytes(137, 80, 78, 71));
+    expect(entries[`patterns/${other}`]).toBeUndefined();
+    const pkg = readChapterPackage(zip);
+    expect([...pkg.patterns.keys()]).toEqual([src]);
+    expect(pkg.patterns.get(src)).toEqual(bytes(137, 80, 78, 71));
+  });
+
+  it('reads a package from before picked tiles as having none', () => {
+    const pkg = readChapterPackage(buildChapterPackage(sampleInput()));
+    expect(pkg.patterns.size).toBe(0);
+  });
+
+  it('never takes a name that is not a tile name out of the archive', () => {
+    const input = withPicked();
+    input.record.pages[0].boxes[0].style.pattern.src = '../evil.png';
+    const zip = buildChapterPackage(input);
+    const files = Object.keys(unzipSync(zip));
+    expect(files.some((f) => f.startsWith('patterns/'))).toBe(false);
+    expect(readChapterPackage(zip).patterns.size).toBe(0);
+  });
+});

@@ -68,6 +68,7 @@
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
   import { PICTURE_MAX_PX, PICTURE_DRAG_PX, PICTURE_OFF, pictureScale, pictureKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
+  import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
   import { maskTool } from './mask-tool.svelte.js';
@@ -633,6 +634,16 @@
   // - so turning a box repaints nothing, and it states the LINES, so a change
   // to how the text breaks repaints whatever caused it and a move, which
   // re-derives the same lines, does not.
+  // What else a pattern's picture is painted from: a picked tile that lands
+  // after the box first painted, and, for tiles that start at the page's
+  // corner, where the box stands on the page (a move slides its tone).
+  const patternTileKey = $derived.by(() => {
+    const p = s.pattern;
+    if (!p?.on) return '';
+    const tile = p.kind === 'picked' ? `t${patternTiles.version}` : '';
+    const at = p.anchor === 'page' ? `@${box.x},${box.y}` : '';
+    return tile + at;
+  });
   const engineKey = $derived(
     engineWanted
       ? pictureOn
@@ -648,6 +659,7 @@
             indents,
             scale: pictureRes,
             fonts: app.fontsVersion,
+            tiles: patternTileKey,
           })
         : PICTURE_OFF
       : '',

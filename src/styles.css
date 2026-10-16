@@ -129,6 +129,17 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .ed-dockrow > *{ pointer-events:auto; }
 
 .editor-scroll{ position:absolute; inset:0; overflow:auto; }
+/* Pattern from page: the one-drag layer over the canvas (Canvas.svelte). */
+.pick-layer{ position:absolute; inset:0; z-index:40; cursor:crosshair; touch-action:none; }
+.pick-hint{
+  position:absolute; top:10px; left:50%; translate:-50% 0; pointer-events:none;
+  padding:5px 10px; border-radius:6px; background:var(--panel); color:var(--text);
+  border:1px solid var(--line2); font-size:12px; box-shadow:0 2px 8px rgba(0,0,0,.18);
+}
+.pick-rect{
+  position:absolute; pointer-events:none;
+  border:1.5px dashed var(--accent); background:var(--accent-soft);
+}
 /* `width:max-content` is the whole reason the page stays reachable. A block
    child of a scroll container is as wide as the container and no wider, so a
    page zoomed past the viewport overflowed a box that could not grow - and

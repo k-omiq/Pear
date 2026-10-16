@@ -24,6 +24,7 @@
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
+  import { patternPick, cancelPatternPick } from './lib/pattern-pick.svelte.js';
   import { initHistory, undo, redo } from './lib/editor/history.svelte.js';
   import { flushPanels } from './lib/editor/panels.svelte.js';
   import { switchHistoryPage } from './lib/editor/history-file.svelte.js';
@@ -469,6 +470,7 @@
       if (settingsView.open) return closeSettings();
       if (fontModalOpen) return (fontModalOpen = false);
       if (brushTool.manager) return closeBrushManager();
+      if (patternPick.active) return cancelPatternPick();
       return deselect();
     }
     // Suppress global editor shortcuts while a modal overlay is open. Markup

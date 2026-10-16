@@ -18,7 +18,9 @@ import {
   import { tagsInUse, boxesWithTag } from './tags.svelte.js';
   import { modKey } from './format.js';
   import { fontGroups, fontCaveat } from './font-menu.js';
-  import { PATTERN_KINDS, GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
+  import { PATTERN_KINDS, CANVAS_PATTERN_KINDS, GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
+  import { engineSwitch } from './engine-switch.svelte.js';
+  import { glyphPainter } from './text-engine/index.js';
   import ColorPicker from './ColorPicker.svelte';
   import { iconNoFill } from './tab-icons.js';
 
@@ -303,6 +305,10 @@ import {
     s.gradient.cy = c.cy;
     tickBulkProp('gradient');
   }
+
+  // The Rust engine paints every pattern kind and control; the browser engine
+  // the eleven canvas tiles (Inspector.svelte says the same).
+  const rustPatterns = $derived(engineSwitch.painting && glyphPainter().screen === true);
 
   // Pattern helpers
   function setPatternHex(field, v, el) {
@@ -691,7 +697,7 @@ import {
                   <div class="switch" class:on={s.pattern.on} role="switch" aria-checked={s.pattern.on} aria-label="Pattern" tabindex="0" onclick={() => { s.pattern.on = !s.pattern.on; tickBulkProp('pattern'); }} onkeydown={(e) => e.key === 'Enter' && ((s.pattern.on = !s.pattern.on), tickBulkProp('pattern'))}><span class="knob"></span></div>
                   <span class="sub-count">{s.pattern.on ? 'On' : 'Off'}</span>
                   <select aria-label="Pattern kind" value={s.pattern.kind} onchange={(e) => { s.pattern.kind = e.target.value; tickBulkProp('pattern'); }} style="flex:1 1 auto; height:26px">
-                    {#each PATTERN_KINDS as k}<option value={k}>{k}</option>{/each}
+                    {#each rustPatterns ? PATTERN_KINDS : CANVAS_PATTERN_KINDS as k}<option value={k}>{k}</option>{/each}
                   </select>
                 </div>
                 <div class="sub-row2">
@@ -714,6 +720,21 @@ import {
                   <span class="sub-lbl" style="width:36px">Scale</span>
                   <input type="number" aria-label="Pattern scale" min="0.25" max="4" step="0.25" value={s.pattern.scale} onchange={(e) => { s.pattern.scale = clamp(+e.target.value || 1, 0.25, 4); tickBulkProp('pattern'); }} />
                 </div>
+                {#if rustPatterns}
+                  <!-- The Rust pattern's basic controls; the Inspector has the rest. -->
+                  <div class="sub-row">
+                    <span class="sub-lbl" style="width:36px">Angle</span>
+                    <input type="number" aria-label="Pattern angle" min="-180" max="180" step="1" value={s.pattern.angle} onchange={(e) => { s.pattern.angle = clamp(+e.target.value || 0, -180, 180); tickBulkProp('pattern'); }} />
+                    <span class="sub-lbl" style="width:44px">Density</span>
+                    <input type="number" aria-label="Pattern density, percent" min="0" max="100" step="1" value={Math.round(s.pattern.density * 100)} onchange={(e) => { s.pattern.density = clamp((+e.target.value || 0) / 100, 0, 1); tickBulkProp('pattern'); }} />
+                  </div>
+                  <div class="sub-row">
+                    <span class="sub-lbl" style="width:36px">Ink</span>
+                    <input type="number" aria-label="Pattern opacity, percent" min="0" max="100" step="1" value={Math.round(s.pattern.fgOpacity * 100)} onchange={(e) => { s.pattern.fgOpacity = clamp((+e.target.value || 0) / 100, 0, 1); tickBulkProp('pattern'); }} />
+                    <span class="sub-lbl" style="width:44px">Ground</span>
+                    <input type="number" aria-label="Background opacity, percent" min="0" max="100" step="1" value={Math.round(s.pattern.bgOpacity * 100)} onchange={(e) => { s.pattern.bgOpacity = clamp((+e.target.value || 0) / 100, 0, 1); tickBulkProp('pattern'); }} />
+                  </div>
+                {/if}
               </div>
             </div>
           </div>

@@ -27,6 +27,7 @@ import {
 import { warpActive, meshMap } from './warp.js';
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
+import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
 import { planStripCuts, SLICE_H_DEFAULT } from './editor/strip-cuts.js';
@@ -439,7 +440,7 @@ function fillRect(box, L, line = -1) {
 // into the run's space rather than the rect being re-measured per glyph - which
 // is what keeps one gradient running across curved text instead of restarting on
 // every letter.
-function runFill(s, rect, local) {
+function runFill(s, rect, local, page) {
   const kind = fillKind(s);
   if (kind === 'gradient') {
     let fill;
@@ -460,6 +461,7 @@ function runFill(s, rect, local) {
     // per-stop alpha included, so the two ramps are the one ramp.
     return fill;
   }
+  if (kind === 'pattern' && screenInJob()) return screenFill(s, rect, local, page);
   if (kind === 'pattern') {
     // The tile is drawn at TILE_SS so it survives the supersampled canvas, and
     // its origin is the fill rect's corner - the same corner CSS anchors
@@ -477,6 +479,69 @@ function runFill(s, rect, local) {
     return { kind: 'pattern', style: { size: s.size, color: s.color, pattern: { ...s.pattern } }, px, ax, ay };
   }
   return { kind: 'solid', color: s.color };
+}
+
+// Whether a pattern goes to the glyph painter as a procedural fill (the Rust
+// painter's `Fill::Screen`, shaded per pixel) instead of a repeated tile. Only
+// there do the pattern's angle, density, stretch, offset, opacities, fade,
+// anchor, seed and the new kinds paint; the browser engine draws the eleven
+// canvas tiles and reads none of them.
+export function screenInJob() {
+  return engineDraws() && glyphPainter().screen === true;
+}
+
+// The pattern as a procedural fill (`fill()` kind 'screen' in
+// text-engine/js/paint.mjs). Every point is mapped through `local` as a
+// gradient's endpoints are, so the grid runs on across curved letters.
+//
+// - The tile's two edges, job units: a square of the tile's pitch, or a picked
+//   tile's own lattice cell times the scale.
+// - The origin: the fill rect's corner, or with anchor 'page' the page's own
+//   corner (`page`), so one tone lines up across boxes. The page's corner is
+//   the box's unturned frame's; a turned box turns its tone with it.
+// - The centre and reach the centred kinds (burst, rings) measure from.
+// - The fade: full ink up to `from` along a gradient's line at `fade.angle`
+//   across the rect, none from `to`. 'halftone-fade' always fades.
+export function screenFill(s, rect, local, page) {
+  const p = s.pattern;
+  const map = (x, y) => (local ? local(x, y) : [x, y]);
+  const picked = p.kind === 'picked';
+  let basis;
+  if (picked) {
+    const k = Number(p.scale) || 1;
+    basis = (p.cell ?? []).map((v) => v * k);
+  } else {
+    const px = patternTilePx(s);
+    basis = [px, 0, 0, px];
+  }
+  const pitch = Math.hypot(basis[0], basis[1]);
+  const [x, y] = p.anchor === 'page' && page ? map(page.x, page.y) : map(rect.x, rect.y);
+  const [cx, cy] = map(rect.x + rect.w / 2, rect.y + rect.h / 2);
+  const reach = Math.max(1, Math.hypot(rect.w, rect.h) / 2);
+  const fadeOn = p.fade?.on || p.kind === 'halftone-fade';
+  let fade = null;
+  if (fadeOn) {
+    const f = p.fade?.on ? p.fade : { angle: 180, from: 0, to: 1 };
+    const g = gradientEndpoints(f.angle, rect.x, rect.y, rect.w, rect.h);
+    const at = (t) => map(g.x0 + (g.x1 - g.x0) * t, g.y0 + (g.y1 - g.y0) * t);
+    const [x0, y0] = at(f.from);
+    const [x1, y1] = at(f.to);
+    fade = { x0, y0, x1, y1 };
+  }
+  return {
+    kind: 'screen',
+    pattern: { ...p, cell: [...(p.cell ?? [])], fade: { ...p.fade } },
+    basis,
+    x,
+    y,
+    cx,
+    cy,
+    reach,
+    // A hairline is a page px or more, as the canvas tile keeps it.
+    line: Math.max(1, pitch * 0.12) / pitch,
+    fade,
+    color: s.color,
+  };
 }
 
 // Describe the glyphs in the caller's user space, without creating paint objects.
@@ -509,6 +574,9 @@ export function glyphJob(box, L) {
     const o = noiseOrigin(L);
     job.roughen = { amount: s.roughen.amount, detail: s.roughen.detail, seed: s.roughen.seed, x: o.x, y: o.y, grit: roughenGrit(s) };
   }
+  // The page's corner in the job's coordinates, for a pattern anchored to the
+  // page: the box's top-left is at (L.ox, L.oy) and at (box.x, box.y) on it.
+  const page = { x: L.ox - (Number(box.x) || 0), y: L.oy - (Number(box.y) || 0) };
   if (L.isCurve) {
     const cx = L.ox + box.w / 2;
     const cy = L.oy + box.h / 2;
@@ -534,7 +602,7 @@ export function glyphJob(box, L) {
       // fixed in box space - a different picture from the one the canvas
       // shows, and most visible on the letters furthest around the arc.
       // The silhouette pass wants one flat colour, not the real fill.
-      if (!L.silhouette && !hollow) run.fill = runFill(s, rect, (px, py) => [px - x, py - y]);
+      if (!L.silhouette && !hollow) run.fill = runFill(s, rect, (px, py) => [px - x, py - y], page);
       return run;
     });
   } else {
@@ -549,7 +617,7 @@ export function glyphJob(box, L) {
     // Gradient scope 'line' restarts the gradient on every wrapped line, so the
     // fill style is chosen per line rather than once for the block.
     const perLine = !L.silhouette && !hollow && s.gradient?.on && s.gradient.scope === 'line';
-    if (!L.silhouette && !hollow && !perLine) job.fill = runFill(s, fillRect(box, L));
+    if (!L.silhouette && !hollow && !perLine) job.fill = runFill(s, fillRect(box, L), null, page);
     job.runs = L.lines.map((ln, i) => {
       const run = { text: ln, x: L.ox + L.lineX[i], y: startY + i * L.lineH + L.baseY };
       if (perLine) run.fill = runFill(s, fillRect(box, L, i));
@@ -1045,6 +1113,7 @@ export async function renderPageCanvas(p, scale = 1) {
   // painted: the painter cannot await, so the awaiting happens here. See
   // brush-tips.js. Null when no box draws with an imported brush.
   const tips = await settleBoxTips(p?.boxes);
+  await settlePickedTiles(p?.boxes);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(W * scale);
   canvas.height = Math.round(H * scale);
@@ -1363,6 +1432,7 @@ export async function renderStripSliceCanvas(pages, tops, y0, y1, scale = 1, che
   const painted = textHits.map((h) => h.box);
   await settleNoise(painted);
   const tips = await settleBoxTips(painted);
+  await settlePickedTiles(painted);
 
   check?.();
   // Pass 1: paint all artwork intersecting the requested output rectangle.
