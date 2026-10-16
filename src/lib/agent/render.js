@@ -73,14 +73,16 @@ export function chooseScale(w, h, scale, maxSide = MAX_SIDE) {
 // The image size for a crop at `s`, at least 1 px each way.
 export const outSize = (w, h, s) => [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))];
 
-// Ruler ticks along one edge: every 100 page px inside [start, start + len),
-// with a number on every `labelEvery`-th one so numbers never crowd (at least
-// `minGap` output px apart).
-export function rulerTicks(start, len, s, { step = 100, minGap = 56 } = {}) {
-  const every = [1, 2, 5, 10, 20, 50, 100].find((k) => step * k * s >= minGap) ?? 100;
+// Ruler ticks along one edge, inside [start, start + len): every 10 page px
+// when they are at least `minTick` output px apart (else every 50, else 100),
+// longer every 50, with a number every 50 page px or the next round step that
+// keeps numbers `minGap` output px apart.
+export function rulerTicks(start, len, s, { minTick = 6, minGap = 40 } = {}) {
+  const step = [10, 50, 100].find((k) => k * s >= minTick) ?? 100;
+  const every = [50, 100, 200, 500, 1000, 2000, 5000, 10000].find((k) => k * s >= minGap && k % step === 0) ?? 10000;
   const ticks = [];
   for (let v = Math.ceil(start / step) * step; v < start + len; v += step) {
-    ticks.push({ at: v, pos: (v - start) * s, label: (v / step) % every === 0 ? String(v) : null });
+    ticks.push({ at: v, pos: (v - start) * s, label: v % every === 0 ? String(v) : null, major: v % 50 === 0 });
   }
   return ticks;
 }
@@ -391,12 +393,12 @@ function drawRulers(ctx, rect, s, W, H) {
   };
   for (const t of rulerTicks(rx, rw, s)) {
     const x = Math.round(t.pos) + 0.5;
-    tick(x, 0, x, t.label ? 12 : 7);
+    tick(x, 0, x, t.label ? 12 : t.major ? 8 : 4);
     if (t.label && t.pos > 0) text(t.label, x + 2, 2);
   }
   for (const t of rulerTicks(ry, rh, s)) {
     const y = Math.round(t.pos) + 0.5;
-    tick(0, y, t.label ? 12 : 7, y);
+    tick(0, y, t.label ? 12 : t.major ? 8 : 4, y);
     if (t.label && t.pos > 0) text(t.label, 2, y + 2);
   }
   ctx.restore();

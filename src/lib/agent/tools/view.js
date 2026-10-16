@@ -30,7 +30,7 @@ const input = {
       },
     },
     marks: {
-      description: 'Page and region views only. ids: true or a list of box ids to label; outlines: bubble outlines with their points; rulers: page px every 100.',
+      description: 'Page and region views only. ids: true or a list of box ids to label; outlines: bubble outlines with their points; rulers: page px, ticks every 10 (every 50 or 100 zoomed out), numbered every 50 or more.',
       type: 'object',
       properties: {
         ids: { anyOf: [{ type: 'boolean' }, { type: 'array', items: { type: 'string' } }] },
