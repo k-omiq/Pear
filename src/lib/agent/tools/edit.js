@@ -15,6 +15,8 @@ import { applyStylePatch, resolveRelative } from '../../style-patch.js';
 import { applyCase, breaksFor } from '../../measure.js';
 import { normalizeAuto } from '../../data.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
+import { splitOutline } from '../../bubble-outline.js';
+import { fitPolygon, intervalsAt } from '../../outline-geom.js';
 import { checksFor, fitsOf } from './check.js';
 import {
   app,
@@ -45,7 +47,7 @@ import { guide } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
 import { sfxAvailable, sfxPresets, applySfxPreset, clearSfx } from '../../sfx.js';
 
-const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'outline_to_box'];
+const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box'];
 const DO_NAMED = ['preset:', 'sfx:'];
 const DO_LATER = { match_angle: 'match_angle comes with chapter mode; set geometry.rotation for now.' };
 const SET_KEYS = ['text', 'style', 'sizing', 'geometry', 'breaks', 'tags', 'locks', 'outline', 'note'];
@@ -70,6 +72,7 @@ const DESCRIPTION = [
   'do: "typeset" (outline fit: style.margin 0.5 em unless set, then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "refit_outline" (find the bubble under the box again),',
+  '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
   '"outline_to_box" (the box rectangle as its outline), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
   '"preset:<name or id>", "sfx:<name or id>" (Rust engine only), "clear_sfx", "duplicate", "delete".',
   'Numbers may be relative: "+2", "-2", "*1.1". All ops are checked first; any bad value changes nothing. dryRun: true checks and counts only.',
@@ -410,6 +413,7 @@ function writeDo(d, matches) {
   const changed = [];
   const created = [];
   const deleted = [];
+  const unsplit = [];
   if (d.kind === 'approve_outline') {
     const byPage = new Map();
     for (const m of matches) byPage.set(m.page, [...(byPage.get(m.page) ?? []), m.box]);
@@ -469,13 +473,35 @@ function writeDo(d, matches) {
     if (d.kind === 'refit') retypesetBox(id, p);
     else if (d.kind === 'refit_outline') refitBalloon(id, p);
     else if (d.kind === 'outline_to_box') outlineToBox(id, p);
+    else if (d.kind === 'split_outline') {
+      const pts = splitBoxOutline(b, p);
+      if (pts) commitOutlinePoints(id, pts, p);
+      else unsplit.push(id);
+    }
     else if (d.kind === 'fit_balloon') {
       if (b.style.balloon === false) toggleBalloonFit(id, p);
       else if (!b.fit) refitBalloon(id, p);
     }
     if (fingerprint(b) !== before) changed.push(id);
   }
-  return { changed, created, deleted };
+  return { changed, created, deleted, unsplit };
+}
+
+// The piece of a box's outline that holds its text, cut from a joined bubble
+// at the neck (`splitOutline`). The text is where the line was detected, when
+// that is inside the outline, else the box; the other lines detected inside
+// the outline are the other bubbles' texts. Null when there is nothing to cut.
+function splitBoxOutline(b, p) {
+  const pts = b.fit ? fitPolygon(b.fit) : null;
+  if (!pts) return null;
+  const inside = ([x0, y0, x1, y1]) => {
+    const x = (x0 + x1) / 2;
+    return intervalsAt(pts, (y0 + y1) / 2).some(([l, r]) => x >= l && x <= r);
+  };
+  const blocks = (p.detect?.boxes ?? []).filter((d) => Array.isArray(d.box) && d.box.length === 4 && inside(d.box));
+  const own = blocks.find((d) => d.n === b.lineN)?.box ?? [b.x, b.y, b.x + b.w, b.y + b.h];
+  const others = blocks.filter((d) => d.n !== b.lineN).map((d) => d.box);
+  return splitOutline(pts, own, others);
 }
 
 function runOp(c) {
@@ -504,6 +530,7 @@ function runOp(c) {
     for (const id of r.changed) ids.add(id);
     if (r.created.length) out.created = r.created;
     if (r.deleted.length) out.deleted = r.deleted;
+    if (r.unsplit?.length) out.notSplit = { ids: r.unsplit, why: 'no neck found in the outline; draw the outline (set.outline) instead' };
     if (c.do.kind === 'approve_outline') {
       const open = c.matches.filter((m) => !m.box.fit).length;
       if (open) out.notApproved = { count: open, why: 'no outline to approve: draw one (set.outline) or use outline_to_box' };

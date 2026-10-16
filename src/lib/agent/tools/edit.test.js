@@ -251,6 +251,32 @@ describe('edit: size, geometry and lines for the solver', () => {
   });
 });
 
+describe('edit: split_outline', () => {
+  const dumbbell = [];
+  for (let i = 0; i <= 40; i++) {
+    const t = -Math.PI * 0.85 + (i / 40) * Math.PI * 1.7;
+    dumbbell.push([200 - 80 * Math.cos(t), 200 + 80 * Math.sin(t)]);
+  }
+  for (let i = 0; i <= 40; i++) {
+    const t = Math.PI * 0.85 - (i / 40) * Math.PI * 1.7;
+    dumbbell.push([440 + 80 * Math.cos(t), 200 + 80 * Math.sin(t)]);
+  }
+
+  it('cuts a joined outline at the neck, the box keeping its own bubble', async () => {
+    const p = pageById(1);
+    p.detect = { boxes: [{ n: 1, box: [180, 170, 220, 230] }, { n: 2, box: [420, 170, 460, 230] }] };
+    p.boxes[0].fit = { kind: 'poly', pts: copy(dumbbell) };
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'split_outline' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.ops[0].changed).toEqual(['a']);
+    const xs = p.boxes[0].fit.pts.map(([x]) => x);
+    expect(Math.max(...xs)).toBeLessThan(330);
+    expect(p.boxes[0].outline.approved).toBeNull();
+    const again = await call({ ops: [{ where: { ids: ['a'] }, do: 'split_outline' }] });
+    expect(again.result.ops[0].notSplit.ids).toEqual(['a']);
+  });
+});
+
 describe('add', () => {
   it('places an unplaced line in a rect, one undo step', async () => {
     const r = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80] }, callContext('mcp'));
