@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ocrComparableKey, postProcessDetection } from './detect-post.js';
+import { isAlreadyEnglish, ocrComparableKey, postProcessDetection } from './detect-post.js';
 import { classifyRegionLineType, looksLikeDialogue, looksLikeOnomatopoeia, sfxMeaning } from './sfx-meanings.js';
 
 const line = (jp, box = [0, 0, 100, 100], extra = {}) => ({
@@ -202,5 +202,58 @@ describe('SFX, dialogue and narration classification', () => {
     expect(process(line('ババババ'))[0].type).toBe('sfx');
     expect(process(line('', undefined, { type: 'sfx' }))[0].type).toBe('sfx');
     expect(process(line('', undefined, { type: 'dialogue' }))[0].type).toBe('dialogue');
+  });
+});
+
+describe('already-English lettering', () => {
+  it.each(['OK', 'BANG! 123', 'ＨＥＬＬＯ１２', 'ﬁ', 'éà', '<b>Hello</b>', 'ABCDβ', 'GO\nGO'])
+    ('recognizes Latin lettering after NFKC: %s', (text) => {
+      expect(isAlreadyEnglish(text)).toBe(true);
+    });
+
+  it.each(['', '!?', '1234', 'A', 'Ａ1', '<unk>', 'АВ', 'βγ', 'ABCβ', 'HELLO漢', 'HELLOあ', 'HELLOア', 'HELLO한', 'HELLO가'])
+    ('keeps readings that fail the letter, script or Latin-share rule: %s', (text) => {
+      expect(isAlreadyEnglish(text)).toBe(false);
+    });
+
+  it('drops English by default, keeps source-script text and renumbers the survivors', () => {
+    expect(process(
+      line('HELLO'), line('こんにちは', [200, 0, 300, 100], { n: 5, en: 'Hello' }),
+      line('今天', [400, 0, 500, 100], { lang: 'zh' }), line('기다려', [600, 0, 700, 100], { lang: 'ko' }),
+    ).map((l) => [l.n, l.jp])).toEqual([[1, 'こんにちは'], [2, '今天'], [3, '기다려']]);
+  });
+
+  it('keeps English when requested, still removes duplicates, and does not change the input', () => {
+    const lines = [line('ＨＥＬＬＯ'), line('HELLO', [10, 10, 60, 60])];
+    const input = page(lines);
+    for (const l of lines) Object.freeze(l);
+    const result = postProcessDetection(input, { keepEnglish: true });
+    expect(result.lines).toEqual([{ ...lines[1], n: 1 }]);
+    expect(input.lines).toHaveLength(2);
+    expect(input.lines.map((l) => l.n)).toEqual([9, 9]);
+  });
+
+  it.each([false, true])('removes empty regions on English whether it is skipped or kept (%s)', (keepEnglish) => {
+    const result = postProcessDetection(page([
+      line('BANG!'), line('', [10, 10, 30, 30]), line('<unk>', [40, 40, 60, 60]),
+      line('', [200, 0, 300, 100]),
+    ]), { keepEnglish });
+    expect(result.lines.map((l) => l.jp)).toEqual(keepEnglish ? ['BANG!', ''] : ['']);
+  });
+
+  it.each([[65, 0], [64, 1]])('requires 65 percent coverage to drop an empty region on skipped English (%s percent)', (overlap, count) => {
+    expect(process(line('HELLO'), line('', [100 - overlap, 0, 200 - overlap, 100]))).toHaveLength(count);
+  });
+
+  it('skips English before deciding whether children replace a parent', () => {
+    const input = page([
+      line('HELLO今日は'), line('HELLO', [0, 0, 40, 40]), line('今日は', [50, 50, 90, 90]),
+    ]);
+    expect(postProcessDetection(input).lines.map((l) => l.jp)).toEqual(['HELLO今日は']);
+    expect(postProcessDetection(input, { keepEnglish: true }).lines.map((l) => l.jp)).toEqual(['HELLO', '今日は']);
+  });
+
+  it('preserves digit-only and mark-only source when not covered by another region', () => {
+    expect(process(line('1234'), line('……', [200, 0, 300, 100]))).toHaveLength(2);
   });
 });
