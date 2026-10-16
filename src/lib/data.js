@@ -401,6 +401,12 @@ export function defaultStyle() {
     // the split has to win on price, and the pieces have to be pronounceable -
     // and they are narrow enough that ordinary dialogue never meets them.
     hyphenate: true,
+    // Outline fit (outline-fit.js): the air between the glyph ink and the
+    // bubble outline, in em. Null is the layout every box had before it: the
+    // balloon's safety inset and the shape that explains the outline. A number
+    // lays the text out to the outline polygon itself, with this much air on
+    // every side, and lets the solver choose the line breaks (`auto.breaks`).
+    margin: null,
     // Whether this box lays its text out to the balloon it was fitted to. The
     // shape itself lives on the BOX (`box.fit`) rather than in the style,
     // because it is measured geometry in page coordinates and not a preference;
@@ -830,6 +836,7 @@ export function normalizeStyle(s) {
     // Anything else - a typo in a hand-edited file, a value from a newer build -
     // is the default, not a string every layout would have to second-guess.
     shape: BLOCK_SHAPES.includes(flat.shape) ? flat.shape : d.shape,
+    margin: normalizeMargin(src.margin),
     autoContrast: flat.autoContrast === true,
     blur: Math.max(0, num(src.blur, 0)),
     motionBlur: mb,
@@ -848,6 +855,14 @@ export function normalizeStyle(s) {
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
   return out;
+}
+
+// Outline fit's air, in em, or null for the layout before it.
+export const MARGIN_MAX = 2;
+export function normalizeMargin(v) {
+  if (v == null || v === '' || typeof v === 'boolean') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(MARGIN_MAX, Math.max(0, n)) : null;
 }
 
 // The path a box starts with when the effect is switched on: a straight line
@@ -1055,7 +1070,10 @@ export function normalizeReview(r) {
 // `box.auto` marks a box the auto-layout solver (auto-layout.js) manages, and
 // holds what it needs to solve it again:
 //
-//   { on, refSize, minSize?, locks: { size, width, height, pos, breaks }, status, reason, stamp }
+//   { on, refSize, minSize?, locks: { size, width, height, pos, breaks }, status, reason, stamp, breaks? }
+//
+// `breaks` is an outline fit's chosen lines (`normalizeBreaks` below); with
+// `locks.breaks` they are the agent's or the user's, and kept through a solve.
 //
 // `refSize` is the size the user chose - the solver never goes above it, and
 // shrinks from it only as far as the balloon needs, so it is kept apart from
@@ -1090,5 +1108,17 @@ export function normalizeAuto(a) {
     status: AUTO_STATUSES.includes(a.status) ? a.status : null,
     reason: typeof a.reason === 'string' && a.reason.trim() ? a.reason : null,
     stamp: typeof a.stamp === 'string' && a.stamp ? a.stamp : null,
+    ...(normalizeBreaks(a.breaks) ? { breaks: normalizeBreaks(a.breaks) } : null),
   };
+}
+
+// The line starts an outline fit chose (`auto.breaks`): offsets into the cased
+// text, rising from 0, and the key of the text and face they were chosen for
+// (`breaksKey` in measure.js). Anything else is no breaks, and the lines are
+// broken as before.
+export function normalizeBreaks(b) {
+  if (!b || typeof b !== 'object' || typeof b.key !== 'string' || !b.key || !Array.isArray(b.at)) return null;
+  const at = b.at.map(Number);
+  if (!at.length || at[0] !== 0 || at.some((v, i) => !Number.isInteger(v) || v < 0 || (i && v <= at[i - 1]))) return null;
+  return { key: b.key, at };
 }

@@ -190,6 +190,96 @@ describe('edit', () => {
   });
 });
 
+describe('edit: size, geometry and lines for the solver', () => {
+  const auto = { refSize: 20, locks: { size: false, width: false, height: false, pos: false, breaks: false } };
+  beforeEach(() => {
+    const b = pageById(1).boxes[0];
+    b.auto = copy(auto);
+  });
+  const a = () => pageById(1).boxes[0];
+
+  it('takes a size as the size aimed for, not a lock', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { size: 24 } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto.refSize).toBe(24);
+    expect(a().auto.locks.size).toBe(false);
+  });
+
+  it('sets the size aimed for and the least size', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { sizing: { ref: 18, min: 14 } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto).toMatchObject({ refSize: 18, minSize: 14 });
+    await call({ ops: [{ where: { ids: ['a'] }, set: { sizing: { min: null } } }] });
+    expect('minSize' in a().auto).toBe(false);
+    const bad = await call({ ops: [{ where: { ids: ['a'] }, set: { sizing: { ref: 12, min: 14 } } }] });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toMatch(/min is above ref/);
+  });
+
+  it('holds the width, height and centre it was given', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { geometry: { x: 40, w: 120, h: 80 } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto.locks).toMatchObject({ width: true, height: true, pos: true, size: false });
+  });
+
+  it('holds the lines it was given, and refuses lines that are not the text', async () => {
+    const no = await call({ ops: [{ where: { ids: ['a'] }, set: { breaks: ['Hello', 'there...'] } }] });
+    expect(no.ok).toBe(false);
+    expect(no.error).toMatch(/not laid out by outline fit/);
+    const wrong = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { margin: 0.5 }, breaks: ['Hello', 'world'] } }] });
+    expect(wrong.ok).toBe(false);
+    expect(wrong.error).toMatch(/not box a's text/);
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { margin: 0.5 }, breaks: ['Hello', 'there…'] } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto.breaks.at).toEqual([0, 6]);
+    expect(a().auto.locks.breaks).toBe(true);
+    await call({ ops: [{ where: { ids: ['a'] }, set: { breaks: null } }] });
+    expect(a().auto.breaks).toBeUndefined();
+    expect(a().auto.locks.breaks).toBe(false);
+  });
+
+  it('typesets by outline fit, and "auto" lets every lock go', async () => {
+    a().auto.locks.size = true;
+    a().auto.locks.width = true;
+    a().style.balloon = false;
+    a().fit = { kind: 'ellipse', cx: 90, cy: 40, rx: 90, ry: 40 };
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'typeset' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().style.margin).toBe(0.5);
+    expect(a().style.balloon).toBe(true);
+    expect(a().auto.locks.size).toBe(true);
+    await call({ ops: [{ where: { ids: ['a'] }, do: 'auto' }] });
+    expect(Object.values(a().auto.locks).every((v) => v === false)).toBe(true);
+    expect(a().auto.on).toBe(true);
+  });
+});
+
+describe('edit: split_outline', () => {
+  const dumbbell = [];
+  for (let i = 0; i <= 40; i++) {
+    const t = -Math.PI * 0.85 + (i / 40) * Math.PI * 1.7;
+    dumbbell.push([200 - 80 * Math.cos(t), 200 + 80 * Math.sin(t)]);
+  }
+  for (let i = 0; i <= 40; i++) {
+    const t = Math.PI * 0.85 - (i / 40) * Math.PI * 1.7;
+    dumbbell.push([440 + 80 * Math.cos(t), 200 + 80 * Math.sin(t)]);
+  }
+
+  it('cuts a joined outline at the neck, the box keeping its own bubble', async () => {
+    const p = pageById(1);
+    p.detect = { boxes: [{ n: 1, box: [180, 170, 220, 230] }, { n: 2, box: [420, 170, 460, 230] }] };
+    p.boxes[0].fit = { kind: 'poly', pts: copy(dumbbell) };
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'split_outline' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.ops[0].changed).toEqual(['a']);
+    const xs = p.boxes[0].fit.pts.map(([x]) => x);
+    expect(Math.max(...xs)).toBeLessThan(330);
+    expect(p.boxes[0].outline.approved).toBeNull();
+    const again = await call({ ops: [{ where: { ids: ['a'] }, do: 'split_outline' }] });
+    expect(again.result.ops[0].notSplit.ids).toEqual(['a']);
+  });
+});
+
 describe('add', () => {
   it('places an unplaced line in a rect, one undo step', async () => {
     const r = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80] }, callContext('mcp'));
