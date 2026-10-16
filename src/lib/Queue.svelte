@@ -21,6 +21,7 @@
     addTextBoxInView,
     setLineText,
     setLineSpeaker,
+    setPageNote,
     isTranslateMode,
     addQueueLine,
     placeableDetectedLines,
@@ -69,6 +70,13 @@
   const pagePlaceable = $derived(placeableDetectedLines(p).length);
   // The series' characters, for the speaker picker (TXT-6).
   const characters = $derived(glossaryCharacters(guide.glossary));
+  // The page note (TXT-7): shown while the page has one, or once asked for.
+  let noteAsked = $state(false);
+  const noteShown = $derived(!!p.note || noteAsked);
+  $effect(() => {
+    p.id;
+    noteAsked = false;
+  });
   const speakerName = (line) => characters.find((c) => c.id === line.speaker)?.target ?? null;
 
   // Moving a keyed DOM row can drop its focused descendant even though the
@@ -314,6 +322,23 @@
   <EngineNotice />
   <ReviewList />
   <FontNotice />
+  <!-- A note about this page (TXT-7), saved with the chapter: what the art
+       shows, who is speaking, what to watch for. -->
+  {#if noteShown}
+    <!-- svelte-ignore a11y_autofocus -->
+    <textarea
+      class="qnote"
+      rows="2"
+      placeholder="Note about this page…"
+      aria-label="Page note"
+      autofocus={noteAsked && !p.note}
+      value={p.note ?? ''}
+      onchange={(e) => setPageNote(p, e.currentTarget.value)}
+      onblur={(e) => { setPageNote(p, e.currentTarget.value); if (!p.note) noteAsked = false; }}
+    ></textarea>
+  {:else}
+    <button class="qnote-add" onclick={() => (noteAsked = true)}>+ Page note</button>
+  {/if}
   {#if p.lines.length === 0}
     <div class="qhint">
       No lines yet.<br />{translate
