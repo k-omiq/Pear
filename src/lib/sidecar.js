@@ -53,6 +53,15 @@ export async function analyzeImage(imageUrl, options = {}, maybeLanguage) {
   return invoke('detect_analyze', { image: bytes, ocr, language, ocrModel });
 }
 
+// Read a drawn character or short word (OCR-6) with the recognizer the
+// project's language uses. `bytes` is a PNG of the inked area on white.
+export async function readDrawing(bytes, language = app.projectOcrLanguage) {
+  const invoke = await getInvoke();
+  if (!invoke) throw new Error('reading needs the desktop app');
+  const ocrModel = ocrModelForLanguage(language, prefs.ocrModels);
+  return invoke('detect_read_drawing', { image: Array.from(bytes), language, ocrModel });
+}
+
 // Detect + OCR one page object and apply results to it. Returns { lines } on
 // success or { error } on failure. Shared by the single-page and whole-chapter
 // paths. Pins the write to `p` - detection may resolve after the user navigates.

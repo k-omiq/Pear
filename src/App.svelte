@@ -10,6 +10,8 @@
   import SettingsModal from './lib/SettingsModal.svelte';
   import ExportDialog from './lib/ExportDialog.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
+  import DrawReadModal from './lib/DrawReadModal.svelte';
+  import { drawRead } from './lib/draw-read.svelte.js';
   import Toast from './lib/Toast.svelte';
   import HomeFrame from './lib/home/HomeFrame.svelte';
   import LibraryView from './lib/home/LibraryView.svelte';
@@ -465,6 +467,7 @@
         return;
       }
       if (app.exportOpen) return (app.exportOpen = false);
+      if (drawRead.open) return (drawRead.open = false);
       if (app.bulk.active) return closeBulk();
       if (settingsView.open) return closeSettings();
       if (fontModalOpen) return (fontModalOpen = false);
@@ -599,6 +602,7 @@
 <BrushModal />
 <SettingsModal bind:open={settingsView.open} />
 <ExportDialog />
+<DrawReadModal />
 <CommandPalette
   bind:open={paletteOpen}
   openFonts={() => (fontModalOpen = true)}
