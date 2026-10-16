@@ -15,18 +15,22 @@ const readOnly = (desc) => ({ type: 'any', readOnly: true, desc });
 const alpha = (desc) => number(desc, 0, 1);
 
 // Bounds and choices mirror normalizeStyle and its helpers, not Inspector
-// sliders. Flat fields (size, opacity, lineHeight, curve, roughen, etc.) are
-// passed through there without clamps. align/valign are also plain strings.
+// sliders. Flat fields (lineHeight, curve, roughen, etc.) are passed through
+// there without clamps and have none here; size, opacity, align and valign
+// are the exceptions, marked where they are.
 // Circle angles wrap rather than clamp, so have no min/max. Geometry arrays
 // and the SFX restoration snapshot belong to the editors that create them.
 export const STYLE_SCHEMA = {
   font: string('font family'),
-  size: number('font size px'),
+  // Not clamped by normalizeStyle; the range is what a box can sensibly be
+  // asked for, so a model's slip ("size: 2600") is refused, not drawn.
+  size: number('font size px', 4, 400),
   bold: boolean('bold face'),
   italic: boolean('italic face'),
-  align: string('align: left/center/right'),
-  valign: string('align: top/middle/bottom'),
-  opacity: number('whole-box alpha'),
+  // Plain strings to normalizeStyle; these are the values the layout reads.
+  align: choice('horizontal alignment', ['left', 'center', 'right']),
+  valign: choice('vertical alignment', ['top', 'middle', 'bottom']),
+  opacity: alpha('whole-box alpha'),
   color: color('solid glyph fill'),
   autoContrast: boolean('bubble-picked fill/stroke'),
   gradient: object('gradient fill', {
