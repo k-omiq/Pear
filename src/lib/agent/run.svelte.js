@@ -18,7 +18,7 @@
 // A run through the MCP door (Door A) begins at its first write and ends after
 // IDLE_MS with no call. The in-app panel (Door B, M6) will begin and end its
 // own around one prompt.
-import { app, pageById, settleEdits, markUnsaved, recordEdit, toast } from '../store.svelte.js';
+import { app, pageById, settleEdits, markUnsaved, recordEdit, toast, quietly } from '../store.svelte.js';
 import { chapterOpenSeq } from '../library.svelte.js';
 import { inRun } from '../editor/history.svelte.js';
 import { guide, guideBound, restoreGuide } from '../guide.svelte.js';
@@ -129,7 +129,7 @@ export function callContext(door) {
       for (const p of pages ?? []) {
         if (p && !run.kept.has(p.id)) run.kept.set(p.id, keep(p));
       }
-      const out = inRun(run.id, fn);
+      const out = inRun(run.id, () => quietly(fn));
       run.edits++;
       sync();
       return out;
@@ -139,7 +139,7 @@ export function callContext(door) {
       const run = runForWrite(door);
       if (!guideBound()) throw new ToolError('no series is open, so there is no guide to change');
       if (run.guideBefore == null) run.guideBefore = $state.snapshot(guide);
-      const out = fn();
+      const out = quietly(fn);
       run.edits++;
       sync();
       return out;
