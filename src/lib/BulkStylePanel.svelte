@@ -877,6 +877,11 @@ import {
               <span class="lbl">Hyphenate</span>
               <div class="switch" class:on={s.hyphenate} role="switch" aria-checked={s.hyphenate} aria-label="Hyphenate" tabindex="0" onclick={() => set('hyphenate', !s.hyphenate)} onkeydown={(e) => e.key === 'Enter' && set('hyphenate', !s.hyphenate)}><span class="knob"></span></div>
             </div>
+            <div class="brow" class:off={!app.bulk.mask.margin}>
+              {@render tick('margin')}
+              <span class="lbl">Outline air</span>
+              <input type="number" aria-label="Outline air (em, empty for the older layout)" min="0" max="2" step="0.05" value={s.margin ?? ''} onchange={(e) => set('margin', e.target.value === '' ? null : clamp(+e.target.value || 0, 0, 2))} />
+            </div>
 
             <div class="brow" class:off={!app.bulk.mask.balloon}>
               {@render tick('balloon')}

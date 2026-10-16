@@ -86,6 +86,7 @@ import { applyCase, lineWidth, textInset, blockYFor, layoutLines, withFamiliesHe
 import { interiorLineWidths, inscribedRect, balloonFrame, safetyInset, layoutShape } from './balloon.js';
 import { neededHeight, BALANCED_DEFAULTS, ovalProfile } from './typeset.js';
 import { normalizeFit } from './data.js';
+import { solveOutline } from './outline-fit.js';
 
 export const SIZE_STEP = 0.5;
 const WIDTH_STEPS = 4;
@@ -511,7 +512,15 @@ function result(c, place, status, reasons = [], review = null) {
 // Synchronous from end to end, so no font can arrive or leave while it runs: the
 // family each style resolves to is looked up once (`withFamiliesHeld`) rather
 // than for every line measured.
+//
+// A box with a `margin` and a balloon is an OUTLINE FIT (outline-fit.js): its
+// text is set to the outline polygon itself, and the answer carries the lines
+// it chose (`breaks`).
 export function solveLayout(args) {
+  if (args?.style?.margin != null && args.region && args.region.kind !== 'hint' && args.style.balloon !== false) {
+    const r = solveOutline(args);
+    if (r) return r;
+  }
   return withFamiliesHeld(() => solve(args));
 }
 

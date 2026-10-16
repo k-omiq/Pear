@@ -1158,7 +1158,7 @@ function solverReview(b, p) {
 // The flips count because they mirror the finished block inside the box, and
 // a block anchored to one edge lands at the other - away from the rows the
 // balloon gave it.
-const STAMP_STYLE = ['font', 'size', 'bold', 'italic', 'align', 'valign', 'lineHeight', 'letterSpacing', 'uppercase', 'shape', 'balloon', 'hyphenate', 'minOrphan', 'rotation', 'flipH', 'flipV'];
+const STAMP_STYLE = ['font', 'size', 'bold', 'italic', 'align', 'valign', 'lineHeight', 'letterSpacing', 'uppercase', 'shape', 'balloon', 'hyphenate', 'minOrphan', 'margin', 'rotation', 'flipH', 'flipV'];
 function solveStamp(b, text) {
   const s = b.style;
   const key = JSON.stringify([
@@ -4438,14 +4438,22 @@ function solveBox(b, p, text, at, stay = false) {
     region,
     locks: stay ? { ...a.locks, pos: true } : a.locks,
     opts: {
-      minSize: solveFloor(a.refSize, b, p),
+      minSize: a.minSize > 0 ? Math.max(minFontSize, Math.min(a.refSize, a.minSize)) : solveFloor(a.refSize, b, p),
       minW: MIN_BOX_W,
       minH: MIN_BOX_H,
       box: { x: b.x, y: b.y, w: b.w, h: b.h },
       page: p,
+      breaks: a.breaks ?? null,
     },
   });
   if (!r) return false;
+  // The lines an outline fit chose (`auto.breaks`). Lines held by a lock are
+  // the user's or the agent's, and stay; any other solve's answer replaces
+  // them, and a solve that chose none leaves none.
+  if (!a.locks.breaks) {
+    if (r.breaks) a.breaks = r.breaks;
+    else delete a.breaks;
+  }
   const g = stay ? { x: r.x, y: r.y, w: r.w, h: r.h } : ontoPage(p, r);
   for (const k of ['x', 'y', 'w', 'h']) if (b[k] !== g[k]) b[k] = g[k];
   if (b.style.size !== r.size) b.style.size = r.size;
@@ -6254,6 +6262,7 @@ export const BULK_PROPS = [
   'shape',
   'minOrphan',
   'hyphenate',
+  'margin',
   'balloon',
   'autoHeight',
   // Transform
@@ -6279,7 +6288,7 @@ export const GROUPS = {
   fill: ['color', 'noFill', 'opacity', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
   shadow: ['shadows'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
-  typeset: ['shape', 'minOrphan', 'hyphenate', 'balloon'],
+  typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
   transform: ['rotation', 'flipH', 'flipV', 'autoHeight'],
 };
 

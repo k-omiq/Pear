@@ -2,6 +2,7 @@
 import { fontCssFor, measuredFontFor } from './store.svelte.js';
 import { balanceLines, neededHeight, balancedBlockSize, BALANCED_DEFAULTS, ovalProfile } from './typeset.js';
 import { interiorLineWidths, safetyInset, layoutShape } from './balloon.js';
+import { fitPolygon, roomOver, turnPolygon } from './outline-geom.js';
 import { normalizeFit } from './data.js';
 import { strokeExtent } from './text-paint.js';
 import { textEngine, setTextEngine, onTextEngineChange } from './text-engine/index.js';
@@ -1017,6 +1018,7 @@ export function balloonWidthsFor(box, style, sizePx) {
   // existed and the state `layoutLines` treats as "just wrap it".
   if (!typesetEnabled()) return null;
   if (!box || !style || style.balloon === false) return null;
+  if (style.margin != null) return outlineWidthsFor(box, style, sizePx);
   const shape = layoutShape(normalizeFit(box.fit));
   if (!shape) return null;
   const inset = textInset(style);
@@ -1079,6 +1081,116 @@ export function balloonWidthsFor(box, style, sizePx) {
     fn.round = round;
   }
   return fn;
+}
+
+// The rows of an OUTLINE FIT (`style.margin` set; outline-fit.js): read off the
+// outline polygon itself, not the shape that explains it. A line's room is the
+// outline's interval across its em band, the band grown by the margin above
+// and below, less the margin each side, centred on the box's own centre - so a
+// box the solver set on the axis that gives its block the most room keeps that
+// room. No safety inset and no box inset: the margin is the air between the
+// glyph ink and the outline, and the box still holds its stroke. A row with no
+// room - a band past the top or the bottom - gets the widest room the block
+// has, as a block taller than the balloon does (`interiorLineWidths`).
+export function outlineWidthsFor(box, style, sizePx) {
+  const raw = fitPolygon(box.fit);
+  if (!raw) return null;
+  const cx = box.x + box.w / 2;
+  const pts = turnPolygon(raw, -(Number(style.rotation) || 0), cx, box.y + box.h / 2);
+  const lineH = sizePx * (style.lineHeight ?? 1);
+  const m = Math.max(0, Number(style.margin) || 0) * sizePx;
+  const pad = Math.max(0, (lineH - sizePx) / 2);
+  const contentW = contentWidth(box.w, style);
+  const anchor = Math.round((box.y + blockYFor(style, box.h, 0)) * 1000) / 1000;
+  const kept = new Map();
+  const fn = (lineCount) => {
+    let rows = kept.get(lineCount);
+    if (rows) return rows;
+    const blockH = lineCount * lineH;
+    const top = anchor + blockYFor(style, box.h, blockH) - blockYFor(style, box.h, 0);
+    rows = outlineRows(pts, top, lineH, lineCount, cx, m, pad).map((w) => Math.max(1, Math.min(contentW, w)));
+    kept.set(lineCount, rows);
+    return rows;
+  };
+  fn.key = JSON.stringify(['outline', pts, lineH, style.valign ?? 'middle', anchor, contentW, cx, m]);
+  return fn;
+}
+
+// The room of each of `n` lines of height `lineH` from `top`, centred on
+// `axis`, with `m` of air: see `outlineWidthsFor`. `pad` is how much of each
+// line box is leading rather than em. Rows with no room take the widest.
+export function outlineRows(pts, top, lineH, n, axis, m, pad = 0) {
+  const out = new Array(n);
+  let widest = 0;
+  for (let i = 0; i < n; i++) {
+    const a = top + i * lineH + pad - m;
+    const b = top + (i + 1) * lineH - pad + m;
+    const room = roomOver(pts, a, b, axis);
+    const w = room ? 2 * (Math.min(axis - room[0], room[1] - axis) - m) : 0;
+    out[i] = w > 0 ? w : 0;
+    widest = Math.max(widest, out[i]);
+  }
+  return out.map((w) => (w > 0 ? w : Math.max(1, widest)));
+}
+
+// ===== lines an outline fit chose =====
+//
+// The solver picks a box's lines from many breakings (outline-fit.js), not
+// only the one the breaker prefers at one width, so they are kept on the box
+// (`auto.breaks`) and every renderer draws them: the editor, the exporter and
+// the PSD through `placeBlock`, the editor through `TextBox`. Kept as where
+// each line starts in the cased text, with a key of that text and the face and
+// size they were measured in: change any of them and the key no longer
+// matches, the breaks are ignored, and the lines are broken as before until the
+// next solve chooses again.
+export function breaksKey(text, style, sizePx) {
+  const k = JSON.stringify([String(text ?? ''), style?.font ?? '', sizePx, !!style?.bold, !!style?.italic, Number(style?.letterSpacing) || 0]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36);
+}
+
+const WORDISH = /[\p{L}\p{N}]/u;
+
+// The kept lines, or null when there are none for this text, face and size.
+// A line that ends inside a word gets the hyphen the breaker would have drawn.
+export function brokenLines(text, style, sizePx, breaks) {
+  if (!breaks || !Array.isArray(breaks.at) || breaks.key !== breaksKey(text, style, sizePx)) return null;
+  const t = String(text);
+  const at = breaks.at;
+  if (at[0] !== 0 || at.some((v, i) => !(v <= t.length) || (i && v <= at[i - 1]))) return null;
+  const lines = [];
+  for (let i = 0; i < at.length; i++) {
+    const end = i + 1 < at.length ? at[i + 1] : t.length;
+    let line = t.slice(at[i], end).replace(/\s+$/, '').replace(/^[ \t]+/, '');
+    if (line.includes('\n')) return null;
+    if (end < t.length && WORDISH.test(t[end - 1] ?? '') && WORDISH.test(t[end] ?? '') && !line.endsWith('-')) line += '-';
+    lines.push(line);
+  }
+  return lines;
+}
+
+// Breaks for `lines` of `text` (both cased): where each line starts, found in
+// order. Null when the lines are not the text's own (a line the text does not
+// have where it should be).
+export function breaksFor(text, style, sizePx, lines) {
+  const t = String(text);
+  const at = [];
+  let from = 0;
+  for (const line of lines) {
+    const full = line.trim();
+    // A hyphen the text has stays in its line; one the breaker added is not in
+    // the text, and the line is the head of a word.
+    const core = full.replace(/-$/, '');
+    while (from < t.length && /\s/.test(t[from])) from++;
+    const take = full && t.startsWith(full, from) ? full : core && t.startsWith(core, from) ? core : null;
+    if (take == null) return null;
+    at.push(at.length ? from : 0);
+    from += take.length;
+  }
+  while (from < t.length && /\s/.test(t[from])) from++;
+  if (from !== t.length || !at.length || at[0] !== 0) return null;
+  return { key: breaksKey(t, style, sizePx), at };
 }
 
 // ===== where a flush line starts, inside a balloon =====
