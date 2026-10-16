@@ -12,6 +12,7 @@ import { prefs } from './prefs.svelte.js';
 import { ocrModelForLanguage } from './ocr-models.js';
 import { chapterOpenSeq } from './library.svelte.js';
 import { startJob, finishJob } from './jobs.svelte.js';
+import { postProcessDetection } from './detect-post.js';
 
 // app.sidecar is initialized lazily so older saved state stays compatible.
 function ensureState() {
@@ -76,7 +77,7 @@ export async function detectOnePage(p, { ocr = true, language, lang } = {}, curr
     return await withPageImages(p, async () => {
       if (!current()) return { stopped: true };
       if (!p.raw) return { error: 'Raw page could not be read' };
-      const result = await analyzeImage(p.raw, { ocr, language: language ?? lang });
+      const result = postProcessDetection(await analyzeImage(p.raw, { ocr, language: language ?? lang }));
       // applyDetection also marks the open chapter unsaved. Even writing to
       // the old page object would let a late result affect the new document.
       if (!current()) return { stopped: true };

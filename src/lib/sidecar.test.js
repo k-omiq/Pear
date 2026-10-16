@@ -104,6 +104,23 @@ describe('chapter detection jobs', () => {
     expect(jobs.items).toEqual([]);
   });
 
+  it('post-processes OCR before saving lines and detection geometry', async () => {
+    h.analyze = async () => ({
+      img_width: 100, img_height: 100, panels: [],
+      lines: [
+        { n: 1, jp: '今日はいい天気ですね', type: 'dialogue', box: [0, 0, 100, 100] },
+        { n: 2, jp: 'いい天気', type: 'dialogue', box: [10, 10, 60, 60] },
+        { n: 3, jp: '明日も', type: 'dialogue', box: [200, 0, 300, 100] },
+      ],
+    });
+    const job = await detectAllPages();
+    expect(job.failed).toEqual([]);
+    for (const p of app.pages) {
+      expect(p.lines.map((l) => [l.n, l.jp])).toEqual([[1, '今日はいい天気ですね'], [2, '明日も']]);
+      expect(p.detect.boxes.map((b) => b.n)).toEqual([1, 2]);
+    }
+  });
+
   it.each([detectCurrentPage, detectAllPages])('%s drops a late result as soon as another open starts, before pages change', async (detect) => {
     const seq = vi.spyOn(chapter, 'chapterOpenSeq').mockReturnValue(1);
     let release, started;
