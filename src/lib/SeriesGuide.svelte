@@ -4,7 +4,7 @@
   // project.json under `guide` (guide.svelte.js), so it travels with the
   // series and applies to every chapter in it. `scope` is the modal's own
   // chip snippet, handed down so the chips match the sections around these.
-  import { guide, addTerm, updateTerm, removeTerm } from './guide.svelte.js';
+  import { guide, addTerm, updateTerm, removeTerm, setGuideRule } from './guide.svelte.js';
 
   let { scope } = $props();
 
@@ -35,6 +35,33 @@
   const aliasText = (t) => (t.aliases ?? []).join(', ');
   const aliasList = (v) => v.split(/[,、]/).map((s) => s.trim()).filter(Boolean);
 </script>
+
+<!-- TXT-3. Checked in the check list; Keep checks nothing. A font that has
+     no glyph for the chosen form is named by the queue's font notice. -->
+<div class="settings-section">
+  <div class="settings-title">TEXT RULES{@render scope('series')}</div>
+  <div class="field">
+    <span>Dashes</span>
+    <div class="seg" role="group" aria-label="Dashes">
+      {#each [['keep', 'Keep'], ['ascii', 'No long dash (-)'], ['em', 'Em dash (—)']] as [v, label]}
+        <button class:on={guide.rules.dashes === v} onclick={() => setGuideRule('dashes', v)}>{label}</button>
+      {/each}
+    </div>
+  </div>
+  <div class="field">
+    <span>Ellipsis</span>
+    <div class="seg" role="group" aria-label="Ellipsis">
+      {#each [['keep', 'Keep'], ['dots', 'Three dots (...)'], ['char', 'One glyph (…)']] as [v, label]}
+        <button class:on={guide.rules.ellipsis === v} onclick={() => setGuideRule('ellipsis', v)}>{label}</button>
+      {/each}
+    </div>
+  </div>
+  <div class="qhint">
+    A line that breaks a rule is listed in the check list. Keep checks
+    nothing. Spaced dots (<code>. . .</code>) count as breaking either
+    ellipsis rule.
+  </div>
+</div>
 
 <div class="settings-section">
   <div class="settings-title">GLOSSARY{@render scope('series')}</div>

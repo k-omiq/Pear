@@ -115,6 +115,7 @@ import { revealInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
 import { guide } from './guide.svelte.js';
 import { glossaryMisses } from './glossary.js';
+import { ruleBreaks } from './text-rules.js';
 
 export { PAGE_W, PAGE_H };
 
@@ -1310,12 +1311,14 @@ export function flaggedBoxes(pages = app.pages) {
 //   font      set in a font this machine cannot draw
 //   glossary  the source has a series term and the English lacks its target
 //             (TXT-2; `terms` names the missing targets)
+//   rules     the English breaks the series' dash or ellipsis rule (TXT-3;
+//             `breaks` says which, in words)
 //   unplaced  a detected line with no box yet (`placeableDetectedLines`)
 //
-// The text reasons (glossary) are the line's, not the box's: they sit on the
+// The text reasons (glossary, rules) are the line's, not the box's: they sit on the
 // line's first box when it has one, so Next lands on the box, and otherwise
 // on the line itself, after the boxes, in queue order.
-export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'unplaced'];
+export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'rules', 'unplaced'];
 
 // What a line's text breaks of the series guide, as check items less their
 // place. Read off the guide as it stands, so editing a term re-checks.
@@ -1325,6 +1328,8 @@ function lineTextChecks(line) {
   const en = lineText(line);
   const misses = glossaryMisses(line.jp, en, guide.glossary);
   if (misses.length) out.push({ reason: 'glossary', terms: misses.map((t) => t.target) });
+  const breaks = ruleBreaks(en, guide.rules);
+  if (breaks.length) out.push({ reason: 'rules', breaks });
   return out;
 }
 
