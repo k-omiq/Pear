@@ -10,6 +10,7 @@ import {
   isBoxInStripWindow,
   stripFrameCoords,
   stripFrameMetrics,
+  stripFrameHeight,
   pageIndexAtCenter,
   maxPageWidth,
   fitWidthZoom,
@@ -285,15 +286,49 @@ describe('shared longstrip text overlay layout and hit resolution', () => {
 // This replaced a `getBoundingClientRect()` per page per animation frame, so
 // the bar is not "sensible numbers" - it is the SAME numbers the rects gave, or
 // the scroll names a different page than it used to.
+describe('stripFrameHeight', () => {
+  // A flex column as WebKit and Chromium lay it: each frame's styled height is
+  // kept in 64ths of a pixel with the rest cut off, and the next frame starts
+  // where that one ends.
+  const columnTops = (ps, zoom) => {
+    const tops = [];
+    let units = 0;
+    for (const p of ps) {
+      tops.push(units / 64);
+      units += Math.floor(stripFrameHeight(p, zoom) * 64);
+    }
+    return tops;
+  };
+
+  it('puts the art where the boxes are, down a long chapter, at every zoom', () => {
+    // The boxes' overlay is placed at `stripOffsets`; the art is the column.
+    // With heights off the layout's grid the cut-off remainders added up, and
+    // eighty pages in the art stood most of a pixel off the boxes.
+    const ps = Array.from({ length: 80 }, (_, i) => ({ id: i + 1, w: 800, h: 1237 + (i % 3) }));
+    for (const zoom of [0.25, 0.333, 0.413, 0.617, 0.77, 1, 1.13, 1.37, 2.03, 3.11]) {
+      expect(columnTops(ps, zoom)).toEqual(stripOffsets(ps, zoom).tops);
+    }
+  });
+
+  it('is within half a 64th of a pixel of the page zoomed', () => {
+    for (const zoom of [0.413, 1, 2.03]) {
+      for (const h of [1237, 1238, 851]) {
+        expect(Math.abs(stripFrameHeight({ h }, zoom) - h * zoom)).toBeLessThanOrEqual(1 / 128);
+      }
+    }
+  });
+});
+
 describe('stripFrameMetrics', () => {
-  // What the browser does with the frames: each one is styled `height: h*zoom`,
-  // laid out in a flex column with `gap`, starting wherever the column starts.
+  // What the browser does with the frames: each one is styled
+  // `height: stripFrameHeight`, laid out in a flex column with `gap`, starting
+  // wherever the column starts.
   const laidOut = (ps, zoom, firstTop, gap) => {
     const tops = [];
     const heights = [];
     let y = firstTop;
     for (const p of ps) {
-      const h = p.h * zoom;
+      const h = stripFrameHeight(p, zoom);
       tops.push(y);
       heights.push(h);
       y += h + gap;
