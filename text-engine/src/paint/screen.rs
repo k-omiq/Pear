@@ -13,7 +13,7 @@ use crate::Error;
 use core::f64::consts::{FRAC_1_SQRT_2, PI};
 
 /// Wire ids are positions in this list; picked tiles have a separate id.
-pub const KIND_NAMES: &str = "dots\nhalftone\nstripes\nhstripes\ndiagonal\ndiagonal-alt\ncrosshatch\nchecker\ngrid\nvlines\nhlines";
+pub const KIND_NAMES: &str = "dots\nhalftone\nstripes\nhstripes\ndiagonal\ndiagonal-alt\ncrosshatch\nchecker\ngrid\nvlines\nhlines\nhalftone-fade\nsquare-dots\ndiamond-dots\nline-tone\nsand\nstipple\nspeed-lines\nburst\nrings\nwaves\nzigzag\nbricks\nscales\nhex\ntriangles\nplus\nstars\nhearts\nkakeami\nglitch";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Screen {
@@ -47,7 +47,7 @@ impl Screen {
     /// distance, a fade projection or a colour conversion.
     pub fn sound(&self) -> bool {
         let points = [self.a, self.b, self.origin, self.offset, self.centre];
-        self.kind <= 10
+        self.kind <= 30
             && self.mode <= 1
             && points.iter().all(|p| p.x.is_finite() && p.y.is_finite())
             && [self.angle, self.aspect, self.density, self.line, self.reach]
@@ -208,10 +208,328 @@ fn old_edge(kind: u32, u: f64, v: f64, d: f64, line: f64) -> Edge {
     }
 }
 
+/// A stable integer mixer. Negative lattice indices deliberately wrap into
+/// the same 32-bit ring as positive indices; no platform-sized arithmetic
+/// or random state can change a screen between native and wasm builds.
+fn hash(x: i64, y: i64, seed: u32) -> u32 {
+    let mut h = (x as u32).wrapping_mul(0x9e37_79b9)
+        ^ (y as u32).wrapping_mul(0x85eb_ca6b)
+        ^ seed.wrapping_mul(0xc2b2_ae35);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^ (h >> 16)
+}
+fn random(x: i64, y: i64, seed: u32) -> f64 {
+    hash(x, y, seed) as f64 / u32::MAX as f64
+}
+fn field(d: f64, x: f64, y: f64) -> Edge {
+    Edge {
+        d,
+        n: Pt::new(x, y),
+    }
+}
+fn box_edge(p: Pt, hx: f64, hy: f64) -> Edge {
+    field(p.x.abs() - hx, p.x.signum(), 0.0).max(field(p.y.abs() - hy, 0.0, p.y.signum()))
+}
+fn disk(p: Pt, r: f64) -> Edge {
+    let len = p.x.hypot(p.y);
+    field(
+        len - r,
+        if len > 0.0 { p.x / len } else { 1.0 },
+        if len > 0.0 { p.y / len } else { 0.0 },
+    )
+}
+fn outline(e: Edge, half: f64) -> Edge {
+    Edge {
+        d: e.d.abs() - half,
+        n: e.n.scale(e.d.signum()),
+    }
+}
+
+/// A shape may grow by an offset of its boundary instead of changing a
+/// radius or band width. The share rule still controls the parameter, with
+/// bounds reaching the deepest interior and the furthest empty corner.
+fn adjust(mut e: Edge, d: f64, s0: f64, inside: f64, outside: f64) -> Edge {
+    let s = share(d, s0);
+    e.d += if s <= s0 {
+        inside * (1.0 - s / s0)
+    } else {
+        -outside * (s - s0) / (1.0 - s0)
+    };
+    e
+}
+
+fn grains(u: f64, v: f64, d: f64, seed: u32, scale: f64, radius: f64) -> Edge {
+    let (x, y) = (u * scale, v * scale);
+    let (ix, iy) = (x.floor() as i64, y.floor() as i64);
+    let s0 = PI * radius * radius;
+    let s = share(d, s0);
+    let mut best = field(f64::INFINITY, 1.0, 0.0);
+    for j in -1..=1 {
+        for i in -1..=1 {
+            let (cx, cy) = (ix.saturating_add(i), iy.saturating_add(j));
+            let rx = random(cx, cy, seed);
+            let ry = random(cx, cy, seed.wrapping_add(13));
+            let r0 = radius * (0.7 + 0.6 * random(cx, cy, seed.wrapping_add(31)));
+            let r = grow(s, s0, r0, 1.2);
+            let mut e = disk(
+                Pt::new(
+                    x - cx as f64 - 0.5 - (rx - 0.5) * 0.5,
+                    y - cy as f64 - 0.5 - (ry - 0.5) * 0.5,
+                ),
+                r,
+            );
+            e.d /= scale;
+            best = best.min(e);
+        }
+    }
+    best
+}
+
+/// Polygon distance needs neither a path allocation nor a raster tile. The
+/// small fixed outlines below use this for stars and the heart's lower tip.
+fn polygon(p: Pt, vertices: &[Pt]) -> Edge {
+    let mut best = field(f64::INFINITY, 1.0, 0.0);
+    let mut inside = false;
+    for i in 0..vertices.len() {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % vertices.len()];
+        let ab = b.minus(a);
+        let ap = p.minus(a);
+        let t = (ap.dot(ab) / ab.dot(ab)).clamp(0.0, 1.0);
+        let q = ap.minus(ab.scale(t));
+        let e = disk(q, 0.0);
+        best = best.min(e);
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            inside = !inside;
+        }
+    }
+    if inside {
+        best.d = -best.d;
+        best.n = best.n.scale(-1.0);
+    }
+    best
+}
+
+const STAR: [Pt; 10] = [
+    Pt::new(0.0, -0.4),
+    Pt::new(0.094046, -0.129443),
+    Pt::new(0.380423, -0.123607),
+    Pt::new(0.152169, 0.049443),
+    Pt::new(0.235114, 0.323607),
+    Pt::new(0.0, 0.16),
+    Pt::new(-0.235114, 0.323607),
+    Pt::new(-0.152169, 0.049443),
+    Pt::new(-0.380423, -0.123607),
+    Pt::new(-0.094046, -0.129443),
+];
+
+fn streaks(u: f64, v: f64, d: f64, seed: u32, glitch: bool) -> Edge {
+    let (ix, iy) = ((u / 2.0).floor() as i64, (v * 4.0).floor() as i64);
+    let mut best = field(f64::INFINITY, 1.0, 0.0);
+    for j in -1..=1 {
+        for i in -1..=1 {
+            let (col, row) = (ix.saturating_add(i), iy.saturating_add(j));
+            // Two independently placed marks per two-pitch segment of a row.
+            // Absolute row and column indices keep the result from repeating
+            // every tile, while every preview remains reproducible from seed.
+            for k in 0..2 {
+                let salt = seed.wrapping_add(k * 113);
+                let a = random(col, row, salt);
+                let b = random(col, row, salt.wrapping_add(17));
+                let c = random(col, row, salt.wrapping_add(37));
+                let p = Pt::new(
+                    u - (col as f64 * 2.0 + 2.0 * a),
+                    v - (row as f64 * 0.25 + 0.04 + 0.17 * b),
+                );
+                let hx = 0.15 + 0.65 * c;
+                let hy = if glitch {
+                    0.025 + 0.045 * b
+                } else {
+                    0.009 + 0.016 * b
+                };
+                let e = if glitch {
+                    box_edge(p, hx, hy)
+                } else {
+                    // A diamond has tapered ends and straight sides. The
+                    // normal is the analytic gradient of its implicit edge.
+                    let n = Pt::new(p.x.signum() / hx, p.y.signum() / hy);
+                    field(
+                        (p.x.abs() / hx + p.y.abs() / hy - 1.0) / n.len(),
+                        n.x / n.len(),
+                        n.y / n.len(),
+                    )
+                };
+                best = best.min(e);
+            }
+        }
+    }
+    adjust(
+        best,
+        d,
+        if glitch { 0.3 } else { 0.1 },
+        if glitch { 0.07 } else { 0.026 },
+        0.8,
+    )
+}
+
+fn new_edge(s: &Screen, u: f64, v: f64, q: Pt, rays: f64, d: f64) -> Edge {
+    let x = Pt::new(1.0, 0.0);
+    let p = Pt::new(wrap(u - 0.5), wrap(v - 0.5));
+    match s.kind {
+        11 => old_edge(1, u, v, d, s.line),
+        12 => square(u - 0.5, v - 0.5, grow(share(d, 0.16), 0.16, 0.2, 0.5)),
+        13 => {
+            let r = grow(share(d, 0.2048), 0.2048, 0.32, 1.0);
+            field(
+                (p.x.abs() + p.y.abs() - r) * FRAC_1_SQRT_2,
+                p.x.signum() * FRAC_1_SQRT_2,
+                p.y.signum() * FRAC_1_SQRT_2,
+            )
+        }
+        14 => band(v * 4.0, share(d, 0.3), Pt::new(0.0, 4.0)),
+        15 => grains(u, v, d, s.seed, 6.0, 0.16),
+        16 => grains(u, v, d, s.seed, 2.0, 0.19),
+        17 => streaks(u, v, d, s.seed, false),
+        18 => {
+            let r2 = q.dot(q).max(1e-20);
+            let phase = q.y.atan2(q.x) * rays / core::f64::consts::TAU;
+            let n = Pt::new(-q.y, q.x).scale(rays / core::f64::consts::TAU / r2);
+            let w = share(d, 0.4);
+            if q.dot(q) < 1e-20 {
+                field(-1.0, 1.0, 0.0)
+            } else {
+                band(phase + w / 2.0, w, n)
+            }
+        }
+        19 => {
+            let w = share(d, 0.25);
+            let r = q.x.hypot(q.y);
+            let n = if r > 0.0 { q.scale(1.0 / r) } else { x };
+            band(r + w / 2.0, w, n)
+        }
+        20 => {
+            let phase = core::f64::consts::TAU * u;
+            let (sin, cos) = phase.sin_cos();
+            band(
+                v - 0.14 * sin,
+                share(d, 0.12),
+                Pt::new(-0.14 * core::f64::consts::TAU * cos, 1.0),
+            )
+        }
+        21 => {
+            let t = u.rem_euclid(1.0);
+            let wave = 0.3 * ((2.0 * t - 1.0).abs() - 0.5);
+            band(
+                v - wave,
+                share(d, 0.14),
+                Pt::new(if t < 0.5 { 0.6 } else { -0.6 }, 1.0),
+            )
+        }
+        22 => {
+            let row = (v * 2.0).floor();
+            let e = band(v * 2.0, 0.08, Pt::new(0.0, 2.0)).min(band(
+                u + row.rem_euclid(2.0) * 0.5,
+                0.05,
+                x,
+            ));
+            adjust(e, d, 0.126, 0.025, 0.5)
+        }
+        23 => {
+            let row = (v * 2.0).floor();
+            let col = u.floor();
+            let mut best = field(f64::INFINITY, 1.0, 0.0);
+            for j in -1..=1 {
+                for i in -1..=1 {
+                    let r = row + j as f64;
+                    let p = Pt::new(
+                        u - col - i as f64 - 0.5 - r.rem_euclid(2.0) * 0.5,
+                        v - r * 0.5 - 0.5,
+                    );
+                    let arc = outline(disk(p, 0.5), 0.035).max(field(p.y, 0.0, 1.0));
+                    best = best.min(arc);
+                }
+            }
+            adjust(best, d, 0.2, 0.036, 0.6)
+        }
+        24 => {
+            let h = 3.0_f64.sqrt() / 2.0;
+            let col = (u / 0.75).floor();
+            let row = (v / h).floor();
+            let mut best = field(f64::INFINITY, 1.0, 0.0);
+            for j in -1..=1 {
+                for i in -1..=1 {
+                    let c = col + i as f64;
+                    let p = Pt::new(
+                        u - c * 0.75,
+                        v - (row + j as f64 + c.rem_euclid(2.0) * 0.5) * h,
+                    );
+                    let hex = field(p.y.abs() - h / 2.0, 0.0, p.y.signum()).max(field(
+                        h * p.x.abs() + 0.5 * p.y.abs() - h / 2.0,
+                        h * p.x.signum(),
+                        0.5 * p.y.signum(),
+                    ));
+                    best = best.min(outline(hex, 0.025));
+                }
+            }
+            adjust(best, d, 0.12, 0.025, 0.45)
+        }
+        25 => {
+            let h = 3.0_f64.sqrt() / 2.0;
+            let w = 1.0 - (1.0 - share(d, 0.14)).cbrt();
+            band(v / h, w, Pt::new(0.0, 1.0 / h))
+                .min(band(
+                    u - v / 3.0_f64.sqrt(),
+                    w,
+                    Pt::new(1.0, -1.0 / 3.0_f64.sqrt()),
+                ))
+                .min(band(
+                    u + v / 3.0_f64.sqrt(),
+                    w,
+                    Pt::new(1.0, 1.0 / 3.0_f64.sqrt()),
+                ))
+        }
+        26 => {
+            let e = box_edge(p, 0.3, 0.08).min(box_edge(p, 0.08, 0.3));
+            adjust(e, d, 0.1664, 0.08, 0.43)
+        }
+        27 => adjust(polygon(p, &STAR), d, 0.188, 0.16, 0.5),
+        28 => {
+            const TIP: [Pt; 3] = [
+                Pt::new(-0.32, -0.08),
+                Pt::new(0.32, -0.08),
+                Pt::new(0.0, 0.35),
+            ];
+            let e = polygon(p, &TIP)
+                .min(disk(p.minus(Pt::new(-0.145, -0.12)), 0.18))
+                .min(disk(p.minus(Pt::new(0.145, -0.12)), 0.18));
+            adjust(e, d, 0.27, 0.2, 0.6)
+        }
+        29 => {
+            let (ix, iy) = (u.floor() as i64, v.floor() as i64);
+            let h = hash(ix, iy, s.seed);
+            let n = (4 + h % 3) as f64;
+            let dir = if (ix ^ iy) & 1 == 0 { 1.0 } else { -1.0 };
+            let w = share(d, 0.2);
+            band(
+                (v - dir * u) * n + (h >> 8) as f64 / 0x00ff_ffff_u32 as f64 + w / 2.0,
+                w,
+                Pt::new(-dir * n, n),
+            )
+        }
+        30 => streaks(u, v, d, s.seed, true),
+        _ => old_edge(s.kind, u, v, d, s.line.clamp(0.0, 1.0)),
+    }
+}
+
 pub struct ScreenShader {
     screen: Screen,
     to_frame: Affine,
     to_tile: Affine,
+    to_centre: Affine,
+    rays: f64,
     taps: u32,
     fg: Premul,
     bg: Premul,
@@ -230,11 +548,32 @@ impl ScreenShader {
             .after(&Affine::rotate(cos, -sin))
             .after(&Affine::translate(-s.origin.x, -s.origin.y))
             .after(&to_frame);
-        if !to_tile.is_finite() {
+        let pitch = s.a.x.hypot(s.a.y);
+        let to_centre = Affine::scale(1.0 / pitch / s.aspect, 1.0 / pitch)
+            .after(&Affine::rotate(cos, -sin))
+            .after(&Affine::translate(-s.centre.x, -s.centre.y))
+            .after(&to_frame);
+        let rays = (core::f64::consts::TAU * s.reach / pitch / 4.0)
+            .round()
+            .clamp(12.0, 180.0);
+        if !to_tile.is_finite() || !to_centre.is_finite() {
             return None;
         }
-        let [a, b, c, d, ..] = to_tile.0;
-        let footprint = a.hypot(b).max(c.hypot(d));
+        let [a, b, c, d, ..] = if matches!(s.kind, 18 | 19) {
+            to_centre.0
+        } else {
+            to_tile.0
+        };
+        // Fine grains and hatch patches contain several periods per cell.
+        // Measure their footprint against that smaller feature too; otherwise
+        // a one-pixel filter can span both edges of a hairline at once.
+        let frequency = match s.kind {
+            15 | 29 => 6.0,
+            14 | 17 | 30 => 4.0,
+            16 => 2.0,
+            _ => 1.0,
+        };
+        let footprint = a.hypot(b).max(c.hypot(d)) * frequency;
         let taps = if footprint <= 0.25 {
             1
         } else {
@@ -244,6 +583,8 @@ impl ScreenShader {
             screen: s.clone(),
             to_frame,
             to_tile,
+            to_centre,
+            rays,
             taps,
             fg: premul(s.fg),
             bg: premul(s.bg),
@@ -279,12 +620,13 @@ impl ScreenShader {
         } else if d >= 1.0 {
             1.0
         } else {
-            old_edge(
-                self.screen.kind,
+            new_edge(
+                &self.screen,
                 q.x,
                 q.y,
+                self.to_centre.apply(p),
+                self.rays,
                 d,
-                self.screen.line.clamp(0.0, 1.0),
             )
             .cover(jac)
         } as f32;
@@ -294,7 +636,11 @@ impl ScreenShader {
 
     pub fn at(&self, x: f64, y: f64) -> Premul {
         let n = self.taps;
-        let mut jac = self.to_tile;
+        let mut jac = if matches!(self.screen.kind, 18 | 19) {
+            self.to_centre
+        } else {
+            self.to_tile
+        };
         for v in &mut jac.0[..4] {
             *v /= n as f64;
         }
@@ -622,5 +968,81 @@ mod tests {
         assert!(p.chunks_exact(4).any(|p| p[3] == 255));
         s = screen(2, 0.1);
         assert!((ink(&pixels(&s)) - 0.5).abs() < 0.02);
+    }
+    #[test]
+    fn new_kinds_have_detail_and_obey_density_at_every_step() {
+        for kind in 11..31 {
+            let mut s = screen(kind, 12.0);
+            let designed = pixels(&s);
+            let share = ink(&designed);
+            println!("new kind {kind}: designed ink {share:.5}");
+            assert!(share > 0.02 && share < 0.98, "kind {kind}: {share}");
+            assert!(
+                designed.chunks_exact(4).any(|p| p[0] != designed[0]),
+                "constant kind {kind}"
+            );
+            let mut previous = 0.0;
+            for step in 0..=20 {
+                s.density = step as f64 / 20.0;
+                let p = pixels(&s);
+                let share = ink(&p);
+                assert!(
+                    share + 1e-4 >= previous,
+                    "kind {kind}, step {step}: {share} after {previous}"
+                );
+                if step == 0 {
+                    assert!(p.chunks_exact(4).all(|p| p == [255; 4]));
+                }
+                if step == 20 {
+                    assert!(p.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+                }
+                previous = share;
+            }
+        }
+    }
+
+    #[test]
+    fn random_screens_are_seeded_and_streaks_do_not_repeat_each_tile() {
+        for kind in [15, 16, 17, 29, 30] {
+            let mut s = screen(kind, 12.0);
+            let a = pixels(&s);
+            assert_eq!(a, pixels(&s));
+            s.seed = 735;
+            assert_ne!(a, pixels(&s), "seed did not change kind {kind}");
+            if kind == 17 || kind == 30 {
+                s.seed = 1;
+                s.offset.x = 1.0;
+                assert_ne!(a, pixels(&s), "kind {kind} repeats every tile");
+            }
+        }
+    }
+
+    #[test]
+    fn rings_and_rays_keep_their_centre_when_the_lattice_origin_moves() {
+        for kind in [18, 19] {
+            let mut s = screen(kind, 12.0);
+            let a = pixels(&s);
+            // Both centred patterns reflect across their horizontal axis.
+            // The ring also reflects across its vertical axis.
+            for y in 0..96 {
+                for x in 0..96 {
+                    let p = a[(y * 96 + x) * 4];
+                    assert!(
+                        p.abs_diff(a[((95 - y) * 96 + x) * 4]) <= 1,
+                        "kind {kind} at {x},{y}"
+                    );
+                    if kind == 19 {
+                        assert!(p.abs_diff(a[(y * 96 + 95 - x) * 4]) <= 1);
+                    }
+                }
+            }
+            s.origin = Pt::new(11.0, -5.0);
+            s.offset = Pt::new(0.7, -0.3);
+            assert_eq!(a, pixels(&s));
+            s.aspect = 2.0;
+            assert_ne!(a, pixels(&s));
+            s.angle = PI / 2.0;
+            assert_ne!(pixels(&s), a);
+        }
     }
 }
