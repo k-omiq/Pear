@@ -28,6 +28,7 @@
     pageIndexAtCenter,
     stripOffsets,
     stripFrameMetrics,
+    stripFrameHeight,
     focusHoldsIndex,
     focusedBoxHoldsIndex,
     residentRadiusFor,
@@ -1001,7 +1002,7 @@
             class="page-frame"
             data-page-id={pg.id}
             bind:this={frameEls[i]}
-            style="width:{pg.w * app.zoom}px; height:{pg.h * app.zoom}px"
+            style="width:{pg.w * app.zoom}px; height:{stripFrameHeight(pg, app.zoom)}px"
           >
             {#if srcOf(pg)}
               <!-- `decoding="async"` on every page image, here and in the
