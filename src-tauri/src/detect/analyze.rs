@@ -189,9 +189,12 @@ pub fn analyze(
             || std::env::var("MT_OCR_MODE")
             .map(|v| v.trim().eq_ignore_ascii_case("lines"))
             .unwrap_or(false);
+        let mask_ocr = std::env::var("MT_OCR_MASK")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
         let mut queue: Vec<Raster> = Vec::new();
         for blk in &blk_list {
-            let c = gather_crops(&page, &mask_raster, blk, lines_mode);
+            let c = gather_crops(&page, &mask_raster, blk, lines_mode, mask_ocr);
             counts.push(c.len());
             queue.extend(c);
         }
