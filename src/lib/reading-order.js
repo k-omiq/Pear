@@ -37,6 +37,11 @@ export function applyLineOrder(p, entry, dir = 'redo') {
 // Copy on change because the history file also holds these same entry objects.
 export function remapLineEntry(e, pageId, numbers) {
   if (e.pageId !== pageId || e.t === 'order') return e;
+  // A group's items are entries of their own (history.svelte.js `group`).
+  if (e.t === 'group') {
+    const items = (e.items ?? []).map((it) => remapLineEntry(it, pageId, numbers));
+    return items.some((it, i) => it !== e.items[i]) ? { ...e, items } : e;
+  }
   let out = e;
   const put = (key, value) => {
     if (value === e[key]) return;
