@@ -19,7 +19,8 @@
   import SeriesGuide from './SeriesGuide.svelte';
   import { resetPanels } from './editor/panels.svelte.js';
   import { processMemory, ROLE_LABELS } from './memory.js';
-  import { prefs, setPref } from './prefs.svelte.js';
+  import { prefs, setPref, typesetDefaults } from './prefs.svelte.js';
+  import { guide, setSeriesTypeset } from './guide.svelte.js';
   import { engineSwitch, engineHasNoFont } from './engine-switch.svelte.js';
   import { OCR_MODEL_OPTIONS } from './ocr-models.js';
   import {
@@ -126,6 +127,24 @@
     const more = Object.keys(st).filter((k) => k !== 'font' && k !== 'strokes').length;
     if (more) bits.push(`+${more} style`);
     return bits.join(' · ') || 'No defaults';
+  }
+
+  // ---------- typesetting defaults: yours, or the series' (FLOW-13) ----------
+  // With a project open, the series can hold its own set. The controls edit
+  // whichever set is in force; switching to the series copies yours over as
+  // its start, switching back drops the series' set.
+  const seriesTs = $derived(project ? guide.typeset : null);
+  const ts = $derived(typesetDefaults());
+  function setTs(key, value) {
+    if (seriesTs) setSeriesTypeset({ [key]: value });
+    else setPref(key, value);
+  }
+  function useSeriesTs(on) {
+    if (!project || on === !!seriesTs) return;
+    if (!on) return setSeriesTypeset(null);
+    const mine = {};
+    for (const k of ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'defaultBlockShape', 'defaultMinOrphan']) mine[k] = prefs[k];
+    setSeriesTypeset(mine);
   }
 
   function selectTab(id) {
@@ -573,11 +592,29 @@
            with the old switch off opens with its boxes plain, as they were
            drawn (`openTypesetting` in data.js); Bulk style changes them. -->
       <div class="settings-section ts-section">
-        <div class="settings-title">TYPESETTING{@render scope('you')}</div>
+        <div class="settings-title">TYPESETTING{@render scope(seriesTs ? 'series' : 'you')}</div>
+        {#if project}
+          <div class="field">
+            <span>Defaults for <b>{project.name}</b></span>
+            <div class="seg" role="group" aria-label="Whose defaults">
+              <button class:on={!seriesTs} onclick={() => useSeriesTs(false)}>Mine</button>
+              <button class:on={!!seriesTs} onclick={() => useSeriesTs(true)}>This series' own</button>
+            </div>
+          </div>
+          <div class="qhint">
+            {#if seriesTs}
+              This series sets its own defaults, saved with it. Your own are
+              kept for every other series.
+            {:else}
+              This series uses your defaults. Give it its own to keep them
+              with the series, for whoever opens it.
+            {/if}
+          </div>
+        {/if}
         <div class="group-label">Defaults for new text boxes</div>
         <div class="field">
           <span>Auto height</span>
-          {@render toggle('defaultAutoHeight', 'Auto height', prefs.defaultAutoHeight)}
+          {@render toggle('defaultAutoHeight', 'Auto height', ts.defaultAutoHeight, false, (on) => setTs('defaultAutoHeight', on))}
         </div>
         <div class="qhint">
           A placed box's height follows its text inside its balloon: it grows
@@ -587,14 +624,14 @@
         </div>
         <div class="field">
           <span>Hyphenate long words</span>
-          {@render toggle('defaultHyphenate', 'Hyphenate long words', prefs.defaultHyphenate)}
+          {@render toggle('defaultHyphenate', 'Hyphenate long words', ts.defaultHyphenate, false, (on) => setTs('defaultHyphenate', on))}
         </div>
         <div class="qhint">
           Smart line breaking: lines break to the shape of the balloon, a word
           that fits nowhere is hyphenated, and the text is laid out to the
           fitted balloon. Off, lines wrap plainly at the box's edge.
         </div>
-        <div class="ts-defaults ts-sub" class:dim={!prefs.defaultHyphenate}>
+        <div class="ts-defaults ts-sub" class:dim={!ts.defaultHyphenate}>
           <!-- The silhouette a shaped block aims for (BRK-3). Auto picks an oval
                in a balloon and a rectangle in a caption. -->
           <div class="field">
@@ -602,16 +639,16 @@
             <div class="seg" role="group" aria-label="Block shape">
               {#each [['auto', 'Auto'], ['oval', 'Oval'], ['rect', 'Rectangle']] as [v, label]}
                 <button
-                  class:on={prefs.defaultBlockShape === v}
-                  disabled={!prefs.defaultHyphenate}
-                  onclick={() => setPref('defaultBlockShape', v)}
+                  class:on={ts.defaultBlockShape === v}
+                  disabled={!ts.defaultHyphenate}
+                  onclick={() => setTs('defaultBlockShape', v)}
                 >{label}</button>
               {/each}
             </div>
           </div>
           <div class="field">
             <span>Fit text to balloon</span>
-            {@render toggle('defaultBalloon', 'Fit text to balloon', prefs.defaultBalloon, !prefs.defaultHyphenate)}
+            {@render toggle('defaultBalloon', 'Fit text to balloon', ts.defaultBalloon, !ts.defaultHyphenate, (on) => setTs('defaultBalloon', on))}
           </div>
           <div class="field">
             <label for="ts-orphan">Shortest word left alone on a line</label>
@@ -622,15 +659,15 @@
               min="1"
               max="8"
               step="1"
-              disabled={!prefs.defaultHyphenate}
-              value={prefs.defaultMinOrphan}
+              disabled={!ts.defaultHyphenate}
+              value={ts.defaultMinOrphan}
               title="A word shorter than this is never left alone at the end of a line"
-              onchange={(e) => { setPref('defaultMinOrphan', e.target.value); e.target.value = prefs.defaultMinOrphan; }}
+              onchange={(e) => { setTs('defaultMinOrphan', Math.round(+e.target.value)); e.target.value = typesetDefaults().defaultMinOrphan; }}
             />
           </div>
         </div>
         <div class="qhint">
-          Applies to new text boxes, in every chapter · per-box via Bulk style.
+          Applies to new text boxes, in every chapter{seriesTs ? ' of this series' : ''} · per-box via Bulk style.
           Boxes already on a page keep whatever they were given.
         </div>
       </div>

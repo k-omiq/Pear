@@ -17,6 +17,7 @@ import { setBoxDefaults, setLegacyTypeset } from './data.js';
 import { app, setTool, setBrushToolAllowed, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
 import { normalizeOcrModels } from './ocr-models.js';
 import { useTextEngine } from './engine-switch.svelte.js';
+import { guide, onSeriesTypeset, SERIES_TYPESET_KEYS } from './guide.svelte.js';
 
 const KEY = 'mt.prefs';
 
@@ -109,18 +110,32 @@ const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['b
 // imports nothing - so it cannot read `prefs` itself. The preference is stored
 // here and MIRRORED into the module that consumes it, by the one function that
 // is allowed to write a preference, so the copy can never be a version behind.
+//
+// A series may override them (FLOW-13): the open project's guide holds its own
+// values for some or all of the five, and those win while it is open. The
+// person's own stay as they are, underneath, for every other series. The
+// guide tells this module when the override changes - a project opened or
+// closed, or edited in Settings - since it cannot import this one back.
+export function typesetDefaults() {
+  const out = {};
+  for (const k of Object.keys(SERIES_TYPESET_KEYS)) out[k] = guide.typeset?.[k] ?? prefs[k];
+  return out;
+}
+
 function applyBoxDefaults() {
   // One switch for the line breaking, translated once, at the edge, so nothing
   // downstream has to know: off is the plain wrap whatever the rest say.
-  const smart = prefs.defaultHyphenate;
+  const d = typesetDefaults();
+  const smart = d.defaultHyphenate;
   setBoxDefaults({
-    autoHeight: prefs.defaultAutoHeight,
-    shape: smart ? prefs.defaultBlockShape : 'off',
+    autoHeight: d.defaultAutoHeight,
+    shape: smart ? d.defaultBlockShape : 'off',
     hyphenate: smart,
-    balloon: smart && prefs.defaultBalloon,
-    minOrphan: prefs.defaultMinOrphan,
+    balloon: smart && d.defaultBalloon,
+    minOrphan: d.defaultMinOrphan,
   });
 }
+onSeriesTypeset(applyBoxDefaults);
 
 function persist() {
   try {
