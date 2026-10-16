@@ -1167,18 +1167,22 @@
   const indentCss = (i) => (indents ? `padding-${s.align}:${indents[i] * z}px;` : '');
 
   // How far the centred block moves so its INK, not its line boxes, is centred
-  // in the box - the exporter's `inkShiftY`, in zoomed px because it is applied
-  // to the zoomed text. Zero for any other `valign` and for curved text, which
-  // is placed glyph by glyph from the box centre, typed into or not. While
-  // curved text is typed into flat there are no shaped lines, so the typed
-  // paragraphs stand in: their first ascender and last descender are the ones
-  // that decide the shift, and measuring them keeps the text from jumping when
-  // the edit starts and ends.
-  const inkShift = $derived.by(() => {
+  // in the box - the exporter's `inkShiftY`. Measured at the page size and
+  // zoomed, never measured at the zoomed size: WebKit answers the font's
+  // ascent and descent in whole pixels (23 at 26px type, 24 at 1% more), so a
+  // shift measured at each zoom moved the text against the box by up to two
+  // page px as the zoom changed - the shake a pinch showed. Zero for any other
+  // `valign` and for curved text, which is placed glyph by glyph from the box
+  // centre, typed into or not. While curved text is typed into flat there are
+  // no shaped lines, so the typed paragraphs stand in: their first ascender
+  // and last descender are the ones that decide the shift, and measuring them
+  // keeps the text from jumping when the edit starts and ends.
+  const inkShiftPage = $derived.by(() => {
     if (s.valign !== 'middle' || layout || curveEdit) return 0;
     const lines = shaped ?? (editing ? applyCase(text, s).split('\n') : null);
-    return lines ? inkShiftY(lines, s, effSize) : 0;
+    return lines ? inkShiftY(lines, s, s.size) : 0;
   });
+  const inkShift = $derived(inkShiftPage * z);
   // In the unflipped frame, inside the mirror (which is the clip wrapper's -
   // see `wrapMirror`): the export centres the block on its ink and then flips
   // the finished picture, so a vertically mirrored block is shifted the other
