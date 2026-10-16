@@ -54,18 +54,23 @@ restriction. The package is used unmodified, for pattern data only.
 
 ## Ported code
 
-The bubble-outline finder (`src/lib/bubble-outline.js`) is a JavaScript port
-of the outline ladder in [Komatose](https://github.com/innominata/komatose)
-(`ocr/workflow.py`, commit `d9be51e`). The glossary matching rule in
-`src/lib/glossary.js` (fold by NFKC, case and whitespace; skip terms under two
-characters) follows Komatose's `src/lib/glossary.ts` at the same commit. The SFX
-meanings in `src/lib/sfx-meanings.js` are Komatose's `src/lib/sfx.ts` and
-`src/lib/sfxKo.ts` at the same commit: the two word lists copied verbatim,
-the lookup code with its TypeScript types removed. The page-relative minimum
-region size in `src-tauri/src/detect/analyze.rs` follows Komatose's
-`src/lib/server/detect.ts` at commit `d9be51e`. The tall-page band spans and
-seam deduplication in `src-tauri/src/detect/tiles.rs` port its `ocr/detect.py`
-at that commit.
+Parts of this app are ported from [Komatose](https://github.com/innominata/komatose)
+at commit `d9be51e`:
+
+- `src/lib/bubble-outline.js`: the outline ladder in `ocr/workflow.py`, as
+  JavaScript.
+- `src/lib/glossary.js`: the glossary matching rule (fold by NFKC, case and
+  whitespace; skip terms under two characters) from `src/lib/glossary.ts`.
+- `src/lib/sfx-meanings.js`: `src/lib/sfx.ts` and `src/lib/sfxKo.ts`, the two
+  word lists copied verbatim, the lookup code with its TypeScript types removed.
+- `src-tauri/src/detect/analyze.rs`: the page-relative minimum region size from
+  `src/lib/server/detect.ts`.
+- `src-tauri/src/detect/tiles.rs`: the tall-page band spans and seam
+  deduplication from `ocr/detect.py`.
+- `src/lib/detect-post.js`: the duplicate-region rules from
+  `src/lib/transcribeRegions.ts` and the OCR comparison key from
+  `src/lib/ocrConsensus.ts`.
+
 Komatose is MIT licensed:
 
 > MIT License
