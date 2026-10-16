@@ -19,6 +19,8 @@ const BLOCK_MIN_GLYPH: f64 = 20.0;
 pub const TEXT_HEIGHT: usize = 64;
 /// Half-width, in text heights, of the window a chunk boundary may move within.
 const ANCHOR_WINDOW: usize = 2;
+// Weak lettering threshold from Komatose ocr/lettering.py, commit d9be51e.
+const OCR_MASK_WEAK_THRESHOLD: u8 = 65;
 
 /// Interleaved 8-bit raster (`h` rows of `w * cn` bytes), matching `cv::Mat` layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -595,13 +597,91 @@ fn split_into_chunks(
     out
 }
 
+/// Mask a local source window before either block cropping or line warping.
+/// The undilated mask still controls chunk boundaries; it must not change with this flag.
+// Whitening adapted from Komatose src/lib/server/reviewMask.ts, commit d9be51e.
+fn masked_ocr_source(img: &Raster, mask: &Raster, blk: &TextBlockOut) -> (Raster, Raster, TextBlockOut) {
+    assert_eq!((img.w, img.h, mask.cn), (mask.w, mask.h, 1));
+    // Eight percent of a glyph protects stroke edges without keeping much nearby art.
+    let radius = (blk.font_size.max(0.0) * 0.08).round().clamp(2.0, 6.0) as usize;
+    // Warps sample the far quad edge too; retain its bilinear neighbor.
+    let pad = ((blk.font_size / 3.0).ceil() as i64).saturating_add(1).max(8);
+    let mut bounds = blk.xyxy.map(i64::from);
+    for point in blk.lines.iter().flatten() {
+        bounds[0] = bounds[0].min(i64::from(point[0]));
+        bounds[1] = bounds[1].min(i64::from(point[1]));
+        bounds[2] = bounds[2].max(i64::from(point[0]));
+        bounds[3] = bounds[3].max(i64::from(point[1]));
+    }
+    let x0 = bounds[0].saturating_sub(pad).clamp(0, img.w as i64) as usize;
+    let y0 = bounds[1].saturating_sub(pad).clamp(0, img.h as i64) as usize;
+    let x1 = bounds[2].saturating_add(pad).clamp(x0 as i64, img.w as i64) as usize;
+    let y1 = bounds[3].saturating_add(pad).clamp(y0 as i64, img.h as i64) as usize;
+
+    // Include evidence just outside the crop before dilating. A summed-area
+    // table makes the square dilation linear in the window size, not its radius.
+    let mx0 = x0.saturating_sub(radius);
+    let my0 = y0.saturating_sub(radius);
+    let mx1 = x1.saturating_add(radius).min(mask.w);
+    let my1 = y1.saturating_add(radius).min(mask.h);
+    let stride = mx1 - mx0 + 1;
+    let mut sums = vec![0usize; stride * (my1 - my0 + 1)];
+    for y in my0..my1 {
+        let mut row_sum = 0;
+        for x in mx0..mx1 {
+            row_sum += usize::from(mask.data[y * mask.w + x] >= OCR_MASK_WEAK_THRESHOLD);
+            let i = (y - my0 + 1) * stride + x - mx0 + 1;
+            sums[i] = sums[i - stride] + row_sum;
+        }
+    }
+
+    let mut source = Raster::zeroed(x1 - x0, y1 - y0, img.cn);
+    let mut local_mask = Raster::zeroed(source.w, source.h, 1);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let left = x.saturating_sub(radius) - mx0;
+            let top = y.saturating_sub(radius) - my0;
+            let right = (x + radius + 1).min(mask.w) - mx0;
+            let bottom = (y + radius + 1).min(mask.h) - my0;
+            let covered = sums[bottom * stride + right] - sums[top * stride + right]
+                - (sums[bottom * stride + left] - sums[top * stride + left]);
+            let d = (y - y0) * source.w + x - x0;
+            local_mask.data[d] = mask.data[y * mask.w + x];
+            let pixels = &mut source.data[d * img.cn..(d + 1) * img.cn];
+            if covered == 0 {
+                pixels.fill(255);
+            } else {
+                let s = (y * img.w + x) * img.cn;
+                pixels.copy_from_slice(&img.data[s..s + img.cn]);
+            }
+        }
+    }
+    let mut local_block = blk.clone();
+    for x in [0, 2] {
+        local_block.xyxy[x] -= x0 as i32;
+        local_block.xyxy[x + 1] -= y0 as i32;
+    }
+    for point in local_block.lines.iter_mut().flatten() {
+        point[0] -= x0 as i32;
+        point[1] -= y0 as i32;
+    }
+    (source, local_mask, local_block)
+}
+
 /// Returns all OCR crops for a text block (whole-block crop or per-line fallback chunks).
 pub fn gather_crops(
     img: &Raster,
     mask: &Raster,
     blk: &TextBlockOut,
     lines_mode: bool,
+    mask_ocr: bool,
 ) -> Vec<Raster> {
+    // Off keeps the exact original raster, geometry, and crop path.
+    let masked = mask_ocr.then(|| masked_ocr_source(img, mask, blk));
+    let (img, mask, blk) = match masked.as_ref() {
+        Some((img, mask, blk)) => (img, mask, blk),
+        None => (img, mask, blk),
+    };
     if !lines_mode {
         if let Some(c) = block_crop(img, blk) {
             return vec![c];
@@ -648,6 +728,114 @@ mod tests {
             }
         }
         r
+    }
+
+    #[test]
+    fn ocr_mask_whitens_outside_dilated_support_and_preserves_rgb_inside() {
+        let img = gradient(9, 9);
+        let b = blk([0, 0, 9, 9], vec![], false, 20.0);
+        for (probability, keeps_text) in [(0, false), (1, false), (64, false),
+            (65, true), (66, true), (255, true)] {
+            // Faint detector evidence around art must not seed the dilation.
+            let mut mask = Raster { w: 9, h: 9, cn: 1, data: vec![64; 9 * 9] };
+            mask.data[4 * 9 + 4] = probability;
+            let (source, local_mask, local_block) = masked_ocr_source(&img, &mask, &b);
+            for y in 0..9 {
+                for x in 0..9 {
+                    let i = (y * 9 + x) * 3;
+                    let expected = if keeps_text && (2..=6).contains(&x) && (2..=6).contains(&y) {
+                        &img.data[i..i + 3]
+                    } else {
+                        &[255, 255, 255][..]
+                    };
+                    assert_eq!(&source.data[i..i + 3], expected,
+                        "probability {probability}, {x},{y}");
+                }
+            }
+            assert_eq!(local_mask, mask, "chunking must keep the original probabilities");
+            assert_eq!(local_block.xyxy, b.xyxy);
+        }
+        assert_eq!(img, gradient(9, 9), "the page is never mutated");
+    }
+
+    #[test]
+    fn ocr_mask_dilation_scales_with_font_size_and_stays_bounded() {
+        let img = gradient(25, 25);
+        let mut mask = Raster::zeroed(25, 25, 1);
+        mask.data[12 * 25 + 12] = 255;
+        for (font_size, radius) in [(1.0, 2), (20.0, 2), (60.0, 5), (1000.0, 6)] {
+            let b = blk([0, 0, 25, 25], vec![], false, font_size);
+            let (source, _, _) = masked_ocr_source(&img, &mask, &b);
+            for x in 0..25usize {
+                let i = (12 * 25 + x) * 3;
+                assert_eq!(source.data[i] != 255, x.abs_diff(12) <= radius,
+                    "font {font_size}, x {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn ocr_mask_uses_evidence_outside_the_source_window_and_clips_at_page_edges() {
+        let img = gradient(40, 40);
+        let mut mask = Raster::zeroed(40, 40, 1);
+        mask.data[15 * 40] = 255;
+        let b = blk([10, 10, 20, 20], vec![], false, 20.0);
+        let (source, local_mask, local_block) = masked_ocr_source(&img, &mask, &b);
+        assert_eq!((source.w, source.h), (26, 26));
+        assert_eq!(local_block.xyxy, [8, 8, 18, 18]);
+        assert_eq!(&source.data[13 * 26 * 3..13 * 26 * 3 + 3],
+            &img.data[(15 * 40 + 2) * 3..(15 * 40 + 2) * 3 + 3]);
+        assert!(local_mask.data.iter().all(|v| *v == 0));
+        let edge = blk([0, 0, 10, 10], vec![], false, 20.0);
+        assert!(masked_ocr_source(&img, &Raster::zeroed(40, 40, 1), &edge)
+            .0.data.iter().all(|v| *v == 255));
+    }
+
+    #[test]
+    fn ocr_mask_covers_block_line_and_rotated_fallback_paths_and_off_is_unchanged() {
+        let img = Raster { w: 40, h: 40, cn: 3, data: [10, 20, 30].repeat(40 * 40) };
+        let mut mask = Raster::zeroed(40, 40, 1);
+        mask.data[20 * 40 + 20] = 255;
+        let mut b = blk([10, 10, 30, 30],
+            vec![[[12, 12], [28, 12], [28, 28], [12, 28]]], false, 20.0);
+        assert_eq!(gather_crops(&img, &mask, &b, false, false),
+            vec![block_crop(&img, &b).unwrap()]);
+        assert_eq!(gather_crops(&img, &mask, &b, true, false),
+            vec![transformed_region(&img, &b, 0, TEXT_HEIGHT).unwrap()]);
+        let empty = Raster::zeroed(40, 40, 1);
+        let full = Raster { w: 40, h: 40, cn: 1, data: vec![255; 40 * 40] };
+        for (vertical, angle, lines_mode) in [(false, 0, false), (false, 0, true),
+            (false, 12, false), (true, 0, true)] {
+            b.vertical = vertical;
+            b.angle = angle;
+            let crops = gather_crops(&img, &mask, &b, lines_mode, true);
+            assert_eq!(crops.len(), 1);
+            assert!(crops[0].data.chunks_exact(3).any(|p| p == [255, 255, 255]));
+            assert!(crops[0].data.chunks_exact(3).any(|p| p == [10, 20, 30]));
+            assert!(gather_crops(&img, &empty, &b, lines_mode, true)[0]
+                .data.iter().all(|v| *v == 255));
+            assert_eq!(gather_crops(&img, &full, &b, lines_mode, true),
+                gather_crops(&img, &mask, &b, lines_mode, false));
+            assert_eq!(gather_crops(&img, &empty, &b, lines_mode, false),
+                gather_crops(&img, &mask, &b, lines_mode, false));
+        }
+    }
+
+    #[test]
+    fn full_ocr_mask_preserves_fractional_english_padding_and_line_pixels() {
+        let img = gradient(100, 100);
+        let mask = Raster { w: 100, h: 100, cn: 1, data: vec![255; 100 * 100] };
+        let mut b = blk([40, 40, 60, 60],
+            vec![[[40, 40], [60, 40], [60, 60], [40, 60]]], false, 28.0);
+        b.language = Language::Eng;
+        for font_size in [28.0, 30.0] {
+            b.font_size = font_size;
+            for (angle, lines_mode) in [(0, false), (0, true), (8, false)] {
+                b.angle = angle;
+                assert_eq!(gather_crops(&img, &mask, &b, lines_mode, true),
+                    gather_crops(&img, &mask, &b, lines_mode, false));
+            }
+        }
     }
 
     #[test]
@@ -976,8 +1164,8 @@ mod tests {
             true,
             35.0,
         );
-        assert_eq!(gather_crops(&img, &mask, &b, false).len(), 1);
-        let lines = gather_crops(&img, &mask, &b, true);
+        assert_eq!(gather_crops(&img, &mask, &b, false, false).len(), 1);
+        let lines = gather_crops(&img, &mask, &b, true, false);
         assert_eq!(lines.len(), 2);
         // Rotated back upright: vertical crops are 64 wide.
         assert!(lines.iter().all(|c| c.w == 64));

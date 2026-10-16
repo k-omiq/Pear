@@ -69,6 +69,9 @@ at commit `d9be51e`:
   `src/lib/server/detect.ts`.
 - `src-tauri/src/detect/tiles.rs`: the tall-page band spans and seam
   deduplication from `ocr/detect.py`.
+- `src-tauri/src/detect/crops.rs`: the OCR crop whitening from
+  `src/lib/server/reviewMask.ts`, with a font-scaled dilation of the detector
+  mask and the weak threshold from `ocr/lettering.py`.
 - `src/lib/detect-post.js`: the duplicate-region and already-English
   rules from `src/lib/transcribeRegions.ts` and the OCR comparison key from
   `src/lib/ocrConsensus.ts`.
