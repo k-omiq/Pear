@@ -97,12 +97,13 @@ export function shortcutActions() {
 }
 
 // Matches SettingsModal's TABS, by id. Listed here rather than imported so this
-// module does not load the Settings component to read five names.
+// module does not load the Settings component to read six names.
 const SETTINGS_TABS = [
   { id: 'general', label: 'General', keywords: 'theme library folder updates' },
   { id: 'typesetting', label: 'Typesetting', keywords: 'auto height line breaking hyphen' },
   { id: 'project', label: 'Project', keywords: 'series language tags layout', when: () => !!app.chapterRef },
   { id: 'shortcuts', label: 'Shortcuts', keywords: 'keys keyboard rebind hotkeys' },
+  { id: 'ai', label: 'AI', keywords: 'agent mcp claude codex antigravity token door' },
   { id: 'system', label: 'System', keywords: 'memory engine models cache gpu version' },
 ];
 
