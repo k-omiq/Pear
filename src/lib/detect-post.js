@@ -1,6 +1,10 @@
 // Detection post-processing, before engine coordinates enter the store.
 // Ported from Komatose's src/lib/transcribeRegions.ts and src/lib/ocrConsensus.ts
 // at commit d9be51e (MIT, Copyright (c) 2026 innominata). See THIRD-PARTY.md.
+// Region types use the sfx.ts port in sfx-meanings.js; sidecar loads this module
+// lazily so the dictionary is parsed only when detection or a queue hint needs it.
+
+import { classifyRegionLineType } from './sfx-meanings.js';
 
 // Ignore OCR spacing and interchangeable separators, but keep sound-length ー
 // and punctuation that can change a reading, such as ! versus ?.
@@ -94,6 +98,10 @@ export function postProcessDetection(result) {
   const drop = dropRedundantTranscriptions(regions);
   return {
     ...result,
-    lines: result.lines.filter((_, id) => !drop.has(id)).map((line, i) => ({ ...line, n: i + 1 })),
+    lines: result.lines.filter((_, id) => !drop.has(id)).map((line, i) => ({
+      ...line,
+      n: i + 1,
+      type: classifyRegionLineType(line.kind, line.jp ?? '', { type: line.type, lang: line.lang ?? result.lang }),
+    })),
   };
 }

@@ -62,7 +62,9 @@ at commit `d9be51e`:
 - `src/lib/glossary.js`: the glossary matching rule (fold by NFKC, case and
   whitespace; skip terms under two characters) from `src/lib/glossary.ts`.
 - `src/lib/sfx-meanings.js`: `src/lib/sfx.ts` and `src/lib/sfxKo.ts`, the two
-  word lists copied verbatim, the lookup code with its TypeScript types removed.
+  word lists copied verbatim, the lookup code with its TypeScript types
+  removed, plus the classification tail (dialogue, SFX, narration) with a weak
+  font-size prior and generic Chinese rules.
 - `src-tauri/src/detect/analyze.rs`: the page-relative minimum region size from
   `src/lib/server/detect.ts`.
 - `src-tauri/src/detect/tiles.rs`: the tall-page band spans and seam
