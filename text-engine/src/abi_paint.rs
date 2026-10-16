@@ -184,6 +184,42 @@ pub extern "C" fn mt_paint_pattern_tile(kind: u32, side: u32, fg: u32, bg: u32, 
     })
 }
 
+/// The names of built-in screens, in wire-id order, separated by newlines.
+#[no_mangle]
+pub extern "C" fn mt_pattern_kinds_ptr() -> *const u8 {
+    paint::KIND_NAMES.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mt_pattern_kinds_len() -> u32 {
+    paint::KIND_NAMES.len() as u32
+}
+
+/// Reads an MTPS swatch from the job buffer and replaces the last raster.
+/// Errors clear both the pixels and result, exactly as a failed job does.
+#[no_mangle]
+pub extern "C" fn mt_paint_pattern_swatch(byte_len: usize) -> i32 {
+    with(|s| {
+        s.pixels = Vec::new();
+        *s.result = [0.0; 4];
+        let drawn = (|| -> Result<_, Error> {
+            let _budget = paint::budget::Scope::new();
+            let (w, h, fill, tiles) =
+                paint::decode_swatch(s.job.get(..byte_len).ok_or(Error::BadSpec)?)?;
+            let pixels = paint::pattern_swatch(w, h, fill.as_ref(), &tiles)?;
+            Ok((w, h, pixels))
+        })();
+        match drawn {
+            Ok((w, h, pixels)) => {
+                *s.result = [0.0, 0.0, f64::from(w), f64::from(h)];
+                s.pixels = pixels;
+                1
+            }
+            Err(e) => Status::from(e) as i32,
+        }
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn mt_paint_job_result() -> *const f64 {
     with(|s| s.result.as_ptr())
