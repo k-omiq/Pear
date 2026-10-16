@@ -590,6 +590,21 @@ export function openChapterDir() {
   return chapterById(ref.projectId, ref.chapterId)?.dir ?? null;
 }
 
+// The text mask detection keeps for a page (MASK-1): `masks/<raw file>.png`
+// in the open chapter's folder, in the raw's pixels. Named after the whole raw
+// name so `a.jpg` and `a.png` cannot share one. Re-detecting overwrites it; it
+// is not part of snapshots or packages because detection can make it again.
+// Null when no chapter folder is open (the browser preview).
+export async function writePageMask(pg, bytes) {
+  const dir = openChapterDir();
+  if (!dir || !isPlainFileName(pg?.file) || !bytes?.length) return null;
+  const masks = await fsx.join(dir, 'masks');
+  await fsx.mkdir(masks);
+  const name = `${pg.file}.png`;
+  await fsx.writeFile(await fsx.join(masks, name), bytes);
+  return name;
+}
+
 // ---------- mutations ----------
 
 // Pick a directory name that is free ON DISK, not merely free in the catalogue.

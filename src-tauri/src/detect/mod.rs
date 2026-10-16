@@ -10,6 +10,7 @@ pub mod cvops;
 pub mod dbnet;
 pub mod engine;
 pub mod geometry;
+pub mod lettering;
 pub mod minrect;
 pub mod ocr;
 pub mod paddle_ocr;

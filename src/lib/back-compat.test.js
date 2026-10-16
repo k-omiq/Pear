@@ -428,6 +428,18 @@ describe('a whole chapter.json from the last release', () => {
     expect(pageById(2).detect).toEqual({ panels: [[0, 0, 100, 100]], boxes: [] });
   });
 
+  it('reads a detect saved before text masks as having no mask, and drops a bad one', () => {
+    expect('mask' in pageById(2).detect).toBe(false);
+    loadProjectPages([
+      { id: 11, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [], mask: { file: '001.jpg.png', w: 800, h: 1200 } } },
+      { id: 12, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [], mask: { file: '../x.png', w: 800, h: 1200 } } },
+      { id: 13, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [], mask: { file: 'a.png' } } },
+    ]);
+    expect(pageById(11).detect.mask).toEqual({ file: '001.jpg.png', w: 800, h: 1200 });
+    expect('mask' in pageById(12).detect).toBe(false);
+    expect('mask' in pageById(13).detect).toBe(false);
+  });
+
   it('reads a page with no detect at all as having none', () => {
     expect(pageById(3).detect).toBeNull();
   });

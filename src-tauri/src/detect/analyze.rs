@@ -2,7 +2,7 @@
 //!
 //! Flattens OCR crops into a single pass, stitches text back to blocks, and sorts in project reading order.
 
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, GrayImage, ImageEncoder};
 use ort::session::Session;
 
 use super::crops::{gather_crops, Raster};
@@ -46,6 +46,9 @@ pub struct AnalyzeResponse {
     pub img_height: u32,
     pub lines: Vec<AnalyzeLine>,
     pub panels: Vec<[i32; 4]>,
+    /// Optional page-sized binary lettering mask, encoded as grayscale PNG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_png: Option<Vec<u8>>,
 }
 
 /// Decode an uploaded page, dropping any alpha channel to RGB.
@@ -149,6 +152,24 @@ fn filter_small_regions(blocks: &mut Vec<TextBlockOut>, width: u32, height: u32)
     });
 }
 
+fn requested_mask_png(
+    page: &Raster,
+    probability: &GrayImage,
+    blocks: &[Block],
+    want_mask: bool,
+) -> Result<Option<Vec<u8>>, String> {
+    if !want_mask {
+        return Ok(None);
+    }
+    let boxes: Vec<_> = blocks.iter().map(|block| block.r#box).collect();
+    let refined = super::lettering::refine(page, probability, &boxes);
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(refined.as_raw(), refined.width(), refined.height(), image::ExtendedColorType::L8)
+        .map_err(|e| format!("could not encode text mask: {e}"))?;
+    Ok(Some(png))
+}
+
 /// Detect, read, and order text and panels on one page.
 pub fn analyze(
     img: &DynamicImage,
@@ -157,6 +178,7 @@ pub fn analyze(
     ocr: Option<&mut dyn TextRecognizer>,
     direction: ReadingDirection,
     lang: &str,
+    want_mask: bool,
 ) -> Result<AnalyzeResponse, String> {
     let (im_w, im_h) = img.dimensions();
 
@@ -227,7 +249,8 @@ pub fn analyze(
     }
 
     let lines = order_and_type(&blocks, &panels, direction, lang);
-    Ok(AnalyzeResponse { img_width: im_w, img_height: im_h, lines, panels })
+    let mask_png = requested_mask_png(&page, &mask, &blocks, want_mask)?;
+    Ok(AnalyzeResponse { img_width: im_w, img_height: im_h, lines, panels, mask_png })
 }
 
 /// Put detected blocks in reading order, label them, and number them.
@@ -392,6 +415,7 @@ mod tests {
                 font_size: 27.0,
             }],
             panels: vec![[0, 0, 100, 100]],
+            mask_png: None,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["lines"][0]["type"], "sfx");
@@ -400,6 +424,7 @@ mod tests {
         assert_eq!(v["lines"][0]["n"], 1);
         assert_eq!(v["lines"][0]["en"], "");
         assert_eq!(v["panels"][0], serde_json::json!([0, 0, 100, 100]));
+        assert!(!v.as_object().unwrap().contains_key("mask_png"));
         // Round-trips, which is what the e2e golden fixture relies on.
         let back: AnalyzeResponse = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
@@ -408,6 +433,39 @@ mod tests {
         old["lines"][0].as_object_mut().unwrap().remove("lang");
         let parsed: AnalyzeResponse = serde_json::from_value(old).unwrap();
         assert_eq!(parsed.lines[0].lang, "ja");
+        assert_eq!(parsed.mask_png, None);
+
+        let mut with_mask = r;
+        with_mask.mask_png = Some(vec![137, 80, 78, 71]);
+        let v = serde_json::to_value(&with_mask).unwrap();
+        assert_eq!(v["mask_png"], serde_json::json!([137, 80, 78, 71]));
+        assert_eq!(serde_json::from_value::<AnalyzeResponse>(v).unwrap(), with_mask);
+    }
+
+    #[test]
+    fn requested_mask_is_a_page_sized_grayscale_png_and_default_off_does_no_refinement() {
+        let mut rgb = image::RgbImage::from_pixel(32, 40, image::Rgb([255, 255, 255]));
+        let mut probability = GrayImage::new(32, 40);
+        for y in 12..26 {
+            for x in 14..17 {
+                rgb.put_pixel(x, y, image::Rgb([0, 0, 0]));
+                probability.put_pixel(x, y, image::Luma([200]));
+            }
+        }
+        let page = Raster::from_rgb(&rgb);
+        let blocks = [Block::new([10, 10, 22, 30], false, 12.0, String::new())];
+        assert_eq!(requested_mask_png(&page, &probability, &blocks, false).unwrap(), None);
+        // An invalid probability size would panic in refinement, even without blocks.
+        assert_eq!(requested_mask_png(&page, &GrayImage::new(0, 0), &[], false).unwrap(), None);
+        let png = requested_mask_png(&page, &probability, &blocks, true).unwrap().unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let decoded = image::load_from_memory(&png).unwrap();
+        assert_eq!(decoded.dimensions(), (32, 40));
+        assert_eq!(decoded.color(), image::ColorType::L8);
+        let mask = decoded.to_luma8();
+        assert_eq!(mask.get_pixel(15, 20).0[0], 255);
+        assert_eq!(mask.get_pixel(0, 0).0[0], 0);
+        assert!(mask.as_raw().iter().all(|v| *v == 0 || *v == 255));
     }
 
     #[test]
@@ -504,6 +562,7 @@ mod tests {
                 Some(&mut engine),
                 ReadingDirection::Rtl,
                 "ja",
+                false,
             )
                 .expect("analyze failed");
             compared += 1;

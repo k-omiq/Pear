@@ -164,6 +164,15 @@ const idNum = (id) => (typeof id === 'string' && /^b\d+$/.test(id) ? Number(id.s
 // `speaker` (TXT-6) is a character id from the series glossary; anything but a
 // non-empty string is no speaker. A `jp` that is not a string is no source:
 // the checks and the queue read it as text.
+// The text mask a detection kept (MASK-1): a plain file name under masks/ and
+// the size it was made at. Anything else is no mask, never a path to follow.
+function detectMaskField(m) {
+  const file = m?.file;
+  if (typeof file !== 'string' || !file || /[/\\]/.test(file) || file === '.' || file === '..') return {};
+  if (!(m.w > 0) || !(m.h > 0)) return {};
+  return { mask: { file, w: m.w, h: m.h } };
+}
+
 function sanitizeLine(l) {
   const out = { ...l };
   if (l?.placed) out.placed = true;
@@ -281,6 +290,7 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
               if (b.fit === undefined) return d;
               return { ...d, fit: normalizeFit(b.fit), ...outlineField(outline) };
             }),
+            ...detectMaskField(p.detect.mask),
           }
         : null,
       // NOT migrated: a box already on disk with `lineN: null` is loaded as it
@@ -3864,6 +3874,8 @@ export function applyDetection(result, target = null) {
       ...(l.lang != null ? { lang: l.lang } : result.lang != null ? { lang: result.lang } : {}),
     })),
     ...(result.lang != null ? { lang: result.lang } : {}),
+    // The text mask file (MASK-1), in the detector's pixels, under masks/.
+    ...(result.mask?.file ? { mask: { ...result.mask } } : {}),
   };
   // The typeset boxes go. Every one of them is bound to a line number the
   // detector has just reassigned, so keeping them would leave boxes rendering

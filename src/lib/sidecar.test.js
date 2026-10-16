@@ -138,6 +138,24 @@ describe('chapter detection jobs', () => {
     expect(app.pages[0].detect.boxes.map((b) => b.n)).toEqual(keepEnglish ? [1, 2] : [1]);
   });
 
+  it('asks for the text mask and keeps it beside the chapter (MASK-1)', async () => {
+    const write = vi.spyOn(chapter, 'writePageMask').mockResolvedValue('001.jpg.png');
+    h.analyze = async () => ({ img_width: 100, img_height: 120, panels: [], lines: [], mask_png: [137, 80, 78, 71] });
+    await detectOnePage(app.pages[0]);
+    expect(h.calls[0][1].mask).toBe(true);
+    expect(write).toHaveBeenCalledWith(app.pages[0], new Uint8Array([137, 80, 78, 71]));
+    expect(app.pages[0].detect.mask).toEqual({ file: '001.jpg.png', w: 100, h: 120 });
+    write.mockRestore();
+  });
+
+  it('detects without a mask when none can be written', async () => {
+    const write = vi.spyOn(chapter, 'writePageMask').mockResolvedValue(null);
+    h.analyze = async () => ({ img_width: 100, img_height: 120, panels: [], lines: [], mask_png: [1] });
+    await detectOnePage(app.pages[0]);
+    expect('mask' in app.pages[0].detect).toBe(false);
+    write.mockRestore();
+  });
+
   it.each([detectCurrentPage, detectAllPages])('%s drops a late result as soon as another open starts, before pages change', async (detect) => {
     const seq = vi.spyOn(chapter, 'chapterOpenSeq').mockReturnValue(1);
     let release, started;
