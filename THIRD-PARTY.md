@@ -74,6 +74,9 @@ at commit `d9be51e`:
   mask and the weak threshold from `ocr/lettering.py`.
 - `src-tauri/src/detect/lettering.rs`: the region-clipped text mask
   refinement from `ocr/lettering.py`.
+- `src-tauri/src/detect/fusion.rs`: the two-detector vote from
+  `src/lib/server/detectFusion.ts`; `src-tauri/src/detect/rtdetr.rs` follows
+  the RT-DETR preprocessing and seam merging in `ocr/detect.py`.
 - `src/lib/detect-post.js`: the duplicate-region and already-English
   rules from `src/lib/transcribeRegions.ts` and the OCR comparison key from
   `src/lib/ocrConsensus.ts`.
@@ -149,6 +152,7 @@ by this project's license.
 | --- | --- | --- |
 | manga109 YOLO detector | [deepghs/manga109_yolo](https://huggingface.co/deepghs/manga109_yolo) | YOLO11 lineage; Ultralytics applies AGPL-3.0 to its models |
 | comic text detector | [manga-image-translator](https://github.com/zyddnys/manga-image-translator) | published from a GPL-3.0 repository |
+| RT-DETR comic text and bubble detector | [ogkalu/comic-text-and-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector/tree/16e8a622f91fabc6b5b65c96d32d1183f8843546) | Apache-2.0; optional on-demand download at revision `16e8a622f91fabc6b5b65c96d32d1183f8843546`, not bundled |
 | manga-ocr-base | [kha-white/manga-ocr](https://github.com/kha-white/manga-ocr), [ONNX build](https://huggingface.co/onnx-community/manga-ocr-base-ONNX) | Apache-2.0 |
 | PP-OCRv4/v5 Korean and PP-OCRv5/v6 Chinese recognition | [RapidOCR](https://github.com/RapidAI/RapidOCR), derived from [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR); [download mirror](https://huggingface.co/DjB314/RapidOCR) | Apache-2.0 |
 

@@ -3871,6 +3871,8 @@ export function applyDetection(result, target = null) {
       box: intoPage(l.box),
       vertical: l.vertical,
       font_size: Number.isFinite(l.font_size) ? l.font_size * sy : l.font_size,
+      // 'bubble' or 'free' when the second detector (DTC-2) classed it.
+      ...(l.kind === 'bubble' || l.kind === 'free' ? { kind: l.kind } : {}),
       ...(l.lang != null ? { lang: l.lang } : result.lang != null ? { lang: result.lang } : {}),
     })),
     ...(result.lang != null ? { lang: result.lang } : {}),
@@ -4118,9 +4120,21 @@ export function measureBalloon(p, block, pixels, scale = null) {
   if (!Array.isArray(block) || block.length !== 4) return null;
   const image = pixels ?? pagePixelsFor(p);
   if (!image) return null;
+  if (isFreeText(p, block, scale)) return openMeasure();
   const neighbors = neighbourBlocks(p, block, image, scale);
   const m = outlineMeasure(findOutline(image, block, { neighbors })) ?? fillMeasure(detectBalloon(image, block));
   return m ? withInk(m, image) : openMeasure();
+}
+
+// Lettering the second detector (DTC-2) called free text sits on the art, not
+// in a bubble: there is no outline to find, so it is open, which the check
+// list shows. Matched by the block's centre in page coordinates.
+function isFreeText(p, block, scale) {
+  const cx = (block[0] + block[2]) / 2 / (scale?.sx ?? 1);
+  const cy = (block[1] + block[3]) / 2 / (scale?.sy ?? 1);
+  return (p?.detect?.boxes ?? []).some(
+    (d) => d.kind === 'free' && Array.isArray(d.box) && cx >= d.box[0] && cx <= d.box[2] && cy >= d.box[1] && cy <= d.box[3],
+  );
 }
 
 // The measurement with the text colour its bubble calls for written on its

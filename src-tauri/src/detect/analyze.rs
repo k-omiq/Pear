@@ -8,6 +8,7 @@ use ort::session::Session;
 use super::crops::{gather_crops, Raster};
 use super::ocr::{OcrReading, TextRecognizer};
 use super::panels;
+use super::rtdetr::{Region, RtDetr};
 use super::sorting::{
     assign_types, sort_bubbles_by_reading_order, Block, LineType, ReadingDirection,
 };
@@ -37,6 +38,8 @@ pub struct AnalyzeLine {
     pub r#box: [i32; 4],
     pub vertical: bool,
     pub font_size: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// The `/analyze` response.
@@ -170,6 +173,17 @@ fn requested_mask_png(
     Ok(Some(png))
 }
 
+fn fuse_second_result(blocks: Vec<TextBlockOut>, result: Option<Result<Vec<Region>, String>>, lang: &str) -> Vec<TextBlockOut> {
+    match result {
+        Some(Ok(regions)) => super::fusion::fuse(blocks, regions, lang),
+        Some(Err(e)) => {
+            log::warn!("second detector inference failed, using CTD alone: {e}");
+            blocks
+        }
+        None => blocks,
+    }
+}
+
 /// Detect, read, and order text and panels on one page.
 pub fn analyze(
     img: &DynamicImage,
@@ -179,6 +193,7 @@ pub fn analyze(
     direction: ReadingDirection,
     lang: &str,
     want_mask: bool,
+    second_detector: Option<&mut RtDetr>,
 ) -> Result<AnalyzeResponse, String> {
     let (im_w, im_h) = img.dimensions();
 
@@ -188,6 +203,7 @@ pub fn analyze(
     };
 
     let (blk_list, mask) = detector.detect_page(img, lang).map_err(|e| format!("detect failed: {e}"))?;
+    let blk_list = fuse_second_result(blk_list, second_detector.map(|detector| detector.detect_page(img)), lang);
     let in_count = blk_list.len();
     let mut blk_list = split_by_regions(blk_list, &text_regions, im_w as i32, lang);
     if blk_list.len() != in_count {
@@ -245,7 +261,9 @@ pub fn analyze(
             None => &[][..],
         };
         let Some(jp) = stitch_readings(crops) else { continue };
-        blocks.push(Block::new(blk.xyxy, blk.vertical, blk.font_size as f32, jp));
+        let mut block = Block::new(blk.xyxy, blk.vertical, blk.font_size as f32, jp);
+        block.kind = blk.kind.clone();
+        blocks.push(block);
     }
 
     let lines = order_and_type(&blocks, &panels, direction, lang);
@@ -276,6 +294,7 @@ pub fn order_and_type(
             r#box: b.r#box,
             vertical: b.vertical,
             font_size: b.font_size,
+            kind: b.kind,
         })
         .collect()
 }
@@ -304,6 +323,7 @@ mod tests {
         let mut blocks: Vec<_> = boxes.into_iter().map(|xyxy| TextBlockOut {
             xyxy, lines: vec![], vertical: true, font_size: 2.0, angle: 0,
             language: Language::Ja,
+            ..Default::default()
         }).collect();
         filter_small_regions(&mut blocks, 1000, 4000);
         assert_eq!(blocks.iter().map(|b| b.xyxy).collect::<Vec<_>>(), boxes[2..4]);
@@ -360,6 +380,27 @@ mod tests {
     }
 
     #[test]
+    fn disabled_or_failed_second_detector_preserves_every_ctd_field() {
+        let blocks = vec![TextBlockOut { xyxy: [10, 20, 50, 70], score: 0.41,
+            font_size: 12.0, lines: vec![[[10, 20], [50, 20], [50, 70], [10, 70]]],
+            ..Default::default() }];
+        assert_eq!(fuse_second_result(blocks.clone(), None, "ja"), blocks);
+        assert_eq!(fuse_second_result(blocks.clone(), Some(Err("surprising tensor contract".into())), "ja"), blocks);
+        assert!(fuse_second_result(blocks, Some(Ok(vec![])), "ja").is_empty());
+    }
+
+    #[test]
+    fn reading_order_retains_the_kind_with_its_original_block() {
+        let mut right = Block::new([100, 10, 140, 50], false, 20.0, "right".into());
+        right.kind = Some("free".into());
+        let mut left = Block::new([10, 10, 50, 50], false, 20.0, "left".into());
+        left.kind = Some("bubble".into());
+        let lines = order_and_type(&[right, left], &[], ReadingDirection::Ltr, "ko");
+        assert_eq!(lines.iter().map(|l| (l.jp.as_str(), l.kind.as_deref())).collect::<Vec<_>>(),
+            [("left", Some("bubble")), ("right", Some("free"))]);
+    }
+
+    #[test]
     fn junk_is_removed_before_reading_order_and_contiguous_numbering() {
         let crops = [
             vec![reading("BOOM", 0.9)],
@@ -413,6 +454,7 @@ mod tests {
                 r#box: [1, 2, 3, 4],
                 vertical: true,
                 font_size: 27.0,
+                kind: None,
             }],
             panels: vec![[0, 0, 100, 100]],
             mask_png: None,
@@ -425,6 +467,7 @@ mod tests {
         assert_eq!(v["lines"][0]["en"], "");
         assert_eq!(v["panels"][0], serde_json::json!([0, 0, 100, 100]));
         assert!(!v.as_object().unwrap().contains_key("mask_png"));
+        assert!(!v["lines"][0].as_object().unwrap().contains_key("kind"));
         // Round-trips, which is what the e2e golden fixture relies on.
         let back: AnalyzeResponse = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
@@ -434,11 +477,14 @@ mod tests {
         let parsed: AnalyzeResponse = serde_json::from_value(old).unwrap();
         assert_eq!(parsed.lines[0].lang, "ja");
         assert_eq!(parsed.mask_png, None);
+        assert_eq!(parsed.lines[0].kind, None);
 
         let mut with_mask = r;
         with_mask.mask_png = Some(vec![137, 80, 78, 71]);
+        with_mask.lines[0].kind = Some("bubble".into());
         let v = serde_json::to_value(&with_mask).unwrap();
         assert_eq!(v["mask_png"], serde_json::json!([137, 80, 78, 71]));
+        assert_eq!(v["lines"][0]["kind"], "bubble");
         assert_eq!(serde_json::from_value::<AnalyzeResponse>(v).unwrap(), with_mask);
     }
 
@@ -563,6 +609,7 @@ mod tests {
                 ReadingDirection::Rtl,
                 "ja",
                 false,
+                None,
             )
                 .expect("analyze failed");
             compared += 1;

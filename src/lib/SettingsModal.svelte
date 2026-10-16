@@ -1069,6 +1069,18 @@
       </label>
       <div class="qhint" id="keep-english-hint">Off: English lettering on the raw is not detected.</div>
 
+      <label class="srow">
+        <input
+          class="btick"
+          type="checkbox"
+          checked={prefs.secondDetector}
+          aria-describedby="second-detector-hint"
+          onchange={(e) => setPref('secondDetector', e.currentTarget.checked)}
+        />
+        <span>Use a second text detector</span>
+      </label>
+      <div class="qhint" id="second-detector-hint">RT-DETR (a 168 MB download) checks the main detector, finds text it misses and tells bubble text from free text.</div>
+
       <div class="group-label">Models{@render scope('you')}</div>
 
       <div class="model-card">

@@ -440,6 +440,17 @@ describe('a whole chapter.json from the last release', () => {
     expect('mask' in pageById(13).detect).toBe(false);
   });
 
+  it('keeps the second detector’s kind on a detected box, and an old box has none', () => {
+    expect(pageById(2).detect.boxes).toEqual([]);
+    loadProjectPages([{ id: 14, w: 0, h: 0, lines: [], boxes: [], detect: { panels: [], boxes: [
+      { n: 1, box: [0, 0, 10, 10], vertical: true, font_size: 9 },
+      { n: 2, box: [20, 0, 30, 10], vertical: true, font_size: 9, kind: 'free' },
+    ] } }]);
+    const [a, b] = pageById(14).detect.boxes;
+    expect('kind' in a).toBe(false);
+    expect(b.kind).toBe('free');
+  });
+
   it('reads a page with no detect at all as having none', () => {
     expect(pageById(3).detect).toBeNull();
   });
