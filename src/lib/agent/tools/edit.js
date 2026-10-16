@@ -65,7 +65,7 @@ const DESCRIPTION = [
   'Change boxes. ops is a list; each op is { where, set?, do? } and they run in order. where is the selector every tool takes (see context).',
   'set: text (the box text), style (a style patch, schema below; style.size is the size the solver aims for, not a lock),',
   'sizing { ref, min } (the size aimed for and the least it may shrink to, px; min null is the chapter floor),',
-  'geometry { x, y, w, h, rotation } in page px and degrees (w and h are held as given, x and y hold the box\'s centre: the solver keeps them; locks undo it),',
+  'geometry { x, y, w, h, rotation } in page px and degrees (x and y are the top-left corner; the solver keeps what is given, the place by its centre; locks undo it),',
   'breaks ["line one", "line two", ...] the box\'s lines exactly, in order (no added hyphens), held until null clears them; needs outline fit (do "typeset"),',
   'tags (the line\'s tags, replaced whole; the box takes the tags\' style),',
   'locks { size, width, height, pos, breaks } booleans, outline [[x, y], ...] a drawn bubble outline (3+ points, unapproved, the text typeset again inside it), note (a note on the outline for the user).',
