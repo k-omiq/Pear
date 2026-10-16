@@ -221,6 +221,13 @@ describe('packagePagesForImport', () => {
     expect(pages[0].lines[0].tags).toEqual(['sfx']);
     expect(pages[1].cleanedName).toBeNull();
     expect(pages[1].cleanedBytes).toBeNull();
+    expect(pages[0].note).toBe('');
+  });
+
+  it('carries the page note (TXT-7)', () => {
+    const input = sampleInput();
+    input.record.pages[0].note = 'Flashback';
+    expect(packagePagesForImport(readChapterPackage(buildChapterPackage(input)))[0].note).toBe('Flashback');
   });
 });
 

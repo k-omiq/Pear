@@ -75,6 +75,21 @@ export function recordForExport(record) {
 // family the system scan lists whose file cannot be read is in the list and
 // is drawn in a stand-in all the same. Whoever calls this has waited for the
 // gate to know (`familiesKnown`).
+// Each line's speaker (TXT-6) by name as well as id. The id means nothing in
+// another series; the importing side makes the names its own characters. A
+// copy: the record read from disk is left as it was.
+export function withSpeakerNames(record, terms) {
+  if (!record?.pages?.some((pg) => pg.lines?.some((l) => l?.speaker))) return record;
+  const name = (id) => terms.find((t) => t.id === id)?.target ?? null;
+  return {
+    ...record,
+    pages: record.pages.map((pg) => ({
+      ...pg,
+      lines: (pg.lines ?? []).map((l) => (l?.speaker && name(l.speaker) ? { ...l, speakerName: name(l.speaker) } : l)),
+    })),
+  };
+}
+
 export function fontsStaying(fonts, named = fonts.map((f) => f.name)) {
   if (!fontsGated()) return [];
   const carried = new Set(fonts.filter((f) => Object.values(f.faces ?? {}).some(Boolean)).map((f) => f.name));
@@ -127,7 +142,7 @@ export async function exportChapterPackage(projectId, chapterId) {
   const p = projectById(projectId);
   if (!p) throw new Error('No such project');
   const src = await readChapterPackageSources(projectId, chapterId);
-  const record = recordForExport(src.record);
+  const record = withSpeakerNames(recordForExport(src.record), p.guide?.glossary ?? []);
   const pages = record.pages ?? [];
 
   // The tag vocabulary this chapter uses, as its PROJECT knows it - the registry

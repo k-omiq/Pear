@@ -350,7 +350,9 @@
   <ReviewList />
   <FontNotice />
   <!-- A note about this page (TXT-7), saved with the chapter: what the art
-       shows, who is speaking, what to watch for. -->
+       shows, who is speaking, what to watch for. Written on every keystroke:
+       the page can change under the field (a longstrip scroll, Next to
+       check) with no blur first. -->
   {#if noteShown}
     <!-- svelte-ignore a11y_autofocus -->
     <textarea
@@ -360,8 +362,8 @@
       aria-label="Page note"
       autofocus={noteAsked && !p.note}
       value={p.note ?? ''}
-      onchange={(e) => setPageNote(p, e.currentTarget.value)}
-      onblur={(e) => { setPageNote(p, e.currentTarget.value); if (!p.note) noteAsked = false; }}
+      oninput={(e) => setPageNote(p, e.currentTarget.value)}
+      onblur={() => { if (!p.note) noteAsked = false; }}
     ></textarea>
   {:else}
     <button class="qnote-add" onclick={() => (noteAsked = true)}>+ Page note</button>

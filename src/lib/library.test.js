@@ -1853,6 +1853,34 @@ describe('the chapter sources sheet', () => {
     expect(out.filled).toBe(1);
   });
 
+  it('makes named speakers characters only for the lines it writes, once the chapter lands', async () => {
+    const { p, c } = await seedThree();
+    const record = chapterJson(c);
+    record.pages[0].lines = [line(1, 'kept'), line(2, '')];
+    fsx._tree.files.set(`${c.dir}/chapter.json`, JSON.stringify(record));
+    const projectJson = () => JSON.parse(fsx._tree.files.get(`${p.dir}/project.json`));
+
+    // Filling empty English: line 1 keeps its own, so its speaker is not taken.
+    await applyTranslations(p.id, c.id, [
+      { lines: [{ ...line(1, 'NEW'), speakerName: 'Makoto' }, { ...line(2, 'filled'), speakerName: 'Tomoe' }] },
+    ], { fillEmpty: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(projectById(p.id).guide.glossary.map((t) => t.target)).toEqual([]);
+    expect(chapterJson(c).pages[0].lines[1].speakerName).toBeUndefined();
+
+    // Replacing: both lines land, and both names become characters on disk.
+    await applyTranslations(p.id, c.id, [
+      { lines: [{ ...line(1, 'NEW'), speakerName: 'Makoto' }, { ...line(2, 'filled'), speakerName: 'Tomoe' }] },
+    ]);
+    await new Promise((r) => setTimeout(r, 0));
+    const chars = projectJson().guide.glossary;
+    expect(chars.map((t) => [t.target, t.character])).toEqual([['Makoto', true], ['Tomoe', true]]);
+    expect(chapterJson(c).pages[0].lines.map((l) => l.speaker)).toEqual(chars.map((t) => t.id));
+    // translations.json names them from this series' own guide.
+    const text = JSON.parse(fsx._tree.files.get(`${c.dir}/translations.json`));
+    expect(text.pages[0].lines.map((l) => l.speaker)).toEqual(['Makoto', 'Tomoe']);
+  });
+
   it('counts the placed boxes a renumbered file leaves with nothing to say', async () => {
     const { p, c } = await seedThree();
     const record = chapterJson(c);
@@ -3597,6 +3625,28 @@ describe('createChapterFromPages', () => {
     expect(json.pages[0].cleaned).toBe('p001-cleaned.png');
     expect(fsx._tree.files.get(`${c.dir}/raws/p001.png`)).toEqual(new Uint8Array([1, 2, 3]));
     expect(fsx._tree.files.get(`${c.dir}/cleaned/p001-cleaned.png`)).toEqual(new Uint8Array([4, 5, 6]));
+  });
+
+  // A package's pages: the page note comes along, and speakers named by the
+  // other series become this one's characters.
+  it('keeps a page note and makes named speakers characters', async () => {
+    const p = await createProject('Packaged');
+    const c = await createChapterFromPages({
+      projectId: p.id,
+      number: 1,
+      title: '',
+      pages: [{
+        rawName: 'p001.png', rawBytes: new Uint8Array([1]), w: 10, h: 10, boxes: [],
+        note: 'Rain all page',
+        lines: [{ n: 1, jp: 'あ', en: 'Hi', speaker: 'g-from-elsewhere', speakerName: 'Makoto' }],
+      }],
+    });
+    const json = JSON.parse(fsx._tree.files.get(`${c.dir}/chapter.json`));
+    const makoto = projectById(p.id).guide.glossary.find((t) => t.target === 'Makoto');
+    expect(json.pages[0].note).toBe('Rain all page');
+    expect(json.pages[0].lines[0]).toMatchObject({ speaker: makoto.id });
+    expect(json.pages[0].lines[0].speakerName).toBeUndefined();
+    expect(JSON.parse(fsx._tree.files.get(`${p.dir}/project.json`)).guide.glossary).toHaveLength(1);
   });
 
   it('rejects pages missing rawName (undefined, null, empty string, or whitespace)', async () => {
