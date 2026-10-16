@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shapeOf, addedHyphens, orphanCount, fitIssues } from './fit-report.js';
+import { shapeOf, addedHyphens, orphanCount, fitIssues, fitQuality } from './fit-report.js';
 import { fitPolygon, intervalsAt, roomOver, visualCentre } from './outline-geom.js';
 
 describe('the line-width profile', () => {
@@ -43,5 +43,21 @@ describe('the outline as a polygon', () => {
     // A band near the crown of the oval is narrower than its middle.
     const crown = roomOver(ell, 72, 80);
     expect(crown[1] - crown[0]).toBeLessThan(r - l - 30);
+  });
+});
+
+describe('fitQuality', () => {
+  const good = { size: 16, inside: true, margin: { px: 9, em: 0.56 }, shape: { kind: 'oval', oval: 0.9, hourglass: false }, centre: { dx: 0, dy: 1 }, hyphens: 0, orphans: 0, fill: 0.35 };
+  it('scores a well lettered balloon high, and each broken rule lower', () => {
+    const q = fitQuality(good, { ref: 16 });
+    expect(q).toBeGreaterThanOrEqual(90);
+    expect(fitQuality({ ...good, inside: false, overflow: { l: 0, t: 6, r: 0, b: 0 } }, { ref: 16 })).toBeLessThan(q - 40);
+    expect(fitQuality({ ...good, shape: { kind: 'hourglass', oval: 0.6, hourglass: true } }, { ref: 16 })).toBeLessThan(q - 25);
+    expect(fitQuality({ ...good, hyphens: 1 }, { ref: 16 })).toBe(q - 10);
+    expect(fitQuality({ ...good, size: 12 }, { ref: 16 })).toBeLessThan(q - 15);
+    expect(fitQuality({ ...good, margin: { px: 2, em: 0.12 } }, { ref: 16 })).toBeLessThan(q - 20);
+    // A caption frame asks no oval of its block.
+    expect(fitQuality({ ...good, shape: { kind: 'rect', oval: 0.5, hourglass: false } }, { round: false, ref: 16 })).toBe(fitQuality(good, { round: false, ref: 16 }));
+    expect(fitQuality(null)).toBeNull();
   });
 });
