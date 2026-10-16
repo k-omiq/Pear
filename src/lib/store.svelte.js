@@ -1347,12 +1347,13 @@ export function flaggedBoxes(pages = app.pages) {
 //             (TXT-2; `terms` names the missing targets)
 //   rules     the English breaks the series' dash or ellipsis rule (TXT-3;
 //             `breaks` says which, in words)
+//   english   an imported line has source text but no English and no box yet
 //   unplaced  a detected line with no box yet (`placeableDetectedLines`)
 //
 // The text reasons (glossary, rules) are the line's, not the box's: they sit on the
 // line's first box when it has one, so Next lands on the box, and otherwise
 // on the line itself, after the boxes, in queue order.
-export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'rules', 'unplaced'];
+export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'rules', 'english', 'unplaced'];
 
 // What a line's text breaks of the series guide, as check items less their
 // place. Read off the guide as it stands, so editing a term re-checks.
@@ -1397,6 +1398,7 @@ export function pageCheckItems(pg, pageIndex = app.pages.indexOf(pg)) {
     if (!l || boxed.has(l.n)) continue;
     const at = { pageId, pageIndex, slot, lineN: l.n };
     const text = lineTextChecks(l);
+    if (!isFreeLine(l) && l.jp?.trim() && !lineText(l).trim()) text.push({ reason: 'english' });
     if (!text.length && !placeable.has(l.n)) continue;
     for (const c of text) out.push({ ...at, ...c });
     if (placeable.has(l.n)) out.push({ ...at, reason: 'unplaced' });

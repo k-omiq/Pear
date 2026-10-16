@@ -25,6 +25,7 @@
   let error = $state('');
   let pendingBulk = $state(null); // files picked for a bulk replace, awaiting Apply
   let confirmingRemoveAll = $state(false);
+  let fillEmpty = $state(false);
   // The version kept just before this sheet's last change (UND-2), which Undo
   // puts back - images included (CLN-11). Read off the library after each
   // change, so a change made and then superseded by an open is not offered.
@@ -186,13 +187,15 @@
   const onAddTranslations = () => {
     const pid = projectId;
     const cid = chapterId;
+    const onlyEmpty = fillEmpty;
     return picking('Could not read that translations file', async () => {
       const picked = await pickJsonFile();
       if (!picked || !picked[0]) return;
       const parsed = await readTranslations(picked[0]);
       await run(pid, cid, async () => {
-        const { covered, kept, ignored, lines, orphaned } = await applyTranslations(pid, cid, parsed);
+        const { covered, kept, ignored, lines, orphaned, filled } = await applyTranslations(pid, cid, parsed, { fillEmpty: onlyEmpty });
         const notes = [];
+        if (onlyEmpty) notes.push(`${plural(filled, 'line')} filled`);
         if (kept) notes.push(`${plural(kept, 'later page')} left unchanged`);
         if (ignored) notes.push(`${plural(ignored, 'page')} past the end ignored`);
         // Warn if new translation renumbers placed lines.
@@ -272,6 +275,10 @@
         <button class="soft-btn" onclick={onAddTranslations} disabled={busy || !pages.length}>
           Add translations…
         </button>
+        <label class="pair-note sources-fill">
+          <input class="btick" type="checkbox" bind:checked={fillEmpty} disabled={busy} />
+          Only fill empty English
+        </label>
         {#if undoName}
           <button class="soft-btn" onclick={onUndo} disabled={busy} title="Put the chapter back as it was before the last change here">
             Undo last change
