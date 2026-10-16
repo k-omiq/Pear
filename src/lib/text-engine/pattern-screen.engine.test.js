@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createEngine } from '../../../text-engine/js/engine.mjs';
-import { drawsScreens, encodeJob, paintJob, patternKinds, patternSwatch, WIRE_VERSION } from '../../../text-engine/js/paint.mjs';
+import { drawsScreens, encodeJob, paintJob, patternKinds, patternSwatch, patternTile, WIRE_VERSION } from '../../../text-engine/js/paint.mjs';
 import { engineWasm, fixtureFont } from '../../test/rust-engine.js';
 import { PATTERN_KINDS } from '../data.js';
 
@@ -10,7 +10,28 @@ beforeAll(async () => {
   font = engine.addFont(fixtureFont('ComicNeue-Regular.ttf'));
 });
 
-const names = [...PATTERN_KINDS];
+const names = [...PATTERN_KINDS,
+  'halftone-fade',
+  'square-dots',
+  'diamond-dots',
+  'line-tone',
+  'sand',
+  'stipple',
+  'speed-lines',
+  'burst',
+  'rings',
+  'waves',
+  'zigzag',
+  'bricks',
+  'scales',
+  'hex',
+  'triangles',
+  'plus',
+  'stars',
+  'hearts',
+  'kakeami',
+  'glitch',
+];
 const screen = (kind = 'dots', pattern = {}, rest = {}) => ({
   kind: 'screen', pattern: { kind, ...pattern }, basis: [12, 0, 0, 12],
   x: 0, y: 0, cx: 24, cy: 16, reach: 29, line: 0.12, fade: null, color: '#123456', ...rest,
@@ -23,6 +44,8 @@ describe('procedural screen fills', () => {
     expect(WIRE_VERSION).toBe(8);
     expect(drawsScreens(engine)).toBe(true);
     expect(patternKinds(engine)).toEqual(names);
+    expect(patternKinds(engine)).toHaveLength(31);
+    expect(patternTile(engine, { kind: 'waves' }, 16, 0.12)).toBeNull();
     expect(patternKinds(engine).slice(0, 11)).toEqual(PATTERN_KINDS);
     expect(patternKinds({ exports: {} })).toBeNull();
     expect(drawsScreens({ exports: {} })).toBe(false);
@@ -97,4 +120,22 @@ describe('procedural screen fills', () => {
     }
     expect(swatch(screen())).not.toBeNull();
   });
+  it.each(['sand', 'stipple', 'speed-lines', 'kakeami', 'glitch'])('%s uses a repeatable seed', (kind) => {
+    const a = swatch(screen(kind, { seed: 1 })).data;
+    expect(a).toEqual(swatch(screen(kind, { seed: 1 })).data);
+    expect(a).not.toEqual(swatch(screen(kind, { seed: 2 })).data);
+  });
+
+  it('halftone-fade uses the same shape and the supplied job-space fade', () => {
+    const fade = { x0: 0, y0: 0, x1: 48, y1: 0 };
+    const a = swatch(screen('halftone-fade', {}, { fade })).data;
+    expect(a).toEqual(swatch(screen('halftone', {}, { fade })).data);
+    const ink = (from, to) => {
+      let sum = 0;
+      for (let y = 0; y < 32; y++) for (let x = from; x < to; x++) sum += 255 - a[(y * 48 + x) * 4];
+      return sum;
+    };
+    expect(ink(0, 24)).toBeGreaterThan(ink(24, 48));
+  });
+
 });

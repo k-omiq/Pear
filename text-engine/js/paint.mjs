@@ -469,7 +469,7 @@ function rasterOf(ex, asView) {
   return { x, y, width, height, data }
 }
 
-// The patterns, numbered as `Kind` in text-engine/src/paint/pattern.rs.
+// Screen ids from screen.rs; the first eleven also name the legacy tiles.
 const PATTERN_KIND = {
   dots: 0,
   halftone: 1,
@@ -482,6 +482,26 @@ const PATTERN_KIND = {
   grid: 8,
   vlines: 9,
   hlines: 10,
+  'halftone-fade': 11,
+  'square-dots': 12,
+  'diamond-dots': 13,
+  'line-tone': 14,
+  sand: 15,
+  stipple: 16,
+  'speed-lines': 17,
+  burst: 18,
+  rings: 19,
+  waves: 20,
+  zigzag: 21,
+  bricks: 22,
+  scales: 23,
+  hex: 24,
+  triangles: 25,
+  plus: 26,
+  stars: 27,
+  hearts: 28,
+  kakeami: 29,
+  glitch: 30,
 }
 
 /** Whether this wasm draws pattern tiles itself. */
@@ -502,7 +522,7 @@ export function drawsPatternTiles(engine) {
 export function patternTile(engine, pattern, side, line) {
   const ex = engine.exports
   const kind = PATTERN_KIND[pattern?.kind ?? 'dots']
-  if (kind === undefined) return null
+  if (kind === undefined || kind > 10) return null
   const word = (css) => {
     const c = parseColor(css)
     return ((c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3]) >>> 0
