@@ -502,6 +502,7 @@ const PATTERN_KIND = {
   hearts: 28,
   kakeami: 29,
   glitch: 30,
+  picked: 255,
 }
 
 /** Whether this wasm draws pattern tiles itself. */

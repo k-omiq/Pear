@@ -76,7 +76,7 @@ impl Ramp {
 
 pub enum Shader<'a> {
     Solid(Premul),
-    Screen(super::screen::ScreenShader),
+    Screen(super::screen::ScreenShader<'a>),
     /// `t = tx * X + ty * Y + t0` along the gradient line, in device pixels.
     Linear {
         ramp: Ramp,
@@ -107,7 +107,7 @@ impl<'a> Shader<'a> {
     /// pixels. `None` means the fill paints nothing at all.
     pub fn new(fill: &Fill, frame: &Affine, tiles: &'a [Tile]) -> Option<Self> {
         match fill {
-            Fill::Screen(s) => super::screen::ScreenShader::new(s, frame).map(Shader::Screen),
+            Fill::Screen(s) => super::screen::ScreenShader::new(s, frame, tiles).map(Shader::Screen),
             Fill::Solid(c) => Some(Shader::Solid(premul(unit(*c)))),
             Fill::Linear { from, to, stops } => {
                 let inv = frame.invert()?;
