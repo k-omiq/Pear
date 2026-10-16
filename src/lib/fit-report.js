@@ -11,6 +11,7 @@
 //   centre     the ink block's centre against the outline's visual centre (R9)
 //   hyphens    lines ending in a hyphen the text does not have (R6)
 //   orphans    lines of one word shorter than three letters (R7)
+//   fill       the ink block's rectangle over the outline's area
 //
 // The glyph ink only: a stroke the colour of the bubble is not seen on it, and
 // the box holds the stroke anyway (contain.js). Null for a box with no outline,
@@ -21,7 +22,7 @@
 import { placeBlock, boxCandidate } from './contain.js';
 import { canMeasure } from './measure.js';
 import { ovalProfile } from './typeset.js';
-import { fitPolygon, intervalsAt, intervalsDown, roomOver, visualCentre, turnPolygon } from './outline-geom.js';
+import { fitPolygon, intervalsAt, intervalsDown, roomOver, visualCentre, turnPolygon, polyArea } from './outline-geom.js';
 
 // The thresholds the check reads (agent/tools/check.js) and the guide states.
 export const FIT_RULES = Object.freeze({
@@ -192,7 +193,37 @@ export function fitReport(b, text, rules = FIT_RULES) {
     centre: { dx: r1((x0 + x1) / 2 - cx), dy: r1((y0 + y1) / 2 - cy) },
     hyphens: addedHyphens(place.lines, place.text),
     orphans: orphanCount(place.lines, s.minOrphan ?? rules.minOrphan),
+    fill: Math.round(((x1 - x0) * (y1 - y0) / Math.max(1, Math.abs(polyArea(pts)))) * 100) / 100,
   };
+}
+
+// One number for how well a box is lettered, 0 to 100, to rank boxes and
+// compare tries: 100 less what each rule costs. `ref` is the size this kind
+// of text is set at (a box shrunk below it reads as another voice); `round`
+// as `fitIssues` takes it. Null without a report.
+export function fitQuality(rep, { round = true, ref = null } = {}, rules = FIT_RULES) {
+  if (!rep) return null;
+  let q = 100;
+  if (!rep.inside) q -= 40 + Math.min(20, Math.max(...Object.values(rep.overflow ?? {}), 0));
+  const m = rep.margin.em;
+  if (rep.inside) {
+    if (m < rules.tightMargin) q -= 25;
+    else if (m < rules.goodMargin) q -= (10 * (rules.goodMargin - m)) / (rules.goodMargin - rules.tightMargin);
+  }
+  const sh = rep.shape;
+  if (round && sh.oval != null) {
+    if (sh.hourglass) q -= 25;
+    else if (sh.kind === 'funnel' || sh.kind === 'pyramid') q -= 10;
+    else if (sh.kind === 'rect') q -= 8;
+    else if (sh.kind === 'ragged') q -= 8;
+    q -= 20 * (1 - sh.oval);
+  }
+  const off = Math.hypot(rep.centre.dx, rep.centre.dy) / rep.size;
+  q -= Math.min(15, (15 * off) / 0.5);
+  q -= 10 * rep.hyphens + 8 * rep.orphans;
+  if (ref > 0 && rep.size < ref) q -= Math.min(20, ((ref - rep.size) / ref) * 100);
+  if (rep.fill < 0.1) q -= 5;
+  return Math.max(0, Math.round(q));
 }
 
 // The rules a report breaks, as check issues: { kind, detail }. `round` says
