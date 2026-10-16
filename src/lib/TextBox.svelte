@@ -63,7 +63,7 @@
   } from './text-paint.js';
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
-  import { boxCandidate, placeBlock, blockReach } from './contain.js';
+  import { boxCandidate, placeBlock, blockReach, keptBreaks } from './contain.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
@@ -1147,7 +1147,7 @@
     // dimensions and balloon fit.
     const cased = applyCase(text, s);
     return (
-      brokenLines(cased, s, s.size, box.auto?.breaks) ??
+      brokenLines(cased, s, s.size, keptBreaks(box)) ??
       layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size))
     );
   });

@@ -111,11 +111,14 @@ export const CONTAIN_TOL = 0.5;
 // Probes the ladder makes that it may throw away. See `layoutLines`.
 const NO_CACHE = { cache: false };
 
+// The lines an outline fit chose (`auto.breaks`), for a box still laid out by
+// it: drawn while they are for this text, face and size (`brokenLines` in
+// measure.js). A box set back to the older layout breaks its lines again.
+export const keptBreaks = (box) => (box?.style?.margin != null ? (box.auto?.breaks ?? null) : null);
+
 // A box as the functions below take it.
-// `breaks` are the lines an outline fit chose (`auto.breaks`), drawn while
-// they are for this text, face and size (`brokenLines` in measure.js).
 export function boxCandidate(box, text) {
-  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: box.auto?.breaks ?? null };
+  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: keptBreaks(box) };
 }
 
 // Glyph-by-glyph text - SFX lettering, the bezier path, the closed ring, the arc

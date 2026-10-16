@@ -190,6 +190,67 @@ describe('edit', () => {
   });
 });
 
+describe('edit: size, geometry and lines for the solver', () => {
+  const auto = { refSize: 20, locks: { size: false, width: false, height: false, pos: false, breaks: false } };
+  beforeEach(() => {
+    const b = pageById(1).boxes[0];
+    b.auto = copy(auto);
+  });
+  const a = () => pageById(1).boxes[0];
+
+  it('takes a size as the size aimed for, not a lock', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { size: 24 } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto.refSize).toBe(24);
+    expect(a().auto.locks.size).toBe(false);
+  });
+
+  it('sets the size aimed for and the least size', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { sizing: { ref: 18, min: 14 } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto).toMatchObject({ refSize: 18, minSize: 14 });
+    await call({ ops: [{ where: { ids: ['a'] }, set: { sizing: { min: null } } }] });
+    expect('minSize' in a().auto).toBe(false);
+    const bad = await call({ ops: [{ where: { ids: ['a'] }, set: { sizing: { ref: 12, min: 14 } } }] });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toMatch(/min is above ref/);
+  });
+
+  it('holds the width, height and centre it was given', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { geometry: { x: 40, w: 120, h: 80 } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto.locks).toMatchObject({ width: true, height: true, pos: true, size: false });
+  });
+
+  it('holds the lines it was given, and refuses lines that are not the text', async () => {
+    const no = await call({ ops: [{ where: { ids: ['a'] }, set: { breaks: ['Hello', 'there...'] } }] });
+    expect(no.ok).toBe(false);
+    expect(no.error).toMatch(/not laid out by outline fit/);
+    const wrong = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { margin: 0.5 }, breaks: ['Hello', 'world'] } }] });
+    expect(wrong.ok).toBe(false);
+    expect(wrong.error).toMatch(/not box a's text/);
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { margin: 0.5 }, breaks: ['Hello', 'there…'] } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().auto.breaks.at).toEqual([0, 6]);
+    expect(a().auto.locks.breaks).toBe(true);
+    await call({ ops: [{ where: { ids: ['a'] }, set: { breaks: null } }] });
+    expect(a().auto.breaks).toBeUndefined();
+    expect(a().auto.locks.breaks).toBe(false);
+  });
+
+  it('typesets by outline fit, and "auto" lets every lock go', async () => {
+    a().auto.locks.size = true;
+    a().auto.locks.width = true;
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'typeset' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().style.margin).toBe(0.5);
+    expect(a().auto.locks.size).toBe(true);
+    await call({ ops: [{ where: { ids: ['a'] }, do: 'auto' }] });
+    expect(Object.values(a().auto.locks).every((v) => v === false)).toBe(true);
+    expect(a().auto.on).toBe(true);
+  });
+});
+
 describe('add', () => {
   it('places an unplaced line in a rect, one undo step', async () => {
     const r = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80] }, callContext('mcp'));
