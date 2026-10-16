@@ -518,6 +518,10 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
    rows, but unclamped: in the editor it is reference material the user is
    translating from and must be readable in full, not one ellipsised line. */
 .qrow.editing .qjp{ white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
+/* Glossary chips (TXT-2): the series terms found in the line's source. */
+.qgls{ display:flex; flex-wrap:wrap; gap:4px; }
+.qgl{ padding:1px 7px; border-radius:999px; border:1px solid var(--line2); font-size:10.5px; color:var(--t2); }
+.qgl.miss{ border-color:var(--warn); color:var(--warn); }
 .qrow.editing textarea{
   /* No resize grip. The row grows with the panel, and the native handle only
      ever let the user drag a textarea out of alignment with the rows around it. */

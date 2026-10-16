@@ -54,6 +54,8 @@
   import FontNotice from './FontNotice.svelte';
   import EngineNotice from './EngineNotice.svelte';
   import TagDefaultsForm from './TagDefaultsForm.svelte';
+  import { guide } from './guide.svelte.js';
+  import { glossaryHits } from './glossary.js';
 
   const p = $derived(page());
   // Which lines already have a box, in one pass over the page's boxes rather
@@ -337,6 +339,7 @@
       onkeydown={editing ? undefined : (e) => e.key === 'Enter' && activateLine(line.n)}
     >
       {#if editing}
+        {@const hits = glossaryHits(line.jp, lineText(line), guide.glossary)}
 
         <button class="badge" class:free title="Select this line's box" onclick={() => activateLine(line.n)}>{badge}</button>
         <span class="qcol">
@@ -412,6 +415,15 @@
           {/if}
 
           {#if line.jp}<span class="qjp">{line.jp}</span>{/if}
+          <!-- The series terms in this line's source (TXT-2): lit when the
+               English has the term's target, marked when it does not. -->
+          {#if hits.length}
+            <span class="qgls">
+              {#each hits as h (h.term.id)}
+                <span class="qgl" class:miss={!h.used} title={h.used ? `${h.term.source} → ${h.term.target}` : `${h.term.source} should read “${h.term.target}”`}>{h.used ? '' : '! '}{h.term.target}</span>
+              {/each}
+            </span>
+          {/if}
           <textarea
             rows="2"
             placeholder="English…"

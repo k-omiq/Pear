@@ -111,6 +111,8 @@ import { translateClipShapes } from './text-paint.js';
 import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
+import { guide } from './guide.svelte.js';
+import { glossaryMisses } from './glossary.js';
 
 export { PAGE_W, PAGE_H };
 
@@ -1300,15 +1302,32 @@ export function flaggedBoxes(pages = app.pages) {
 //   stale     laid out for inputs the box no longer has (`isLayoutStale`)
 //   empty     a box with no text and no ink: a line placed before it had English
 //   font      set in a font this machine cannot draw
+//   glossary  the source has a series term and the English lacks its target
+//             (TXT-2; `terms` names the missing targets)
 //   unplaced  a detected line with no box yet (`placeableDetectedLines`)
 //
-// Glossary misses (06-text.md) join once the series guide exists (M4).
-export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'unplaced'];
+// The text reasons (glossary) are the line's, not the box's: they sit on the
+// line's first box when it has one, so Next lands on the box, and otherwise
+// on the line itself, after the boxes, in queue order.
+export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'unplaced'];
+
+// What a line's text breaks of the series guide, as check items less their
+// place. Read off the guide as it stands, so editing a term re-checks.
+function lineTextChecks(line) {
+  const out = [];
+  if (!line) return out;
+  const en = lineText(line);
+  const misses = glossaryMisses(line.jp, en, guide.glossary);
+  if (misses.length) out.push({ reason: 'glossary', terms: misses.map((t) => t.target) });
+  return out;
+}
 
 export function pageCheckItems(pg, pageIndex = app.pages.indexOf(pg)) {
   const out = [];
   if (!pg) return out;
   const pageId = pg.id;
+  const lines = new Map((pg.lines ?? []).map((l) => [l.n, l]));
+  const boxed = new Set();
   (pg.boxes ?? []).forEach((b, slot) => {
     const at = { pageId, pageIndex, slot, boxId: b.id };
     const review = reviewOf(b, pg) ?? relaidNote(b);
@@ -1321,11 +1340,23 @@ export function pageCheckItems(pg, pageIndex = app.pages.indexOf(pg)) {
     if (!inked && !String(boxText(b, pg) ?? '').trim()) out.push({ ...at, reason: 'empty' });
     const font = b.style?.font;
     if (typeof font === 'string' && font && fontMissing(font)) out.push({ ...at, reason: 'font', font });
+    if (b.lineN != null && !boxed.has(b.lineN)) {
+      boxed.add(b.lineN);
+      for (const c of lineTextChecks(lines.get(b.lineN))) out.push({ ...at, lineN: b.lineN, ...c });
+    }
   });
   const n = pg.boxes?.length ?? 0;
-  placeableDetectedLines(pg).forEach((l, i) => {
-    out.push({ pageId, pageIndex, slot: n + i, lineN: l.n, reason: 'unplaced' });
-  });
+  const placeable = new Set(placeableDetectedLines(pg).map((l) => l.n));
+  let slot = n;
+  for (const l of pg.lines ?? []) {
+    if (!l || boxed.has(l.n)) continue;
+    const at = { pageId, pageIndex, slot, lineN: l.n };
+    const text = lineTextChecks(l);
+    if (!text.length && !placeable.has(l.n)) continue;
+    for (const c of text) out.push({ ...at, ...c });
+    if (placeable.has(l.n)) out.push({ ...at, reason: 'unplaced' });
+    slot++;
+  }
   return out;
 }
 

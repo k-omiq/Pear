@@ -17,6 +17,7 @@
     ['stale', 'Layout out of date'],
     ['empty', 'No text yet'],
     ['font', 'Font missing'],
+    ['glossary', 'Glossary term missing'],
     ['unplaced', 'Line not placed'],
   ];
 
@@ -52,6 +53,7 @@
     }
     if (it.reason === 'outline') return `${Math.round((it.confidence || 0) * 100)}% sure`;
     if (it.reason === 'font') return it.font;
+    if (it.reason === 'glossary') return `Wants ${it.terms.join(', ')}`;
     if (it.reason === 'unplaced') return `Line ${it.lineN}`;
     return '';
   }
