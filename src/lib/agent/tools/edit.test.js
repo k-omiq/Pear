@@ -241,9 +241,12 @@ describe('edit: size, geometry and lines for the solver', () => {
   it('typesets by outline fit, and "auto" lets every lock go', async () => {
     a().auto.locks.size = true;
     a().auto.locks.width = true;
+    a().style.balloon = false;
+    a().fit = { kind: 'ellipse', cx: 90, cy: 40, rx: 90, ry: 40 };
     const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'typeset' }] });
     expect(r.ok, JSON.stringify(r)).toBe(true);
     expect(a().style.margin).toBe(0.5);
+    expect(a().style.balloon).toBe(true);
     expect(a().auto.locks.size).toBe(true);
     await call({ ops: [{ where: { ids: ['a'] }, do: 'auto' }] });
     expect(Object.values(a().auto.locks).every((v) => v === false)).toBe(true);
