@@ -69,7 +69,7 @@ const DESCRIPTION = [
   'breaks ["line one", "line two", ...] the box\'s lines exactly, in order (no added hyphens), held until null clears them; needs outline fit (do "typeset"),',
   'tags (the line\'s tags, replaced whole; the box takes the tags\' style),',
   'locks { size, width, height, pos, breaks } booleans, outline [[x, y], ...] a drawn bubble outline (3+ points, unapproved, the text typeset again inside it), note (a note on the outline for the user).',
-  'do: "typeset" (outline fit: style.margin 0.5 em unless set, then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
+  'do: "typeset" (outline fit: style.margin 0.5 em unless set, balloon fit on, then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "refit_outline" (find the bubble under the box again),',
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
@@ -395,6 +395,8 @@ export function typesetMatches(matches, { auto = false } = {}) {
     matches.map((m) => ({ page: m.page, box: m.box })),
     (b) => {
       if (b.style.margin == null) b.style.margin = OUTLINE_FIT.margin;
+      // Set in its outline means the outline is used.
+      if (b.fit && b.style.balloon === false) b.style.balloon = true;
       if (!auto) return;
       if (!b.auto && b.style.size > 0) b.auto = normalizeAuto({ refSize: b.style.size });
       if (!b.auto) return;
