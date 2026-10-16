@@ -12,7 +12,7 @@ use super::sorting::{
     assign_types, sort_bubbles_by_reading_order, Block, LineType, ReadingDirection,
 };
 use super::textblock::{round_half_even, split_by_regions};
-use super::textdetector::TextDetector;
+use super::textdetector::{TextBlockOut, TextDetector};
 
 fn default_lang() -> String {
     "ja".to_string()
@@ -136,6 +136,19 @@ fn stitch_readings(readings: &[Option<OcrReading>]) -> Option<String> {
     }
 }
 
+// Ported from Komatose src/lib/server/detect.ts, commit d9be51e.
+fn minimum_region_side(width: u32, height: u32) -> i32 {
+    (width.min(height) as f64 * 0.012).round().clamp(10.0, 30.0) as i32
+}
+
+fn filter_small_regions(blocks: &mut Vec<TextBlockOut>, width: u32, height: u32) {
+    let floor = minimum_region_side(width, height);
+    blocks.retain(|block| {
+        let [x1, y1, x2, y2] = block.xyxy;
+        (x2 - x1).min(y2 - y1) >= floor
+    });
+}
+
 /// Detect, read, and order text and panels on one page.
 pub fn analyze(
     img: &DynamicImage,
@@ -154,7 +167,7 @@ pub fn analyze(
 
     let (blk_list, mask) = detector.detect(img, lang).map_err(|e| format!("detect failed: {e}"))?;
     let in_count = blk_list.len();
-    let blk_list = split_by_regions(blk_list, &text_regions, im_w as i32, lang);
+    let mut blk_list = split_by_regions(blk_list, &text_regions, im_w as i32, lang);
     if blk_list.len() != in_count {
         log::debug!(
             "split_by_regions: {} blocks in, {} blocks out",
@@ -162,6 +175,8 @@ pub fn analyze(
             blk_list.len()
         );
     }
+
+    filter_small_regions(&mut blk_list, im_w, im_h);
 
     let page = Raster::from_rgb(&img.to_rgb8());
     let mask_raster = Raster::from_gray(&mask);
@@ -243,6 +258,30 @@ pub fn order_and_type(
 mod tests {
     use super::*;
     use crate::detect::ocr::OcrEngine;
+
+    #[test]
+    fn minimum_region_floor_scales_with_the_short_page_side_and_caps_at_30() {
+        for (w, h, expected) in [
+            (0, 100, 10), (500, 2000, 10), (1000, 4000, 12),
+            (1125, 2000, 14), (2000, 1125, 14), (2500, 3000, 30),
+            (10000, 20000, 30),
+        ] {
+            assert_eq!(minimum_region_side(w, h), expected, "{w}x{h}");
+        }
+    }
+
+    #[test]
+    fn region_filter_uses_page_pixels_and_keeps_the_exact_floor() {
+        use super::super::textblock::Language;
+        let boxes = [[10, 20, 21, 120], [10, 20, 110, 31], [10, 20, 22, 120],
+            [10, 20, 110, 32], [10, 20, 10, 120], [20, 20, 10, 120]];
+        let mut blocks: Vec<_> = boxes.into_iter().map(|xyxy| TextBlockOut {
+            xyxy, lines: vec![], vertical: true, font_size: 2.0, angle: 0,
+            language: Language::Ja,
+        }).collect();
+        filter_small_regions(&mut blocks, 1000, 4000);
+        assert_eq!(blocks.iter().map(|b| b.xyxy).collect::<Vec<_>>(), boxes[2..4]);
+    }
 
     #[test]
     fn meaningful_source_keeps_script_and_confident_latin_sfx() {
