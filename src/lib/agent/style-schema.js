@@ -1,0 +1,254 @@
+import {
+  GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS,
+  WARP_MIN_GRID, WARP_MAX_GRID, SFX_FLOWS, SFX_MAX_MOVES,
+} from '../data.js';
+
+const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
+const integer = (desc, min, max) => ({ ...number(desc, min, max), type: 'integer' });
+const boolean = (desc) => ({ type: 'boolean', desc });
+const string = (desc) => ({ type: 'string', desc });
+const color = (desc) => ({ type: 'color', desc });
+const choice = (desc, values) => ({ type: 'enum', desc, values });
+const object = (desc, fields) => ({ type: 'object', desc, fields });
+const array = (desc, items, limits = {}) => ({ type: 'array', desc, items, ...limits });
+const readOnly = (desc) => ({ type: 'any', readOnly: true, desc });
+const alpha = (desc) => number(desc, 0, 1);
+
+// Bounds and choices mirror normalizeStyle and its helpers, not Inspector
+// sliders. Flat fields (size, opacity, lineHeight, curve, roughen, etc.) are
+// passed through there without clamps. align/valign are also plain strings.
+// Circle angles wrap rather than clamp, so have no min/max. Geometry arrays
+// and the SFX restoration snapshot belong to the editors that create them.
+export const STYLE_SCHEMA = {
+  font: string('font family'),
+  size: number('font size px'),
+  bold: boolean('bold face'),
+  italic: boolean('italic face'),
+  align: string('align: left/center/right'),
+  valign: string('align: top/middle/bottom'),
+  opacity: number('whole-box alpha'),
+  color: color('solid glyph fill'),
+  autoContrast: boolean('bubble-picked fill/stroke'),
+  gradient: object('gradient fill', {
+    on: boolean('enable gradient'),
+    kind: choice('ramp kind', GRADIENT_KINDS),
+    angle: number('CSS gradient degrees'),
+    cx: alpha('radial centre x'),
+    cy: alpha('radial centre y'),
+    radius: number('radial scale', 0.1, 4),
+    scope: choice('ramp span', ['box', 'line']),
+    stops: array('sorted colour stops', object('stop', {
+      color: color('stop colour'),
+      pos: alpha('ramp position'),
+      opacity: alpha('stop alpha'),
+    }), { minItems: GRADIENT_MIN_STOPS, maxItems: GRADIENT_MAX_STOPS }),
+  }),
+  pattern: object('tiled fill beats gradient', {
+    on: boolean('enable pattern'),
+    kind: choice('tile kind', PATTERN_KINDS),
+    fg: color('tile ink'),
+    bg: color('tile background'),
+    scale: number('tile/font scale', 0.25, 4),
+  }),
+  noFill: boolean('hollow glyphs; overrides fills'),
+  strokes: array('bands, inner first', object('stroke', {
+    color: color('band colour'),
+    width: number('band px; 0=remove', 0),
+    opacity: alpha('band alpha'),
+  })),
+  shadows: array('shadows, top first', object('shadow', {
+    x: number('x offset px'),
+    y: number('y offset px'),
+    blur: number('blur in page px', 0),
+    color: color('shadow colour'),
+    opacity: alpha('shadow alpha'),
+  })),
+  blur: number('whole-text blur px', 0),
+  motionBlur: object('directional smear', {
+    on: boolean('enable smear'),
+    x: number('x px/step', -50, 50),
+    y: number('y px/step', -50, 50),
+    amount: integer('smear iterations', 1, 32),
+  }),
+  path: object('bezier text path', {
+    on: boolean('enable path'),
+    pts: readOnly('set through the path editor'),
+  }),
+  clip: object('painted visibility mask', {
+    on: boolean('enable mask'),
+    mode: choice('hide/keep painted areas', ['exclude', 'include']),
+    brushSize: number('mask brush page px', 2, 200),
+    shapes: readOnly('set through the mask editor'),
+  }),
+  ink: object('hand-drawn box-local ink', {
+    on: boolean('enable ink'),
+    strokes: readOnly('set through the ink brush tool'),
+  }),
+  warp: object('whole-box mesh transform', {
+    on: boolean('enable mesh'),
+    cols: integer('mesh columns', WARP_MIN_GRID, WARP_MAX_GRID),
+    rows: integer('mesh rows', WARP_MIN_GRID, WARP_MAX_GRID),
+    pts: readOnly('set through transform/liquify tools'),
+  }),
+  circle: object('circular text', {
+    on: boolean('enable circle'),
+    angle: number('clockwise degrees; wraps at 360'),
+    inside: boolean('text on inner face'),
+    r: number('radius px; 0=auto', 0, 4000),
+  }),
+  sfx: object('per-letter recipe (Rust)', {
+    on: boolean('enable SFX'),
+    amount: number('move strength', 0, 2),
+    seed: integer('arrangement seed', 1, 9999),
+    flow: choice('letter flow', SFX_FLOWS),
+    rowShift: number('row shift in ems', -2, 2),
+    moves: array('engine moves', object('move', {
+      kind: { ...string('engine kind from sfxInfo'), minLength: 1 },
+      a: number('move parameter a'),
+      b: number('move parameter b'),
+    }), { maxItems: SFX_MAX_MOVES }),
+    before: readOnly('set through the SFX preset tool'),
+  }),
+  uppercase: boolean('display uppercase'),
+  lineHeight: number('line multiplier'),
+  letterSpacing: number('letter gap px'),
+  rotation: number('box rotation degrees'),
+  flipH: boolean('horizontal mirror'),
+  flipV: boolean('vertical mirror'),
+  roughen: object('distressed edges', {
+    on: boolean('enable rough edges'),
+    amount: number('crumple in page px'),
+    detail: number('grain frequency'),
+    seed: number('distortion seed'),
+    grit: number('fine tear in page px'),
+  }),
+  curve: number('arc: negative=frown, positive=smile'),
+  shape: choice('line-breaking shape', ['auto', 'oval', 'rect', 'off']),
+  minOrphan: number('minimum solo-word letters'),
+  hyphenate: boolean('split words that fit no line'),
+  balloon: boolean('lay out to box.fit balloon'),
+  autoHeight: boolean('text height at valign'),
+};
+
+const RELATIVE = /^[+\-*]\d+(\.\d+)?$/;
+// The same four CSS hex lengths accepted by data.js's hex().
+const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const INDEX = /^(0|[1-9]\d*)$/;
+const isObject = (v) => v !== null && typeof v === 'object' &&
+  (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+const at = (path, key) => path ? `${path}.${key}` : key;
+
+function editDistance(a, b) {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 0; i < a.length; i++) {
+    const next = [i + 1];
+    for (let j = 0; j < b.length; j++) {
+      next.push(Math.min(next[j] + 1, row[j + 1] + 1, row[j] + (a[i] === b[j] ? 0 : 1)));
+    }
+    row = next;
+  }
+  return row[b.length];
+}
+
+/** Validate a partial style without coercing, applying, or mutating it.
+ * Objects are partial, including array items (normalizers fill omitted fields).
+ * Arrays replace the list; index objects patch items. Relative operands are
+ * checked here; the applying tool checks results against the current style.
+ */
+export function validateStylePatch(patch) {
+  const errors = [];
+  const fail = (path, error, hint) => errors.push({ path: path || '$', error, ...(hint ? { hint } : {}) });
+
+  function fields(value, schema, path) {
+    if (!isObject(value)) return fail(path, 'expected an object');
+    for (const key of Object.keys(value)) {
+      if (!Object.hasOwn(schema, key)) {
+        const nearest = Object.keys(schema)
+          .map((k) => [k, editDistance(key, k)])
+          .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+          .slice(0, 3).map(([k]) => k);
+        fail(at(path, key), 'unknown key', `nearest keys: ${nearest.join(', ')}`);
+      } else {
+        check(value[key], schema[key], at(path, key));
+      }
+    }
+  }
+
+  function check(value, entry, path) {
+    if (entry.readOnly) return fail(path, entry.desc);
+    switch (entry.type) {
+      case 'number':
+      case 'integer': {
+        if (typeof value === 'string' && RELATIVE.test(value) && Number.isFinite(Number(value.slice(1)))) return;
+        if (typeof value !== 'number' || !Number.isFinite(value)) return fail(path, 'expected a finite number or relative string (+2, -2, *1.1)');
+        if (entry.type === 'integer' && !Number.isInteger(value)) return fail(path, 'expected an integer');
+        if ((entry.min !== undefined && value < entry.min) || (entry.max !== undefined && value > entry.max)) {
+          fail(path, `expected range ${entry.min ?? '-Infinity'}..${entry.max ?? 'Infinity'}`);
+        }
+        return;
+      }
+      case 'boolean':
+        if (typeof value !== 'boolean') fail(path, 'expected a boolean');
+        return;
+      case 'string':
+        if (typeof value !== 'string') fail(path, 'expected a string');
+        else if (entry.minLength !== undefined && value.length < entry.minLength) fail(path, `expected at least ${entry.minLength} characters`);
+        return;
+      case 'enum':
+        if (!entry.values.includes(value)) fail(path, `expected one of: ${entry.values.join(', ')}`);
+        return;
+      case 'color':
+        if (typeof value !== 'string' || !HEX.test(value)) fail(path, 'expected hex colour: #rgb, #rgba, #rrggbb or #rrggbbaa');
+        return;
+      case 'object':
+        return fields(value, entry.fields, path);
+      case 'array':
+        if (Array.isArray(value)) {
+          if (entry.minItems !== undefined && value.length < entry.minItems) fail(path, `expected at least ${entry.minItems} items`);
+          if (entry.maxItems !== undefined && value.length > entry.maxItems) fail(path, `expected at most ${entry.maxItems} items`);
+          for (let i = 0; i < value.length; i++) check(value[i], entry.items, `${path}[${i}]`);
+        } else if (isObject(value)) {
+          for (const key of Object.keys(value)) {
+            const index = Number(key);
+            const itemPath = `${path}[${key}]`;
+            if (!INDEX.test(key) || !Number.isSafeInteger(index)) fail(itemPath, 'expected a non-negative integer index');
+            else if (entry.maxItems !== undefined && index >= entry.maxItems) fail(itemPath, `index must be below ${entry.maxItems}`);
+            else check(value[key], entry.items, itemPath);
+          }
+        } else fail(path, 'expected an array or an object of item indexes');
+        return;
+    }
+  }
+
+  // No JSON input can recurse beyond the finite schema. Catch unreadable JS
+  // objects too (throwing getters, revoked proxies), without inspecting them.
+  try {
+    fields(patch, STYLE_SCHEMA, '');
+  } catch {
+    fail('', 'invalid or unreadable patch');
+  }
+  return errors;
+}
+
+/** Compact dotted paths for embedding directly in an AI tool description. */
+export function styleSchemaText() {
+  const lines = [];
+  function walk(entry, path) {
+    let type = entry.type;
+    if (entry.type === 'enum') type += ` ${entry.values.join('|')}`;
+    if (entry.min !== undefined || entry.max !== undefined) type += ` ${entry.min ?? '-inf'}..${entry.max ?? 'inf'}`;
+    if (entry.type === 'array' && (entry.minItems !== undefined || entry.maxItems !== undefined)) {
+      type += ` ${entry.minItems ?? 0}..${entry.maxItems ?? 'inf'} items`;
+    }
+    if (entry.readOnly) type += ' readOnly';
+    lines.push(`${path}: ${type} - ${entry.desc}`);
+    if (entry.fields) for (const [key, field] of Object.entries(entry.fields)) walk(field, at(path, key));
+    if (entry.items) {
+      const itemPath = `${path}[]`;
+      if (entry.items.fields) for (const [key, field] of Object.entries(entry.items.fields)) walk(field, at(itemPath, key));
+      else walk(entry.items, itemPath);
+    }
+  }
+  for (const [key, entry] of Object.entries(STYLE_SCHEMA)) walk(entry, key);
+  return lines.join('\n');
+}
