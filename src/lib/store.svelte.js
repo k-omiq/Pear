@@ -3186,7 +3186,20 @@ let toastT;
 // `app.toast` is always the last thing said, whatever its kind, so a reader
 // asking "what did the app just tell the user" has one place to look. Only an
 // info toast is drawn from it; an error is drawn from `app.errors`.
+// While an AI tool runs (`quietly`), the store's own toasts stay quiet: the
+// AI bar says what the run is doing, and a toast per box would be noise.
+let quiet = 0;
+export function quietly(fn) {
+  quiet++;
+  try {
+    return fn();
+  } finally {
+    quiet--;
+  }
+}
+
 export function toast(msg, kind = 'info') {
+  if (quiet) return;
   app.toast = { msg, seq: app.toast.seq + 1, kind };
   clearTimeout(toastT);
   toastT = setTimeout(() => {
@@ -4682,6 +4695,48 @@ export function placeActiveAt(imgX, imgY, target = null) {
   );
 }
 
+// A box placed for the AI's `add`: on page `p`, for line `lineN` (one not
+// placed yet) or for new free text, born where a click at (x, y) would put it -
+// in the balloon there, as `placeActiveAt` does - or in `rect` exactly, with no
+// fit. `style` is a patch over the style it is born with. Nothing is selected
+// and the view stays where it is. One `place` step. Returns the box, or a
+// string saying why not.
+export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, style = null } = {}) {
+  if (isTranslateMode()) return 'this chapter is in translate mode';
+  if (!p) return 'no such page';
+  settleEdits();
+  let ln;
+  let free = false;
+  if (lineN != null) {
+    ln = lineByN(p, lineN);
+    if (!ln) return `page has no line ${lineN}`;
+    if (isFreeLine(ln) || isPlaced(p, ln.n)) return `line ${lineN} already has a box`;
+    ln.placed = true;
+  } else {
+    ln = { n: nextFreeLineN(p), type: 'dialogue', jp: '', en: text ?? '' };
+    p.lines.push(ln);
+    free = true;
+  }
+  const activeBefore = p.activeLineN;
+  const cx = rect ? rect[0] + rect[2] / 2 : x;
+  const cy = rect ? rect[1] + rect[3] / 2 : y;
+  const b = bornBox(p, ln, cx, cy, rect ? { fit: null, outline: null } : undefined);
+  if (rect) Object.assign(b, { x: rect[0], y: rect[1], w: rect[2], h: rect[3] });
+  if (style) b.style = applyStylePatch(cloneStyle(b.style), style).style;
+  if (rect || style) autoFitBox(b, p);
+  p.boxes.push(b);
+  if (!free) p.activeLineN = firstUnplaced(p);
+  recordEdit({
+    t: 'place',
+    pageId: p.id,
+    index: p.boxes.length - 1,
+    box: $state.snapshot(b),
+    ...(free ? freeLineRecord(p, b) : { activeBefore, activeAfter: p.activeLineN }),
+  });
+  markUnsaved();
+  return b;
+}
+
 export function placeableDetectedLines(p) {
   if (!p?.lines) return [];
   const placed = placedLineNs(p);
@@ -4829,57 +4884,17 @@ export function cancelChapterPlace() {
 export async function placeDetectedInChapter() {
   if (isTranslateMode() || chapterRun) return 0;
   if (!app.pages.length) return 0;
-  const pages = app.pages;
-  const run = (chapterRun = new AbortController());
-  const before = new Map(pages.map((p) => [p, rasterOf(p)]));
-  let fits;
-  try {
-    fits = await measureChapterFits(pages, {
-      blocksFor: unmeasuredBlocks,
-      fitFor: measureBlock,
-      signal: run.signal,
-      onProgress: (progress) => {
-        app.chapterPlace = progress;
-      },
-    });
-  } finally {
-    chapterRun = null;
-    app.chapterPlace = null;
-  }
-  if (!fits || run.signal.aborted || app.pages !== pages || isTranslateMode()) {
-    if (app.pages === pages) toast('Place chapter cancelled - nothing was placed');
+  const measured = await measureForPlace(app.pages);
+  if (!measured) {
+    if (measured === null) toast('Place chapter cancelled - nothing was placed');
     return 0;
   }
   settleEdits();
   const here = page();
-  let total = 0;
-  let pagesTouched = 0;
-  let changed = 0;
-  const placeOn = (p) => {
-    const was = before.get(p);
-    const now = rasterOf(p);
-    if (!was || was.detect !== now.detect || was.file !== now.file || was.w !== now.w || was.h !== now.h) {
-      if (placeableDetectedLines(p).length) changed++;
-      return [];
-    }
-    for (const d of p.detect?.boxes ?? []) {
-      if (!fits.has(d)) continue;
-      const m = fits.get(d);
-      d.fit = m?.fit ?? null;
-      if (m?.outline) d.outline = m.outline;
-      else delete d.outline;
-    }
-    const items = placeDetectedInto(p);
-    if (items.length) {
-      total += items.length;
-      pagesTouched++;
-    }
-    return items;
-  };
-  for (const p of app.pages) if (p !== here) placeOn(p);
-  const lastItems = placeOn(here);
-  // The stored answers are document too, placed or not.
-  if (total || fits.size) markUnsaved();
+  // The page in front of the user goes last, so it keeps the selection.
+  const order = [...app.pages.filter((p) => p !== here), here];
+  const { total, pagesTouched, changed, placed } = commitPlace(order, measured);
+  const lastItems = placed.get(here) ?? [];
   const changedStr = changed ? ` · ${changed} page${changed === 1 ? '' : 's'} changed while fitting, place again` : '';
   if (!total) {
     toast(`No detected bubbles left to place in this chapter${changedStr}`);
@@ -4896,6 +4911,67 @@ export async function placeDetectedInChapter() {
   const leftStr = remaining > 0 ? ` · ${remaining} left with no detected bubble` : '';
   toast(`Placed ${countStr} across ${pageStr}${leftStr}${changedStr}`);
   return total;
+}
+
+// The measuring half of a place over many pages (see above), for the button
+// and for the AI's `place`. Answers `{ pages, fits, before }`, or null when the
+// run was cancelled or the chapter changed under it, or false when another
+// place is already running or there is nothing to place into.
+export async function measureForPlace(pages) {
+  if (isTranslateMode() || chapterRun || !pages?.length) return false;
+  const chapter = app.pages;
+  const run = (chapterRun = new AbortController());
+  const before = new Map(pages.map((p) => [p, rasterOf(p)]));
+  let fits;
+  try {
+    fits = await measureChapterFits(pages, {
+      blocksFor: unmeasuredBlocks,
+      fitFor: measureBlock,
+      signal: run.signal,
+      onProgress: (progress) => {
+        app.chapterPlace = progress;
+      },
+    });
+  } finally {
+    chapterRun = null;
+    app.chapterPlace = null;
+  }
+  if (!fits || run.signal.aborted || app.pages !== chapter || isTranslateMode()) return app.pages === chapter ? null : false;
+  return { fits, before };
+}
+
+// The placing half: synchronous, one `placeMany` entry per page. A page whose
+// detection, raster or coordinate space changed while it was measured is left
+// alone and counted in `changed`. The stored answers are document too, placed
+// or not.
+export function commitPlace(pages, { fits, before }) {
+  let total = 0;
+  let pagesTouched = 0;
+  let changed = 0;
+  const placed = new Map();
+  for (const p of pages) {
+    const was = before.get(p);
+    const now = rasterOf(p);
+    if (!was || was.detect !== now.detect || was.file !== now.file || was.w !== now.w || was.h !== now.h) {
+      if (placeableDetectedLines(p).length) changed++;
+      continue;
+    }
+    for (const d of p.detect?.boxes ?? []) {
+      if (!fits.has(d)) continue;
+      const m = fits.get(d);
+      d.fit = m?.fit ?? null;
+      if (m?.outline) d.outline = m.outline;
+      else delete d.outline;
+    }
+    const items = placeDetectedInto(p);
+    placed.set(p, items);
+    if (items.length) {
+      total += items.length;
+      pagesTouched++;
+    }
+  }
+  if (total || fits.size) markUnsaved();
+  return { total, pagesTouched, changed, placed };
 }
 
 // What a page's measured fits are answers about: its detection, its raster's
@@ -5096,7 +5172,7 @@ export function approvePageOutlines(p = page(), by = 'user') {
   return n;
 }
 
-function approveBoxes(p, boxes, by) {
+export function approveBoxes(p, boxes, by) {
   settleEdits();
   const items = [];
   for (const b of boxes) {
@@ -5112,6 +5188,17 @@ function approveBoxes(p, boxes, by) {
     markUnsaved();
   }
   return items.length;
+}
+
+// The text typeset again inside the outline it has, which stays as it is,
+// approval and all: the solver, or the ladder when the solver has nothing to
+// say. One `refit` step when anything moved.
+export function retypesetBox(boxId, p = page()) {
+  const b = (p?.boxes ?? []).find((x) => x.id === boxId);
+  if (!b) return false;
+  settleEdits();
+  setBoxOutline(b, p, b.fit ?? null, b.outline ? $state.snapshot(b.outline) : null);
+  return true;
 }
 
 // The box's own rectangle as its outline: for free text, an SFX, or a bubble
@@ -5233,7 +5320,7 @@ function applyBubbleInk(b, p) {
 // box - sizing off, text on a curve, a mesh warp, ink or a mask - is never laid
 // out by the solver, so a lock on it would do nothing and a chip would promise
 // something it cannot deliver.
-const LOCK_KEYS = ['size', 'width', 'height', 'pos', 'breaks'];
+export const LOCK_KEYS = ['size', 'width', 'height', 'pos', 'breaks'];
 
 export const lockableBox = (b) => !!(b?.auto?.on && b.style && isAutoBox(boxCandidate(b, null)));
 
@@ -5577,18 +5664,19 @@ const DUP_OFFSET = 16;
 // line carries the type, the Japanese, the English and the tags across, so
 // `boxText` answers the same for both and a tag-scoped bulk edit still reaches
 // the copy.
-export function duplicateBox(id = app.selectedId) {
+// `p` is the page the box is on (the one on screen unless said); the copy is
+// selected unless `select` is false.
+export function duplicateBox(id = app.selectedId, p = page(), { select = true } = {}) {
   if (!app.pages.length) return null; // no chapter open: never write into the stand-in page
   if (isTranslateMode()) return null; // no canvas boxes in a translate chapter - see `placeActiveAt`
   // Before anything is read: a settle arriving after this gesture's own record
   // would sit on top of it, so the first undo would rewind the edit that came
   // *before* the duplicate.
   settleEdits();
-  const p = page();
-  const src = p.boxes.find((b) => b.id === id);
+  const src = p?.boxes.find((b) => b.id === id);
   if (!src) return null;
   const snap = boxSnapshot(src, p);
-  return placeSnapshot(p, snap, snap.box.x + DUP_OFFSET, snap.box.y + DUP_OFFSET);
+  return placeSnapshot(p, snap, snap.box.x + DUP_OFFSET, snap.box.y + DUP_OFFSET, select);
 }
 
 // What a copy needs of its source, taken whole at the moment of the copy: the
@@ -5631,7 +5719,7 @@ function boxSnapshot(src, p) {
 
 // A snapshot made into a new box on `p`, its top-left at (x, y) or as near as
 // the page allows. One undo entry, and the copy ends up selected.
-function placeSnapshot(p, snap, x, y) {
+function placeSnapshot(p, snap, x, y, select = true) {
   const ln = { n: nextFreeLineN(p), ...snap.line };
   if (ln.tags) ln.tags = [...ln.tags];
   p.lines.push(ln);
@@ -5683,7 +5771,7 @@ function placeSnapshot(p, snap, x, y) {
     ...freeLineRecord(p, b),
   });
   markUnsaved();
-  selectBox(b.id);
+  if (select) selectBox(b.id);
   return b.id;
 }
 
@@ -6045,10 +6133,10 @@ export function resetBoxRotation(id = app.selectedId) {
 }
 
 // ---------- delete ----------
-export function deleteBox(id) {
+// `p` is the page the box is on: the one on screen unless said.
+export function deleteBox(id, p = page()) {
   if (isTranslateMode()) return;
-  const p = page();
-  const b = byId(id);
+  const b = p?.boxes.find((x) => x.id === id);
   if (!b) return;
   // All three taken before the removal: the undo has to put the box back where
   // it was in the stacking order, not on the end, and take its line back out of
@@ -6093,7 +6181,7 @@ export function deleteBox(id) {
       ...freeLine,
     });
   }
-  app.selectedId = null;
+  if (app.selectedId === id) app.selectedId = null;
   // The caret goes with the box. A delete can arrive from outside the box being
   // typed into - the Inspector's button, the keyboard while the pointer is
   // elsewhere - and `editingId` left naming a box that no longer exists is not

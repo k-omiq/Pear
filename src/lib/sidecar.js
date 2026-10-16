@@ -56,7 +56,7 @@ export async function analyzeImage(imageUrl, options = {}, maybeLanguage) {
 // Detect + OCR one page object and apply results to it. Returns { lines } on
 // success or { error } on failure. Shared by the single-page and whole-chapter
 // paths. Pins the write to `p` - detection may resolve after the user navigates.
-async function detectOnePage(p, { ocr = true, language, lang } = {}, current = () => true) {
+export async function detectOnePage(p, { ocr = true, language, lang } = {}, current = () => true) {
   if (!current()) return { stopped: true };
   if (!hasRawImage(p)) return { skipped: true };
   // A batch runs over every page in the chapter, but only five pages' images
@@ -79,7 +79,7 @@ async function detectOnePage(p, { ocr = true, language, lang } = {}, current = (
   }
 }
 
-function detectionChapter() {
+export function detectionChapter() {
   const seq = chapterOpenSeq();
   const pages = app.pages;
   const ref = app.chapterRef;
