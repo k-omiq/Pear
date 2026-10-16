@@ -1,3 +1,5 @@
+// The AI door: a local MCP server, off until Settings turns it on.
+mod agent_mcp;
 // `pub` because the `.sut` parser and its scorer are reachable from the crate's
 // tests as well as from the `brush_import` command below.
 pub mod brush;
@@ -63,9 +65,19 @@ pub fn run() {
       font_coverage::system_font_coverage,
       font_decode::font_to_sfnt,
       durability::fsync_path,
-      trash::trash_path
+      trash::trash_path,
+      agent_mcp::agent_door_start,
+      agent_mcp::agent_door_stop,
+      agent_mcp::agent_door_status,
+      agent_mcp::agent_tools_set,
+      agent_mcp::agent_result
     ])
+    .manage(agent_mcp::AgentDoor::default())
     .setup(|app| {
+      {
+        use tauri::Manager;
+        app.state::<agent_mcp::AgentDoor>().set_app(app.handle().clone());
+      }
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()

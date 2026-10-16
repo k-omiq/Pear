@@ -1,0 +1,4 @@
+// Every tool the agent has. Importing this file fills the registry; the MCP
+// door and (later) the in-app panel read it from there.
+import './read.js';
+import './view.js';
