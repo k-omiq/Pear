@@ -257,6 +257,9 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
       // open decodes the art, rescales, and clears it. Carried through a load
       // rather than recomputed - only the file knows the swap happened.
       needsRespace: p.needsRespace === true,
+      // A free note about the page (TXT-7): what the art shows, who is in it,
+      // anything the next pass should know. Absent is no note.
+      note: typeof p.note === 'string' ? p.note : '',
       lines: (p.lines ?? []).map(sanitizeLine),
       // Both halves defaulted, not just `panels`. `detect` arrives from a file
       // this build did not write - a hand edit, a foreign tool, a half-written
@@ -791,6 +794,17 @@ export function setLineText(p, n, v) {
   clearTimeout(lineT);
   lineT = setTimeout(settleLine, LINE_SETTLE_MS);
 }
+// The page's note (TXT-7). A text field, so the field keeps its own undo while
+// it has focus, like the queue's textarea before its edit settles; the note is
+// not drawn, so nothing refits and the document history is not involved.
+export function setPageNote(p, text) {
+  if (!p) return;
+  const v = typeof text === 'string' ? text.slice(0, 4000) : '';
+  if ((p.note ?? '') === v) return;
+  p.note = v;
+  markUnsaved();
+}
+
 // Who speaks a line (TXT-6): a character id, or null for nobody. One click,
 // one undo step; nothing is restyled - the speaker's tag reaches a box only
 // when it is placed, like any tag default.
@@ -1713,7 +1727,7 @@ function fitRest(b, pending) {
 // names, its space, its lines, what was detected on it, and which boxes it
 // holds in which order.
 const pageRest = (p) =>
-  JSON.stringify([p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.lines ?? null, p.detect ?? null, p.boxes.map((b) => b.id)]);
+  JSON.stringify([p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.note ?? '', p.lines ?? null, p.detect ?? null, p.boxes.map((b) => b.id)]);
 
 function noteBox(b, p, lines) {
   const pending = b.auto?.status === 'pending';
@@ -2044,7 +2058,7 @@ const docText = () =>
     JSON.stringify([
       app.chapterMode,
       { ...app.typesetting, version: 0 },
-      app.pages.map((p) => [p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.lines ?? null, p.detect ?? null, p.boxes]),
+      app.pages.map((p) => [p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.note ?? '', p.lines ?? null, p.detect ?? null, p.boxes]),
     ]),
   );
 

@@ -37,6 +37,8 @@ export function serializePageText(p) {
     width: p.w > 0 ? p.w : null,
     height: p.h > 0 ? p.h : null,
     panels: (p.detect?.panels ?? []).slice(),
+    // The page's note (TXT-7), for a translator's tooling; only when there is one.
+    ...(p.note ? { note: p.note } : null),
     lines: (p.lines ?? []).map((l) => {
       const g = geom.get(l.n);
       // `tags` alongside `type`, not instead of it: `type` is the legacy field

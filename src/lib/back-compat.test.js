@@ -472,6 +472,13 @@ describe('a whole chapter.json from the last release', () => {
     expect(l2.type).toBe('sfx');
   });
 
+  it('gives a page saved before page notes an empty note', () => {
+    expect(pageById(1).note).toBe('');
+    loadProjectPages([{ id: 8, w: 0, h: 0, note: 'Rain all page.', lines: [], boxes: [] }, { id: 7, w: 0, h: 0, note: 3, lines: [], boxes: [] }]);
+    expect(pageById(8).note).toBe('Rain all page.');
+    expect(pageById(7).note).toBe('');
+  });
+
   it('gives a line saved before speakers no speaker, and drops one of the wrong type', () => {
     const [l1, l2] = pageById(1).lines;
     expect('speaker' in l1).toBe(false);

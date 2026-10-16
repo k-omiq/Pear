@@ -2359,6 +2359,9 @@ async function writeOpenChapter(seq, requestedRef, requestedTurn) {
     // memory because the whole point of it is to survive to a session that CAN
     // decode the image.
     ...(pg.needsRespace ? { needsRespace: true } : null),
+    // Written only when there is one (TXT-7), so a chapter nobody wrote a
+    // note in is saved exactly as before.
+    ...(pg.note ? { note: pg.note } : null),
     // $state.snapshot is a deep clone: the nested style objects inside boxes
     // and the detect geometry come out as plain data, never proxies.
     lines: $state.snapshot(pg.lines),
