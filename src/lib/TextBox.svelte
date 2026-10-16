@@ -2901,14 +2901,17 @@
          same reasons - `renderBoxTexture` has the mask in it and neither the
          flip, the turn nor the opacity, which stay CSS on the wrapper and on
          the box - set on whole device pixels where that keeps it sharp
-         (`pictureCss`). -->
+         (`pictureCss`). Not while a zoom gesture is moving: the picture is
+         not repainted then, only stretched, so no texel is on a device pixel
+         to keep, and a snap worked out again at every step only moved the
+         letters against the page by up to half a device pixel each step. -->
     <canvas
       class="warpl"
       bind:this={warpEl}
       data-painter={engineShown ? 'engine' : undefined}
       style={warpGeom
         ? engineShown
-          ? pictureCss(warpGeom, z, displayScale(), s.rotation || mirror ? null : box)
+          ? pictureCss(warpGeom, z, displayScale(), s.rotation || mirror || app.zoomLive ? null : box)
           : `left:${-warpGeom.ox * z}px;top:${-warpGeom.oy * z}px;width:${warpGeom.cw * z}px;height:${warpGeom.ch * z}px;`
         : 'left:0;top:0;width:0;height:0'}
       aria-hidden="true"
