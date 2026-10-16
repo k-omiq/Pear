@@ -16,6 +16,7 @@
     MAX_TAG_LEN,
   } from './tags.svelte.js';
   import TagDefaultsForm from './TagDefaultsForm.svelte';
+  import SeriesGuide from './SeriesGuide.svelte';
   import { resetPanels } from './editor/panels.svelte.js';
   import { processMemory, ROLE_LABELS } from './memory.js';
   import { prefs, setPref } from './prefs.svelte.js';
@@ -752,9 +753,9 @@
         </div>
       </div>
 
-      <!-- M4 puts the series guide here (docs/AI_TYPESETTING_PLAN.md section
-           4): full styles per tag, text rules and free notes, all in
+      <!-- The series guide (docs/AI_TYPESETTING_PLAN.md section 4), in
            project.json beside the tags above. -->
+      <SeriesGuide {scope} />
 
       <div class="settings-section">
         <div class="settings-title">LAYOUT{@render scope('series')}</div>

@@ -44,6 +44,7 @@ import {
 import { normalizeTypesetting, newTypesetting, legacyTypesetting, openTypesetting } from './data.js';
 import { buildTextJson } from './text-json.js';
 import { carryTagsForward, bindTags, unbindTags, sanitizeTags, sanitizeTagSizes } from './tags.svelte.js';
+import { bindGuide, unbindGuide, sanitizeGuide } from './guide.svelte.js';
 import {
   setChapterImageDirs,
   setResidentWindow,
@@ -348,6 +349,7 @@ async function readProject(root, slug, problems, dupes) {
     // Old Korean builds stored this globally; otherwise absent is Japanese.
     ocrLanguage: normalizeOcrLanguage(raw.ocrLanguage ?? legacyProjectLanguage()),
     ...projectTags(raw),
+    guide: sanitizeGuide(raw.guide),
     chapters,
     unreadable: false,
   };
@@ -377,9 +379,11 @@ function projectTags(raw) {
   return { tags: sanitizeTags(list), tagSizes: sanitizeTagSizes(sizes) };
 }
 
-// Every project.json rewrite is a whole-record write, so the registry and the
-// size memory ride on every one of them or they are deleted from disk.
-const tagFields = (p) => ({ tags: p.tags ?? [], tagSizes: p.tagSizes ?? {} });
+// Every project.json rewrite is a whole-record write, so the registry, the
+// size memory and the series guide ride on every one of them or they are
+// deleted from disk. Both writers (`writeProjectRecord`, and chapter creation's
+// own) spread this, so a field added here reaches both.
+const seriesFields = (p) => ({ tags: p.tags ?? [], tagSizes: p.tagSizes ?? {}, guide: p.guide ?? sanitizeGuide(null) });
 
 // Writes of the open project's registry are chained, so two clicks in quick
 // succession cannot land their whole-record rewrites out of order and leave the
@@ -388,29 +392,41 @@ const tagFields = (p) => ({ tags: p.tags ?? [], tagSizes: p.tagSizes ?? {} });
 // joins the same chain (`setProjectOcrLanguage`): Settings ▸ Project edits both
 // at once, and a tag write racing a language write would put the old language
 // back on disk under the new one in memory.
+//
+// The series guide's writes are the same kind of write and share the count:
+// each writes the whole record from `p` as it stands, so a tag write and a
+// guide write queued together need only the later of the two.
 let recordWrite = Promise.resolve();
-const tagWriteSeq = new WeakMap(); // project record -> number of registry writes asked for
-function saveProjectTags(p, next) {
-  p.tags = next.list;
-  p.tagSizes = next.sizes;
-  const mine = (tagWriteSeq.get(p) ?? 0) + 1;
-  tagWriteSeq.set(p, mine);
+const seriesWriteSeq = new WeakMap(); // project record -> number of registry/guide writes asked for
+function queueSeriesWrite(p, what) {
+  const mine = (seriesWriteSeq.get(p) ?? 0) + 1;
+  seriesWriteSeq.set(p, mine);
   recordWrite = recordWrite
     .then(async () => {
-      if (tagWriteSeq.get(p) !== mine) return;
+      if (seriesWriteSeq.get(p) !== mine) return;
       await writeProjectRecord(p, {});
     })
     .catch((e) => {
-      toastError(`Could not save tags: ${e?.message ?? e}`);
+      toastError(`Could not save ${what}: ${e?.message ?? e}`);
     });
   return recordWrite;
+}
+function saveProjectTags(p, next) {
+  p.tags = next.list;
+  p.tagSizes = next.sizes;
+  return queueSeriesWrite(p, 'tags');
+}
+function saveProjectGuide(p, next) {
+  p.guide = next;
+  return queueSeriesWrite(p, 'the series guide');
 }
 
 // Bind the registry to the project whose chapter is on screen. Called on every
 // open, because the vocabulary belongs to the project and two projects must each
 // present their own, whichever was opened first; `closeChapter` unbinds.
-function bindProjectTags(p) {
+function bindProjectSeries(p) {
   bindTags({ list: p.tags ?? [], sizes: p.tagSizes ?? {} }, (next) => saveProjectTags(p, next));
+  bindGuide(p.guide, (next) => saveProjectGuide(p, next));
 }
 
 // A tag entry for `name` in `projectId`'s registry, or null. The package flow
@@ -433,7 +449,7 @@ export async function addProjectTags(projectId, entries) {
   if (!fresh.length) return 0;
   const next = { list: [...(p.tags ?? []), ...fresh], sizes: p.tagSizes ?? {} };
   await saveProjectTags(p, next);
-  if (app.chapterRef?.projectId === projectId) bindProjectTags(p);
+  if (app.chapterRef?.projectId === projectId) bindProjectSeries(p);
   return fresh.length;
 }
 
@@ -591,6 +607,7 @@ export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja'
     // `projectTags` reads as pre-registry and hands the legacy global list.
     tags: [],
     tagSizes: {},
+    guide: sanitizeGuide(null),
   };
   await writeJson(await fsx.join(dir, 'project.json'), record);
   const project = { ...record, slug, dir, chapters: [], unreadable: false };
@@ -666,7 +683,7 @@ async function writeProjectRecord(p, patch) {
     coverPageId: p.coverPageId ?? null,
     layout: normalizeLayout(p.layout),
     ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
-    ...tagFields(p),
+    ...seriesFields(p),
     ...patch,
   };
   await writeJson(await fsx.join(p.dir, 'project.json'), record);
@@ -957,8 +974,9 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
       // silently turn a webtoon project back into a paged one.
       layout: normalizeLayout(p.layout),
       ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
-      // And the tag registry with its size memory, which are this project's alone.
-      ...tagFields(p),
+      // And the tag registry, its size memory and the series guide, which are
+      // this project's alone.
+      ...seriesFields(p),
     });
 
     p.chapters = [...p.chapters, chapter].sort((a, b) => a.number - b.number);
@@ -2159,7 +2177,7 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   app.projectOcrLanguage = normalizeOcrLanguage(p.ocrLanguage);
   // And so does the tag registry: this project's vocabulary and size memory,
   // not whatever the last project left behind.
-  bindProjectTags(p);
+  bindProjectSeries(p);
   // Translate mode has no place and no text tool, and `setTool` refuses them
   // while it is on - so a chapter opened in it always lands on the hand rather
   // than on whatever the previous chapter was left holding.
@@ -2528,6 +2546,7 @@ export function closeChapter() {
   // And the tag registry goes with it, so no project's vocabulary is on offer
   // while none is open.
   unbindTags();
+  unbindGuide();
   // The failure streak belongs to the chapter that was open. Nothing is pending
   // any more, so the next chapter starts its own two-step from scratch.
   resetSaveFailures();

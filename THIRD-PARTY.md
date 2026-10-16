@@ -56,7 +56,10 @@ restriction. The package is used unmodified, for pattern data only.
 
 The bubble-outline finder (`src/lib/bubble-outline.js`) is a JavaScript port
 of the outline ladder in [Komatose](https://github.com/innominata/komatose)
-(`ocr/workflow.py`, commit `d9be51e`), which is MIT licensed:
+(`ocr/workflow.py`, commit `d9be51e`). The glossary matching rule in
+`src/lib/glossary.js` (fold by NFKC, case and whitespace; skip terms under two
+characters) follows Komatose's `src/lib/glossary.ts` at the same commit.
+Komatose is MIT licensed:
 
 > MIT License
 >

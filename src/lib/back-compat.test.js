@@ -25,6 +25,7 @@ import { parsePresets } from './presets.svelte.js';
 import { normalizeTranslations } from './importer.js';
 import { migrateEntry, migrateDoc } from './editor/history-file.svelte.js';
 import { app, loadProjectPages, pageById, byId } from './store.svelte.js';
+import { sanitizeGuide, emptyGuide } from './guide.svelte.js';
 import { initHistory, loadStack, undo, redo, resetHistory } from './editor/history.svelte.js';
 
 // ---------------------------------------------------------------------------
@@ -658,6 +659,47 @@ describe('a translations file, whichever era wrote it', () => {
 // ---------------------------------------------------------------------------
 // 5. localStorage
 // ---------------------------------------------------------------------------
+
+// A project.json from before the series guide: no `guide` key at all.
+const PROJECT_BEFORE_GUIDE = `{
+  "schema": 1,
+  "id": "p_old",
+  "name": "Tsukimichi",
+  "createdAt": "2026-09-01T10:00:00.000Z",
+  "updatedAt": "2026-10-01T10:00:00.000Z",
+  "coverChapterId": null,
+  "coverPageId": null,
+  "layout": "pages",
+  "ocrLanguage": "ja",
+  "tags": [{ "name": "sfx", "font": "Bangers", "outline": "#ffffff", "outlineWidth": 4, "size": 60 }],
+  "tagSizes": { "sfx": 60 }
+}`;
+
+describe('a project.json from before the series guide', () => {
+  it('reads as the empty guide, with no rule switched on', () => {
+    const raw = JSON.parse(PROJECT_BEFORE_GUIDE);
+    expect(sanitizeGuide(raw.guide)).toEqual(emptyGuide());
+  });
+
+  it('keeps a guide it wrote, and drops the fields of the wrong type', () => {
+    const g = sanitizeGuide({
+      glossary: [
+        { id: 'g1', source: 'ファルツ', target: 'Faltz', aliases: ['ファルツ様', 3], note: 'never Falz' },
+        { source: '', target: '' },
+        'junk',
+      ],
+      rules: { dashes: 'ascii', ellipsis: 'sideways' },
+      notes: 'Screams tilt with the balloon.',
+      typeset: { defaultHyphenate: false, defaultMinOrphan: 'many' },
+    });
+    expect(g.glossary).toEqual([
+      { id: 'g1', source: 'ファルツ', target: 'Faltz', aliases: ['ファルツ様'], note: 'never Falz', locked: true, character: false, tag: null },
+    ]);
+    expect(g.rules).toEqual({ dashes: 'ascii', ellipsis: 'keep' });
+    expect(g.notes).toBe('Screams tilt with the balloon.');
+    expect(g.typeset).toEqual({ defaultHyphenate: false });
+  });
+});
 
 describe('a presets blob from the last release', () => {
   const ERA2_PRESETS = `{"list":[
