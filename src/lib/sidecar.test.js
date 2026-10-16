@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { app, loadProjectPages } from './store.svelte.js';
 import { jobs } from './jobs.svelte.js';
-import { detectAllPages, detectCurrentPage } from './sidecar.js';
+import { detectAllPages, detectCurrentPage, detectOnePage } from './sidecar.js';
+import { prefs } from './prefs.svelte.js';
 import * as chapter from './library.svelte.js';
 
 const h = vi.hoisted(() => ({ calls: [], analyze: null }));
@@ -17,6 +18,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 beforeEach(() => {
   h.calls.length = 0;
   h.analyze = null;
+  prefs.keepEnglish = false;
   globalThis.window = { __TAURI_INTERNALS__: {} };
   globalThis.fetch = vi.fn().mockResolvedValue({
     arrayBuffer: async () => new ArrayBuffer(4),
@@ -119,6 +121,21 @@ describe('chapter detection jobs', () => {
       expect(p.lines.map((l) => [l.n, l.jp])).toEqual([[1, '今日はいい天気ですね'], [2, '明日も']]);
       expect(p.detect.boxes.map((b) => b.n)).toEqual([1, 2]);
     }
+  });
+
+  it.each([false, true])('passes keepEnglish=%s to detection post-processing and reports the surviving count', async (keepEnglish) => {
+    prefs.keepEnglish = keepEnglish;
+    h.analyze = async () => ({
+      img_width: 100, img_height: 100, panels: [],
+      lines: [
+        { n: 1, jp: 'BANG!', type: 'sfx', box: [0, 0, 100, 100] },
+        { n: 2, jp: '', type: 'dialogue', box: [10, 10, 60, 60] },
+        { n: 3, jp: '明日も', type: 'dialogue', box: [200, 0, 300, 100] },
+      ],
+    });
+    expect(await detectOnePage(app.pages[0])).toEqual({ lines: keepEnglish ? 2 : 1 });
+    expect(app.pages[0].lines.map((l) => l.jp)).toEqual(keepEnglish ? ['BANG!', '明日も'] : ['明日も']);
+    expect(app.pages[0].detect.boxes.map((b) => b.n)).toEqual(keepEnglish ? [1, 2] : [1]);
   });
 
   it.each([detectCurrentPage, detectAllPages])('%s drops a late result as soon as another open starts, before pages change', async (detect) => {

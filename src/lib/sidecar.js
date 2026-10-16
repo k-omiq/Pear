@@ -78,7 +78,7 @@ export async function detectOnePage(p, { ocr = true, language, lang } = {}, curr
       if (!p.raw) return { error: 'Raw page could not be read' };
       const detected = await analyzeImage(p.raw, { ocr, language: language ?? lang });
       const { postProcessDetection } = await import('./detect-post.js');
-      const result = postProcessDetection(detected);
+      const result = postProcessDetection(detected, { keepEnglish: prefs.keepEnglish });
       // applyDetection also marks the open chapter unsaved. Even writing to
       // the old page object would let a late result affect the new document.
       if (!current()) return { stopped: true };

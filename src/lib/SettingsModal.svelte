@@ -1057,6 +1057,18 @@
         </div>
       {/if}
 
+      <label class="srow">
+        <input
+          class="btick"
+          type="checkbox"
+          checked={prefs.keepEnglish}
+          aria-describedby="keep-english-hint"
+          onchange={(e) => setPref('keepEnglish', e.currentTarget.checked)}
+        />
+        <span>Keep text that is already English</span>
+      </label>
+      <div class="qhint" id="keep-english-hint">Off: English lettering on the raw is not detected.</div>
+
       <div class="group-label">Models{@render scope('you')}</div>
 
       <div class="model-card">

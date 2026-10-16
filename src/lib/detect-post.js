@@ -16,6 +16,16 @@ function visible(source) {
   return source.normalize('NFKC').replace(/<[^>\s]{1,40}>/g, '');
 }
 
+const SOURCE_SCRIPT = /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u;
+
+export function isAlreadyEnglish(source) {
+  const letters = [...visible(source)].filter((ch) => /\p{L}/u.test(ch));
+  if (letters.length < 2) return false;
+  if (letters.some((ch) => SOURCE_SCRIPT.test(ch))) return false;
+  const latin = letters.filter((ch) => /\p{Script=Latin}/u.test(ch)).length;
+  return latin / letters.length >= 0.8;
+}
+
 function readingKey(source) {
   return ocrComparableKey(visible(source));
 }
@@ -46,8 +56,11 @@ function coveredFraction(parent, parts) {
   return parent.length ? (parent.length - rest.length) / parent.length : 0;
 }
 
-function dropRedundantTranscriptions(regions) {
+function dropRedundantTranscriptions(regions, { keepEnglish }) {
   const drop = new Set();
+  if (!keepEnglish) {
+    for (const region of regions) if (region.english) drop.add(region.id);
+  }
   const live = () => regions.filter((region) => !drop.has(region.id) && hasReading(region.source));
 
   for (const region of live()) {
@@ -85,17 +98,22 @@ function dropRedundantTranscriptions(regions) {
   }
 
   const keptText = regions.filter((region) => !drop.has(region.id) && hasReading(region.source));
+  const skippedEnglish = keepEnglish ? [] : regions.filter((region) => region.english);
   for (const region of regions) {
     if (drop.has(region.id) || hasReading(region.source)) continue;
-    if (keptText.some((other) => coverage(region, other) >= 0.65)) drop.add(region.id);
+    const onKept = keptText.some((other) => coverage(region, other) >= 0.65);
+    const onEnglish = skippedEnglish.some((other) => coverage(region, other) >= 0.65);
+    if (onKept || onEnglish) drop.add(region.id);
   }
   return drop;
 }
 
-export function postProcessDetection(result) {
+export function postProcessDetection(result, { keepEnglish = false } = {}) {
   // Array positions identify regions even if incoming line numbers have gaps.
-  const regions = result.lines.map((line, id) => ({ id, box: line.box, source: line.jp ?? '' }));
-  const drop = dropRedundantTranscriptions(regions);
+  const regions = result.lines.map((line, id) => ({
+    id, box: line.box, source: line.jp ?? '', english: isAlreadyEnglish(line.jp ?? ''),
+  }));
+  const drop = dropRedundantTranscriptions(regions, { keepEnglish });
   return {
     ...result,
     lines: result.lines.filter((_, id) => !drop.has(id)).map((line, i) => ({
