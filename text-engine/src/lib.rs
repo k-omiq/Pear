@@ -27,6 +27,8 @@ pub mod abi_line_fonts;
 #[cfg(feature = "paint")]
 pub mod abi_paint;
 #[cfg(feature = "paint")]
+pub mod abi_pattern;
+#[cfg(feature = "paint")]
 pub mod abi_sfx;
 mod engine;
 mod font;
@@ -34,6 +36,8 @@ pub mod memory;
 mod metrics;
 #[cfg(feature = "paint")]
 pub mod paint;
+#[cfg(feature = "paint")]
+pub mod pattern;
 #[cfg(feature = "paint")]
 pub mod sfx;
 mod wrap;
