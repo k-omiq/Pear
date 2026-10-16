@@ -522,6 +522,10 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .qgls{ display:flex; flex-wrap:wrap; gap:4px; }
 .qgl{ padding:1px 7px; border-radius:999px; border:1px solid var(--line2); font-size:10.5px; color:var(--t2); }
 .qgl.miss{ border-color:var(--warn); color:var(--warn); }
+/* Speaker picker (TXT-6). */
+.qspk{ display:flex; align-items:center; gap:6px; }
+.qspk select{ flex:1 1 auto; min-width:0; background:var(--surface); color:var(--text); border:1px solid var(--line2); border-radius:5px; padding:2px 4px; font:inherit; font-size:11.5px; }
+.qspk-name{ font-weight:600; color:var(--t2); margin-right:4px; }
 .qrow.editing textarea{
   /* No resize grip. The row grows with the panel, and the native handle only
      ever let the user drag a textarea out of alignment with the rows around it. */

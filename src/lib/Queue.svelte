@@ -20,6 +20,7 @@
     isFreeLine,
     addTextBoxInView,
     setLineText,
+    setLineSpeaker,
     isTranslateMode,
     addQueueLine,
     placeableDetectedLines,
@@ -55,7 +56,7 @@
   import EngineNotice from './EngineNotice.svelte';
   import TagDefaultsForm from './TagDefaultsForm.svelte';
   import { guide } from './guide.svelte.js';
-  import { glossaryHits } from './glossary.js';
+  import { glossaryHits, glossaryCharacters } from './glossary.js';
 
   const p = $derived(page());
   // Which lines already have a box, in one pass over the page's boxes rather
@@ -66,6 +67,9 @@
   // How many bubbles on THIS page still want a box. Drives the top button's
   // label and its disabled state.
   const pagePlaceable = $derived(placeableDetectedLines(p).length);
+  // The series' characters, for the speaker picker (TXT-6).
+  const characters = $derived(glossaryCharacters(guide.glossary));
+  const speakerName = (line) => characters.find((c) => c.id === line.speaker)?.target ?? null;
 
   // Moving a keyed DOM row can drop its focused descendant even though the
   // node survives. Finish that move before restoring focus, so repeated Enter
@@ -417,6 +421,19 @@
             </span>
           {/if}
 
+          <!-- Who speaks it (TXT-6). Only offered once the series has
+               characters (Settings ▸ Project). A speaker whose character
+               was removed shows as unknown until it is changed. -->
+          {#if characters.length || line.speaker}
+            <span class="qspk">
+              <label class="qtf-lbl" for="qspk-{line.n}">Speaker</label>
+              <select id="qspk-{line.n}" value={line.speaker ?? ''} onchange={(e) => setLineSpeaker(p, line.n, e.currentTarget.value || null)}>
+                <option value="">-</option>
+                {#if line.speaker && !speakerName(line)}<option value={line.speaker}>Unknown character</option>{/if}
+                {#each characters as c (c.id)}<option value={c.id}>{c.target}</option>{/each}
+              </select>
+            </span>
+          {/if}
           {#if line.jp}<span class="qjp">{line.jp}</span>{/if}
           <!-- The series terms in this line's source (TXT-2): lit when the
                English has the term's target, marked when it does not. -->
@@ -444,7 +461,7 @@
               {#each tagged as t (t)}<span class="qtype {t}">{t}</span>{/each}
             </span>
           {/if}
-          <span class="preview">{lineText(line)}</span>
+          <span class="preview">{#if speakerName(line)}<b class="qspk-name">{speakerName(line)}:</b> {/if}{lineText(line)}</span>
           {#if line.jp}<span class="qjp">{line.jp}</span>{/if}
         </span>
         {#if !translate}<span class="dot {placed ? 'placed' : 'unplaced'}" title={placed ? 'Placed' : 'Unplaced'}></span>{/if}

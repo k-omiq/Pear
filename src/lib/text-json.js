@@ -9,6 +9,7 @@
 // and exporter.js re-exports `buildTextJson` - one serialiser, one file format,
 // no second copy to drift.
 import { lineText } from './store.svelte.js';
+import { termById } from './guide.svelte.js';
 
 // One page → the detected/typeset text plus the geometry it came from. `jp` is
 // the OCR'd source text, `en` the translation you typed (or that came in via a
@@ -50,6 +51,11 @@ export function serializePageText(p) {
         n: l.n,
         type: l.type ?? 'dialogue',
         ...(Array.isArray(l.tags) ? { tags: l.tags.slice() } : null),
+        // The speaker by name (TXT-6), which is what the importer reads back
+        // and what a translator's tooling can use; the id means nothing
+        // outside this series. Left out when the open series has no such
+        // character (a chapter of another project being packaged).
+        ...(termById(l.speaker)?.target ? { speaker: termById(l.speaker).target } : null),
         jp: l.jp ?? '',
         en: lineText(l),
         box: g?.box ?? null,

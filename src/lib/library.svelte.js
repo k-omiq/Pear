@@ -45,6 +45,7 @@ import { normalizeTypesetting, newTypesetting, legacyTypesetting, openTypesettin
 import { buildTextJson } from './text-json.js';
 import { carryTagsForward, bindTags, unbindTags, sanitizeTags, sanitizeTagSizes } from './tags.svelte.js';
 import { bindGuide, unbindGuide, sanitizeGuide } from './guide.svelte.js';
+import { resolveSpeakerNames } from './glossary.js';
 import {
   setChapterImageDirs,
   setResidentWindow,
@@ -427,6 +428,31 @@ function saveProjectGuide(p, next) {
 function bindProjectSeries(p) {
   bindTags({ list: p.tags ?? [], sizes: p.tagSizes ?? {} }, (next) => saveProjectTags(p, next));
   bindGuide(p.guide, (next) => saveProjectGuide(p, next));
+}
+
+// The speakers an imported translations file names, made into the series'
+// character ids (TXT-6), page by page. A name the series has no character for
+// is added to its glossary - in memory here; the caller's project.json write
+// carries it (chapter creation writes the record anyway, a re-import queues
+// one). The live guide is re-bound when this is the open project. Returns the
+// pages with their lines resolved, and whether the guide changed.
+function resolveSpeakers(p, pages) {
+  let glossary = p.guide?.glossary ?? [];
+  let changed = false;
+  const out = (pages ?? []).map((pg) => {
+    if (!pg?.lines?.some((l) => l?.speakerName != null)) return pg;
+    const { lines, made } = resolveSpeakerNames(pg.lines, glossary);
+    if (made.length) {
+      glossary = [...glossary, ...made];
+      changed = true;
+    }
+    return { ...pg, lines };
+  });
+  if (changed) {
+    p.guide = { ...(p.guide ?? sanitizeGuide(null)), glossary };
+    if (app.chapterRef?.projectId === p.id) bindProjectSeries(p);
+  }
+  return { pages: out, changed };
 }
 
 // A tag entry for `name` in `projectId`'s registry, or null. The package flow
@@ -1033,6 +1059,9 @@ export async function createChapter({
 
   const ordered = [...files].sort(naturalSort);
   const orderedCleaned = [...(cleanedFiles ?? [])].sort(naturalSort);
+  // Speakers named in the file become character ids; any new character
+  // reaches project.json with the record write chapter creation makes.
+  if (translations) translations = resolveSpeakers(p, translations).pages;
 
   return buildChapter(p, number, title, async (dir, cover) => {
     const rawsDir = await fsx.join(dir, 'raws');
@@ -1823,6 +1852,9 @@ export const applyTranslations = guarded(async function applyTranslations(
   const record = JSON.parse(chapterText);
   const before = await requireSnapshot(c.dir, chapterText, record, 'before-translations');
   const pages = record.pages ?? [];
+  const resolved = resolveSpeakers(projectById(projectId), parsed);
+  parsed = resolved.pages;
+  if (resolved.changed) queueSeriesWrite(projectById(projectId), 'the new characters');
   const covered = Math.min(parsed.length, pages.length);
   const next = pages.map((pg, i) =>
     i < covered ? { ...pg, lines: carryTagsForward(pg.lines ?? [], parsed[i].lines) } : pg,

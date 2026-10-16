@@ -360,14 +360,30 @@ const KINDS = {
   // (setBoxText on a box) writes a box-level override that would freeze the
   // box against its own line forever. Every box bound to the line refits, for
   // the same reason `setBoxText` fits as it writes.
+  //
+  // `field` says which of the line's fields the entry is about: absent is the
+  // translation (`en`), every entry before there was a choice; `jp` is the
+  // source text (TXT-11) and `speaker` the character id (TXT-6), null for none.
+  // Only the translation is drawn, so only it refits the boxes.
   line: {
-    label: 'that translation edit',
+    label: 'that line edit',
     apply(e, dir) {
       const p = pageById(e.pageId);
       if (!p) throw new Error('the page is gone');
       const ln = p.lines.find((l) => l.n === e.lineN);
       if (!ln) throw new Error('the queue line is gone');
-      ln.en = dir === 'undo' ? e.before : e.after;
+      const v = dir === 'undo' ? e.before : e.after;
+      const field = e.field ?? 'en';
+      if (field === 'speaker') {
+        if (v == null) delete ln.speaker;
+        else ln.speaker = v;
+        return;
+      }
+      if (field === 'jp') {
+        ln.jp = v;
+        return;
+      }
+      ln.en = v;
       // A writer that recorded the bound boxes' geometry on both sides of the
       // edit (`boxes: [{ boxId, geomBefore, geomAfter }]`) gets it put back, as
       // the `text` kind does. One that did not - every entry written so far -
