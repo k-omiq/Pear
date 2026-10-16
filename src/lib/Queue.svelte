@@ -80,6 +80,19 @@
   });
   const speakerName = (line) => characters.find((c) => c.id === line.speaker)?.target ?? null;
 
+  // What an sfx-tagged line's sound means (TXT-13). The dictionary is big, so
+  // it loads the first time a page has an sfx line, never at boot.
+  let sfxMeaning = $state(null);
+  const wantsSfx = $derived(!sfxMeaning && p.lines.some((l) => lineTags(l).includes('sfx')));
+  $effect(() => {
+    if (!wantsSfx) return;
+    import('./sfx-meanings.js').then((m) => (sfxMeaning = m.sfxMeaning)).catch(() => {});
+  });
+  const sfxHint = (line) => {
+    const hit = sfxMeaning && line.jp ? sfxMeaning(line.jp) : null;
+    return hit ? hit.meanings.join(' / ') : '';
+  };
+
   // Moving a keyed DOM row can drop its focused descendant even though the
   // node survives. Finish that move before restoring focus, so repeated Enter
   // presses keep moving this content. At an edge, stop on the row itself.
@@ -386,6 +399,7 @@
     >
       {#if editing}
         {@const hits = glossaryHits(line.jp, lineText(line), guide.glossary)}
+        {@const meaning = tagged.includes('sfx') ? sfxHint(line) : ''}
 
         <button class="badge" class:free title="Select this line's box" onclick={() => activateLine(line.n)}>{badge}</button>
         <span class="qcol">
@@ -484,6 +498,7 @@
               onkeydown={(e) => onTextareaKey(e, line, 'jp')}
             ></textarea>
           {/if}
+          {#if meaning}<span class="qsfx" title="What this sound usually means">≈ {meaning}</span>{/if}
           <!-- The series terms in this line's source (TXT-2): lit when the
                English has the term's target, marked when it does not. -->
           {#if hits.length}
@@ -512,6 +527,7 @@
           {/if}
           <span class="preview">{#if speakerName(line)}<b class="qspk-name">{speakerName(line)}:</b> {/if}{lineText(line)}</span>
           {#if line.jp}<span class="qjp">{line.jp}</span>{/if}
+          {#if tagged.includes('sfx') && sfxHint(line)}<span class="qsfx">≈ {sfxHint(line)}</span>{/if}
         </span>
         {#if !translate}<span class="dot {placed ? 'placed' : 'unplaced'}" title={placed ? 'Placed' : 'Unplaced'}></span>{/if}
       {/if}
