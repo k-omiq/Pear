@@ -5,13 +5,29 @@ import { warpExtent } from '../warp-paint.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+// A frame's height in the column, zoomed px, on the layout's own grid.
+//
+// The art and the boxes are placed by two different sums. The frames are a flex
+// column, so each one starts where the layout ended the one above it, and the
+// layout keeps a length in 64ths of a pixel (WebKit's and Chromium's
+// LayoutUnit), cutting off whatever is finer. The boxes sit in one overlay at
+// `stripOffsets`, a running total of the exact heights. Those cut-off remainders
+// add up down the column: eighty pages in, the art stood up to 0.8 screen px
+// off the boxes, by an amount that changed with every zoom step - text that
+// shook against the page in a long chapter. A height already on the grid has
+// nothing to cut, so both sums are the same numbers.
+const LAYOUT_UNIT = 64;
+export function stripFrameHeight(p, zoom = 1) {
+  return Math.round(Math.max(0, p?.h ?? 0) * zoom * LAYOUT_UNIT) / LAYOUT_UNIT;
+}
+
 // Calculate page top offsets and total column height.
 export function stripOffsets(pages, zoom = 1) {
   const tops = [];
   let y = 0;
   for (const p of pages ?? []) {
     tops.push(y);
-    y += Math.max(0, p?.h ?? 0) * zoom;
+    y += stripFrameHeight(p, zoom);
   }
   return { tops, total: y };
 }
@@ -198,7 +214,7 @@ export function stripFrameMetrics(pages, zoom = 1, firstTop = 0, gap = 0) {
   const g = gap > 0 ? gap : 0;
   let y = firstTop;
   for (const p of pages ?? []) {
-    const h = Math.max(0, p?.h ?? 0) * zoom;
+    const h = stripFrameHeight(p, zoom);
     tops.push(y);
     heights.push(h);
     // The gap is flex's, so it sits between every pair of frames whether or not

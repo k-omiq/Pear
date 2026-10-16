@@ -489,14 +489,20 @@
   // strokes themselves are drawn on the brush board and placed here whole; a
   // box never takes a stroke from the pointer directly.
   function paintInk(el, tips) {
-    const w = Math.max(1, Math.round((box.w + inkPad.l + inkPad.r) * z));
-    const h = Math.max(1, Math.round((box.h + inkPad.t + inkPad.b) * z));
+    const pw = box.w + inkPad.l + inkPad.r;
+    const ph = box.h + inkPad.t + inkPad.b;
+    const w = Math.max(1, Math.round(pw * z));
+    const h = Math.max(1, Math.round(ph * z));
     if (el.width !== w) el.width = w;
     if (el.height !== h) el.height = h;
     const ctx = el.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    ctx.scale(z, z);
+    // Scaled to the whole pixels the canvas has, not by the zoom: the canvas
+    // is stretched to its CSS size (`pw * z`), so ink drawn at the zoom alone
+    // landed up to half a pixel off at the far edge, by an amount that changed
+    // with every zoom it was repainted at.
+    ctx.scale(pw > 0 ? w / pw : z, ph > 0 ? h / ph : z);
     ctx.translate(inkPad.l, inkPad.t);
     drawInk(ctx, s.ink, undefined, tips, s);
     // The whole-text filters, over the ink as the exporter runs them over its
@@ -1167,18 +1173,22 @@
   const indentCss = (i) => (indents ? `padding-${s.align}:${indents[i] * z}px;` : '');
 
   // How far the centred block moves so its INK, not its line boxes, is centred
-  // in the box - the exporter's `inkShiftY`, in zoomed px because it is applied
-  // to the zoomed text. Zero for any other `valign` and for curved text, which
-  // is placed glyph by glyph from the box centre, typed into or not. While
-  // curved text is typed into flat there are no shaped lines, so the typed
-  // paragraphs stand in: their first ascender and last descender are the ones
-  // that decide the shift, and measuring them keeps the text from jumping when
-  // the edit starts and ends.
-  const inkShift = $derived.by(() => {
+  // in the box - the exporter's `inkShiftY`. Measured at the page size and
+  // zoomed, never measured at the zoomed size: WebKit answers the font's
+  // ascent and descent in whole pixels (23 at 26px type, 24 at 1% more), so a
+  // shift measured at each zoom moved the text against the box by up to two
+  // page px as the zoom changed - the shake a pinch showed. Zero for any other
+  // `valign` and for curved text, which is placed glyph by glyph from the box
+  // centre, typed into or not. While curved text is typed into flat there are
+  // no shaped lines, so the typed paragraphs stand in: their first ascender
+  // and last descender are the ones that decide the shift, and measuring them
+  // keeps the text from jumping when the edit starts and ends.
+  const inkShiftPage = $derived.by(() => {
     if (s.valign !== 'middle' || layout || curveEdit) return 0;
     const lines = shaped ?? (editing ? applyCase(text, s).split('\n') : null);
-    return lines ? inkShiftY(lines, s, effSize) : 0;
+    return lines ? inkShiftY(lines, s, s.size) : 0;
   });
+  const inkShift = $derived(inkShiftPage * z);
   // In the unflipped frame, inside the mirror (which is the clip wrapper's -
   // see `wrapMirror`): the export centres the block on its ink and then flips
   // the finished picture, so a vertically mirrored block is shifted the other
@@ -2891,14 +2901,17 @@
          same reasons - `renderBoxTexture` has the mask in it and neither the
          flip, the turn nor the opacity, which stay CSS on the wrapper and on
          the box - set on whole device pixels where that keeps it sharp
-         (`pictureCss`). -->
+         (`pictureCss`). Not while a zoom gesture is moving: the picture is
+         not repainted then, only stretched, so no texel is on a device pixel
+         to keep, and a snap worked out again at every step only moved the
+         letters against the page by up to half a device pixel each step. -->
     <canvas
       class="warpl"
       bind:this={warpEl}
       data-painter={engineShown ? 'engine' : undefined}
       style={warpGeom
         ? engineShown
-          ? pictureCss(warpGeom, z, displayScale(), s.rotation || mirror ? null : box)
+          ? pictureCss(warpGeom, z, displayScale(), s.rotation || mirror || app.zoomLive ? null : box)
           : `left:${-warpGeom.ox * z}px;top:${-warpGeom.oy * z}px;width:${warpGeom.cw * z}px;height:${warpGeom.ch * z}px;`
         : 'left:0;top:0;width:0;height:0'}
       aria-hidden="true"
