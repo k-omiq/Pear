@@ -14,6 +14,7 @@ import { isTauri, pickFilesTauri } from './importer.js';
 import { renderBoxLayer, pageSpace, settleNoise, enginesSettled, enginesHeld, measureStrip, chapterNow, chapterHeld } from './exporter.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
 import { settleBoxTips } from './brush-tips.js';
+import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { fontCssFor, fontNameFor, reviewOf, fontsSettling, fontMissing } from './store.svelte.js';
 import { resolveFace, postScriptNameFor } from './fonts.js';
 import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor } from './measure.js';
@@ -1017,6 +1018,7 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   // the PSD needs the same decoded tips the raster export does, prefetched the
   // same way and for the same reason: the painter is synchronous.
   const tips = await settleBoxTips(boxes);
+  await settlePickedTiles(boxes);
 
   // Text layers - one editable type layer per box, each backed by the box's
   // exact pixels, trimmed by renderBoxLayer to the glyphs it actually painted
@@ -1616,6 +1618,7 @@ export async function psdSelfTest(p) {
       const scratch = document.createElement('canvas');
       const entries = pageLayerBoxes(src, stripColumn(src));
       const selfTips = await settleBoxTips(entries.map((e) => e.box));
+      await settlePickedTiles(entries.map((e) => e.box));
       const layerBoxes = pageTextLayers(src, entries, W, H, scratch, selfTips);
       layerBoxes.forEach(({ rendered }, i) => {
         // A box that paints nothing (empty text) gets a layer with no pixels at

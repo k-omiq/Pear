@@ -126,6 +126,10 @@ const isCurrentStyle = (s) =>
   typeof s.gradient === 'object' &&
   !!s.pattern &&
   typeof s.pattern === 'object' &&
+  // The Rust pattern fill's fields came after; `fade` is the one a reader
+  // would trip on if it were missing.
+  !!s.pattern.fade &&
+  typeof s.pattern.fade === 'object' &&
   s.outline === undefined &&
   s.outlineWidth === undefined &&
   s.shadow === undefined;

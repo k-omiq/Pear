@@ -7,6 +7,7 @@
 // like - is answered here once, so a change lands on both at the same time.
 
 import { strokeStamps, strokeBounds, aaLevel, textureActive } from './brush.js';
+import { CANVAS_PATTERN_KINDS } from './data.js';
 
 // A stroke's `width` is the VISIBLE band the user asked for, but neither a
 // canvas stroke nor `-webkit-text-stroke` can draw a band: both draw a line
@@ -200,6 +201,13 @@ export function patternTilePx(style) {
   return Math.max(2, Math.round(tile * TILE_SS) / TILE_SS);
 }
 
+// The kind a canvas tile draws for `kind`: one of the eleven it knows, or
+// 'dots' for an engine-only kind and a picked tile, which only the Rust
+// engine paints (`screenInJob` in exporter.js).
+export function canvasPatternKind(kind) {
+  return CANVAS_PATTERN_KINDS.includes(kind) ? kind : 'dots';
+}
+
 // Draw one tile of `pattern` into the square (0,0,tile,tile) of `ctx`. The tile
 // has to be seamless in both directions - it is repeated by `createPattern` in
 // the exporter and by `background-repeat` in the editor - so every shape either
@@ -210,7 +218,7 @@ export function drawPatternTile(ctx, pattern, tile) {
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, tile, tile);
   ctx.fillStyle = fg;
-  const kind = pattern?.kind ?? 'dots';
+  const kind = canvasPatternKind(pattern?.kind);
   const dot = (cx, cy, r) => {
     ctx.beginPath();
     ctx.arc(cx * tile, cy * tile, r * tile, 0, Math.PI * 2);

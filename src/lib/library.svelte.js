@@ -42,7 +42,7 @@ import {
   stampTypesetting,
   noteTypesettingSaved,
 } from './store.svelte.js';
-import { normalizeTypesetting, newTypesetting, legacyTypesetting, openTypesetting } from './data.js';
+import { normalizeTypesetting, newTypesetting, legacyTypesetting, openTypesetting, patternSrcsUsed } from './data.js';
 import { buildTextJson } from './text-json.js';
 import { carryTagsForward, bindTags, unbindTags, sanitizeTags, sanitizeTagSizes } from './tags.svelte.js';
 import { bindGuide, unbindGuide, sanitizeGuide } from './guide.svelte.js';
@@ -60,6 +60,7 @@ import {
 } from './editor/history-file.svelte.js';
 import { setLeaveEditorHook } from './route.svelte.js';
 import { forgetPagePixels } from './page-pixels.js';
+import { bindPatternTiles, forgetPickedTiles, PATTERNS_DIR } from './pattern-tiles.svelte.js';
 
 const ROOT_KEY = 'mt.libraryRoot';
 const SCHEMA = 1;
@@ -1140,7 +1141,7 @@ export async function createChapter({
 // lines, boxes, detect, note }. A page with no raster or missing/invalid file name
 // is not accepted - it would persist with an empty or unresolvable `file`,
 // unrenderable and impossible to remove.
-export async function createChapterFromPages({ projectId, number, title, pages: input, mode = 'typeset', typesetting }) {
+export async function createChapterFromPages({ projectId, number, title, pages: input, mode = 'typeset', typesetting, patterns = null }) {
   const p = projectById(projectId);
   if (!p) throw new Error('No such project');
   if (!input?.length) throw new Error('Nothing to import');
@@ -1182,6 +1183,17 @@ export async function createChapterFromPages({ projectId, number, title, pages: 
     if (hasCleaned) {
       cleanedDir = await fsx.join(dir, 'cleaned');
       await fsx.mkdir(cleanedDir);
+    }
+
+    // Picked pattern tiles, under the names the boxes give them: a content
+    // hash, so a name is never renamed on the way in.
+    if (patterns?.size) {
+      const patternsDir = await fsx.join(dir, PATTERNS_DIR);
+      await fsx.mkdir(patternsDir);
+      for (const [name, bytes] of patterns) {
+        if (!isPlainFileName(name)) continue;
+        await fsx.writeFile(await fsx.join(patternsDir, name), bytes);
+      }
     }
 
     const usedRaws = new Set();
@@ -1400,6 +1412,17 @@ export async function readChapterPackageSources(projectId, chapterId) {
       }
     }
   }
+  // The picked pattern tiles the boxes name. One that is not on disk is left
+  // out: its boxes paint the default pattern on the other side, as here.
+  const patterns = new Map();
+  const patternsDir = await fsx.join(c.dir, PATTERNS_DIR);
+  for (const name of patternSrcsUsed(record.pages)) {
+    try {
+      patterns.set(name, await fsx.readFile(await fsx.join(patternsDir, name)));
+    } catch {
+      // missing: see above
+    }
+  }
   let translations = null;
   try {
     translations = await fsx.readTextFile(await fsx.join(c.dir, 'translations.json'));
@@ -1416,6 +1439,7 @@ export async function readChapterPackageSources(projectId, chapterId) {
     },
     raws,
     cleaned,
+    patterns,
   };
 }
 
@@ -1997,6 +2021,7 @@ let openSeq = 0;
 export function chapterOpenSeq() {
   return openSeq;
 }
+bindPatternTiles({ dir: () => openChapterDir(), seq: chapterOpenSeq });
 
 // The chapter an open is loading right now. `app.chapterRef` is deliberately
 // null for the whole of a load (see below), so this is the only thing left that
@@ -2590,6 +2615,7 @@ export function closeChapter() {
   // library; correctness never depended on this (entries are src-matched), so
   // this is purely returning memory early.
   forgetPagePixels();
+  forgetPickedTiles();
   // Cleared before the pages are: a debounce that lands after this point finds
   // no chapterRef and is a no-op, rather than a write of stale state.
   app.chapterRef = null;

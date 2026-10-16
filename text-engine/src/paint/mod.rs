@@ -31,6 +31,7 @@ mod pattern;
 mod raster;
 mod roughen;
 mod scene;
+mod screen;
 mod shade;
 mod shape;
 mod stroke;
@@ -51,12 +52,14 @@ pub use boxjob::{
 };
 pub use geom::{Affine, IBox, Polys, Pt};
 pub use job::{
-    decode, Align, Band, Fill, Job, Request, Rgba, Run, Stop, Tile, MAGIC, MAX_WEIGHT, WIRE_VERSION,
+    decode, decode_swatch, Align, Band, Fill, Job, Request, Rgba, Run, Stop, Tile, MAGIC, MAX_WEIGHT,
+    WIRE_VERSION,
 };
 pub use outline::FLATTEN_TOLERANCE;
 pub use pattern::{tile as pattern_tile, Kind as PatternKind, MAX_TILE_SIDE};
 pub use raster::{Coverage, Exact, Part, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
+pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
 pub use scene::Scene;
 pub use shape::{align_offset, curved_origin, shape_run, Placed, ShapedRun};
 pub use stroke::{Join, Side};

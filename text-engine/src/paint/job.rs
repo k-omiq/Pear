@@ -39,6 +39,8 @@ pub struct Stop {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fill {
     Solid(Rgba),
+    /// A seamless, procedural screen in the fill's own frame.
+    Screen(super::screen::Screen),
     /// Canvas `createLinearGradient(from, to)`.
     Linear {
         from: Pt,
@@ -204,7 +206,7 @@ pub struct Request {
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 7;
+pub const WIRE_VERSION: u32 = 8;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -355,7 +357,48 @@ impl<'a> Reader<'a> {
                 origin: self.pt()?,
                 fallback: self.rgba()?,
             },
+            5 => {
+                let screen = super::screen::Screen {
+                    kind: self.u32()?,
+                    tile: self.u32()?,
+                    mode: self.u32()?,
+                    seed: self.u32()?,
+                    a: self.pt()?,
+                    b: self.pt()?,
+                    origin: self.pt()?,
+                    angle: self.f64()?,
+                    aspect: self.f64()?,
+                    offset: self.pt()?,
+                    density: self.f64()?,
+                    line: self.f64()?,
+                    fg: self.rgba()?,
+                    bg: self.rgba()?,
+                    fallback: self.rgba()?,
+                    centre: self.pt()?,
+                    reach: self.f64()?,
+                    fade: match self.u32()? {
+                        0 => None,
+                        1 => Some((self.pt()?, self.pt()?)),
+                        _ => return Err(Error::BadSpec),
+                    },
+                };
+                if !screen.sound() {
+                    return Err(Error::BadSpec);
+                }
+                Fill::Screen(screen)
+            }
             _ => return Err(Error::BadSpec),
+        }))
+    }
+
+    fn tiles(&mut self) -> Result<Vec<Tile>, Error> {
+        super::budget::collect((0..self.count(8)?).map(|_| {
+            let (width, height) = (self.u32()?, self.u32()?);
+            if width > MAX_TILE_SIDE || height > MAX_TILE_SIDE {
+                return Err(Error::BadSpec);
+            }
+            let len = width as usize * height as usize * 4;
+            Tile::from_rgba(width, height, self.take(len)?).ok_or(Error::BadSpec)
         }))
     }
 }
@@ -387,6 +430,16 @@ impl<'a> Reader<'a> {
 ///   2 linear:  f64 x0, y0, x1, y1, stops
 ///   3 radial:  f64 cx, cy, r, stops
 ///   4 pattern: u32 tile, f64 pitch, f64 ax, ay, rgba fallback
+///   5 screen: u32 kind (0..30 built-in, 255 picked), tile (0xffffffff for none),
+///     mode (0 tone, 1 image), seed;
+///     f64 ax, ay, bx, by (basis columns), ox, oy (origin), angle (radians),
+///     aspect (> 0), su, sv (offset in tiles), density (0..1), line (tile share);
+///     rgba fg, bg, fallback; f64 cx, cy (centre), reach (> 0);
+///     u32 fade: 0 none, 1 then f64 x0, y0, x1, y1 (job units).
+///     Tile and mode apply only to picked screens. Image mode preserves the
+///     tile colours, multiplied by fg alpha; tone mode recolours with fg/bg.
+///     The basis must be nonsingular and all numbers finite. The aspect is
+///     applied along local x before the canvas turn about the origin.
 /// mesh: u32 cols, 0 for a job with no mesh; else
 ///   u32 rows, f64 x, y, w, h (the rectangle the mesh is defined on),
 ///   then (cols + 1) * (rows + 1) points, row by row from the top left:
@@ -480,14 +533,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
             fill,
         })
     }))?;
-    let tiles = super::budget::collect((0..r.count(8)?).map(|_| {
-        let (width, height) = (r.u32()?, r.u32()?);
-        if width > MAX_TILE_SIDE || height > MAX_TILE_SIDE {
-            return Err(Error::BadSpec);
-        }
-        let len = width as usize * height as usize * 4;
-        Tile::from_rgba(width, height, r.take(len)?).ok_or(Error::BadSpec)
-    }))?;
+    let tiles = r.tiles()?;
     if r.at != bytes.len() {
         return Err(Error::BadSpec);
     }
@@ -515,4 +561,24 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         transform: Affine(m),
         tiles,
     })
+}
+
+/// A swatch uses the same fill and tile records as a job, without a font
+/// or glyphs. Decode all of it before painting so a trailing or truncated
+/// record cannot leave a partial result in the caller's raster.
+pub fn decode_swatch(bytes: &[u8]) -> Result<(u32, u32, Option<Fill>, Vec<Tile>), Error> {
+    let mut r = Reader { bytes, at: 0 };
+    if r.u32()? != 0x5354_504d {
+        return Err(Error::BadSpec);
+    }
+    let (w, h) = (r.u32()?, r.u32()?);
+    if !(1..=2048).contains(&w) || !(1..=2048).contains(&h) {
+        return Err(Error::BadSpec);
+    }
+    let fill = r.fill()?;
+    let tiles = r.tiles()?;
+    if r.at != bytes.len() {
+        return Err(Error::BadSpec);
+    }
+    Ok((w, h, fill, tiles))
 }
