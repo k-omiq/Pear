@@ -895,7 +895,10 @@ mod tests {
     #[test]
     fn old_kinds_match_the_tiles_at_the_apps_two_pitches() {
         let _budget = budget::Scope::new();
-        for pitch in [7.8_f64, 15.6] {
+        // 7.5 and 15.5 are pitches the app makes (`patternTilePx` snaps a
+        // tile to whole device pixels at TILE_SS 2); 7.8 and 15.6 are not, and
+        // add the old path's own resampling to the difference.
+        for pitch in [7.5_f64, 15.5, 7.8, 15.6] {
             for kind in 0..11 {
                 let s = screen(kind, pitch);
                 let side = (pitch * 2.0).round() as u32;
@@ -932,11 +935,14 @@ mod tests {
                             "old kind {kind:2}, pitch {pitch}: channel MAE {mean:.4}, p99 {p99}"
                         );
                     }
-                    // Measured maxima: mean 6.7003 and p99 64 on RGBA8 channels.
+                    // Measured maxima: mean 9.45 (crosshatch at 7.5) and p99 76
+                    // on RGBA8 channels. The difference is the edges' antialiasing
+                    // alone: the tile's is exact area, the screen's a filtered
+                    // distance, which reads a 45 degree edge a little softer.
                     // The limits are measured on each channel independently;
                     // the opaque alpha channel cannot dilute the RGB error.
                     assert!(
-                        mean < 7.0 && p99 <= 64,
+                        mean < 10.0 && p99 <= 80,
                         "kind {kind}, pitch {pitch}, channel {channel}: {mean}, {p99}"
                     );
                 }
