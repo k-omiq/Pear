@@ -52,7 +52,7 @@ export async function analyzeImage(imageUrl, options = {}, maybeLanguage) {
   const buf = await (await fetch(imageUrl)).arrayBuffer();
   const bytes = Array.from(new Uint8Array(buf));
   const ocrModel = ocrModelForLanguage(language, prefs.ocrModels);
-  return invoke('detect_analyze', { image: bytes, ocr, language, ocrModel, secondDetector: prefs.secondDetector, mask });
+  return invoke('detect_analyze', { image: bytes, ocr, language, ocrModel, secondReader: ocr && prefs.secondReader, secondDetector: prefs.secondDetector, mask });
 }
 
 // Read a drawn character or short word (OCR-6) with the recognizer the

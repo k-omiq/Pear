@@ -21,6 +21,7 @@
     addTextBoxInView,
     setLineText,
     setLineSource,
+    resolveOtherReading,
     setLineSpeaker,
     setPageNote,
     isTranslateMode,
@@ -499,6 +500,14 @@
               oninput={(e) => onTextareaInput(e, line, 'jp')}
               onkeydown={(e) => onTextareaKey(e, line, 'jp')}
             ></textarea>
+            <!-- A second reader read this line differently (OCR-1). -->
+            {#if line.jp2}
+              <span class="qalt">
+                <span class="qalt-text" title="What the second OCR reader saw">Other reading: {line.jp2}</span>
+                <button class="qalt-btn" onclick={() => resolveOtherReading(p, line.n, true)}>Use</button>
+                <button class="qalt-btn" onclick={() => resolveOtherReading(p, line.n, false)}>Keep mine</button>
+              </span>
+            {/if}
           {/if}
           {#if meaning}<span class="qsfx" title="What this sound usually means">≈ {meaning}</span>{/if}
           <!-- The series terms in this line's source (TXT-2): lit when the

@@ -50,6 +50,7 @@ fn main() {
                     "ja",
                     false,
                     None,
+                    None,
                 )
             });
         let line = match result {

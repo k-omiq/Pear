@@ -58,6 +58,8 @@ pub struct Block {
     pub line_type: LineType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jp2: Option<String>,
 }
 
 impl Block {
@@ -70,6 +72,7 @@ impl Block {
             jp,
             line_type: LineType::Dialogue,
             kind: None,
+            jp2: None,
         }
     }
 }
