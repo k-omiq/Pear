@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 7
+export const WIRE_VERSION = 8
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -119,13 +119,13 @@ function f64(v) {
   view.setFloat64(at, +v, true)
   at += 8
 }
-function rgba(css) {
+function rgba(css, opacity = 1) {
   const c = parseColor(css)
   need(4)
   u8[at] = c[0]
   u8[at + 1] = c[1]
   u8[at + 2] = c[2]
-  u8[at + 3] = c[3]
+  u8[at + 3] = byte(c[3] * opacity)
   at += 4
 }
 function stops(list) {
@@ -166,6 +166,39 @@ function fill(f, tileIndex) {
       f64(f.ax)
       f64(f.ay)
       return rgba(f.style.color)
+    }
+    case 'screen': {
+      const p = f.pattern ?? {}
+      const kind = Object.hasOwn(PATTERN_KIND, p.kind) ? PATTERN_KIND[p.kind] : 0
+      u32(5)
+      u32(kind)
+      // Built-in screens never request or send a tile.
+      u32(kind === 255 ? tileIndex(f) : 0xffffffff)
+      u32(p.mode === 'image' ? 1 : 0)
+      u32(p.seed ?? 1)
+      for (const v of f.basis) f64(v)
+      f64(f.x)
+      f64(f.y)
+      f64((p.angle ?? 0) * (Math.PI / 180))
+      f64(p.aspect ?? 1)
+      f64(p.ox ?? 0)
+      f64(p.oy ?? 0)
+      f64(p.density ?? 0.5)
+      f64(f.line)
+      rgba(p.fg ?? '#000000', p.fgOpacity ?? 1)
+      rgba(p.bg ?? '#ffffff', p.bgOpacity ?? 1)
+      rgba(f.color)
+      f64(f.cx)
+      f64(f.cy)
+      f64(f.reach)
+      u32(f.fade ? 1 : 0)
+      if (f.fade) {
+        f64(f.fade.x0)
+        f64(f.fade.y0)
+        f64(f.fade.x1)
+        f64(f.fade.y1)
+      }
+      return
     }
     default:
       throw new Error(`mt-text: unknown fill kind ${JSON.stringify(f.kind)}`)
@@ -250,10 +283,10 @@ export function encodeJob(request) {
   return u8.subarray(0, at)
 }
 
-// The job's bytes, appended where the buffer stands.
-function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0, transform, tiles }) {
+// Both job and swatch buffers use the same tile table and object identity.
+function tileCollector(tiles) {
   const sent = []
-  const tileIndex = (f) => {
+  const index = (f) => {
     const tile = tiles ? tiles(f) : null
     if (!tile || !(tile.width > 0) || !(tile.height > 0)) return -1
     if (tile.data.length !== tile.width * tile.height * 4) {
@@ -262,6 +295,23 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
     const i = sent.indexOf(tile)
     return i >= 0 ? i : sent.push(tile) - 1
   }
+  return { sent, index }
+}
+
+function writeTiles(sent) {
+  u32(sent.length)
+  for (const tile of sent) {
+    u32(tile.width)
+    u32(tile.height)
+    need(tile.data.length)
+    u8.set(tile.data, at)
+    at += tile.data.length
+  }
+}
+
+// The job's bytes, appended where the buffer stands.
+function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0, transform, tiles }) {
+  const { sent, index: tileIndex } = tileCollector(tiles)
   const m = transform ?? [1, 0, 0, 1, 0, 0]
   u32(MAGIC)
   u32(WIRE_VERSION)
@@ -311,14 +361,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
     u32(written)
     at += written
   }
-  u32(sent.length)
-  for (const tile of sent) {
-    u32(tile.width)
-    u32(tile.height)
-    need(tile.data.length)
-    u8.set(tile.data, at)
-    at += tile.data.length
-  }
+  writeTiles(sent)
 }
 
 export const BOX_WIRE_VERSION = 1
@@ -426,7 +469,7 @@ function rasterOf(ex, asView) {
   return { x, y, width, height, data }
 }
 
-// The patterns, numbered as `Kind` in text-engine/src/paint/pattern.rs.
+// Screen ids from screen.rs; the first eleven also name the legacy tiles.
 const PATTERN_KIND = {
   dots: 0,
   halftone: 1,
@@ -439,6 +482,27 @@ const PATTERN_KIND = {
   grid: 8,
   vlines: 9,
   hlines: 10,
+  'halftone-fade': 11,
+  'square-dots': 12,
+  'diamond-dots': 13,
+  'line-tone': 14,
+  sand: 15,
+  stipple: 16,
+  'speed-lines': 17,
+  burst: 18,
+  rings: 19,
+  waves: 20,
+  zigzag: 21,
+  bricks: 22,
+  scales: 23,
+  hex: 24,
+  triangles: 25,
+  plus: 26,
+  stars: 27,
+  hearts: 28,
+  kakeami: 29,
+  glitch: 30,
+  picked: 255,
 }
 
 /** Whether this wasm draws pattern tiles itself. */
@@ -459,13 +523,49 @@ export function drawsPatternTiles(engine) {
 export function patternTile(engine, pattern, side, line) {
   const ex = engine.exports
   const kind = PATTERN_KIND[pattern?.kind ?? 'dots']
-  if (kind === undefined) return null
+  if (kind === undefined || kind > 10) return null
   const word = (css) => {
     const c = parseColor(css)
     return ((c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3]) >>> 0
   }
   const code = ex.mt_paint_pattern_tile(kind, side, word(pattern?.fg ?? '#000000'), word(pattern?.bg ?? '#ffffff'), line)
   if (code < 0) throw new Error(`mt-text: patternTile: ${STATUS[code] ?? `error ${code}`}`)
+  const raster = rasterOf(ex, false)
+  return { width: raster.width, height: raster.height, data: raster.data }
+}
+
+/** Whether this engine supports procedural screen fills and swatches. */
+export function drawsScreens(engine) {
+  return typeof engine?.exports?.mt_paint_pattern_swatch === 'function'
+}
+
+/** Built-in screen names in wire-id order; null for an older engine. */
+export function patternKinds(engine) {
+  const ex = engine?.exports
+  if (typeof ex?.mt_pattern_kinds_ptr !== 'function' || typeof ex?.mt_pattern_kinds_len !== 'function') return null
+  const ptr = ex.mt_pattern_kinds_ptr()
+  const len = ex.mt_pattern_kinds_len()
+  return new TextDecoder().decode(new Uint8Array(ex.memory.buffer, ptr, len)).split('\n')
+}
+
+/** A whole-fill preview in straight RGBA8. The returned pixels are a copy. */
+export function patternSwatch(engine, { width, height, fill: f, tiles }) {
+  if (!drawsScreens(engine)) return null
+  const ex = engine.exports
+  const { sent, index } = tileCollector(tiles)
+  at = 0
+  u32(0x5354504d) // MTPS
+  u32(width)
+  u32(height)
+  fill(f, index)
+  writeTiles(sent)
+  const bytes = u8.subarray(0, at)
+  const ptr = ex.mt_paint_job_reserve(bytes.length)
+  if (!ptr) throw new Error(`mt-text: patternSwatch: the engine refused a swatch of ${bytes.length} bytes`)
+  new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes)
+  const code = ex.mt_paint_pattern_swatch(bytes.length)
+  if (code < 0) throw new Error(`mt-text: patternSwatch: ${STATUS[code] ?? `error ${code}`}`)
+  if (code === 0) return null
   const raster = rasterOf(ex, false)
   return { width: raster.width, height: raster.height, data: raster.data }
 }

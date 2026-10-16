@@ -32,6 +32,8 @@
   import { modKey } from './format.js';
   import {
     PATTERN_KINDS,
+    CANVAS_PATTERN_KINDS,
+    SEEDED_PATTERN_KINDS,
     GRADIENT_MAX_STOPS,
     defaultPathPts,
     WARP_MIN_GRID,
@@ -53,6 +55,10 @@
   import SfxPanel from './SfxPanel.svelte';
   import { clearSfx } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
+  import { glyphPainter } from './text-engine/index.js';
+  import { patternCard } from './pattern-cards.js';
+  import { patternTiles, restorePickedTile } from './pattern-tiles.svelte.js';
+  import { patternPick, startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
   // Which tab is open is session state shared with the keyboard - see
@@ -695,17 +701,67 @@
     grid: 'Grid',
     vlines: 'Hairline',
     hlines: 'Hairline 2',
+    'halftone-fade': 'Tone fade',
+    'square-dots': 'Squares',
+    'diamond-dots': 'Diamonds',
+    'line-tone': 'Line tone',
+    sand: 'Sand',
+    stipple: 'Stipple',
+    'speed-lines': 'Speed lines',
+    burst: 'Burst',
+    rings: 'Rings',
+    waves: 'Waves',
+    zigzag: 'Zigzag',
+    bricks: 'Bricks',
+    scales: 'Scales',
+    hex: 'Hex',
+    triangles: 'Triangles',
+    plus: 'Plus',
+    stars: 'Stars',
+    hearts: 'Hearts',
+    kakeami: 'Kakeami',
+    glitch: 'Glitch',
+    picked: 'From page',
   };
   const patLabel = (k) => PATTERN_LABELS[k] ?? k;
+  // The picker's groups, so thirty-one cards are not one long wall.
+  const PATTERN_GROUPS = {
+    tone: ['dots', 'halftone', 'halftone-fade', 'square-dots', 'diamond-dots', 'stipple', 'sand'],
+    lines: ['stripes', 'hstripes', 'diagonal', 'diagonal-alt', 'crosshatch', 'vlines', 'hlines', 'line-tone', 'waves', 'zigzag', 'kakeami'],
+    action: ['speed-lines', 'burst', 'rings', 'glitch'],
+    shapes: ['checker', 'grid', 'bricks', 'scales', 'hex', 'triangles', 'plus', 'stars', 'hearts'],
+  };
+  let patGroup = $state('all');
+  // The Rust engine shades a pattern per pixel and paints every kind and
+  // control; the browser engine repeats one of the eleven canvas tiles.
+  const rustPatterns = $derived(engineSwitch.painting && glyphPainter().screen === true);
+  const shownKinds = $derived.by(() => {
+    if (!rustPatterns) return CANVAS_PATTERN_KINDS;
+    return patGroup === 'all' ? PATTERN_KINDS : PATTERN_GROUPS[patGroup];
+  });
   // The card's tile is a fixed size rather than the box's, so the cards are
   // comparable with each other; `scale` is the slider under them.
   const CARD_SIZE = 44;
   const CARD_TILE = CARD_SIZE * 0.3;
+  const CARD_W = 70;
+  const CARD_H = 30;
   const patternCards = $derived.by(() => {
-    const fg = box?.style.pattern.fg ?? '#000000';
-    const bg = box?.style.pattern.bg ?? '#ffffff';
+    const pat = box?.style.pattern;
+    const fg = pat?.fg ?? '#000000';
+    const bg = pat?.bg ?? '#ffffff';
     const out = {};
-    for (const k of PATTERN_KINDS) {
+    if (rustPatterns && pat) {
+      // The engine's own fill, in this box's colours, density, turn and
+      // stretch: the card is what lands on the letters.
+      const dpr = typeof window === 'undefined' ? 1 : Math.min(2, window.devicePixelRatio || 1);
+      const look = $state.snapshot(pat);
+      for (const k of shownKinds) out[k] = patternCard({ ...look, kind: k }, CARD_W, CARD_H, dpr);
+      // The picked tile's card waits on its file being read.
+      patternTiles.version;
+      if (look.src && look.cell.length) out.picked = patternCard({ ...look, kind: 'picked' }, CARD_W, CARD_H, dpr);
+      return out;
+    }
+    for (const k of CANVAS_PATTERN_KINDS) {
       const cnv = patternTileCanvas({ size: CARD_SIZE, pattern: { kind: k, fg, bg, scale: 1 } }, 2);
       out[k] = cnv ? cnv.toDataURL() : '';
     }
@@ -714,6 +770,13 @@
   function setPatternKind(k) {
     box.style.pattern.kind = k;
     touch();
+  }
+  // Pattern from page: the next drag on the page is read (pattern-pick.svelte.js),
+  // which records its own style step, so the panel's pending one lands first.
+  function pickFromPage() {
+    if (!box) return;
+    settle();
+    startPatternPick(page().id, box.id);
   }
 
   // ---- strokes ----
@@ -777,6 +840,8 @@
     for (const k of PRESET_SKIP) delete next[k];
     Object.assign(box.style, next);
     touch();
+    // A picked tile from another chapter is written into this one.
+    if (next.pattern.src && p.tile) void restorePickedTile(next.pattern.src, p.tile);
   }
   function startSavePreset() {
     presetName = presets.list.find((p) => p.id === presetId)?.name ?? '';
@@ -878,6 +943,113 @@
 <!-- Swatch + hex, the one colour idiom in the panel. The label is named by
      the caller, as `swatchCell` does for the list rows - three identical
      "Colour" inputs are three identical names to a screen reader. -->
+<!-- The Rust pattern's controls (Fill::Screen). Every one defaults to the old
+     look; the browser engine reads none of them, so they are shown only while
+     the Rust engine paints. -->
+{#snippet patternControls(s)}
+  {@const p = s.pattern}
+  <div class="grp">
+    <span class="lbl">Ink</span>
+    <div class="slider-row">
+      <input type="range" min="0" max="100" step="1" value={pct(p.fgOpacity)} aria-label="Pattern opacity" oninput={(e) => setAlpha(p, 'fgOpacity', e.target.value)} />
+      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.fgOpacity)} title="Pattern opacity, %" aria-label="Pattern opacity, percent" onchange={(e) => commitAlpha(p, 'fgOpacity', e)} />
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Ground</span>
+    <div class="slider-row">
+      <input type="range" min="0" max="100" step="1" value={pct(p.bgOpacity)} aria-label="Background opacity" oninput={(e) => setAlpha(p, 'bgOpacity', e.target.value)} />
+      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.bgOpacity)} title="Background opacity, %; 0 lets the page show between" aria-label="Background opacity, percent" onchange={(e) => commitAlpha(p, 'bgOpacity', e)} />
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Density · {pct(p.density)}%</span>
+    <div class="slider-row">
+      <input type="range" min="0" max="100" step="1" value={pct(p.density)} aria-label="Pattern density" oninput={(e) => setAlpha(p, 'density', e.target.value)} />
+      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.density)} title="How much ink; 50% is the pattern as designed" aria-label="Pattern density, percent" onchange={(e) => commitAlpha(p, 'density', e)} />
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Angle</span>
+    <div class="slider-row">
+      <input type="range" min="-180" max="180" step="1" value={p.angle} aria-label="Pattern angle" oninput={(e) => setNum(p, 'angle', e.target.value, -180, 180)} />
+      <input class="num-s" type="number" min="-180" max="180" step="1" value={p.angle} title="Turns the pattern, degrees" aria-label="Pattern angle, degrees" onchange={(e) => commitNum(p, 'angle', e, -180, 180)} />
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Stretch · {Number(p.aspect).toFixed(2)}×</span>
+    <div class="slider-row">
+      <input type="range" min="0.25" max="4" step="0.05" value={p.aspect} aria-label="Pattern stretch" oninput={(e) => setNum(p, 'aspect', e.target.value, 0.25, 4)} />
+      <input class="num-s" type="number" min="0.25" max="4" step="0.05" value={p.aspect} title="Stretches the tile along its own width" aria-label="Pattern stretch, multiple" onchange={(e) => commitNum(p, 'aspect', e, 0.25, 4)} />
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Offset X</span>
+    <div class="slider-row">
+      <input type="range" min="0" max="100" step="1" value={pct(p.ox)} aria-label="Pattern offset X" oninput={(e) => setAlpha(p, 'ox', e.target.value)} />
+      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.ox)} title="Moves the tiles sideways, % of a tile" aria-label="Pattern offset X, percent of a tile" onchange={(e) => commitAlpha(p, 'ox', e)} />
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Offset Y</span>
+    <div class="slider-row">
+      <input type="range" min="0" max="100" step="1" value={pct(p.oy)} aria-label="Pattern offset Y" oninput={(e) => setAlpha(p, 'oy', e.target.value)} />
+      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.oy)} title="Moves the tiles down, % of a tile" aria-label="Pattern offset Y, percent of a tile" onchange={(e) => commitAlpha(p, 'oy', e)} />
+    </div>
+  </div>
+  <div class="grp">
+    <span class="lbl">Tiles start at</span>
+    <div class="seg">
+      <button type="button" class:on={p.anchor === 'box'} aria-pressed={p.anchor === 'box'} title="Each box starts its own tiles" onclick={() => { p.anchor = 'box'; touch(); }}>Box</button>
+      <button type="button" class:on={p.anchor === 'page'} aria-pressed={p.anchor === 'page'} title="Tiles line up across boxes, from the page's corner" onclick={() => { p.anchor = 'page'; touch(); }}>Page</button>
+    </div>
+  </div>
+  {#if SEEDED_PATTERN_KINDS.includes(p.kind)}
+    <div class="grp">
+      <label class="lbl" for="insp-pat-seed">Seed</label>
+      <div class="slider-row">
+        <input id="insp-pat-seed" class="num-s" type="number" min="1" max="9999" step="1" value={p.seed} title="Picks the random arrangement; same seed, same pattern" onchange={(e) => commitNum(p, 'seed', e, 1, 9999, true)} />
+        <button type="button" class="add-btn" onclick={() => { p.seed = 1 + Math.floor(Math.random() * 9999); touch(); }}>Reshuffle</button>
+      </div>
+    </div>
+  {/if}
+  <div class="switch-row">
+    <button
+      type="button"
+      class="switch"
+      class:on={p.fade.on}
+      role="switch"
+      aria-checked={p.fade.on}
+      aria-label="Fade"
+      onclick={() => { p.fade.on = !p.fade.on; touch(); }}
+    ><span class="knob"></span></button>
+    <span class="lbl2">Fade</span>
+  </div>
+  <div class="insp-sub-body" class:disabled={!p.fade.on} style="padding:0;border:none;gap:11px">
+    <div class="grp">
+      <span class="lbl">Direction</span>
+      <div class="slider-row">
+        <input type="range" min="0" max="359" step="1" value={((p.fade.angle % 360) + 360) % 360} disabled={!p.fade.on} aria-label="Fade direction" oninput={(e) => setNum(p.fade, 'angle', e.target.value, 0, 359)} />
+        <input class="num-s" type="number" min="0" max="359" step="1" value={((p.fade.angle % 360) + 360) % 360} disabled={!p.fade.on} title="Degrees, as a gradient's: 180 fades top to bottom" aria-label="Fade direction, degrees" onchange={(e) => commitNum(p.fade, 'angle', e, 0, 359)} />
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Start</span>
+      <div class="slider-row">
+        <input type="range" min="0" max="100" step="1" value={pct(p.fade.from)} disabled={!p.fade.on} aria-label="Fade start" oninput={(e) => setAlpha(p.fade, 'from', e.target.value)} />
+        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.fade.from)} disabled={!p.fade.on} title="Full ink up to here, % across the box" aria-label="Fade start, percent" onchange={(e) => commitAlpha(p.fade, 'from', e)} />
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">End</span>
+      <div class="slider-row">
+        <input type="range" min="0" max="100" step="1" value={pct(p.fade.to)} disabled={!p.fade.on} aria-label="Fade end" oninput={(e) => setAlpha(p.fade, 'to', e.target.value)} />
+        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.fade.to)} disabled={!p.fade.on} title="No ink from here, % across the box" aria-label="Fade end, percent" onchange={(e) => commitAlpha(p.fade, 'to', e)} />
+      </div>
+    </div>
+  </div>
+{/snippet}
+
 {#snippet colorField(obj, key, label = 'Colour')}
   <div class="color-field">
     <ColorPicker value={obj[key]} {label} size={24} unclipped onchange={(hex) => setColour(obj, key, hex)} />
@@ -1187,8 +1359,15 @@
         {:else}
           <div class="grp">
             <span class="lbl">Tile</span>
+            {#if rustPatterns}
+              <div class="seg" role="group" aria-label="Pattern group">
+                {#each [['all', 'All'], ['tone', 'Tone'], ['lines', 'Lines'], ['action', 'Action'], ['shapes', 'Shapes']] as [g, label] (g)}
+                  <button type="button" class:on={patGroup === g} aria-pressed={patGroup === g} onclick={() => (patGroup = g)}>{label}</button>
+                {/each}
+              </div>
+            {/if}
             <div class="pat-grid" role="radiogroup" aria-label="Pattern">
-              {#each PATTERN_KINDS as k (k)}
+              {#each shownKinds as k (k)}
                 <button
                   type="button"
                   role="radio"
@@ -1198,12 +1377,66 @@
                   title={patLabel(k)}
                   onclick={() => setPatternKind(k)}
                 >
-                  <span class="pat-tile" style="background-image:url({patternCards[k]});background-size:{CARD_TILE}px {CARD_TILE}px"></span>
+                  {#if rustPatterns}
+                    <span class="pat-tile" style="background-image:url({patternCards[k]});background-size:100% 100%"></span>
+                  {:else}
+                    <span class="pat-tile" style="background-image:url({patternCards[k]});background-size:{CARD_TILE}px {CARD_TILE}px"></span>
+                  {/if}
                   <span class="pat-name">{patLabel(k)}</span>
                 </button>
               {/each}
             </div>
+            {#if !rustPatterns}
+              <p class="pat-note">More patterns and controls need the Rust text engine (Settings).</p>
+            {/if}
           </div>
+          {#if rustPatterns}
+            <div class="grp">
+              <span class="lbl">From the page</span>
+              <div class="pat-pick">
+                {#if s.pattern.src && s.pattern.cell.length}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={s.pattern.kind === 'picked'}
+                    class="pat-card"
+                    class:on={s.pattern.kind === 'picked'}
+                    title="The tone taken from the page"
+                    onclick={() => setPatternKind('picked')}
+                  >
+                    <span class="pat-tile" style="background-image:url({patternCards.picked ?? ''});background-size:100% 100%"></span>
+                    <span class="pat-name">{patLabel('picked')}</span>
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="add-btn"
+                  class:on={patternPick.active}
+                  disabled={patternPick.busy || !canPickPattern()}
+                  title="Drag over a tone on the page; it becomes this box's pattern"
+                  onclick={pickFromPage}
+                >{patternPick.busy ? 'Reading…' : patternPick.active ? 'Drag on the page…' : 'Pick from page'}</button>
+              </div>
+              <div class="switch-row">
+                <button
+                  type="button"
+                  class="switch"
+                  class:on={patternPick.raw}
+                  role="switch"
+                  aria-checked={patternPick.raw}
+                  aria-label="Read the raw page"
+                  onclick={() => (patternPick.raw = !patternPick.raw)}
+                ><span class="knob"></span></button>
+                <span class="lbl2" title="Cleaning often takes the tone away; the raw page still has it">Read the raw page</span>
+              </div>
+              {#if s.pattern.kind === 'picked'}
+                <div class="seg">
+                  <button type="button" class:on={s.pattern.mode === 'tone'} aria-pressed={s.pattern.mode === 'tone'} title="Recolour the tone with the two colours below" onclick={() => { s.pattern.mode = 'tone'; touch(); }}>Tone</button>
+                  <button type="button" class:on={s.pattern.mode === 'image'} aria-pressed={s.pattern.mode === 'image'} title="Keep the page's own greys" onclick={() => { s.pattern.mode = 'image'; touch(); }}>Image</button>
+                </div>
+              {/if}
+            </div>
+          {/if}
           <div class="grp">
             <span class="lbl">Scale · {Number(s.pattern.scale).toFixed(2)}×</span>
             <!-- 0.25..4 is what normalizeStyle clamps to; a wider field here
@@ -1223,6 +1456,9 @@
               {@render colorField(s.pattern, 'bg', 'Background colour')}
             </div>
           </div>
+          {#if rustPatterns}
+            {@render patternControls(s)}
+          {/if}
         {/if}
 
         <div class="insp-rule"></div>
@@ -2244,6 +2480,25 @@
     background-repeat: repeat;
     background-position: center;
     border: 1px solid var(--line);
+  }
+  .pat-pick {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    align-items: stretch;
+  }
+  .pat-pick .add-btn {
+    grid-column: span 2;
+    min-height: 30px;
+  }
+  .pat-pick .add-btn.on {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .pat-note {
+    margin: 2px 0 0;
+    font-size: 11px;
+    color: var(--t3);
   }
   .pat-name {
     font-size: 10px;

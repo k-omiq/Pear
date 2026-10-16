@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildCorpus, completeStyle } from './corpus.js';
-import { defaultStyle, PATTERN_KINDS } from '../../lib/data.js';
+import { defaultStyle, CANVAS_PATTERN_KINDS } from '../../lib/data.js';
 
 const fonts = { version: 1, fonts: [
   { family: 'Comic Neue', slot: 'regular' }, { family: 'Bangers', slot: 'regular' },
@@ -45,7 +45,7 @@ describe('the frozen synthetic text-port corpus', () => {
     expect(corpus.pixels.cases.length).toBeGreaterThanOrEqual(250);
     expect(corpus.pixels.cases.length).toBeLessThanOrEqual(400);
     expect(new Set(corpus.layout.cases.map((c) => c.mode))).toEqual(new Set(['plain', 'smart']));
-    expect(new Set(corpus.pixels.cases.filter((c) => c.box.style.pattern.on).map((c) => c.box.style.pattern.kind))).toEqual(new Set(PATTERN_KINDS));
+    expect(new Set(corpus.pixels.cases.filter((c) => c.box.style.pattern.on).map((c) => c.box.style.pattern.kind))).toEqual(new Set(CANVAS_PATTERN_KINDS));
     expect(corpus.metrics.cases.some((c) => c.tags.includes('missing-glyph'))).toBe(true);
     expect(corpus.metrics.cases.find((c) => c.font === 'DejaVu Sans' && c.italic && !c.bold).tags).not.toContain('faux-italic');
     expect(corpus.metrics.cases.find((c) => c.font === 'Comic Neue' && c.bold && c.italic).tags).toEqual(expect.arrayContaining(['faux-bold', 'faux-italic']));

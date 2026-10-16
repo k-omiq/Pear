@@ -146,7 +146,7 @@ fn over(px: &mut [f32], src: [f32; 4], c: f32) {
 /// 255.5, so the result does not depend on how a conversion treats anything
 /// else.
 #[inline]
-fn store(px: &[f32], out: &mut [u8]) {
+pub(super) fn store(px: &[f32], out: &mut [u8]) {
     let a = px[3].min(1.0);
     let a8 = (a * 255.0 + 0.5) as u8;
     if a8 == 0 {

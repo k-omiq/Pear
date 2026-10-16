@@ -39,6 +39,7 @@
     stripScrollTopForBox,
   } from './strip.js';
   import { publishStripScroll, stripReveal } from './strip-sync.svelte.js';
+  import { patternPick, finishPatternPick } from '../pattern-pick.svelte.js';
 
   // Handle for dock Fit button.
   let { onReady } = $props();
@@ -477,6 +478,44 @@
   // read a point in page coordinates, and a click 200px out in the grey would
   // otherwise land a box off the paper - so their branch below still demands a
   // press that landed on `.boxlayer` or a page frame.
+  // ---------- pattern from page ----------
+  // The drag of a pick, in the layer's own px; the page under its first
+  // point is the page it reads, and both corners go to page px through
+  // `frameCoords` as a click's do.
+  let pickEl = $state(null);
+  let pickDrag = $state(null);
+  function pickPoint(e) {
+    const r = pickEl.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function onPickDown(e) {
+    if (e.button !== 0) return;
+    const hit = frameCoords({ clientX: e.clientX, clientY: e.clientY, target: null });
+    if (!hit) return;
+    e.preventDefault();
+    pickEl.setPointerCapture?.(e.pointerId);
+    const p = pickPoint(e);
+    pickDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, start: hit };
+  }
+  function onPickMove(e) {
+    if (!pickDrag) return;
+    const p = pickPoint(e);
+    pickDrag.x1 = p.x;
+    pickDrag.y1 = p.y;
+  }
+  function onPickUp(e) {
+    const d = pickDrag;
+    pickDrag = null;
+    if (!d) return;
+    const end = frameCoords({ clientX: e.clientX, clientY: e.clientY, target: null });
+    const a = d.start;
+    // The second corner in the first corner's page: on a strip, a drag that
+    // crosses a seam reads the first page up to its edge.
+    const bx = end && end.pg === a.pg ? end.x : a.x + (d.x1 - d.x0) / app.zoom;
+    const by = end && end.pg === a.pg ? end.y : a.y + (d.y1 - d.y0) / app.zoom;
+    void finishPatternPick(a.pg.id, { x0: a.x, y0: a.y, x1: bx, y1: by });
+  }
+
   function onStagePointerDown(e) {
     // The primary button and nothing else. A right-click is on its way to a
     // context menu and a middle one is a paste on some platforms; neither is a
@@ -1086,6 +1125,29 @@
     {/if}
   </div>
 </div>
+
+{#if patternPick.active}
+  <!-- Pattern from page: one drag over the page, then the layer goes
+       (pattern-pick.svelte.js). Laid over the whole canvas so a press on a
+       box picks too; Escape ends it (App.svelte). -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="pick-layer"
+    bind:this={pickEl}
+    onpointerdown={onPickDown}
+    onpointermove={onPickMove}
+    onpointerup={onPickUp}
+    onpointercancel={() => (pickDrag = null)}
+  >
+    <div class="pick-hint">Drag over the tone to take it · Esc to cancel</div>
+    {#if pickDrag}
+      <div
+        class="pick-rect"
+        style="left:{Math.min(pickDrag.x0, pickDrag.x1)}px;top:{Math.min(pickDrag.y0, pickDrag.y1)}px;width:{Math.abs(pickDrag.x1 - pickDrag.x0)}px;height:{Math.abs(pickDrag.y1 - pickDrag.y0)}px"
+      ></div>
+    {/if}
+  </div>
+{/if}
 
 {#if !app.loaded}
   <div class="empty-state">

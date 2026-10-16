@@ -173,6 +173,7 @@ export async function exportChapterPackage(projectId, chapterId) {
     project: src.project,
     raws: src.raws,
     cleaned: src.cleaned,
+    patterns: src.patterns,
     fonts,
     tags: tagEntries,
     app: await appVersion(),
@@ -362,6 +363,7 @@ export async function importChapterPackage({ pkg, projectId, number, title }) {
     number,
     title: title ?? pkg.record.title ?? '',
     pages: packagePagesForImport(pkg),
+    patterns: pkg.patterns,
     mode: pkg.record.mode === 'translate' ? 'translate' : 'typeset',
     // The chapter's own, absent reading as plain - never this machine's default.
     typesetting: pkg.record.typesetting ?? null,

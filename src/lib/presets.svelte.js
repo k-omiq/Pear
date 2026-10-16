@@ -15,6 +15,7 @@ import {
 import { record } from './editor/history.svelte.js';
 import { isAutoBox, boxCandidate } from './contain.js';
 import { rebaseSfx } from './sfx.js';
+import { pickedTileUrl, isTileUrl } from './pattern-tiles.svelte.js';
 
 const KEY = 'mt.presets';
 
@@ -54,11 +55,17 @@ export function parsePresets(raw) {
   try {
     const saved = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (!Array.isArray(saved?.list)) return [];
-    return saved.list.map((it) => ({
-      id: String(it.id || ('pr_' + Math.random().toString(36).slice(2, 9))),
-      name: String(it.name || '').trim(),
-      style: normalizeStyle(it.style),
-    }));
+    return saved.list.map((it) => {
+      const style = normalizeStyle(it.style);
+      return {
+        id: String(it.id || ('pr_' + Math.random().toString(36).slice(2, 9))),
+        name: String(it.name || '').trim(),
+        style,
+        // A picked pattern's tile, as a PNG data URL (`pickedTileUrl`): only
+        // with a style that names one.
+        ...(style.pattern.src && isTileUrl(it.tile) ? { tile: it.tile } : null),
+      };
+    });
   } catch {
     /* ignore */
     return [];
@@ -80,10 +87,13 @@ export function savePreset(name, style) {
 
   let item;
   if (existingIdx !== -1) {
+    const was = presets.list[existingIdx];
     item = {
-      id: presets.list[existingIdx].id,
+      id: was.id,
       name: cleanName,
       style: cleanStyle,
+      // The same tile as before needs no second read.
+      ...(was.tile && was.style?.pattern?.src === cleanStyle.pattern.src ? { tile: was.tile } : null),
     };
     presets.list[existingIdx] = item;
   } else {
@@ -95,6 +105,17 @@ export function savePreset(name, style) {
     presets.list.push(item);
   }
   persist();
+  // A picked tile goes with the preset, read off the chapter's folder.
+  const src = cleanStyle.pattern.src;
+  if (src && !item.tile) {
+    const id = item.id;
+    void pickedTileUrl(src).then((url) => {
+      const it = url && presets.list.find((p) => p.id === id);
+      if (!it || it.style.pattern.src !== src) return;
+      it.tile = url;
+      persist();
+    });
+  }
   return item;
 }
 

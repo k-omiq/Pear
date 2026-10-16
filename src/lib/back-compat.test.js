@@ -392,6 +392,63 @@ describe('a style written before strokes and shadows were lists', () => {
     expect(s.pattern.kind).toBe(defaultStyle().pattern.kind);
   });
 
+  // The pattern of the release before the Rust fill: five keys. Every new
+  // field takes the default that paints what those five painted.
+  it('gives a five-key pattern the new fields at their old look', () => {
+    const s = normalizeStyle(JSON.parse(`{"pattern": {"on": true, "kind": "halftone", "fg": "#112233", "bg": "#ffffff", "scale": 1.5}}`));
+    expect(s.pattern).toEqual({
+      ...defaultStyle().pattern,
+      on: true,
+      kind: 'halftone',
+      fg: '#112233',
+      scale: 1.5,
+    });
+    expect(s.pattern.density).toBe(0.5);
+    expect(s.pattern.angle).toBe(0);
+    expect(s.pattern.aspect).toBe(1);
+    expect([s.pattern.ox, s.pattern.oy]).toEqual([0, 0]);
+    expect([s.pattern.fgOpacity, s.pattern.bgOpacity]).toEqual([1, 1]);
+    expect(s.pattern.fade.on).toBe(false);
+    expect(s.pattern.anchor).toBe('box');
+    expect(s.pattern.src).toBe('');
+    expect(s.pattern.cell).toEqual([]);
+  });
+
+  it('clamps a hand-edited pattern and drops a picked tile it cannot find', () => {
+    const s = normalizeStyle({
+      pattern: {
+        on: true, kind: 'picked', src: '../../etc/passwd', cell: [8, 0, 0, 8],
+        density: 3, aspect: 0, ox: -2, fgOpacity: 'x', fade: { on: 1, from: -1, to: 9 },
+        anchor: 'sky', seed: 0.2, mode: 'paint',
+      },
+    }).pattern;
+    expect(s.kind).toBe(defaultStyle().pattern.kind);
+    expect(s.src).toBe('');
+    expect(s.density).toBe(1);
+    expect(s.aspect).toBe(0.25);
+    expect(s.ox).toBe(0);
+    expect(s.fgOpacity).toBe(1);
+    expect(s.fade).toEqual({ on: false, angle: 180, from: 0, to: 1 });
+    expect(s.anchor).toBe('box');
+    expect(s.seed).toBe(1);
+    expect(s.mode).toBe('tone');
+  });
+
+  it('keeps a picked tile with a file name and a cell', () => {
+    const src = '0123456789abcdef.png';
+    const s = normalizeStyle({ pattern: { on: true, kind: 'picked', src, cell: [6.5, 0, 3.25, 6.5], mode: 'image' } }).pattern;
+    expect(s.kind).toBe('picked');
+    expect(s.src).toBe(src);
+    expect(s.cell).toEqual([6.5, 0, 3.25, 6.5]);
+    expect(s.mode).toBe('image');
+    // Two parallel edges are no cell at all.
+    expect(normalizeStyle({ pattern: { kind: 'picked', src, cell: [4, 0, 8, 0] } }).pattern.kind).toBe('dots');
+  });
+
+  it('keeps every engine pattern kind', () => {
+    for (const kind of PATTERN_KINDS) expect(normalizeStyle({ pattern: { kind } }).pattern.kind).toBe(kind);
+  });
+
   it('keeps a block shape it knows and folds any other back to auto', () => {
     for (const shape of ['auto', 'oval', 'rect', 'off']) expect(normalizeStyle({ shape }).shape).toBe(shape);
     expect(normalizeStyle({ shape: 'hexagon' }).shape).toBe('auto');
@@ -539,6 +596,15 @@ describe('an undo history written before the style schema moved', () => {
     expect(e.index).toBe(0);
     expect(e.activeBefore).toBe(1);
     expect(e.box.x).toBe(10);
+  });
+
+  // A place entry recorded after strokes but before the Rust pattern fill:
+  // the style is current in every other way, and its pattern has five keys.
+  it('migrates a box whose pattern predates the Rust fill', () => {
+    const style = normalizeStyle({});
+    style.pattern = JSON.parse('{"on": true, "kind": "grid", "fg": "#000000", "bg": "#ffffff", "scale": 2}');
+    const e = migrateEntry({ t: 'place', index: 0, box: { id: 'b1', x: 0, y: 0, w: 50, h: 20, text: 'A', style } });
+    expect(e.box.style.pattern).toEqual({ ...defaultStyle().pattern, on: true, kind: 'grid', scale: 2 });
   });
 
   it('migrates a delete entry’s box the same way', () => {
@@ -773,6 +839,24 @@ describe('a presets blob from the last release', () => {
     expect(parsePresets(ERA2_PRESETS).map((p) => p.id)).toEqual(['pr_1', 'pr_2']);
   });
 
+  it('gives an old preset no tile, and keeps a picked tile only with the style that names it', () => {
+    for (const p of parsePresets(ERA2_PRESETS)) expect('tile' in p).toBe(false);
+    const src = '0123456789abcdef0123456789abcdef.png';
+    const tile = 'data:image/png;base64,iVBORw0KGgo=';
+    const picked = { pattern: { on: true, kind: 'picked', src, cell: [6, 0, 0, 6] } };
+    const [a, b, c] = parsePresets({
+      list: [
+        { id: 'a', name: 'Tone', style: picked, tile },
+        { id: 'b', name: 'Plain', style: {}, tile },
+        { id: 'c', name: 'Bad', style: picked, tile: 'javascript:alert(1)' },
+      ],
+    });
+    expect(a.tile).toBe(tile);
+    expect(a.style.pattern.src).toBe(src);
+    expect('tile' in b).toBe(false);
+    expect('tile' in c).toBe(false);
+  });
+
   it('drops a blob it cannot read rather than failing the launch', () => {
     expect(parsePresets('{ not json')).toEqual([]);
     expect(parsePresets('{"list":"nope"}')).toEqual([]);
@@ -984,7 +1068,7 @@ describe('a chapter laid out under the old chapter switch', () => {
   });
 
   it('gives the boxes and box styles of a stored stack the plain wrap', () => {
-    const smart = { shape: 'auto', hyphenate: true, balloon: true, strokes: [], shadows: [], gradient: {}, pattern: {} };
+    const smart = { shape: 'auto', hyphenate: true, balloon: true, strokes: [], shadows: [], gradient: {}, pattern: { fade: {} } };
     const entries = [
       { t: 'style', before: { ...smart, color: '#000' }, after: { ...smart, color: '#f00' } },
       { t: 'place', box: { id: 'b1', style: smart } },

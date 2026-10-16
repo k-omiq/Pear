@@ -280,11 +280,49 @@ export function defaultStyle() {
         { color: '#9a9a9a', pos: 1, opacity: 1 },
       ],
     },
-    // Pattern fill, tiled. `kind` is one of PATTERN_KINDS below. `fg` draws the
-    // pattern, `bg` is what shows between. The tile is
-    // `size * 0.3 * scale` page px square, so it scales with the font. Pattern
-    // wins over gradient when both are on.
-    pattern: { on: false, kind: 'dots', fg: '#000000', bg: '#ffffff', scale: 1 },
+    // Pattern fill, tiled. `kind` is one of PATTERN_KINDS below, or 'picked'
+    // (a tile taken from the page, `src` and `cell`). `fg` draws the pattern,
+    // `bg` is what shows between. The tile is `size * 0.3 * scale` page px
+    // square, so it scales with the font; a picked tile is its own cell times
+    // `scale`. Pattern wins over gradient when both are on.
+    //
+    // Everything after `scale` is painted only by the Rust engine, which shades
+    // the pattern per pixel (`Fill::Screen`); the browser engine repeats a
+    // canvas tile of the first eleven kinds and reads none of it. Each one's
+    // default is the old look:
+    //   angle      degrees the pattern is turned by
+    //   density    0..1 ink, 0.5 the kind as designed
+    //   aspect     stretch along the tile's own x
+    //   ox, oy     offset, in tiles (0..1)
+    //   fgOpacity, bgOpacity   0 bg = no ground, the letters' own page shows
+    //   fade       density ramps to nothing across the fill rect: `angle` as a
+    //              gradient's, full ink up to `from`, none from `to` (0..1)
+    //   anchor     'box': the tile starts at the box; 'page': at the page's
+    //              corner, so tones line up across boxes
+    //   seed       the random kinds' arrangement
+    //   src, cell  a picked tile: its file in <chapter>/patterns/, and the
+    //              lattice cell `[ax, ay, bx, by]` in page px it repeats on
+    //   mode       picked: 'tone' recolours it with fg/bg, 'image' keeps it
+    pattern: {
+      on: false,
+      kind: 'dots',
+      fg: '#000000',
+      bg: '#ffffff',
+      scale: 1,
+      angle: 0,
+      density: 0.5,
+      aspect: 1,
+      ox: 0,
+      oy: 0,
+      fgOpacity: 1,
+      bgOpacity: 1,
+      fade: { on: false, angle: 180, from: 0, to: 1 },
+      anchor: 'box',
+      seed: 1,
+      src: '',
+      cell: [],
+      mode: 'tone',
+    },
     // No fill at all: the letters are cut out of their own strokes, so what
     // shows is each stroke's visible width and the page through the letter.
     // It wins over the pattern and the gradient, and a box with no stroke
@@ -613,10 +651,13 @@ export function normalizeWarp(src) {
   return { on: src?.on === true, cols, rows, pts: pts.length === want ? pts : [] };
 }
 
-// Every tile `drawPatternTile` knows how to draw, in the order the picker shows
-// them. A kind that is not on this list is normalized back to the default, so
-// adding one here and nowhere else would show a card that paints nothing - the
-// two lists are kept in step by hand.
+// Every procedural pattern, in the engine's own order (`PATTERN_NAMES` in
+// text-engine/src/paint/screen.rs; pattern-screen.engine.test.js holds the
+// two lists together). A kind that is not on this list, or 'picked' without a
+// tile, is normalized back to the default.
+//
+// The first eleven are the ones the canvas draws (`drawPatternTile`), for the
+// browser engine; it paints any other kind as 'dots'.
 export const PATTERN_KINDS = [
   'dots',
   'halftone',
@@ -629,7 +670,56 @@ export const PATTERN_KINDS = [
   'grid',
   'vlines',
   'hlines',
+  'halftone-fade',
+  'square-dots',
+  'diamond-dots',
+  'line-tone',
+  'sand',
+  'stipple',
+  'speed-lines',
+  'burst',
+  'rings',
+  'waves',
+  'zigzag',
+  'bricks',
+  'scales',
+  'hex',
+  'triangles',
+  'plus',
+  'stars',
+  'hearts',
+  'kakeami',
+  'glitch',
 ];
+export const CANVAS_PATTERN_KINDS = PATTERN_KINDS.slice(0, 11);
+// The kinds whose look a seed changes.
+export const SEEDED_PATTERN_KINDS = ['sand', 'stipple', 'speed-lines', 'kakeami', 'glitch'];
+export const PATTERN_ANCHORS = ['box', 'page'];
+export const PATTERN_MODES = ['tone', 'image'];
+// A picked tile's file: its content hash, as `<chapter>/patterns/` names it.
+export const PATTERN_SRC = /^[0-9a-f]{16,64}\.png$/;
+
+/** Names of every picked tile `pages` refer to, on or off. */
+export function patternSrcsUsed(pages) {
+  const out = new Set();
+  for (const p of pages ?? []) {
+    for (const b of p?.boxes ?? []) {
+      const src = b?.style?.pattern?.src;
+      if (typeof src === 'string' && PATTERN_SRC.test(src)) out.add(src);
+    }
+  }
+  return out;
+}
+
+// A picked tile's lattice cell, `[ax, ay, bx, by]` page px, or [] when it is
+// not one (not four finite numbers, or the two edges are parallel).
+export function normalizePatternCell(c) {
+  if (!Array.isArray(c) || c.length !== 4) return [];
+  const v = c.map(Number);
+  if (!v.every(Number.isFinite)) return [];
+  const area = Math.abs(v[0] * v[3] - v[1] * v[2]);
+  return area > 1e-3 ? v : [];
+}
 
 export const GRADIENT_KINDS = ['linear', 'radial'];
 
@@ -710,6 +800,46 @@ export function normalizeSfx(x) {
   };
 }
 
+// A style's pattern, every field checked. A pattern saved before the Rust
+// fill had only on/kind/fg/bg/scale, and gets the defaults for the rest,
+// which paint what it painted.
+export function normalizePattern(p, d = defaultStyle().pattern) {
+  const src = p && typeof p === 'object' ? p : {};
+  const clamp = (v, lo, hi, def) => Math.min(hi, Math.max(lo, num(v, def)));
+  const fade = src.fade && typeof src.fade === 'object' ? src.fade : {};
+  const out = {
+    on: src.on === true,
+    kind: PATTERN_KINDS.includes(src.kind) || src.kind === 'picked' ? src.kind : d.kind,
+    // Taken as written, as before this was checked: a colour is the
+    // painters' to read, and both read every form the app writes.
+    fg: typeof src.fg === 'string' && src.fg ? src.fg : d.fg,
+    bg: typeof src.bg === 'string' && src.bg ? src.bg : d.bg,
+    scale: clamp(src.scale, 0.25, 4, 1),
+    angle: num(src.angle, d.angle) % 360,
+    density: clamp(src.density, 0, 1, d.density),
+    aspect: clamp(src.aspect, 0.25, 4, d.aspect),
+    // An offset is a phase: a whole tile moves nothing, so 0..1 says it all.
+    ox: clamp(src.ox, 0, 1, d.ox),
+    oy: clamp(src.oy, 0, 1, d.oy),
+    fgOpacity: clamp(src.fgOpacity, 0, 1, d.fgOpacity),
+    bgOpacity: clamp(src.bgOpacity, 0, 1, d.bgOpacity),
+    fade: {
+      on: fade.on === true,
+      angle: num(fade.angle, d.fade.angle) % 360,
+      from: clamp(fade.from, 0, 1, d.fade.from),
+      to: clamp(fade.to, 0, 1, d.fade.to),
+    },
+    anchor: PATTERN_ANCHORS.includes(src.anchor) ? src.anchor : d.anchor,
+    seed: Math.min(9999, Math.max(1, Math.round(num(src.seed, d.seed)))),
+    src: typeof src.src === 'string' && PATTERN_SRC.test(src.src) ? src.src : '',
+    cell: normalizePatternCell(src.cell),
+    mode: PATTERN_MODES.includes(src.mode) ? src.mode : d.mode,
+  };
+  // A picked pattern needs its tile; without one it is the default kind.
+  if (out.kind === 'picked' && (!out.src || !out.cell.length)) out.kind = d.kind;
+  return out;
+}
+
 export function normalizeStyle(s) {
   const d = defaultStyle();
   const src = s || {};
@@ -743,9 +873,7 @@ export function normalizeStyle(s) {
     .map(normalizeStop)
     .sort((a, b) => a.pos - b.pos)
     .slice(0, GRADIENT_MAX_STOPS);
-  const pat = { ...d.pattern, ...(src.pattern || {}) };
-  if (!PATTERN_KINDS.includes(pat.kind)) pat.kind = d.pattern.kind;
-  pat.scale = Math.min(4, Math.max(0.25, num(pat.scale, 1)));
+  const pat = normalizePattern(src.pattern, d.pattern);
 
   // Flat keys are whitelisted to the schema rather than spread as they come, so
   // a style carrying keys this build has never heard of - a future schema read
