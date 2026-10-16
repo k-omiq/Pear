@@ -10,7 +10,7 @@ import { app, page, applyDetection, toast, toastError } from './store.svelte.js'
 import { withPageImages, hasRawImage } from './page-images.js';
 import { prefs } from './prefs.svelte.js';
 import { ocrModelForLanguage } from './ocr-models.js';
-import { chapterOpenSeq } from './library.svelte.js';
+import { chapterOpenSeq, writePageMask } from './library.svelte.js';
 import { startJob, finishJob } from './jobs.svelte.js';
 
 // app.sidecar is initialized lazily so older saved state stays compatible.
@@ -40,17 +40,28 @@ export async function analyzeImage(imageUrl, options = {}, maybeLanguage) {
   const invoke = await getInvoke();
   if (!invoke) throw new Error('detection unavailable (no Tauri runtime)');
   let ocr = true;
+  let mask = false;
   let language = app.projectOcrLanguage;
   if (typeof options === 'string') language = options;
   else if (options && typeof options === 'object') {
     ocr = options.ocr ?? true;
     language = options.language ?? options.lang ?? language;
+    mask = options.mask === true;
   }
   if (typeof maybeLanguage === 'string') language = maybeLanguage;
   const buf = await (await fetch(imageUrl)).arrayBuffer();
   const bytes = Array.from(new Uint8Array(buf));
   const ocrModel = ocrModelForLanguage(language, prefs.ocrModels);
-  return invoke('detect_analyze', { image: bytes, ocr, language, ocrModel });
+  return invoke('detect_analyze', { image: bytes, ocr, language, ocrModel, secondReader: ocr && prefs.secondReader, secondDetector: prefs.secondDetector, mask });
+}
+
+// Read a drawn character or short word (OCR-6) with the recognizer the
+// project's language uses. `bytes` is a PNG of the inked area on white.
+export async function readDrawing(bytes, language = app.projectOcrLanguage) {
+  const invoke = await getInvoke();
+  if (!invoke) throw new Error('reading needs the desktop app');
+  const ocrModel = ocrModelForLanguage(language, prefs.ocrModels);
+  return invoke('detect_read_drawing', { image: Array.from(bytes), language, ocrModel });
 }
 
 // Detect + OCR one page object and apply results to it. Returns { lines } on
@@ -67,7 +78,15 @@ export async function detectOnePage(p, { ocr = true, language, lang } = {}, curr
     return await withPageImages(p, async () => {
       if (!current()) return { stopped: true };
       if (!p.raw) return { error: 'Raw page could not be read' };
-      const result = await analyzeImage(p.raw, { ocr, language: language ?? lang });
+      const { mask_png: maskPng, ...detected } = await analyzeImage(p.raw, { ocr, language: language ?? lang, mask: true });
+      const { postProcessDetection } = await import('./detect-post.js');
+      const result = postProcessDetection(detected, { keepEnglish: prefs.keepEnglish });
+      // The text mask (MASK-1) is kept beside the chapter for cleaning. A
+      // mask that cannot be written costs nothing the detection needs.
+      if (maskPng?.length && current()) {
+        const file = await writePageMask(p, new Uint8Array(maskPng)).catch(() => null);
+        if (file) result.mask = { file, w: detected.img_width, h: detected.img_height };
+      }
       // applyDetection also marks the open chapter unsaved. Even writing to
       // the old page object would let a late result affect the new document.
       if (!current()) return { stopped: true };

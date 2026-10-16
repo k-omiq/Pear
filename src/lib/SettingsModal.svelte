@@ -1057,6 +1057,26 @@
         </div>
       {/if}
 
+      <div class="settings-section">
+        <div class="field">
+          <span>Keep text that is already English</span>
+          {@render toggle('keepEnglish', 'Keep text that is already English', prefs.keepEnglish)}
+        </div>
+        <div class="qhint">Off: English lettering on the raw is not detected.</div>
+
+        <div class="field">
+          <span>Check Japanese with a second reader</span>
+          {@render toggle('secondReader', 'Check Japanese with a second reader', prefs.secondReader)}
+        </div>
+        <div class="qhint">Reads each line again with PP-OCRv6 (a 77 MB download). Lines where the two readers differ go on the check list. About twice the OCR time.</div>
+
+        <div class="field">
+          <span>Use a second text detector</span>
+          {@render toggle('secondDetector', 'Use a second text detector', prefs.secondDetector)}
+        </div>
+        <div class="qhint">RT-DETR (a 168 MB download) checks the main detector, finds text it misses and tells bubble text from free text.</div>
+      </div>
+
       <div class="group-label">Models{@render scope('you')}</div>
 
       <div class="model-card">

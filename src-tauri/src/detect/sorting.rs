@@ -56,6 +56,10 @@ pub struct Block {
     /// Assigned line type (`dialogue` or `sfx`).
     #[serde(default, rename = "type")]
     pub line_type: LineType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jp2: Option<String>,
 }
 
 impl Block {
@@ -67,6 +71,8 @@ impl Block {
             font_size,
             jp,
             line_type: LineType::Dialogue,
+            kind: None,
+            jp2: None,
         }
     }
 }

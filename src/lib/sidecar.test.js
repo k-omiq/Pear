@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { app, loadProjectPages } from './store.svelte.js';
 import { jobs } from './jobs.svelte.js';
-import { detectAllPages, detectCurrentPage } from './sidecar.js';
+import { detectAllPages, detectCurrentPage, detectOnePage } from './sidecar.js';
+import { prefs } from './prefs.svelte.js';
 import * as chapter from './library.svelte.js';
 
 const h = vi.hoisted(() => ({ calls: [], analyze: null }));
@@ -17,6 +18,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 beforeEach(() => {
   h.calls.length = 0;
   h.analyze = null;
+  prefs.keepEnglish = false;
   globalThis.window = { __TAURI_INTERNALS__: {} };
   globalThis.fetch = vi.fn().mockResolvedValue({
     arrayBuffer: async () => new ArrayBuffer(4),
@@ -33,6 +35,8 @@ describe('analyzeImage IPC invocation', () => {
     expect(h.calls[0][0]).toBe('detect_analyze');
     expect(h.calls[0][1].language).toBe('ja');
     expect(h.calls[0][1].ocr).toBe(true);
+    // The second reader (OCR-1) is off until Settings turns it on.
+    expect(h.calls[0][1].secondReader).toBe(false);
   });
 
   it('passes explicit lang option when provided', async () => {
@@ -102,6 +106,56 @@ describe('chapter detection jobs', () => {
     expect(app.pages[1].detect).toBeFalsy();
     expect(job.done).toBe(1);
     expect(jobs.items).toEqual([]);
+  });
+
+  it('post-processes OCR before saving lines and detection geometry', async () => {
+    h.analyze = async () => ({
+      img_width: 100, img_height: 100, panels: [],
+      lines: [
+        { n: 1, jp: '今日はいい天気ですね', type: 'dialogue', box: [0, 0, 100, 100] },
+        { n: 2, jp: 'いい天気', type: 'dialogue', box: [10, 10, 60, 60] },
+        { n: 3, jp: '明日も', type: 'dialogue', box: [200, 0, 300, 100] },
+      ],
+    });
+    const job = await detectAllPages();
+    expect(job.failed).toEqual([]);
+    for (const p of app.pages) {
+      expect(p.lines.map((l) => [l.n, l.jp])).toEqual([[1, '今日はいい天気ですね'], [2, '明日も']]);
+      expect(p.detect.boxes.map((b) => b.n)).toEqual([1, 2]);
+    }
+  });
+
+  it.each([false, true])('passes keepEnglish=%s to detection post-processing and reports the surviving count', async (keepEnglish) => {
+    prefs.keepEnglish = keepEnglish;
+    h.analyze = async () => ({
+      img_width: 100, img_height: 100, panels: [],
+      lines: [
+        { n: 1, jp: 'BANG!', type: 'sfx', box: [0, 0, 100, 100] },
+        { n: 2, jp: '', type: 'dialogue', box: [10, 10, 60, 60] },
+        { n: 3, jp: '明日も', type: 'dialogue', box: [200, 0, 300, 100] },
+      ],
+    });
+    expect(await detectOnePage(app.pages[0])).toEqual({ lines: keepEnglish ? 2 : 1 });
+    expect(app.pages[0].lines.map((l) => l.jp)).toEqual(keepEnglish ? ['BANG!', '明日も'] : ['明日も']);
+    expect(app.pages[0].detect.boxes.map((b) => b.n)).toEqual(keepEnglish ? [1, 2] : [1]);
+  });
+
+  it('asks for the text mask and keeps it beside the chapter (MASK-1)', async () => {
+    const write = vi.spyOn(chapter, 'writePageMask').mockResolvedValue('001.jpg.png');
+    h.analyze = async () => ({ img_width: 100, img_height: 120, panels: [], lines: [], mask_png: [137, 80, 78, 71] });
+    await detectOnePage(app.pages[0]);
+    expect(h.calls[0][1].mask).toBe(true);
+    expect(write).toHaveBeenCalledWith(app.pages[0], new Uint8Array([137, 80, 78, 71]));
+    expect(app.pages[0].detect.mask).toEqual({ file: '001.jpg.png', w: 100, h: 120 });
+    write.mockRestore();
+  });
+
+  it('detects without a mask when none can be written', async () => {
+    const write = vi.spyOn(chapter, 'writePageMask').mockResolvedValue(null);
+    h.analyze = async () => ({ img_width: 100, img_height: 120, panels: [], lines: [], mask_png: [1] });
+    await detectOnePage(app.pages[0]);
+    expect('mask' in app.pages[0].detect).toBe(false);
+    write.mockRestore();
   });
 
   it.each([detectCurrentPage, detectAllPages])('%s drops a late result as soon as another open starts, before pages change', async (detect) => {

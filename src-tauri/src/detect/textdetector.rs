@@ -9,7 +9,7 @@ use ort::value::Tensor;
 use super::cvops::resize_linear_u8;
 use super::dbnet::boxes_from_bitmap;
 use super::geometry::{nms, BBox};
-use super::textblock::{group_output, Language, Quad};
+use super::textblock::{group_output_scored, Language, Quad};
 
 /// Square input size for comic text detector model (1024x1024).
 pub const INPUT_SIZE: usize = 1024;
@@ -23,7 +23,7 @@ pub const MAX_DETECTIONS: usize = 300;
 pub const BOX_THRESHOLD: f32 = 0.6;
 
 /// Detected text block in page coordinates.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextBlockOut {
     /// Bounding box, `[x1, y1, x2, y2]`.
     pub xyxy: [i32; 4],
@@ -36,6 +36,19 @@ pub struct TextBlockOut {
     /// Rotation in degrees, snapped to 0 below 3.
     pub angle: i32,
     pub language: Language,
+    /// YOLO proposal confidence; line-only blocks have no proposal and default to 1.
+    pub score: f32,
+    /// Bubble/free lettering classification supplied by the optional second detector.
+    pub kind: Option<String>,
+}
+
+impl Default for TextBlockOut {
+    fn default() -> Self {
+        Self {
+            xyxy: [0; 4], lines: Vec::new(), vertical: false, font_size: 0.0,
+            angle: 0, language: Language::Unknown, score: 1.0, kind: None,
+        }
+    }
 }
 
 /// Loaded comic_text_detector ONNX session.
@@ -56,6 +69,29 @@ impl TextDetector {
         self.device
     }
 
+    /// Full-page context plus overlapping bands only for pages taller than 2:1.
+    pub fn detect_page(&mut self, img: &DynamicImage, lang: &str) -> ort::Result<(Vec<TextBlockOut>, GrayImage)> {
+        use super::tiles::{band_spans, dedupe, max_mask, Candidate};
+        let (width, height) = img.dimensions();
+        let (blocks, mut mask) = self.detect(img, lang)?;
+        let spans = band_spans(width, height);
+        if spans.is_empty() {
+            return Ok((blocks, mask));
+        }
+        let mut candidates: Vec<_> = blocks.into_iter().filter_map(|block| {
+            Candidate::from_band(block, 0, height, width, height, 0)
+        }).collect();
+        for (index, (start, end)) in spans.into_iter().enumerate() {
+            let band = img.crop_imm(0, start, width, end - start);
+            let (blocks, band_mask) = self.detect(&band, lang)?;
+            max_mask(&mut mask, &band_mask, start);
+            candidates.extend(blocks.into_iter().filter_map(|block| {
+                Candidate::from_band(block, start, end, width, height, index + 1)
+            }));
+        }
+        Ok((dedupe(candidates), mask))
+    }
+
     /// Detects text blocks and page-sized mask on an image.
     pub fn detect(&mut self, img: &DynamicImage, lang: &str) -> ort::Result<(Vec<TextBlockOut>, GrayImage)> {
         let (im_w, im_h) = img.dimensions();
@@ -73,11 +109,13 @@ impl TextDetector {
         let anchors = if blk_shape.len() == 3 { blk_shape[1] as usize } else { 0 };
         let channels = if blk_shape.len() == 3 { blk_shape[2] as usize } else { 0 };
         let proposals = decode_blocks(blk, anchors, channels, &lb);
+        let boxes: Vec<_> = proposals.iter().map(|&(b, class, _)| (b, class)).collect();
+        let scores: Vec<_> = proposals.iter().map(|p| p.2).collect();
 
         let mask = page_mask(seg, &lb, im_w, im_h)?;
         let lines = decode_lines(det, &lb);
 
-        let blocks = group_output(&proposals, &lines, im_w as i32, im_h as i32, &mask, lang);
+        let blocks = group_output_scored(&boxes, &lines, im_w as i32, im_h as i32, &mask, lang, &scores);
         let out = blocks
             .into_iter()
             .map(|b| TextBlockOut {
@@ -87,6 +125,8 @@ impl TextDetector {
                 font_size: b.font_size,
                 angle: b.angle,
                 language: b.language,
+                score: b.score,
+                kind: None,
             })
             .collect();
         Ok((out, mask))
@@ -157,7 +197,7 @@ pub fn preprocess(img: &DynamicImage, lb: &Letterbox) -> Vec<f32> {
 }
 
 /// Decodes YOLO block proposals in page coordinates.
-fn decode_blocks(data: &[f32], anchors: usize, channels: usize, lb: &Letterbox) -> Vec<([i32; 4], usize)> {
+fn decode_blocks(data: &[f32], anchors: usize, channels: usize, lb: &Letterbox) -> Vec<([i32; 4], usize, f32)> {
     if channels < 6 || anchors == 0 || data.len() < anchors * channels {
         return Vec::new();
     }
@@ -205,6 +245,7 @@ fn decode_blocks(data: &[f32], anchors: usize, channels: usize, lb: &Letterbox) 
                     (b.y2 * ry) as i32,
                 ],
                 b.class,
+                b.score,
             )
         })
         .collect()
@@ -259,6 +300,39 @@ mod tests {
 
     fn page(w: u32, h: u32) -> DynamicImage {
         DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, Rgb([255, 255, 255])))
+    }
+
+    /// Uses only committed crop pixels; source pages in the user's library are not needed.
+    #[test]
+    #[ignore = "requires the detector model; prints tall-page detection counts"]
+    fn stacked_fixture_crops_compare_full_page_and_tiled_detection() {
+        let models = super::super::engine::default_models_dir();
+        let path = models.join("comictextdetector.onnx");
+        assert!(path.exists(), "detector model missing: {}", path.display());
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/analyze-golden/crops/page-0-crop-0.png");
+        let crop = image::open(fixture).expect("fixture crop").to_rgb8();
+        let width = crop.width().max(crop.height()) + 80;
+        let mut page = RgbImage::from_pixel(width, width * 4, Rgb([255, 255, 255]));
+        for i in 0..4 {
+            image::imageops::replace(&mut page, &crop, 40, i64::from(i * width + 40));
+        }
+        let mut detector = TextDetector::load(&path).expect("load detector");
+        // The ordinary-page path returns the unmodified single-pass result.
+        let ordinary = DynamicImage::ImageRgb8(image::imageops::crop_imm(&page, 0, 0, width, width).to_image());
+        let (single, single_mask) = detector.detect(&ordinary, "ja").unwrap();
+        let (unchanged, unchanged_mask) = detector.detect_page(&ordinary, "ja").unwrap();
+        assert_eq!(single_mask, unchanged_mask);
+        assert_eq!(format!("{single:?}"), format!("{unchanged:?}"));
+
+        let tall = DynamicImage::ImageRgb8(page);
+        let (before, full_mask) = detector.detect(&tall, "ja").unwrap();
+        let (after, tiled_mask) = detector.detect_page(&tall, "ja").unwrap();
+        eprintln!("synthetic tall page {width}x{}: {} full-page blocks, {} tiled blocks",
+            width * 4, before.len(), after.len());
+        assert_eq!(tiled_mask.dimensions(), (width, width * 4));
+        assert!(tiled_mask.as_raw().iter().zip(full_mask.as_raw()).all(|(a, b)| a >= b));
+        assert!(!after.is_empty(), "stacked lettering should be detected");
     }
 
     #[test]
@@ -326,6 +400,7 @@ mod tests {
         let out = decode_blocks(&data, 2, 7, &lb);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].1, 1, "should pick the Japanese class");
+        assert!((out[0].2 - 0.855).abs() < 1e-6, "retain objectness times class confidence");
         assert_eq!(out[0].0, [160, 340, 240, 460]);
     }
 

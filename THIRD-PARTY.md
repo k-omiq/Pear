@@ -54,14 +54,37 @@ restriction. The package is used unmodified, for pattern data only.
 
 ## Ported code
 
-The bubble-outline finder (`src/lib/bubble-outline.js`) is a JavaScript port
-of the outline ladder in [Komatose](https://github.com/innominata/komatose)
-(`ocr/workflow.py`, commit `d9be51e`). The glossary matching rule in
-`src/lib/glossary.js` (fold by NFKC, case and whitespace; skip terms under two
-characters) follows Komatose's `src/lib/glossary.ts` at the same commit. The SFX
-meanings in `src/lib/sfx-meanings.js` are Komatose's `src/lib/sfx.ts` and
-`src/lib/sfxKo.ts` at the same commit: the two word lists copied verbatim,
-the lookup code with its TypeScript types removed.
+Parts of this app are ported from [Komatose](https://github.com/innominata/komatose)
+at commit `d9be51e`:
+
+- `src/lib/bubble-outline.js`: the outline ladder in `ocr/workflow.py`, as
+  JavaScript.
+- `src/lib/glossary.js`: the glossary matching rule (fold by NFKC, case and
+  whitespace; skip terms under two characters) from `src/lib/glossary.ts`.
+- `src/lib/sfx-meanings.js`: `src/lib/sfx.ts` and `src/lib/sfxKo.ts`, the two
+  word lists copied verbatim, the lookup code with its TypeScript types
+  removed, plus the classification tail (dialogue, SFX, narration) with a weak
+  font-size prior and generic Chinese rules.
+- `src-tauri/src/detect/analyze.rs`: the page-relative minimum region size from
+  `src/lib/server/detect.ts`.
+- `src-tauri/src/detect/tiles.rs`: the tall-page band spans and seam
+  deduplication from `ocr/detect.py`.
+- `src-tauri/src/detect/crops.rs`: the OCR crop whitening from
+  `src/lib/server/reviewMask.ts`, with a font-scaled dilation of the detector
+  mask and the weak threshold from `ocr/lettering.py`.
+- `src-tauri/src/detect/lettering.rs`: the region-clipped text mask
+  refinement from `ocr/lettering.py`.
+- `src-tauri/src/detect/fusion.rs`: the two-detector vote from
+  `src/lib/server/detectFusion.ts`; `src-tauri/src/detect/rtdetr.rs` follows
+  the RT-DETR preprocessing and seam merging in `ocr/detect.py`.
+- `src/lib/detect-post.js`: the duplicate-region and already-English
+  rules from `src/lib/transcribeRegions.ts` and the OCR comparison key from
+  `src/lib/ocrConsensus.ts`.
+- `src/lib/strip-reslice.js`: the clean-gutter rule and tail balancing from
+  `src/lib/server/reslice.ts` and `src/lib/reslice.ts`.
+- `src/lib/page-prep.js`: the spread split, auto-crop and auto-align planners
+  from `src/lib/server/pageEdit.ts` and `src/lib/server/spreadGutter.ts`.
+
 Komatose is MIT licensed:
 
 > MIT License
@@ -129,6 +152,7 @@ by this project's license.
 | --- | --- | --- |
 | manga109 YOLO detector | [deepghs/manga109_yolo](https://huggingface.co/deepghs/manga109_yolo) | YOLO11 lineage; Ultralytics applies AGPL-3.0 to its models |
 | comic text detector | [manga-image-translator](https://github.com/zyddnys/manga-image-translator) | published from a GPL-3.0 repository |
+| RT-DETR comic text and bubble detector | [ogkalu/comic-text-and-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector/tree/16e8a622f91fabc6b5b65c96d32d1183f8843546) | Apache-2.0; optional on-demand download at revision `16e8a622f91fabc6b5b65c96d32d1183f8843546`, not bundled |
 | manga-ocr-base | [kha-white/manga-ocr](https://github.com/kha-white/manga-ocr), [ONNX build](https://huggingface.co/onnx-community/manga-ocr-base-ONNX) | Apache-2.0 |
 | PP-OCRv4/v5 Korean and PP-OCRv5/v6 Chinese recognition | [RapidOCR](https://github.com/RapidAI/RapidOCR), derived from [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR); [download mirror](https://huggingface.co/DjB314/RapidOCR) | Apache-2.0 |
 

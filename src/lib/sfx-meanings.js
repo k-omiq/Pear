@@ -1,20 +1,24 @@
-// ===== What a Japanese or Korean SFX means (TXT-13) =====
+// ===== Japanese and Korean SFX meanings and region types (TXT-13, SFX-1) =====
 // A dictionary of about 3,500 comic sound effects with their usual English
 // readings, shown as a hint on `sfx`-tagged queue rows: a letterer who cannot
-// read ドキドキ is told it is a pounding heartbeat. A hint only - nothing here
-// writes a line.
+// read ドキドキ is told it is a pounding heartbeat. Pure classification rules
+// also distinguish lettering from dialogue and speech outside a bubble.
 //
 // Ported from Komatose (https://github.com/innominata/komatose, commit
 // d9be51e: `src/lib/sfx.ts` and `src/lib/sfxKo.ts`), MIT licensed,
 // Copyright (c) 2026 innominata - see THIRD-PARTY.md. The two word lists are
 // copied verbatim; the lookup code is Komatose's with its TypeScript types
-// removed. The lists are parsed when this module loads, so the queue imports
-// it on demand (`import('./sfx-meanings.js')`) rather than at boot.
+// removed. The classification tail is ported from sfx.ts at the same commit,
+// with app type names, a weak engine type prior and conservative Chinese rules.
+// The lists are parsed when this module loads, so the queue and detection
+// import it on demand rather than at boot.
 //
 // Exports: `sfxMeaning(text)` - the entry when the whole text is one known
 // sound, allowing for punctuation, long vowels, small tsu, repeats and
 // Korean elongation - and `sfxMeaningsIn(text)` - every known sound inside a
 // longer text. Each entry is `{ source, meanings: string[] }`.
+// `classifyRegionLineType(kind, source, hints)` returns dialogue/sfx/narration;
+// `kind` is bubble/free/unknown, `hints.type` is only a font-size prior.
 
 const KOREAN_SFX_TEXT = `
 # Breath, voice
@@ -3764,3 +3768,117 @@ function findSfxInText(source) {
   return found;
 }
 export { normalizeSfx, lookupStandaloneSfx as sfxMeaning, findSfxInText as sfxMeaningsIn };
+
+// Short Korean replies are speech even when their syllables repeat.
+const KO_SPOKEN =
+  /^(응|어|아|네|예|야|왜|뭐|음|오|아니|그래|맞아|진짜|정말|잠깐|저기|안녕|고마워|미안|좋아|싫어|가자|설마|뭐야|왜요|그래요|아니야|알았어|알겠어|괜찮아|어서|아이고|아이구|어머|어머나|대박|잠깐만|기다려|여기|거기|네네|응응|어어|예예)$/;
+
+function koreanPlain(text) {
+  return text.replace(/[\s\u3000…‥.。．·・･,，、!！?？~～〜'"″“”‘’「」『』()（）♪♡♥]/g, '');
+}
+
+function koreanOnomatopoeiaShape(plain) {
+  const core = stripKoEmphasis(plain);
+  if (!core || KO_SPOKEN.test(core)) return false;
+  const unit = smallestRepeatUnit(core);
+  if (unit !== core && KO_SPOKEN.test(unit)) return false;
+  if (/^(.)\1+$/u.test(core)) return true;
+  if (/^(.{2,3})\1+$/u.test(core)) return true;
+  if ([...core].length > 12) return false;
+  const short = elongationForms(core).at(-1) ?? core;
+  if (short === core) return false;
+  if ([...short].length === 1) return true;
+  const tail = hangulSyllable([...short].at(-1) ?? '');
+  return [...short].length === 2 && tail?.initial === IEUNG && tail.final === 0;
+}
+
+function looksLikeKoreanSpeech(text) {
+  if (/[\u3040-\u30ff\u4e00-\u9fff]/u.test(text)) return false;
+  const plain = koreanPlain(text);
+  if (!plain || !/^[\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]+$/u.test(plain)) return false;
+  if (KO_SPOKEN.test(plain)) return true;
+  const core = stripKoEmphasis(plain);
+  return [...core].length >= 2 && !koreanOnomatopoeiaShape(core);
+}
+
+function looksLikeKoreanSentence(text) {
+  if (/[\u3040-\u30ff\u4e00-\u9fff]/u.test(text)) return false;
+  const plain = text.replace(/[^\uac00-\ud7a3]/g, '');
+  if ([...plain].length < 2) return false;
+  return !koreanOnomatopoeiaShape(plain);
+}
+
+export function looksLikeDialogue(source) {
+  const text = source.normalize('NFKC').trim();
+  if (!text || lookupStandaloneSfx(text)) return false;
+  if (/[\u4e00-\u9fff]/.test(text)) return true;
+  const hiragana = text.match(/[\u3041-\u3096]/g)?.length ?? 0;
+  const katakana = text.match(/[\u30a1-\u30fa]/g)?.length ?? 0;
+  if (hiragana >= 4 && hiragana > katakana) return true;
+  return looksLikeKoreanSpeech(text);
+}
+
+function looksLikeSentence(text) {
+  const kanji = text.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
+  const hiragana = text.match(/[\u3041-\u3096]/g)?.length ?? 0;
+  if (kanji >= 3 || hiragana >= 6 || (kanji >= 1 && hiragana >= 3)) return true;
+  return looksLikeKoreanSentence(text);
+}
+
+export function looksLikeOnomatopoeia(source) {
+  const text = source.normalize('NFKC').replace(/[\s…・。、！？!?.,'"「」『』()（）~〜♪♡]/g, '');
+  if (isKoreanLettering(text)) {
+    if (!text) return false;
+    if (lookupStandaloneSfx(text)) return true;
+    return koreanOnomatopoeiaShape(text);
+  }
+  if (text.length < 2 || text.length > 12) return false;
+  if (!/^[\u3041-\u3096\u30a1-\u30fc]+$/.test(text)) return false;
+  if (/^(はい|いや|うん|ええ|そう|だめ|まって|ねえ)+$/.test(text)) return false;
+  if (/(.)\1{2,}/.test(text)) return true;
+  if (text.length >= 4 && /(.{2,3})\1/.test(text)) return true;
+  const katakana = text.match(/[\u30a1-\u30fa]/g)?.length ?? 0;
+  if (katakana === text.length && /ッ$/.test(text)) return true;
+  return /(.)\1.{0,2}っ$/.test(text);
+}
+
+const SPOKEN_WORD = /(そう|はい|うん|ええ|いや|まって|だめ|です|ます|ない|よね|かな)[！？!?…。、]*$/;
+const SPOKEN_PARTICLE = /(よ|ね|だ|ぞ|ぜ|か|な|わ)[！？!?…。、]*$/;
+
+function looksSpoken(text) {
+  const plain = text.replace(/[\s…・。、！？!?.,'"「」『』()（）~〜♪♡]/g, '');
+  if (/^[가-힣]+$/u.test(plain) && KO_SPOKEN.test(plain)) return true;
+  if (plain.length < 2 || plain.length > 8) return false;
+  if (!/^[\u3041-\u3096ー]+$/.test(plain)) return false;
+  if (looksLikeOnomatopoeia(plain)) return false;
+  // A particle after one mora can still be a sound (ぐわ, かさ); require a stem.
+  return SPOKEN_WORD.test(text) || (plain.length >= 3 && SPOKEN_PARTICLE.test(text));
+}
+
+export function classifyRegionLineType(kind, source, hints = {}) {
+  if (kind !== 'bubble' && kind !== 'free') kind = 'unknown';
+  const text = source.trim();
+  const fallback = hints.type === 'sfx' ? 'sfx' : 'dialogue';
+  // The dictionaries and sound shapes are Japanese/Korean. Han readings only
+  // supply generic speech evidence for Chinese; do not guess its sound effects.
+  if (hints.lang === 'zh') {
+    if (/\p{Script=Han}/u.test(text)) return kind === 'free' ? 'narration' : 'dialogue';
+    return kind === 'bubble' ? 'dialogue' : fallback;
+  }
+  if (text && lookupStandaloneSfx(text)) {
+    const spoken =
+      kind !== 'free' &&
+      !hints.sfxDetector &&
+      !/[\u30a1-\u30fa]/.test(text.normalize('NFKC')) &&
+      !looksLikeOnomatopoeia(text);
+    return spoken ? 'dialogue' : 'sfx';
+  }
+  const speech = text && (looksLikeSentence(text.normalize('NFKC')) || looksSpoken(text.normalize('NFKC')));
+  if (hints.sfxDetector && !speech) return 'sfx';
+  if (kind === 'free') return looksLikeDialogue(text) || speech ? 'narration' : 'sfx';
+  if (kind === 'unknown' && text && looksLikeOnomatopoeia(text)) return 'sfx';
+  // A font-size label cannot overrule speech or the dictionary. With no OCR
+  // evidence (including detection without OCR), keep that weak prior.
+  if (kind === 'unknown' && !speech && !looksLikeDialogue(text)) return fallback;
+  return 'dialogue';
+}
