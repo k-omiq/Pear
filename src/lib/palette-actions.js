@@ -24,6 +24,10 @@ import {
   nextPageWithWork,
   placeDetectedInChapter,
   saveSidebar,
+  boxTagName,
+  resetBoxToTagStyle,
+  saveBoxStyleAsTag,
+  applyTagStyleToChapter,
 } from './store.svelte.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
 import { SHORTCUTS, comboFor, formatCombo, hasShortcutHandler, runShortcut } from './shortcuts.svelte.js';
@@ -110,6 +114,9 @@ export const ACTIONS = [
   { id: 'jobs.retry', label: 'Retry failed pages', group: 'Detect', keywords: 'again failed errors jobs', when: () => !!retryable() && sidecarReady() && !app.detecting, run: () => retryable()?.retry() },
   { id: 'page.nextWork', label: 'Next page with work', group: 'Pages', keywords: 'todo unfinished check unplaced go', when: () => typeset() && app.pages.length > 1, run: () => nextPageWithWork() },
   { id: 'chapter.export', label: 'Export…', group: 'Chapter', keywords: 'save png psd zip pages images', when: () => typeset() && !app.exporting, run: () => { app.exportOpen = true; } },
+  { id: 'tag.reset', label: 'Reset box to its tag style', group: 'Text box', keywords: 'tag style default revert', when: () => boxSelected() && !!boxTagName(), run: () => resetBoxToTagStyle() },
+  { id: 'tag.save', label: 'Save box style as its tag style', group: 'Text box', keywords: 'tag style default remember', when: () => boxSelected() && !!boxTagName(), run: () => saveBoxStyleAsTag() },
+  { id: 'tag.applyChapter', label: 'Apply tag style to chapter', group: 'Text box', keywords: 'tag style all boxes restyle', when: () => boxSelected() && !!boxTagName(), run: () => applyTagStyleToChapter(boxTagName()) },
   { id: 'bulk.open', label: 'Bulk style', group: 'Text box', keywords: 'many boxes style all batch', when: () => typeset() && !app.bulk.active, run: () => openBulk() },
   { id: 'view.rawShow', label: 'Show raw page', group: 'View', keywords: 'compare raw original reference sidebar japanese', when: () => typeset() && app.sidebarHidden, run: toggleRaw },
   { id: 'view.rawHide', label: 'Hide raw page', group: 'View', keywords: 'compare raw original reference sidebar japanese', when: () => typeset() && !app.sidebarHidden, run: toggleRaw },

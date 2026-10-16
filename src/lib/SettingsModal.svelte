@@ -118,9 +118,13 @@
 
   function tagSummary(t) {
     const bits = [];
-    if (t.font) bits.push(t.font);
-    if (t.outline != null || t.outlineWidth != null) bits.push(`outline ${t.outlineWidth ?? 3}px`);
+    const st = t.style ?? {};
+    if (st.font) bits.push(st.font);
+    if (Array.isArray(st.strokes)) bits.push(st.strokes.length ? `outline ${st.strokes[0].width}px` : 'no outline');
     if (t.size) bits.push(`${t.size}px`);
+    if (t.minSize) bits.push(`min ${t.minSize}px`);
+    const more = Object.keys(st).filter((k) => k !== 'font' && k !== 'strokes').length;
+    if (more) bits.push(`+${more} style`);
     return bits.join(' · ') || 'No defaults';
   }
 
@@ -716,8 +720,9 @@
       <div class="settings-section">
         <div class="settings-title">TAGS{@render scope('series')}</div>
         <div class="qhint pt-lead">
-          The font, outline and size a box of each tag starts with. Boxes
-          already placed keep their style.
+          The style a box of each tag starts with. Save a box's whole look as
+          its tag's style from the Inspector. Boxes already placed keep their
+          style until you apply it with Bulk style.
         </div>
         {#each projectTags as t (t.name)}
           <div class="pt-row">

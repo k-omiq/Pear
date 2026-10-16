@@ -168,7 +168,10 @@
     // If tag already exists, transition form to edit mode.
     if (findTag(name)) {
       if (!hasTag(line, name)) toggle(line, name);
-      form = { ...f, name, edit: true, tools: true, existed: true, confirmDelete: false };
+      // The existing tag's saved style rides along, so Save keeps what this
+      // form does not edit - a style saved off a box (LET-1).
+      const saved = tagFormFields(findTag(name));
+      form = { ...f, name, edit: true, tools: true, existed: true, confirmDelete: false, style: saved.style, extra: saved.extra };
       return;
     }
     createTag(name, tagFormDefaults(f));

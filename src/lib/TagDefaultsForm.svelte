@@ -12,7 +12,7 @@
   // label ids unique when more than one form is on screen; `onforget` runs after
   // a delete, for the caller to close its form.
   import { fontGroups, fontCaveat } from './font-menu.js';
-  import { deleteTag } from './tags.svelte.js';
+  import { deleteTag, formOnlyStyle } from './tags.svelte.js';
   import { toast } from './store.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
 
@@ -57,6 +57,22 @@
     <label class="qtf-lbl" for="qtf-size-{key}">Size</label>
     <input id="qtf-size-{key}" type="number" min="6" max="200" step="1" placeholder="-" title="Font size, px" value={form.size} onchange={(e) => { const v = e.currentTarget.value.trim(); form.size = v === '' ? '' : Math.max(6, Math.min(200, +v || 6)); e.currentTarget.value = String(form.size); }} />
   </span>
+
+  <!-- The smallest size a box of this tag may shrink to when its text does
+       not fit. Empty is three quarters of the size above. -->
+  <span class="qtf-row">
+    <label class="qtf-lbl" for="qtf-min-{key}">Min size</label>
+    <input id="qtf-min-{key}" type="number" min="4" max="200" step="1" placeholder="auto" title="Smallest size the fit may shrink to, px" value={form.minSize} onchange={(e) => { const v = e.currentTarget.value.trim(); form.minSize = v === '' ? '' : Math.max(4, Math.min(200, +v || 4)); e.currentTarget.value = String(form.minSize); }} />
+  </span>
+
+  <!-- A style saved off a box holds more than this form edits; it survives
+       a save. Clearing it leaves the font and outline above. -->
+  {#if form.extra}
+    <span class="qtf-row">
+      <span class="qtf-note">Also sets {form.extra} more style {form.extra === 1 ? 'field' : 'fields'}, saved from a box.</span>
+      <button class="qtf-quiet" onclick={() => { form.style = formOnlyStyle(form.style); form.extra = 0; }}>Clear them</button>
+    </span>
+  {/if}
 {/if}
 {#if form.edit}
   <span class="qtf-del">

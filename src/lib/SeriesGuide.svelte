@@ -77,6 +77,10 @@
     display: flex;
     align-items: center;
   }
+  .btn.tiny {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
   .sg-lead {
     margin: 0 0 10px;
   }

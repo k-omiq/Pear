@@ -54,6 +54,8 @@ import {
   tagSize,
   rememberTagSize,
   findTag,
+  saveTagDefaults,
+  TAG_STYLE_KEYS,
 } from './tags.svelte.js';
 // The one edge in this file that points at a module which points back: `measure`
 // imports `fontCssFor` from here. Both directions are lazy - neither module
@@ -904,8 +906,9 @@ export function autoFitBox(b, p = page()) {
 //   the preference, `prefs.minFontSize` - an absolute size below which text is
 //   not worth reading, whatever it was set at (mirrored here by the prefs
 //   module, which the store cannot import - see `setMinFontSize`);
-//   three quarters of the size this kind of text is set at - the size remembered
-//   for the line's tag (`tagSize`), or the box's own reference size when there
+//   the primary tag's minimum size, or three quarters of the size this kind
+//   of text is set at - the size remembered for the line's tag (`tagSize`),
+//   or the box's own reference size when there
 //   is none (`refSizeOf`: not the size it was shrunk to, or every shrink would
 //   lower the floor for the next). A
 //   quarter smaller is about as far as a letterer shrinks one balloon before it
@@ -917,18 +920,21 @@ export function autoFitBox(b, p = page()) {
 // the preference. That is a choice, and the rule it answers to - text never
 // leaves its box unflagged, and is never clipped - holds either way: the
 // preference is the one floor nothing ever goes below, "Fit now" included, and
-// the three quarters is how far the app goes without asking. Shrinking a
-// balloon's text to half the size of its neighbours to avoid a flag would trade
+// the tag minimum or three quarters is how far the app goes without asking.
+// Shrinking a balloon's text to half the size of its neighbours to avoid a flag would trade
 // a visible, fixable problem for a quiet one nobody is told about.
 let minFontSize = 12;
 export function setMinFontSize(v) {
   const n = Number(v);
   if (n > 0) minFontSize = n;
 }
-const solveFloor = (ref) => Math.max(minFontSize, 0.75 * ref);
+function solveFloor(ref, b, p) {
+  const line = b.lineN != null && p ? lineByN(p, b.lineN) : null;
+  return Math.max(minFontSize, findTag(sizeKeyFor(line))?.minSize ?? 0.75 * ref);
+}
 function minSizeFor(b, p) {
   const line = b.lineN != null && p ? lineByN(p, b.lineN) : null;
-  return solveFloor(tagSize(sizeKeyFor(line)) ?? refSizeOf(b));
+  return solveFloor(tagSize(sizeKeyFor(line)) ?? refSizeOf(b), b, p);
 }
 
 const stripOf = (p) => {
@@ -2340,8 +2346,8 @@ export function setInheritBoxStyle(enabled) {
 // The size a new box is born at follows the box before it that carries the
 // SAME primary tag, not the last box touched: an `sfx` box sized up to 60 must
 // not drag the next dialogue box up with it, and the dialogue size must not
-// pull the next `sfx` back down. Everything else about the style still follows
-// `lastStyle`. The group is the line's first tag - the same one `styleForLine`
+// pull the next `sfx` back down. The rest of the style follows `lastStyle`
+// under the tag patches. The group is the line's first tag - the same one `styleForLine`
 // lets win - and an untagged line is its own group, keyed by the empty string.
 //
 // "Before it" is reading order: the nearest earlier line of the group that has
@@ -4272,7 +4278,7 @@ function solveBox(b, p, text, at, stay = false) {
     region,
     locks: stay ? { ...a.locks, pos: true } : a.locks,
     opts: {
-      minSize: solveFloor(a.refSize),
+      minSize: solveFloor(a.refSize, b, p),
       minW: MIN_BOX_W,
       minH: MIN_BOX_H,
       box: { x: b.x, y: b.y, w: b.w, h: b.h },
@@ -6422,15 +6428,8 @@ export function applyBulkToTag(name, pages = app.pages) {
 // stand. The two orders agree by construction, because they are the same
 // function; there is no second answer to keep in step.
 //
-// What that means for manual styling, since it is the question the rule has to
-// answer: the tag wins, over the three fields a tag can define and no others.
-// `styleForLine` only ever sets font and the stroke list, and only those
-// its tags actually define - so size, colour, shadow, warp, rotation, every
-// property the user set by hand in the Inspector, come through untouched. If the
-// tag defines nothing, nothing changes, nothing is recorded, and the caller is
-// told so. The alternative - manual styling wins - makes an apply do nothing on
-// precisely the boxes the user has been fiddling with, which is the complaint
-// this exists to answer. It is one undo press away either way.
+// The tag wins over every key its patch defines. Size, geometry and transforms
+// stay the box's own. An empty patch changes nothing and records nothing.
 //
 // Un-applying restyles nothing. A box's style is a value it owns, not a
 // reference to the tag; there is no "what it would have been" to go back to, and
@@ -6442,26 +6441,87 @@ export function applyBulkToTag(name, pages = app.pages) {
 // restyle" and the reason the panel must not call this "undo the tag".
 const sameStyle = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-function restyleLineBoxes(p, ln) {
-  // Every box on the line, not the first: `activateLine` will happily re-arm a
-  // line that is already placed, so a second click on the canvas gives that line
-  // two boxes. Both are the line's, so both follow its tags - and one entry
-  // covers them, or the user would pay two presses for one click.
+function restyleForTags(boxes) {
   const items = [];
-  for (const b of p.boxes) {
-    if (b.lineN !== ln.n) continue;
+  for (const { page: p, line: ln, box: b } of boxes) {
     const before = cloneStyle(b.style);
-    const after = cloneStyle(styleForLine(ln, cloneStyle(b.style)));
+    const after = cloneStyle(styleForLine(ln, before));
     if (sameStyle(before, after)) continue;
     const geomBefore = fitGeom(b);
-    b.style = cloneStyle(after);
-    // A tag sets the font, and a different font measures differently - so this
-    // is a restyle that can change how many lines the box's text takes, exactly
-    // like the bulk apply above, and it fits for the same reason and records the
-    // geometry either side for the same one.
+    b.style = after;
+    // Lettering changes can change the fit. The history carries both the style
+    // and geometry so one undo restores the box the user was looking at.
     autoFitBox(b, p);
-    items.push({ pageId: p.id, boxId: b.id, before, after, geomBefore, geomAfter: fitGeom(b) });
+    items.push({ pageId: p.id, boxId: b.id, before, after: cloneStyle(b.style), geomBefore, geomAfter: fitGeom(b) });
   }
+  return items;
+}
+
+// The tag a box's style answers to: its line's first, the one `styleForLine`
+// lets win. Null for a box whose line carries no tag, or a legacy free box.
+export function boxTagName(boxId = app.selectedId) {
+  for (const p of app.pages) {
+    const b = p.boxes.find((x) => x.id === boxId);
+    if (b) return b.lineN != null ? (lineTags(lineByN(p, b.lineN))[0] ?? null) : null;
+  }
+  return null;
+}
+
+// The Inspector's two tag buttons and the Bulk panel's chapter apply (LET-1).
+// "Reset to tag style" puts one box back to what its tags say; "Save as tag
+// style" goes the other way, writing the box's look (all but geometry,
+// transforms, size and the line breaking - see TAG_STYLE_KEYS) into its
+// primary tag for every box placed from now on. That is a registry write like
+// any other tag edit, never document history, and it restyles nothing already
+// placed - the user applies it on purpose, with the chapter apply, which is
+// one undo step per page.
+export function resetBoxToTagStyle(boxId = app.selectedId) {
+  const p = app.pages.find((pg) => pg.boxes.some((b) => b.id === boxId));
+  const b = p?.boxes.find((b) => b.id === boxId);
+  const ln = b?.lineN != null ? lineByN(p, b.lineN) : null;
+  const items = ln ? restyleForTags([{ page: p, line: ln, box: b }]) : [];
+  if (!items.length) {
+    toast('No tag style changes');
+    return 0;
+  }
+  const it = items[0];
+  recordEdit({ t: 'style', ...it });
+  markUnsaved();
+  toast('Reset box to tag style');
+  return 1;
+}
+
+export function saveBoxStyleAsTag(boxId = app.selectedId) {
+  const p = app.pages.find((pg) => pg.boxes.some((b) => b.id === boxId));
+  const b = p?.boxes.find((b) => b.id === boxId);
+  const ln = b?.lineN != null ? lineByN(p, b.lineN) : null;
+  const name = lineTags(ln)[0];
+  if (!name) {
+    toast('Tag the line first');
+    return null;
+  }
+  const style = cloneStyle(b.style);
+  const entry = saveTagDefaults(name, { style: Object.fromEntries(TAG_STYLE_KEYS.map((k) => [k, style[k]])) });
+  toast(`Saved style for “${name}”`);
+  return entry;
+}
+
+export function applyTagStyleToChapter(name, pages = app.pages) {
+  const items = restyleForTags(boxesWithTag(name, pages));
+  if (!items.length) {
+    toast('No tag style changes');
+    return 0;
+  }
+  const pageCount = recordBulkByPage(items);
+  markUnsaved();
+  toast(`Applied tag style to ${items.length} box${items.length === 1 ? '' : 'es'}` +
+    (pageCount > 1 ? ` · ${pageCount} pages, one undo step each` : ''));
+  return items.length;
+}
+
+function restyleLineBoxes(p, ln) {
+  // Every box on the line follows its tags, with one history entry for the lot.
+  const items = restyleForTags(p.boxes.filter((b) => b.lineN === ln.n).map((box) => ({ page: p, line: ln, box })));
   if (!items.length) return 0;
   // A `style` entry when there is one box, because that is what it is and its
   // failure message says so; `bulk` only for the case that needs it.
