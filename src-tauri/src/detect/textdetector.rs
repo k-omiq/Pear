@@ -56,6 +56,29 @@ impl TextDetector {
         self.device
     }
 
+    /// Full-page context plus overlapping bands only for pages taller than 2:1.
+    pub fn detect_page(&mut self, img: &DynamicImage, lang: &str) -> ort::Result<(Vec<TextBlockOut>, GrayImage)> {
+        use super::tiles::{band_spans, dedupe, max_mask, Candidate};
+        let (width, height) = img.dimensions();
+        let (blocks, mut mask) = self.detect(img, lang)?;
+        let spans = band_spans(width, height);
+        if spans.is_empty() {
+            return Ok((blocks, mask));
+        }
+        let mut candidates: Vec<_> = blocks.into_iter().filter_map(|block| {
+            Candidate::from_band(block, 0, height, width, height, 0)
+        }).collect();
+        for (index, (start, end)) in spans.into_iter().enumerate() {
+            let band = img.crop_imm(0, start, width, end - start);
+            let (blocks, band_mask) = self.detect(&band, lang)?;
+            max_mask(&mut mask, &band_mask, start);
+            candidates.extend(blocks.into_iter().filter_map(|block| {
+                Candidate::from_band(block, start, end, width, height, index + 1)
+            }));
+        }
+        Ok((dedupe(candidates), mask))
+    }
+
     /// Detects text blocks and page-sized mask on an image.
     pub fn detect(&mut self, img: &DynamicImage, lang: &str) -> ort::Result<(Vec<TextBlockOut>, GrayImage)> {
         let (im_w, im_h) = img.dimensions();
@@ -259,6 +282,39 @@ mod tests {
 
     fn page(w: u32, h: u32) -> DynamicImage {
         DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, Rgb([255, 255, 255])))
+    }
+
+    /// Uses only committed crop pixels; source pages in the user's library are not needed.
+    #[test]
+    #[ignore = "requires the detector model; prints tall-page detection counts"]
+    fn stacked_fixture_crops_compare_full_page_and_tiled_detection() {
+        let models = super::super::engine::default_models_dir();
+        let path = models.join("comictextdetector.onnx");
+        assert!(path.exists(), "detector model missing: {}", path.display());
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/analyze-golden/crops/page-0-crop-0.png");
+        let crop = image::open(fixture).expect("fixture crop").to_rgb8();
+        let width = crop.width().max(crop.height()) + 80;
+        let mut page = RgbImage::from_pixel(width, width * 4, Rgb([255, 255, 255]));
+        for i in 0..4 {
+            image::imageops::replace(&mut page, &crop, 40, i64::from(i * width + 40));
+        }
+        let mut detector = TextDetector::load(&path).expect("load detector");
+        // The ordinary-page path returns the unmodified single-pass result.
+        let ordinary = DynamicImage::ImageRgb8(image::imageops::crop_imm(&page, 0, 0, width, width).to_image());
+        let (single, single_mask) = detector.detect(&ordinary, "ja").unwrap();
+        let (unchanged, unchanged_mask) = detector.detect_page(&ordinary, "ja").unwrap();
+        assert_eq!(single_mask, unchanged_mask);
+        assert_eq!(format!("{single:?}"), format!("{unchanged:?}"));
+
+        let tall = DynamicImage::ImageRgb8(page);
+        let (before, full_mask) = detector.detect(&tall, "ja").unwrap();
+        let (after, tiled_mask) = detector.detect_page(&tall, "ja").unwrap();
+        eprintln!("synthetic tall page {width}x{}: {} full-page blocks, {} tiled blocks",
+            width * 4, before.len(), after.len());
+        assert_eq!(tiled_mask.dimensions(), (width, width * 4));
+        assert!(tiled_mask.as_raw().iter().zip(full_mask.as_raw()).all(|(a, b)| a >= b));
+        assert!(!after.is_empty(), "stacked lettering should be detected");
     }
 
     #[test]
