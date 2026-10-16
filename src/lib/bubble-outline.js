@@ -779,3 +779,75 @@ export function findOutline(image, block, opts = {}) {
   }
   return open('no-closed-outline');
 }
+
+// ===== an outline cut at its neck =====
+//
+// For an outline that holds two bubbles joined by a neck (two found as one, or
+// drawn so): the piece holding `box` (page px [x0, y0, x1, y1]), cut from the
+// rest the way `findOutline` cuts a join - along the neck's chord, between the
+// text and each of `neighbors` (other text blocks inside it). With no
+// neighbour, the far lobe is found from the outline's own shape: the widest
+// point past a neck from the text. Null when there is no neck to cut. Pure
+// over its arguments; no pixels are needed.
+export function splitOutline(pts, box, neighbors = []) {
+  if (!Array.isArray(pts) || pts.length < 3 || !Array.isArray(box) || box.length !== 4) return null;
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const x0 = Math.floor(Math.min(...xs)) - 4;
+  const y0 = Math.floor(Math.min(...ys)) - 4;
+  const w = Math.ceil(Math.max(...xs)) + 4 - x0;
+  const h = Math.ceil(Math.max(...ys)) + 4 - y0;
+  if (!(w > 8 && h > 8) || w * h > 4e6) return null;
+  const n = w * h;
+  const mask = new Uint8Array(n);
+  // Even-odd fill at each row's middle.
+  for (let y = 0; y < h; y++) {
+    const yy = y + y0 + 0.5;
+    const hits = [];
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [ax, ay] = pts[j];
+      const [bx, by] = pts[i];
+      if ((ay <= yy) !== (by <= yy)) hits.push(ax + ((yy - ay) / (by - ay)) * (bx - ax));
+    }
+    hits.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < hits.length; k += 2) {
+      const from = clamp(Math.ceil(hits[k] - x0 - 0.5), 0, w);
+      const to = clamp(Math.floor(hits[k + 1] - x0 - 0.5), -1, w - 1);
+      for (let x = from; x <= to; x++) mask[y * w + x] = 1;
+    }
+  }
+  const local = [box[0] - x0, box[1] - y0, box[2] - x0, box[3] - y0];
+  const c = { x: x0, y: y0, w, h, n, box: local, a: new Uint8Array(n), b: new Uint8Array(n), labels: new Int32Array(n), stack: new Int32Array(n) };
+  const own = centre(local).map(Math.floor);
+  if (!at(c, mask, own[0], own[1])) return null;
+  let seeds = neighbors.filter((r) => Array.isArray(r) && r.length === 4);
+  if (!seeds.length) {
+    // The far lobe: the clearest point that a path from the text reaches only
+    // through a neck.
+    const dist = distanceTransform(c, mask);
+    const peaks = [];
+    for (let y = 2; y < h - 2; y++) for (let x = 2; x < w - 2; x++) {
+      const v = dist[y * w + x];
+      if (v < 4) continue;
+      let top = true;
+      for (let dy = -2; dy <= 2 && top; dy++) for (let dx = -2; dx <= 2; dx++) if (dist[(y + dy) * w + x + dx] > v) { top = false; break; }
+      if (top) peaks.push([x, y, v]);
+    }
+    peaks.sort((a, b) => b[2] - a[2]);
+    for (const [x, y] of peaks.slice(0, 12)) {
+      if (Math.hypot(x - own[0], y - own[1]) < 8) continue;
+      const path = connectingPath(c, mask, dist, own, [x, y]);
+      if (path && neckIndex(path.map(([px, py]) => dist[py * w + px])) >= 0) {
+        seeds = [[x + x0 - 1, y + y0 - 1, x + x0 + 1, y + y0 + 1]];
+        break;
+      }
+    }
+    if (!seeds.length) return null;
+  }
+  const before = countMask(mask);
+  const divided = splitInterior(c, mask.slice(), seeds);
+  const kept = countMask(divided.mask);
+  if (!divided.split || !kept || kept > before * 0.97) return null;
+  const out = simplifyClosed(trace(c, divided.mask)).map(([x, y]) => [r2(x + x0 + 0.5), r2(y + y0 + 0.5)]);
+  return out.length >= 3 ? out : null;
+}

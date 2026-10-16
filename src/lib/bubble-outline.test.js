@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findOutline } from './bubble-outline.js';
+import { findOutline, splitOutline } from './bubble-outline.js';
 import { shapeContainsPoint } from './balloon.js';
 
 // Pages drawn by hand, the way balloon.test.js draws them: paper near white,
@@ -227,5 +227,42 @@ describe('findOutline - the bubble ladder', () => {
     expect(findOutline(page(50, 50), null).open).toBe(true);
     expect(findOutline(page(50, 50), [10, 10, 10, 10]).open).toBe(true);
     expect(gray(page(4, 4), 0, 0)).toBe(PAPER);
+  });
+});
+
+describe('splitOutline', () => {
+  const oval = (cx, cy, rx, ry, k = 48) => Array.from({ length: k }, (_, i) => [cx + rx * Math.cos((2 * Math.PI * i) / k), cy + ry * Math.sin((2 * Math.PI * i) / k)]);
+  const inPoly = (pts, x, y) => {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [ax, ay] = pts[j];
+      const [bx, by] = pts[i];
+      if ((ay <= y) !== (by <= y) && x < ax + ((y - ay) / (by - ay)) * (bx - ax)) inside = !inside;
+    }
+    return inside;
+  };
+  // A dumbbell: two circles and the narrow bar between them, as one polygon.
+  const dumbbell = [];
+  for (let i = 0; i <= 40; i++) {
+    const t = -Math.PI * 0.85 + (i / 40) * Math.PI * 1.7;
+    dumbbell.push([200 - 80 * Math.cos(t), 200 + 80 * Math.sin(t)]);
+  }
+  for (let i = 0; i <= 40; i++) {
+    const t = Math.PI * 0.85 - (i / 40) * Math.PI * 1.7;
+    dumbbell.push([440 + 80 * Math.cos(t), 200 + 80 * Math.sin(t)]);
+  }
+
+  it('cuts a joined outline at its neck, keeping the piece with the text', () => {
+    const a = splitOutline(dumbbell, [180, 180, 220, 220]);
+    expect(a).not.toBeNull();
+    expect(inPoly(a, 200, 200)).toBe(true);
+    expect(inPoly(a, 440, 200)).toBe(false);
+    const b = splitOutline(dumbbell, [420, 180, 460, 220], [[180, 180, 220, 220]]);
+    expect(inPoly(b, 440, 200)).toBe(true);
+    expect(inPoly(b, 200, 200)).toBe(false);
+  });
+
+  it('leaves a single bubble alone', () => {
+    expect(splitOutline(oval(200, 200, 90, 120), [180, 180, 220, 220])).toBeNull();
   });
 });
