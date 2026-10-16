@@ -197,6 +197,31 @@ describe('findOutline - the bubble ladder', () => {
     expect(bboxOf(a.pts).x1).toBeLessThanOrEqual(bboxOf(b.pts).x0 + 2);
   });
 
+  // A tall bubble with a smaller one overlapping its upper right, the texts
+  // set diagonally apart: the bisector between the two centres runs
+  // diagonally through the tall bubble's crown, the neck does not.
+  it('splits joined bubbles at the neck, not on the centres bisector', () => {
+    const img = page(700, 650);
+    const big = [300, 330, 95, 150];
+    const small = [430, 240, 75, 95];
+    drawOval(img, ...big);
+    drawOval(img, ...small);
+    const inOval = ([cx, cy, rx, ry], x, y) => Math.hypot((x + 0.5 - cx) / rx, (y + 0.5 - cy) / ry) <= 1;
+    for (let y = 0; y < 650; y++) for (let x = 0; x < 700; x++) if (inOval(big, x, y) || inOval(small, x, y)) put(img, x, y, PAPER);
+    drawGlyphs(img, 285, 310, 30, 100);
+    drawGlyphs(img, 425, 170, 30, 100);
+    const left = [282, 308, 318, 412];
+    const right = [422, 168, 458, 272];
+    const a = findOutline(img, left, { neighbors: [right] });
+    const b = findOutline(img, right, { neighbors: [left] });
+    expect(a.split).toBe(true);
+    // Nearer the other text, but on this bubble's side of the neck.
+    expect(inside(a, 330, 220)).toBe(true);
+    expect(inside(a, 440, 220)).toBe(false);
+    expect(inside(b, 440, 220)).toBe(true);
+    expect(inside(b, 330, 220)).toBe(false);
+  });
+
   it('answers open on bad input instead of throwing', () => {
     expect(findOutline(null, [0, 0, 10, 10]).open).toBe(true);
     expect(findOutline(page(50, 50), null).open).toBe(true);
