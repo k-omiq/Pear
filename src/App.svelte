@@ -30,6 +30,7 @@
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
   import { isTauri } from './lib/importer.js';
   import { checkSidecar } from './lib/sidecar.js';
+  import { initDoor } from './lib/agent/door.svelte.js';
   import { initTheme } from './lib/theme.svelte.js';
   // Side-effect import: reading the stored preferences also applies them, and
   // the typesetting switch has to be applied before the first line is measured.
@@ -86,6 +87,8 @@
     checkSidecar().then((h) => {
       if (h) toast(`Detection ready · ${h.device}`);
     });
+    // The AI door opens only if the user left it on (Settings, AI).
+    initDoor();
   });
 
   // The last thing that can be done synchronously on the way out of the process.

@@ -99,6 +99,19 @@ fontdb = "0.24"
 # decoders are crates the tree already had. Decoded here rather than in the
 # engine so the wasm does not carry a Brotli decoder.
 wuff = "0.2.9"
+# The AI door (src/agent_mcp.rs, docs/AI_TYPESETTING_PLAN.md section 6): a
+# local MCP server that Claude Code, Codex and agy connect to. `rmcp` is the
+# MCP project's own Rust SDK and the only crate new to the tree; it hands back
+# a request handler, not a listener, so the five below serve it. All five were
+# already in the tree (tauri and reqwest pull them in), so naming them adds
+# features, not code: a TCP listener (tokio `net`), HTTP/1 (hyper `server`),
+# and the body and IO glue between them.
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["net", "time", "sync", "rt"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
 
 # Execution providers are per-OS `ort` features: each one selects a different
 # prebuilt onnxruntime, and a provider the target cannot have (CoreML off a
