@@ -8,7 +8,7 @@
 
 import { defineTool, ToolError } from '../registry.js';
 import { parsePages } from '../select.js';
-import { matchesOf, checksOf, fitsFor } from './edit.js';
+import { matchesOf, checksOf, fitsFor, typesetMatches } from './edit.js';
 import { validateStylePatch } from '../style-schema.js';
 import { app, measureForPlace, commitPlace, addBoxAt, isTranslateMode, placeableDetectedLines, lineByN } from '../../store.svelte.js';
 import { hasRawImage } from '../../page-images.js';
@@ -26,7 +26,8 @@ defineTool({
   name: 'place',
   description:
     'Place every detected line that has no box yet, each in its bubble, laid out by the solver: the app\'s Place. ' +
-    'pages limits it. Lines already placed are left alone; to lay a placed box out again use edit with do: "refit". ' +
+    'Each new box is set by outline fit (an oval block in its outline, 0.5 em of air, no hyphens). ' +
+    'pages limits it. Lines already placed are left alone; to lay a placed box out again use edit with do: "typeset". ' +
     'Returns the new box ids per page and the checks for them.',
   input: { type: 'object', additionalProperties: false, properties: { pages: pagesSchema } },
   write: true,
@@ -37,7 +38,12 @@ defineTool({
     const measured = await measureForPlace(ps);
     if (!measured) throw new ToolError(measured === null ? 'the place was cancelled' : 'a place is already running, or the chapter changed', 'Wait, then call again.');
     if (!ctx.stillPinned()) throw new ToolError('the chapter changed in the app, so nothing was placed');
-    const r = ctx.write(ps, () => commitPlace(ps, measured));
+    // Each new box set by outline fit, in the same undo step as its placing.
+    const r = ctx.write(ps, () => {
+      const out = commitPlace(ps, measured);
+      typesetMatches(matchesOf([...out.placed.values()].flat().map((it) => it.box.id)));
+      return out;
+    });
     const ids = [];
     const per = [];
     for (const [p, items] of r.placed) {
@@ -60,7 +66,7 @@ defineTool({
   name: 'add',
   description:
     'Add one box. page is 1-based. line: a line number on that page with no box yet; or text for new free text. ' +
-    'at [x, y]: the box goes in the balloon at that point, as a click would place it. rect [x, y, w, h]: exactly there, with no balloon fit. ' +
+    'at [x, y]: the box goes in the balloon at that point, as a click would place it, set by outline fit unless style.margin is given. rect [x, y, w, h]: exactly there, with no balloon fit. ' +
     'style: a style patch (the edit schema). Page px. Returns the new box id and its checks.',
   input: {
     type: 'object',
@@ -90,7 +96,12 @@ defineTool({
       const e = validateStylePatch(style)[0];
       if (e) throw new ToolError(`style.${e.path}: ${e.error}`, e.hint);
     }
-    const b = ctx.write([p], () => addBoxAt(p, { lineN: line ?? null, text: text ?? null, x: at?.[0], y: at?.[1], rect, style }));
+    const b = ctx.write([p], () => {
+      const got = addBoxAt(p, { lineN: line ?? null, text: text ?? null, x: at?.[0], y: at?.[1], rect, style });
+      // In a balloon: set by outline fit, unless the style says otherwise.
+      if (typeof got !== 'string' && got.fit && !(style && 'margin' in style)) typesetMatches(matchesOf([got.id]));
+      return got;
+    });
     if (typeof b === 'string') throw new ToolError(b);
     return { id: b.id, page: n, rect: [b.x, b.y, b.w, b.h].map(Math.round), checks: checksOf([b.id]), fit: fitsFor([b.id]) };
   },

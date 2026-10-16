@@ -4450,10 +4450,10 @@ function solveBox(b, p, text, at, stay = false) {
   // The lines an outline fit chose (`auto.breaks`). Lines held by a lock are
   // the user's or the agent's, and stay; any other solve's answer replaces
   // them, and a solve that chose none leaves none.
-  if (!a.locks.breaks) {
-    if (r.breaks) a.breaks = r.breaks;
-    else delete a.breaks;
-  }
+  // Held lines solved at another size come back with that size's key.
+  const same = r.breaks && a.breaks && r.breaks.at.join() === a.breaks.at.join();
+  if (r.breaks && (!a.locks.breaks || same)) a.breaks = r.breaks;
+  else if (!a.locks.breaks) delete a.breaks;
   const g = stay ? { x: r.x, y: r.y, w: r.w, h: r.h } : ontoPage(p, r);
   for (const k of ['x', 'y', 'w', 'h']) if (b[k] !== g[k]) b[k] = g[k];
   if (b.style.size !== r.size) b.style.size = r.size;

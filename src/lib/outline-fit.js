@@ -390,7 +390,8 @@ function solve({ text, style, refSize, region, locks, opts = {} }) {
     return r ? r[1] - r[0] : 0;
   }));
   ctx.aspect = (widestRoom - 2 * marginEm * ref) / Math.max(1, b.h - 2 * marginEm * ref);
-  if (lk.breaks && opts.breaks) ctx.fixedLines = brokenLines(cased, style, ref, opts.breaks);
+  // Held lines are the ones the box draws now, at the size it stands at.
+  if (lk.breaks && opts.breaks) ctx.fixedLines = brokenLines(cased, style, style.size, opts.breaks);
   const step = OUTLINE_FIT.step;
   const floor = lk.size ? ref : Math.min(ref, Math.max(step, upToGrid(Number(opts.minSize) || 0, step)));
   const sizes = [];
