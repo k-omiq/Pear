@@ -71,3 +71,13 @@ describe('keeping English lettering during detection', () => {
     expect((await import('./prefs.svelte.js')).prefs.keepEnglish).toBe(false);
   });
 });
+
+describe('the second detector switch (DTC-2)', () => {
+  it('is off until chosen and survives a relaunch', async () => {
+    const { prefs, setPref } = await import('./prefs.svelte.js');
+    expect(prefs.secondDetector).toBe(false);
+    setPref('secondDetector', true);
+    vi.resetModules();
+    expect((await import('./prefs.svelte.js')).prefs.secondDetector).toBe(true);
+  });
+});

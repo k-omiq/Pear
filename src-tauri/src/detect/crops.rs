@@ -714,6 +714,7 @@ mod tests {
             font_size,
             angle: 0,
             language: Language::Ja,
+            ..Default::default()
         }
     }
 

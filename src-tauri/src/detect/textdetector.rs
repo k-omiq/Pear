@@ -9,7 +9,7 @@ use ort::value::Tensor;
 use super::cvops::resize_linear_u8;
 use super::dbnet::boxes_from_bitmap;
 use super::geometry::{nms, BBox};
-use super::textblock::{group_output, Language, Quad};
+use super::textblock::{group_output_scored, Language, Quad};
 
 /// Square input size for comic text detector model (1024x1024).
 pub const INPUT_SIZE: usize = 1024;
@@ -23,7 +23,7 @@ pub const MAX_DETECTIONS: usize = 300;
 pub const BOX_THRESHOLD: f32 = 0.6;
 
 /// Detected text block in page coordinates.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextBlockOut {
     /// Bounding box, `[x1, y1, x2, y2]`.
     pub xyxy: [i32; 4],
@@ -36,6 +36,19 @@ pub struct TextBlockOut {
     /// Rotation in degrees, snapped to 0 below 3.
     pub angle: i32,
     pub language: Language,
+    /// YOLO proposal confidence; line-only blocks have no proposal and default to 1.
+    pub score: f32,
+    /// Bubble/free lettering classification supplied by the optional second detector.
+    pub kind: Option<String>,
+}
+
+impl Default for TextBlockOut {
+    fn default() -> Self {
+        Self {
+            xyxy: [0; 4], lines: Vec::new(), vertical: false, font_size: 0.0,
+            angle: 0, language: Language::Unknown, score: 1.0, kind: None,
+        }
+    }
 }
 
 /// Loaded comic_text_detector ONNX session.
@@ -96,11 +109,13 @@ impl TextDetector {
         let anchors = if blk_shape.len() == 3 { blk_shape[1] as usize } else { 0 };
         let channels = if blk_shape.len() == 3 { blk_shape[2] as usize } else { 0 };
         let proposals = decode_blocks(blk, anchors, channels, &lb);
+        let boxes: Vec<_> = proposals.iter().map(|&(b, class, _)| (b, class)).collect();
+        let scores: Vec<_> = proposals.iter().map(|p| p.2).collect();
 
         let mask = page_mask(seg, &lb, im_w, im_h)?;
         let lines = decode_lines(det, &lb);
 
-        let blocks = group_output(&proposals, &lines, im_w as i32, im_h as i32, &mask, lang);
+        let blocks = group_output_scored(&boxes, &lines, im_w as i32, im_h as i32, &mask, lang, &scores);
         let out = blocks
             .into_iter()
             .map(|b| TextBlockOut {
@@ -110,6 +125,8 @@ impl TextDetector {
                 font_size: b.font_size,
                 angle: b.angle,
                 language: b.language,
+                score: b.score,
+                kind: None,
             })
             .collect();
         Ok((out, mask))
@@ -180,7 +197,7 @@ pub fn preprocess(img: &DynamicImage, lb: &Letterbox) -> Vec<f32> {
 }
 
 /// Decodes YOLO block proposals in page coordinates.
-fn decode_blocks(data: &[f32], anchors: usize, channels: usize, lb: &Letterbox) -> Vec<([i32; 4], usize)> {
+fn decode_blocks(data: &[f32], anchors: usize, channels: usize, lb: &Letterbox) -> Vec<([i32; 4], usize, f32)> {
     if channels < 6 || anchors == 0 || data.len() < anchors * channels {
         return Vec::new();
     }
@@ -228,6 +245,7 @@ fn decode_blocks(data: &[f32], anchors: usize, channels: usize, lb: &Letterbox) 
                     (b.y2 * ry) as i32,
                 ],
                 b.class,
+                b.score,
             )
         })
         .collect()
@@ -382,6 +400,7 @@ mod tests {
         let out = decode_blocks(&data, 2, 7, &lb);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].1, 1, "should pick the Japanese class");
+        assert!((out[0].2 - 0.855).abs() < 1e-6, "retain objectness times class confidence");
         assert_eq!(out[0].0, [160, 340, 240, 460]);
     }
 

@@ -104,8 +104,8 @@ fn merge_lines(kept: &mut Vec<Quad>, incoming: Vec<Quad>) {
 
 /// Prefer complete blocks, preserve small nested lettering, union aligned seam fragments.
 pub fn dedupe(mut candidates: Vec<Candidate>) -> Vec<TextBlockOut> {
-    // TextBlockOut has no detector score. At equal completeness, prefer the
-    // higher-resolution bands to the full-page pass, retaining stable band order.
+    // Retain the original completeness/resolution order, even with scores
+    // available, so opting out of fusion preserves existing tall-page geometry.
     candidates.sort_by_key(|c| (c.truncated, c.source == 0));
     let mut kept: Vec<Candidate> = Vec::new();
     'next: for candidate in candidates {
@@ -126,6 +126,7 @@ pub fn dedupe(mut candidates: Vec<Candidate>) -> Vec<TextBlockOut> {
                     a[3].max(b[3]),
                 ];
                 merge_lines(&mut previous.block.lines, candidate.block.lines);
+                previous.block.score = previous.block.score.max(candidate.block.score);
                 continue 'next;
             }
             if (shared > 0.4 && aa.min(ab) / aa.max(ab) > 0.55)
@@ -164,6 +165,7 @@ mod tests {
                 font_size: 20.0,
                 angle: 0,
                 language: Language::Ja,
+                ..Default::default()
             },
             truncated,
             source,

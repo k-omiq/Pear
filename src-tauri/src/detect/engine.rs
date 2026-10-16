@@ -17,6 +17,7 @@ use super::analyze::{analyze, decode_image, AnalyzeResponse};
 use super::ocr::{OcrEngine, OcrReading, TextRecognizer};
 use super::paddle_ocr::PaddleOcrEngine;
 use super::panels;
+use super::rtdetr::RtDetr;
 use super::sorting::ReadingDirection;
 use super::textdetector::TextDetector;
 
@@ -36,6 +37,11 @@ const TEXT_DETECTOR: ModelFile = ModelFile {
     rel: "comictextdetector.onnx",
     url: "https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx",
     sha256: "1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f",
+};
+const SECOND_DETECTOR: ModelFile = ModelFile {
+    rel: "rtdetr/detector.onnx",
+    url: "https://huggingface.co/ogkalu/comic-text-and-bubble-detector/resolve/16e8a622f91fabc6b5b65c96d32d1183f8843546/detector.onnx",
+    sha256: "065744e91c0594ad8663aa8b870ce3fb27222942eded5a3cc388ce23421bd195",
 };
 const JAPANESE_OCR_FILES: [ModelFile; 3] = [
     ModelFile {
@@ -212,6 +218,7 @@ fn download_deadline() -> Duration {
 #[derive(Default)]
 struct Sessions {
     detector: Option<TextDetector>,
+    second_detector: Option<RtDetr>,
     panels: Option<Session>,
     ocr: HashMap<OcrModel, Recognizer>,
     /// Execution provider the text detector landed on, once it has loaded.
@@ -296,6 +303,7 @@ impl DetectEngine {
         language: OcrLanguage,
         model: OcrModel,
         want_mask: bool,
+        want_second_detector: bool,
     ) -> Result<AnalyzeResponse, String> {
         let img = decode_image(bytes)?;
         let dir = &self.0.models_dir;
@@ -320,12 +328,19 @@ impl DetectEngine {
                 Err(e) => log::warn!("panel model unavailable, reading order degrades: {e}"),
             }
         }
+        if want_second_detector && s.second_detector.is_none() {
+            match RtDetr::load(&dir.join(SECOND_DETECTOR.rel)) {
+                Ok(detector) => s.second_detector = Some(detector),
+                Err(e) => log::warn!("second detector unavailable, using CTD alone: {e}"),
+            }
+        }
         if want_ocr && !s.ocr.contains_key(&model) {
             s.ocr.insert(model, load_recognizer(dir, model)?);
         }
 
         let Sessions {
             detector,
+            second_detector,
             panels,
             ocr,
             ..
@@ -345,6 +360,7 @@ impl DetectEngine {
             language.direction(),
             language.code(),
             want_mask,
+            if want_second_detector { second_detector.as_mut() } else { None },
         )
     }
 }
@@ -657,6 +673,7 @@ pub async fn detect_analyze(
     language: Option<String>,
     ocr_model: Option<String>,
     mask: Option<bool>,
+    second_detector: Option<bool>,
 ) -> Result<AnalyzeResponse, String> {
     let engine = state.inner().clone();
     let language = OcrLanguage::from_code(language.as_deref());
@@ -670,12 +687,20 @@ pub async fn detect_analyze(
     }
     engine.ensure(&needed).await?;
 
+    let mut want_second_detector = second_detector.unwrap_or(false);
+    if want_second_detector {
+        if let Err(e) = engine.ensure(&[&SECOND_DETECTOR]).await {
+            log::warn!("second detector download failed, using CTD alone: {e}");
+            want_second_detector = false;
+        }
+    }
+
     if let Err(e) = engine.ensure(&[&PANEL_MODEL]).await {
         log::warn!("failed to download panel model, reading order degrades: {e}");
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        engine.analyze_blocking(&image, ocr, language, model, mask.unwrap_or(false))
+        engine.analyze_blocking(&image, ocr, language, model, mask.unwrap_or(false), want_second_detector)
     })
     .await
     .map_err(|e| format!("analyze task failed: {e}"))?
@@ -1150,6 +1175,7 @@ mod tests {
         let all: Vec<&ModelFile> = [
             &PANEL_MODEL,
             &TEXT_DETECTOR,
+            &SECOND_DETECTOR,
             &CHINESE_OCR_V5_MOBILE,
             &CHINESE_OCR_V5_SERVER,
             &KOREAN_OCR_V5_MOBILE,
@@ -1211,7 +1237,7 @@ mod tests {
         let bytes = std::fs::read(&page_path)
             .unwrap_or_else(|error| panic!("failed to read {page_path}: {error}"));
         let result = engine
-            .analyze_blocking(&bytes, true, OcrLanguage::Korean, model, false)
+            .analyze_blocking(&bytes, true, OcrLanguage::Korean, model, false, false)
             .unwrap_or_else(|error| panic!("production analysis failed for {page_path}: {error}"));
 
         eprintln!("production pipeline detected {} regions", result.lines.len());

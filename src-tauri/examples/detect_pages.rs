@@ -49,6 +49,7 @@ fn main() {
                     ReadingDirection::Rtl,
                     "ja",
                     false,
+                    None,
                 )
             });
         let line = match result {
