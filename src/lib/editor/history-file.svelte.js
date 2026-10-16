@@ -144,6 +144,10 @@ const stale = (s) => !!s && typeof s === 'object' && !isCurrentStyle(s);
 // box's lines. `lastStyle` is not a box's, and is left as recorded.
 export function migrateEntry(e, plain = false) {
   if (!e || typeof e !== 'object') return e;
+  if (e.t === 'group' && Array.isArray(e.items)) {
+    const items = e.items.map((it) => migrateEntry(it, plain));
+    return items.every((it, i) => it === e.items[i]) ? e : { ...e, items };
+  }
   let out = e;
   const put = (k, v) => {
     if (out === e) out = { ...e };
@@ -287,6 +291,8 @@ const scaleRecordedBox = (b, sx, sy) => {
 
 export function rescaleEntry(entry, sx, sy) {
   if (!entry || typeof entry !== 'object') return entry;
+  // A group's items are entries of their own (history.svelte.js `group`).
+  if (entry.t === 'group') return { ...entry, items: (entry.items ?? []).map((it) => rescaleEntry(it, sx, sy)) };
   const e = { ...entry };
   if (e.box) e.box = scaleRecordedBox(e.box, sx, sy);
   if (e.t === 'move' || e.t === 'resize') {

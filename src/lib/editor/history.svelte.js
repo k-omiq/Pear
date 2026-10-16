@@ -442,7 +442,37 @@ const KINDS = {
       }
     },
   },
+  // Several entries on one page taken back as one step: an edit that reached
+  // many boxes in different ways (`editBoxes`), or everything one AI run did
+  // on the page (`run`, see "runs" below). Walked through the kinds above,
+  // last first on the way back. An item that no longer applies - its box
+  // deleted since - is passed over like a gone box in `bulk`; the step fails
+  // only when nothing in it applies. Never holds an `order` entry or another
+  // group, so a renumber reads it like any other entry (`remapLineEntry`).
+  group: {
+    label: 'that group of edits',
+    apply(e, dir) {
+      if (!pageById(e.pageId)) throw new Error('the page is gone');
+      const items = dir === 'undo' ? [...(e.items ?? [])].reverse() : (e.items ?? []);
+      let hit = 0;
+      let last = null;
+      for (const it of items) {
+        if (it.pageId !== e.pageId || !GROUPABLE(it)) continue;
+        try {
+          KINDS[it.t].apply(it, dir);
+          hit++;
+        } catch (err) {
+          last = err;
+        }
+      }
+      if (!hit) throw last ?? new Error('there was nothing in it');
+    },
+  },
 };
+
+// What a group may hold. An `order` entry remaps the whole stack around it,
+// which only works from the top level.
+const GROUPABLE = (e) => e && e.t !== 'group' && e.t !== 'order' && !!KINDS[e.t];
 
 // ---------- a fit owed to an entry ----------
 // An entry carries its box's geometry on both sides of the edit, fit included,
@@ -478,6 +508,15 @@ const KINDS = {
 function geomSlot(e, id, side) {
   const key = side === 'after' ? 'geomAfter' : 'geomBefore';
   const fields = (get, set) => ({ get, set });
+  // A group keeps a box's geometry where its latest item about the box does.
+  if (e.t === 'group') {
+    const items = e.items ?? [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      const s = geomSlot(items[i], id, side);
+      if (s) return fields(s.get, (g) => ({ ...e, items: items.map((it, j) => (j === i ? s.set(g) : it)) }));
+    }
+    return null;
+  }
   if (e.t === 'move' || e.t === 'resize') {
     if (e.boxId !== id || !e[side]) return null;
     return fields(() => e[side], (g) => ({ ...e, [side]: g }));
@@ -514,6 +553,7 @@ function geomSlot(e, id, side) {
 
 // Every box an entry keeps an after-side geometry for.
 function boxesOf(e) {
+  if (e.t === 'group') return [...new Set((e.items ?? []).flatMap(boxesOf))];
   const ids = [e.boxId, e.box?.id, ...(e.boxes ?? []).map((g) => g.boxId), ...(e.items ?? []).map((it) => it.boxId ?? it.box?.id)];
   return [...new Set(ids.filter((id) => id != null && geomSlot(e, id, 'after')))];
 }
@@ -527,6 +567,14 @@ const owes = (e, id) => Array.isArray(e.fitOwed) && e.fitOwed.includes(id);
 // from the box as it stood before the fit, so what one direction writes the
 // other can take back.
 function withGeom(e, id, side, geom, other) {
+  if (e.t === 'group') {
+    const items = e.items ?? [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (!geomSlot(items[i], id, side)) continue;
+      return { ...e, items: items.map((it, j) => (j === i ? withGeom(it, id, side, geom, other) : it)) };
+    }
+    return e;
+  }
   const slot = geomSlot(e, id, side);
   if (!slot) return e;
   const fit = structuredClone(geom);
@@ -657,6 +705,46 @@ function remapOrder(entry, dir = 'redo') {
   redoStack = stack.redo;
 }
 
+// ---------- runs ----------
+// An AI run (docs/AI_TYPESETTING_PLAN.md section 5) is one undo step per page:
+// while `inRun` is calling, every entry recorded on a page joins the run's
+// group on that page, when that group is still the top of the page's stack.
+// So a user edit on the page closes the run's group there - its entry is on
+// top now - and the run's next edit on that page opens a new group. A step
+// through a group seals it, so a run's edit after an undo and redo of its
+// group starts a fresh one rather than growing the one the user just walked.
+//
+// Synchronous only: `fn` must not await, or an edit the user makes meanwhile
+// would be filed under the run.
+let groupRun = null;
+export function inRun(runId, fn) {
+  const prev = groupRun;
+  groupRun = runId ?? null;
+  try {
+    return fn();
+  } finally {
+    groupRun = prev;
+  }
+}
+
+const itemsOf = (e) => (e.t === 'group' ? e.items ?? [] : [e]);
+const unionOwed = (a, b) => {
+  const ids = [...new Set([...(a.fitOwed ?? []), ...(b.fitOwed ?? [])])];
+  return ids.length ? ids : undefined;
+};
+
+// `flat` added to the run's open group at the top of `stack`, in place of the
+// top entry. False when the top is no such group.
+function foldInto(stack, flat) {
+  const top = stack[stack.length - 1];
+  if (!top || top.t !== 'group' || top.run !== groupRun || top.pageId !== flat.pageId || top.sealed) return false;
+  const next = { ...top, items: [...top.items, ...itemsOf(flat)] };
+  const owed = unionOwed(top, flat);
+  if (owed) next.fitOwed = owed;
+  stack[stack.length - 1] = next;
+  return true;
+}
+
 export function record(entry) {
   if (applying) return;
   if (!KINDS[entry?.t]) return;
@@ -672,6 +760,30 @@ export function record(entry) {
     const p = pageById(flat.pageId);
     const owed = p ? boxesOf(flat).filter((id) => fitHeld(p.boxes.find((b) => b.id === id))) : [];
     if (owed.length) flat.fitOwed = owed;
+  }
+  if (groupRun != null && flat.pageId != null && flat.t !== 'order') {
+    // Into the run's open group on that page, wherever its stack lives.
+    let folded = false;
+    const offscreenPage = offscreenAmend?.(flat.pageId, (undo) => (folded = foldInto(undo, flat)));
+    if (folded) return;
+    if (!offscreenPage && foldInto(undoStack, flat)) {
+      redoStack = [];
+      history.pageId = flat.pageId;
+      sync();
+      sink?.(flat.pageId);
+      return;
+    }
+    const items = itemsOf(flat);
+    const group = { t: 'group', pageId: flat.pageId, run: groupRun, items };
+    if (flat.fitOwed) group.fitOwed = flat.fitOwed;
+    if (offscreen?.(group.pageId, group)) return;
+    undoStack.push(group);
+    if (undoStack.length > MAX_STEPS) undoStack.shift();
+    redoStack = [];
+    history.pageId = group.pageId;
+    sync();
+    sink?.(group.pageId);
+    return;
   }
   // An entry belongs to the page it names, and this is the one line that makes
   // that true of every mutation site at once rather than of the careful ones.
@@ -700,7 +812,7 @@ function step(from, dir) {
     KINDS[entry.t].apply(entry, dir);
     // An order step replaces both lists while it remaps their entries. Push
     // onto the current list, not the reference captured before that change.
-    (dir === 'undo' ? redoStack : undoStack).push(entry);
+    (dir === 'undo' ? redoStack : undoStack).push(entry.t === 'group' && !entry.sealed ? { ...entry, sealed: true } : entry);
     // Show the user what just changed. `place` and `delete` name their box
     // inside the box itself, which is why this is not just `entry.boxId`. When
     // the step was the one that took the box away, the selection has to go with
@@ -792,13 +904,17 @@ export function takeStack() {
 
 // Whatever comes back off disk is untrusted: a record of a kind this build no
 // longer knows how to apply is dropped rather than kept to fail on a press.
+// A group keeps only the items this build can walk; one with none is dropped.
+const known = (e) => {
+  if (!KINDS[e?.t]) return null;
+  if (e.t !== 'group') return e;
+  const items = Array.isArray(e.items) ? e.items.filter((it) => GROUPABLE(it) && it.pageId === e.pageId) : [];
+  return items.length ? { ...e, items } : null;
+};
+const vetted = (list) => (Array.isArray(list) ? list.map(known).filter(Boolean).slice(-MAX_STEPS) : []);
 export function loadStack(pageId, stack) {
-  undoStack = Array.isArray(stack?.undo)
-    ? stack.undo.filter((e) => KINDS[e?.t]).slice(-MAX_STEPS)
-    : [];
-  redoStack = Array.isArray(stack?.redo)
-    ? stack.redo.filter((e) => KINDS[e?.t]).slice(-MAX_STEPS)
-    : [];
+  undoStack = vetted(stack?.undo);
+  redoStack = vetted(stack?.redo);
   history.pageId = pageId;
   sync();
 }

@@ -116,6 +116,7 @@ import { exportPageColumn } from './export-pages.svelte.js';
 import { guide, termById } from './guide.svelte.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
+import { applyStylePatch } from './style-patch.js';
 
 export { PAGE_W, PAGE_H };
 
@@ -767,6 +768,52 @@ export function boxEditRecords(key, before, after, geom) {
   if (moved) out.push({ t: 'resize', ...key, before: geomOf(before), after: geomOf(after) });
   if (typed) out.push({ t: 'text', ...key, before: before.text ?? null, after: after.text, ...fit });
   return out;
+}
+
+// ---------- many boxes, one edit ----------
+// The one path for an edit that reaches many boxes at once: the bulk panel's
+// Apply and every write of the AI tool layer (docs/AI_TYPESETTING_PLAN.md
+// section 1). `targets` is `[{ page, box }]`; `mutate(box, page)` writes the
+// box in place and returns false to leave it out. Each box is then fitted
+// (`autoFitBox`) and the history is recorded at once, with no settle timer:
+// one entry per page the edit reached, so one undo per page takes it back.
+//
+// A page whose boxes only changed style records one `bulk` entry, carrying
+// `extra` (the bulk panel's `lastStyle` pair) as that kind always has. A page
+// with any other change - the rectangle, the text - records the entries
+// `boxEditRecords` makes for each box, as one `group` when there is more than
+// one. `always` keeps a box in a `bulk` entry even when nothing changed, for
+// the panel, whose Apply has always been an undo step of its own.
+//
+// Returns the targets that changed (all of them, with `always`).
+export function editBoxes(targets, mutate, { always = false, ...extra } = {}) {
+  settleEdits();
+  const byPage = new Map();
+  const changed = [];
+  for (const t of targets ?? []) {
+    const pg = t?.page;
+    const b = t?.box;
+    if (!pg || !b) continue;
+    const before = boxSnap(b);
+    const geomBefore = fitGeom(b);
+    if (mutate(b, pg) === false) continue;
+    autoFitBox(b, pg);
+    const after = boxSnap(b);
+    const entries = boxEditRecords({ pageId: pg.id, boxId: b.id }, before, after, true);
+    if (!entries.length && !always) continue;
+    let bucket = byPage.get(pg.id);
+    if (!bucket) byPage.set(pg.id, (bucket = { items: [], entries: [] }));
+    bucket.items.push({ pageId: pg.id, boxId: b.id, before: before.style, after: after.style, geomBefore, geomAfter: fitGeom(b) });
+    bucket.entries.push(...entries);
+    changed.push(t);
+  }
+  for (const [pageId, { items, entries }] of byPage) {
+    if (entries.every((e) => e.t === 'style')) recordEdit({ t: 'bulk', pageId, items, ...extra });
+    else if (entries.length === 1) recordEdit(entries[0]);
+    else recordEdit({ t: 'group', pageId, items: entries });
+  }
+  if (changed.length) markUnsaved();
+  return changed;
 }
 
 // ---------- a queue line's translation, typed into the queue ----------
@@ -6181,29 +6228,28 @@ export function mergeMasked(base, template, mask = {}) {
 // read as they stand, so the caller clones them (once for the batch, not once
 // per box) and hands the clones over.
 export function mergeMaskedInto(out, template, mask = {}) {
+  return Object.assign(out, applyStylePatch(out, maskedPatch(template, mask)).style);
+}
+
+// The ticked half of `template` as a style patch (`style-patch.js`): a
+// top-level key whole, a dotted key as its one field of the group. A field the
+// template has no value for is left out - "no opinion", never "write nothing".
+// A colour or stroke list set across boxes is a colour set by hand, so the
+// patch also stops the bubbles picking it (LET-3).
+export function maskedPatch(template, mask = {}) {
+  const patch = {};
   for (const key of BULK_PROPS) {
     if (!mask[key]) continue;
     const dot = key.indexOf('.');
     if (dot === -1) {
-      const v = template[key];
-      // A style never holds undefined on purpose (`normalizeStyle` fills every
-      // leaf), so an absent field means "the template has no opinion" rather
-      // than "write nothing here" - skipping it is what keeps a partial
-      // template from erasing the base's value.
-      if (v !== undefined) out[key] = v;
-    } else {
-      // `cloneStyle` normalises, so the nested group is present on `out` even
-      // when `base` came off an older document that had never heard of it.
-      const grp = key.slice(0, dot);
-      const field = key.slice(dot + 1);
-      const gv = template[grp]?.[field];
-      if (gv !== undefined) out[grp][field] = gv;
+      if (template[key] !== undefined) patch[key] = $state.snapshot(template[key]);
+      continue;
     }
+    const grp = key.slice(0, dot);
+    const gv = template[grp]?.[key.slice(dot + 1)];
+    if (gv !== undefined) (patch[grp] ??= {})[key.slice(dot + 1)] = $state.snapshot(gv);
   }
-  // A colour set across boxes is a colour set by hand: the bubbles stop
-  // picking it (LET-3).
-  if (mask.color || mask.strokes) out.autoContrast = false;
-  return out;
+  return patch;
 }
 
 export function openBulk() {
@@ -6313,48 +6359,36 @@ export function toggleBulkTarget(id) {
 // `bulk` kind assigns - an entry carrying only the changed fields would replace
 // each box's style with a fragment on undo.
 function restyleForBulk(boxes) {
-  const items = [];
   // One clone of the template for the whole batch, not one per box: the merge
-  // reads it and never writes it, so every target can share the copy. (`out`,
-  // by contrast, is per box - each `after` must stand alone.)
+  // reads it and never writes it, so every target can share the copy.
   const tpl = cloneStyle(app.bulk.style);
   const mask = app.bulk.mask;
-  // The style every box placed afterwards inherits moves with this apply too -
-  // see the block below - so the history entry has to carry it on both sides,
-  // or an undo would restore the boxes and leave `lastStyle` bulk-advanced:
-  // every future box would then be born in a style no undo step accounts for.
-  let lastStyleBefore = null;
-  let lastStyleAfter = null;
-  for (const { page: pg, box: b } of boxes) {
-    const before = cloneStyle(b.style);
-    const after = mergeMaskedInto(cloneStyle(before), tpl, mask);
-    const geomBefore = fitGeom(b);
-    b.style = cloneStyle(after);
-    if (mask?.size) rememberSizeFor(pg, b);
-    // A bulk that changes the font, the size or the line height changes what
-    // every target box has to fit. It costs no extra undo step: the item carries
-    // the geometry either side of the fit, so the one entry the apply writes
-    // walks the style and the height it caused back together - per box, because
-    // one entry covers many and they grew by different amounts.
-    autoFitBox(b, pg);
-    items.push({ pageId: pg.id, boxId: b.id, before, after, geomBefore, geomAfter: fitGeom(b) });
-  }
-  // Both inside the guard, and `lastStyle` especially: an apply that matched no
-  // box is not an edit, and it must not leave a trace on the style every later
-  // box is born with. `applyBulkToTag('nosuchtag')` restyled nothing and still
-  // moved the inherited roughen amount from 4 to 13 - a style the user could
-  // then not account for, because it had never been applied to anything they
-  // could see.
+  // The style every box placed afterwards inherits moves with this apply too,
+  // so the history entry has to carry it on both sides, or an undo would
+  // restore the boxes and leave `lastStyle` bulk-advanced: every future box
+  // would then be born in a style no undo step accounts for.
   //
-  // Only the ticked half carries, for the same reason it is the only half that
-  // reaches a box: handing `lastStyle` the whole template would push properties
-  // this edit deliberately left alone onto every box placed afterwards.
-  if (items.length) {
-    markUnsaved();
-    lastStyleBefore = cloneStyle(app.lastStyle);
-    app.lastStyle = mergeMaskedInto(app.lastStyle, tpl, mask);
-    lastStyleAfter = cloneStyle(app.lastStyle);
-  }
+  // Only when the apply reaches a box: an apply that matched none is not an
+  // edit, and it must not leave a trace on the style every later box is born
+  // with. `applyBulkToTag('nosuchtag')` restyled nothing and still moved the
+  // inherited roughen amount from 4 to 13. And only the ticked half carries,
+  // for the same reason it is the only half that reaches a box.
+  if (!boxes.length) return { items: [], lastStyleBefore: null, lastStyleAfter: null };
+  const lastStyleBefore = cloneStyle(app.lastStyle);
+  const lastStyleAfter = cloneStyle(mergeMaskedInto(cloneStyle(app.lastStyle), tpl, mask));
+  // A bulk that changes the font, the size or the line height changes what
+  // every target box has to fit. It costs no extra undo step: `editBoxes`
+  // records the geometry either side of the fit, so the one entry per page
+  // walks the style and the height it caused back together.
+  const items = editBoxes(
+    boxes,
+    (b, pg) => {
+      b.style = cloneStyle(mergeMaskedInto(cloneStyle(b.style), tpl, mask));
+      if (mask?.size) rememberSizeFor(pg, b);
+    },
+    { lastStyleBefore, lastStyleAfter, always: true },
+  );
+  if (items.length) app.lastStyle = lastStyleAfter;
   return { items, lastStyleBefore, lastStyleAfter };
 }
 
@@ -6465,7 +6499,7 @@ export function applyBulk() {
   }
   // One record per page rather than one for the apply, for the reason spelled
   // out over `recordBulkByPage` - which in a paged chapter is still exactly one.
-  const pageCount = recordBulkByPage(items, lastStyleBefore, lastStyleAfter);
+  const pageCount = new Set(items.map((it) => it.page.id)).size;
   closeBulk();
   toast(
     `Applied style to ${items.length} box${items.length > 1 ? 'es' : ''}` +
@@ -6504,7 +6538,7 @@ export function applyBulkToTag(name, pages = app.pages) {
   // One entry per page - see `recordBulkByPage`. Grouped in the order
   // `boxesWithTag` walked the pages, so each page's entry carries its boxes in
   // document order.
-  const pageCount = recordBulkByPage(items, lastStyleBefore, lastStyleAfter);
+  const pageCount = new Set(items.map((it) => it.page.id)).size;
   closeBulk();
   toast(
     `Applied style to ${items.length} box${items.length > 1 ? 'es' : ''} tagged “${name}”` +
