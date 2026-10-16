@@ -1057,41 +1057,25 @@
         </div>
       {/if}
 
-      <label class="srow">
-        <input
-          class="btick"
-          type="checkbox"
-          checked={prefs.keepEnglish}
-          aria-describedby="keep-english-hint"
-          onchange={(e) => setPref('keepEnglish', e.currentTarget.checked)}
-        />
-        <span>Keep text that is already English</span>
-      </label>
-      <div class="qhint" id="keep-english-hint">Off: English lettering on the raw is not detected.</div>
+      <div class="settings-section">
+        <div class="field">
+          <span>Keep text that is already English</span>
+          {@render toggle('keepEnglish', 'Keep text that is already English', prefs.keepEnglish)}
+        </div>
+        <div class="qhint">Off: English lettering on the raw is not detected.</div>
 
-      <label class="srow">
-        <input
-          class="btick"
-          type="checkbox"
-          checked={prefs.secondReader}
-          aria-describedby="second-reader-hint"
-          onchange={(e) => setPref('secondReader', e.currentTarget.checked)}
-        />
-        <span>Check Japanese with a second reader</span>
-      </label>
-      <div class="qhint" id="second-reader-hint">Reads each line again with PP-OCRv6 (a 77 MB download). Lines where the two readers differ go on the check list. About twice the OCR time.</div>
+        <div class="field">
+          <span>Check Japanese with a second reader</span>
+          {@render toggle('secondReader', 'Check Japanese with a second reader', prefs.secondReader)}
+        </div>
+        <div class="qhint">Reads each line again with PP-OCRv6 (a 77 MB download). Lines where the two readers differ go on the check list. About twice the OCR time.</div>
 
-      <label class="srow">
-        <input
-          class="btick"
-          type="checkbox"
-          checked={prefs.secondDetector}
-          aria-describedby="second-detector-hint"
-          onchange={(e) => setPref('secondDetector', e.currentTarget.checked)}
-        />
-        <span>Use a second text detector</span>
-      </label>
-      <div class="qhint" id="second-detector-hint">RT-DETR (a 168 MB download) checks the main detector, finds text it misses and tells bubble text from free text.</div>
+        <div class="field">
+          <span>Use a second text detector</span>
+          {@render toggle('secondDetector', 'Use a second text detector', prefs.secondDetector)}
+        </div>
+        <div class="qhint">RT-DETR (a 168 MB download) checks the main detector, finds text it misses and tells bubble text from free text.</div>
+      </div>
 
       <div class="group-label">Models{@render scope('you')}</div>
 
