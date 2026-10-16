@@ -14,6 +14,7 @@
   import RefSidebar from './RefSidebar.svelte';
   import RailTools, { RAIL_W } from './RailTools.svelte';
   import ChromePills from './ChromePills.svelte';
+  import AiRunPill from './AiRunPill.svelte';
   import ZoomDock from './ZoomDock.svelte';
   import Pager from './Pager.svelte';
   import FloatingPanel from './FloatingPanel.svelte';
@@ -162,6 +163,7 @@
   <RailTools />
 
   <ChromePills {onFontLib} {onSettings} />
+  <AiRunPill />
 
   <!-- Nothing to zoom and no pages to step through until a chapter is open:
        ungated, the "Nothing open" empty state sits behind a live zoom pill and
