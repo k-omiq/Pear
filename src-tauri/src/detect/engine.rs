@@ -295,6 +295,7 @@ impl DetectEngine {
         want_ocr: bool,
         language: OcrLanguage,
         model: OcrModel,
+        want_mask: bool,
     ) -> Result<AnalyzeResponse, String> {
         let img = decode_image(bytes)?;
         let dir = &self.0.models_dir;
@@ -343,6 +344,7 @@ impl DetectEngine {
             recognizer,
             language.direction(),
             language.code(),
+            want_mask,
         )
     }
 }
@@ -654,6 +656,7 @@ pub async fn detect_analyze(
     ocr: bool,
     language: Option<String>,
     ocr_model: Option<String>,
+    mask: Option<bool>,
 ) -> Result<AnalyzeResponse, String> {
     let engine = state.inner().clone();
     let language = OcrLanguage::from_code(language.as_deref());
@@ -672,7 +675,7 @@ pub async fn detect_analyze(
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        engine.analyze_blocking(&image, ocr, language, model)
+        engine.analyze_blocking(&image, ocr, language, model, mask.unwrap_or(false))
     })
     .await
     .map_err(|e| format!("analyze task failed: {e}"))?
@@ -1208,7 +1211,7 @@ mod tests {
         let bytes = std::fs::read(&page_path)
             .unwrap_or_else(|error| panic!("failed to read {page_path}: {error}"));
         let result = engine
-            .analyze_blocking(&bytes, true, OcrLanguage::Korean, model)
+            .analyze_blocking(&bytes, true, OcrLanguage::Korean, model, false)
             .unwrap_or_else(|error| panic!("production analysis failed for {page_path}: {error}"));
 
         eprintln!("production pipeline detected {} regions", result.lines.len());
