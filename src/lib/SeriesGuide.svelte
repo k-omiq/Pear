@@ -5,8 +5,28 @@
   // series and applies to every chapter in it. `scope` is the modal's own
   // chip snippet, handed down so the chips match the sections around these.
   import { guide, addTerm, updateTerm, removeTerm, setGuideRule } from './guide.svelte.js';
+  import { knownTags } from './tags.svelte.js';
+  import { app } from './store.svelte.js';
 
   let { scope } = $props();
+
+  // Characters (TXT-6) are glossary terms marked `character`: their names are
+  // checked like any term, and a line's speaker points at one by id. Listed
+  // apart so each list says what it is for.
+  const terms = $derived(guide.glossary.filter((t) => !t.character));
+  const characters = $derived(guide.glossary.filter((t) => t.character));
+  const tagNames = $derived(knownTags(app.pages).map((t) => t.name));
+  let newName = $state('');
+  let newNameSource = $state('');
+  let nameEl = $state(null);
+
+  function addCharacter() {
+    if (!newName.trim()) return;
+    addTerm({ source: newNameSource, target: newName, character: true });
+    newName = '';
+    newNameSource = '';
+    nameEl?.focus();
+  }
 
   // ---------- glossary ----------
   // Each field commits on change (blur or Enter), not per keystroke: one
@@ -18,8 +38,8 @@
 
   const shown = $derived.by(() => {
     const f = filter.trim().toLowerCase();
-    if (!f) return guide.glossary;
-    return guide.glossary.filter((t) =>
+    if (!f) return terms;
+    return terms.filter((t) =>
       [t.source, t.target, t.note, ...(t.aliases ?? [])].some((v) => String(v ?? '').toLowerCase().includes(f)),
     );
   });
@@ -70,10 +90,10 @@
     term and whose English does not is listed in the check list. Other
     spellings are other ways the source may write it.
   </div>
-  {#if guide.glossary.length > 8}
+  {#if terms.length > 8}
     <input class="qtf-input sg-filter" placeholder="Find a term…" aria-label="Find a term" bind:value={filter} />
   {/if}
-  {#if guide.glossary.length}
+  {#if terms.length}
     <div class="sg-head" aria-hidden="true">
       <span>Source</span><span>English</span><span>Other spellings</span><span>Note</span><span></span>
     </div>
@@ -89,12 +109,48 @@
       </button>
     </div>
   {:else}
-    <div class="qhint sg-empty">{guide.glossary.length ? 'No term matches.' : 'No terms yet.'}</div>
+    <div class="qhint sg-empty">{terms.length ? 'No term matches.' : 'No terms yet.'}</div>
   {/each}
   <div class="sg-row sg-add">
     <input class="qtf-input" placeholder="Source…" aria-label="New term source" bind:this={sourceEl} bind:value={newSource} onkeydown={(e) => e.key === 'Enter' && add()} />
     <input class="qtf-input" placeholder="English…" aria-label="New term English" bind:value={newTarget} onkeydown={(e) => e.key === 'Enter' && add()} />
     <button class="btn tiny" disabled={!newSource.trim() || !newTarget.trim()} onclick={add}>Add</button>
+  </div>
+</div>
+
+<div class="settings-section">
+  <div class="settings-title">CHARACTERS{@render scope('series')}</div>
+  <div class="qhint sg-lead">
+    Who speaks a line, picked in the Text Queue. A name is checked like a
+    glossary term. A character with a tag gives their boxes that tag's
+    style when they are placed.
+  </div>
+  {#if characters.length}
+    <div class="sg-head sg-chars" aria-hidden="true">
+      <span>Name</span><span>Source</span><span>Tag</span><span>Note</span><span></span>
+    </div>
+  {/if}
+  {#each characters as t (t.id)}
+    <div class="sg-row sg-chars">
+      <input class="qtf-input" aria-label="Name" value={t.target} onchange={(e) => updateTerm(t.id, { target: e.currentTarget.value })} />
+      <input class="qtf-input" aria-label="Source name" placeholder="-" value={t.source} onchange={(e) => updateTerm(t.id, { source: e.currentTarget.value })} />
+      <select class="qtf-input" aria-label="Tag" value={t.tag ?? ''} onchange={(e) => updateTerm(t.id, { tag: e.currentTarget.value || null })}>
+        <option value="">-</option>
+        {#if t.tag && !tagNames.includes(t.tag)}<option value={t.tag}>{t.tag}</option>{/if}
+        {#each tagNames as n (n)}<option value={n}>{n}</option>{/each}
+      </select>
+      <input class="qtf-input" aria-label="Note" placeholder="-" value={t.note} onchange={(e) => updateTerm(t.id, { note: e.currentTarget.value })} />
+      <button class="btn tiny sg-del" title="Remove this character" aria-label="Remove {t.target}" onclick={() => removeTerm(t.id)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </button>
+    </div>
+  {:else}
+    <div class="qhint sg-empty">No characters yet.</div>
+  {/each}
+  <div class="sg-row sg-add">
+    <input class="qtf-input" placeholder="Name…" aria-label="New character name" bind:this={nameEl} bind:value={newName} onkeydown={(e) => e.key === 'Enter' && addCharacter()} />
+    <input class="qtf-input" placeholder="Source name…" aria-label="New character source name" bind:value={newNameSource} onkeydown={(e) => e.key === 'Enter' && addCharacter()} />
+    <button class="btn tiny" disabled={!newName.trim()} onclick={addCharacter}>Add</button>
   </div>
 </div>
 
@@ -134,6 +190,9 @@
   }
   .sg-row {
     padding: 3px 0;
+  }
+  .sg-row select.qtf-input {
+    height: 26px;
   }
   .sg-row .qtf-input {
     min-width: 0;

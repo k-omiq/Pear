@@ -113,3 +113,25 @@ export function findCharacter(terms, name) {
     ) ?? null
   );
 }
+
+// An imported file's speakers, by name (`speakerName`, see importer.js), made
+// into character ids: each line takes the id of the character called that,
+// and a name the series has no character for becomes a new character, once.
+// Returns the lines (copies where one changed) and the characters it made, for
+// the caller to add to the series' glossary. `terms` is not changed.
+export function resolveSpeakerNames(lines, terms) {
+  const made = [];
+  const all = [...(terms ?? [])];
+  const out = (lines ?? []).map((l) => {
+    if (!l || typeof l.speakerName !== 'string') return l;
+    const { speakerName, ...rest } = l;
+    let c = findCharacter(all, speakerName);
+    if (!c) {
+      c = sanitizeTerm({ target: speakerName, character: true });
+      all.push(c);
+      made.push(c);
+    }
+    return { ...rest, speaker: c.id };
+  });
+  return { lines: out, made };
+}

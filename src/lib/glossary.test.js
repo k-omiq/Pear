@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { glossaryHits, glossaryMisses, textHasTerm, findCharacter, sanitizeGlossary } from './glossary.js';
+import { glossaryHits, glossaryMisses, textHasTerm, findCharacter, sanitizeGlossary, resolveSpeakerNames } from './glossary.js';
 
 const terms = sanitizeGlossary([
   { source: 'ファルツ', target: 'Faltz' },
@@ -31,5 +31,15 @@ describe('the glossary matcher', () => {
     expect(findCharacter(terms, 'makoto')?.target).toBe('Makoto');
     expect(findCharacter(terms, 'マコト')?.target).toBe('Makoto');
     expect(findCharacter(terms, 'Faltz')).toBe(null);
+  });
+
+  it('turns imported speaker names into ids, making a character once per new name', () => {
+    const { lines, made } = resolveSpeakerNames(
+      [{ n: 1, speakerName: 'makoto' }, { n: 2, speakerName: 'Tomoe' }, { n: 3, speakerName: 'TOMOE' }, { n: 4 }],
+      terms,
+    );
+    expect(made.map((t) => t.target)).toEqual(['Tomoe']);
+    expect(lines.map((l) => l.speaker)).toEqual([terms[2].id, made[0].id, made[0].id, undefined]);
+    expect(lines.some((l) => 'speakerName' in l)).toBe(false);
   });
 });

@@ -471,6 +471,16 @@ describe('a whole chapter.json from the last release', () => {
     expect('tags' in l2).toBe(false);
     expect(l2.type).toBe('sfx');
   });
+
+  it('gives a line saved before speakers no speaker, and drops one of the wrong type', () => {
+    const [l1, l2] = pageById(1).lines;
+    expect('speaker' in l1).toBe(false);
+    expect('speaker' in l2).toBe(false);
+    loadProjectPages([{ id: 9, w: 0, h: 0, lines: [{ n: 1, jp: '', en: 'a', speaker: 'g1' }, { n: 2, jp: '', en: 'b', speaker: 7 }], boxes: [] }]);
+    const [a, b] = pageById(9).lines;
+    expect(a.speaker).toBe('g1');
+    expect('speaker' in b).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

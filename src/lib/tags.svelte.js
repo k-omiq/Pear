@@ -430,15 +430,24 @@ export function toggleLineTag(line, name) {
 // happen from any producer this app has met (translators number from 1) and if
 // it does, two lines answering to one number is the one outcome nothing
 // downstream survives - `lineByN` would hand the box whichever came first.
+//
+// The speaker (TXT-6) is carried the same way and for the same reason: a file
+// that names no speaker for a line says nothing about who speaks it, so the
+// one the user picked stays; a file that names one wins.
 export function carryTagsForward(prevLines = [], nextLines = []) {
   const kept = new Map();
-  for (const l of prevLines) if (l && Array.isArray(l.tags)) kept.set(l.n, l.tags);
+  const speakers = new Map();
+  for (const l of prevLines) {
+    if (l && Array.isArray(l.tags)) kept.set(l.n, l.tags);
+    if (l && typeof l.speaker === 'string') speakers.set(l.n, l.speaker);
+  }
   const out = nextLines.map((l) => {
-    if (Array.isArray(l.tags)) return l;
-    const tags = kept.get(l.n);
-    if (!tags) return l;
+    const speaker = l.speaker == null && l.speakerName == null ? speakers.get(l.n) : undefined;
+    const tags = Array.isArray(l.tags) ? null : kept.get(l.n);
+    if (!tags && speaker === undefined) return l;
     const copy = { ...l };
-    setLineTags(copy, tags);
+    if (tags) setLineTags(copy, tags);
+    if (speaker !== undefined) copy.speaker = speaker;
     return copy;
   });
   const taken = new Set(nextLines.map((l) => l?.n));

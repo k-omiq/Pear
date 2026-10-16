@@ -113,7 +113,7 @@ import { translateClipShapes } from './text-paint.js';
 import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
-import { guide } from './guide.svelte.js';
+import { guide, termById } from './guide.svelte.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 
@@ -159,9 +159,14 @@ const idNum = (id) => (typeof id === 'string' && /^b\d+$/.test(id) ? Number(id.s
 // rather than repaired: the array's *presence* is what tells `lineTags` the user
 // has taken over from the legacy `line.type`, and a string there means the file
 // never said that.
+//
+// `speaker` (TXT-6) is a character id from the series glossary; anything but a
+// non-empty string is no speaker.
 function sanitizeLine(l) {
   const out = { ...l };
   if (l?.placed) out.placed = true;
+  if (typeof out.speaker !== 'string' || !out.speaker) delete out.speaker;
+  delete out.speakerName;
   if (!Array.isArray(l?.tags)) {
     delete out.tags;
     return out;
@@ -786,6 +791,21 @@ export function setLineText(p, n, v) {
   clearTimeout(lineT);
   lineT = setTimeout(settleLine, LINE_SETTLE_MS);
 }
+// Who speaks a line (TXT-6): a character id, or null for nobody. One click,
+// one undo step; nothing is restyled - the speaker's tag reaches a box only
+// when it is placed, like any tag default.
+export function setLineSpeaker(p, n, id) {
+  const ln = p ? lineByN(p, n) : null;
+  if (!ln) return;
+  const before = ln.speaker ?? null;
+  const after = typeof id === 'string' && id ? id : null;
+  if (before === after) return;
+  if (after) ln.speaker = after;
+  else delete ln.speaker;
+  recordEdit({ t: 'line', field: 'speaker', pageId: p.id, lineN: n, before, after, boxes: [] });
+  markUnsaved();
+}
+
 function settleLine() {
   clearTimeout(lineT);
   const pend = linePending;
@@ -2485,9 +2505,20 @@ function groupSizeFor(p, ln) {
 // defaults under the line's tag defaults,
 // with the size its group gives it (`groupSizeFor`). A reference size (see
 // above), which placement solves down from.
+//
+// A line's speaker can bring a tag of its own (TXT-6: a character linked to a
+// tag, so their font follows them). It counts after the line's own tags, so a
+// tag the user put on the line still wins, and it feeds only the style, not
+// the size group, which stays the line's first tag.
+function withSpeakerTag(ln) {
+  const tag = termById(ln?.speaker)?.tag;
+  const own = lineTags(ln);
+  return tag && !own.includes(tag) ? { ...ln, tags: [...own, tag] } : ln;
+}
+
 export function inheritedStyleFor(ln, p = page()) {
   const base = inheritBoxStyle ? cloneStyle(app.lastStyle) : defaultStyle();
-  const style = styleForLine(ln, applyBoxDefaults(base));
+  const style = styleForLine(withSpeakerTag(ln), applyBoxDefaults(base));
   style.size = groupSizeFor(p, ln);
   return style;
 }

@@ -60,6 +60,11 @@ function normLine(item, idx, shift = 0) {
   // a file carrying both, disagreeing, would otherwise land a line whose badge
   // and whose export said different things about it.
   if (Array.isArray(item.tags)) setLineTags(out, item.tags);
+  // Who says it (TXT-6), by name: the file cannot know the series' character
+  // ids. The library turns the name into one (`resolveSpeakers`), making the
+  // character when the series has none by that name.
+  const speaker = item.speaker ?? item.character;
+  if (typeof speaker === 'string' && speaker.trim()) out.speakerName = speaker.trim().slice(0, 100);
   return out;
 }
 
