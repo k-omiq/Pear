@@ -16,6 +16,7 @@
   const checkNote = $derived(preflight ? [
     preflight.boxes ? `${preflight.boxes} ${preflight.boxes === 1 ? 'box needs' : 'boxes need'} a look` : '',
     preflight.lines ? `${preflight.lines} ${preflight.lines === 1 ? 'line' : 'lines'} unplaced` : '',
+    preflight.text ? `${preflight.text} ${preflight.text === 1 ? 'line needs' : 'lines need'} a look` : '',
   ].filter(Boolean).join(' · ') : '');
 
   $effect(() => {

@@ -49,10 +49,14 @@ export async function exportPreflight(pages = app.pages) {
   const { isRasterOnly } = await import('./psd.js');
   const items = pages === app.pages ? checks.items : checkItems(pages);
   const boxes = new Set();
+  // A line-level reason on a line with no box (a glossary miss, say) is a
+  // line to look at, counted apart from the unplaced ones.
+  const text = new Set();
   let lines = 0;
   for (const it of items) {
     if (it.reason === 'unplaced') lines++;
-    else boxes.add(`${it.pageIndex}:${it.boxId}`);
+    else if (it.boxId != null) boxes.add(`${it.pageIndex}:${it.boxId}`);
+    else text.add(`${it.pageIndex}:${it.lineN}`);
   }
   let raster = 0;
   for (const p of pages ?? []) {
@@ -61,7 +65,7 @@ export async function exportPreflight(pages = app.pages) {
       if (isRasterOnly(b.style) && (String(boxText(b, p) ?? '').trim() || inkActive(b.style?.ink))) raster++;
     }
   }
-  return { items, boxes: boxes.size, lines, raster };
+  return { items, boxes: boxes.size, lines, text: text.size, raster };
 }
 
 // Reduce a free-text export name to something every platform will accept as a
