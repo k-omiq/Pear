@@ -12,6 +12,8 @@
   import { pickPackageFile, inspectPackage, importChapterPackage } from '../package-flow.js';
   import { toast, toastError } from '../store.svelte.js';
   import { plural, relativeTime } from '../format.js';
+  import { resliceStripFiles, resliceWarning, RESLICE_H_DEFAULT, RESLICE_H_MAX, clampResliceHeight } from '../strip-reslice.js';
+  import { SLICE_H_MIN } from '../editor/strip-cuts.js';
 
   // In-flight creation blocks dismissal.
   let { open = $bindable(), busy = $bindable(false), projectId = null } = $props();
@@ -35,8 +37,22 @@
   let workflow = $state('typeset');
   let newProjectLayout = $state('pages');
   let newProjectOcrLanguage = $state('ja');
+  let recut = $state(false);
+  let resliceH = $state(RESLICE_H_DEFAULT);
+  let prepared = $state.raw(null);
+  let prepareWarning = $state('');
 
   const isPackage = $derived(source === 'package');
+  const selectedProject = $derived(library.projects.find((p) => p.id === target));
+  const importLayout = $derived(target === '__new__' ? newProjectLayout : selectedProject?.layout ?? 'pages');
+  const prepBlocked = $derived(cleaned.length > 0 || translations !== null);
+
+  $effect(() => {
+    // Any change to the inputs invalidates the prepared-file review.
+    files; recut; resliceH; importLayout; prepBlocked; source;
+    prepared = null;
+    prepareWarning = '';
+  });
 
   function nextNumberFor(id) {
     const p = library.projects.find((x) => x.id === id);
@@ -64,6 +80,8 @@
       newProjectLayout = 'pages';
       newProjectOcrLanguage = 'ja';
       workflow = 'typeset';
+      recut = false;
+      resliceH = RESLICE_H_DEFAULT;
     });
   });
 
@@ -239,6 +257,17 @@
 
     let createdProject = null;
     try {
+      let importFiles = files;
+      if (!isPackage && !prepBlocked && importLayout === 'longstrip' && recut) {
+        if (!prepared) {
+          prepared = await resliceStripFiles([...files], clampResliceHeight(resliceH));
+          prepareWarning = resliceWarning(prepared.warnings);
+          // Keep fallback warnings visible before import. A second Create
+          // uses these prepared files without decoding the chapter again.
+          if (prepareWarning) return;
+        }
+        importFiles = prepared.files;
+      }
       if (target === '__new__') {
         createdProject = await createProject(newProjectName.trim(), {
           layout: newProjectLayout,
@@ -262,12 +291,12 @@
           projectId: pid,
           number: n,
           title,
-          files,
+          files: importFiles,
           cleanedFiles: cleaned,
           translations: translations?.pages ?? null,
           mode: workflow,
         });
-        note = `${plural(files.length, 'page')} copied`;
+        note = `${plural(importFiles.length, 'page')} copied`;
         if (cleaned.length) note += ` · ${Math.min(cleaned.length, files.length)} cleaned`;
       }
       open = false;
@@ -315,7 +344,7 @@
 
       <label class="field">
         <span>Project</span>
-        <select bind:value={target} onchange={onTargetChange}>
+        <select bind:value={target} onchange={onTargetChange} disabled={busy}>
           {#each library.projects.filter((p) => !p.unreadable) as p (p.id)}
             <option value={p.id}>{p.name}</option>
           {/each}
@@ -395,6 +424,23 @@
             <button class="soft-btn slim" onclick={() => (translations = null)} disabled={busy}>Clear</button>
           {/if}
         </div>
+
+        {#if importLayout === 'longstrip'}
+          <label class="pair-note prep-option">
+            <input class="btick" type="checkbox" bind:checked={recut} disabled={busy || prepBlocked} />
+            Re-cut at clean gutters
+          </label>
+          <div class="pair-note">Re-encodes the pages as PNG.</div>
+          <label class="field">
+            <span>Target height (px)</span>
+            <input type="number" min={SLICE_H_MIN} max={RESLICE_H_MAX} step="1" bind:value={resliceH}
+              onblur={() => (resliceH = clampResliceHeight(resliceH))} disabled={busy || prepBlocked || !recut} />
+          </label>
+          {#if prepBlocked}
+            <div class="pair-note">Page preparation is unavailable with cleaned pages or translations because it changes positional pairing.</div>
+          {/if}
+          {#if prepareWarning}<div class="pair-note warn">{prepareWarning}</div>{/if}
+        {/if}
       {/if}
 
       {#each summary as note}
@@ -406,9 +452,13 @@
       <div class="modal-foot">
         <button class="soft-btn" onclick={() => (open = false)} disabled={busy}>Cancel</button>
         <button class="accent-btn narrow" onclick={submit} disabled={busy}>
-          {busy ? (isPackage ? 'Importing…' : 'Copying…') : 'Create'}
+          {busy ? (isPackage ? 'Importing…' : 'Copying…') : prepareWarning ? 'Create with these cuts' : 'Create'}
         </button>
       </div>
     </div>
   </div>
 {/if}
+
+<style>
+  .prep-option { display: flex; align-items: center; gap: 8px; }
+</style>

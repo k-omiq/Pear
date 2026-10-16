@@ -72,6 +72,8 @@ at commit `d9be51e`:
 - `src/lib/detect-post.js`: the duplicate-region and already-English
   rules from `src/lib/transcribeRegions.ts` and the OCR comparison key from
   `src/lib/ocrConsensus.ts`.
+- `src/lib/strip-reslice.js`: the clean-gutter rule and tail balancing from
+  `src/lib/server/reslice.ts` and `src/lib/reslice.ts`.
 
 Komatose is MIT licensed:
 
