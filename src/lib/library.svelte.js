@@ -15,6 +15,7 @@ import { uniqueSlug, chapterSlug } from './paths.js';
 import {
   app,
   chapterProgress,
+  lineText,
   checks,
   loadProjectPages,
   hasPageSpace,
@@ -1846,6 +1847,7 @@ export const applyTranslations = guarded(async function applyTranslations(
   projectId,
   chapterId,
   parsed,
+  { fillEmpty = false } = {},
 ) {
   const { c, path } = await chapterFile(projectId, chapterId);
   const chapterText = await fsx.readTextFile(path);
@@ -1856,9 +1858,21 @@ export const applyTranslations = guarded(async function applyTranslations(
   parsed = resolved.pages;
   if (resolved.changed) queueSeriesWrite(projectById(projectId), 'the new characters');
   const covered = Math.min(parsed.length, pages.length);
-  const next = pages.map((pg, i) =>
-    i < covered ? { ...pg, lines: carryTagsForward(pg.lines ?? [], parsed[i].lines) } : pg,
-  );
+  let filled = 0;
+  const next = pages.map((pg, i) => {
+    if (i >= covered) return pg;
+    if (!fillEmpty) return { ...pg, lines: carryTagsForward(pg.lines ?? [], parsed[i].lines) };
+    const incoming = new Map(parsed[i].lines.map((l) => [l.n, l]));
+    const existing = new Set((pg.lines ?? []).map((l) => l.n));
+    const lines = (pg.lines ?? []).map((l) => {
+      const en = lineText(incoming.get(l.n));
+      if (lineText(l).trim() || !en.trim()) return l;
+      filled++;
+      return { ...l, en };
+    });
+    for (const l of parsed[i].lines) if (!existing.has(l.n)) lines.push(l);
+    return { ...pg, lines };
+  });
   await commitPages(c, path, record, next);
   sourceUndos.set(chapterId, before);
 
@@ -1883,6 +1897,7 @@ export const applyTranslations = guarded(async function applyTranslations(
     kept: pages.length - covered,
     ignored: parsed.length - covered,
     lines: parsed.slice(0, covered).reduce((n, pg) => n + pg.lines.length, 0),
+    filled,
     orphaned,
   };
 });

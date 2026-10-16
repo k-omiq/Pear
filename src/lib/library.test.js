@@ -1822,12 +1822,35 @@ describe('the chapter sources sheet', () => {
     fsx._tree.files.set(`${c.dir}/chapter.json`, JSON.stringify(before));
 
     const out = await applyTranslations(p.id, c.id, parsed('One', 'Two'));
-    expect(out).toEqual({ covered: 2, kept: 1, ignored: 0, lines: 2, orphaned: 0 });
+    expect(out).toEqual({ covered: 2, kept: 1, ignored: 0, lines: 2, orphaned: 0, filled: 0 });
     const after = chapterJson(c);
     expect(after.pages).toHaveLength(3);
     expect(after.pages.map((pg) => pg.lines[0].en)).toEqual(['One', 'Two', 'End']);
     expect(after.pages[2].boxes).toHaveLength(1);
     expect(after.pages.map((pg) => pg.file)).toEqual(['a.png', 'b.png', 'c.png']);
+  });
+
+  it('fills only empty English and appends new line numbers in file order', async () => {
+    const { p, c } = await seedThree();
+    const record = chapterJson(c);
+    const lines = [
+      { ...line(1, 'kept'), tags: ['whisper'], speaker: 'speaker-1' },
+      { ...line(2, ''), type: 'narration', jp: '元の文', tags: [] },
+      line(3, ''),
+    ];
+    record.pages[0].lines = lines;
+    fsx._tree.files.set(`${c.dir}/chapter.json`, JSON.stringify(record));
+    const added = line(4, 'added');
+
+    const out = await applyTranslations(p.id, c.id, [
+      { lines: [line(1, 'NEW'), line(2, 'filled'), added] },
+    ], { fillEmpty: true });
+
+    expect(chapterJson(c).pages[0].lines).toEqual([
+      lines[0], { ...lines[1], en: 'filled' }, lines[2], added,
+    ]);
+    expect(chapterJson(c).pages.slice(1)).toEqual(record.pages.slice(1));
+    expect(out.filled).toBe(1);
   });
 
   it('counts the placed boxes a renumbered file leaves with nothing to say', async () => {

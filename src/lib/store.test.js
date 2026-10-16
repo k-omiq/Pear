@@ -32,6 +32,7 @@ import {
   setEditSettleHook,
   gotoPage,
   page,
+  pageCheckItems,
   setTool,
   TOOLS,
   setZoom,
@@ -452,6 +453,28 @@ describe('the hook seams take more than one subscriber', () => {
       offA();
       offB();
     }
+  });
+});
+
+describe('lines waiting for English', () => {
+  it('checks only unboxed imported lines with source and no English', () => {
+    const pg = {
+      id: 'english',
+      lines: [
+        { n: 1, jp: 'あ', en: ' \n' },
+        { n: 2, jp: 'い', en: '' },
+        { n: 3, jp: 'う', en: 'translated' },
+        { n: 4, jp: ' ', en: '' },
+        { n: 5, jp: 'え', natural: 'legacy English' },
+        { n: -1, jp: 'お', en: '' },
+      ],
+      boxes: [{ id: 'placed', lineN: 2, style: {} }],
+    };
+    const items = pageCheckItems(pg, 0);
+    expect(items.filter((it) => it.reason === 'english')).toEqual([
+      { pageId: 'english', pageIndex: 0, slot: 1, lineN: 1, reason: 'english' },
+    ]);
+    expect(items).toContainEqual(expect.objectContaining({ boxId: 'placed', reason: 'empty' }));
   });
 });
 
