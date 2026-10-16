@@ -35,6 +35,8 @@ describe('analyzeImage IPC invocation', () => {
     expect(h.calls[0][0]).toBe('detect_analyze');
     expect(h.calls[0][1].language).toBe('ja');
     expect(h.calls[0][1].ocr).toBe(true);
+    // The second reader (OCR-1) is off until Settings turns it on.
+    expect(h.calls[0][1].secondReader).toBe(false);
   });
 
   it('passes explicit lang option when provided', async () => {

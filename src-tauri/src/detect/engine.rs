@@ -125,6 +125,10 @@ impl OcrLanguage {
     }
 }
 
+fn second_reader_enabled(language: OcrLanguage, ocr: bool, requested: bool) -> bool {
+    requested && ocr && language == OcrLanguage::Japanese
+}
+
 /// A concrete recognizer selected in Settings. The language remains a project
 /// property (and controls reading order); this is a machine preference for the
 /// quality/size trade-off used whenever that language is detected.
@@ -219,6 +223,8 @@ fn download_deadline() -> Duration {
 struct Sessions {
     detector: Option<TextDetector>,
     second_detector: Option<RtDetr>,
+    /// Separate session permits mutable access to both primary and secondary OCR.
+    second_reader: Option<PaddleOcrEngine>,
     panels: Option<Session>,
     ocr: HashMap<OcrModel, Recognizer>,
     /// Execution provider the text detector landed on, once it has loaded.
@@ -304,7 +310,9 @@ impl DetectEngine {
         model: OcrModel,
         want_mask: bool,
         want_second_detector: bool,
+        want_second_reader: bool,
     ) -> Result<AnalyzeResponse, String> {
+        let want_second_reader = second_reader_enabled(language, want_ocr, want_second_reader);
         let img = decode_image(bytes)?;
         let dir = &self.0.models_dir;
         let (mut s, recovered) = self.lock_sessions();
@@ -337,10 +345,17 @@ impl DetectEngine {
         if want_ocr && !s.ocr.contains_key(&model) {
             s.ocr.insert(model, load_recognizer(dir, model)?);
         }
+        if want_second_reader && s.second_reader.is_none() {
+            match PaddleOcrEngine::load(&dir.join(PADDLE_OCR_V6_MEDIUM.rel)) {
+                Ok(reader) => s.second_reader = Some(reader),
+                Err(e) => log::warn!("second Japanese reader unavailable, using primary OCR alone: {e}"),
+            }
+        }
 
         let Sessions {
             detector,
             second_detector,
+            second_reader,
             panels,
             ocr,
             ..
@@ -361,6 +376,11 @@ impl DetectEngine {
             language.code(),
             want_mask,
             if want_second_detector { second_detector.as_mut() } else { None },
+            if want_second_reader {
+                second_reader.as_mut().map(|reader| reader as &mut dyn TextRecognizer)
+            } else {
+                None
+            },
         )
     }
 }
@@ -674,6 +694,7 @@ pub async fn detect_analyze(
     ocr_model: Option<String>,
     mask: Option<bool>,
     second_detector: Option<bool>,
+    second_reader: Option<bool>,
 ) -> Result<AnalyzeResponse, String> {
     let engine = state.inner().clone();
     let language = OcrLanguage::from_code(language.as_deref());
@@ -686,6 +707,14 @@ pub async fn detect_analyze(
         }
     }
     engine.ensure(&needed).await?;
+
+    let mut want_second_reader = second_reader_enabled(language, ocr, second_reader.unwrap_or(false));
+    if want_second_reader {
+        if let Err(e) = engine.ensure(&[&PADDLE_OCR_V6_MEDIUM]).await {
+            log::warn!("second Japanese reader download failed, using primary OCR alone: {e}");
+            want_second_reader = false;
+        }
+    }
 
     let mut want_second_detector = second_detector.unwrap_or(false);
     if want_second_detector {
@@ -700,7 +729,7 @@ pub async fn detect_analyze(
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        engine.analyze_blocking(&image, ocr, language, model, mask.unwrap_or(false), want_second_detector)
+        engine.analyze_blocking(&image, ocr, language, model, mask.unwrap_or(false), want_second_detector, want_second_reader)
     })
     .await
     .map_err(|e| format!("analyze task failed: {e}"))?
@@ -810,6 +839,19 @@ mod tests {
         let flat = flatten_on_white(image::DynamicImage::ImageRgba8(rgba)).to_rgb8();
         assert_eq!(flat.get_pixel(0, 0).0, [255, 255, 255]);
         assert_eq!(flat.get_pixel(1, 0).0, [0, 0, 0]);
+    }
+
+    #[test]
+    fn second_reader_is_opt_in_and_only_enabled_for_japanese_ocr() {
+        for language in [OcrLanguage::Japanese, OcrLanguage::Chinese, OcrLanguage::Korean] {
+            for ocr in [false, true] {
+                for requested in [false, true] {
+                    assert_eq!(second_reader_enabled(language, ocr, requested),
+                        language == OcrLanguage::Japanese && ocr && requested);
+                }
+            }
+        }
+        assert_eq!(OcrModel::PaddleV6Medium.paddle_file().unwrap().rel, PADDLE_OCR_V6_MEDIUM.rel);
     }
 
     #[test]
@@ -1237,7 +1279,7 @@ mod tests {
         let bytes = std::fs::read(&page_path)
             .unwrap_or_else(|error| panic!("failed to read {page_path}: {error}"));
         let result = engine
-            .analyze_blocking(&bytes, true, OcrLanguage::Korean, model, false, false)
+            .analyze_blocking(&bytes, true, OcrLanguage::Korean, model, false, false, false)
             .unwrap_or_else(|error| panic!("production analysis failed for {page_path}: {error}"));
 
         eprintln!("production pipeline detected {} regions", result.lines.len());

@@ -72,6 +72,16 @@ describe('keeping English lettering during detection', () => {
   });
 });
 
+describe('the second reader switch (OCR-1)', () => {
+  it('is off until chosen and survives a relaunch', async () => {
+    const { prefs, setPref } = await import('./prefs.svelte.js');
+    expect(prefs.secondReader).toBe(false);
+    setPref('secondReader', true);
+    vi.resetModules();
+    expect((await import('./prefs.svelte.js')).prefs.secondReader).toBe(true);
+  });
+});
+
 describe('the second detector switch (DTC-2)', () => {
   it('is off until chosen and survives a relaunch', async () => {
     const { prefs, setPref } = await import('./prefs.svelte.js');

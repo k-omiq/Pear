@@ -40,6 +40,9 @@ pub struct AnalyzeLine {
     pub font_size: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Optional second Japanese reading; comparison belongs to the webview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jp2: Option<String>,
 }
 
 /// The `/analyze` response.
@@ -184,6 +187,89 @@ fn fuse_second_result(blocks: Vec<TextBlockOut>, result: Option<Result<Vec<Regio
     }
 }
 
+fn second_reading(page: &Raster, mask: &Raster, block: &TextBlockOut, engine: &mut dyn TextRecognizer, mask_ocr: bool) -> Option<String> {
+    let crops = gather_crops(page, mask, block, engine.prefers_line_crops(), mask_ocr);
+    if crops.is_empty() {
+        return None;
+    }
+    let readings: Vec<_> = crops.iter().map(|crop| {
+        match engine.ocr_with_confidence(&crop.as_python_saw_it()) {
+            Ok(reading) => Some(reading),
+            Err(e) => {
+                log::warn!("second OCR failed for crop, keeping primary reading: {e}");
+                None
+            }
+        }
+    }).collect();
+    // An attempted but empty/junk reading is present as ""; it never rejects the block.
+    Some(stitch_readings(&readings).unwrap_or_default())
+}
+
+fn recognize_blocks(
+    page: &Raster,
+    mask: &Raster,
+    blk_list: &[TextBlockOut],
+    ocr: Option<&mut dyn TextRecognizer>,
+    second_reader: Option<&mut dyn TextRecognizer>,
+    lang: &str,
+) -> Vec<Block> {
+    let second_reader = if ocr.is_some() && lang == "ja" { second_reader } else { None };
+    let mask_ocr = std::env::var("MT_OCR_MASK")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    // Gather first, then read each crop in the original order for golden parity.
+    let mut readings: Vec<Option<OcrReading>> = Vec::new();
+    let mut counts: Vec<usize> = Vec::with_capacity(blk_list.len());
+    if let Some(engine) = ocr {
+        let lines_mode = engine.prefers_line_crops()
+            || std::env::var("MT_OCR_MODE")
+            .map(|v| v.trim().eq_ignore_ascii_case("lines"))
+            .unwrap_or(false);
+        let mut queue: Vec<Raster> = Vec::new();
+        for blk in blk_list {
+            let c = gather_crops(page, mask, blk, lines_mode, mask_ocr);
+            counts.push(c.len());
+            queue.extend(c);
+        }
+        for crop in &queue {
+            match engine.ocr_with_confidence(&crop.as_python_saw_it()) {
+                Ok(reading) => readings.push(Some(reading)),
+                Err(e) => {
+                    log::warn!("ocr failed for crop, degrading to empty text: {e}");
+                    readings.push(None);
+                }
+            }
+        }
+    }
+
+    let mut blocks: Vec<Block> = Vec::with_capacity(blk_list.len());
+    let mut kept_sources = Vec::new();
+    let mut cursor = 0usize;
+    for (i, blk) in blk_list.iter().enumerate() {
+        let crops = match counts.get(i) {
+            Some(&count) => {
+                let crops = &readings[cursor..cursor + count];
+                cursor += count;
+                crops
+            }
+            None => &[][..],
+        };
+        let Some(jp) = stitch_readings(crops) else { continue };
+        let mut block = Block::new(blk.xyxy, blk.vertical, blk.font_size as f32, jp);
+        block.kind = blk.kind.clone();
+        blocks.push(block);
+        if second_reader.is_some() {
+            kept_sources.push(blk);
+        }
+    }
+    if let Some(engine) = second_reader {
+        for (block, source) in blocks.iter_mut().zip(kept_sources) {
+            block.jp2 = second_reading(page, mask, source, engine, mask_ocr);
+        }
+    }
+    blocks
+}
+
 /// Detect, read, and order text and panels on one page.
 pub fn analyze(
     img: &DynamicImage,
@@ -194,6 +280,7 @@ pub fn analyze(
     lang: &str,
     want_mask: bool,
     second_detector: Option<&mut RtDetr>,
+    second_reader: Option<&mut dyn TextRecognizer>,
 ) -> Result<AnalyzeResponse, String> {
     let (im_w, im_h) = img.dimensions();
 
@@ -219,52 +306,7 @@ pub fn analyze(
     let page = Raster::from_rgb(&img.to_rgb8());
     let mask_raster = Raster::from_gray(&mask);
 
-    // Pass 1: gather all crops flat with per-block counts.
-    let mut readings: Vec<Option<OcrReading>> = Vec::new();
-    let mut counts: Vec<usize> = Vec::with_capacity(blk_list.len());
-    if let Some(engine) = ocr {
-        let lines_mode = engine.prefers_line_crops()
-            || std::env::var("MT_OCR_MODE")
-            .map(|v| v.trim().eq_ignore_ascii_case("lines"))
-            .unwrap_or(false);
-        let mask_ocr = std::env::var("MT_OCR_MASK")
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false);
-        let mut queue: Vec<Raster> = Vec::new();
-        for blk in &blk_list {
-            let c = gather_crops(&page, &mask_raster, blk, lines_mode, mask_ocr);
-            counts.push(c.len());
-            queue.extend(c);
-        }
-        // Pass 2: OCR each crop individually to match golden fixtures.
-        for crop in &queue {
-            match engine.ocr_with_confidence(&crop.as_python_saw_it()) {
-                Ok(reading) => readings.push(Some(reading)),
-                Err(e) => {
-                    log::warn!("ocr failed for crop, degrading to empty text: {e}");
-                    readings.push(None);
-                }
-            }
-        }
-    }
-
-    // Pass 3: stitch recognized text back onto blocks and drop junk reads.
-    let mut blocks: Vec<Block> = Vec::with_capacity(blk_list.len());
-    let mut cursor = 0usize;
-    for (i, blk) in blk_list.iter().enumerate() {
-        let crops = match counts.get(i) {
-            Some(&count) => {
-                let crops = &readings[cursor..cursor + count];
-                cursor += count;
-                crops
-            }
-            None => &[][..],
-        };
-        let Some(jp) = stitch_readings(crops) else { continue };
-        let mut block = Block::new(blk.xyxy, blk.vertical, blk.font_size as f32, jp);
-        block.kind = blk.kind.clone();
-        blocks.push(block);
-    }
+    let blocks = recognize_blocks(&page, &mask_raster, &blk_list, ocr, second_reader, lang);
 
     let lines = order_and_type(&blocks, &panels, direction, lang);
     let mask_png = requested_mask_png(&page, &mask, &blocks, want_mask)?;
@@ -295,6 +337,7 @@ pub fn order_and_type(
             vertical: b.vertical,
             font_size: b.font_size,
             kind: b.kind,
+            jp2: b.jp2,
         })
         .collect()
 }
@@ -303,6 +346,120 @@ pub fn order_and_type(
 mod tests {
     use super::*;
     use crate::detect::ocr::OcrEngine;
+
+    struct RecordingReader {
+        lines: bool,
+        queued: std::collections::VecDeque<Option<OcrReading>>,
+        sizes: Vec<(u32, u32)>,
+        colors: Vec<[u8; 3]>,
+    }
+
+    impl RecordingReader {
+        fn new(lines: bool, queued: Vec<Option<OcrReading>>) -> Self {
+            Self { lines, queued: queued.into(), sizes: vec![], colors: vec![] }
+        }
+    }
+
+    impl TextRecognizer for RecordingReader {
+        fn ocr_with_confidence(&mut self, img: &DynamicImage) -> ort::Result<OcrReading> {
+            self.sizes.push(img.dimensions());
+            self.colors.push(img.to_rgb8().get_pixel(0, 0).0);
+            self.queued.pop_front().expect("unexpected OCR crop")
+                .ok_or_else(|| ort::Error::new("synthetic OCR failure"))
+        }
+
+        fn prefers_line_crops(&self) -> bool {
+            self.lines
+        }
+    }
+
+    fn reader_fixture(offset: i32) -> TextBlockOut {
+        TextBlockOut {
+            xyxy: [10, 10 + offset, 70, 70 + offset],
+            lines: vec![
+                [[15, 15 + offset], [60, 15 + offset], [60, 27 + offset], [15, 27 + offset]],
+                [[15, 40 + offset], [60, 40 + offset], [60, 52 + offset], [15, 52 + offset]],
+            ],
+            font_size: 12.0, language: super::super::textblock::Language::Ja,
+            ..Default::default()
+        }
+    }
+
+    fn reader_page() -> (Raster, Raster) {
+        let rgb = image::RgbImage::from_fn(100, 180, |x, y| image::Rgb([y as u8, x as u8, 7]));
+        (Raster::from_rgb(&rgb), Raster::from_gray(&GrayImage::from_pixel(100, 180, image::Luma([255]))))
+    }
+
+    #[test]
+    fn second_reader_uses_its_own_preferred_crop_mode() {
+        let (page, mask) = reader_page();
+        let block = reader_fixture(0);
+        let mut block_reader = RecordingReader::new(false, vec![reading("主読", 0.9)]);
+        assert_eq!(second_reading(&page, &mask, &block, &mut block_reader, false).as_deref(), Some("主読"));
+        assert_eq!(block_reader.sizes, [(66, 66)]);
+        let mut line_reader = RecordingReader::new(true, vec![reading("こん", 0.9), reading("にちは", 0.9)]);
+        assert_eq!(second_reading(&page, &mask, &block, &mut line_reader, false).as_deref(), Some("こんにちは"));
+        assert_eq!(line_reader.sizes, [(240, 64), (240, 64)]);
+    }
+
+    #[test]
+    fn second_reader_runs_only_on_final_primary_blocks_with_their_original_pixels() {
+        let (page, mask) = reader_page();
+        let sources = [reader_fixture(0), reader_fixture(90)];
+        let mut primary = RecordingReader::new(true, vec![reading("1", 0.9), reading(".", 0.9),
+            reading("主", 0.9), reading("読", 0.9)]);
+        let mut secondary = RecordingReader::new(true, vec![reading("こん", 0.9), reading("にちは", 0.9)]);
+        let blocks = recognize_blocks(&page, &mask, &sources, Some(&mut primary), Some(&mut secondary), "ja");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].r#box, sources[1].xyxy);
+        assert_eq!(blocks[0].jp, "主読");
+        assert_eq!(blocks[0].jp2.as_deref(), Some("こんにちは"));
+        assert_eq!(primary.sizes.len(), 4);
+        assert_eq!(secondary.sizes, [(240, 64), (240, 64)]);
+        assert_eq!(secondary.colors, [[7, 15, 105], [7, 15, 130]]);
+    }
+
+    #[test]
+    fn second_reader_junk_or_failures_never_remove_primary_text_and_do_not_normalize() {
+        let (page, mask) = reader_page();
+        for (responses, expected) in [
+            (vec![reading("1.", 0.9), reading("", 0.9)], ""),
+            (vec![None, None], ""),
+            (vec![None, reading("あ", 0.9)], "あ"),
+            (vec![reading("ｱ", 0.9), reading("ｲ", 0.9)], "ｱｲ"),
+        ] {
+            let mut primary = RecordingReader::new(true, vec![reading("主", 0.9), reading("読", 0.9)]);
+            let mut secondary = RecordingReader::new(true, responses);
+            let blocks = recognize_blocks(&page, &mask, &[reader_fixture(0)], Some(&mut primary), Some(&mut secondary), "ja");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].jp, "主読");
+            assert_eq!(blocks[0].jp2.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn second_reader_is_absent_without_ocr_for_other_languages_or_without_crops() {
+        let (page, mask) = reader_page();
+        for (lang, with_primary, with_secondary) in [("ja", false, true), ("zh", true, true),
+            ("ko", true, true), ("ja", true, false)] {
+            let mut primary = RecordingReader::new(true, vec![reading("主", 0.9), reading("読", 0.9)]);
+            let mut secondary = RecordingReader::new(true, vec![]);
+            let blocks = recognize_blocks(&page, &mask, &[reader_fixture(0)],
+                if with_primary { Some(&mut primary) } else { None },
+                if with_secondary { Some(&mut secondary) } else { None }, lang);
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].jp2, None);
+            assert!(secondary.sizes.is_empty());
+        }
+        let mut source = reader_fixture(0);
+        source.lines.clear();
+        let mut primary = RecordingReader::new(true, vec![]);
+        let mut secondary = RecordingReader::new(true, vec![]);
+        let blocks = recognize_blocks(&page, &mask, &[source], Some(&mut primary), Some(&mut secondary), "ja");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].jp2, None);
+        assert!(secondary.sizes.is_empty());
+    }
 
     #[test]
     fn minimum_region_floor_scales_with_the_short_page_side_and_caps_at_30() {
@@ -393,11 +550,14 @@ mod tests {
     fn reading_order_retains_the_kind_with_its_original_block() {
         let mut right = Block::new([100, 10, 140, 50], false, 20.0, "right".into());
         right.kind = Some("free".into());
+        right.jp2 = Some("右二".into());
         let mut left = Block::new([10, 10, 50, 50], false, 20.0, "left".into());
         left.kind = Some("bubble".into());
+        left.jp2 = Some("左二".into());
         let lines = order_and_type(&[right, left], &[], ReadingDirection::Ltr, "ko");
         assert_eq!(lines.iter().map(|l| (l.jp.as_str(), l.kind.as_deref())).collect::<Vec<_>>(),
             [("left", Some("bubble")), ("right", Some("free"))]);
+        assert_eq!(lines.iter().map(|l| l.jp2.as_deref()).collect::<Vec<_>>(), [Some("左二"), Some("右二")]);
     }
 
     #[test]
@@ -455,6 +615,7 @@ mod tests {
                 vertical: true,
                 font_size: 27.0,
                 kind: None,
+                jp2: None,
             }],
             panels: vec![[0, 0, 100, 100]],
             mask_png: None,
@@ -468,6 +629,7 @@ mod tests {
         assert_eq!(v["panels"][0], serde_json::json!([0, 0, 100, 100]));
         assert!(!v.as_object().unwrap().contains_key("mask_png"));
         assert!(!v["lines"][0].as_object().unwrap().contains_key("kind"));
+        assert!(!v["lines"][0].as_object().unwrap().contains_key("jp2"));
         // Round-trips, which is what the e2e golden fixture relies on.
         let back: AnalyzeResponse = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
@@ -478,13 +640,16 @@ mod tests {
         assert_eq!(parsed.lines[0].lang, "ja");
         assert_eq!(parsed.mask_png, None);
         assert_eq!(parsed.lines[0].kind, None);
+        assert_eq!(parsed.lines[0].jp2, None);
 
         let mut with_mask = r;
         with_mask.mask_png = Some(vec![137, 80, 78, 71]);
         with_mask.lines[0].kind = Some("bubble".into());
+        with_mask.lines[0].jp2 = Some("ドーン".into());
         let v = serde_json::to_value(&with_mask).unwrap();
         assert_eq!(v["mask_png"], serde_json::json!([137, 80, 78, 71]));
         assert_eq!(v["lines"][0]["kind"], "bubble");
+        assert_eq!(v["lines"][0]["jp2"], "ドーン");
         assert_eq!(serde_json::from_value::<AnalyzeResponse>(v).unwrap(), with_mask);
     }
 
@@ -609,6 +774,7 @@ mod tests {
                 ReadingDirection::Rtl,
                 "ja",
                 false,
+                None,
                 None,
             )
                 .expect("analyze failed");

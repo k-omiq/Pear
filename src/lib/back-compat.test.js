@@ -511,6 +511,17 @@ describe('a whole chapter.json from the last release', () => {
     expect(a.speaker).toBe('g1');
     expect('speaker' in b).toBe(false);
   });
+
+  it('gives a line saved before the second reader no other reading, and drops one of the wrong type', () => {
+    const [l1, l2] = pageById(1).lines;
+    expect('jp2' in l1).toBe(false);
+    expect('jp2' in l2).toBe(false);
+    loadProjectPages([{ id: 10, w: 0, h: 0, lines: [{ n: 1, jp: '猫', en: '', jp2: '描' }, { n: 2, jp: 'a', en: '', jp2: 4 }, { n: 3, jp: 'b', en: '', jp2: '' }], boxes: [] }]);
+    const [a, b, c] = pageById(10).lines;
+    expect(a.jp2).toBe('描');
+    expect('jp2' in b).toBe(false);
+    expect('jp2' in c).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

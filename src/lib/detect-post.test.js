@@ -257,3 +257,23 @@ describe('already-English lettering', () => {
     expect(process(line('1234'), line('……', [200, 0, 300, 100]))).toHaveLength(2);
   });
 });
+
+describe('a second reader (OCR-1)', () => {
+  const line = (jp, jp2) => ({ n: 1, type: 'dialogue', lang: 'ja', jp, jp2, en: '', box: [0, 0, 50, 80], vertical: true, font_size: 20 });
+  const one = (jp, jp2) => postProcessDetection({ img_width: 100, img_height: 100, panels: [], lines: [line(jp, jp2)] }).lines[0];
+
+  it('keeps the other reading only when the two disagree', () => {
+    expect(one('猫が好き', '描が好き').jp2).toBe('描が好き');
+  });
+
+  it('drops it when they agree up to spacing, width and dashes', () => {
+    expect('jp2' in one('ねえ、ちょっと〜', 'ねえ、 ちょっと～')).toBe(false);
+    expect('jp2' in one('そうだ！', 'そうだ!')).toBe(false);
+  });
+
+  it('drops an empty or unread second reading', () => {
+    expect('jp2' in one('猫', '')).toBe(false);
+    expect('jp2' in one('猫', '……')).toBe(false);
+    expect('jp2' in one('猫', undefined)).toBe(false);
+  });
+});

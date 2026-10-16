@@ -1073,6 +1073,18 @@
         <input
           class="btick"
           type="checkbox"
+          checked={prefs.secondReader}
+          aria-describedby="second-reader-hint"
+          onchange={(e) => setPref('secondReader', e.currentTarget.checked)}
+        />
+        <span>Check Japanese with a second reader</span>
+      </label>
+      <div class="qhint" id="second-reader-hint">Reads each line again with PP-OCRv6 (a 77 MB download). Lines where the two readers differ go on the check list. About twice the OCR time.</div>
+
+      <label class="srow">
+        <input
+          class="btick"
+          type="checkbox"
           checked={prefs.secondDetector}
           aria-describedby="second-detector-hint"
           onchange={(e) => setPref('secondDetector', e.currentTarget.checked)}

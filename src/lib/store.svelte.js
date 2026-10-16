@@ -163,7 +163,8 @@ const idNum = (id) => (typeof id === 'string' && /^b\d+$/.test(id) ? Number(id.s
 //
 // `speaker` (TXT-6) is a character id from the series glossary; anything but a
 // non-empty string is no speaker. A `jp` that is not a string is no source:
-// the checks and the queue read it as text.
+// the checks and the queue read it as text. `jp2` (OCR-1) is the same: the
+// second reader's text or nothing.
 // The text mask a detection kept (MASK-1): a plain file name under masks/ and
 // the size it was made at. Anything else is no mask, never a path to follow.
 function detectMaskField(m) {
@@ -177,6 +178,7 @@ function sanitizeLine(l) {
   const out = { ...l };
   if (l?.placed) out.placed = true;
   if (out.jp != null && typeof out.jp !== 'string') delete out.jp;
+  if (typeof out.jp2 !== 'string' || !out.jp2) delete out.jp2;
   if (typeof out.speaker !== 'string' || !out.speaker) delete out.speaker;
   delete out.speakerName;
   if (!Array.isArray(l?.tags)) {
@@ -873,6 +875,20 @@ export function setLineSource(p, n, v) {
   sourceT = setTimeout(settleSource, LINE_SETTLE_MS);
 }
 
+// The second reader's disagreement (OCR-1) is settled by picking a reading:
+// `use` makes the other reading the source, as an ordinary source edit with
+// its undo step; either way the other reading goes, which clears the check.
+export function resolveOtherReading(p, n, use) {
+  const ln = p ? lineByN(p, n) : null;
+  if (!ln || typeof ln.jp2 !== 'string') return;
+  const alt = ln.jp2;
+  delete ln.jp2;
+  if (use) {
+    setLineSource(p, n, alt);
+    settleSource();
+  } else markUnsaved();
+}
+
 function settleSource() {
   clearTimeout(sourceT);
   const pend = sourcePending;
@@ -1442,13 +1458,15 @@ export function flaggedBoxes(pages = app.pages) {
 //             (TXT-2; `terms` names the missing targets)
 //   rules     the English breaks the series' dash or ellipsis rule (TXT-3;
 //             `breaks` says which, in words)
+//   ocr       a second reader read the source differently (OCR-1; `alt` is
+//             its reading). Cleared by keeping one reading in the queue.
 //   english   an imported line has source text but no English and no box yet
 //   unplaced  a detected line with no box yet (`placeableDetectedLines`)
 //
 // The text reasons (glossary, rules) are the line's, not the box's: they sit on the
 // line's first box when it has one, so Next lands on the box, and otherwise
 // on the line itself, after the boxes, in queue order.
-export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'rules', 'english', 'unplaced'];
+export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'rules', 'ocr', 'english', 'unplaced'];
 
 // What a line's text breaks of the series guide, as check items less their
 // place. Read off the guide as it stands, so editing a term re-checks. `en` is
@@ -1461,6 +1479,7 @@ function lineTextChecks(line, en = lineText(line)) {
   if (misses.length) out.push({ reason: 'glossary', terms: misses.map((t) => t.target) });
   const breaks = ruleBreaks(en, guide.rules);
   if (breaks.length) out.push({ reason: 'rules', breaks });
+  if (typeof line.jp2 === 'string' && line.jp2) out.push({ reason: 'ocr', alt: line.jp2 });
   return out;
 }
 
@@ -3855,6 +3874,9 @@ export function applyDetection(result, target = null) {
         type: l.type,
         jp,
         en: was && (was.jp ?? '') === jp ? (was.en ?? '') : '',
+        // A second reader that disagreed (OCR-1); detect-post.js drops it
+        // when the two readings agree.
+        ...(typeof l.jp2 === 'string' && l.jp2 ? { jp2: l.jp2 } : {}),
         ...(l.lang != null ? { lang: l.lang } : result.lang != null ? { lang: result.lang } : {}),
       };
     }),

@@ -524,6 +524,11 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .qgl.miss{ border-color:var(--warn); color:var(--warn); }
 /* What an sfx line's sound means (TXT-13): a hint, quieter than the text. */
 .qsfx{ font-size:11px; color:var(--t2); font-style:italic; }
+/* A second OCR reader disagreed (OCR-1): its reading and the two ways out. */
+.qalt{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:11px; color:var(--warn); }
+.qalt-text{ flex:1 1 100%; min-width:0; }
+.qalt-btn{ padding:1px 8px; border-radius:999px; border:1px solid var(--line2); background:var(--surface); color:var(--text); font:inherit; font-size:10.5px; cursor:pointer; }
+.qalt-btn:hover{ border-color:var(--accent); }
 /* Page note (TXT-7), above the queue's lines. */
 .qnote{ width:100%; box-sizing:border-box; resize:vertical; margin:2px 0 4px; background:var(--surface); color:var(--text); border:1px solid var(--line2); border-radius:6px; padding:5px 8px; font:inherit; font-size:11.5px; line-height:1.4; }
 .qnote:focus{ outline:none; border-color:var(--accent); }

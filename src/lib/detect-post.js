@@ -116,10 +116,18 @@ export function postProcessDetection(result, { keepEnglish = false } = {}) {
   const drop = dropRedundantTranscriptions(regions, { keepEnglish });
   return {
     ...result,
-    lines: result.lines.filter((_, id) => !drop.has(id)).map((line, i) => ({
+    lines: result.lines.filter((_, id) => !drop.has(id)).map(({ jp2, ...line }, i) => ({
       ...line,
+      ...(otherReading(line.jp ?? '', jp2) ? { jp2 } : {}),
       n: i + 1,
       type: classifyRegionLineType(line.kind, line.jp ?? '', { type: line.type, lang: line.lang ?? result.lang }),
     })),
   };
+}
+
+// The second reader (OCR-1) counts only when it disagrees: compared the way
+// Komatose's consensus compares (NFKC, spacing, dashes and tildes ignored),
+// and only when it read something. Agreement leaves no trace on the line.
+function otherReading(jp, jp2) {
+  return typeof jp2 === 'string' && hasReading(jp2) && readingKey(jp2) !== readingKey(jp);
 }
