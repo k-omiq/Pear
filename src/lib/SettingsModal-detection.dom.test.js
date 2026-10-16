@@ -21,19 +21,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it('offers and persists the English-lettering checkbox in detection settings', async () => {
+it('offers and persists the English-lettering switch in detection settings', async () => {
   setPref('keepEnglish', false);
   const view = render(SettingsModal, { open: true });
   await tick();
   await fireEvent.click(view.getByRole('tab', { name: 'System' }));
-  const checkbox = view.getByRole('checkbox', { name: 'Keep text that is already English' });
-  expect(checkbox.checked).toBe(false);
-  expect(view.getByText('Off: English lettering on the raw is not detected.').id).toBe(checkbox.getAttribute('aria-describedby'));
+  const toggle = view.getByRole('switch', { name: 'Keep text that is already English' });
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
+  view.getByText('Off: English lettering on the raw is not detected.');
 
-  await fireEvent.click(checkbox);
-  expect(checkbox.checked).toBe(true);
+  await fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-checked')).toBe('true');
   expect(prefs.keepEnglish).toBe(true);
   expect(JSON.parse(localStorage.getItem('mt.prefs')).keepEnglish).toBe(true);
-  await fireEvent.click(checkbox);
+  await fireEvent.click(toggle);
   expect(prefs.keepEnglish).toBe(false);
 });
