@@ -4,7 +4,7 @@
   // project.json under `guide` (guide.svelte.js), so it travels with the
   // series and applies to every chapter in it. `scope` is the modal's own
   // chip snippet, handed down so the chips match the sections around these.
-  import { guide, addTerm, updateTerm, removeTerm, setGuideRule } from './guide.svelte.js';
+  import { guide, addTerm, updateTerm, removeTerm, setGuideRule, setGuideNotes } from './guide.svelte.js';
   import { knownTags } from './tags.svelte.js';
   import { app } from './store.svelte.js';
 
@@ -154,6 +154,20 @@
   </div>
 </div>
 
+<!-- Free notes (AI_TYPESETTING_PLAN.md section 4): what no rule can hold.
+     Saved when the field is left. -->
+<div class="settings-section">
+  <div class="settings-title">NOTES{@render scope('series')}</div>
+  <textarea
+    class="qtf-input sg-notes"
+    rows="4"
+    placeholder="Anything about this series a rule cannot say: “screams tilt with the balloon”, “Tomoe never uses contractions”…"
+    aria-label="Series notes"
+    value={guide.notes}
+    onchange={(e) => setGuideNotes(e.currentTarget.value)}
+  ></textarea>
+</div>
+
 <style>
   /* The modal lays its own headings out this way; its rule is scoped to it. */
   .settings-title {
@@ -214,6 +228,14 @@
   .sg-del svg {
     width: 12px;
     height: 12px;
+  }
+  .sg-notes {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.45;
   }
   .sg-empty {
     padding: 4px 0;
