@@ -12,7 +12,12 @@ import { defineTool, ToolError, nearest } from '../registry.js';
 import { selectBoxes } from '../select.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
-import { checksFor } from './check.js';
+import { applyCase, breaksFor } from '../../measure.js';
+import { normalizeAuto } from '../../data.js';
+import { OUTLINE_FIT } from '../../outline-fit.js';
+import { splitOutline } from '../../bubble-outline.js';
+import { fitPolygon, intervalsAt } from '../../outline-geom.js';
+import { checksFor, fitsOf } from './check.js';
 import {
   app,
   allFonts,
@@ -42,10 +47,11 @@ import { guide } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
 import { sfxAvailable, sfxPresets, applySfxPreset, clearSfx } from '../../sfx.js';
 
-const DO_PLAIN = ['refit', 'fit_balloon', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'outline_to_box'];
+const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box'];
 const DO_NAMED = ['preset:', 'sfx:'];
 const DO_LATER = { match_angle: 'match_angle comes with chapter mode; set geometry.rotation for now.' };
-const SET_KEYS = ['text', 'style', 'geometry', 'tags', 'locks', 'outline', 'note'];
+const SET_KEYS = ['text', 'style', 'sizing', 'geometry', 'breaks', 'tags', 'locks', 'outline', 'note'];
+const SIZE_RANGE = [4, 300];
 const GEOM_KEYS = ['x', 'y', 'w', 'h', 'rotation'];
 // A preset is a look, not a placement (Inspector.svelte `PRESET_SKIP`).
 const PRESET_SKIP = ['rotation', 'flipH', 'flipV'];
@@ -57,13 +63,20 @@ const isRel = (v) => typeof v === 'string' && /^[+\-*]\d+(\.\d+)?$/.test(v.trim(
 
 const DESCRIPTION = [
   'Change boxes. ops is a list; each op is { where, set?, do? } and they run in order. where is the selector every tool takes (see context).',
-  'set: text (the box text), style (a style patch, schema below), geometry { x, y, w, h, rotation } in page px and degrees, tags (the line\'s tags, replaced whole; the box takes the tags\' style),',
+  'set: text (the box text), style (a style patch, schema below; style.size is the size the solver aims for, not a lock),',
+  'sizing { ref, min } (the size aimed for and the least it may shrink to, px; min null is the chapter floor),',
+  'geometry { x, y, w, h, rotation } in page px and degrees (x and y are the top-left corner; the solver keeps what is given, the place by its centre; locks undo it),',
+  'breaks ["line one", "line two", ...] the box\'s lines exactly, in order (no added hyphens), held until null clears them; needs outline fit (do "typeset"),',
+  'tags (the line\'s tags, replaced whole; the box takes the tags\' style),',
   'locks { size, width, height, pos, breaks } booleans, outline [[x, y], ...] a drawn bubble outline (3+ points, unapproved, the text typeset again inside it), note (a note on the outline for the user).',
-  'do: "refit" (typeset again in the outline it has), "fit_balloon" (turn the balloon fit on, measuring it when there is none), "refit_outline" (find the bubble under the box again),',
+  'do: "typeset" (outline fit: style.margin 0.5 em unless set, balloon fit on, then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
+  '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
+  '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "refit_outline" (find the bubble under the box again),',
+  '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
   '"outline_to_box" (the box rectangle as its outline), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
   '"preset:<name or id>", "sfx:<name or id>" (Rust engine only), "clear_sfx", "duplicate", "delete".',
   'Numbers may be relative: "+2", "-2", "*1.1". All ops are checked first; any bad value changes nothing. dryRun: true checks and counts only.',
-  'Each page changed is one undo step for the user. The result gives matched, changed ids and the checks for the changed boxes.',
+  'Each page changed is one undo step for the user. The result gives matched, changed ids, the checks for the changed boxes, and fit: each box against its outline in numbers.',
   '',
   styleSchemaText(),
 ].join('\n');
@@ -90,6 +103,12 @@ const input = {
             properties: {
               text: { type: 'string' },
               style: { type: 'object' },
+              sizing: {
+                type: 'object',
+                additionalProperties: false,
+                properties: { ref: { type: 'number' }, min: { type: ['number', 'null'] } },
+              },
+              breaks: { type: ['array', 'null'], items: { type: 'string' } },
               geometry: {
                 type: 'object',
                 additionalProperties: false,
@@ -187,6 +206,40 @@ function compile(op, i) {
       }
       set.geometry = { ...s.geometry };
     }
+    if ('sizing' in s) {
+      if (!object(s.sizing)) fail(i, 'set.sizing', 'expected { ref, min }');
+      const sz = {};
+      for (const [k, v] of Object.entries(s.sizing)) {
+        if (k !== 'ref' && k !== 'min') fail(i, `set.sizing.${k}`, 'unknown key', 'use ref and min.');
+        if (k === 'min' && v === null) {
+          sz.min = null;
+          continue;
+        }
+        if (!isNum(v) || v < SIZE_RANGE[0] || v > SIZE_RANGE[1]) fail(i, `set.sizing.${k}`, `expected a size in px, ${SIZE_RANGE[0]} to ${SIZE_RANGE[1]}`);
+        sz[k] = v;
+      }
+      if (sz.ref != null && sz.min != null && sz.min > sz.ref) fail(i, 'set.sizing.min', 'min is above ref', 'the least size is at most the size aimed for.');
+      set.sizing = sz;
+    }
+    if ('breaks' in s) {
+      if (s.breaks !== null && (!Array.isArray(s.breaks) || !s.breaks.length || s.breaks.some((t) => typeof t !== 'string'))) {
+        fail(i, 'set.breaks', 'expected the lines as a list of strings, or null', 'e.g. ["WAS THERE", "ANYTHING YOU", "WERE INTO?"].');
+      }
+      set.breaks = s.breaks === null ? null : s.breaks.map((t) => t.trim());
+      if (set.breaks) {
+        // Checked on every box now, against the text and style it will have.
+        for (const m of matches) {
+          const style = set.style ? applyStylePatch(cloneStyle(m.box.style), set.style).style : m.box.style;
+          if (style.margin == null && op.do?.trim() !== 'typeset') {
+            fail(i, 'set.breaks', `box ${m.box.id} is not laid out by outline fit`, 'add do: "typeset" to this op, or set style.margin.');
+          }
+          const text = applyCase(set.text ?? boxText(m.box, m.page), style);
+          if (!breaksFor(text, style, style.size, set.breaks.map((t) => applyCase(t, style)))) {
+            fail(i, 'set.breaks', `the lines are not box ${m.box.id}'s text`, 'give every word of the text once, in order, split into lines; box shows the text.');
+          }
+        }
+      }
+    }
     if ('tags' in s) {
       if (!Array.isArray(s.tags) || s.tags.some((t) => typeof t !== 'string')) fail(i, 'set.tags', 'expected an array of tag names');
       const tags = s.tags.map((t) => normalizeTagName(t));
@@ -238,7 +291,7 @@ function compile(op, i) {
 
 // The parts of `set` that `editBoxes` records: text, style, geometry, tags.
 function writeSet(set, matches) {
-  const hasBoxPart = set.text != null || set.style || set.geometry || set.tags;
+  const hasBoxPart = set.text != null || set.style || set.geometry || set.tags || set.sizing || 'breaks' in set;
   if (!hasBoxPart) return [];
   const changed = editBoxes(
     matches.map((m) => ({ page: m.page, box: m.box })),
@@ -253,12 +306,20 @@ function writeSet(set, matches) {
         const { style, errors } = applyStylePatch(cloneStyle(b.style), set.style);
         if (errors.length) return false;
         b.style = style;
-        // A size the agent set is the box's own, as one the user types is:
-        // the solver starts from it and keeps it.
-        if ('size' in set.style && b.auto && b.style.size !== before) {
-          b.auto.refSize = b.style.size;
-          b.auto.locks.size = true;
+        // A size the agent set is the size the solver aims for: it starts
+        // from it and shrinks only as far as the outline needs.
+        if ('size' in set.style && b.auto && b.style.size !== before) b.auto.refSize = b.style.size;
+      }
+      if (set.sizing || 'breaks' in set) {
+        if (!b.auto && b.style.size > 0) b.auto = normalizeAuto({ refSize: b.style.size });
+      }
+      if (set.sizing && b.auto) {
+        if (set.sizing.ref != null) {
+          b.auto.refSize = set.sizing.ref;
+          b.style.size = set.sizing.ref;
         }
+        if (set.sizing.min === null) delete b.auto.minSize;
+        else if (set.sizing.min != null) b.auto.minSize = set.sizing.min;
       }
       if (set.geometry) {
         const g = {};
@@ -270,6 +331,13 @@ function writeSet(set, matches) {
         if (g.w != null) g.w = Math.max(8, g.w);
         if (g.h != null) g.h = Math.max(8, g.h);
         if (Object.keys(g).length) resizeBox(p.id, b.id, g);
+        // What the agent placed, the solver keeps: the width, the height, the
+        // centre (`auto.locks`).
+        if (b.auto) {
+          if (g.w != null) b.auto.locks.width = true;
+          if (g.h != null) b.auto.locks.height = true;
+          if (g.x != null || g.y != null) b.auto.locks.pos = true;
+        }
         if ('rotation' in set.geometry) {
           const v = set.geometry.rotation;
           const r = isNum(v) ? v : resolveRelative(v, b.style.rotation ?? 0).value;
@@ -277,6 +345,20 @@ function writeSet(set, matches) {
         }
       }
       if (set.text != null) setBoxText(b, set.text, p, { fit: false });
+      if ('breaks' in set && b.auto) {
+        if (set.breaks === null) {
+          delete b.auto.breaks;
+          b.auto.locks.breaks = false;
+        } else {
+          if (b.style.margin == null) b.style.margin = OUTLINE_FIT.margin;
+          const st = b.style;
+          const brk = breaksFor(applyCase(boxText(b, p), st), st, st.size, set.breaks.map((t) => applyCase(t, st)));
+          if (brk) {
+            b.auto.breaks = brk;
+            b.auto.locks.breaks = true;
+          }
+        }
+      }
     },
   );
   return changed.map((t) => t.box.id);
@@ -304,12 +386,36 @@ function writeNote(note, matches) {
 
 const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text]);
 
+// Outline fit on, then laid out again in the outline: the agent's typesetting
+// (`do: "typeset"`, and what `place` and `add` do with a new box). `auto`
+// also lets every lock and kept line go. Returns the ids that changed.
+export function typesetMatches(matches, { auto = false } = {}) {
+  const before = new Map(matches.map((m) => [m.box.id, fingerprint(m.box)]));
+  editBoxes(
+    matches.map((m) => ({ page: m.page, box: m.box })),
+    (b) => {
+      if (b.style.margin == null) b.style.margin = OUTLINE_FIT.margin;
+      // Set in its outline means the outline is used.
+      if (b.fit && b.style.balloon === false) b.style.balloon = true;
+      if (!auto) return;
+      if (!b.auto && b.style.size > 0) b.auto = normalizeAuto({ refSize: b.style.size });
+      if (!b.auto) return;
+      b.auto.on = true;
+      for (const k of LOCK_KEYS) b.auto.locks[k] = false;
+      delete b.auto.breaks;
+    },
+  );
+  for (const m of matches) if (m.box.fit) retypesetBox(m.box.id, m.page);
+  return matches.filter((m) => fingerprint(m.box) !== before.get(m.box.id)).map((m) => m.box.id);
+}
+
 // One `do`, box by box, through the store's command for it. Returns
 // { changed, created, deleted } ids.
 function writeDo(d, matches) {
   const changed = [];
   const created = [];
   const deleted = [];
+  const unsplit = [];
   if (d.kind === 'approve_outline') {
     const byPage = new Map();
     for (const m of matches) byPage.set(m.page, [...(byPage.get(m.page) ?? []), m.box]);
@@ -319,6 +425,10 @@ function writeDo(d, matches) {
       if (approveBoxes(p, mine, 'ai')) changed.push(...mine.map((b) => b.id));
     }
     return { changed, created, deleted };
+  }
+  if (d.kind === 'typeset' || d.kind === 'auto') {
+    const r = typesetMatches(matches, { auto: d.kind === 'auto' });
+    return { changed: r, created, deleted };
   }
   if (['preset', 'sfx', 'clear_sfx', 'apply_guide'].includes(d.kind)) {
     const out = editBoxes(
@@ -365,13 +475,35 @@ function writeDo(d, matches) {
     if (d.kind === 'refit') retypesetBox(id, p);
     else if (d.kind === 'refit_outline') refitBalloon(id, p);
     else if (d.kind === 'outline_to_box') outlineToBox(id, p);
+    else if (d.kind === 'split_outline') {
+      const pts = splitBoxOutline(b, p);
+      if (pts) commitOutlinePoints(id, pts, p);
+      else unsplit.push(id);
+    }
     else if (d.kind === 'fit_balloon') {
       if (b.style.balloon === false) toggleBalloonFit(id, p);
       else if (!b.fit) refitBalloon(id, p);
     }
     if (fingerprint(b) !== before) changed.push(id);
   }
-  return { changed, created, deleted };
+  return { changed, created, deleted, unsplit };
+}
+
+// The piece of a box's outline that holds its text, cut from a joined bubble
+// at the neck (`splitOutline`). The text is where the line was detected, when
+// that is inside the outline, else the box; the other lines detected inside
+// the outline are the other bubbles' texts. Null when there is nothing to cut.
+function splitBoxOutline(b, p) {
+  const pts = b.fit ? fitPolygon(b.fit) : null;
+  if (!pts) return null;
+  const inside = ([x0, y0, x1, y1]) => {
+    const x = (x0 + x1) / 2;
+    return intervalsAt(pts, (y0 + y1) / 2).some(([l, r]) => x >= l && x <= r);
+  };
+  const blocks = (p.detect?.boxes ?? []).filter((d) => Array.isArray(d.box) && d.box.length === 4 && inside(d.box));
+  const own = blocks.find((d) => d.n === b.lineN)?.box ?? [b.x, b.y, b.x + b.w, b.y + b.h];
+  const others = blocks.filter((d) => d.n !== b.lineN).map((d) => d.box);
+  return splitOutline(pts, own, others);
 }
 
 function runOp(c) {
@@ -400,6 +532,7 @@ function runOp(c) {
     for (const id of r.changed) ids.add(id);
     if (r.created.length) out.created = r.created;
     if (r.deleted.length) out.deleted = r.deleted;
+    if (r.unsplit?.length) out.notSplit = { ids: r.unsplit, why: 'no neck found in the outline; draw the outline (set.outline) instead' };
     if (c.do.kind === 'approve_outline') {
       const open = c.matches.filter((m) => !m.box.fit).length;
       if (open) out.notApproved = { count: open, why: 'no outline to approve: draw one (set.outline) or use outline_to_box' };
@@ -423,8 +556,9 @@ export function matchesOf(ids) {
   return ms;
 }
 
-// The checks for the changed (and created) boxes.
+// The checks for the changed (and created) boxes, and their fit in numbers.
 export const checksOf = (ids) => (ids.length ? checksFor(matchesOf(ids)) : []);
+export const fitsFor = (ids) => (ids.length ? fitsOf(matchesOf(ids)) : []);
 
 defineTool({
   name: 'edit',
@@ -441,7 +575,11 @@ defineTool({
     if (!pages.length) return { ops: compiled.map(() => ({ matched: 0, changed: [] })), note: 'nothing matched; fix the where and call again' };
     const results = ctx.write(pages, () => compiled.map(runOp));
     return {
-      ops: results.map((r) => ({ ...r, checks: checksOf([...r.changed, ...(r.created ?? [])]) })),
+      ops: results.map((r) => {
+        const ids = [...r.changed, ...(r.created ?? [])];
+        const fit = fitsFor(ids);
+        return { ...r, checks: checksOf(ids), ...(fit.length ? { fit } : null) };
+      }),
     };
   },
 });

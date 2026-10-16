@@ -65,18 +65,19 @@ describe('chooseScale', () => {
 });
 
 describe('rulerTicks', () => {
-  it('ticks every 100 page px inside the crop, positions in image px', () => {
-    const t = rulerTicks(150, 400, 1);
-    expect(t.map((x) => x.at)).toEqual([200, 300, 400, 500]);
-    expect(t.map((x) => x.pos)).toEqual([50, 150, 250, 350]);
-    expect(t.every((x) => x.label === String(x.at))).toBe(true);
+  it('ticks every 10 page px when there is room, numbered every 50, positions in image px', () => {
+    const t = rulerTicks(150, 120, 1);
+    expect(t.map((x) => x.at)).toEqual([150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260]);
+    expect(t.map((x) => x.pos).slice(0, 3)).toEqual([0, 10, 20]);
+    expect(t.filter((x) => x.label).map((x) => x.at)).toEqual([150, 200, 250]);
+    expect(t.filter((x) => x.major).map((x) => x.at)).toEqual([150, 200, 250]);
   });
 
-  it('thins the numbers when ticks are close, never the ticks', () => {
+  it('ticks coarser and thins the numbers when zoomed out', () => {
     const t = rulerTicks(0, 3000, 0.25);
-    expect(t).toHaveLength(30);
-    const labelled = t.filter((x) => x.label).map((x) => x.at);
-    expect(labelled).toEqual([0, 500, 1000, 1500, 2000, 2500]);
+    expect(t).toHaveLength(60);
+    expect(t.filter((x) => x.label).map((x) => x.at)).toEqual([0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800]);
+    expect(rulerTicks(0, 3000, 0.05)).toHaveLength(30);
   });
 });
 

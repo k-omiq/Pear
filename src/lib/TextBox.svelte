@@ -43,7 +43,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, layoutLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
+  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
     strokeBands,
     rgba,
@@ -63,7 +63,7 @@
   } from './text-paint.js';
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
-  import { boxCandidate, placeBlock, blockReach } from './contain.js';
+  import { boxCandidate, placeBlock, blockReach, keptBreaks } from './contain.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
@@ -1142,13 +1142,13 @@
     if (layout || (editing && curved)) return null;
     // Invalidate breaks when fonts load.
     app.fontsVersion;
-    // Line breaking layout using box style dimensions and balloon fit.
-    return layoutLines(
-      applyCase(text, s),
-      s,
-      s.size,
-      contentWidth(box.w, s),
-      balloonWidthsFor(box, s, s.size),
+    // The lines an outline fit chose, while they are this text's, face's and
+    // size's (`brokenLines`); otherwise line breaking from the box's
+    // dimensions and balloon fit.
+    const cased = applyCase(text, s);
+    return (
+      brokenLines(cased, s, s.size, keptBreaks(box)) ??
+      layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size))
     );
   });
 

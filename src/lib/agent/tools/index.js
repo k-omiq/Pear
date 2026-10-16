@@ -7,3 +7,4 @@ import './edit.js';
 import './place.js';
 import './guide.js';
 import './settings.js';
+import './tag.js';

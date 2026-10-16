@@ -20,7 +20,7 @@
 // a partial or hand-edited group degrades to something both renderers can paint.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { normalizeStyle, defaultStyle, PATTERN_KINDS, openTypesetting, PLAIN_BREAKS, plainStyle } from './data.js';
+import { normalizeStyle, defaultStyle, PATTERN_KINDS, openTypesetting, PLAIN_BREAKS, plainStyle, normalizeAuto } from './data.js';
 import { parsePresets } from './presets.svelte.js';
 import { normalizeTranslations } from './importer.js';
 import { migrateEntry, migrateDoc } from './editor/history-file.svelte.js';
@@ -397,6 +397,38 @@ describe('a style written before strokes and shadows were lists', () => {
     expect(normalizeStyle({ shape: 'hexagon' }).shape).toBe('auto');
     expect(normalizeStyle({ shape: 3 }).shape).toBe('auto');
     expect(normalizeStyle({}).shape).toBe(defaultStyle().shape);
+  });
+
+  // `margin` turns on the outline fit. A style written before it has none, and
+  // must keep the older layout, so its boxes stay where they were.
+  it('reads a style with no margin as the older layout, and keeps one it wrote', () => {
+    expect(normalizeStyle(JSON.parse(ERA1_STYLE)).margin).toBeNull();
+    expect(normalizeStyle({}).margin).toBeNull();
+    expect(normalizeStyle({ margin: 0.5 }).margin).toBe(0.5);
+    expect(normalizeStyle({ margin: 0 }).margin).toBe(0);
+    expect(normalizeStyle({ margin: 9 }).margin).toBe(2);
+    expect(normalizeStyle({ margin: 'wide' }).margin).toBeNull();
+    expect(normalizeStyle({ margin: true }).margin).toBeNull();
+  });
+});
+
+// The solver record (`box.auto`) gained `breaks`, the line starts a
+// box holds to. A record from before it has none, and a broken one is dropped
+// rather than trusted.
+describe('a solver record from before kept line breaks', () => {
+  const OLD_AUTO = '{"on":true,"refSize":18,"locks":{"size":false,"width":false,"height":false,"pos":false},"status":"ok","reason":null,"stamp":"abc"}';
+  it('reads a record with no breaks as none, and no breaks lock', () => {
+    const a = normalizeAuto(JSON.parse(OLD_AUTO));
+    expect('breaks' in a).toBe(false);
+    expect(a.locks.breaks).toBe(false);
+    expect(a.refSize).toBe(18);
+  });
+  it('keeps breaks it wrote and drops ones it cannot use', () => {
+    const base = JSON.parse(OLD_AUTO);
+    expect(normalizeAuto({ ...base, breaks: { key: 'k1', at: [0, 4, 9] } }).breaks).toEqual({ key: 'k1', at: [0, 4, 9] });
+    for (const bad of [{ key: 'k', at: [4, 9] }, { key: 'k', at: [0, 9, 4] }, { key: '', at: [0] }, { at: [0] }, 'k', 3]) {
+      expect('breaks' in normalizeAuto({ ...base, breaks: bad })).toBe(false);
+    }
   });
 });
 

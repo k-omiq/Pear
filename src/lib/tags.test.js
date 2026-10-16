@@ -92,7 +92,7 @@ describe('stored registry', () => {
     expect(list[0].style.font).toBe('Bangers');
   });
   it('permits every lettering key and rejects geometry, transforms and unknown keys', () => {
-    const excluded = ['size', 'path', 'clip', 'ink', 'warp', 'circle', 'sfx', 'rotation', 'flipH', 'flipV', 'curve', 'shape', 'minOrphan', 'hyphenate', 'balloon', 'autoHeight'];
+    const excluded = ['size', 'path', 'clip', 'ink', 'warp', 'circle', 'sfx', 'rotation', 'flipH', 'flipV', 'curve', 'shape', 'minOrphan', 'hyphenate', 'margin', 'balloon', 'autoHeight'];
     expect(TAG_STYLE_KEYS).toEqual(Object.keys(defaultStyle()).filter((k) => !excluded.includes(k)));
     const t = sanitizeTagEntry({ name: 'test', style: { ...defaultStyle(), unknown: 12 }, minSize: 18 });
     expect(Object.keys(t.style)).toEqual(TAG_STYLE_KEYS);

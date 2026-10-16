@@ -348,6 +348,33 @@ describe('locks', () => {
     expect(aside.status).toBe('overflow');
   });
 
+  // The box's own rectangle as its outline ("Outline = box", the agent's
+  // outline_to_box), balloon layout off, the width and the position held: text
+  // too long for it overflows. The band its block must fit is the rectangle
+  // less its safety inset, and a best effort cut to that band, which a locked
+  // width keeps the ladder from growing back, was shorter than one line - and
+  // shorter again each time the outline was taken from the box, down to 2px.
+  it('a locked width never squeezes an overflowing box below its text', () => {
+    const s = style({ balloon: false });
+    const text = 'HELLO THERE HOW ARE YOU TODAY MY FRIEND';
+    let box = { x: 100, y: 100, w: 100, h: 30 };
+    for (let i = 0; i < 6; i++) {
+      const { x, y, w, h } = box;
+      const r = solveLayout({
+        text,
+        style: s,
+        refSize: 20,
+        region: { kind: 'poly', pts: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]] },
+        locks: { width: true, pos: true },
+        opts: { box, page: { w: 1000, h: 1500 }, minSize: 15 },
+      });
+      expect(r.status).toBe('overflow');
+      expect(r.w).toBe(100);
+      expect(r.h).toBeGreaterThanOrEqual(neededHeight(r.lines.length, { ...s, size: r.size }, textInset(s)) - 1e-6);
+      box = { x: r.x, y: r.y, w: r.w, h: r.h };
+    }
+  });
+
   it('locked breaks lock the size and the width', () => {
     const r = solve({ refSize: 40, locks: { breaks: true }, opts: { box, minSize: 12 } });
     expect(r.size).toBe(40);

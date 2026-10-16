@@ -1214,6 +1214,7 @@ const BULK_VALUES = () => ({
   shape: 'off',
   minOrphan: 6,
   hyphenate: false,
+  margin: 0.4,
   balloon: false,
   autoHeight: false,
   rotation: 25,
