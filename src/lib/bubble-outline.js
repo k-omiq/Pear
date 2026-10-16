@@ -576,12 +576,19 @@ function splitInterior(c, mask, neighbors) {
     }
   }
   keepBoxComponent(c, cut);
-  // Applying the same strict distance rule in both calls leaves a shared gap,
-  // even when a shallow join has no measurable cusp or neck.
-  for (let y = 0, p = 0; y < c.h; y++) for (let x = 0; x < c.w; x++, p++) {
-    if (!cut[p]) continue;
-    const d = (x - own[0]) ** 2 + (y - own[1]) ** 2;
-    for (const [nx, ny] of others) if (d >= (x - nx) ** 2 + (y - ny) ** 2) { cut[p] = 0; break; }
+  // The nearest-centre rule is the fallback for a neighbour the cut did not
+  // sever (a shallow join with no cusp or neck), as in Komatose's
+  // `split_interior`. Applied to a severed neighbour too, its straight
+  // bisector cut a second, diagonal line through a bubble the chord had
+  // already divided along its neck. The same strict rule in both calls
+  // leaves a shared gap.
+  const joined = others.filter(([x, y]) => at(c, cut, Math.floor(x), Math.floor(y)));
+  if (joined.length) {
+    for (let y = 0, p = 0; y < c.h; y++) for (let x = 0; x < c.w; x++, p++) {
+      if (!cut[p]) continue;
+      const d = (x - own[0]) ** 2 + (y - own[1]) ** 2;
+      for (const [nx, ny] of joined) if (d >= (x - nx) ** 2 + (y - ny) ** 2) { cut[p] = 0; break; }
+    }
   }
   return { mask: keepBoxComponent(c, cut), split: true };
 }
