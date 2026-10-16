@@ -82,4 +82,29 @@ it('leaves typing keys to the textarea and never offers to move a free row', asy
   await tick();
   expect(view.queryByRole('button', { name: 'Move up' })).toBeNull();
   expect(view.queryByRole('button', { name: 'Move down' })).toBeNull();
+  expect(view.queryByRole('textbox', { name: 'Source text' })).toBeNull();
+});
+
+it('keeps source and English field undo separate and shows collapsed source text', async () => {
+  const line = page().lines.find((l) => l.n === 2);
+  line.jp = '元の文';
+  page().lines[0].jp = '別の文';
+  const view = render(Queue);
+  await tick();
+  const source = view.getByRole('textbox', { name: 'Source text' });
+  const english = view.getByPlaceholderText('English…');
+  expect(source.rows).toBe(1);
+  expect(source.value).toBe('元の文');
+  expect(view.container.querySelector('.qrow:not(.editing) .qjp').textContent).toBe('別の文');
+
+  await fireEvent.input(source, { target: { value: '直した文' } });
+  await fireEvent.input(english, { target: { value: 'edited English' } });
+  await fireEvent.keyDown(source, { key: 'z', metaKey: true });
+  expect(line.jp).toBe('元の文');
+  expect(line.en).toBe('edited English');
+  await fireEvent.keyDown(source, { key: 'z', metaKey: true, shiftKey: true });
+  expect(line.jp).toBe('直した文');
+  await fireEvent.keyDown(english, { key: 'z', metaKey: true });
+  expect(line.en).toBe('beta');
+  expect(line.jp).toBe('直した文');
 });

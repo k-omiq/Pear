@@ -57,6 +57,7 @@ const {
   autoFitBox,
   autoFitBoxTo,
   setLineText,
+  setLineSource,
   settleEdits,
   flaggedBoxes,
   reviewBox,
@@ -1764,6 +1765,55 @@ describe('placement chooses the size (FIT-1)', () => {
       hist.redo();
       expect(ln.en).toBe('NO.');
       expect([...geomOf(b), { ...b.auto }]).toEqual(edited);
+    });
+
+    it('undoes a source typing burst without changing the English or box', () => {
+      hist.initHistory();
+      hist.resetHistory();
+      const b = placeAt(32);
+      const placed = geomOf(b);
+      const ln = page().lines[0];
+      const before = ln.jp;
+      const n = hist.peekStack().undo.length;
+
+      for (const v of ['元', '元の', '元の文']) setLineSource(page(), ln.n, v);
+      expect(app.saved).toBe(false);
+      settleEdits();
+      expect(hist.peekStack().undo.length).toBe(n + 1);
+      expect(hist.peekStack().undo.at(-1)).toEqual({
+        t: 'line', field: 'jp', pageId: page().id, lineN: ln.n,
+        before, after: '元の文', boxes: [],
+      });
+      expect(hist.undo()).toBe(true);
+      expect(ln.jp).toBe(before);
+      expect(ln.en).toBe(TEXT);
+      expect(geomOf(b)).toEqual(placed);
+      expect(hist.redo()).toBe(true);
+      expect(ln.jp).toBe('元の文');
+      expect(geomOf(b)).toEqual(placed);
+    });
+
+    it('settles each field before typing in the other field on the same line', () => {
+      hist.initHistory();
+      hist.resetHistory();
+      placeAt(32);
+      const ln = page().lines[0];
+      const before = ln.jp;
+      const n = hist.peekStack().undo.length;
+
+      setLineSource(page(), ln.n, 'first source');
+      setLineText(page(), ln.n, 'NO.');
+      setLineSource(page(), ln.n, 'second source');
+      settleEdits();
+      expect(hist.peekStack().undo.length).toBe(n + 3);
+      expect(hist.undo()).toBe(true);
+      expect(ln.jp).toBe('first source');
+      expect(ln.en).toBe('NO.');
+      expect(hist.undo()).toBe(true);
+      expect(ln.en).toBe(TEXT);
+      expect(ln.jp).toBe('first source');
+      expect(hist.undo()).toBe(true);
+      expect(ln.jp).toBe(before);
     });
 
     // With no balloon, a width set by hand is the box's, and a wider box gives

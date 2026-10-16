@@ -786,6 +786,7 @@ let lineT = null;
 export function setLineText(p, n, v) {
   const ln = p ? lineByN(p, n) : null;
   if (!ln) return;
+  settleSource();
   if (linePending && (linePending.lineN !== n || linePending.pageId !== p.id)) settleLine();
   linePending ??= { pageId: p.id, lineN: n, before: ln.en ?? '', geoms: lineBoxGeoms(p, n) };
   ln.en = v;
@@ -794,6 +795,36 @@ export function setLineText(p, n, v) {
   clearTimeout(lineT);
   lineT = setTimeout(settleLine, LINE_SETTLE_MS);
 }
+
+// Source edits have their own burst. Only the English is drawn, so these
+// record the words without fitting any boxes.
+let sourcePending = null;
+let sourceT = null;
+export function setLineSource(p, n, v) {
+  const ln = p ? lineByN(p, n) : null;
+  if (!ln) return;
+  settleLine();
+  if (sourcePending && (sourcePending.lineN !== n || sourcePending.pageId !== p.id)) settleSource();
+  sourcePending ??= { pageId: p.id, lineN: n, before: ln.jp ?? '' };
+  ln.jp = v;
+  markUnsaved();
+  clearTimeout(sourceT);
+  sourceT = setTimeout(settleSource, LINE_SETTLE_MS);
+}
+
+function settleSource() {
+  clearTimeout(sourceT);
+  const pend = sourcePending;
+  sourcePending = null;
+  if (!pend) return;
+  const pg = pageById(pend.pageId);
+  const ln = pg ? lineByN(pg, pend.lineN) : null;
+  if (!ln) return;
+  const after = ln.jp ?? '';
+  if (after === pend.before) return;
+  recordEdit({ t: 'line', field: 'jp', pageId: pend.pageId, lineN: pend.lineN, before: pend.before, after, boxes: [] });
+}
+
 // The page's note (TXT-7). A text field, so the field keeps its own undo while
 // it has focus, like the queue's textarea before its edit settles; the note is
 // not drawn, so nothing refits and the document history is not involved.
@@ -2921,8 +2952,9 @@ export function settleEdits() {
   // two lines and it fails.
   editSettleHooks.notify();
   // The queue's line burst is a panel's pending entry too, kept here since the
-  // store writes it (`setLineText`).
+  // store writes it (`setLineText`, `setLineSource`).
   settleLine();
+  settleSource();
   // The inline box edit is settled here rather than by each caller because this
   // is already what every path that would strand an unrecorded edit calls - the
   // page turn, the undo, the start of a drag, the way out of the chapter - and

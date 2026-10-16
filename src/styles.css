@@ -538,6 +538,7 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
   border:1px solid var(--line2); border-radius:6px; padding:6px 8px; font-family:inherit; font-size:12.5px; outline:none;
 }
 .qrow.editing textarea:focus{ border-color:var(--accent); }
+.qrow.editing textarea.qjp{ field-sizing:content; min-height:0; white-space:pre-wrap; font-size:10.5px; color:var(--t2); }
 
 /* Tag picker - four slots along the top of the editing row: the two most recent
    tags, the pen that makes a new one, and the caret onto the full history. */

@@ -20,6 +20,7 @@
     isFreeLine,
     addTextBoxInView,
     setLineText,
+    setLineSource,
     setLineSpeaker,
     setPageNote,
     isTranslateMode,
@@ -89,9 +90,11 @@
     if (focused) (button.disabled ? button.closest('.qrow') : button)?.focus({ preventScroll: true });
   }
 
-  // Undo/redo for translation textarea.
+  // Undo/redo for each text field.
   const fieldUndo = createFieldUndo();
+  const sourceUndo = createFieldUndo();
   let fieldOwner = null;
+  let sourceOwner = null;
 
   $effect(() => {
     const activeLine = p.lines.find((l) => l.n === p.activeLineN);
@@ -103,25 +106,36 @@
     resyncField(fieldUndo, v);
   });
 
-  // The translation textarea writes through the store (`setLineText`), which
-  // fits the line's boxes and records one `line` entry per typing burst for the
-  // toolbar undo; the field's own Cmd+Z stack covers the keystrokes.
-  function onTextareaInput(e, line) {
+  $effect(() => {
+    const activeLine = p.lines.find((l) => l.n === p.activeLineN);
+    const key = activeLine ?? null;
+    const v = activeLine?.jp ?? '';
+    if (key === sourceOwner && v === sourceUndo.stack[sourceUndo.i]) return;
+    sourceOwner = key;
+    resyncField(sourceUndo, v);
+  });
+
+  // Both fields write through the store for the toolbar's burst undo; each
+  // field's own Cmd+Z stack covers its keystrokes. Only English fits boxes.
+  function onTextareaInput(e, line, field = 'en') {
     const v = e.currentTarget.value;
-    setLineText(p, line.n, v);
-    recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(e.inputType) });
+    if (field === 'jp') setLineSource(p, line.n, v);
+    else setLineText(p, line.n, v);
+    recordFieldEdit(field === 'jp' ? sourceUndo : fieldUndo, v, { atomic: isAtomicInput(e.inputType) });
   }
 
-  function onTextareaKey(e, line) {
+  function onTextareaKey(e, line, field = 'en') {
     if (!(e.metaKey || e.ctrlKey) || (e.key !== 'z' && e.key !== 'Z')) return;
     e.preventDefault();
-    const next = e.shiftKey ? redoField(fieldUndo) : undoField(fieldUndo);
+    const u = field === 'jp' ? sourceUndo : fieldUndo;
+    const next = e.shiftKey ? redoField(u) : undoField(u);
     if (next == null) return;
     const el = e.currentTarget;
     const caret = caretAfter(el.value, next);
     el.value = next;
     el.setSelectionRange(caret, caret);
-    setLineText(p, line.n, next);
+    if (field === 'jp') setLineSource(p, line.n, next);
+    else setLineText(p, line.n, next);
   }
 
   // Translate mode disables canvas box placement and status indicators.
@@ -459,7 +473,17 @@
               </select>
             </span>
           {/if}
-          {#if line.jp}<span class="qjp">{line.jp}</span>{/if}
+          {#if !free}
+            <textarea
+              class="qjp"
+              rows="1"
+              placeholder="Source…"
+              aria-label="Source text"
+              value={line.jp ?? ''}
+              oninput={(e) => onTextareaInput(e, line, 'jp')}
+              onkeydown={(e) => onTextareaKey(e, line, 'jp')}
+            ></textarea>
+          {/if}
           <!-- The series terms in this line's source (TXT-2): lit when the
                English has the term's target, marked when it does not. -->
           {#if hits.length}
