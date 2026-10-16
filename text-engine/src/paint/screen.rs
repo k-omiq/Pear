@@ -611,10 +611,15 @@ impl<'a> ScreenShader<'a> {
             let h = tile.height as f64;
             let step = (a * w).hypot(b * h).max((c * w).hypot(d * h));
             (step - 0.25).ceil().clamp(1.0, 8.0) as u32
-        } else if s.kind == 255 || footprint <= 0.25 {
+        } else if s.kind == 255 || footprint <= 0.1 {
             1
         } else {
-            (footprint * 4.0).ceil().clamp(2.0, 8.0) as u32
+            // A cell under ten device pixels: its edges are a large share of
+            // it, and one filtered sample a pixel reads a dot a little smaller
+            // or bigger than the pixel's true average (measured 3 levels in
+            // a fully inked pixel at 1x against 3x averaged down, where the
+            // old tile was 1). Two by two closes that; finer cells take more.
+            (footprint * 8.0).ceil().clamp(2.0, 8.0) as u32
         };
         Some(Self {
             screen: s.clone(),
