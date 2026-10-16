@@ -1677,7 +1677,7 @@ fn a_runs_scale_and_skew_are_read_and_their_range_is_checked() {
     let mut old = good.clone();
     old[4] = 6;
     assert_eq!(decode(&old).err(), Some(Error::BadSpec));
-    assert_eq!(WIRE_VERSION, 7);
+    assert_eq!(WIRE_VERSION, 8);
 }
 
 #[test]
