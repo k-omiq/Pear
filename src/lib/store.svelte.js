@@ -161,10 +161,12 @@ const idNum = (id) => (typeof id === 'string' && /^b\d+$/.test(id) ? Number(id.s
 // never said that.
 //
 // `speaker` (TXT-6) is a character id from the series glossary; anything but a
-// non-empty string is no speaker.
+// non-empty string is no speaker. A `jp` that is not a string is no source:
+// the checks and the queue read it as text.
 function sanitizeLine(l) {
   const out = { ...l };
   if (l?.placed) out.placed = true;
+  if (out.jp != null && typeof out.jp !== 'string') delete out.jp;
   if (typeof out.speaker !== 'string' || !out.speaker) delete out.speaker;
   delete out.speakerName;
   if (!Array.isArray(l?.tags)) {
@@ -845,6 +847,9 @@ export function setLineSpeaker(p, n, id) {
   const before = ln.speaker ?? null;
   const after = typeof id === 'string' && id ? id : null;
   if (before === after) return;
+  // Typing still in its burst is recorded first, so undo takes this back first.
+  settleLine();
+  settleSource();
   if (after) ln.speaker = after;
   else delete ln.speaker;
   recordEdit({ t: 'line', field: 'speaker', pageId: p.id, lineN: n, before, after, boxes: [] });
@@ -1387,11 +1392,12 @@ export function flaggedBoxes(pages = app.pages) {
 export const CHECK_REASONS = ['overflow', 'open', 'outline', 'stale', 'empty', 'font', 'glossary', 'rules', 'english', 'unplaced'];
 
 // What a line's text breaks of the series guide, as check items less their
-// place. Read off the guide as it stands, so editing a term re-checks.
-function lineTextChecks(line) {
+// place. Read off the guide as it stands, so editing a term re-checks. `en` is
+// what the reader sees: the line's boxes' text when it has boxes (one edited on
+// the canvas keeps its own), else the line's English.
+function lineTextChecks(line, en = lineText(line)) {
   const out = [];
   if (!line) return out;
-  const en = lineText(line);
   const misses = glossaryMisses(line.jp, en, guide.glossary);
   if (misses.length) out.push({ reason: 'glossary', terms: misses.map((t) => t.target) });
   const breaks = ruleBreaks(en, guide.rules);
@@ -1404,6 +1410,14 @@ export function pageCheckItems(pg, pageIndex = app.pages.indexOf(pg)) {
   if (!pg) return out;
   const pageId = pg.id;
   const lines = new Map((pg.lines ?? []).map((l) => [l.n, l]));
+  // A line split over several boxes is read as all of them, so a term in the
+  // second box counts as used.
+  const shown = new Map();
+  for (const b of pg.boxes ?? []) {
+    if (b.lineN == null) continue;
+    const t = String(boxText(b, pg) ?? '');
+    shown.set(b.lineN, shown.has(b.lineN) ? `${shown.get(b.lineN)} ${t}` : t);
+  }
   const boxed = new Set();
   (pg.boxes ?? []).forEach((b, slot) => {
     const at = { pageId, pageIndex, slot, boxId: b.id };
@@ -1419,7 +1433,7 @@ export function pageCheckItems(pg, pageIndex = app.pages.indexOf(pg)) {
     if (typeof font === 'string' && font && fontMissing(font)) out.push({ ...at, reason: 'font', font });
     if (b.lineN != null && !boxed.has(b.lineN)) {
       boxed.add(b.lineN);
-      for (const c of lineTextChecks(lines.get(b.lineN))) out.push({ ...at, lineN: b.lineN, ...c });
+      for (const c of lineTextChecks(lines.get(b.lineN), shown.get(b.lineN))) out.push({ ...at, lineN: b.lineN, ...c });
     }
   });
   const n = pg.boxes?.length ?? 0;
@@ -1429,7 +1443,7 @@ export function pageCheckItems(pg, pageIndex = app.pages.indexOf(pg)) {
     if (!l || boxed.has(l.n)) continue;
     const at = { pageId, pageIndex, slot, lineN: l.n };
     const text = lineTextChecks(l);
-    if (!isFreeLine(l) && l.jp?.trim() && !lineText(l).trim()) text.push({ reason: 'english' });
+    if (!isFreeLine(l) && l.jp?.trim() && !String(lineText(l) ?? '').trim()) text.push({ reason: 'english' });
     if (!text.length && !placeable.has(l.n)) continue;
     for (const c of text) out.push({ ...at, ...c });
     if (placeable.has(l.n)) out.push({ ...at, reason: 'unplaced' });

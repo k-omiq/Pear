@@ -431,12 +431,12 @@ function bindProjectSeries(p) {
   bindGuide(p.guide, (next) => saveProjectGuide(p, next));
 }
 
-// The speakers an imported translations file names, made into the series'
-// character ids (TXT-6), page by page. A name the series has no character for
-// is added to its glossary - in memory here; the caller's project.json write
-// carries it (chapter creation writes the record anyway, a re-import queues
-// one). The live guide is re-bound when this is the open project. Returns the
-// pages with their lines resolved, and whether the guide changed.
+// The speakers an imported file names (`speakerName`, see importer.js), made
+// into the series' character ids (TXT-6), page by page. A name the series has
+// no character for becomes a new character. Nothing is changed here: returns
+// the pages with their lines resolved, and the series' glossary with the new
+// characters added, or null when there are none - for `adoptCharacters` once
+// the caller's own write has landed.
 function resolveSpeakers(p, pages) {
   let glossary = p.guide?.glossary ?? [];
   let changed = false;
@@ -449,11 +449,17 @@ function resolveSpeakers(p, pages) {
     }
     return { ...pg, lines };
   });
-  if (changed) {
-    p.guide = { ...(p.guide ?? sanitizeGuide(null)), glossary };
-    if (app.chapterRef?.projectId === p.id) bindProjectSeries(p);
-  }
-  return { pages: out, changed };
+  return { pages: out, glossary: changed ? glossary : null };
+}
+
+// Puts the characters `resolveSpeakers` made into the series, in memory; the
+// caller's project.json write carries them. The live guide is re-bound when
+// this is the open project.
+function adoptCharacters(p, glossary) {
+  if (!glossary) return false;
+  p.guide = { ...(p.guide ?? sanitizeGuide(null)), glossary };
+  if (app.chapterRef?.projectId === p.id) bindProjectSeries(p);
+  return true;
 }
 
 // A tag entry for `name` in `projectId`'s registry, or null. The package flow
@@ -950,7 +956,7 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
     // disk for whatever else is watching that folder. Written unconditionally -
     // it is one small file and "there is always one beside chapter.json" is a
     // simpler promise than "there is one once there were lines".
-    await writeTranslationsJson(dir, buildTextJson(pages));
+    await writeTranslationsJson(dir, buildTextJson(pages, p.guide?.glossary ?? []));
 
     const chapter = {
       id: record.id,
@@ -1062,7 +1068,11 @@ export async function createChapter({
   const orderedCleaned = [...(cleanedFiles ?? [])].sort(naturalSort);
   // Speakers named in the file become character ids; any new character
   // reaches project.json with the record write chapter creation makes.
-  if (translations) translations = resolveSpeakers(p, translations).pages;
+  if (translations) {
+    const r = resolveSpeakers(p, translations);
+    translations = r.pages;
+    adoptCharacters(p, r.glossary);
+  }
 
   return buildChapter(p, number, title, async (dir, cover) => {
     const rawsDir = await fsx.join(dir, 'raws');
@@ -1127,7 +1137,7 @@ export async function createChapter({
 // bytes the caller has already encoded. The dialog says so before importing.
 //
 // Each input page: { rawName, rawBytes, cleanedName, cleanedBytes, w, h,
-// lines, boxes, detect }. A page with no raster or missing/invalid file name
+// lines, boxes, detect, note }. A page with no raster or missing/invalid file name
 // is not accepted - it would persist with an empty or unresolvable `file`,
 // unrenderable and impossible to remove.
 export async function createChapterFromPages({ projectId, number, title, pages: input, mode = 'typeset', typesetting }) {
@@ -1158,6 +1168,11 @@ export async function createChapterFromPages({ projectId, number, title, pages: 
   ) {
     throw new Error('A cleaned page arrived with no file name');
   }
+  // A package names its speakers (exportChapterPackage); they become this
+  // series' characters, by name, like an imported translations file's.
+  const speakers = resolveSpeakers(p, input);
+  input = speakers.pages;
+  adoptCharacters(p, speakers.glossary);
 
   return buildChapter(p, number, title, async (dir, cover) => {
     const rawsDir = await fsx.join(dir, 'raws');
@@ -1188,6 +1203,7 @@ export async function createChapterFromPages({ projectId, number, title, pages: 
         lines: src.lines ?? [],
         detect: src.detect ?? null,
         boxes: src.boxes ?? [],
+        ...(typeof src.note === 'string' && src.note ? { note: src.note } : null),
       });
       if (i === 0) await cover.offer(src.cleanedBytes ?? src.rawBytes);
     }
@@ -1388,7 +1404,7 @@ export async function readChapterPackageSources(projectId, chapterId) {
   try {
     translations = await fsx.readTextFile(await fsx.join(c.dir, 'translations.json'));
   } catch {
-    translations = buildTextJson(record.pages ?? []);
+    translations = buildTextJson(record.pages ?? [], p?.guide?.glossary ?? []);
   }
   return {
     record,
@@ -1416,7 +1432,9 @@ export async function readChapterPackageSources(projectId, chapterId) {
 // already landed would unlink the images the new record names. So the derived
 // file is written while a failure is still harmless, and chapter.json - the
 // only copy of anything - is the last thing to commit.
-async function commitPages(c, path, record, pages) {
+// `terms` names the speakers in translations.json: the chapter's own series'
+// glossary unless the caller has one about to land.
+async function commitPages(c, path, record, pages, terms = null) {
   // The last check before anything is written, and the one that matters: the
   // one at the top of the caller was made before the file dialog, the copies and
   // the decodes, and the chapter can have been opened in every one of those
@@ -1430,7 +1448,8 @@ async function commitPages(c, path, record, pages) {
   const at = Date.now();
   record.updatedAt = new Date(Number.isFinite(previous) ? Math.max(at, previous + 1) : at).toISOString();
   record.pages = pages;
-  await writeTranslationsJson(c.dir, buildTextJson(pages));
+  const owner = terms ? null : library.projects.find((q) => q.chapters.includes(c));
+  await writeTranslationsJson(c.dir, buildTextJson(pages, terms ?? owner?.guide?.glossary ?? []));
   await writeJson(path, record);
   c.updatedAt = record.updatedAt;
   c.pageCount = pages.length;
@@ -1854,9 +1873,6 @@ export const applyTranslations = guarded(async function applyTranslations(
   const record = JSON.parse(chapterText);
   const before = await requireSnapshot(c.dir, chapterText, record, 'before-translations');
   const pages = record.pages ?? [];
-  const resolved = resolveSpeakers(projectById(projectId), parsed);
-  parsed = resolved.pages;
-  if (resolved.changed) queueSeriesWrite(projectById(projectId), 'the new characters');
   const covered = Math.min(parsed.length, pages.length);
   let filled = 0;
   const next = pages.map((pg, i) => {
@@ -1873,7 +1889,13 @@ export const applyTranslations = guarded(async function applyTranslations(
     for (const l of parsed[i].lines) if (!existing.has(l.n)) lines.push(l);
     return { ...pg, lines };
   });
-  await commitPages(c, path, record, next);
+  // Speakers by name become character ids only for the lines that landed, so
+  // a fill that keeps a line's English adds no character for it, and the
+  // characters reach the series only once the chapter is written.
+  const p = projectById(projectId);
+  const resolved = resolveSpeakers(p, next);
+  await commitPages(c, path, record, resolved.pages, resolved.glossary);
+  if (adoptCharacters(p, resolved.glossary)) queueSeriesWrite(p, 'the new characters');
   sourceUndos.set(chapterId, before);
 
   // A box placed from the queue carries no text of its own - it renders

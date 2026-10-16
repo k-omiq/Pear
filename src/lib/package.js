@@ -224,6 +224,7 @@ export function packagePagesForImport(pkg) {
     lines: pg.lines ?? [],
     detect: pg.detect ?? null,
     boxes: pg.boxes ?? [],
+    note: typeof pg.note === 'string' ? pg.note : '',
   }));
 }
 

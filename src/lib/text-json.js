@@ -9,7 +9,7 @@
 // and exporter.js re-exports `buildTextJson` - one serialiser, one file format,
 // no second copy to drift.
 import { lineText } from './store.svelte.js';
-import { termById } from './guide.svelte.js';
+import { guide } from './guide.svelte.js';
 
 // One page → the detected/typeset text plus the geometry it came from. `jp` is
 // the OCR'd source text, `en` the translation you typed (or that came in via a
@@ -17,12 +17,15 @@ import { termById } from './guide.svelte.js';
 // `placed` is where the line's text box actually sits on the page, when one has
 // been placed. Free-typed boxes (no detected line behind them) are listed
 // separately so nothing typeset is lost.
-export function serializePageText(p) {
+// `terms` is the series glossary that names the speakers: the open series' by
+// default, the chapter's own series when a closed chapter is written.
+export function serializePageText(p, terms = guide.glossary) {
   const geom = new Map((p.detect?.boxes ?? []).map((d) => [d.n, d]));
   const placedFor = (n) => {
     const b = (p.boxes ?? []).find((x) => x.lineN === n);
     return b ? { x: b.x, y: b.y, w: b.w, h: b.h } : null;
   };
+  const speakerOf = (l) => (l.speaker ? ((terms ?? []).find((t) => t.id === l.speaker)?.target ?? null) : null);
   return {
     page: p.id,
     // `null`, never a stand-in. A page nobody has measured is stored `w:0,h:0`
@@ -55,9 +58,8 @@ export function serializePageText(p) {
         ...(Array.isArray(l.tags) ? { tags: l.tags.slice() } : null),
         // The speaker by name (TXT-6), which is what the importer reads back
         // and what a translator's tooling can use; the id means nothing
-        // outside this series. Left out when the open series has no such
-        // character (a chapter of another project being packaged).
-        ...(termById(l.speaker)?.target ? { speaker: termById(l.speaker).target } : null),
+        // outside this series. Left out when the series has no such character.
+        ...(speakerOf(l) ? { speaker: speakerOf(l) } : null),
         jp: l.jp ?? '',
         en: lineText(l),
         box: g?.box ?? null,
@@ -75,9 +77,9 @@ export function serializePageText(p) {
 
 // The whole export scope as one JSON document. The `pages` shape is exactly what
 // the JSON importer accepts, so an exported file re-imports cleanly.
-export function buildTextJson(pages) {
+export function buildTextJson(pages, terms = guide.glossary) {
   return JSON.stringify(
-    { schema: 1, generator: 'manga-typesetter', pages: pages.map(serializePageText) },
+    { schema: 1, generator: 'manga-typesetter', pages: pages.map((p) => serializePageText(p, terms)) },
     null,
     2,
   );

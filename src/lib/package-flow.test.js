@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { recordForExport } from './package-flow.js';
+import { recordForExport, withSpeakerNames } from './package-flow.js';
 import { setLegacyTypeset, legacyTypesetting } from './data.js';
 
 describe('recordForExport', () => {
@@ -53,5 +53,14 @@ describe('recordForExport', () => {
 
     const recordCustomVersion = { id: 'c3', typesetting: { mode: 'smart', version: 2 } };
     expect(recordForExport(recordCustomVersion).typesetting).toEqual({ mode: 'smart', version: 2 });
+  });
+});
+
+describe('withSpeakerNames', () => {
+  it('names each known speaker beside its id, and leaves the source record alone', () => {
+    const record = { pages: [{ lines: [{ n: 1, speaker: 'mk' }, { n: 2, speaker: 'gone' }, { n: 3 }] }] };
+    const out = withSpeakerNames(record, [{ id: 'mk', target: 'Makoto' }]);
+    expect(out.pages[0].lines).toEqual([{ n: 1, speaker: 'mk', speakerName: 'Makoto' }, { n: 2, speaker: 'gone' }, { n: 3 }]);
+    expect(record.pages[0].lines[0].speakerName).toBeUndefined();
   });
 });
