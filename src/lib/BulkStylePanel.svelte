@@ -13,6 +13,7 @@ import {
   tickBulkProp,
   bulkTicked,
   lockBulkTargets,
+  applyTagStyleToChapter,
 } from './store.svelte.js';
   import { tagsInUse, boxesWithTag } from './tags.svelte.js';
   import { modKey } from './format.js';
@@ -437,7 +438,12 @@ import {
           {:else if !tag}
             Choose a tag to select every box carrying it in {scopeWord}, or click boxes on the page.
           {:else}
-            Selected {tagHits} box{tagHits === 1 ? '' : 'es'} tagged “{tag}” in {scopeWord} - press Apply below.
+            Selected {tagHits} box{tagHits === 1 ? '' : 'es'} tagged “{tag}” in {scopeWord} - press Apply below,
+            or give them the tag's own style:
+            <!-- LET-1: every box of the tag takes the tag's style (all but
+                 geometry, transforms, size and line breaking), one undo step
+                 per page. Nothing in the template above is used. -->
+            <button class="rbtn bulk-tagstyle" disabled={!tagHits} onclick={() => { if (applyTagStyleToChapter(tag, scopePages)) closeBulk(); }}>Apply tag style</button>
             {#if !ticked}
               <br />Tick a property below first - nothing is set to change.
             {/if}
@@ -949,5 +955,9 @@ import {
   .sub-del { width: 22px; height: 22px; border: 1px solid var(--line2); background: transparent; color: var(--t2); border-radius: 4px; cursor: pointer; display: grid; place-items: center; font-size: 14px; line-height: 1; flex: 0 0 auto; }
   .sub-del:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
   .sub-del:disabled { opacity: 0.3; cursor: not-allowed; }
+  .bulk-tagstyle {
+    margin-top: 4px;
+    height: 26px;
+  }
 </style>
 

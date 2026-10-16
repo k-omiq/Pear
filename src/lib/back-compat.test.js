@@ -958,8 +958,7 @@ describe('a chapter laid out under the old chapter switch', () => {
 });
 
 describe('a tags blob from the last release', () => {
-  // Tags still persist an outline as one colour and one width - that half of the
-  // format has not moved, and this is the fixture that says so.
+  // An older registry stored an outline as one colour and one width.
   const ERA2_TAGS = `{"list":[
     {"name":"shout","font":"Bangers","outline":"#ff0000","outlineWidth":6},
     {"name":"whisper","font":null,"outline":null,"outlineWidth":null}
@@ -975,6 +974,52 @@ describe('a tags blob from the last release', () => {
     expect(styled.strokes).toEqual([{ color: '#ff0000', width: 6, opacity: 1 }]);
     // A tag that names nothing changes nothing.
     expect(tags.styleForLine({ n: 2, tags: ['whisper'] }, base).strokes).toEqual(base.strokes);
+  });
+});
+
+describe('a project tag registry from before tag styles', () => {
+  const OLD_TAGS = '[{"name":"sfx","font":"Bangers","outline":"#ffffff","outlineWidth":4,"size":60},{"name":"narration","font":null,"outline":null,"outlineWidth":null,"size":null}]';
+
+  afterEach(async () => {
+    const { unbindTags } = await import('./tags.svelte.js');
+    unbindTags();
+    const { setInheritBoxStyle } = await import('./store.svelte.js');
+    setInheritBoxStyle(true);
+  });
+
+  it('migrates the registry and gives a placed line its old font and stroke', async () => {
+    const { bindTags, tags } = await import('./tags.svelte.js');
+    const { app, loadProjectPages, placeActiveAt } = await import('./store.svelte.js');
+    bindTags(OLD_TAGS);
+    expect(tags.list).toEqual([
+      { name: 'sfx', style: { font: 'Bangers', strokes: [{ color: '#ffffff', width: 4, opacity: 1 }] }, size: 60, minSize: null },
+      { name: 'narration', style: {}, size: null, minSize: null },
+    ]);
+    app.chapterRef = null;
+    app.lastStyle = defaultStyle();
+    loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [{ n: 1, en: 'BOOM', tags: ['sfx'] }], boxes: [] }]);
+    placeActiveAt(200, 200);
+    expect(app.pages[0].boxes[0].style).toMatchObject({ font: 'Bangers', strokes: [{ color: '#ffffff', width: 4, opacity: 1 }], size: 60 });
+  });
+
+  it('places narration after sfx with its whole patch whatever the last box was', async () => {
+    const { bindTags } = await import('./tags.svelte.js');
+    const { app, loadProjectPages, placeActiveAt, activateLine, cloneStyle, setInheritBoxStyle } = await import('./store.svelte.js');
+    bindTags({ list: [
+      { name: 'sfx', style: { font: 'Bangers', italic: false, color: '#ff0000' } },
+      { name: 'narration', style: { font: 'Comic Neue', italic: true, color: '#123456' } },
+    ] });
+    app.chapterRef = null;
+    app.lastStyle = defaultStyle();
+    setInheritBoxStyle(true);
+    loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [{ n: 1, en: 'BOOM', tags: ['sfx'] }, { n: 2, en: 'Later that day', tags: ['narration'] }], boxes: [] }]);
+    placeActiveAt(200, 200);
+    const first = app.pages[0].boxes[0];
+    expect(first.style).toMatchObject({ font: 'Bangers', italic: false, color: '#ff0000' });
+    app.lastStyle = cloneStyle(first.style);
+    activateLine(2);
+    placeActiveAt(400, 400);
+    expect(app.pages[0].boxes[1].style).toMatchObject({ font: 'Comic Neue', italic: true, color: '#123456' });
   });
 });
 

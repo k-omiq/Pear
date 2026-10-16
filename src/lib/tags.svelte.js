@@ -1,6 +1,6 @@
 // ===== Tags =====
 // A tag is a name the user puts on a queued line - `sfx`, `narration`, whatever
-// else they invent - plus an optional default font, outline and font size that a
+// else they invent - plus a style patch, reference size and minimum size that a
 // box picks up at the moment it is placed.
 //
 // Two halves, deliberately kept apart, because they persist in different places
@@ -20,10 +20,12 @@
 //                     The remembered font size per tag lives beside it, for the
 //                     same reason - "sfx is about 60 in this series".
 //
-// This module imports nothing. Not the store, not the filesystem - the functions
-// that touch the document take the pages they work on as an argument, which is
-// also what makes the whole model testable in node. The store imports *this*,
+// This module imports only the style schema in data.js, never the store or
+// filesystem. Functions that touch the document take pages as an argument,
+// which also makes the whole model testable in node. The store imports *this*,
 // for the one thing that has to happen inside placement.
+
+import { defaultStyle, normalizeStyle } from './data.js';
 
 // Every write here is a discrete click - created a tag, edited a tag, applied a
 // tag - never a drag or a key repeat, so there is nothing to coalesce: each one
@@ -69,6 +71,52 @@ export const tags = $state({ list: [], sizes: {} });
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const okSize = (v) => (isNum(v) && v > 0 ? v : null);
 
+// What a tag's style patch may hold (LET-1): any style key but these.
+// Geometry and transforms belong to the box, even when its lettering comes
+// from a tag - a path, a clip, ink, a warp mesh or an SFX recipe were drawn
+// for one box's text, and a rotation for one balloon. Size has its own
+// reference and floor beside the patch. And the five line-breaking keys are
+// the typesetting defaults' (Settings, or the series' override, FLOW-13): a
+// tag saved off a box laid out plain would otherwise turn the smart breaker
+// off for every later box of the tag without anyone choosing that.
+const BOX_STYLE_KEYS = new Set([
+  'size', 'path', 'clip', 'ink', 'warp', 'circle', 'sfx', 'rotation', 'flipH', 'flipV', 'curve',
+  'shape', 'minOrphan', 'hyphenate', 'balloon', 'autoHeight',
+]);
+export const TAG_STYLE_KEYS = Object.keys(defaultStyle()).filter((k) => !BOX_STYLE_KEYS.has(k));
+const isPatch = (v) =>
+  v != null && typeof v === 'object' &&
+  (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+
+function sanitizeTagStyle(style) {
+  if (!isPatch(style)) return {};
+  const picked = {};
+  for (const k of TAG_STYLE_KEYS) if (Object.hasOwn(style, k)) picked[k] = $state.snapshot(style[k]);
+  const vetted = normalizeStyle({ ...defaultStyle(), ...picked });
+  return Object.fromEntries(Object.keys(picked).map((k) => [k, vetted[k]]));
+}
+
+// One entry, stored or carried in a package. The migration is a read-time
+// one, like the line tags': an entry written before tags held a style has
+// `font`, `outline` and `outlineWidth` instead, and reads as the patch those
+// meant - the font, and the outline as the whole stroke list (a width of 0 is
+// "no outline"). Nothing rewrites the file; the next registry write saves the
+// new shape. An entry that has a `style` ignores the old fields.
+export function sanitizeTagEntry(e) {
+  const name = normalizeTagName(e && typeof e === 'object' ? e.name : e);
+  if (!name) return null;
+  let style = e?.style;
+  if (!isPatch(style)) {
+    style = {};
+    if (typeof e?.font === 'string' && e.font !== '') style.font = e.font;
+    if (e?.outline != null || e?.outlineWidth != null) {
+      const width = e.outlineWidth ?? 3;
+      style.strokes = width <= 0 ? [] : [{ color: e.outline ?? '#ffffff', width, opacity: 1 }];
+    }
+  }
+  return { name, style: sanitizeTagStyle(style), size: okSize(e?.size), minSize: okSize(e?.minSize) };
+}
+
 // A stored registry is a preference of the least important kind, so the same rule
 // as the panel geometry applies: anything that does not parse, or does not carry
 // the right types, is dropped rather than coerced. An entry survives only if its
@@ -83,20 +131,14 @@ export function sanitizeTags(stored) {
       raw = null;
     }
   }
-  const arr = Array.isArray(raw?.list) ? raw.list : [];
+  const arr = Array.isArray(raw) ? raw : Array.isArray(raw?.list) ? raw.list : [];
   const out = [];
   const seen = new Set();
   for (const e of arr) {
-    const name = normalizeTagName(e && typeof e === 'object' ? e.name : e);
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    out.push({
-      name,
-      font: typeof e?.font === 'string' && e.font !== '' ? e.font : null,
-      outline: typeof e?.outline === 'string' && e.outline !== '' ? e.outline : null,
-      outlineWidth: isNum(e?.outlineWidth) ? e.outlineWidth : null,
-      size: okSize(e?.size),
-    });
+    const entry = sanitizeTagEntry(e);
+    if (!entry || seen.has(entry.name)) continue;
+    seen.add(entry.name);
+    out.push(entry);
   }
   return out;
 }
@@ -114,8 +156,8 @@ export function sanitizeTagSizes(raw) {
 // The registry is bound to the open project by the library, which is the one
 // module that knows where project.json is: `stored` is `{ list, sizes }` off the
 // project record and `save` is called with the same shape after every write.
-// This module still imports nothing. With no project open the registry is empty
-// and writes go nowhere, which is what `unbindTags` puts it back to.
+// With no project open the registry is empty and writes go nowhere, which is
+// what `unbindTags` puts it back to.
 let saver = null;
 
 export function bindTags(stored, save = null) {
@@ -171,13 +213,7 @@ export function touchTag(name, defaults = null) {
   const n = normalizeTagName(name);
   if (!n) return null;
   const found = findTag(n);
-  const entry = found ?? {
-    name: n,
-    font: defaults?.font ?? null,
-    outline: defaults?.outline ?? null,
-    outlineWidth: isNum(defaults?.outlineWidth) ? defaults.outlineWidth : null,
-    size: okSize(defaults?.size),
-  };
+  const entry = found ?? sanitizeTagEntry({ name: n, style: defaults?.style, size: defaults?.size, minSize: defaults?.minSize });
   if (!found) seedSize(n, null, entry.size);
   tags.list = [entry, ...tags.list.filter((t) => t.name !== n)];
   save();
@@ -206,10 +242,8 @@ export function createTag(name, defaults = null) {
 export function updateTag(name, patch = {}) {
   const t = findTag(normalizeTagName(name));
   if (!t) return null;
-  if (patch.font !== undefined) t.font = typeof patch.font === 'string' && patch.font !== '' ? patch.font : null;
-  if (patch.outline !== undefined)
-    t.outline = typeof patch.outline === 'string' && patch.outline !== '' ? patch.outline : null;
-  if (patch.outlineWidth !== undefined) t.outlineWidth = isNum(patch.outlineWidth) ? patch.outlineWidth : null;
+  if (patch.style !== undefined) t.style = sanitizeTagStyle(patch.style);
+  if (patch.minSize !== undefined) t.minSize = okSize(patch.minSize);
   if (patch.size !== undefined) {
     const size = okSize(patch.size);
     seedSize(t.name, t.size, size);
@@ -231,13 +265,7 @@ export function saveTagDefaults(name, defaults = {}) {
   const n = normalizeTagName(name);
   if (!n) return null;
   if (findTag(n)) return updateTag(n, defaults);
-  const entry = {
-    name: n,
-    font: typeof defaults.font === 'string' && defaults.font !== '' ? defaults.font : null,
-    outline: typeof defaults.outline === 'string' && defaults.outline !== '' ? defaults.outline : null,
-    outlineWidth: isNum(defaults.outlineWidth) ? defaults.outlineWidth : null,
-    size: okSize(defaults.size),
-  };
+  const entry = sanitizeTagEntry({ name: n, style: defaults.style, size: defaults.size, minSize: defaults.minSize });
   seedSize(n, null, entry.size);
   tags.list = [...tags.list, entry];
   save();
@@ -269,38 +297,49 @@ export function deleteTag(name) {
 }
 
 // ---------- the settings form's two halves ----------
-// Seeding the form from an entry, and reading the entry back out of it. They
-// live here rather than in the queue because they are one round trip and their
-// bug was a disagreement between them: the form seeded its outline switch from
-// `outline` alone, while `sanitizeTags` vets `outline` and `outlineWidth`
-// independently - so an entry holding a width and no colour (which is exactly
-// what a stored entry with a bad colour sanitises down to) opened with the
-// switch off, and Save wrote the width away.
+// Seeding the form from an entry, and reading the entry back out of it. One
+// round trip, kept here so the queue and Settings cannot disagree about it.
+// The form edits only the font and the outline (the first stroke); a style
+// saved off a box ("Save as tag style") holds much more, and every other key
+// of the patch survives a save untouched - `extra` is how many there are, so
+// the form can say so.
 //
-// The switch means "this tag sets an outline", so it lights for either half, and
-// the half that was missing shows its fallback where the user can see it before
-// they press Save. Saving then writes both or clears both, which is the only
-// reading under which the form is a faithful view of what it will write.
+// The outline switch means "this tag sets the outline", so it is lit by the
+// patch holding a stroke list at all, even an empty one (a tag that says "no
+// outline"); saving writes the list or removes it.
 export function tagFormFields(t) {
+  const style = t?.style ?? {};
+  const stroke = style.strokes?.[0];
   return {
-    outlineOn: t?.outline != null || t?.outlineWidth != null,
-    font: t?.font ?? '',
-    outline: t?.outline ?? '#ffffff',
-    outlineWidth: t?.outlineWidth ?? 3,
-    // '' is "no default size", shown as an empty field.
+    outlineOn: Object.hasOwn(style, 'strokes'),
+    font: style.font ?? '',
+    outline: stroke?.color ?? '#ffffff',
+    outlineWidth: stroke?.width ?? (style.strokes?.length === 0 ? 0 : 3),
+    // '' is an unset size, shown as an empty field.
     size: t?.size ?? '',
+    minSize: t?.minSize ?? '',
+    extra: Object.keys(style).filter((k) => k !== 'font' && k !== 'strokes').length,
+    // The patch the form was opened on, which a save starts from.
+    style: $state.snapshot(style),
   };
 }
 
-// `null` for a default the user left unset - that is the value that means "fall
-// back to whatever the style would have been", and it is why a tag with nothing
-// configured changes nothing.
-export function tagFormDefaults(f) {
+// The patch with only what the form edits left in it: the form's "Clear the
+// rest" button, for a tag whose saved box style is no longer wanted.
+export const formOnlyStyle = (style) =>
+  Object.fromEntries(Object.entries(style ?? {}).filter(([k]) => k === 'font' || k === 'strokes'));
+
+export function tagFormDefaults(f, prevStyle = f.style ?? {}) {
+  const style = { ...$state.snapshot(prevStyle ?? {}) };
+  if (f.font === '' || f.font == null) delete style.font;
+  else style.font = f.font;
+  if (f.outlineOn) {
+    style.strokes = +f.outlineWidth <= 0 ? [] : [{ color: f.outline, width: +f.outlineWidth, opacity: 1 }];
+  } else delete style.strokes;
   return {
-    font: f.font === '' ? null : f.font,
-    outline: f.outlineOn ? f.outline : null,
-    outlineWidth: f.outlineOn ? f.outlineWidth : null,
+    style: sanitizeTagStyle(style),
     size: f.size === '' || f.size == null ? null : +f.size,
+    minSize: f.minSize === '' || f.minSize == null ? null : +f.minSize,
   };
 }
 
@@ -410,68 +449,31 @@ export function carryTagsForward(prevLines = [], nextLines = []) {
 }
 
 // ---------- defaults reaching a box ----------
-// Called once, by `placeActiveAt`, at the instant the box is created - the only
-// moment a tag's defaults are ever read. What comes back is a plain style value
-// that the box then owns outright, which is why editing the tag later cannot
-// touch it.
+// Called by `placeActiveAt` when a box is made, and by the restyles that put a
+// box back to what its tags say (a tag chip, "Reset to tag style", "Apply tag
+// style to chapter"). What comes back is a plain style value the box then owns
+// outright, which is why editing the tag later cannot touch it.
 //
-// `base` is consumed: the flat keys are copied over it and the nested groups
-// (shadow, roughen) come through by reference, so every caller hands over a style
-// it has just cloned rather than one something else still holds.
-//
-// The leftmost tag wins. A later tag only fills in what the earlier ones left
-// unset, so the first tag on a line is its primary one and adding a second cannot
-// quietly restyle it. An unset default - the `null` - is what makes tags optional
-// at all: it changes nothing, and the box keeps the style it would have had.
-// A tag still defines an outline as one colour and one width, which is what a
-// tag has always been and what the picker offers. The style it lands on holds a
-// LIST of strokes, so the two have to be reconciled, and the rule is the one
-// that keeps a tag meaning what it says: a tag that defines an outline defines
-// THE outline, so it replaces the box's stroke list rather than adding to it -
-// otherwise tagging a box that already had two strokes would give it three, and
-// the tag's own colour would be buried under the box's.
-//
-// A tag that names only a colour (no width) is read as "this outline, at
-// whatever width is already there", so it recolours the first stroke and adds
-// one at the default width only when the box has none; a tag that names only a
-// width does the same the other way round. Both together replace the list
-// outright. A width of 0 is a real answer - no outline at all.
+// The leftmost tag wins, key by key: a later tag only fills keys the earlier
+// ones left unset, so the first tag on a line is its primary one and adding a
+// second cannot quietly restyle it. A nested group - the stroke list, the
+// shadows, a gradient - is one key and replaces the box's value whole: a tag
+// that defines the outline defines THE outline, it is not added to the box's.
+// A key no tag defines keeps the box's value, so a tag with an empty patch
+// changes nothing. Values are snapshots, never the registry's proxies.
 export function styleForLine(line, base) {
   const out = { ...base };
-  const done = { font: false, outline: false, outlineWidth: false };
+  const done = new Set();
   for (const name of lineTags(line)) {
     const t = findTag(name);
     if (!t) continue;
-    if (!done.font && t.font != null) {
-      out.font = t.font;
-      done.font = true;
-    }
-    if (!done.outline && t.outline != null) {
-      out.strokes = withStrokeColor(out.strokes, t.outline, done.outlineWidth);
-      done.outline = true;
-    }
-    if (!done.outlineWidth && t.outlineWidth != null) {
-      out.strokes = withStrokeWidth(out.strokes, t.outlineWidth, done.outline);
-      done.outlineWidth = true;
+    for (const k of TAG_STYLE_KEYS) {
+      if (done.has(k) || !Object.hasOwn(t.style, k)) continue;
+      out[k] = $state.snapshot(t.style[k]);
+      done.add(k);
     }
   }
   return out;
-}
-
-// `replace` says the other half of the outline came from this same tag, so the
-// pair is the whole outline and the box's own strokes go.
-const STROKE_W = 3;
-const STROKE_C = '#ffffff';
-function withStrokeColor(strokes, color, replace) {
-  if (replace) return [{ color, width: strokes?.[0]?.width ?? STROKE_W, opacity: 1 }];
-  if (!strokes?.length) return [{ color, width: STROKE_W, opacity: 1 }];
-  return [{ ...strokes[0], color }, ...strokes.slice(1)];
-}
-function withStrokeWidth(strokes, width, replace) {
-  if (width <= 0) return [];
-  if (replace) return [{ color: strokes?.[0]?.color ?? STROKE_C, width, opacity: 1 }];
-  if (!strokes?.length) return [{ color: STROKE_C, width, opacity: 1 }];
-  return [{ ...strokes[0], width }, ...strokes.slice(1)];
 }
 
 // ---------- picker + bulk-editor surface ----------
@@ -502,7 +504,7 @@ export function tagsInUse(pages = []) {
 export function knownTags(pages = []) {
   const out = tags.list.map((t) => ({ ...t }));
   for (const name of tagsInUse(pages)) {
-    if (!out.some((t) => t.name === name)) out.push({ name, font: null, outline: null, outlineWidth: null });
+    if (!out.some((t) => t.name === name)) out.push({ name, style: {}, size: null, minSize: null });
   }
   return out;
 }

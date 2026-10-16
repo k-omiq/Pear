@@ -18,6 +18,7 @@
 // files are deflated.
 
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
+import { sanitizeTagEntry } from './tags.svelte.js';
 
 export const PACKAGE_FORMAT = 'manga-typesetter/chapter';
 export const PACKAGE_VERSION = 1;
@@ -53,7 +54,7 @@ const familySegment = (name) => String(name).replace(/[\\/]+/g, '_').trim() || '
 //   raws          Map<fileName, Uint8Array>   every page.file must be present
 //   cleaned       Map<fileName, Uint8Array>   every page.cleaned must be present
 //   fonts         [{ name, faces: { slot: { file, data } | null } }]  user fonts only
-//   tags          [{ name, font, outline, outlineWidth }]
+//   tags          [{ name, style, size, minSize }]
 //   app           version string
 //   exportedAt    ISO string (passed in, so the builder stays deterministic in tests)
 export function buildChapterPackage({
@@ -120,12 +121,7 @@ export function buildChapterPackage({
       pageCount: record.pages.length,
     },
     fonts: manifestFonts,
-    tags: tags.map((t) => ({
-      name: t.name,
-      font: t.font ?? null,
-      outline: t.outline ?? null,
-      outlineWidth: t.outlineWidth ?? null,
-    })),
+    tags: tags.map(sanitizeTagEntry).filter(Boolean),
   };
 
   files['manifest.json'] = [strToU8(JSON.stringify(manifest, null, 2)), { level: 6 }];
@@ -207,13 +203,8 @@ export function readChapterPackage(bytes) {
 
   const tags = [];
   for (const t of Array.isArray(manifest.tags) ? manifest.tags : []) {
-    if (typeof t?.name !== 'string' || !t.name.trim()) continue;
-    tags.push({
-      name: t.name,
-      font: typeof t.font === 'string' && t.font ? t.font : null,
-      outline: typeof t.outline === 'string' && t.outline ? t.outline : null,
-      outlineWidth: typeof t.outlineWidth === 'number' && Number.isFinite(t.outlineWidth) ? t.outlineWidth : null,
-    });
+    const entry = sanitizeTagEntry(t);
+    if (entry) tags.push(entry);
   }
 
   const translations = entries['translations.json'] ? strFromU8(entries['translations.json']) : null;
@@ -244,7 +235,7 @@ export function fontFamiliesUsed(pages = [], tagEntries = []) {
   for (const p of pages) {
     for (const b of p?.boxes ?? []) if (b?.style?.font) out.add(b.style.font);
   }
-  for (const t of tagEntries) if (t?.font) out.add(t.font);
+  for (const t of tagEntries) if (t?.style?.font) out.add(t.style.font);
   return [...out];
 }
 

@@ -135,7 +135,7 @@ export async function exportChapterPackage(projectId, chapterId) {
   // configured travel as names with no defaults - which is what they are here.
   const inUse = tagsInUse(pages);
   const tagEntries = inUse.map(
-    (name) => projectTag(projectId, name) ?? { name, font: null, outline: null, outlineWidth: null },
+    (name) => projectTag(projectId, name) ?? { name, style: {}, size: null, minSize: null },
   );
 
   // Only user fonts carry bytes; a built-in is named in the style and the other

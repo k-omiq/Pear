@@ -18,6 +18,9 @@
     refitBalloon,
     approveOutline,
     approvePageOutlines,
+    boxTagName,
+    resetBoxToTagStyle,
+    saveBoxStyleAsTag,
     outlineToBox,
     outlineState,
     toast,
@@ -86,6 +89,8 @@
   let { onSettings = null } = $props();
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
+  // The tag this box's style answers to (LET-1), for the Tag style section.
+  const tagName = $derived(box ? boxTagName(box.id) : null);
 
   // Four tabs across the top, one job each. What used to be five stacked
   // accordions in one scroll is now four panels the height of the panel: the
@@ -1812,6 +1817,24 @@
             {/if}
           </div>
           <div class="insp-none">Replaces colour, effects and type settings</div>
+        </div>
+
+        <!-- The box's tag style (LET-1): the look its line's first tag sets
+             for every box placed under it. Reset puts this box back to it;
+             Save makes this box's look the tag's, for boxes placed from now
+             on - existing boxes change only through Bulk style. -->
+        <div class="insp-rule"></div>
+        {@render secHead('Tag style')}
+        <div class="grp">
+          {#if tagName}
+            <div class="preset-row">
+              <button type="button" class="rbtn" title="Give this box the style its tag sets" onclick={() => resetBoxToTagStyle(box.id)}>Reset to tag style</button>
+              <button type="button" class="rbtn" title="Make this box's look the style of “{tagName}”, for boxes placed from now on" onclick={() => saveBoxStyleAsTag(box.id)}>Save as tag style</button>
+            </div>
+            <div class="insp-none">Tag “{tagName}” · position, size and line breaking stay the box's</div>
+          {:else}
+            <div class="insp-none">This box's line has no tag. Tag it in the Text Queue.</div>
+          {/if}
         </div>
 
         <!-- ===== Typeset =====

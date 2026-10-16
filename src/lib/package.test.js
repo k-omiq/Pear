@@ -60,7 +60,7 @@ function sampleInput() {
         },
       },
     ],
-    tags: [{ name: 'sfx', font: 'Wild Words', outline: '#fff', outlineWidth: 3 }],
+    tags: [{ name: 'sfx', style: { font: 'Wild Words', strokes: [{ color: '#fff', width: 3, opacity: 1 }], italic: true }, size: 60, minSize: 30 }],
     app: '0.1.1',
     exportedAt: '2026-08-22T00:00:00.000Z',
   };
@@ -98,7 +98,7 @@ describe('buildChapterPackage', () => {
         },
       },
     ]);
-    expect(manifest.tags).toEqual([{ name: 'sfx', font: 'Wild Words', outline: '#fff', outlineWidth: 3 }]);
+    expect(manifest.tags).toEqual([{ name: 'sfx', style: { font: 'Wild Words', strokes: [{ color: '#fff', width: 3, opacity: 1 }], italic: true }, size: 60, minSize: 30 }]);
     // Rasters are byte-for-byte.
     expect([...entries['raws/p1.png']]).toEqual([1, 2, 3]);
     expect([...entries['cleaned/p1-clean.png']]).toEqual([9, 9, 9, 9]);
@@ -141,7 +141,19 @@ describe('readChapterPackage', () => {
     expect([...pkg.fonts[0].faces.regular.data]).toEqual([7, 7]);
     expect([...pkg.fonts[0].faces.bold.data]).toEqual([8, 8, 8]);
     expect(pkg.fonts[0].faces.italic).toBeNull();
-    expect(pkg.tags).toEqual([{ name: 'sfx', font: 'Wild Words', outline: '#fff', outlineWidth: 3 }]);
+    expect(pkg.tags).toEqual([{ name: 'sfx', style: { font: 'Wild Words', strokes: [{ color: '#fff', width: 3, opacity: 1 }], italic: true }, size: 60, minSize: 30 }]);
+  });
+
+  it('migrates a legacy package tag through the same registry reader', () => {
+    const entries = unzipSync(buildChapterPackage(sampleInput()));
+    const manifest = JSON.parse(strFromU8(entries['manifest.json']));
+    manifest.tags = JSON.parse('[{"name":"SFX","font":"Bangers","outline":"#ffffff","outlineWidth":4},{"name":"empty","font":null,"outline":null,"outlineWidth":null}]');
+    const pkg = readChapterPackage(zipSync({ ...entries, 'manifest.json': strToU8(JSON.stringify(manifest)) }));
+    expect(pkg.tags).toEqual([
+      { name: 'sfx', style: { font: 'Bangers', strokes: [{ color: '#ffffff', width: 4, opacity: 1 }] }, size: null, minSize: null },
+      { name: 'empty', style: {}, size: null, minSize: null },
+    ]);
+    expect(fontFamiliesUsed([], pkg.tags)).toEqual(['Bangers']);
   });
 
   it('rejects bytes that are not a zip', () => {
@@ -218,7 +230,7 @@ describe('fontFamiliesUsed', () => {
       { boxes: [{ style: { font: 'A' } }, { style: { font: 'B' } }] },
       { boxes: [{ style: { font: 'A' } }, { style: {} }] },
     ];
-    const tags = [{ name: 'sfx', font: 'C' }, { name: 'x', font: null }];
+    const tags = [{ name: 'sfx', style: { font: 'C' } }, { name: 'x', style: {} }];
     expect(fontFamiliesUsed(pages, tags)).toEqual(['A', 'B', 'C']);
   });
 });
