@@ -63,7 +63,9 @@ meanings in `src/lib/sfx-meanings.js` are Komatose's `src/lib/sfx.ts` and
 `src/lib/sfxKo.ts` at the same commit: the two word lists copied verbatim,
 the lookup code with its TypeScript types removed. The page-relative minimum
 region size in `src-tauri/src/detect/analyze.rs` follows Komatose's
-`src/lib/server/detect.ts` at commit `d9be51e`.
+`src/lib/server/detect.ts` at commit `d9be51e`. The tall-page band spans and
+seam deduplication in `src-tauri/src/detect/tiles.rs` port its `ocr/detect.py`
+at that commit.
 Komatose is MIT licensed:
 
 > MIT License

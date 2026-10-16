@@ -165,7 +165,7 @@ pub fn analyze(
         None => (Vec::new(), Vec::new()),
     };
 
-    let (blk_list, mask) = detector.detect(img, lang).map_err(|e| format!("detect failed: {e}"))?;
+    let (blk_list, mask) = detector.detect_page(img, lang).map_err(|e| format!("detect failed: {e}"))?;
     let in_count = blk_list.len();
     let mut blk_list = split_by_regions(blk_list, &text_regions, im_w as i32, lang);
     if blk_list.len() != in_count {

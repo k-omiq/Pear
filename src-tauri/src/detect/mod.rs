@@ -17,3 +17,4 @@ pub mod panels;
 pub mod sorting;
 pub mod textblock;
 pub mod textdetector;
+pub mod tiles;
