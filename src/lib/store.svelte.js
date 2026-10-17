@@ -114,6 +114,7 @@ import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
 import { guide, termById } from './guide.svelte.js';
+import { VOICE_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
@@ -1502,7 +1503,9 @@ export function pageCheckItems(pg, pageIndex = app.pages.indexOf(pg)) {
     const review = reviewOf(b, pg) ?? relaidNote(b);
     if (review) out.push({ ...at, reason: 'overflow', review });
     const state = outlineState(b);
-    if (state === 'open') out.push({ ...at, reason: 'open' });
+    // A box set free of balloons on purpose (balloon fit off: an SFX, a sign)
+    // has no outline to find.
+    if (state === 'open' && b.style?.balloon !== false) out.push({ ...at, reason: 'open' });
     else if (state === 'waiting') out.push({ ...at, reason: 'outline', confidence: Number(b.outline?.confidence) || 0 });
     if (isLayoutStale(b, pg)) out.push({ ...at, reason: 'stale' });
     const inked = !!(b.style?.ink?.on && b.style.ink.strokes?.length);
@@ -2646,13 +2649,20 @@ function groupSizeFor(p, ln) {
 // above), which placement solves down from.
 //
 // A line's speaker can bring a tag of its own (TXT-6: a character linked to a
-// tag, so their font follows them). It counts after the line's own tags, so a
-// tag the user put on the line still wins, and it feeds only the style, not
-// the size group, which stays the line's first tag.
-function withSpeakerTag(ln) {
+// tag, so their font follows them). On a line that is only spoken - no tag, or
+// only the ways of speaking (`VOICE_ROLES`: speech, a shout) - the voice comes
+// first, so the character keeps their font however the series sets speech.
+// After any other tag the user put on the line (narration, an SFX), which
+// still wins. The same order holds when the line already carries the voice
+// tag itself. It feeds only the style, not the size group, which stays the
+// line's first tag.
+export function withSpeakerTag(ln) {
   const tag = termById(ln?.speaker)?.tag;
+  if (!tag) return ln;
   const own = lineTags(ln);
-  return tag && !own.includes(tag) ? { ...ln, tags: [...own, tag] } : ln;
+  const rest = own.filter((t) => t !== tag);
+  const tags = rest.every((t) => VOICE_ROLES.includes(t)) ? [tag, ...rest] : [...rest, tag];
+  return tags.every((t, i) => t === own[i]) && tags.length === own.length ? ln : { ...ln, tags };
 }
 
 export function inheritedStyleFor(ln, p = page()) {
@@ -4768,7 +4778,9 @@ export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, styl
   if (lineN != null) {
     ln = lineByN(p, lineN);
     if (!ln) return `page has no line ${lineN}`;
-    if (isFreeLine(ln) || isPlaced(p, ln.n)) return `line ${lineN} already has a box`;
+    // A line whose box was deleted stays marked placed, so the bulk placer
+    // leaves it alone; asked for by name, it gets a box again.
+    if (isFreeLine(ln) || p.boxes.some((x) => x.lineN === ln.n)) return `line ${lineN} already has a box`;
     ln.placed = true;
   } else {
     ln = { n: nextFreeLineN(p), type: 'dialogue', jp: '', en: text ?? '' };
@@ -4779,8 +4791,18 @@ export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, styl
   const cx = rect ? rect[0] + rect[2] / 2 : x;
   const cy = rect ? rect[1] + rect[3] / 2 : y;
   const b = bornBox(p, ln, cx, cy, rect ? { fit: null, outline: null } : undefined);
-  if (rect) Object.assign(b, { x: rect[0], y: rect[1], w: rect[2], h: rect[3] });
-  if (style) b.style = applyStylePatch(cloneStyle(b.style), style).style;
+  if (rect) {
+    Object.assign(b, { x: rect[0], y: rect[1], w: rect[2], h: rect[3] });
+    // Free text in the rectangle given: no balloon to fit to, and the solver
+    // keeps the rectangle (`auto.locks`), as an edit's geometry does.
+    b.style.balloon = false;
+    if (b.auto) Object.assign(b.auto.locks, { width: true, height: true, pos: true });
+  }
+  if (style) {
+    b.style = applyStylePatch(cloneStyle(b.style), style).style;
+    // A size given is the size aimed for, as in an edit.
+    if ('size' in style && b.auto && b.style.size > 0) b.auto.refSize = b.style.size;
+  }
   if (rect || style) autoFitBox(b, p);
   p.boxes.push(b);
   if (!free) p.activeLineN = firstUnplaced(p);
@@ -5509,6 +5531,18 @@ function balloonUnder(p, b) {
 function setOutline(b, outline) {
   if (outline) b.outline = { ...outline };
   else delete b.outline;
+}
+
+// The box off any outline: text drawn on the art (an SFX the finder wrapped in
+// the figure behind it), laid out from itself where it stands. The outline is
+// recorded as looked for and open, so nothing finds it again unasked. With
+// balloon fit already off, `pageCheckItems` lists nothing for it. One undo step.
+export function dropBoxOutline(boxId = app.selectedId, p = page()) {
+  const b = (p?.boxes ?? []).find((x) => x.id === boxId);
+  if (!b || (!b.fit && b.outline?.open)) return false;
+  settleEdits();
+  setBoxOutline(b, p, null, OPEN_OUTLINE);
+  return true;
 }
 
 // Is the fit under this box a panel rather than a balloon - for a toast's word.
@@ -6724,7 +6758,7 @@ function restyleForTags(boxes) {
   const items = [];
   for (const { page: p, line: ln, box: b } of boxes) {
     const before = cloneStyle(b.style);
-    const after = cloneStyle(styleForLine(ln, before));
+    const after = cloneStyle(styleForLine(withSpeakerTag(ln), before));
     if (sameStyle(before, after)) continue;
     const geomBefore = fitGeom(b);
     b.style = after;

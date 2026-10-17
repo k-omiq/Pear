@@ -8,3 +8,6 @@ import './place.js';
 import './guide.js';
 import './settings.js';
 import './tag.js';
+import './lettering.js';
+import './colors.js';
+import './font-sheet.js';

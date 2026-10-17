@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { defaultStyle, normalizeStyle, normalizeStroke, normalizeShadow, normalizeSfx } from '../data.js';
 import { STYLE_SCHEMA, validateStylePatch, styleSchemaText } from './style-schema.js';
+import { applyStylePatch } from '../style-patch.js';
 
 const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const join = (path, key) => path ? `${path}.${key}` : key;
@@ -45,6 +46,15 @@ const numericEntries = allEntries.filter(([, e]) => e.type === 'number' || e.typ
 const stroke = { color: '#fff', width: 3, opacity: 1 };
 const shadow = { x: -2, y: 4, blur: 3, color: '#1234', opacity: 0.5 };
 const stop = { color: '#fff', pos: 0, opacity: 1 };
+const anchor = { x: 10, y: 20, ix: -5, iy: 0, ox: 5, oy: 0 };
+const move = { kind: 'tilt', a: 0, b: 0 };
+// A drawable item for each list whose default is empty.
+const EMPTY_ITEMS = { shadows: shadow, moves: move, pts: anchor };
+const SHAPES = {
+  ellipse: { kind: 'ellipse', cx: 40, cy: 30, rx: 20, ry: 10 },
+  poly: { kind: 'poly', pts: [[0, 0], [50, 0], [25, 40]] },
+  stroke: { kind: 'stroke', size: 12, pts: [[5, 5], [60, 20]] },
+};
 
 describe('STYLE_SCHEMA drift', () => {
   it('covers exactly every default key and nested field', () => {
@@ -68,15 +78,29 @@ describe('STYLE_SCHEMA drift', () => {
     for (const [key, value] of [
       ['strokes', normalizeStroke({})], ['shadows', normalizeShadow({})],
       ['sfx.moves', normalizeSfx({ moves: [{ kind: 'tilt', a: 0, b: 0 }] }).moves[0]],
+      ['path.pts', normalizeStyle({ path: { pts: [{ x: 1, y: 2 }] } }).path.pts[0]],
     ]) {
-      const item = key === 'sfx.moves' ? STYLE_SCHEMA.sfx.fields.moves.items : STYLE_SCHEMA[key].items;
+      const [top, sub] = key.split('.');
+      const item = sub ? STYLE_SCHEMA[top].fields[sub].items : STYLE_SCHEMA[key].items;
       expect(drift(value, item, `${key}[]`)).toEqual([]);
+    }
+  });
+
+  it('has one variant per mask shape kind, with exactly the normalized fields', () => {
+    const union = STYLE_SCHEMA.clip.fields.shapes.items;
+    expect(union.type).toBe('union');
+    expect(Object.keys(union.variants).sort()).toEqual(Object.keys(SHAPES).sort());
+    for (const [kind, shape] of Object.entries(SHAPES)) {
+      const [normalized] = normalizeStyle({ clip: { shapes: [shape] } }).clip.shapes;
+      expect(normalized, kind).toBeTruthy();
+      expect(Object.keys(union.variants[kind].fields).sort(), kind).toEqual(Object.keys(normalized).sort());
+      expect(validateStylePatch({ clip: { shapes: [shape] } }), kind).toEqual([]);
     }
   });
 
   it('has short descriptions, known types, and only read-only opaque payloads', () => {
     for (const [path, entry] of allEntries) {
-      expect(['number', 'integer', 'boolean', 'string', 'enum', 'color', 'object', 'array', 'any'], path).toContain(entry.type);
+      expect(['number', 'integer', 'boolean', 'string', 'enum', 'color', 'object', 'array', 'union', 'any'], path).toContain(entry.type);
       expect(entry.desc, path).toBeTruthy();
       expect(entry.desc, path).not.toContain('\n');
       if (entry.type === 'any') {
@@ -253,7 +277,7 @@ function numericCases(fields, defaults, path = []) {
     if (entry.fields) return numericCases(entry.fields, defaults[key], next);
     if (entry.items?.fields) {
       // Empty arrays need a drawable complete item to exercise their numbers.
-      const item = defaults[key][0] ?? (key === 'shadows' ? shadow : { kind: 'tilt', a: 0, b: 0 });
+      const item = defaults[key][0] ?? EMPTY_ITEMS[key];
       return numericCases(entry.items.fields, item, [...next, 0]);
     }
     if (entry.type !== 'number' && entry.type !== 'integer') return [];
@@ -268,7 +292,8 @@ describe('normalizer numeric sanity', () => {
     it(`${path.join('.')} = ${value} survives normalization`, () => {
       const style = defaultStyle();
       style.shadows = [{ ...shadow }];
-      style.sfx.moves = [{ kind: 'tilt', a: 0, b: 0 }];
+      style.sfx.moves = [{ ...move }];
+      style.path.pts = [{ ...anchor }];
       let target = style;
       for (const key of path.slice(0, -1)) target = target[key];
       target[path.at(-1)] = value;
@@ -286,14 +311,104 @@ describe('normalizer numeric sanity', () => {
 });
 
 describe('styleSchemaText', () => {
-  it('describes every key, field and item in under 5200 characters', () => {
+  // The budget grew from 5200 when the path anchors and the mask shapes
+  // became writable: about 900 characters for two whole new item schemas.
+  it('describes every key, field and item in under 6200 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(5200);
+    expect(text.length).toBeLessThan(6200);
     for (const [path, entry] of allEntries) {
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }
     expect(text).toContain('gradient.radius: number 0.1..4');
     expect(text).toContain('gradient.stops: array 2..8 items');
-    expect(text).toContain('path.pts: any readOnly - set through');
+    expect(text).toContain('warp.pts: any readOnly - set through');
+    expect(text).toContain('path.pts: array 2..64 items - anchors');
+    expect(text).toContain('path.pts[].x: number required - ');
+    expect(text).toContain('path.pts[].ix: number - ');
+    expect(text).toContain('clip.shapes[]: union by kind: ellipse|poly|stroke - ');
+    expect(text).toContain('clip.shapes[kind=ellipse].rx: number 1..inf required - ');
+    expect(text).toContain('clip.shapes[kind=poly].pts: array 3..256 items required - ');
+    expect(text).toContain('clip.shapes[kind=poly].pts[]: array 2..2 items of number - [x, y]');
+    // The key is the variant's name in the path, not a line of its own.
+    expect(text).not.toMatch(/\[kind=\w+\]\.kind/);
+  });
+});
+
+describe('writable geometry: path anchors and mask shapes', () => {
+  const arch = [{ x: 0, y: 60 }, { x: 80, y: 0, ix: -40, ox: 40 }, { x: 160, y: 60 }];
+
+  it('accepts a path given whole, and anchors patched by index', () => {
+    expect(validateStylePatch({ path: { on: true, pts: arch } })).toEqual([]);
+    expect(validateStylePatch({ path: { pts: { 1: { y: '-20', ox: 50 } } } })).toEqual([]);
+    expect(validateStylePatch({ path: { pts: { 63: { x: 1 } } } })).toEqual([]);
+    expect(validateStylePatch({ path: { pts: { 64: { x: 1 } } } })[0].error).toContain('below 64');
+  });
+
+  it('refuses a new anchor without x and y, too few or too many anchors, and unknown handle names', () => {
+    expect(validateStylePatch({ path: { pts: [{ x: 0, y: 0 }, { x: 5 }] } })).toEqual([
+      { path: 'path.pts[1].y', error: 'required in a new item' },
+    ]);
+    expect(validateStylePatch({ path: { pts: [{ x: 0, y: 0 }] } })[0].error).toContain('at least 2');
+    expect(validateStylePatch({ path: { pts: Array.from({ length: 65 }, () => ({ x: 0, y: 0 })) } })[0].error).toContain('at most 64');
+    expect(validateStylePatch({ path: { pts: [{ x: 0, y: 0, hx: 3 }, { x: 1, y: 1 }] } })[0]).toMatchObject({ path: 'path.pts[0].hx', error: 'unknown key' });
+  });
+
+  it('accepts every mask shape kind whole, and an index patch that names its kind', () => {
+    expect(validateStylePatch({ clip: { on: true, mode: 'include', shapes: Object.values(SHAPES) } })).toEqual([]);
+    expect(validateStylePatch({ clip: { shapes: [] } })).toEqual([]);
+    expect(validateStylePatch({ clip: { shapes: { 0: { kind: 'ellipse', rx: '+10' } } } })).toEqual([]);
+    expect(validateStylePatch({ clip: { shapes: { 0: { kind: 'poly', pts: { 1: [3, 4] } } } } })).toEqual([]);
+  });
+
+  it('refuses a shape with no kind, an unknown kind, missing fields and fields of another kind', () => {
+    const [noKind] = validateStylePatch({ clip: { shapes: { 0: { rx: 10 } } } });
+    expect(noKind).toMatchObject({ path: 'clip.shapes[0].kind', hint: expect.stringContaining('index patch') });
+    expect(noKind.error).toContain('ellipse, poly, stroke');
+    expect(validateStylePatch({ clip: { shapes: [{ kind: 'rect', x: 0 }] } })[0]).toMatchObject({ path: 'clip.shapes[0].kind' });
+    expect(validateStylePatch({ clip: { shapes: [{ kind: 'ellipse', cx: 1, cy: 1, rx: 4 }] } })).toEqual([
+      { path: 'clip.shapes[0].ry', error: 'required in a new item' },
+    ]);
+    expect(validateStylePatch({ clip: { shapes: [{ kind: 'ellipse', cx: 1, cy: 1, rx: 4, ry: 4, pts: [] }] } })[0]).toMatchObject({
+      path: 'clip.shapes[0].pts', error: 'unknown key',
+    });
+    expect(validateStylePatch({ clip: { shapes: [{ ...SHAPES.ellipse, rx: 0 }] } })[0]).toMatchObject({ path: 'clip.shapes[0].rx', error: 'expected range 1..Infinity' });
+    expect(validateStylePatch({ clip: { shapes: [{ kind: 'poly', pts: [[0, 0], [1, 1]] }] } })[0].error).toContain('at least 3');
+    expect(validateStylePatch({ clip: { shapes: [{ kind: 'poly', pts: [[0, 0], [1, 1], [2]] }] } })[0]).toMatchObject({ path: 'clip.shapes[0].pts[2]' });
+    expect(validateStylePatch({ clip: { shapes: [{ ...SHAPES.stroke, size: 201 }] } })[0].path).toBe('clip.shapes[0].size');
+    for (const junk of [null, 'ellipse', 3, []]) expect(validateStylePatch({ clip: { shapes: [junk] } })).not.toEqual([]);
+  });
+
+  it('applies what it accepts: lists replace whole, index patches move one point', () => {
+    const base = defaultStyle();
+    const one = applyStylePatch(base, { path: { on: true, pts: arch }, clip: { on: true, shapes: [SHAPES.ellipse, SHAPES.poly] } });
+    expect(one.errors).toEqual([]);
+    expect(one.style.path.on).toBe(true);
+    expect(one.style.path.pts).toEqual([
+      { x: 0, y: 60, ix: 0, iy: 0, ox: 0, oy: 0 },
+      { x: 80, y: 0, ix: -40, iy: 0, ox: 40, oy: 0 },
+      { x: 160, y: 60, ix: 0, iy: 0, ox: 0, oy: 0 },
+    ]);
+    expect(one.style.clip.shapes).toEqual([SHAPES.ellipse, SHAPES.poly]);
+
+    const two = applyStylePatch(one.style, { path: { pts: { 1: { y: '-10' } } }, clip: { shapes: { 1: { kind: 'poly', pts: { 2: [30, 50] } } } } });
+    expect(two.errors).toEqual([]);
+    expect(two.style.path.pts[1]).toMatchObject({ x: 80, y: -10, ix: -40, ox: 40 });
+    expect(two.style.clip.shapes[1].pts).toEqual([[0, 0], [50, 0], [30, 50]]);
+
+    const three = applyStylePatch(two.style, { clip: { shapes: [SHAPES.stroke] } });
+    expect(three.style.clip.shapes).toEqual([SHAPES.stroke]);
+  });
+
+  it('a relative number inside a list given whole has nothing to change, and says so', () => {
+    const r = applyStylePatch(defaultStyle(), { clip: { shapes: [{ kind: 'poly', pts: [['+5', 0], [1, 1], [2, 0]] }] } });
+    expect(r.errors).toEqual([{ path: 'clip.shapes.0.pts.0.0', error: expect.stringContaining('needs a number') }]);
+    expect(r.style.clip.shapes).toEqual([]);
+  });
+
+  it('an index patch of another kind is refused, not merged into half of each', () => {
+    const one = applyStylePatch(defaultStyle(), { clip: { on: true, shapes: [SHAPES.poly] } });
+    const r = applyStylePatch(one.style, { clip: { shapes: { 0: { kind: 'ellipse', cx: 5 } } } });
+    expect(r.errors).toEqual([{ path: 'clip.shapes.0', error: expect.stringContaining('give the whole list') }]);
+    expect(r.style.clip.shapes).toEqual([SHAPES.poly]);
   });
 });

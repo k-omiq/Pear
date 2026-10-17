@@ -13,7 +13,7 @@ import { app } from '../../store.svelte.js';
 export const MAX_IMAGES = 3;
 export const PER_SHEET = 20;
 
-const SOURCES = ['typeset', 'raw'];
+const SOURCES = ['typeset', 'raw', 'clean'];
 
 const input = {
   type: 'object',
@@ -38,7 +38,7 @@ const input = {
         rulers: { type: 'boolean' },
       },
     },
-    source: { type: 'string', enum: SOURCES, description: '"typeset" (default) or "raw": the page art without our text, for SFX matching.' },
+    source: { type: 'string', enum: SOURCES, description: '"typeset" (default); "raw": the original scan, its Japanese lettering still on it, for matching an SFX; "clean": the cleaned page with none of our text - original letters that still show there were left by the cleaner.' },
     scale: { type: 'number', description: `page and region views: image px per page px; default fits ${MAX_SIDE} px on the long side, never past 2.` },
   },
   required: ['target'],
@@ -130,7 +130,7 @@ export const viewTool = defineTool({
   write: false,
   async run(args) {
     const { target, source = 'typeset', scale } = args;
-    if (!SOURCES.includes(source)) throw new ToolError(`no source "${source}"`, 'source is "typeset" or "raw"');
+    if (!SOURCES.includes(source)) throw new ToolError(`no source "${source}"`, 'source is "typeset", "raw" or "clean"');
     if (target == null || typeof target !== 'object' || Array.isArray(target)) {
       throw new ToolError('target is required', '{ page }, { page, rect } or { where }');
     }

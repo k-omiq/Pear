@@ -9,17 +9,45 @@ const boolean = (desc) => ({ type: 'boolean', desc });
 const string = (desc) => ({ type: 'string', desc });
 const color = (desc) => ({ type: 'color', desc });
 const choice = (desc, values) => ({ type: 'enum', desc, values });
-const object = (desc, fields) => ({ type: 'object', desc, fields });
+// `required` names the fields an item must carry when it arrives in a whole
+// list (a new item has nothing to fall back on); an index patch over an item
+// that exists may still give any part of it.
+const object = (desc, fields, required) => ({ type: 'object', desc, fields, ...(required ? { required } : {}) });
 const array = (desc, items, limits = {}) => ({ type: 'array', desc, items, ...limits });
+// A list item that is one of several shapes, told apart by one field (`key`),
+// which every item names, also when an index patch changes one: the validator
+// cannot see which kind the stored item is. Each variant is an `object`; the
+// key is added to its fields as a one-value enum.
+const union = (desc, key, variants) => ({
+  type: 'union',
+  desc,
+  key,
+  variants: Object.fromEntries(Object.entries(variants).map(([name, v]) => [
+    name,
+    { ...v, fields: { [key]: choice(`${key} ${name}`, [name]), ...v.fields } },
+  ])),
+});
 const readOnly = (desc) => ({ type: 'any', readOnly: true, desc });
 const alpha = (desc) => number(desc, 0, 1);
+const point = (desc) => array(desc, number('px'), { minItems: 2, maxItems: 2 });
+
+// Geometry the agent writes, all in box-local page px: the origin is the box's
+// top-left corner, x runs right and y down, the same space normalizeStyle and
+// the renderers read `path.pts` and `clip.shapes` in. Coordinates are not
+// clamped (a path or a mask may reach past the box) and have no bounds here.
+// The caps on list lengths are only there to stop a runaway list.
+const PATH_MAX_ANCHORS = 64;
+const MASK_MAX_SHAPES = 64;
+const MASK_MAX_POINTS = 256;
 
 // Bounds and choices mirror normalizeStyle and its helpers, not Inspector
 // sliders. Flat fields (lineHeight, curve, roughen, etc.) are passed through
 // there without clamps and have none here; size, opacity, align and valign
 // are the exceptions, marked where they are.
-// Circle angles wrap rather than clamp, so have no min/max. Geometry arrays
-// and the SFX restoration snapshot belong to the editors that create them.
+// Circle angles wrap rather than clamp, so have no min/max. The path's anchors
+// and the mask's shapes are plain enough to write by hand; the warp mesh, the
+// ink strokes and the SFX restoration snapshot belong to the editors that
+// create them (a warp comes from edit's "warp:<kind>" action instead).
 export const STYLE_SCHEMA = {
   font: string('font family'),
   // Not clamped by normalizeStyle; the range is what a box can sensibly be
@@ -92,15 +120,39 @@ export const STYLE_SCHEMA = {
     y: number('y px/step', -50, 50),
     amount: integer('smear iterations', 1, 32),
   }),
-  path: object('bezier text path', {
+  // A cubic bezier through the anchors, first to last; the text runs along it
+  // left to right. Segment A->B is A, A+out, B+in, B. The example is the
+  // rainbow arch in a box w by h (swap y 0 and h for a smile).
+  path: object('bezier text path, needs 2+ pts', {
     on: boolean('enable path'),
-    pts: readOnly('set through the path editor'),
+    pts: array('anchors in box px from its top-left; ix,iy/ox,oy = in/out handle offsets. Arch: [{x:0,y:h},{x:w/2,y:0,ix:-w/4,ox:w/4},{x:w,y:h}]', object('anchor', {
+      x: number('anchor x'),
+      y: number('anchor y'),
+      ix: number('in handle dx'),
+      iy: number('in handle dy'),
+      ox: number('out handle dx'),
+      oy: number('out handle dy'),
+    }, ['x', 'y']), { minItems: 2, maxItems: PATH_MAX_ANCHORS }),
   }),
   clip: object('painted visibility mask', {
     on: boolean('enable mask'),
     mode: choice('hide/keep painted areas', ['exclude', 'include']),
     brushSize: number('mask brush page px', 2, 200),
-    shapes: readOnly('set through the mask editor'),
+    shapes: array('painted areas, box px', union('area', 'kind', {
+      ellipse: object('ellipse', {
+        cx: number('centre x'),
+        cy: number('centre y'),
+        rx: number('x radius', 1),
+        ry: number('y radius', 1),
+      }, ['cx', 'cy', 'rx', 'ry']),
+      poly: object('closed polygon', {
+        pts: array('corners', point('[x, y]'), { minItems: 3, maxItems: MASK_MAX_POINTS }),
+      }, ['pts']),
+      stroke: object('brush line', {
+        size: number('brush px', 1, 200),
+        pts: array('line points', point('[x, y]'), { minItems: 1, maxItems: MASK_MAX_POINTS }),
+      }, ['size', 'pts']),
+    }), { maxItems: MASK_MAX_SHAPES }),
   }),
   ink: object('hand-drawn box-local ink', {
     on: boolean('enable ink'),
@@ -174,16 +226,22 @@ function editDistance(a, b) {
 }
 
 /** Validate a partial style without coercing, applying, or mutating it.
- * Objects are partial, including array items (normalizers fill omitted fields).
- * Arrays replace the list; index objects patch items. Relative operands are
- * checked here; the applying tool checks results against the current style.
+ * Objects are partial, including array items (normalizers fill omitted fields),
+ * except that an item in a list given whole must carry its object's `required`
+ * fields: a path anchor with no x, or a mask shape with no points, would be
+ * dropped by normalizeStyle without a word. Arrays replace the list; index
+ * objects patch items. Relative operands are checked here; the applying tool
+ * checks results against the current style.
  */
 export function validateStylePatch(patch) {
   const errors = [];
   const fail = (path, error, hint) => errors.push({ path: path || '$', error, ...(hint ? { hint } : {}) });
 
-  function fields(value, schema, path) {
+  // `required` is the object's list when the value is an item of a list
+  // given whole, else null.
+  function fields(value, schema, path, required = null) {
     if (!isObject(value)) return fail(path, 'expected an object');
+    for (const key of required ?? []) if (!Object.hasOwn(value, key)) fail(at(path, key), 'required in a new item');
     for (const key of Object.keys(value)) {
       if (!Object.hasOwn(schema, key)) {
         const nearest = Object.keys(schema)
@@ -197,7 +255,8 @@ export function validateStylePatch(patch) {
     }
   }
 
-  function check(value, entry, path) {
+  // `whole`: the value is an item of a list given whole (see `required`).
+  function check(value, entry, path, whole = false) {
     if (entry.readOnly) return fail(path, entry.desc);
     if (value === null && entry.nullable) return;
     switch (entry.type) {
@@ -225,12 +284,20 @@ export function validateStylePatch(patch) {
         if (typeof value !== 'string' || !HEX.test(value)) fail(path, 'expected hex colour: #rgb, #rgba, #rrggbb or #rrggbbaa');
         return;
       case 'object':
-        return fields(value, entry.fields, path);
+        return fields(value, entry.fields, path, whole ? entry.required : null);
+      case 'union': {
+        if (!isObject(value)) return fail(path, 'expected an object');
+        const kinds = Object.keys(entry.variants);
+        const kind = value[entry.key];
+        if (!Object.hasOwn(value, entry.key)) return fail(at(path, entry.key), `expected one of: ${kinds.join(', ')}`, `every item names its ${entry.key}, also in an index patch`);
+        if (!kinds.includes(kind)) return fail(at(path, entry.key), `expected one of: ${kinds.join(', ')}`);
+        return check(value, entry.variants[kind], path, whole);
+      }
       case 'array':
         if (Array.isArray(value)) {
           if (entry.minItems !== undefined && value.length < entry.minItems) fail(path, `expected at least ${entry.minItems} items`);
           if (entry.maxItems !== undefined && value.length > entry.maxItems) fail(path, `expected at most ${entry.maxItems} items`);
-          for (let i = 0; i < value.length; i++) check(value[i], entry.items, `${path}[${i}]`);
+          for (let i = 0; i < value.length; i++) check(value[i], entry.items, `${path}[${i}]`, true);
         } else if (isObject(value)) {
           for (const key of Object.keys(value)) {
             const index = Number(key);
@@ -254,22 +321,39 @@ export function validateStylePatch(patch) {
   return errors;
 }
 
-/** Compact dotted paths for embedding directly in an AI tool description. */
+/** Compact dotted paths for embedding directly in an AI tool description.
+ * A union's variants print under `path[kind=name]`; a field a new item must
+ * carry says `required`; a list of plain values (a point) says what it holds
+ * on its own line rather than a line per value.
+ */
 export function styleSchemaText() {
   const lines = [];
-  function walk(entry, path) {
+  const scalar = (e) => !e.fields && !e.items && !e.variants;
+  function walk(entry, path, required = false) {
     let type = entry.type;
     if (entry.type === 'enum') type += ` ${entry.values.join('|')}`;
+    if (entry.type === 'union') type += ` by ${entry.key}: ${Object.keys(entry.variants).join('|')}`;
     if (entry.min !== undefined || entry.max !== undefined) type += ` ${entry.min ?? '-inf'}..${entry.max ?? 'inf'}`;
     if (entry.type === 'array' && (entry.minItems !== undefined || entry.maxItems !== undefined)) {
       type += ` ${entry.minItems ?? 0}..${entry.maxItems ?? 'inf'} items`;
     }
+    if (entry.type === 'array' && scalar(entry.items)) type += ` of ${entry.items.type}`;
+    if (required) type += ' required';
     if (entry.readOnly) type += ' readOnly';
     lines.push(`${path}: ${type} - ${entry.desc}`);
-    if (entry.fields) for (const [key, field] of Object.entries(entry.fields)) walk(field, at(path, key));
-    if (entry.items) {
+    const children = (e, base) => {
+      for (const [key, field] of Object.entries(e.fields)) walk(field, at(base, key), !!e.required?.includes(key));
+    };
+    if (entry.fields) children(entry, path);
+    if (entry.variants) {
+      for (const [name, v] of Object.entries(entry.variants)) {
+        const base = `${path.replace(/\[\]$/, '')}[${entry.key}=${name}]`;
+        children({ ...v, fields: Object.fromEntries(Object.entries(v.fields).filter(([k]) => k !== entry.key)) }, base);
+      }
+    }
+    if (entry.items && !scalar(entry.items)) {
       const itemPath = `${path}[]`;
-      if (entry.items.fields) for (const [key, field] of Object.entries(entry.items.fields)) walk(field, at(itemPath, key));
+      if (entry.items.fields) children(entry.items, itemPath);
       else walk(entry.items, itemPath);
     }
   }

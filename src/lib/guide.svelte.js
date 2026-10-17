@@ -1,7 +1,8 @@
 // ===== The series guide =====
 // What a series keeps for itself beyond its tags: the glossary (with its
 // characters), the text rules, free notes, and the typesetting defaults the
-// series overrides. All of it lives in project.json under one `guide` key,
+// series overrides, and how the series is lettered (`lettering.js`). All of
+// it lives in project.json under one `guide` key,
 // beside the tag registry, so it travels with the series folder and applies to
 // every chapter in it (docs/AI_TYPESETTING_PLAN.md section 4).
 //
@@ -11,6 +12,7 @@
 // writes go nowhere. Nothing here imports the store, so the check list and the
 // queue can read it without a cycle.
 import { sanitizeGlossary, sanitizeTerm, newTermId } from './glossary.js';
+import { emptyLettering, sanitizeLettering } from './lettering.js';
 
 // The text rules a series can choose (TXT-3). `keep` is "no rule": nothing is
 // flagged, which is also what every project made before the guide reads as.
@@ -36,7 +38,7 @@ export const SERIES_TYPESET_KEYS = {
 const MAX_NOTES = 20000;
 
 export function emptyGuide() {
-  return { glossary: [], rules: { dashes: 'keep', ellipsis: 'keep' }, notes: '', typeset: null };
+  return { glossary: [], rules: { dashes: 'keep', ellipsis: 'keep' }, notes: '', typeset: null, lettering: emptyLettering() };
 }
 
 // The series' typesetting override: null when the series uses the person's
@@ -69,6 +71,7 @@ export function sanitizeGuide(raw) {
   if (ELLIPSIS_RULES.includes(raw.rules?.ellipsis)) g.rules.ellipsis = raw.rules.ellipsis;
   if (typeof raw.notes === 'string') g.notes = raw.notes.slice(0, MAX_NOTES);
   g.typeset = sanitizeSeriesTypeset(raw.typeset);
+  g.lettering = sanitizeLettering(raw.lettering);
   return g;
 }
 
@@ -93,6 +96,12 @@ export function unbindGuide() {
 }
 
 export const guideBound = () => saver != null;
+
+// The guide as plain data, for a caller that keeps a copy (an AI run). A
+// function, not `const x = $state.snapshot(guide)` at the call site: Svelte's
+// server build (the unit test lane) compiles that declaration to `const x =
+// guide`, no copy at all.
+export const snapshotGuide = () => $state.snapshot(guide);
 
 // The whole guide put back as it was (an AI run's Revert), and saved.
 export function restoreGuide(stored) {
@@ -169,4 +178,15 @@ export function setSeriesTypeset(patch) {
   guide.typeset = patch == null ? null : sanitizeSeriesTypeset({ ...(guide.typeset ?? {}), ...patch });
   save();
   onTypeset?.();
+}
+
+// The lettering record (`lettering.js`): a patch of `freedom` and `notes`,
+// merged over what the series has. A freedom of null puts the series back to
+// "not set up", so the AI asks again.
+export function setLettering(patch) {
+  if (!patch || typeof patch !== 'object') return;
+  const next = sanitizeLettering({ ...$state.snapshot(guide.lettering), ...patch });
+  if (next.freedom === guide.lettering.freedom && next.notes === guide.lettering.notes) return;
+  guide.lettering = next;
+  save();
 }

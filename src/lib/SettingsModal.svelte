@@ -17,6 +17,7 @@
   } from './tags.svelte.js';
   import TagDefaultsForm from './TagDefaultsForm.svelte';
   import SeriesGuide from './SeriesGuide.svelte';
+  import LetteringSetup from './LetteringSetup.svelte';
   import { resetPanels } from './editor/panels.svelte.js';
   import { processMemory, ROLE_LABELS } from './memory.js';
   import { prefs, setPref, typesetDefaults } from './prefs.svelte.js';
@@ -796,6 +797,10 @@
           left as it is. The model for each language is under System.
         </div>
       </div>
+
+      <!-- How the series is lettered: a font per kind of text and per
+           character, and the AI's freedom. The fonts are the tags' below. -->
+      <LetteringSetup {scope} />
 
       <div class="settings-section">
         <div class="settings-title">TAGS{@render scope('series')}</div>

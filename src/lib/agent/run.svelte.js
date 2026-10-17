@@ -21,7 +21,8 @@
 import { app, pageById, settleEdits, markUnsaved, recordEdit, toast, quietly } from '../store.svelte.js';
 import { chapterOpenSeq } from '../library.svelte.js';
 import { inRun } from '../editor/history.svelte.js';
-import { guide, guideBound, restoreGuide } from '../guide.svelte.js';
+import { guideBound, snapshotGuide, restoreGuide } from '../guide.svelte.js';
+import { snapshotTags, emptyTagChanges, keepTagChanges, tagChangesKept, restoreTagChanges } from '../tags.svelte.js';
 import { ToolError } from './registry.js';
 
 export const IDLE_MS = 20000;
@@ -38,7 +39,7 @@ export const aiRun = $state({
   canRevert: false,
 });
 
-let current = null; // { id, seq, door, kept: Map(pageId -> page copy), guideBefore }
+let current = null; // { id, seq, door, kept: Map(pageId -> page copy), guideBefore: { key: value }, tagsBefore }
 let seqCounter = 0;
 let idleT = null;
 let stoppedUntilQuiet = false;
@@ -61,8 +62,10 @@ function sync() {
   aiRun.edits = current?.edits ?? 0;
   aiRun.pages = current?.kept.size ?? 0;
   aiRun.stopped = stoppedUntilQuiet;
-  aiRun.canRevert = !!current && current.seq === chapterOpenSeq() && (current.kept.size > 0 || current.guideBefore != null);
+  aiRun.canRevert = !!current && current.seq === chapterOpenSeq() && (current.kept.size > 0 || seriesChanged(current));
 }
+
+const seriesChanged = (run) => Object.keys(run.guideBefore).length > 0 || tagChangesKept(run.tagsBefore);
 
 function begin(door) {
   current = {
@@ -72,7 +75,8 @@ function begin(door) {
     active: true,
     edits: 0,
     kept: new Map(),
-    guideBefore: null,
+    guideBefore: {},
+    tagsBefore: emptyTagChanges(),
   };
   sync();
   return current;
@@ -166,15 +170,29 @@ export function callContext(door) {
       sync();
       return out;
     },
-    // The series guide is part of a run too (`guide(set)`).
+    // The series record is part of a run too: the guide (`guide`,
+    // `lettering`) and the tag registry beside it (`tag`, `lettering`). Each
+    // part the run changes - a guide key, a tag, a tag size - is kept as it
+    // was before the run first changed it, so Revert puts back those and
+    // leaves the user's own changes to the rest, made since, alone.
     writeGuide(fn) {
       const run = runForWrite(door, since);
       if (!guideBound()) throw new ToolError('no series is open, so there is no guide to change');
-      if (run.guideBefore == null) run.guideBefore = $state.snapshot(guide);
-      const out = quietly(fn);
-      run.edits++;
-      sync();
-      return out;
+      const guidePre = snapshotGuide();
+      const tagsPre = snapshotTags();
+      try {
+        const out = quietly(fn);
+        run.edits++;
+        return out;
+      } finally {
+        // Kept even when `fn` threw halfway: what it did change, Revert undoes.
+        const guideNow = snapshotGuide();
+        for (const [k, v] of Object.entries(guidePre)) {
+          if (!Object.hasOwn(run.guideBefore, k) && JSON.stringify(v) !== JSON.stringify(guideNow[k])) run.guideBefore[k] = v;
+        }
+        keepTagChanges(run.tagsBefore, tagsPre, snapshotTags());
+        sync();
+      }
     },
     // A long tool (detection, the chapter placer) asks between its steps.
     stillPinned() {
@@ -214,7 +232,8 @@ export function revertRun() {
     if ('detect' in after) p.detect = after.detect ? structuredClone(after.detect) : null;
     n++;
   }
-  if (run.guideBefore) restoreGuide(run.guideBefore);
+  if (Object.keys(run.guideBefore).length) restoreGuide({ ...snapshotGuide(), ...run.guideBefore });
+  restoreTagChanges(run.tagsBefore);
   if (n) markUnsaved();
   current = null;
   sync();

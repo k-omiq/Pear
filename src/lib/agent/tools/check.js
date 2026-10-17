@@ -2,9 +2,34 @@ import { defineTool } from '../registry.js';
 import { selectBoxes } from '../select.js';
 import { countedChecks } from '../counted-checks.js';
 import { untrusted } from '../fence.js';
-import { app, lineByN, boxText, pageCheckItems, reviewOf, CHECK_REASONS } from '../../store.svelte.js';
+import { app, lineByN, boxText, pageCheckItems, reviewOf, withSpeakerTag, CHECK_REASONS } from '../../store.svelte.js';
 import { fitReport, fitIssues, fitQuality } from '../../fit-report.js';
-import { lineTags } from '../../tags.svelte.js';
+import { lineTags, findTag } from '../../tags.svelte.js';
+import { letteringIssues } from '../lettering-checks.js';
+import { ART_SIZED_ROLES } from '../../lettering.js';
+import { contrastInk } from '../../balloon.js';
+import { peekPagePixels } from '../../page-pixels.js';
+
+// The font a line's tags give its boxes, and the tag it comes from: the same
+// order placement reads them in (a speaker's voice first on a spoken line).
+function wantedFont(line) {
+  if (!line) return null;
+  for (const t of lineTags(withSpeakerTag(line))) {
+    const font = findTag(t)?.style?.font;
+    if (font) return { font, tag: t };
+  }
+  return null;
+}
+
+// The text colour a box's balloon asks for: measured when it was found, else
+// read off the page's pixels when they are already in hand (a peek: a check
+// walks whole chapters and must not reorder the click cache).
+function balloonInk(b, page) {
+  if (!b.fit) return null;
+  if (b.outline?.ink) return b.outline.ink;
+  const image = peekPagePixels(page);
+  return image ? contrastInk(image, b.fit) : null;
+}
 
 // Check the whole page before projecting onto matches: neighbours and the
 // tag-size median must still count when only one box was selected.
@@ -36,7 +61,7 @@ export function checksFor(matches) {
       const rep = fitReport(b, boxText(b, page));
       if (rep) issues.get(b.id).push(...fitIssues(rep, { round: roundOutline(b) }));
     }
-    const counted = countedChecks(page, (b) => lineTags(lineByN(page, b.lineN)));
+    const counted = countedChecks(page, (b) => lineTags(lineByN(page, b.lineN)), { skip: ART_SIZED_ROLES });
     for (const { boxId, other, overlap } of counted.collisions) {
       issues.get(boxId).push({ kind: 'collision', with: other, detail: { overlap } });
       issues.get(other).push({ kind: 'collision', with: boxId, detail: { overlap } });
@@ -46,6 +71,12 @@ export function checksFor(matches) {
     }
     for (const { boxId, size, median, tag } of counted.sizes) {
       issues.get(boxId).push({ kind: 'size', detail: { size, median, tag } });
+    }
+    // The series' lettering style: the font each box's role or voice wants,
+    // and text the same tone as its balloon.
+    for (const b of page.boxes) {
+      const line = lineByN(page, b.lineN);
+      issues.get(b.id).push(...letteringIssues(b, { want: wantedFont(line), tags: lineTags(line), ink: balloonInk(b, page) }));
     }
     pages.set(page, issues);
   }
@@ -104,7 +135,7 @@ const where = {
 
 defineTool({
   name: 'check',
-  description: 'Check matching boxes for overflow, check-list reasons (including glossary and guide rules), collisions, panel crossings and tag-size outliers, and, for a box with a bubble outline, its text against that outline: outside (ink past the outline, px per side), tight (air under 0.25 em), hourglass, shape (funnel, pyramid or far from an oval, in a balloon), offcentre (ink centre off the bubble centre, px), hyphen and orphan. quality: the mean lettering score (0-100: air, shape, centre, hyphens, orphans, size kept against the size aimed for, fill) of the boxes with outlines and the five weakest, to work on first. Return only boxes with problems, in page/box order, with 1-based pages and panel numbers. where uses the query AND selector; pages accepts current (default), all, "2-5", "1,3" or [1,3]; ids/selection default to all pages. Neighbours on the whole page count even outside the selector. count counts all problem boxes, checked counts all selected boxes; problems is capped at 200 with truncated: true. Free text is fenced.',
+  description: 'Check matching boxes for overflow, check-list reasons (including glossary and guide rules), collisions, panel crossings and tag-size outliers, and, for a box with a bubble outline, its text against that outline: outside (ink past the outline, px per side), tight (air under 0.25 em), hourglass, shape (funnel, pyramid or far from an oval, in a balloon), offcentre (ink centre off the bubble centre, px), hyphen and orphan; role (not in the font its role tag or speaker\'s voice gives it; SFX exempt) and contrast (fill the same tone as the balloon\'s inside, with no outline to carry it). quality: the mean lettering score (0-100: air, shape, centre, hyphens, orphans, size kept against the size aimed for, fill) of the boxes with outlines and the five weakest, to work on first. Return only boxes with problems, in page/box order, with 1-based pages and panel numbers. where uses the query AND selector; pages accepts current (default), all, "2-5", "1,3" or [1,3]; ids/selection default to all pages. Neighbours on the whole page count even outside the selector. count counts all problem boxes, checked counts all selected boxes; problems is capped at 200 with truncated: true. Free text is fenced.',
   input: {
     type: 'object', additionalProperties: false,
     properties: { where: { $ref: '#/$defs/where' } },

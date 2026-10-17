@@ -65,6 +65,16 @@ describe('renderRegion (real canvas)', () => {
     expect(r.boxes.map((b) => b.id)).toEqual(['b1']);
     await dump('region', r.png);
   });
+
+  it('gives a box shown only by its outline a cell inside the image', async () => {
+    const r = await renderRegion(page(), [310, 100, 200, 200], { scale: 1, marks: { outlines: true } });
+    expect(r.boxes.map((b) => b.id)).toEqual(['b1']);
+    const [c] = r.boxes;
+    expect(c.w).toBeGreaterThan(0);
+    expect(c.h).toBeGreaterThan(0);
+    expect(c.x + c.w).toBeLessThanOrEqual(r.width);
+    expect(c.y + c.h).toBeLessThanOrEqual(r.height);
+  });
 });
 
 describe('proofSheet (real canvas)', () => {

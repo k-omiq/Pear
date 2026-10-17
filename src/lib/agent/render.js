@@ -10,6 +10,14 @@
 //                 no text is written as a label (page text is untrusted, see
 //                 fence.js, and a picture of it is the same text).
 //
+// And two the other read tools use:
+//
+//   regionPixels     a rectangle of a page as raw pixels, small, for the
+//                    `colors` tool to measure (palette.js); never an image.
+//   renderFontSheet  font samples in a grid, each labelled with its exact
+//                    family name, for the `font_sheet` tool. The names are the
+//                    font lists' own, not page text.
+//
 // Sizes follow the model's no-resize size: about 1568 px on the long side,
 // never more, so the image goes in as drawn.
 //
@@ -189,6 +197,38 @@ export function fitInCell(cw, ch, cell) {
   return { s, x: cell.x + (cell.w - w) / 2, y: cell.y + (cell.h - h) / 2, w, h };
 }
 
+// The scale a region is read at for its colours: down so its long side is at
+// most `maxSide`, never up - an upscaled pixel holds no colour the page did not.
+export const PIXELS_MAX_SIDE = 400;
+export const pixelScale = (w, h, maxSide = PIXELS_MAX_SIDE) => Math.min(1, maxSide / Math.max(w, h, 1));
+
+// The grid of a font sheet: `n` fonts, one to a row, in one column up to
+// ten and two past that, filled down the first column before the second so it
+// reads as a list. Rows share the long side; each row is a small label (the
+// number and name) over the sample, whose font size is `sample` px, shrunk at
+// drawing time only if a font's sample is wider than its cell.
+export const FONT_SHEET_MAX = 40;
+export function fontSheetLayout(n, { maxSide = MAX_SIDE, pad = 12, gap = 10 } = {}) {
+  const count = Math.min(FONT_SHEET_MAX, Math.max(0, n | 0));
+  if (!count) return { cols: 0, rows: 0, width: 0, height: 0, label: 0, sample: 0, cells: [] };
+  const cols = count > 10 ? 2 : 1;
+  const rows = Math.ceil(count / cols);
+  const rowH = Math.max(56, Math.min(140, Math.floor((maxSide - pad * 2) / rows)));
+  const cellW = cols === 1 ? 1000 : Math.floor((maxSide - pad * 2 - gap) / 2);
+  const label = Math.max(11, Math.min(16, Math.round(rowH * 0.17)));
+  const sample = Math.round((rowH - label - 10) * 0.75);
+  const cells = Array.from({ length: count }, (_, i) => {
+    const col = Math.floor(i / rows);
+    const row = i % rows;
+    return { row: row + 1, col: col + 1, x: pad + col * (cellW + gap), y: pad + row * rowH, w: cellW, h: rowH };
+  });
+  return { cols, rows, width: pad * 2 + cols * cellW + (cols - 1) * gap, height: pad * 2 + rows * rowH, label, sample, cells };
+}
+
+// The sample's font size in a cell: `size`, or smaller so `width` (measured at
+// `size`) fits `room`, never under 8 px.
+export const fitSampleSize = (size, width, room) => (width > room && width > 0 ? Math.max(8, Math.floor((size * room) / width)) : size);
+
 // PNG unless its base64 passes `max`, then JPEG.
 export const encodingFor = (pngB64Length, max = MAX_PNG_B64) => (pngB64Length > max ? 'image/jpeg' : 'image/png');
 
@@ -246,17 +286,20 @@ async function settle(p) {
   if (typeof document !== 'undefined' && document.fonts?.ready) await document.fonts.ready;
 }
 
-// The whole page at `s`, typeset or raw. The caller holds the page's images
-// (withPageImages) and releases the canvas.
+// The whole page at `s`: typeset; raw (the original scan, its own lettering
+// still on it); or clean (the cleaned page with none of our text - where the
+// original letters still show, the cleaner left them). The caller holds the
+// page's images (withPageImages) and releases the canvas.
 async function pageCanvas(p, source, s) {
-  if (source === 'raw') {
-    if (!p.raw) throw new ToolError('this page has no raw image', 'use source: "typeset"');
+  if (source === 'raw' || source === 'clean') {
+    const src = source === 'raw' ? p.raw : (p.cleaned ?? p.raw);
+    if (!src) throw new ToolError(`this page has no ${source === 'raw' ? 'raw' : 'page'} image`, 'use source: "typeset"');
     const { w: W, h: H } = await pageSpace(p);
     const c = newCanvas(Math.round(W * s), Math.round(H * s));
     const ctx = c.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, c.width, c.height);
-    const img = await loadImage(p.raw);
+    const img = await loadImage(src);
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, c.width, c.height);
     return c;
@@ -448,12 +491,19 @@ export async function renderRegion(p, rect, { scale, marks, source = 'typeset' }
         height: oh,
         scale: s,
         rect: r,
+        // Each box's cell in the image, cut to it: its rectangle, or, for a
+        // box shown only because its outline reaches in, the outline's part.
         boxes: shown.map((m) => {
-          const [x0, y0] = map(m.bounds[0], m.bounds[1]);
-          const [x1, y1] = map(m.bounds[0] + m.bounds[2], m.bounds[1] + m.bounds[3]);
-          const cx = Math.max(0, Math.round(x0));
-          const cy = Math.max(0, Math.round(y0));
-          return { id: m.id, x: cx, y: cy, w: Math.min(ow, Math.round(x1)) - cx, h: Math.min(oh, Math.round(y1)) - cy };
+          const cell = (bx) => {
+            const [x0, y0] = map(bx[0], bx[1]);
+            const [x1, y1] = map(bx[0] + bx[2], bx[1] + bx[3]);
+            const cx = Math.min(ow, Math.max(0, Math.round(x0)));
+            const cy = Math.min(oh, Math.max(0, Math.round(y0)));
+            const w = Math.min(ow, Math.max(0, Math.round(x1))) - cx;
+            const h = Math.min(oh, Math.max(0, Math.round(y1))) - cy;
+            return w > 0 && h > 0 ? { x: cx, y: cy, w, h } : null;
+          };
+          return { id: m.id, ...(cell(m.bounds) ?? cell(union(m.bounds, boundsOf(m.points))) ?? { x: 0, y: 0, w: 0, h: 0 }) };
         }),
       };
     } finally {
@@ -461,6 +511,112 @@ export async function renderRegion(p, rect, { scale, marks, source = 'typeset' }
       release(out);
     }
   });
+}
+
+// ---------- pixels for colour ----------
+
+// `rect` [x, y, w, h] of page `p` (clamped; default the whole page), drawn
+// `source` 'raw' (the original scan), 'clean' (the cleaned page, no text of ours) or 'typeset', at the scale
+// that keeps its long side within `maxSide`. Returns `{ data, width, height,
+// rect, scale }`: an ImageData's RGBA bytes, the size they were read at, and
+// the page px rect they cover.
+export async function regionPixels(p, rect, { source = 'raw', maxSide = PIXELS_MAX_SIDE } = {}) {
+  return withPageImages(p, async () => {
+    const { w: W, h: H } = await pageSpace(p);
+    const r = clampRect(rect, W, H);
+    if (!r) throw new ToolError('the rect is outside the page', `the page is ${W} x ${H} px; rect is [x, y, w, h]`);
+    const s = pixelScale(r[2], r[3], maxSide);
+    const [ow, oh] = outSize(r[2], r[3], s);
+    const page = await pageCanvas(p, source, s);
+    const out = newCanvas(ow, oh);
+    try {
+      const ctx = out.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, ow, oh);
+      ctx.drawImage(page, Math.round(r[0] * s), Math.round(r[1] * s), ow, oh, 0, 0, ow, oh);
+      const img = ctx.getImageData(0, 0, ow, oh);
+      return { data: img.data, width: ow, height: oh, rect: r, scale: s };
+    } finally {
+      release(page);
+      release(out);
+    }
+  });
+}
+
+// ---------- font sheets ----------
+
+// How long a sheet waits for its fonts before drawing what it has: a family
+// that never arrives (a file gone, a webfont offline) is drawn in its
+// fallback rather than holding the agent up.
+export const FONT_LOAD_MS = 4000;
+
+// Every entry's regular face asked for and waited on, as the browser loads a
+// face only once something asks for it (the built-ins are webfonts). Where
+// there is no font set (the tests' canvas), there is nothing to wait for.
+async function loadFaces(entries, text, size) {
+  const set = typeof document !== 'undefined' ? document.fonts : null;
+  if (!set?.load) return;
+  let timer;
+  await Promise.race([
+    Promise.all(entries.map((e) => set.load(`400 ${size}px ${e.css}`, text).catch(() => null))),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, FONT_LOAD_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
+// `entries` [{ n, name, css, missing }] in sheet order: each drawn as its
+// number and name in a plain UI face over `text` set in the entry's own CSS
+// family. Returns `{ png, mime, width, height, cells: [{ n, name, row, col,
+// size }] }`, `size` being the sample's font px after any shrink to fit.
+export async function renderFontSheet(entries, { text, maxSide = MAX_SIDE } = {}) {
+  const L = fontSheetLayout(entries.length, { maxSide });
+  const list = entries.slice(0, L.cells.length);
+  await loadFaces(list, text, L.sample);
+  const out = newCanvas(Math.max(1, L.width), Math.max(1, L.height));
+  try {
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, out.width, out.height);
+    const cells = list.map((e, i) => {
+      const k = L.cells[i];
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(k.x, k.y, k.w, k.h);
+      ctx.clip();
+      // Every other row on a faint band, so a sample cannot be read as the
+      // next row's.
+      if (k.row % 2 === 0) {
+        ctx.fillStyle = '#f4f4f5';
+        ctx.fillRect(k.x, k.y, k.w, k.h);
+      }
+      ctx.textBaseline = 'top';
+      ctx.font = `bold ${L.label}px sans-serif`;
+      ctx.fillStyle = '#52525b';
+      const tag = `${e.n}. ${e.name}`;
+      ctx.fillText(tag, k.x + 8, k.y + 4);
+      if (e.missing) {
+        const w = ctx.measureText(tag).width;
+        ctx.fillStyle = '#dc2626';
+        ctx.fillText('  missing: drawn in a fallback', k.x + 8 + w, k.y + 4);
+      }
+      // The sample on a baseline under the label, shrunk to fit the cell.
+      const room = k.w - 16;
+      ctx.font = `400 ${L.sample}px ${e.css}`;
+      const size = fitSampleSize(L.sample, ctx.measureText(text).width, room);
+      if (size !== L.sample) ctx.font = `400 ${size}px ${e.css}`;
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = '#111111';
+      ctx.fillText(text, k.x + 8, k.y + L.label + 8 + Math.round(L.sample * 0.85));
+      ctx.restore();
+      return { n: e.n, name: e.name, row: k.row, col: k.col, size };
+    });
+    const img = encodeCanvas(out);
+    return { ...img, width: out.width, height: out.height, cells };
+  } finally {
+    release(out);
+  }
 }
 
 // ---------- proof sheets ----------
