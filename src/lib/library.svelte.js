@@ -1319,6 +1319,15 @@ async function chapterFile(projectId, chapterId) {
   return { c, path: await fsx.join(c.dir, 'chapter.json') };
 }
 
+// A closed chapter's record as written, for a reader that looks across the
+// series (the lettering setup reads which fonts other chapters' boxes use).
+// Read-only; the open chapter is the editor's and is refused like any read
+// that must agree with the file.
+export async function readChapterRecord(projectId, chapterId) {
+  const { path } = await chapterFile(projectId, chapterId);
+  return readJson(path);
+}
+
 export async function listChapterSnapshots(projectId, chapterId) {
   const { c } = await chapterFile(projectId, chapterId);
   return listSnapshots(c.dir);

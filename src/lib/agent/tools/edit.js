@@ -12,7 +12,7 @@ import { defineTool, ToolError, nearest } from '../registry.js';
 import { selectBoxes } from '../select.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
-import { applyCase, breaksFor } from '../../measure.js';
+import { applyCase, breaksFor, brokenLines } from '../../measure.js';
 import { normalizeAuto } from '../../data.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
@@ -40,17 +40,25 @@ import {
   lineByN,
   boxText,
   isTranslateMode,
+  withSpeakerTag,
+  setLineSpeaker,
+  dropBoxOutline,
 } from '../../store.svelte.js';
 import { setLineTags, normalizeTagName, styleForLine } from '../../tags.svelte.js';
 import { applyTextRules } from '../../text-rules.js';
-import { guide } from '../../guide.svelte.js';
+import { letteringSetUp } from '../../lettering.js';
+import { guide, guideBound, termById } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
 import { sfxAvailable, sfxPresets, applySfxPreset, clearSfx } from '../../sfx.js';
+import { WARP_PRESETS, WARP_PRESET_NOTES, warpPresetPts } from '../../warp-presets.js';
 
-const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box'];
-const DO_NAMED = ['preset:', 'sfx:'];
+const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box'];
+const DO_NAMED = ['preset:', 'sfx:', 'warp:'];
+// "warp:<kind>" alone bends by this much (percent of the kind's strongest).
+export const WARP_DEFAULT_AMOUNT = 50;
+const WARP_AMOUNT = /^[+-]?\d+(\.\d+)?$/;
 const DO_LATER = { match_angle: 'match_angle comes with chapter mode; set geometry.rotation for now.' };
-const SET_KEYS = ['text', 'style', 'sizing', 'geometry', 'breaks', 'tags', 'locks', 'outline', 'note'];
+const SET_KEYS = ['text', 'style', 'sizing', 'geometry', 'breaks', 'tags', 'speaker', 'locks', 'outline', 'note'];
 const SIZE_RANGE = [4, 300];
 const GEOM_KEYS = ['x', 'y', 'w', 'h', 'rotation'];
 // A preset is a look, not a placement (Inspector.svelte `PRESET_SKIP`).
@@ -67,14 +75,17 @@ const DESCRIPTION = [
   'sizing { ref, min } (the size aimed for and the least it may shrink to, px; min null is the chapter floor),',
   'geometry { x, y, w, h, rotation } in page px and degrees (x and y are the top-left corner; the solver keeps what is given, the place by its centre; locks undo it),',
   'breaks ["line one", "line two", ...] the box\'s lines exactly, in order (no added hyphens), held until null clears them; needs outline fit (do "typeset"),',
-  'tags (the line\'s tags, replaced whole; the box takes the tags\' style),',
+  'tags (the line\'s tags, replaced whole; the box takes the tags\' style), speaker (the id of the character who says the line, from lettering get or guide, or null; the box takes their font),',
   'locks { size, width, height, pos, breaks } booleans, outline [[x, y], ...] a drawn bubble outline (3+ points, unapproved, the text typeset again inside it), note (a note on the outline for the user).',
   'do: "typeset" (outline fit: style.margin 0.5 em unless set, balloon fit on, then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
-  '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "refit_outline" (find the bubble under the box again),',
+  '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "free" (balloon fit off and the outline dropped: text drawn on the art, an SFX or sign the finder wrapped in an outline, laid out from itself where it stands), "refit_outline" (find the bubble under the box again),',
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
   '"outline_to_box" (the box rectangle as its outline), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
-  '"preset:<name or id>", "sfx:<name or id>" (Rust engine only), "clear_sfx", "duplicate", "delete".',
+  '"preset:<name or id>", "sfx:<name or id>" (Rust engine only), "clear_sfx", "duplicate", "delete",',
+  `"warp:<kind>" or "warp:<kind>:<amount>" (a mesh bend of the whole box, Photoshop-style; amount -100..100, default ${WARP_DEFAULT_AMOUNT}, negative bends the other way; replaces any mesh the box had), "warp:off" (mesh off and cleared). Kinds: ` +
+    WARP_PRESETS.map((k) => `${k} (${WARP_PRESET_NOTES[k]})`).join(', ') + '.',
+  'Other curves: style.curve (a simple arc of the lines), style.circle (text round a ring), style.path (text along bezier anchors you give); path beats circle beats curve, and a warp bends whatever they drew.',
   'Numbers may be relative: "+2", "-2", "*1.1". All ops are checked first; any bad value changes nothing. dryRun: true checks and counts only.',
   'Each page changed is one undo step for the user. The result gives matched, changed ids, the checks for the changed boxes, and fit: each box against its outline in numbers.',
   '',
@@ -115,6 +126,7 @@ const input = {
                 properties: Object.fromEntries(GEOM_KEYS.map((k) => [k, { type: ['number', 'string'] }])),
               },
               tags: { type: 'array', items: { type: 'string' } },
+              speaker: { type: ['string', 'null'] },
               locks: {
                 type: 'object',
                 additionalProperties: false,
@@ -151,6 +163,26 @@ function findNamed(list, name, what, i) {
     fail(i, 'do', `no ${what} "${name}"`, `close: ${nearest(name, names).join(', ') || '(none)'}.`);
   }
   return hit;
+}
+
+// "arc", "arc:-30" or "off" (what follows "warp:"), as a `do`.
+function parseWarp(spec, i) {
+  const [name = '', amount, ...extra] = spec.split(':').map((t) => t.trim());
+  const kind = name.toLowerCase();
+  if (kind === 'off') {
+    if (amount != null) fail(i, 'do', '"warp:off" takes no amount');
+    return { kind: 'warp', preset: null };
+  }
+  if (!WARP_PRESETS.includes(kind)) {
+    fail(i, 'do', `no warp "${name}"`, `close: ${nearest(name, WARP_PRESETS).join(', ')}. Kinds: ${WARP_PRESETS.join(', ')}, or off.`);
+  }
+  if (extra.length) fail(i, 'do', `"warp:${spec}" has too many parts`, 'use "warp:<kind>" or "warp:<kind>:<amount>", e.g. "warp:arc:-30".');
+  let n = WARP_DEFAULT_AMOUNT;
+  if (amount != null) {
+    n = WARP_AMOUNT.test(amount) ? Number(amount) : NaN;
+    if (!Number.isFinite(n) || n < -100 || n > 100) fail(i, 'do', `warp amount "${amount}" is not a number from -100 to 100`, 'a percentage, e.g. "warp:arc:30"; negative bends the other way.');
+  }
+  return { kind: 'warp', preset: kind, amount: n };
 }
 
 // One op, checked and resolved: what it will touch and how. Throws on any bad
@@ -235,7 +267,7 @@ function compile(op, i) {
           }
           const text = applyCase(set.text ?? boxText(m.box, m.page), style);
           if (!breaksFor(text, style, style.size, set.breaks.map((t) => applyCase(t, style)))) {
-            fail(i, 'set.breaks', `the lines are not box ${m.box.id}'s text`, 'give every word of the text once, in order, split into lines; box shows the text.');
+            fail(i, 'set.breaks', `the lines are not box ${m.box.id}'s text`, 'give every word of the text once, in order, split into lines, with its letters and capitals exactly as the text has them; box shows the text.');
           }
         }
       }
@@ -248,6 +280,15 @@ function compile(op, i) {
       const lineless = matches.filter((m) => !m.line).map((m) => m.box.id);
       if (lineless.length) fail(i, 'set.tags', `box ${lineless.slice(0, 5).join(', ')} has no line to tag`, 'leave those out with where.not: { ids: [...] }.');
       set.tags = tags;
+    }
+    if ('speaker' in s) {
+      if (s.speaker !== null && !(typeof s.speaker === 'string' && termById(s.speaker)?.character)) {
+        const ids = guide.glossary.filter((t) => t.character).map((t) => t.id);
+        fail(i, 'set.speaker', `no character "${s.speaker}"`, ids.length ? `ids: ${nearest(String(s.speaker), ids).join(', ')}.` : 'the guide has no characters: lettering set characters [{ name, font }] adds one.');
+      }
+      const lineless = matches.filter((m) => !m.line).map((m) => m.box.id);
+      if (lineless.length) fail(i, 'set.speaker', `box ${lineless.slice(0, 5).join(', ')} has no line to give a speaker`, 'leave those out with where.not: { ids: [...] }.');
+      set.speaker = s.speaker;
     }
     if ('locks' in s) {
       if (!object(s.locks)) fail(i, 'set.locks', 'expected { size, width, height, pos, breaks } booleans');
@@ -281,6 +322,8 @@ function compile(op, i) {
     else if (d.startsWith('sfx:')) {
       if (!sfxAvailable()) fail(i, 'do', 'SFX lettering needs the Rust text engine', 'it is off in this app; leave SFX to the user.');
       out.do = { kind: 'sfx', preset: findNamed(sfxPresets(), d.slice(4), 'SFX preset', i) };
+    } else if (d.startsWith('warp:')) {
+      out.do = parseWarp(d.slice(5), i);
     } else {
       fail(i, 'do', `unknown action "${d}"`, `close: ${nearest(d, [...DO_PLAIN, ...DO_NAMED]).join(', ')}.`);
     }
@@ -291,15 +334,24 @@ function compile(op, i) {
 
 // The parts of `set` that `editBoxes` records: text, style, geometry, tags.
 function writeSet(set, matches) {
-  const hasBoxPart = set.text != null || set.style || set.geometry || set.tags || set.sizing || 'breaks' in set;
+  const hasBoxPart = set.text != null || set.style || set.geometry || set.tags || 'speaker' in set || set.sizing || 'breaks' in set;
   if (!hasBoxPart) return [];
   const changed = editBoxes(
     matches.map((m) => ({ page: m.page, box: m.box })),
     (b, p) => {
-      if (set.tags) {
+      // Lines held by a lock are kept keyed to the face and size they were
+      // measured in (measure.js `breaksKey`), so a style change below would
+      // void them while the lock still shows: read them now, key them to the
+      // new style at the end.
+      const held = set.text == null && !('breaks' in set) ? heldLines(b, p) : null;
+      if (set.tags || 'speaker' in set) {
         const ln = lineByN(p, b.lineN);
-        setLineTags(ln, set.tags);
-        b.style = cloneStyle(styleForLine(ln, cloneStyle(b.style)));
+        if (set.tags) setLineTags(ln, set.tags);
+        // The app's own speaker change: one undo step of its own.
+        if ('speaker' in set) setLineSpeaker(p, ln.n, set.speaker);
+        // The order placement reads them in: a speaker's voice first on a
+        // spoken line, so re-tagging a character's box keeps their font.
+        b.style = cloneStyle(styleForLine(withSpeakerTag(ln), cloneStyle(b.style)));
       }
       if (set.style) {
         const before = b.style.size;
@@ -359,9 +411,22 @@ function writeSet(set, matches) {
           }
         }
       }
+      if (held) {
+        const st = b.style;
+        const brk = breaksFor(applyCase(boxText(b, p), st), st, st.size, held.map((t) => applyCase(t, st)));
+        if (brk) b.auto.breaks = brk;
+      }
     },
   );
   return changed.map((t) => t.box.id);
+}
+
+// The lines a box holds under a breaks lock, as it draws them now. Null when
+// none are held, or they no longer match the box's text, face and size.
+function heldLines(b, p) {
+  if (!b.auto?.locks?.breaks || !b.auto.breaks) return null;
+  const st = b.style;
+  return brokenLines(applyCase(boxText(b, p), st), st, st.size, b.auto.breaks);
 }
 
 function writeNote(note, matches) {
@@ -416,6 +481,7 @@ function writeDo(d, matches) {
   const created = [];
   const deleted = [];
   const unsplit = [];
+  const noBalloon = [];
   if (d.kind === 'approve_outline') {
     const byPage = new Map();
     for (const m of matches) byPage.set(m.page, [...(byPage.get(m.page) ?? []), m.box]);
@@ -430,7 +496,7 @@ function writeDo(d, matches) {
     const r = typesetMatches(matches, { auto: d.kind === 'auto' });
     return { changed: r, created, deleted };
   }
-  if (['preset', 'sfx', 'clear_sfx', 'apply_guide'].includes(d.kind)) {
+  if (['preset', 'sfx', 'clear_sfx', 'apply_guide', 'warp'].includes(d.kind)) {
     const out = editBoxes(
       matches.map((m) => ({ page: m.page, box: m.box })),
       (b, p) => {
@@ -448,9 +514,20 @@ function writeDo(d, matches) {
         } else if (d.kind === 'clear_sfx') {
           if (!b.style.sfx?.on) return false;
           clearSfx(b.style, b);
+        } else if (d.kind === 'warp') {
+          // Built on the box's own rectangle: the mesh is box-local, and a
+          // warped box keeps its rectangle from here on (store.svelte.js,
+          // "hand-placed"), so the bend stays where it was made.
+          if (!d.preset) {
+            if (!b.style.warp?.on && !b.style.warp?.pts?.length) return false;
+            b.style.warp = { ...b.style.warp, on: false, pts: [] };
+          } else {
+            const { cols, rows, pts } = warpPresetPts(d.preset, d.amount, b.w, b.h);
+            b.style.warp = { on: true, cols, rows, pts };
+          }
         } else {
           const ln = b.lineN != null ? lineByN(p, b.lineN) : null;
-          if (ln) b.style = cloneStyle(styleForLine(ln, cloneStyle(b.style)));
+          if (ln) b.style = cloneStyle(styleForLine(withSpeakerTag(ln), cloneStyle(b.style)));
           const text = boxText(b, p);
           const ruled = applyTextRules(text, guide.rules);
           if (ruled !== text) setBoxText(b, ruled, p, { fit: false });
@@ -473,20 +550,26 @@ function writeDo(d, matches) {
     }
     const before = fingerprint(b);
     if (d.kind === 'refit') retypesetBox(id, p);
-    else if (d.kind === 'refit_outline') refitBalloon(id, p);
+    else if (d.kind === 'refit_outline') {
+      if (!refitBalloon(id, p)) noBalloon.push(id);
+    }
     else if (d.kind === 'outline_to_box') outlineToBox(id, p);
     else if (d.kind === 'split_outline') {
       const pts = splitBoxOutline(b, p);
       if (pts) commitOutlinePoints(id, pts, p);
       else unsplit.push(id);
     }
+    else if (d.kind === 'free') {
+      if (b.style.balloon !== false) toggleBalloonFit(id, p);
+      dropBoxOutline(id, p);
+    }
     else if (d.kind === 'fit_balloon') {
       if (b.style.balloon === false) toggleBalloonFit(id, p);
-      else if (!b.fit) refitBalloon(id, p);
+      else if (!b.fit && !refitBalloon(id, p)) noBalloon.push(id);
     }
     if (fingerprint(b) !== before) changed.push(id);
   }
-  return { changed, created, deleted, unsplit };
+  return { changed, created, deleted, unsplit, noBalloon };
 }
 
 // The piece of a box's outline that holds its text, cut from a joined bubble
@@ -533,6 +616,7 @@ function runOp(c) {
     if (r.created.length) out.created = r.created;
     if (r.deleted.length) out.deleted = r.deleted;
     if (r.unsplit?.length) out.notSplit = { ids: r.unsplit, why: 'no neck found in the outline; draw the outline (set.outline) instead' };
+    if (r.noBalloon?.length) out.noBalloon = { ids: r.noBalloon, why: 'no balloon found under the box (the box now lays out in a rectangle if it had an outline); draw the outline (set.outline) instead' };
     if (c.do.kind === 'approve_outline') {
       const open = c.matches.filter((m) => !m.box.fit).length;
       if (open) out.notApproved = { count: open, why: 'no outline to approve: draw one (set.outline) or use outline_to_box' };
@@ -580,6 +664,11 @@ defineTool({
         const fit = fitsFor(ids);
         return { ...r, checks: checksOf(ids), ...(fit.length ? { fit } : null) };
       }),
+      // The setup comes first (instructions.js): a reminder, never a refusal,
+      // since a user may ask for one quick change before any setup.
+      ...(guideBound() && !letteringSetUp(guide.lettering)
+        ? { lettering: 'not set up: before lettering more, ask the user the lettering get questions and save them with lettering set' }
+        : null),
     };
   },
 });

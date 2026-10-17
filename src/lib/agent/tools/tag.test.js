@@ -5,8 +5,9 @@ vi.mock('../../library.svelte.js', async (orig) => ({ ...(await orig()), chapter
 
 const { app, loadProjectPages } = await import('../../store.svelte.js');
 const { bindTags, unbindTags, findTag } = await import('../../tags.svelte.js');
+const { bindGuide, unbindGuide } = await import('../../guide.svelte.js');
 const { callTool } = await import('../registry.js');
-const { callContext, __resetRun } = await import('../run.svelte.js');
+const { callContext, revertRun, __resetRun } = await import('../run.svelte.js');
 await import('./tag.js');
 
 const call = (args) => callTool('tag', args, callContext('mcp'));
@@ -18,10 +19,14 @@ beforeEach(() => {
   app.chapterRef = { projectId: 'p', chapterId: 'c' };
   app.fonts = { user: [{ name: 'CCVictorySpeech Regular' }], builtin: [{ name: 'Comic Neue' }], system: [] };
   bindTags({ list: [{ name: 'speech', style: { color: '#111111' }, size: 18, minSize: 14 }] }, saved);
-  loadProjectPages([]);
+  bindGuide({}, vi.fn());
+  loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [], boxes: [] }]);
   __resetRun();
 });
 afterEach(() => {
+  __resetRun();
+  loadProjectPages([]);
+  unbindGuide();
   unbindTags();
   app.fonts = originalFonts;
   app.chapterRef = null;
@@ -54,5 +59,12 @@ describe('tag', () => {
       expect(r.error).toMatch(re);
     }
     expect(findTag('speech')).toMatchObject({ size: 18, minSize: 14, style: { color: '#111111' } });
+  });
+
+  it('is part of the run, so Revert puts the tag back', async () => {
+    expect((await call({ name: 'speech', style: { font: 'Comic Neue' } })).ok).toBe(true);
+    expect(findTag('speech').style.font).toBe('Comic Neue');
+    revertRun();
+    expect(findTag('speech').style).toEqual({ color: '#111111' });
   });
 });

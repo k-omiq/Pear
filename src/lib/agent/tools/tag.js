@@ -55,10 +55,11 @@ defineTool({
     const minOf = patch.minSize !== undefined ? patch.minSize : findTag(n)?.minSize;
     const sizeOf = patch.size !== undefined ? patch.size : findTag(n)?.size;
     if (minOf != null && sizeOf != null && minOf > sizeOf) throw new ToolError('minSize is above size', 'the least size is at most the size aimed for.');
-    ctx?.guard?.();
     // Merged over what the tag holds, so a font set today keeps yesterday's colour.
     if (patch.style && Object.keys(patch.style).length) patch.style = { ...(findTag(n)?.style ?? {}), ...patch.style };
-    saveTagDefaults(n, patch);
+    // A part of the series record, so the run's Revert puts it back.
+    if (ctx?.writeGuide) ctx.writeGuide(() => saveTagDefaults(n, patch));
+    else saveTagDefaults(n, patch);
     const t = knownTags(app.pages).find((x) => x.name === n) ?? findTag(n);
     return { tag: snapshot(t) };
   },

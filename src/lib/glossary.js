@@ -5,14 +5,16 @@
 // drifts - marked `character`, with a stable `id` a line's `speaker` points at
 // and an optional tag its boxes take their style from.
 //
-// Pure: no store, no filesystem, so the matcher can be tested in node and the
-// check list, the queue's chips and (later) the agent's `check` all share it.
+// Pure: reads no store and no filesystem (the tag-name rule it borrows is a
+// plain function), so the matcher can be tested in node and the check list, the queue's chips and (later) the agent's `check` all share it.
 //
 // The matching rule follows Komatose's `glossary.ts` (see THIRD-PARTY.md): both
 // sides folded by NFKC, case and whitespace, so full-width letters, a capital
 // at the start of a sentence and a name broken across two lines all still
 // match; a term shorter than 2 characters after folding is never checked,
 // because one kana or one letter is found inside almost anything.
+
+import { normalizeTagName } from './tags.svelte.js';
 
 const MAX_TERM = 100;
 const MAX_NOTE = 2000;
@@ -48,7 +50,9 @@ export function sanitizeTerm(raw) {
     // change. Every term made by hand is locked; absent reads as locked.
     locked: raw.locked !== false,
     character: raw.character === true,
-    tag: typeof raw.tag === 'string' && raw.tag.trim() ? raw.tag.trim() : null,
+    // Spelled as the tag registry spells names, so a hand-typed "Voice Mom"
+    // finds the tag `voice mom` its font is kept on.
+    tag: normalizeTagName(raw.tag),
   };
 }
 

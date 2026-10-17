@@ -71,6 +71,28 @@ describe('check', () => {
     expect(issues.every((issue) => CHECK_REASONS.includes(issue.kind))).toBe(true);
   });
 
+  it('reports a box out of its role\'s font and text the tone of its balloon', async () => {
+    const { bindTags, unbindTags } = await import('../../tags.svelte.js');
+    bindTags({ list: [{ name: 'narration', style: { font: 'Arial' } }] });
+    try {
+      app.pages[0].lines = [{ n: 1, en: 'Long ago', tags: ['narration'] }];
+      const b = app.pages[0].boxes[0];
+      Object.assign(b, { lineN: 1, fit: { kind: 'rect', x: b.x, y: b.y, w: b.w, h: b.h }, outline: { source: 'ring', confidence: 1, ink: '#ffffff' } });
+      Object.assign(b.style, { font: 'Comic Sans', color: '#000000', strokes: [] });
+      const issues = (await check({ ids: ['clean'] })).problems[0].issues;
+      expect(issues).toEqual(expect.arrayContaining([
+        { kind: 'role', detail: { want: 'Arial', have: 'Comic Sans', tag: 'narration' } },
+        { kind: 'contrast', detail: { fill: '#000000', balloon: 'dark' } },
+      ]));
+      Object.assign(b.style, { font: 'Arial', color: '#ffffff' });
+      const after = (await check({ ids: ['clean'] })).problems[0]?.issues ?? [];
+      expect(after.map((i) => i.kind)).not.toEqual(expect.arrayContaining(['role']));
+      expect(after.map((i) => i.kind)).not.toEqual(expect.arrayContaining(['contrast']));
+    } finally {
+      unbindTags();
+    }
+  });
+
   it('fences glossary targets and reports guide rules only on the first box of a split line', async () => {
     bindGuide({ glossary: [{ source: 'ヒューマン', target: payload }], rules: { dashes: 'ascii' } });
     loadProjectPages([{

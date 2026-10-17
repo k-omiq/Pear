@@ -33,7 +33,11 @@ export function resolveRelative(value, current) {
 }
 
 function merge(base, patch, path, errors) {
-  if (Array.isArray(patch)) return patch.map((it, i) => (isPlain(it) ? merge({}, it, `${path}.${i}`, errors) : copy(it)));
+  // A list given whole is new items with nothing under them, nested lists (a
+  // mask polygon's [x, y] points) included. A relative number there has no
+  // number to change and is refused; copied as it came, "+5" would reach
+  // normalizeStyle, which reads it as an absolute 5.
+  if (Array.isArray(patch)) return patch.map((it, i) => merge(undefined, it, `${path}.${i}`, errors));
   if (!isPlain(patch)) {
     const rel = resolveRelative(patch, base);
     if (rel?.error) errors.push({ path, error: rel.error });
@@ -46,6 +50,13 @@ function merge(base, patch, path, errors) {
       const i = Number(k);
       if (!Number.isInteger(i) || i < 0 || i >= out.length) {
         errors.push({ path: `${path}.${k}`, error: `no item ${k} (the list has ${out.length})` });
+        continue;
+      }
+      // An item of another kind (an ellipse over a polygon) shares no fields
+      // with the one there: merged, it is half of each, which normalizeStyle
+      // drops without a word.
+      if (isPlain(out[i]) && isPlain(v) && 'kind' in out[i] && 'kind' in v && v.kind !== out[i].kind) {
+        errors.push({ path: `${path}.${k}`, error: `item ${k} is a ${out[i].kind}; to make it a ${v.kind}, give the whole list` });
         continue;
       }
       out[i] = merge(out[i], v, `${path}.${i}`, errors);

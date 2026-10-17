@@ -170,6 +170,50 @@ export function unbindTags() {
   bindTags(null, null);
 }
 
+// ---------- an AI run's Revert ----------
+// A run keeps what it changed, tag by tag and size key by size key, and its
+// Revert puts back only that: a tag the user made or edited after the run
+// (Revert stays open after it ends) is theirs and stays. A tag only moved up
+// the recency order counts as unchanged.
+export const snapshotTags = () => ({ list: $state.snapshot(tags.list), sizes: $state.snapshot(tags.sizes) });
+export const emptyTagChanges = () => ({ list: new Map(), sizes: new Map() });
+
+// Into `kept`, the first time each one changes between two snapshots: a tag's
+// entry and place before (null: it did not exist), a size key's value before.
+export function keepTagChanges(kept, before, after) {
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  for (const name of new Set([...before.list, ...after.list].map((t) => t.name))) {
+    if (kept.list.has(name)) continue;
+    const index = before.list.findIndex((t) => t.name === name);
+    const was = before.list[index] ?? null;
+    if (!same(was, after.list.find((t) => t.name === name) ?? null)) kept.list.set(name, was ? { entry: was, index } : null);
+  }
+  for (const key of new Set([...Object.keys(before.sizes), ...Object.keys(after.sizes)])) {
+    if (!kept.sizes.has(key) && before.sizes[key] !== after.sizes[key]) kept.sizes.set(key, before.sizes[key] ?? null);
+  }
+}
+
+export const tagChangesKept = (kept) => kept.list.size > 0 || kept.sizes.size > 0;
+
+// What `keepTagChanges` kept, put back over the registry as it is now, and saved.
+export function restoreTagChanges(kept) {
+  if (!saver || !tagChangesKept(kept)) return false;
+  // Copies through `snapshotTags`: see `snapshotGuide` for why not here.
+  let { list, sizes } = snapshotTags();
+  for (const [name, was] of kept.list) {
+    list = list.filter((t) => t.name !== name);
+    if (was) list.splice(Math.min(was.index, list.length), 0, was.entry);
+  }
+  for (const [key, was] of kept.sizes) {
+    if (was == null) delete sizes[key];
+    else sizes[key] = was;
+  }
+  tags.list = sanitizeTags(list);
+  tags.sizes = sanitizeTagSizes(sizes);
+  save();
+  return true;
+}
+
 function save() {
   if (!saver) return;
   try {

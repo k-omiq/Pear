@@ -77,13 +77,14 @@ export function panelCrossings(p, { tolerance = 3 } = {}) {
   return crossings;
 }
 
-/** Group finite numeric sizes by their first caller-supplied tag. */
-export function sizeOutliers(p, tagsOf = () => [], { ratio = 1.35, minGroup = 3 } = {}) {
+/** Group finite numeric sizes by their first caller-supplied tag; tags in `skip` are not checked. */
+export function sizeOutliers(p, tagsOf = () => [], { ratio = 1.35, minGroup = 3, skip = [] } = {}) {
   const groups = new Map();
   for (const b of boxesOf(p)) {
     const size = b?.style?.size;
     if (!Number.isFinite(size)) continue;
     const tag = tagsOf(b)?.[0] ?? 'untagged';
+    if (skip.includes(tag)) continue;
     if (!groups.has(tag)) groups.set(tag, []);
     groups.get(tag).push({ boxId: b.id, size });
   }

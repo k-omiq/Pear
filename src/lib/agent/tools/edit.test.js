@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let seq = 1;
 vi.mock('../../library.svelte.js', async (orig) => ({ ...(await orig()), chapterOpenSeq: () => seq }));
 
-const { app, loadProjectPages, pageById, settleEdits } = await import('../../store.svelte.js');
+const { app, loadProjectPages, pageById, settleEdits, pageCheckItems } = await import('../../store.svelte.js');
 const { initHistory, resetHistory, undo, peekStack } = await import('../../editor/history.svelte.js');
 const { callContext, revertRun, stopRun, __resetRun } = await import('../run.svelte.js');
 const { callTool } = await import('../registry.js');
@@ -12,7 +12,8 @@ const { bindTags, unbindTags } = await import('../../tags.svelte.js');
 const { bindGuide, unbindGuide } = await import('../../guide.svelte.js');
 const { presets } = await import('../../presets.svelte.js');
 const { defaultStyle } = await import('../../data.js');
-await import('./edit.js');
+const { warpPresetPts } = await import('../../warp-presets.js');
+const { WARP_DEFAULT_AMOUNT } = await import('./edit.js');
 await import('./place.js');
 
 const copy = (v) => JSON.parse(JSON.stringify(v));
@@ -238,6 +239,19 @@ describe('edit: size, geometry and lines for the solver', () => {
     expect(a().auto.locks.breaks).toBe(false);
   });
 
+  it('keeps held lines through a later change of size, spacing or face', async () => {
+    const { brokenLines, applyCase } = await import('../../measure.js');
+    const { boxText } = await import('../../store.svelte.js');
+    const lines = () => brokenLines(applyCase(boxText(a(), pageById(1)), a().style), a().style, a().style.size, a().auto.breaks);
+    await call({ ops: [{ where: { ids: ['a'] }, set: { style: { margin: 0.5 }, breaks: ['Hello', 'there…'] } }] });
+    for (const style of [{ size: 26 }, { letterSpacing: 2 }, { bold: true }]) {
+      const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style } }] });
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(a().auto.locks.breaks).toBe(true);
+      expect(lines()).toEqual(['Hello', 'there…']);
+    }
+  });
+
   it('typesets by outline fit, and "auto" lets every lock go', async () => {
     a().auto.locks.size = true;
     a().auto.locks.width = true;
@@ -278,6 +292,93 @@ describe('edit: split_outline', () => {
     const again = await call({ ops: [{ where: { ids: ['a'] }, do: 'split_outline' }] });
     expect(again.result.ops[0].notSplit.ids).toEqual(['a']);
   });
+
+  it('sets a box free of its outline, with nothing left to flag', async () => {
+    const p = pageById(1);
+    p.boxes[0].fit = { kind: 'poly', pts: copy(dumbbell) };
+    p.boxes[0].outline = { source: 'dark', confidence: 0.3, approved: null };
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'free' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(p.boxes[0].fit).toBeNull();
+    expect(p.boxes[0].style.balloon).toBe(false);
+    expect(p.boxes[0].outline).toMatchObject({ open: true });
+    expect(pageCheckItems(p, 0).filter((it) => it.boxId === 'a').map((it) => it.reason)).not.toContain('open');
+  });
+
+  it('says so when no balloon is found under a box to refit', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'refit_outline' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.ops[0].noBalloon).toMatchObject({ ids: ['a'], why: expect.stringContaining('no balloon found') });
+  });
+});
+
+describe('edit: warp presets', () => {
+  const a = () => pageById(1).boxes[0];
+
+  it('bends a box with its own size, one undo step, and undo puts it back', async () => {
+    const start = copy(a().style.warp);
+    const r = await call({ ops: [{ where: { ids: ['a'] }, do: 'warp:arc' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.ops[0]).toMatchObject({ matched: 1, changed: ['a'] });
+    const want = warpPresetPts('arc', WARP_DEFAULT_AMOUNT, 160, 60);
+    expect(copy(a().style.warp)).toEqual({ on: true, cols: want.cols, rows: want.rows, pts: want.pts });
+    expect(peekStack().undo).toHaveLength(1);
+    undo();
+    expect(copy(a().style.warp)).toEqual(start);
+  });
+
+  it('takes an amount, negative too, on every box it matches, each by its own rectangle', async () => {
+    pageById(2).boxes[0].w = 300;
+    const r = await call({ ops: [{ where: { pages: 'all' }, do: 'warp:flag:-30' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.ops[0].changed).toEqual(['a', 'b', 'c']);
+    expect(copy(a().style.warp.pts)).toEqual(warpPresetPts('flag', -30, 160, 60).pts);
+    expect(copy(pageById(2).boxes[0].style.warp.pts)).toEqual(warpPresetPts('flag', -30, 300, 60).pts);
+    // One step per page.
+    expect(peekStack().undo).toHaveLength(2);
+  });
+
+  it('is case- and space-tolerant, and a later warp replaces the mesh', async () => {
+    await call({ ops: [{ where: { ids: ['a'] }, do: ' warp: Bulge : 20 ' }] });
+    expect(copy(a().style.warp.pts)).toEqual(warpPresetPts('bulge', 20, 160, 60).pts);
+    await call({ ops: [{ where: { ids: ['a'] }, do: 'warp:rise:+100' }] });
+    expect(copy(a().style.warp.pts)).toEqual(warpPresetPts('rise', 100, 160, 60).pts);
+  });
+
+  it('"warp:off" turns the mesh off and clears it, and is nothing on a box with no mesh', async () => {
+    await call({ ops: [{ where: { ids: ['a'] }, do: 'warp:wave:40' }] });
+    const r = await call({ ops: [{ where: { ids: ['a', 'b'] }, do: 'warp:off' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.ops[0].changed).toEqual(['a']);
+    expect(copy(a().style.warp)).toMatchObject({ on: false, pts: [] });
+  });
+
+  it('works beside a set in the same op, the warp built on the new size', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { geometry: { w: 200, h: 100 } }, do: 'warp:arch:25' }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(copy(a().style.warp.pts)).toEqual(warpPresetPts('arch', 25, 200, 100).pts);
+  });
+
+  it('refuses an unknown kind with the nearest names, and an amount out of range or not a number', async () => {
+    const start = copy(app.pages.map((p) => p.boxes));
+    const unknown = await call({ ops: [{ where: { ids: ['a'] }, do: 'warp:arcc' }] });
+    expect(unknown.ok).toBe(false);
+    expect(unknown.error).toMatch(/ops\[0\]\.do: no warp "arcc"/);
+    expect(unknown.hint).toMatch(/close: arc/);
+    for (const bad of ['warp:arc:150', 'warp:arc:-101', 'warp:arc:lots', 'warp:arc:', 'warp:arc:1e2', 'warp:off:3', 'warp:arc:10:2', 'warp:']) {
+      const r = await call({ ops: [{ where: { ids: ['a'] }, do: bad }] });
+      expect(r.ok, bad).toBe(false);
+      expect(r.error, bad).toMatch(/ops\[0\]\.do/);
+    }
+    expect(copy(app.pages.map((p) => p.boxes))).toEqual(start);
+    expect(peekStack().undo).toHaveLength(0);
+  });
+
+  it('dryRun counts and writes nothing', async () => {
+    const r = await call({ ops: [{ where: { pages: 'all' }, do: 'warp:squeeze' }], dryRun: true });
+    expect(r.result.ops[0].matched).toBe(3);
+    expect(a().style.warp.on).toBe(false);
+  });
 });
 
 describe('add', () => {
@@ -297,5 +398,22 @@ describe('add', () => {
     const bad = await callTool('add', { page: 1, line: 1, at: [50, 50] }, callContext('mcp'));
     expect(bad.ok).toBe(false);
     expect(bad.error).toMatch(/already has a box/);
+  });
+
+  it('keeps the rect and the size it is given, with no balloon fit', async () => {
+    const r = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80], style: { size: 30 } }, callContext('mcp'));
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const b = pageById(1).boxes.find((x) => x.id === r.result.id);
+    expect(b).toMatchObject({ x: 300, y: 400, w: 200, h: 80 });
+    expect(b.style.balloon).toBe(false);
+    if (b.auto) expect(b.auto.refSize).toBe(30);
+  });
+
+  it('gives a line a box again after its box was deleted', async () => {
+    const first = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80] }, callContext('mcp'));
+    await call({ ops: [{ where: { ids: [first.result.id] }, do: 'delete' }] });
+    const again = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80] }, callContext('mcp'));
+    expect(again.ok, JSON.stringify(again)).toBe(true);
+    expect(pageById(1).boxes.filter((x) => x.lineN === 3)).toHaveLength(1);
   });
 });

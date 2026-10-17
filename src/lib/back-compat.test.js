@@ -848,6 +848,14 @@ describe('a project.json from before the series guide', () => {
     expect(g.notes).toBe('Screams tilt with the balloon.');
     expect(g.typeset).toEqual({ defaultHyphenate: false });
   });
+
+  // A guide written before the lettering style: not set up, so the AI asks.
+  it('reads a guide with no lettering as not set up, and keeps one it wrote', () => {
+    expect(sanitizeGuide({ notes: 'x' }).lettering).toEqual({ freedom: null, notes: '' });
+    expect(sanitizeGuide({ lettering: { freedom: 'wild', notes: 7 } }).lettering).toEqual({ freedom: null, notes: '' });
+    expect(sanitizeGuide({ lettering: { freedom: 'balanced', notes: 'SFX match the art.' } }).lettering)
+      .toEqual({ freedom: 'balanced', notes: 'SFX match the art.' });
+  });
 });
 
 describe('a presets blob from the last release', () => {

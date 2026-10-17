@@ -115,6 +115,11 @@ describe('sizeOutliers', () => {
     ]);
   });
 
+  it('leaves out the groups it is told to skip', () => {
+    const boxes = [10, 20, 20, 20, 40].map((size, i) => sized(`b${i}`, size, ['title']));
+    expect(sizeOutliers({ boxes }, tagsOf, { skip: ['title'] })).toEqual([]);
+  });
+
   it('averages the middle two sizes for even groups and defaults to untagged', () => {
     const boxes = [10, 18, 22, 40].map((size, i) => sized(`b${i}`, size));
     expect(sizeOutliers({ boxes }, tagsOf)).toEqual([

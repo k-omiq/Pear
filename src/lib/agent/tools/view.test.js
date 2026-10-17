@@ -86,7 +86,7 @@ describe('view: input', () => {
     [{ target: { page: '1' } }, /no page "1"/],
     [{ target: { page: 1, rect: [0, 0, 10] } }, /rect must be/],
     [{ target: { page: 1, rect: [0, 0, 0, 10] } }, /width and a height/],
-    [{ target: { page: 1 }, source: 'clean' }, /no source "clean"/],
+    [{ target: { page: 1 }, source: 'inked' }, /no source "inked"/],
     [{ target: { page: 1 }, marks: { ids: 'b1' } }, /marks.ids/],
     [{ target: { page: 1 }, scale: -1 }, /scale must be/],
     [{ target: { page: 1, where: {} } }, /not both/],
