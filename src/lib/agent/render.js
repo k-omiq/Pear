@@ -453,61 +453,95 @@ const intersects = (a, b) => a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < 
 
 // ---------- renderRegion ----------
 
+// `source: 'compare'`: the region twice at one scale - the raw scan, its
+// Japanese still on it, then the page as lettered - side by side when the
+// region is taller than wide, one above the other when it is wider, `gap` px
+// apart and tabbed "original" and "ours". An SFX is judged against the one it
+// replaces in one look: place, slant, size, weight and colour. Marks go on ours.
+export const COMPARE_GAP = 12;
+const ORIGINAL_TAB = '#b91c1c';
+const OURS_TAB = '#1d4ed8';
+
 // `p` a live page. `rect` [x, y, w, h] in page px (clamped; default the whole
 // page). Returns `{ png, mime, width, height, scale, rect, boxes }` where
-// `boxes` is each box the crop shows, with its bounds in image px.
+// `boxes` is each box the crop shows, with its bounds in image px (in the
+// "ours" panel, given as `panels`, for a compare).
 export async function renderRegion(p, rect, { scale, marks, source = 'typeset' } = {}) {
   const marksIn = marks ?? {};
+  const compare = source === 'compare';
   const boxes = (p?.boxes ?? []).map(markOf);
   return withPageImages(p, async () => {
     const { w: W, h: H } = await pageSpace(p);
     const r = clampRect(rect, W, H);
     if (!r) throw new ToolError('the rect is outside the page', `the page is ${W} x ${H} px; rect is [x, y, w, h]`);
-    const s = chooseScale(r[2], r[3], scale);
+    const across = compare && r[2] <= r[3];
+    const s = compare
+      ? chooseScale(across ? r[2] * 2 : r[2], across ? r[3] : r[3] * 2, scale, MAX_SIDE - COMPARE_GAP)
+      : chooseScale(r[2], r[3], scale);
     const [ow, oh] = outSize(r[2], r[3], s);
-    const page = await pageCanvas(p, source, s);
-    const out = newCanvas(ow, oh);
+    const [dx, dy] = !compare ? [0, 0] : across ? [ow + COMPARE_GAP, 0] : [0, oh + COMPARE_GAP];
+    const out = newCanvas(dx + ow, dy + oh);
     try {
       const ctx = out.getContext('2d');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, ow, oh);
-      ctx.drawImage(page, Math.round(r[0] * s), Math.round(r[1] * s), ow, oh, 0, 0, ow, oh);
-      release(page);
-      const map = (x, y) => [(x - r[0]) * s, (y - r[1]) * s];
+      ctx.fillStyle = '#d4d4d8';
+      ctx.fillRect(0, 0, out.width, out.height);
+      for (const [src, x, y] of compare ? [['raw', 0, 0], ['typeset', dx, dy]] : [[source, 0, 0]]) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x, y, ow, oh);
+        const page = await pageCanvas(p, src, s);
+        try {
+          ctx.drawImage(page, Math.round(r[0] * s), Math.round(r[1] * s), ow, oh, x, y, ow, oh);
+        } finally {
+          release(page);
+        }
+      }
+      const map = (x, y) => [dx + (x - r[0]) * s, dy + (y - r[1]) * s];
       const shown = boxes.filter((m) => intersects(union(m.bounds, boundsOf(m.points)), r));
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(dx, dy, ow, oh);
+      ctx.clip();
       if (marksIn.outlines) for (const m of shown) drawOutline(ctx, m, map, 2);
       if (marksIn.ids) {
         for (const m of shown) {
           if (!wantsId(marksIn.ids, m.id)) continue;
           const [lx, ly] = map(m.bounds[0], m.bounds[1]);
-          label(ctx, m.id, Math.max(0, lx), Math.max(0, ly), 14, OUTLINE_COLORS[m.state] ?? '#111827', ow);
+          label(ctx, m.id, Math.max(dx, lx), Math.max(dy, ly), 14, OUTLINE_COLORS[m.state] ?? '#111827', dx + ow);
         }
       }
-      if (marksIn.rulers) drawRulers(ctx, r, s, W, H);
+      if (marksIn.rulers) {
+        ctx.translate(dx, dy);
+        drawRulers(ctx, r, s, W, H);
+      }
+      ctx.restore();
+      if (compare) {
+        label(ctx, 'original', 0, 0, 16, ORIGINAL_TAB, ow);
+        label(ctx, 'ours', dx, dy, 16, OURS_TAB, dx + ow);
+      }
       const img = encodeCanvas(out);
       return {
         ...img,
-        width: ow,
-        height: oh,
+        width: out.width,
+        height: out.height,
         scale: s,
         rect: r,
+        ...(compare ? { panels: { original: [0, 0, ow, oh], ours: [dx, dy, ow, oh] } } : null),
         // Each box's cell in the image, cut to it: its rectangle, or, for a
         // box shown only because its outline reaches in, the outline's part.
         boxes: shown.map((m) => {
           const cell = (bx) => {
             const [x0, y0] = map(bx[0], bx[1]);
             const [x1, y1] = map(bx[0] + bx[2], bx[1] + bx[3]);
-            const cx = Math.min(ow, Math.max(0, Math.round(x0)));
-            const cy = Math.min(oh, Math.max(0, Math.round(y0)));
-            const w = Math.min(ow, Math.max(0, Math.round(x1))) - cx;
-            const h = Math.min(oh, Math.max(0, Math.round(y1))) - cy;
+            const cx = Math.min(dx + ow, Math.max(dx, Math.round(x0)));
+            const cy = Math.min(dy + oh, Math.max(dy, Math.round(y0)));
+            const w = Math.min(dx + ow, Math.max(dx, Math.round(x1))) - cx;
+            const h = Math.min(dy + oh, Math.max(dy, Math.round(y1))) - cy;
             return w > 0 && h > 0 ? { x: cx, y: cy, w, h } : null;
           };
           return { id: m.id, ...(cell(m.bounds) ?? cell(union(m.bounds, boundsOf(m.points))) ?? { x: 0, y: 0, w: 0, h: 0 }) };
         }),
       };
     } finally {
-      release(page);
       release(out);
     }
   });
@@ -624,58 +658,92 @@ export async function renderFontSheet(entries, { text, maxSide = MAX_SIDE } = {}
 const stateTag = (m) =>
   m.state === 'waiting' ? `waiting ${m.confidence == null ? '' : m.confidence.toFixed(2)}`.trim() : m.state === 'none' ? 'no outline' : m.state;
 
+// A compare cell's crop takes in where the box's line was detected too: the
+// original it replaces, which the box may have been moved off.
+function withOriginal(mark, box, p) {
+  const det = box?.lineN != null ? (p?.detect?.boxes ?? []).find((d) => d.n === box.lineN && Array.isArray(d.box) && d.box.length === 4) : null;
+  return det ? { ...mark, bounds: union(mark.bounds, [det.box[0], det.box[1], det.box[2] - det.box[0], det.box[3] - det.box[1]]) } : mark;
+}
+
+// A compare cell cut in two for its crop: one above the other for a wide
+// crop, side by side for a tall one.
+function halves(k, crop, gap = 4) {
+  if (crop[2] >= crop[3]) {
+    const h = (k.h - gap) / 2;
+    return [{ x: k.x, y: k.y, w: k.w, h }, { x: k.x, y: k.y + h + gap, w: k.w, h }];
+  }
+  const w = (k.w - gap) / 2;
+  return [{ x: k.x, y: k.y, w, h: k.h }, { x: k.x + w + gap, y: k.y, w, h: k.h }];
+}
+
 // One sheet of `items` ([{ page, box }], in the order given; pages may differ).
-// Returns `{ png, mime, width, height, cells: [{ id, x, y, w, h }] }`.
+// Returns `{ png, mime, width, height, cells: [{ id, x, y, w, h }] }`. With
+// `source: 'compare'` each cell holds the box's crop twice: the raw scan
+// (tabbed "<id> original") and ours ("ours"), with its outline on ours.
 export async function proofSheetOf(items, { cell = 360, source = 'typeset', maxSide = MAX_SIDE } = {}) {
+  const compare = source === 'compare';
   const L = sheetLayout(items.length, { cell, maxSide });
-  const rows = items.map((it, i) => ({ page: it.page, mark: markOf(it.box), cell: L.cells[i] }));
+  const rows = items.map((it, i) => ({ page: it.page, box: it.box, mark: markOf(it.box), cell: L.cells[i] }));
   const out = newCanvas(Math.max(1, L.width), Math.max(1, L.height));
   try {
     const ctx = out.getContext('2d');
     ctx.fillStyle = '#d4d4d8';
     ctx.fillRect(0, 0, out.width, out.height);
-    // One page canvas per page, at the largest scale any of its cells needs,
-    // drawn into every cell it holds and given back before the next page.
+    // One page canvas per page (and per source), at the largest scale any of
+    // its cells needs, drawn into every cell it holds and given back before
+    // the next.
     const pages = [...new Set(rows.map((r) => r.page))];
     for (const p of pages) {
       await withPageImages(p, async () => {
         const { w: W, h: H } = await pageSpace(p);
         const mine = rows.filter((r) => r.page === p);
         for (const r of mine) {
-          r.crop = cropFor(r.mark, W, H);
-          r.fit = fitInCell(r.crop[2], r.crop[3], r.cell);
+          r.crop = cropFor(compare ? withOriginal(r.mark, r.box, p) : r.mark, W, H);
+          r.parts = compare ? halves(r.cell, r.crop) : [r.cell];
+          r.fits = r.parts.map((k) => fitInCell(r.crop[2], r.crop[3], k));
         }
-        const ps = Math.min(MAX_SCALE, Math.max(...mine.map((r) => r.fit.s)));
-        const pc = await pageCanvas(p, source, ps);
-        try {
-          for (const r of mine) {
-            const { crop: c, fit: f, cell: k } = r;
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(k.x, k.y, k.w, k.h);
-            ctx.clip();
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(k.x, k.y, k.w, k.h);
-            ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(pc, c[0] * ps, c[1] * ps, c[2] * ps, c[3] * ps, f.x, f.y, f.w, f.h);
-            const map = (x, y) => [f.x + (x - c[0]) * f.s, f.y + (y - c[1]) * f.s];
-            drawOutline(ctx, r.mark, map, Math.max(1.5, k.w / 180));
-            ctx.restore();
+        const ps = Math.min(MAX_SCALE, Math.max(...mine.flatMap((r) => r.fits.map((f) => f.s))));
+        const sources = compare ? ['raw', 'typeset'] : [source];
+        for (const [n, src] of sources.entries()) {
+          const pc = await pageCanvas(p, src, ps);
+          try {
+            for (const r of mine) {
+              const c = r.crop;
+              const f = r.fits[n];
+              const k = r.parts[n];
+              ctx.save();
+              ctx.beginPath();
+              ctx.rect(k.x, k.y, k.w, k.h);
+              ctx.clip();
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(k.x, k.y, k.w, k.h);
+              ctx.imageSmoothingQuality = 'high';
+              ctx.drawImage(pc, c[0] * ps, c[1] * ps, c[2] * ps, c[3] * ps, f.x, f.y, f.w, f.h);
+              const map = (x, y) => [f.x + (x - c[0]) * f.s, f.y + (y - c[1]) * f.s];
+              if (src !== 'raw') drawOutline(ctx, r.mark, map, Math.max(1.5, r.cell.w / 180));
+              ctx.restore();
+            }
+          } finally {
+            release(pc);
           }
-        } finally {
-          release(pc);
         }
       });
     }
     // Labels last, over the crops, large.
     for (const r of rows) {
       const k = r.cell;
-      const size = Math.max(16, Math.round(k.w * 0.075));
+      const size = Math.max(16, Math.round(k.w * (compare ? 0.05 : 0.075)));
       ctx.save();
       ctx.beginPath();
       ctx.rect(k.x, k.y, k.w, k.h);
       ctx.clip();
-      label(ctx, r.mark.id, k.x, k.y, size, OUTLINE_COLORS[r.mark.state] ?? '#111827', k.x + k.w, stateTag(r.mark));
+      if (compare) {
+        const [a, b] = r.parts;
+        label(ctx, `${r.mark.id} original`, a.x, a.y, size, ORIGINAL_TAB, a.x + a.w);
+        label(ctx, 'ours', b.x, b.y, size, OURS_TAB, b.x + b.w);
+      } else {
+        label(ctx, r.mark.id, k.x, k.y, size, OUTLINE_COLORS[r.mark.state] ?? '#111827', k.x + k.w, stateTag(r.mark));
+      }
       ctx.restore();
     }
     const img = encodeCanvas(out);

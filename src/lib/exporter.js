@@ -829,18 +829,33 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
   });
 }
 
-export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false) {
+//
+// `at` is for the editor's picture alone: where the box's top-left lands on
+// the screen, in device px, when the picture is to be set on whole device
+// pixels (`pictureCss`). The picture is then painted moved by the fraction of
+// a pixel its corner falls short of one (`phase`), so a canvas set on the
+// pixel grid shows the letters exactly where they belong rather than up to
+// half a pixel off - a different half at every zoom. Only for a box the
+// painter paints whole and that no texture warp resamples afterwards, and
+// only at the scale asked for; null paints at the corner, as the export does.
+export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null) {
   const { L, F, foot } = boxPlan(box, p, flat);
   const s = L.s;
   const SS = textureScale(foot.cw, foot.ch, scale, maxPx, maxSide);
+  const job = boxInJob(box);
+  const phased = !!at && job && SS === scale && (!!F || !warpActive(s, box.w, box.h));
+  const frac = (v) => v - Math.floor(v);
+  const fx = phased ? frac(at.x - foot.ox * SS) : 0;
+  const fy = phased ? frac(at.y - foot.oy * SS) : 0;
   const cnv = document.createElement('canvas');
   // Whole pixels, outwards: at a scale that is not a whole number the footprint
   // does not land on one, and a canvas cut short would lose its last row.
-  const pw = Math.ceil(foot.cw * SS);
-  const ph = Math.ceil(foot.ch * SS);
+  const pw = Math.ceil(foot.cw * SS + fx);
+  const ph = Math.ceil(foot.ch * SS + fy);
   cnv.width = pw;
   cnv.height = ph;
   const ctx = cnv.getContext('2d');
+  if (phased) ctx.translate(fx, fy);
   ctx.scale(SS, SS); // all drawing stays in native units; SS handled here
   // The bent footprint's corner is not the layout's: the job is stated in the
   // layout's coordinates and moved to where the box sits in this canvas.
@@ -848,9 +863,9 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
   ctx.imageSmoothingQuality = 'high';
   // The whole box in one job where the painter does that: every pass below
   // is the engine's, in this order, and the canvas only holds the result.
-  if (boxInJob(box)) {
+  if (job) {
     paintBoxJob(ctx, box, L, foot, coarse);
-    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F };
+    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, phase: phased ? { x: fx, y: fy } : null };
   }
   paintShadows(ctx, box, L, SS, foot);
   paintBox(ctx, box, L);

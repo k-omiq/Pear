@@ -40,6 +40,16 @@ describe('tag', () => {
     expect(saved).toHaveBeenCalled();
   });
 
+  it('puts a user\'s tag under a kind of text, and takes it off with null', async () => {
+    const r = await call({ name: 'angry', kind: 'shout', style: { font: 'Comic Neue' } });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.tag).toMatchObject({ name: 'angry', kind: 'shout' });
+    await call({ name: 'angry', kind: null });
+    expect('kind' in findTag('angry')).toBe(false);
+    expect((await call({ name: 'angry', kind: 'yelling' })).error).toMatch(/not a kind of text/);
+    expect((await call({ name: 'speech', kind: 'shout' })).error).toMatch(/a kind itself/);
+  });
+
   it('adds a new tag, and clears a size with null', async () => {
     expect((await call({ name: 'narration', size: 15 })).ok).toBe(true);
     expect(findTag('narration').size).toBe(15);

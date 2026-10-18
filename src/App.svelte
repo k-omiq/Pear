@@ -479,9 +479,10 @@
     // Suppress global editor shortcuts while a modal overlay is open. Markup
     // contract, relied on by this query: every app modal renders a root
     // `.modal-overlay` element and carries the `open` class only while it is
-    // showing (SettingsModal, FontModal, ExportDialog do; so must any modal
-    // added later, or this line has to be taught about it).
-    if (typeof document !== 'undefined' && document.querySelector('.modal-overlay.open')) return;
+    // showing (FontModal, ExportDialog do; so must any modal added later, or
+    // this line has to be taught about it). Settings is a full-window screen,
+    // `.settings-screen`, mounted only while open.
+    if (typeof document !== 'undefined' && document.querySelector('.modal-overlay.open, .settings-screen')) return;
     if (route.name !== 'editor') return;
     // Every named shortcut, in one line: undo, redo, duplicate, delete, the
     // style clipboard, the three modes, the Inspector's tabs and the rotation

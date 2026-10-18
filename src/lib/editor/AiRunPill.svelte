@@ -31,7 +31,7 @@
   <div class="ai-run" role="status" aria-live="polite">
     <div class="pill ai-run-pill" class:live={aiRun.active}>
       <span class="ai-dot" aria-hidden="true"></span>
-      <span class="ai-label">{aiRun.active ? 'AI is editing' : aiRun.stopped ? 'AI run stopped' : 'AI run done'}</span>
+      <span class="ai-label">{aiRun.active ? (aiRun.quiet ? 'AI is thinking' : 'AI is editing') : aiRun.stopped ? 'AI run stopped' : 'AI run done'}</span>
       <span class="pill-count">{what}</span>
       {#if aiRun.active}
         <button onclick={stopRun} title="End the run now. What it did stays.">Stop</button>

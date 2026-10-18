@@ -52,9 +52,59 @@ export function createBrowserTextEngine() {
         for (const ev of ['loading', 'loadingdone', 'loadingerror']) _fontSet.removeEventListener?.(ev, cb);
       };
     },
+    // Code points of `text` the face itself has no glyph for, each once, in
+    // order (the Rust engine's `missing` at depth 0). A canvas says nothing of
+    // it, so each letter is measured - its advance and its ink box - and
+    // compared. A browser draws a letter the face lacks from another font: set
+    // in the face with a fallback behind it, the letter is the fallback's own,
+    // for two fallbacks alike. A canvas that does not fall back draws the
+    // face's empty box: the letter measures as one nothing has (U+10FFFD). A
+    // letter the face has is the face's, and differs from both. A face that is
+    // not drawing at all (not loaded, not on this machine) lacks its own "A"
+    // too, and answers for none: that is a missing font, said elsewhere.
+    missing(face, text) {
+      const own = `"${face.name}"`;
+      const lacks = (ch) =>
+        sameInk(probe(face, ch, own), probe(face, NOTHING, own)) ||
+        PROBE_FALLBACKS.every((fb) => sameInk(probe(face, ch, `${own}, ${fb}`), probe(face, ch, fb)));
+      // Asked afresh every time, never kept: a face still loading is not
+      // drawing yet, and will be.
+      if (lacks('A')) return [];
+      const cut = (ch) => {
+        const key = `${face.name}\n${face.bold ? 1 : 0}${face.italic ? 1 : 0}\n${ch}`;
+        let v = lacking.get(key);
+        if (v === undefined) {
+          v = lacks(ch);
+          if (lacking.size > 20000) lacking.clear();
+          lacking.set(key, v);
+        }
+        return v;
+      };
+      const out = [];
+      for (const ch of new Set(String(text ?? ''))) {
+        if (!/\S/u.test(ch)) continue;
+        if (cut(ch)) out.push(ch.codePointAt(0));
+      }
+      return out;
+    },
     faceReady: browserFaceReady,
   };
+  function probe(face, ch, family) {
+    _ctx.font = `${face.italic ? 'italic ' : ''}${face.bold ? 700 : 400} ${PROBE_PX}px ${family}`;
+    _ctx.textAlign = 'left';
+    _ctx.textBaseline = 'alphabetic';
+    return ink(_ctx.measureText(ch));
+  }
 }
+
+// The glyph probe (`missing`): two generic families unlike each other, at a
+// size large enough that two different glyphs measure apart.
+const PROBE_FALLBACKS = ['monospace', 'serif'];
+// A code point no font has a glyph for (the last private use one).
+const NOTHING = String.fromCodePoint(0x10fffd);
+const PROBE_PX = 64;
+const lacking = new Map();
+const sameInk = (a, b) => ['width', 'left', 'right', 'ascent', 'descent'].every((k) => Math.abs((a[k] || 0) - (b[k] || 0)) < 0.01);
 
 // Read the browser's own line breaks, including its rules for long words.
 function wrapPlain(face, text, opts) {

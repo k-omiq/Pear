@@ -3,7 +3,6 @@
   import { library, scanLibrary, createProject, deleteProject } from '../library.svelte.js';
   import { goProject } from '../route.svelte.js';
   import { toast, toastError } from '../store.svelte.js';
-  import { plural } from '../format.js';
   import ProjectCard from './ProjectCard.svelte';
 
   let { onNewChapter } = $props();
@@ -39,11 +38,14 @@
     return project.chapters.reduce((n, c) => n + c.pageCount, 0);
   }
 
+  function cancelNew() {
+    naming = false;
+    newName = '';
+    layout = 'pages';
+    ocrLanguage = 'ja';
+  }
+
   async function onDelete(project) {
-    if (confirmingId !== project.id) {
-      confirmingId = project.id;
-      return;
-    }
     confirmingId = null;
     try {
       await deleteProject(project.id);
@@ -55,32 +57,32 @@
 </script>
 
 <div class="home-actions">
-  <button class="accent-btn" onclick={onNewChapter}>New chapter</button>
   {#if naming}
-    <input
-      class="name-input"
-      placeholder="Project name"
-      bind:value={newName}
-      onkeydown={(e) => e.key === 'Enter' && onCreate()}
-      autofocus
-    />
-
-    <div class="seg new-layout">
-      <button class:on={layout === 'pages'} onclick={() => (layout = 'pages')}>Pages</button>
-      <button class:on={layout === 'longstrip'} onclick={() => (layout = 'longstrip')}>Longstrip</button>
-    </div>
-    <div class="seg new-language" aria-label="Source language">
-      <button class:on={ocrLanguage === 'ja'} onclick={() => (ocrLanguage = 'ja')}>Japanese</button>
-      <button class:on={ocrLanguage === 'zh'} onclick={() => (ocrLanguage = 'zh')}>Chinese</button>
-      <button class:on={ocrLanguage === 'ko'} onclick={() => (ocrLanguage = 'ko')}>Korean</button>
-    </div>
-    <button class="soft-btn wide" onclick={onCreate}>Create</button>
+    <!-- A new project: its name, how its pages are read, and the language
+         Detect reads. One column, the width of the widest choice. -->
+    <form class="new-project" onsubmit={(e) => { e.preventDefault(); onCreate(); }} onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), cancelNew())}>
+      <input class="name-input" placeholder="Series name" aria-label="Series name" bind:value={newName} autofocus />
+      <div class="seg new-layout" role="group" aria-label="Layout">
+        <button type="button" class:on={layout === 'pages'} onclick={() => (layout = 'pages')}>Pages</button>
+        <button type="button" class:on={layout === 'longstrip'} onclick={() => (layout = 'longstrip')}>Longstrip</button>
+      </div>
+      <div class="seg new-language" role="group" aria-label="Source language">
+        <button type="button" class:on={ocrLanguage === 'ja'} onclick={() => (ocrLanguage = 'ja')}>Japanese</button>
+        <button type="button" class:on={ocrLanguage === 'zh'} onclick={() => (ocrLanguage = 'zh')}>Chinese</button>
+        <button type="button" class:on={ocrLanguage === 'ko'} onclick={() => (ocrLanguage = 'ko')}>Korean</button>
+      </div>
+      <div class="new-project-foot">
+        <button type="button" class="soft-btn" onclick={cancelNew}>Cancel</button>
+        <button type="submit" class="accent-btn narrow" disabled={!newName.trim()}>Create project</button>
+      </div>
+    </form>
   {:else}
+    <button class="accent-btn" onclick={onNewChapter}>New chapter</button>
     <button class="soft-btn wide" onclick={() => (naming = true)}>New project</button>
   {/if}
 </div>
 
-<div class="section-label">PROJECTS</div>
+<h2 class="section-label">PROJECTS</h2>
 
 {#if library.error}
   <div class="home-error" role="alert">
@@ -94,15 +96,13 @@
     {#each library.projects as project (project.id)}
       <ProjectCard
         {project}
+        confirming={confirmingId === project.id}
+        pages={pageCountOf(project)}
         onOpen={(p) => goProject(p.id)}
-        onDelete={onDelete}
+        onAskDelete={(p) => (confirmingId = p.id)}
+        onCancelDelete={() => (confirmingId = null)}
+        {onDelete}
       />
-      {#if confirmingId === project.id}
-        <div class="confirm-note warn" role="alert">
-          Moves the folder and every chapter in it to the trash - {plural(pageCountOf(project), 'page')}.
-          Click Delete again to confirm.
-        </div>
-      {/if}
     {/each}
   </div>
 {:else if library.loading}
@@ -112,6 +112,6 @@
 
   <div class="home-empty">
     <div>No projects yet.</div>
-    <div>Start a chapter and the raws you pick will be copied into your library.</div>
+    <div>Start a chapter and the raws you pick are copied into your library.</div>
   </div>
 {/if}

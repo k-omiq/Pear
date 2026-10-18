@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { letteringIssues, luminance } from './lettering-checks.js';
+import { letteringIssues, luminance, emphasisIssue } from './lettering-checks.js';
 
 const ellipse = { kind: 'ellipse', cx: 50, cy: 50, rx: 40, ry: 30 };
 const box = (style, fit = ellipse) => ({ id: 'b1', fit, style: { font: 'A', color: '#000000', strokes: [], balloon: true, ...style } });
@@ -50,5 +50,25 @@ describe('contrast', () => {
     expect(letteringIssues(box({ color: '#000000' }, null), { ink: '#ffffff' })).toEqual([]);
     expect(letteringIssues(box({ color: '#000000', balloon: false }), { ink: '#ffffff' })).toEqual([]);
     expect(letteringIssues(box({ color: '#000000' }), { ink: null })).toEqual([]);
+  });
+});
+
+describe('turn', () => {
+  it('flags a drawn sound turned past 35 degrees, never speech or a sound within it', () => {
+    expect(letteringIssues(box({ rotation: 80 }, null), { tags: ['sfx'] })).toEqual([{ kind: 'turn', detail: { rotation: 80, max: 35 } }]);
+    expect(letteringIssues(box({ rotation: 275 }, null), { tags: ['title'] })).toEqual([{ kind: 'turn', detail: { rotation: -85, max: 35 } }]);
+    expect(letteringIssues(box({ rotation: -30 }, null), { tags: ['sfx'] })).toEqual([]);
+    expect(letteringIssues(box({ rotation: 80 }, null), { tags: ['speech'] })).toEqual([]);
+  });
+});
+
+describe('emphasis', () => {
+  it('flags a line the original letters far bigger than its kind, set at its kind\'s size', () => {
+    expect(emphasisIssue(3.9, 1, 'narration')).toEqual({ kind: 'emphasis', detail: { original: 3.9, ours: 1, tag: 'narration' } });
+    // Ours given the weight: a good part of the way to the original's.
+    expect(emphasisIssue(3.9, 2.1, 'narration')).toBeNull();
+    // An original at about its kind's size asks for nothing.
+    expect(emphasisIssue(1.4, 1, 'speech')).toBeNull();
+    expect(emphasisIssue(2, 0, 'speech')).toBeNull();
   });
 });

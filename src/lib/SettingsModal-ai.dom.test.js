@@ -22,7 +22,7 @@ async function aiTab() {
   door.port = DEFAULT_PORT;
   const view = render(SettingsModal, { open: true });
   await tick();
-  await fireEvent.click(view.getByRole('tab', { name: 'AI' }));
+  await fireEvent.click(view.getByRole('tab', { name: 'AI agents' }));
   return view;
 }
 

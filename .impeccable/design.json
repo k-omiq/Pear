@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-18T00:00:00Z",
+  "title": "Design System: Manga Typesetter",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "Workbench Ink", "canonical": "var(--accent)", "tonalRamp": ["#141413", "#2c2b28", "#45433f", "#5f5d58", "#7c7a74", "#a3a19b", "#cfcdc7", "#f6f5f2"] },
+      "accent-soft": { "role": "primary", "displayName": "Ink Wash", "canonical": "var(--accent-soft)" },
+      "warn": { "role": "secondary", "displayName": "Rust Warning", "canonical": "var(--warn)", "tonalRamp": ["#3a1a12", "#5c2a1c", "#8a3f2a", "#a8553c", "#c4705a", "#d98b6a", "#ebb9a3", "#f8e6dd"] },
+      "ground": { "role": "neutral", "displayName": "Workbench Ground", "canonical": "var(--bg)", "tonalRamp": ["#121313", "#1a1b1c", "#212223", "#45433f", "#7c7a74", "#cfcdc7", "#e8e7e3", "#fefdfb"] },
+      "panel": { "role": "neutral", "displayName": "Panel", "canonical": "var(--panel)" },
+      "panel-raised": { "role": "neutral", "displayName": "Raised Panel", "canonical": "var(--panel2)" },
+      "surface": { "role": "neutral", "displayName": "Surface", "canonical": "var(--surface)" },
+      "card": { "role": "neutral", "displayName": "Card", "canonical": "var(--card)" },
+      "paper": { "role": "neutral", "displayName": "Paper (does not invert)", "canonical": "var(--paper)" },
+      "art": { "role": "neutral", "displayName": "Art Ground", "canonical": "var(--art)" },
+      "hairline": { "role": "neutral", "displayName": "Hairline", "canonical": "var(--line)" },
+      "hairline-strong": { "role": "neutral", "displayName": "Strong Hairline", "canonical": "var(--line2)" },
+      "ink": { "role": "neutral", "displayName": "Ink", "canonical": "var(--text)" },
+      "ink-quiet": { "role": "neutral", "displayName": "Quiet Ink", "canonical": "var(--t2)" },
+      "ink-faint": { "role": "neutral", "displayName": "Faint Ink", "canonical": "var(--t3)" },
+      "page-tint": { "role": "neutral", "displayName": "Page Tint (does not invert)", "canonical": "var(--tint)" },
+      "page-tintline": { "role": "neutral", "displayName": "Page Tintline (does not invert)", "canonical": "var(--tintline)" }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Headline", "purpose": "The series name heading a project's chapter list. One per screen." },
+      "title": { "displayName": "Title", "purpose": "The Settings section h2 at the top of the column." },
+      "title-sm": { "displayName": "Title small", "purpose": "Settings sidebar heading, modal heads." },
+      "body": { "displayName": "Body", "purpose": "Row labels, buttons, menu items. The app's base size." },
+      "body-sm": { "displayName": "Body small", "purpose": "The sentence under a row label and section intros, quiet ink, max 64ch." },
+      "label": { "displayName": "Label", "purpose": "Uppercase floating-panel heads and Inspector field labels; tool chrome only." },
+      "list-heading": { "displayName": "List heading", "purpose": "The single uppercase heading over a home list; never a lead-in above another heading." },
+      "wordmark": { "displayName": "Wordmark", "purpose": "MANGA TYPESETTER, spaced uppercase, top-left of the home frame." },
+      "mono": { "displayName": "Mono", "purpose": "Hex values, file paths, shortcut key combos only." }
+    },
+    "shadows": [
+      { "name": "edge", "value": "0 1px 1px rgba(42,38,32,.05), 0 5px 14px rgba(42,38,32,.07)", "purpose": "Light theme. Paper page, floating panels, pills, docks, menus, toasts, covers. Dark: 0 0 0 1px rgba(255,255,255,.05), 0 6px 20px rgba(0,0,0,.42)." },
+      { "name": "edge-soft", "value": "0 1px 2px rgba(42,38,32,.05)", "purpose": "Small on-page badges and pills. Dark: 0 0 0 1px rgba(255,255,255,.05)." },
+      { "name": "scrim", "value": "rgba(42,38,32,.28)", "purpose": "Modal overlay with a 2px backdrop blur. Dark: rgba(0,0,0,.6)." }
+    ],
+    "motion": [
+      { "name": "state", "value": "120ms ease", "purpose": "Background, colour and border changes on hover and selection." },
+      { "name": "toggle", "value": "150ms ease", "purpose": "Switch track and knob." },
+      { "name": "ease-enter", "value": "cubic-bezier(.2,.8,.2,1)", "purpose": "Entrances: Settings fade (160ms), row menu rise (120ms, 3px), cover lift (180ms, 2px)." },
+      { "name": "panel-expand", "value": "420ms cubic-bezier(0,0,.2,1)", "purpose": "Floating panel grows from its top-left corner; collapse uses cubic-bezier(.4,0,1,1)." }
+    ],
+    "breakpoints": [
+      { "name": "settings-compact", "value": "720px" },
+      { "name": "chapters-no-progress", "value": "860px" },
+      { "name": "chapters-compact", "value": "640px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Default bordered button, 30px.",
+      "html": "<button class=\"ds-btn\">Choose folder</button>",
+      "css": ".ds-btn{height:30px;padding:0 11px;border:1px solid var(--line2);background:var(--surface);color:var(--text);border-radius:6px;font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:background .12s,border-color .12s}.ds-btn:hover{background:var(--panel2);border-color:var(--t3)}.ds-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    },
+    {
+      "name": "Accent Button",
+      "kind": "button",
+      "refersTo": "button-accent",
+      "description": "The one filled action in a group.",
+      "html": "<button class=\"ds-btn-accent\">New chapter</button>",
+      "css": ".ds-btn-accent{height:30px;padding:0 16px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-fg);border-radius:8px;font-size:12px;font-weight:600;letter-spacing:.02em;cursor:pointer}.ds-btn-accent:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-btn-accent:disabled{opacity:.55;cursor:default}"
+    },
+    {
+      "name": "Soft Button",
+      "kind": "button",
+      "refersTo": "soft-button",
+      "description": "Secondary action on home and in dialogs.",
+      "html": "<button class=\"ds-soft-btn\">Cancel</button>",
+      "css": ".ds-soft-btn{height:28px;padding:0 12px;border:1px solid transparent;border-radius:7px;background:var(--accent-soft);color:var(--t2);font-size:11.5px;cursor:pointer}.ds-soft-btn:hover{color:var(--text)}.ds-soft-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    },
+    {
+      "name": "Segmented Control",
+      "kind": "chip",
+      "refersTo": "segment",
+      "description": "One-of-few choice at row scale.",
+      "html": "<div class=\"ds-seg\"><button class=\"on\">Auto</button><button>Oval</button><button>Rectangle</button></div>",
+      "css": ".ds-seg{display:inline-flex;background:var(--surface);border:1px solid var(--line2);border-radius:6px;overflow:hidden}.ds-seg button{height:28px;padding:0 13px;border:none;background:transparent;color:var(--t2);font-size:11.5px;cursor:pointer;white-space:nowrap}.ds-seg button:not(:last-child){border-right:1px solid var(--line)}.ds-seg button:hover{color:var(--text)}.ds-seg button.on{background:var(--accent);color:var(--accent-fg)}.ds-seg button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}"
+    },
+    {
+      "name": "Switch",
+      "kind": "custom",
+      "refersTo": "switch",
+      "description": "On/off toggle; the knob follows the track it sits on.",
+      "html": "<button class=\"ds-switch on\" role=\"switch\" aria-checked=\"true\"><span class=\"ds-knob\"></span></button>",
+      "css": ".ds-switch{position:relative;width:34px;height:18px;border-radius:10px;padding:0;cursor:pointer;background:var(--panel2);border:1px solid var(--line2);transition:background .15s,border-color .15s}.ds-switch:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-switch.on{background:var(--accent);border-color:var(--accent)}.ds-knob{position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;background:var(--t2);transition:transform .15s,background .15s}.ds-switch.on .ds-knob{background:var(--accent-fg);transform:translateX(16px)}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Text, number and select fields at row scale.",
+      "html": "<input class=\"ds-input\" value=\"3\">",
+      "css": ".ds-input{height:28px;padding:0 8px;border:1px solid var(--line2);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;font-variant-numeric:tabular-nums;outline:none}.ds-input:focus{border-color:var(--accent)}"
+    },
+    {
+      "name": "Settings Row",
+      "kind": "custom",
+      "refersTo": "settings-row",
+      "description": "Label left, control right, one sentence under, hairline below.",
+      "html": "<div class=\"ds-set-item\"><div class=\"ds-set-line\"><div class=\"ds-set-label\">Auto height</div><button class=\"ds-switch on\"><span class=\"ds-knob\"></span></button></div><p class=\"ds-set-desc\">The box's height follows its text inside the balloon.</p></div>",
+      "css": ".ds-set-item{border-bottom:1px solid var(--line);max-width:680px}.ds-set-line{display:flex;align-items:center;gap:16px;min-height:44px;padding:6px 0}.ds-set-label{flex:1;min-width:0;font-size:12.5px;color:var(--text);line-height:1.35}.ds-set-desc{margin:-4px 0 0;padding:0 0 12px;font-size:11.5px;line-height:1.5;color:var(--t2);max-width:64ch}.ds-switch{position:relative;width:34px;height:18px;border-radius:10px;padding:0;background:var(--accent);border:1px solid var(--accent)}.ds-knob{position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;background:var(--accent-fg);transform:translateX(16px)}"
+    },
+    {
+      "name": "Settings Sidebar Tab",
+      "kind": "nav",
+      "refersTo": "settings-tab",
+      "description": "Section tab; selection is a fill and a brighter label, never a weight change.",
+      "html": "<nav class=\"ds-tabs\"><button class=\"ds-tab on\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3\"/><path d=\"M1 14h6M9 8h6M17 16h6\"/></svg><span>General</span></button><button class=\"ds-tab\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 11v5M12 8h.01\"/></svg><span>About</span></button></nav>",
+      "css": ".ds-tabs{display:flex;flex-direction:column;gap:2px;width:204px;padding:10px;background:var(--panel)}.ds-tab{display:flex;align-items:center;gap:10px;height:30px;padding:0 10px;border:none;border-radius:6px;background:none;color:var(--t2);font-size:12.5px;text-align:left;cursor:pointer;transition:background .12s,color .12s}.ds-tab svg{width:16px;height:16px;flex:none}.ds-tab:hover,.ds-tab.on{background:var(--accent-soft);color:var(--text)}.ds-tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}"
+    },
+    {
+      "name": "Chrome Pill",
+      "kind": "button",
+      "refersTo": "chrome-pill",
+      "description": "Editor top-band control floating over the page.",
+      "html": "<button class=\"ds-pill\">Export</button>",
+      "css": ".ds-pill{height:32px;display:inline-flex;align-items:center;gap:7px;padding:0 12px;background:var(--panel);border:1px solid var(--line2);border-radius:16px;box-shadow:var(--edge);color:var(--text);font-size:12px;cursor:pointer}.ds-pill:hover{border-color:var(--t3)}.ds-pill:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Workbench",
+    "overview": "The interface is a set of warm-grey tools laid around a sheet of paper. The manga page is the only thing on screen allowed to carry colour, contrast and weight; everything the app draws for itself is greyscale, small, and one step back. Density is that of a desktop pro tool: a 12.5px body, 28-32px controls, hairline dividers instead of boxes. Both themes are first-class and invert the chrome, never the page.\n\nStructure is rows, not cards. The newest surfaces (Settings, the chapter list) follow the sibling app Manga Cleaner: a full-window column of rows, a label on the left, its control on the right, one quiet sentence under the label, and a hairline under the row. Where something needs to float (the editor's panels, docks and pills), it floats on the panel tone with the soft edge shadow, never a heavier treatment.\n\nCopy is plain and short, and chrome states where a setting is kept: the Settings sidebar groups sections by owner (this computer vs. the series, headed by the series' own name) rather than tagging each row with a scope chip.",
+    "keyCharacteristics": [
+      "Warm-neutral greyscale in light and dark; the accent is the theme's own ink (near-black in light, near-white in dark).",
+      "The manga page sits on paper that does not invert; on-page affordances use their own non-inverting tint.",
+      "System UI font only, tabular numerals everywhere.",
+      "Rows and hairlines over boxed cards; selection is a soft fill, never a weight change.",
+      "One control vocabulary (button, soft button, segment, switch, input) reused in every surface."
+    ],
+    "rules": [
+      { "name": "The Page Owns Colour Rule", "body": "Chrome is greyscale. The only hues in the UI are the rust warning and the page-status pair (done green #1f9d55, check amber #e08a00), and the status pair is scoped to the pager and page list, where it mirrors the Regions view.", "section": "colors" },
+      { "name": "The Paper Does Not Invert Rule", "body": "Anything drawn over the page (outlines, handles, the review flag, source pills) uses page-tint, page-tintline or the flag rust, never accent, because accent goes near-white in dark mode and would vanish on paper.", "section": "colors" },
+      { "name": "The Theme Token Rule", "body": "Every colour comes from a :root custom property with a light and a dark value. A new surface adds no literal colours.", "section": "colors" },
+      { "name": "The Steady Weight Rule", "body": "Selection never changes font weight; a selected tab or row brightens its colour and gains a fill, so labels never shift under the pointer.", "section": "typography" },
+      { "name": "The Tabular Rule", "body": "Numbers are tabular everywhere, and numeric inputs right-align, so columns of values compare at a glance.", "section": "typography" },
+      { "name": "The Rows Don't Float Rule", "body": "Settings rows, chapter rows and list content take no shadow. A hairline separates them. Elevation belongs to things that sit over something else.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do take every colour from the :root tokens and supply both a light and a dark value for anything new.",
+      "Do lay out preferences as Settings rows: label left, control right, one sentence under the label, a hairline under the row, in the 680px column.",
+      "Do show where a setting is kept by the sidebar group it lives in, not by a per-row chip.",
+      "Do use the shared controls (button, soft button, segment, switch, 28px input) at row scale rather than restyling them per surface.",
+      "Do dim a control that cannot act right now (0.45-0.5 opacity) instead of hiding it, so the layout does not shift.",
+      "Do use page-tint and page-tintline for anything drawn over the manga page.",
+      "Do honour prefers-reduced-motion for every entrance animation."
+    ],
+    "donts": [
+      "Don't add hue to the chrome; colour belongs to the manga page. Rust is for warnings and destructive actions only.",
+      "Don't wrap rows in boxed cards with their own shadows; separate them with hairlines.",
+      "Don't change font weight to show selection.",
+      "Don't use accent for on-page affordances; it inverts with the theme and disappears on paper in dark mode.",
+      "Don't introduce a second typeface for UI chrome; mono is only for hex, paths and key combos.",
+      "Don't put a list heading above another heading as a lead-in; it heads a list on its own."
+    ]
+  }
+}

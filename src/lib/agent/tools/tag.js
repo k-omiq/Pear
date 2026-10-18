@@ -8,6 +8,7 @@ import { validateStylePatch } from '../style-schema.js';
 import { snapshot } from '../snapshot.svelte.js';
 import { app, allFonts } from '../../store.svelte.js';
 import { normalizeTagName, findTag, saveTagDefaults, TAG_STYLE_KEYS, knownTags } from '../../tags.svelte.js';
+import { ROLE_TAGS } from '../../lettering.js';
 
 const SIZE = { type: ['number', 'null'], minimum: 4, maximum: 300 };
 const okSize = (v) => v === null || (typeof v === 'number' && Number.isFinite(v) && v >= 4 && v <= 300);
@@ -17,19 +18,25 @@ defineTool({
   write: true,
   description:
     'Set a line tag\'s defaults for boxes placed from it from now on: style (a style patch of lettering keys: font, bold, colour, strokes and the like; not size, layout or geometry), ' +
-    'size (the size its boxes aim for, px) and minSize (the least they shrink to). null clears one. Series-wide; boxes already placed keep their own style ' +
-    '(use edit with where: { tags: [...] } for those). A new name joins the registry. Returns the tag as stored.',
+    'size (the size its boxes aim for, px) and minSize (the least they shrink to). null clears one. kind: the kind of text one of the user\'s own tags sits under (' + ROLE_TAGS.join(', ') + '): ' +
+    'a style of that kind, its look laid over the kind\'s, counted as that kind (an SFX is drawn over the art); null for none; a kind itself sits under nothing. ' +
+    'Series-wide; boxes already placed keep their own style (use edit with where: { tags: [...] } for those). A new name joins the registry. Returns the tag as stored.',
   input: {
     type: 'object',
     additionalProperties: false,
     required: ['name'],
-    properties: { name: { type: 'string' }, style: { type: ['object', 'null'] }, size: SIZE, minSize: SIZE },
+    properties: { name: { type: 'string' }, style: { type: ['object', 'null'] }, size: SIZE, minSize: SIZE, kind: { type: ['string', 'null'] } },
   },
-  run({ name, style, size, minSize } = {}, ctx) {
+  run({ name, style, size, minSize, kind } = {}, ctx) {
     const n = normalizeTagName(name);
     if (!n) throw new ToolError(`"${name}" is not a tag name`, 'letters, digits and dashes, up to 24.');
-    if (style === undefined && size === undefined && minSize === undefined) throw new ToolError('nothing to set', 'give style, size or minSize.');
+    if (style === undefined && size === undefined && minSize === undefined && kind === undefined) throw new ToolError('nothing to set', 'give style, size, minSize or kind.');
     const patch = {};
+    if (kind !== undefined) {
+      if (kind !== null && !ROLE_TAGS.includes(kind)) throw new ToolError(`kind "${kind}" is not a kind of text`, `kinds: ${ROLE_TAGS.join(', ')}.`);
+      if (kind !== null && ROLE_TAGS.includes(n)) throw new ToolError(`${n} is a kind itself, so it sits under nothing`);
+      patch.kind = kind;
+    }
     if (style !== undefined) {
       if (style !== null) {
         if (typeof style !== 'object' || Array.isArray(style)) throw new ToolError('style must be a style patch object or null');

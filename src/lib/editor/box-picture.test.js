@@ -156,6 +156,24 @@ describe('where the canvas is put', () => {
       expect(Math.abs(c.left + g.ox * z) * dpr).toBeLessThanOrEqual(0.5 + 1e-9);
     }
   });
+  it('a picture painted moved by its phase puts the letters, not the canvas, exactly on the footprint', () => {
+    const page = { x: 120.25, y: 88.75 };
+    for (const [z, dpr, at] of [[1.37, 2, { x: 975.37, y: 1210.61 }], [0.83, 2, { x: 212.4, y: 153.9 }], [3, 1, { x: 10.2, y: 0.9 }]]) {
+      // The phase the paint works out: how far past a device pixel the
+      // footprint's corner falls (`renderBoxTexture`'s `at`).
+      const frac = (v) => v - Math.floor(v);
+      const phase = { x: frac((page.x + (at.x - g.ox) * z) * dpr), y: frac((page.y + (at.y - g.oy) * z) * dpr) };
+      const c = css(pictureCss({ ...g, page, phase }, z, dpr, at));
+      const left = (page.x + at.x * z + c.left) * dpr;
+      const top = (page.y + at.y * z + c.top) * dpr;
+      // The canvas on the device grid...
+      expect(left).toBeCloseTo(Math.round(left), 6);
+      expect(top).toBeCloseTo(Math.round(top), 6);
+      // ...and what it shows, moved by the phase, on the footprint exactly.
+      expect(left + phase.x).toBeCloseTo((page.x + (at.x - g.ox) * z) * dpr, 6);
+      expect(top + phase.y).toBeCloseTo((page.y + (at.y - g.oy) * z) * dpr, 6);
+    }
+  });
 });
 
 describe('where the page is on the screen', () => {

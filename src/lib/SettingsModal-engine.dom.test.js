@@ -40,8 +40,8 @@ async function hint() {
   const view = render(SettingsModal, { open: true });
   await tick();
   await fireEvent.click(view.getByRole('tab', { name: 'Typesetting' }));
-  const section = [...view.container.querySelectorAll('.settings-section')].find((s) => s.textContent.includes('TEXT ENGINE'));
-  return () => section.querySelector('.qhint').textContent.replace(/\s+/g, ' ').trim();
+  const section = [...view.container.querySelectorAll('.settings-section')].find((s) => s.textContent.includes('Text engine'));
+  return () => section.querySelector('.set-desc').textContent.replace(/\s+/g, ' ').trim();
 }
 
 describe('what Settings says of the text engine', () => {

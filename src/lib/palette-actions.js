@@ -99,15 +99,20 @@ export function shortcutActions() {
   }));
 }
 
-// Matches SettingsModal's TABS, by id. Listed here rather than imported so this
-// module does not load the Settings component to read six names.
+// Matches SettingsModal's sections, by id. Listed here rather than imported so
+// this module does not load the Settings component to read their names. The
+// series ones are there only while a chapter is open.
+const inChapter = () => !!app.chapterRef;
 const SETTINGS_TABS = [
-  { id: 'general', label: 'General', keywords: 'theme library folder updates' },
-  { id: 'typesetting', label: 'Typesetting', keywords: 'auto height line breaking hyphen' },
-  { id: 'project', label: 'Project', keywords: 'series language tags layout', when: () => !!app.chapterRef },
+  { id: 'general', label: 'General', keywords: 'theme appearance library folder export panels' },
+  { id: 'typesetting', label: 'Typesetting', keywords: 'auto height line breaking hyphen defaults text engine rust' },
+  { id: 'detection', label: 'Detection', keywords: 'ocr reader detector english models cache gpu engine' },
+  { id: 'ai', label: 'AI agents', keywords: 'agent mcp claude codex antigravity token door port' },
   { id: 'shortcuts', label: 'Shortcuts', keywords: 'keys keyboard rebind hotkeys' },
-  { id: 'ai', label: 'AI', keywords: 'agent mcp claude codex antigravity token door' },
-  { id: 'system', label: 'System', keywords: 'memory engine models cache gpu version' },
+  { id: 'about', label: 'About', keywords: 'version updates memory' },
+  { id: 'series', label: 'Series', keywords: 'project source language layout', when: inChapter },
+  { id: 'styles', label: 'Text styles', keywords: 'fonts tags kinds voices characters ai lettering freedom', when: inChapter },
+  { id: 'guide', label: 'Guide', keywords: 'glossary terms characters notes dashes ellipsis', when: inChapter },
 ];
 
 // Actions with no key. One line each; add the next one here.

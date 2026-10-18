@@ -8,9 +8,12 @@
 
 import { defineTool, ToolError } from '../registry.js';
 import { parsePages } from '../select.js';
-import { matchesOf, checksOf, fitsFor, typesetMatches } from './edit.js';
+import { matchesOf, checksOf, fitsFor, typesetMatches, drawOverArt, lineBlockAt } from './edit.js';
+import { sizesOf } from './check.js';
 import { validateStylePatch } from '../style-schema.js';
-import { app, measureForPlace, commitPlace, addBoxAt, isTranslateMode, placeableDetectedLines, lineByN } from '../../store.svelte.js';
+import { app, measureForPlace, commitPlace, addBoxAt, isTranslateMode, placeableDetectedLines, lineByN, sizeKeyFor } from '../../store.svelte.js';
+import { ART_SIZED_ROLES } from '../../lettering.js';
+import { kindOfTag } from '../../tags.svelte.js';
 import { hasRawImage } from '../../page-images.js';
 import { sidecarReady, detectOnePage, detectionChapter } from '../../sidecar.js';
 
@@ -20,15 +23,33 @@ const pagesSchema = {
 };
 
 const pagesOf = (spec) => parsePages(spec ?? 'current');
+
+// Every new box's sizes, named apart (check.js `sizesOf`).
+const sizesFor = (ids) => matchesOf(ids).map((m) => ({ id: m.box.id, ...sizesOf(m.box, m.page) }));
+
+// A box whose line is an SFX, a title or a blocky word: drawn over the art,
+// not set in a balloon (instructions.js rule C).
+const drawn = (m) => ART_SIZED_ROLES.includes(kindOfTag(sizeKeyFor(m.line)));
+
+// New boxes laid out: a line of speech or narration set by outline fit in its
+// bubble; an SFX, title or blocky word drawn over the original its line was
+// detected as - no outline, no air, centred on it, at the size that runs it
+// (store.svelte.js `artSizeFor`).
+export function layOutNew(ids) {
+  const ms = matchesOf(ids);
+  typesetMatches(ms.filter((m) => !drawn(m)));
+  drawOverArt(ms.filter(drawn), lineBlockAt);
+}
 const pageNo = (p) => app.pages.indexOf(p) + 1;
 
 defineTool({
   name: 'place',
   description:
     'Place every detected line that has no box yet, each in its bubble, laid out by the solver: the app\'s Place. ' +
-    'Each new box is set by outline fit (an oval block in its outline, 0.5 em of air, no hyphens). ' +
+    'Each new box of speech, narration and the like is set by outline fit (an oval block in its outline, a rectangular one in a caption, 0.5 em of air, hyphens only as a last resort and only where the box\'s "Hyphenate long words" (style.hyphenate) is on). ' +
+    'A line tagged sfx, sfx-sharp, sfx-soft, blocky or title is drawn over the original it was detected as instead: no outline, margin 0, centred on it, at the size that runs its length (else its tag\'s size); then do "match_original" turns and colours it. ' +
     'pages limits it. Lines already placed are left alone; to lay a placed box out again use edit with do: "typeset". ' +
-    'Returns the new box ids per page and the checks for them.',
+    'Returns the new box ids per page, the checks for them, and sizes: each box\'s size (what it got), aimedFor (what it aims for) and tagSize (its tag\'s own default, which a new box takes only when no box of its tag comes before it and the user set no size for the tag).',
   input: { type: 'object', additionalProperties: false, properties: { pages: pagesSchema } },
   write: true,
   async run({ pages } = {}, ctx) {
@@ -41,7 +62,7 @@ defineTool({
     // Each new box set by outline fit, in the same undo step as its placing.
     const r = ctx.write(ps, () => {
       const out = commitPlace(ps, measured);
-      typesetMatches(matchesOf([...out.placed.values()].flat().map((it) => it.box.id)));
+      layOutNew([...out.placed.values()].flat().map((it) => it.box.id));
       return out;
     });
     const ids = [];
@@ -58,6 +79,7 @@ defineTool({
       ...(r.changed ? { changedWhileFitting: r.changed, hint: 'those pages changed while being measured; call place again' } : {}),
       checks: checksOf(ids),
       fit: fitsFor(ids),
+      sizes: sizesFor(ids),
     };
   },
 });
@@ -103,7 +125,7 @@ defineTool({
       return got;
     });
     if (typeof b === 'string') throw new ToolError(b);
-    return { id: b.id, page: n, rect: [b.x, b.y, b.w, b.h].map(Math.round), checks: checksOf([b.id]), fit: fitsFor([b.id]) };
+    return { id: b.id, page: n, rect: [b.x, b.y, b.w, b.h].map(Math.round), checks: checksOf([b.id]), fit: fitsFor([b.id]), sizes: sizesFor([b.id]) };
   },
 });
 

@@ -696,12 +696,18 @@
     // An IME's text is not the box's until the composition ends, so the box
     // is painted with it standing in for its own.
     const of = editing && composeText != null ? { ...box, text: composeText } : box;
-    const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget);
+    // An upright box is set on whole device pixels (`pictureCss`), so it is
+    // painted moved by the fraction of a pixel its corner falls short of one:
+    // where the box's top-left lands on the screen now, device px.
+    const page = pageCorner(pageFrameEl);
+    const dpr = displayScale();
+    const corner = page && !s.rotation && !mirror ? { x: (page.x + box.x * z) * dpr, y: (page.y + box.y * z) * dpr } : null;
+    const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner);
     // Lower than asked for under the drag's budget: to be painted again when
     // the drag settles (`settleResize`), or the keys do (`settleKeys`).
     dragSoft = resizing && g.ss < pictureRes;
     keySoft = keying && g.ss < pictureRes;
-    warpGeom = { ...g, page: pageCorner(pageFrameEl) };
+    warpGeom = { ...g, page };
     keepReach(warpGeom);
   }
 
@@ -2913,17 +2919,18 @@
          same reasons - `renderBoxTexture` has the mask in it and neither the
          flip, the turn nor the opacity, which stay CSS on the wrapper and on
          the box - set on whole device pixels where that keeps it sharp
-         (`pictureCss`). Not while a zoom gesture is moving: the picture is
-         not repainted then, only stretched, so no texel is on a device pixel
-         to keep, and a snap worked out again at every step only moved the
-         letters against the page by up to half a device pixel each step. -->
+         (`pictureCss`), and painted moved by the fraction of a pixel that
+         snap takes away (`phase`), so the letters still land exactly. A pinch
+         does not lay the box out again (Canvas.svelte scales the page as one
+         picture until it settles), so nothing here moves while one is in
+         flight. -->
     <canvas
       class="warpl"
       bind:this={warpEl}
       data-painter={engineShown ? 'engine' : undefined}
       style={warpGeom
         ? engineShown
-          ? pictureCss(warpGeom, z, displayScale(), s.rotation || mirror || app.zoomLive ? null : box)
+          ? pictureCss(warpGeom, z, displayScale(), s.rotation || mirror ? null : box)
           : `left:${-warpGeom.ox * z}px;top:${-warpGeom.oy * z}px;width:${warpGeom.cw * z}px;height:${warpGeom.ch * z}px;`
         : 'left:0;top:0;width:0;height:0'}
       aria-hidden="true"
@@ -3207,6 +3214,17 @@
     pointer-events: none;
     user-select: none;
     -webkit-user-select: none;
+  }
+  /* The engine's picture is painted in a layer of its own. WebKit paints a
+     canvas into a rect rounded to whole CSS px from the origin of the layer it
+     is painted in; that origin is set on a device pixel, and the box's own
+     layer origin is where the box is - so the picture landed up to a device
+     pixel off where `pictureCss` put it. With its own layer the origin is the
+     picture's corner, which `pictureCss` has already set on a device pixel,
+     and the rect from there is whole CSS px (`show` in box-picture.js). An
+     identity transform makes the layer and moves nothing. */
+  .warpl[data-painter='engine'] {
+    transform: translate(0, 0);
   }
   /* A transparent pointer target over text that the engine's picture shows
      outside the box's frame. */

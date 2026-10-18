@@ -91,7 +91,7 @@ describe('parsePages', () => {
 
   it.each([
     ['2-5', [2, 3, 4, 5]], ['3', [3]], ['1,3,7-9', [1, 3, 7, 8, 9]],
-    [' 3, 1 - 2, 2 ', [1, 2, 3]], [[3, 1, 3, 2], [1, 2, 3]],
+    [' 3, 1 - 2, 2 ', [1, 2, 3]], [[3, 1, 3, 2], [1, 2, 3]], [7, [7]],
   ])('parses %j as deduplicated 1-based pages in document order', (spec, expected) => {
     loadProjectPages(Array.from({ length: 9 }, (_, i) => ({ id: i + 101, lines: [], boxes: [] })));
     expect(parsePages(spec).map((p) => app.pages.indexOf(p) + 1)).toEqual(expected);
@@ -102,7 +102,7 @@ describe('parsePages', () => {
     try { parsePages(spec); } catch (err) { expect(err).toBeInstanceOf(ToolError); expect(err.hint).toContain('1-based'); }
   });
 
-  it.each(['', '2-1', '1,,2', '1.5', 'one', '1-2-3', null, {}, 2, ['2']])('rejects malformed %j with a hint', (spec) => {
+  it.each(['', '2-1', '1,,2', '1.5', 'one', '1-2-3', null, {}, ['2']])('rejects malformed %j with a hint', (spec) => {
     expect(() => parsePages(spec)).toThrow(ToolError);
     try { parsePages(spec); } catch (err) { expect(err.hint).toBeTruthy(); }
   });

@@ -198,6 +198,13 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
    frame is the biggest element on screen and a standing layer costs compositor
    memory. */
 .page-frame.panning{ will-change: translate; }
+/* A pinch scales the page as one picture (`pinchTo` in Canvas.svelte), and
+   the page grown past the stage must not grow the scroll or raise a scrollbar
+   under the gesture: that would move the centring the transform was worked out
+   against. The stage spans the viewport, so the clip shows the same pixels.
+   `hidden` first for a WebKit without `clip`. */
+.stage.zooming{ overflow:hidden; overflow:clip; }
+.page-frame.zooming, .strip.zooming{ will-change: transform; }
 /* A paged chapter keeps its neighbouring pages mounted so a turn is a
    visibility change rather than a teardown and a rebuild - see `mountedPages` in
    Canvas.svelte. `display:none` and not `visibility:hidden`, because a hidden
@@ -1175,6 +1182,7 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
   width:212px; height:40px; padding:0 12px; border:1px solid var(--line2); border-radius:8px;
   background:var(--surface); color:var(--text); font-size:12.5px;
 }
+.name-input:focus{ outline:none; border-color:var(--accent); }
 /* The layout picker in the create-a-project row: the same 212px column every
    other control in `.home-actions` is, so the three of them read as one form
    rather than a segmented control that wandered in. */
@@ -1183,86 +1191,129 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .seg.new-language{ width:272px; border-radius:8px; }
 .seg.new-language button{ height:36px; padding:0 9px; font-size:11.5px; }
 
-.home-actions{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:168px 0 152px; }
-.section-label{ font-size:10.5px; letter-spacing:.22em; color:var(--t3); margin-bottom:18px; }
-.section-label.spaced{ margin:56px 0 4px; }
-.home-empty{ padding:52px 0; font-size:12px; color:var(--t3); line-height:1.7; }
+.home-actions{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:96px 0 72px; }
+/* New project, opened in place of the two buttons: one 272px column, so the
+   name, the two choices and the buttons line up as one form. */
+.new-project{ display:flex; flex-direction:column; gap:10px; width:272px; }
+.new-project .name-input,.new-project .seg{ width:100%; }
+.new-project-foot{ display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
+.new-project-foot .soft-btn{ height:30px; }
+.section-label{ margin:0 0 18px; font-size:10.5px; font-weight:400; letter-spacing:.22em; color:var(--t3); }
+.section-label.spaced{ margin:52px 0 4px; }
+.home-empty{ padding:52px 0; font-size:12px; color:var(--t2); line-height:1.7; list-style:none; }
 .home-error{
   padding:12px 0 20px; font-size:11.5px; color:var(--warn); line-height:1.7;
   display:flex; flex-direction:column; align-items:flex-start; gap:10px; max-width:560px;
 }
-.confirm-note{ grid-column:1/-1; padding:8px 0 14px; font-size:11px; line-height:1.6; }
 .warn{ color:var(--warn); }
+.soft-btn.danger{ color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); }
+.soft-btn.danger:hover{ background:color-mix(in srgb, var(--warn) 22%, transparent); }
+.sr-only{ position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 
+/* Projects: a shelf of covers. The cover opens the series; the name line
+   carries the "…" menu, shown on hover and on keyboard focus. */
 .pgrid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:32px 20px; }
 .pcard{ display:flex; flex-direction:column; min-width:0; }
 .pcard-cover{
   position:relative; aspect-ratio:2/3; width:100%; padding:0;
   background:var(--card); border:none; border-radius:3px; box-shadow:var(--edge);
-  overflow:hidden; cursor:pointer;
+  overflow:hidden; cursor:pointer; transition:transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .18s;
 }
+.pcard-cover:hover{ transform:translateY(-2px); box-shadow:var(--edge), 0 10px 24px rgba(0,0,0,.18); }
+.pcard-cover:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; }
 .pcard-cover img{ width:100%; height:100%; object-fit:cover; display:block; }
-.pcard-meta{ padding-top:11px; min-width:0; }
+.pcard-meta{ display:flex; align-items:flex-start; gap:4px; padding-top:11px; min-width:0; }
+.pcard-text{ flex:1; min-width:0; }
 .pcard-name{ font-size:13px; font-weight:500; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.pcard-sub{ font-size:11px; color:var(--t3); margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.pcard-sub.small{ font-size:10.5px; margin-top:5px; }
+.pcard-sub{ font-size:11px; color:var(--t2); margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pcard-sub.small{ font-size:10.5px; color:var(--t3); margin-top:3px; }
+.pcard-meta .row-menu-btn{ margin:-6px -6px 0 0; opacity:0; }
+.pcard:hover .row-menu-btn,.pcard-meta .row-menu-btn:focus-visible,.pcard-meta .row-menu-btn.open{ opacity:1; }
 .pcard-del{
-  align-self:flex-start; margin-top:8px; padding:0; border:none; background:transparent;
-  font-size:10.5px; color:var(--t3); cursor:pointer;
+  flex:none; padding:0; border:none; background:transparent;
+  font-size:11px; color:var(--t2); cursor:pointer;
 }
 .pcard-del:hover{ color:var(--warn); }
 .pcard.unreadable .pcard-cover{ cursor:default; opacity:.5; }
+.pcard.unreadable .pcard-cover:hover{ transform:none; }
+.pcard-confirm{ margin-top:10px; padding:10px 12px; border:1px solid color-mix(in srgb, var(--warn) 50%, var(--line)); border-radius:8px; font-size:11.5px; line-height:1.5; color:var(--text); }
+.pcard-confirm-actions{ display:flex; gap:6px; margin-top:8px; }
 
-.back-link{ border:none; background:transparent; padding:0; font-size:11.5px; color:var(--t3); cursor:pointer; letter-spacing:.04em; }
-.project-head{ display:flex; align-items:flex-end; gap:24px; margin-top:22px; }
-.project-title{ flex:1; min-width:0; }
-.project-name{ font-size:27px; font-weight:500; letter-spacing:-.02em; line-height:1.1; }
-.project-meta{ font-size:11.5px; color:var(--t3); margin-top:9px; }
-.project-language{ display:flex; flex-direction:column; gap:5px; margin-left:auto; font-size:11.5px; color:var(--t3); }
-.project-language select{ min-width:130px; height:32px; padding:0 8px; border:1px solid var(--line2); border-radius:6px; background:var(--surface); color:var(--text); font:inherit; }
-.project-language select:focus{ outline:none; border-color:var(--accent); }
-
-.chapter-table{ border-top:1px solid var(--line); }
-.chapter-row{ display:flex; align-items:center; border-bottom:1px solid var(--line); }
-.chapter-open{
-  flex:1; display:flex; align-items:center; gap:16px; min-width:0;
-  padding:14px 0; border:none; background:transparent; color:inherit; text-align:left; cursor:pointer;
+/* A series: back, its name and facts, then its chapters. */
+.back-link{
+  align-self:flex-start; display:inline-flex; align-items:center; gap:4px; margin-top:28px;
+  border:none; background:transparent; padding:4px 6px 4px 2px; margin-left:-2px; border-radius:6px;
+  font-size:12px; color:var(--t2); cursor:pointer;
 }
-.chapter-open:hover{ background:var(--accent-soft); }
-/* Status mark, number, title, then three right-aligned columns at the widths
-   the design specifies. Fixed widths so the columns line up down the table
-   rather than following each row's content. */
-.chapter-mark{ width:14px; flex:none; margin-left:8px; font-size:9px; line-height:1; text-align:center; color:var(--t3); }
-.chapter-mark.on{ color:var(--text); }
-.chapter-num{ width:72px; flex:none; font-size:13px; }
-.chapter-title{ flex:1; min-width:0; font-size:13px; }
-.chapter-sub{ font-size:11px; color:var(--t3); margin-top:4px; }
-.chapter-chip{ width:150px; flex:none; text-align:right; font-size:11px; color:var(--t2); }
-.chapter-chip .chapter-sub{ font-variant-numeric:tabular-nums; }
-.chapter-pages{ width:130px; flex:none; text-align:right; font-size:11.5px; color:var(--t2); }
-.chapter-time{ width:104px; flex:none; text-align:right; font-size:11px; color:var(--t3); }
-.chapter-del,.chapter-act{ border:none; background:transparent; font-size:10.5px; color:var(--t3); cursor:pointer; padding:0 8px; }
-/* Only the destructive one turns --warn. */
+.back-link:hover{ color:var(--text); background:var(--accent-soft); }
+.back-link:focus-visible{ outline:2px solid var(--accent); outline-offset:0; }
+.project-head{ display:flex; align-items:flex-end; gap:24px; margin-top:14px; }
+.project-title{ flex:1; min-width:0; }
+.project-name{ margin:0; font-size:27px; font-weight:500; letter-spacing:-.02em; line-height:1.15; overflow-wrap:anywhere; }
+.project-meta{ display:flex; flex-wrap:wrap; align-items:center; margin-top:9px; font-size:11.5px; color:var(--t2); }
+.project-meta > * + *::before{ content:"·"; margin:0 7px; color:var(--t3); }
+/* The source language reads as one of the facts, and is a menu: a select with
+   no box until it is hovered or focused. */
+.project-language{ display:inline-flex; align-items:center; }
+.project-language select{
+  -webkit-appearance:none; appearance:none;
+  height:24px; margin:0 0 0 -6px; padding:0 20px 0 6px; border:1px solid transparent; border-radius:6px;
+  background:transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right 5px center / 10px 10px;
+  color:var(--t2); font:inherit; font-size:11.5px; cursor:pointer;
+}
+.project-language select:hover{ color:var(--text); background-color:var(--accent-soft); }
+.project-language select:focus-visible{ outline:none; border-color:var(--accent); color:var(--text); }
+.project-head .accent-btn.narrow{ height:32px; padding:0 16px; }
+
+/* Chapters: one quiet row each, the way Manga Cleaner lists them. Mark,
+   number, title with its facts, then status, progress and when, in fixed
+   columns so they line up down the list. Everything else is in the "…" menu
+   (or a right-click), shown on hover and on keyboard focus. */
+.chapter-table{ margin:0; padding:0; list-style:none; border-top:1px solid var(--line); }
+.chapter-row{ display:flex; align-items:center; gap:4px; padding-right:6px; border-bottom:1px solid var(--line); transition:background .12s; }
+/* The whole row lights, the "…" with it: the menu is part of the row. */
+.chapter-row:not(.unreadable):hover,.chapter-row:has(.row-menu-btn.open){ background:var(--accent-soft); }
+.chapter-open{
+  flex:1; display:flex; align-items:center; gap:16px; min-width:0; min-height:58px;
+  padding:10px 12px 10px 10px; border:none; border-radius:6px; background:transparent; color:inherit;
+  text-align:left; cursor:pointer;
+}
+.chapter-row .row-menu-btn:hover{ background:var(--accent-soft); }
+.chapter-open:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+.chapter-mark{ width:14px; flex:none; display:grid; place-items:center; color:var(--t3); }
+.chapter-mark.typeset{ color:var(--text); }
+.chapter-mark.bad{ color:var(--warn); }
+.chapter-num{ width:64px; flex:none; font-size:13px; font-variant-numeric:tabular-nums; }
+.chapter-title{ flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.chapter-name{ font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chapter-sub{ font-size:11px; color:var(--t2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chapter-status{ width:96px; flex:none; text-align:right; font-size:11.5px; color:var(--t2); }
+.chapter-progress{ width:120px; flex:none; text-align:right; font-size:11.5px; color:var(--t2); font-variant-numeric:tabular-nums; }
+.chapter-time{ width:96px; flex:none; text-align:right; font-size:11px; color:var(--t3); }
+.chapter-row .row-menu-btn{ opacity:0; }
+.chapter-row:hover .row-menu-btn,.chapter-row:focus-within .row-menu-btn,.chapter-row .row-menu-btn.open{ opacity:1; }
+.chapter-del{ flex:none; width:58px; border:none; background:transparent; font-size:11px; color:var(--t2); cursor:pointer; }
 .chapter-del:hover{ color:var(--warn); }
-.chapter-act:hover{ color:var(--text); }
-.chapter-act:disabled{ opacity:.4; cursor:default; }
-.chapter-act:disabled:hover{ color:var(--t3); }
-/* The workflow-mode switch. It reads as a state badge rather than as a verb -
-   it says what the chapter IS, and pressing it is what makes it the other one -
-   so it is lit when it is not the default and quiet when it is. Fixed width, or
-   the two words either side of the switch would shift Sources and Delete along
-   the row as chapters differ. */
-.chapter-mode{ width:72px; flex:none; text-align:center; border:1px solid var(--line); border-radius:999px; padding:2px 8px; }
-.chapter-mode:hover{ border-color:var(--t3); }
-.chapter-mode.on{ color:var(--accent); border-color:var(--accent); }
-.chapter-mode.on:hover{ color:var(--accent); }
+.chapter-row.confirming{ border-bottom-color:transparent; }
+.confirm-row{
+  display:flex; align-items:center; gap:8px; padding:10px 12px 12px 40px;
+  border-bottom:1px solid var(--line); font-size:12px; color:var(--text);
+}
+.confirm-row > span{ flex:1; min-width:0; }
+.confirm-row .soft-btn{ height:28px; }
 
 /* Unreadable chapter rows (scan stubs from a chapter.json that failed to
    parse): disabled and visibly flagged rather than clickable, same
    treatment as .pcard.unreadable above. */
-.chapter-open:disabled{ cursor:default; opacity:.5; }
-.chapter-open:disabled:hover{ background:transparent; }
+.chapter-open:disabled{ cursor:default; opacity:.6; }
 .chapter-row.unreadable .chapter-num{ color:var(--t3); }
+@media (max-width:860px){
+  .chapter-progress{ display:none; }
+}
+@media (max-width:640px){
+  .chapter-status,.chapter-time{ display:none; }
+  .project-head{ flex-direction:column; align-items:flex-start; }
+}
 
 /* ---------- new chapter dialog ---------- */
 /* `.field`, `.seg` and `.modal-head` are already taken by the inspector and the
@@ -1273,10 +1324,10 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
   height:auto; flex:none; display:block; padding:0; border-bottom:none;
   font-size:13px; font-weight:600; margin-bottom:18px;
 }
-.dialog-narrow .field,.settings-section .field{
+.dialog-narrow .field{
   display:flex; flex-direction:row; align-items:center; gap:12px; margin-bottom:12px;
 }
-.dialog-narrow .field > span,.settings-section .field > span{
+.dialog-narrow .field > span{
   width:110px; flex:none; font-size:11.5px; color:var(--t2);
 }
 .dialog-narrow .field input,.dialog-narrow .field select{
@@ -1334,25 +1385,111 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .sources-names .path.warn{ color:var(--warn); }
 .sources-none{ font-size:11px; color:var(--t3); }
 
-.settings-section{ margin-bottom:22px; }
-.settings-title{ font-size:10.5px; letter-spacing:.22em; color:var(--t3); margin-bottom:12px; }
-/* Says what it is on the section heading rather than in the hint underneath,
-   because the heading is the part someone scanning Settings actually reads. */
-.settings-title .beta-badge{
-  margin-left:8px; padding:2px 7px; border-radius:999px;
-  border:1px solid var(--warn); color:var(--warn);
-  font-size:9.5px; letter-spacing:.08em; text-transform:none; vertical-align:1px;
+/* ---------- settings screen ---------- */
+/* Settings is a full window, not a modal: a sidebar of sections on the panel
+   layer, and one centred column of rows on the page ground. The grammar is
+   Manga Cleaner's: a row is a label on the left and its control on the right,
+   a hairline under it, and the explanation under the label in the quieter
+   colour. Global rather than in SettingsModal.svelte because TextStyles,
+   LetteringSetup and SeriesGuide draw their rows into it too. */
+.settings-screen{
+  position:fixed; inset:0; z-index:100; display:flex;
+  background:var(--bg); color:var(--text);
+  animation:set-in .16s cubic-bezier(.2,.8,.2,1);
 }
-.settings-section .seg{ flex:none; }
-/* The one place Settings overrides the shared segment: word labels rather than
-   the icon glyphs the Inspector's strips carry, so they need room either side
-   of the hairline or "System · dark" and its neighbours read as one run of
-   text - and a shorter, smaller row, because a settings row is not a control
-   being aimed at repeatedly. Scoped to Settings so the Inspector keeps its
-   tight icon grid. There used to be a second, earlier copy of this selector up
-   beside `.seg` itself at the same specificity: same fix arrived twice, from
-   two directions, and the earlier one silently did nothing. One rule. */
-.settings-section .seg button{ height:26px; padding:0 14px; font-size:11.5px; }
+.settings-screen:focus{ outline:none; }
+@keyframes set-in{ from{ opacity:0; } }
+@media (prefers-reduced-motion:reduce){ .settings-screen{ animation:none; } }
+
+.set-side{
+  flex:none; width:224px; display:flex; flex-direction:column; gap:18px;
+  padding:14px 10px 20px; background:var(--panel); border-right:1px solid var(--line);
+  overflow-y:auto;
+}
+.set-side-head{ display:flex; align-items:center; gap:6px; padding:0 2px; }
+.set-side h1{ margin:0; font-size:14px; font-weight:600; letter-spacing:-.005em; }
+.set-back{
+  flex:none; width:28px; height:28px; display:grid; place-items:center; padding:0;
+  border:none; border-radius:6px; background:none; color:var(--t2); cursor:pointer;
+  transition:background .12s,color .12s;
+}
+.set-back:hover{ background:var(--accent-soft); color:var(--text); }
+.set-back:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+.set-tabs{ display:flex; flex-direction:column; gap:2px; }
+/* Selection is a fill and a brighter label; the weight never changes, so a
+   label never shifts under the pointer. */
+.set-tab{
+  display:flex; align-items:center; gap:10px; height:30px; padding:0 10px;
+  border:none; border-radius:6px; background:none; color:var(--t2);
+  font-size:12.5px; text-align:left; white-space:nowrap; cursor:pointer;
+  transition:background .12s,color .12s;
+}
+.set-tab svg{ flex:none; width:16px; height:16px; }
+.set-tab span{ overflow:hidden; text-overflow:ellipsis; }
+.set-tab:hover{ background:var(--accent-soft); color:var(--text); }
+.set-tab.on{ background:var(--accent-soft); color:var(--text); }
+.set-tab:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+/* The series group's heading is the series' own name: the group is where its
+   settings are kept, which is what the scope chips used to say row by row. */
+.set-group{ display:flex; flex-direction:column; gap:2px; padding:12px 10px 0; border-top:1px solid var(--line); margin-bottom:-12px; }
+.set-group-name{ font-size:12px; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.set-group-note{ font-size:11px; color:var(--t2); }
+
+.set-panel{ flex:1; min-width:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.set-column{ max-width:680px; margin:0 auto; padding:34px 32px 80px; user-select:text; -webkit-user-select:text; }
+.set-page-head h2{ margin:0; font-size:20px; font-weight:600; letter-spacing:-.01em; line-height:1.2; }
+.set-lead{ margin:8px 0 0; font-size:12px; line-height:1.5; color:var(--t2); max-width:64ch; }
+.set-lead-top{ margin-top:10px; }
+
+.settings-section{ margin-top:34px; }
+.settings-title{
+  display:flex; align-items:center; gap:8px; margin:0 0 4px;
+  font-size:12.5px; font-weight:600; color:var(--text); letter-spacing:0;
+}
+.set-intro{ margin:0 0 6px; font-size:11.5px; line-height:1.5; color:var(--t2); max-width:64ch; }
+.set-item{ border-bottom:1px solid var(--line); }
+.set-line{ display:flex; align-items:center; gap:16px; min-height:44px; padding:6px 0; }
+.set-label{ flex:1; min-width:0; font-size:12.5px; color:var(--text); line-height:1.35; }
+.set-label-sub{ display:block; margin-top:2px; font-size:11.5px; color:var(--t2); }
+.set-ctl{ flex:none; display:flex; align-items:center; gap:6px; }
+.set-value{ flex:none; font-size:12px; color:var(--t2); }
+.set-desc{ margin:-4px 0 0; padding:0 0 12px; font-size:11.5px; line-height:1.5; color:var(--t2); max-width:64ch; }
+.set-desc b{ color:var(--text); font-weight:500; }
+.set-path{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:var(--t2); overflow-wrap:anywhere; }
+.set-actions{ display:flex; gap:8px; margin-top:12px; }
+.set-intro b{ color:var(--text); font-weight:500; }
+.set-link{ padding:0; border:none; background:none; color:var(--text); font:inherit; text-decoration:underline; text-underline-offset:2px; cursor:pointer; }
+.set-link:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:2px; }
+/* Rows that only mean something while the row above them is on: set in, and
+   dimmed rather than hidden while it is off. */
+.set-nested{ padding-left:18px; }
+.set-nested.dim{ opacity:.5; }
+.set-badge{
+  display:inline-block; margin-left:6px; padding:1px 7px; border:1px solid var(--line2); border-radius:999px;
+  font-size:10px; font-weight:400; color:var(--t2); vertical-align:1px; white-space:nowrap;
+}
+.set-badge.warn{ border-color:var(--warn); color:var(--warn); }
+
+/* Controls at row scale. */
+.settings-screen .seg{ flex:none; }
+.settings-screen .seg button{ height:28px; padding:0 13px; font-size:11.5px; }
+.settings-screen .btn.tiny{ height:28px; padding:0 10px; font-size:12px; }
+.set-select,.set-num{
+  height:28px; padding:0 8px; border:1px solid var(--line2); border-radius:6px;
+  background:var(--surface); color:var(--text); font-size:12px;
+}
+.set-select{ flex:none; width:min(300px,48%); min-width:0; }
+.set-num{ flex:none; width:76px; text-align:right; font-variant-numeric:tabular-nums; }
+.set-select:focus,.set-num:focus{ outline:none; border-color:var(--accent); }
+.settings-screen textarea.qtf-input{ width:100%; resize:vertical; padding:8px 10px; font-size:12px; line-height:1.5; }
+.settings-screen .switch.disabled{ cursor:default; opacity:.5; }
+
+@media (max-width:720px){
+  .set-side{ width:64px; padding:12px 8px; }
+  .set-side h1,.set-tab span,.set-group{ display:none; }
+  .set-tab{ justify-content:center; padding:0; }
+  .set-column{ padding:24px 18px 64px; }
+}
 
 /* Boot placeholder: the frame before the library root is known. */
 .boot{ height:100vh; background:var(--bg); }

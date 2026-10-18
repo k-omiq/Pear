@@ -112,6 +112,17 @@ export function polyArea(pts) {
   return Math.abs(a / 2);
 }
 
+// Whether an outline is a rectangle - a caption frame, a box drawn as its own
+// outline - rather than a balloon: it fills nearly all of its bounds, square
+// or rounded corners alike, where an oval fills a quarter of pi (0.79) of
+// them. Text in one is set as a rectangular block, not an oval.
+export const RECT_FILL = 0.9;
+export function isRectOutline(pts) {
+  if (!Array.isArray(pts) || pts.length < 3) return false;
+  const b = polyBounds(pts);
+  return b.w > 0 && b.h > 0 && polyArea(pts) / (b.w * b.h) >= RECT_FILL;
+}
+
 // Where a reader sees the middle of the balloon: the interior's centroid. The
 // finder has already opened the tail off the outline, so what is left is the
 // body the text belongs in.

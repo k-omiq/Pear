@@ -275,6 +275,18 @@ export function applyCase(text, style) {
   return style.uppercase ? text.toUpperCase() : text;
 }
 
+// The letters of `text` the style's face has no glyph for, as code points,
+// each once: wherever they appear they are drawn from another font, or as an
+// empty box. Empty where nothing can tell (no engine measuring).
+export function glyphsMissing(style, text) {
+  if (!engine?.missing || !style || !text) return [];
+  try {
+    return engine.missing(faceFor(style, style.size > 0 ? style.size : 16), String(text), 0) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 // Per-character advances (width incl. letterSpacing is added by caller).
 export function charWidths(text, style, sizePx) {
   if (!text || sizePx <= 0) return [];
@@ -1144,10 +1156,36 @@ export function outlineRows(pts, top, lineH, n, axis, m, pad = 0) {
 // matches, the breaks are ignored, and the lines are broken as before until the
 // next solve chooses again.
 export function breaksKey(text, style, sizePx) {
-  const k = JSON.stringify([String(text ?? ''), style?.font ?? '', sizePx, !!style?.bold, !!style?.italic, Number(style?.letterSpacing) || 0]);
+  return hashKey(JSON.stringify([String(text ?? ''), style?.font ?? '', sizePx, !!style?.bold, !!style?.italic, Number(style?.letterSpacing) || 0]));
+}
+
+function hashKey(k) {
   let h = 0x811c9dc5;
   for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 0x01000193);
   return (h >>> 0).toString(36);
+}
+
+// The words alone, with no face or size: what lines held under a lock
+// (`locks.breaks`) carry beside their key, so a change of face, size or
+// spacing - which voids the key - can key the same lines again
+// (`rekeyBreaks`). Capitals or not, so turning uppercase on keeps them; the
+// length is in it, so a capital that is two letters (ß) is new words.
+export const breaksTextKey = (text) => {
+  const t = String(text ?? '');
+  return hashKey(`${t.length}\n${t.toLowerCase()}`);
+};
+
+// Held lines keyed to `style` at `sizePx`: the same line starts, when they
+// were chosen for these words and only the face, the size or the spacing
+// changed since. `breaks` itself when its key still matches; null when it was
+// chosen for other words (or carries no words key: lines kept before there
+// was one), and the lines are broken afresh.
+export function rekeyBreaks(breaks, text, style, sizePx) {
+  if (!breaks || !Array.isArray(breaks.at)) return null;
+  const key = breaksKey(text, style, sizePx);
+  if (breaks.key === key) return breaks;
+  if (!breaks.textKey || breaks.textKey !== breaksTextKey(text)) return null;
+  return { ...breaks, key };
 }
 
 const WORDISH = /[\p{L}\p{N}]/u;
@@ -1171,11 +1209,11 @@ export function brokenLines(text, style, sizePx, breaks) {
 }
 
 // Breaks for `lines` of `text` (both cased): where each line starts, found in
-// order. Null when the lines are not the text's own (a line the text does not
-// have where it should be).
+// order, capitals aside. Null when the lines are not the text's own (a line
+// the text does not have where it should be).
 export function breaksFor(text, style, sizePx, lines) {
   const t = String(text);
-  const at = [];
+  const starts = [];
   let from = 0;
   for (const line of lines) {
     const full = line.trim();
@@ -1183,14 +1221,36 @@ export function breaksFor(text, style, sizePx, lines) {
     // the text, and the line is the head of a word.
     const core = full.replace(/-$/, '');
     while (from < t.length && /\s/.test(t[from])) from++;
-    const take = full && t.startsWith(full, from) ? full : core && t.startsWith(core, from) ? core : null;
+    // Capitals aside: a line written in the face's capitals ("AND AT") names
+    // the text's own letters ("And at"), which are what is kept.
+    const at = (piece) => piece && t.slice(from, from + piece.length).toLowerCase() === piece.toLowerCase();
+    const take = at(full) ? full : at(core) ? core : null;
     if (take == null) return null;
-    at.push(at.length ? from : 0);
+    starts.push(starts.length ? from : 0);
     from += take.length;
   }
   while (from < t.length && /\s/.test(t[from])) from++;
-  if (from !== t.length || !at.length || at[0] !== 0) return null;
-  return { key: breaksKey(t, style, sizePx), at };
+  if (from !== t.length || !starts.length || starts[0] !== 0) return null;
+  return { key: breaksKey(t, style, sizePx), at: starts, textKey: breaksTextKey(t) };
+}
+
+// ===== the size that covers an original =====
+//
+// An SFX, a title or a sign is drawn over the original it replaces, at its
+// size: the size at which `text` (cased), set on one line, runs the original's
+// length `long` and stands no taller than its breadth `short`, both in page px.
+// The line runs along the original's long side, turned to it by whoever lays
+// it there. English reads left to right, so over an `upright` original (a
+// Japanese column) it is never stood on end: it runs across the column, a line
+// as long as the mean of the original's two sides - as the human lettered RMS
+// ch1 (RISE, STRAIIIN, SHIING over columns). Null when there is nothing to
+// measure.
+export function sizeToCover(text, style, long, short, { upright = false } = {}) {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!t || !style || !(long > 0 && short > 0)) return null;
+  const per = lineWidth(t, { ...style, size: 100 }, 100) / 100;
+  if (!(per > 0)) return null;
+  return Math.min((upright ? Math.sqrt(long * short) : long) / per, short);
 }
 
 // ===== where a flush line starts, inside a balloon =====

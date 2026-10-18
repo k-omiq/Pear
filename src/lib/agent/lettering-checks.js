@@ -10,12 +10,27 @@
 //   contrast  the text's fill is the same tone as the inside of its balloon:
 //             black on a black balloon, white on white, with no outline of the
 //             other tone to carry it.
+//   turn      a drawn sound, title or blocky word turned past MAX_TURN: English
+//             stood on end to follow a Japanese column, which the reader has to
+//             turn their head to read (footprint.js).
+//   emphasis  the original letters the line far bigger than the rest of its
+//             kind - a dramatic one-liner, a cry in big heavy strokes - and ours
+//             sits at its kind's usual size, so the moment reads flat.
 //
 // Pure: the caller hands in what the box's tags want and what its balloon's
 // inside is, so the rules can be tested without a store.
 
+import { ART_SIZED_ROLES } from '../lettering.js';
+import { MAX_TURN } from './footprint.js';
+
 // Tags whose boxes are drawn sounds, never held to a font.
 export const FREE_FONT_TAGS = ['sfx', 'sfx-sharp', 'sfx-soft'];
+
+// A turn in degrees, kept to (-180, 180].
+const turnOf = (deg) => {
+  const a = (((Number(deg) || 0) % 360) + 360) % 360;
+  return a > 180 ? a - 360 : a;
+};
 
 // WCAG relative luminance of a #rgb / #rrggbb colour (alpha ignored), or null.
 export function luminance(hex) {
@@ -43,6 +58,18 @@ function bodyLuminance(style) {
   return luminance(style.color);
 }
 
+// The original stresses a line when its letters are this many times its
+// kind's usual size; ours answers when it is a third of the way there.
+export const EMPHASIS = 1.6;
+const tenth = (v) => Math.round(v * 10) / 10;
+
+// `original` the line's detected letter size over its tag's usual one in the
+// chapter, `ours` the box's size over its tag's usual one. An issue or null.
+export function emphasisIssue(original, ours, tag) {
+  if (!(original >= EMPHASIS) || !(ours > 0) || ours >= 1 + (original - 1) / 3) return null;
+  return { kind: 'emphasis', detail: { original: tenth(original), ours: tenth(ours), tag } };
+}
+
 // `box` the box, `want` { font, tag } its tags resolve to (or null), `tags`
 // its line's tags, `ink` '#000000' | '#ffffff' the text colour its balloon
 // asks for (or null when unknown). Returns check issues.
@@ -61,6 +88,10 @@ export function letteringIssues(box, { want = null, tags = [], ink = null } = {}
       const carried = (s.strokes ?? []).some((k) => k.width >= 2 && (k.opacity ?? 1) > 0.5 && Math.abs((luminance(k.color) ?? inside) - inside) >= 0.5);
       if (!carried) out.push({ kind: 'contrast', detail: { fill: s.noFill ? s.strokes?.[0]?.color : s.color, balloon: ink === '#ffffff' ? 'dark' : 'light' } });
     }
+  }
+  const turn = turnOf(s.rotation);
+  if (Math.abs(turn) > MAX_TURN && tags.some((t) => ART_SIZED_ROLES.includes(t))) {
+    out.push({ kind: 'turn', detail: { rotation: Math.round(turn), max: MAX_TURN } });
   }
   return out;
 }

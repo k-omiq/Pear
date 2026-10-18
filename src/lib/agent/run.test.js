@@ -6,7 +6,7 @@ vi.mock('../library.svelte.js', () => ({ chapterOpenSeq: () => seq }));
 
 const { app, loadProjectPages, pageById, editBoxes, settleEdits, cloneStyle } = await import('../store.svelte.js');
 const { initHistory, resetHistory, undo, peekStack } = await import('../editor/history.svelte.js');
-const { callContext, revertRun, stopRun, aiRun, IDLE_MS, __resetRun } = await import('./run.svelte.js');
+const { callContext, revertRun, stopRun, noteCall, aiRun, QUIET_MS, IDLE_MS, __resetRun } = await import('./run.svelte.js');
 const { ToolError } = await import('./registry.js');
 const { bindGuide, unbindGuide, guide, addTerm } = await import('../guide.svelte.js');
 const { defaultStyle } = await import('../data.js');
@@ -96,9 +96,31 @@ describe('Stop', () => {
     expect(aiRun.active).toBe(false);
     expect(p.boxes[0].style.italic).toBe(true);
     expect(() => write(ctx, p, (b) => void (b.x += 1))).toThrow(ToolError);
-    vi.advanceTimersByTime(IDLE_MS + 1);
+    vi.advanceTimersByTime(QUIET_MS + 1);
     write(callContext("mcp"), p, (b) => void (b.x += 1));
     expect(aiRun.active).toBe(true);
+  });
+});
+
+describe('an agent thinking between calls', () => {
+  it('keeps one run through a long pause, says it is thinking, and ends it only when idle', () => {
+    const p = pageById(1);
+    noteCall();
+    write(callContext('mcp'), p, italic);
+    noteCall();
+    vi.advanceTimersByTime(QUIET_MS + 1);
+    expect(aiRun).toMatchObject({ active: true, quiet: true });
+    // Two minutes on, the next write joins the same run: one Revert takes both.
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    noteCall();
+    expect(aiRun.quiet).toBe(false);
+    write(callContext('mcp'), p, (b) => void (b.x += 7));
+    expect(aiRun.edits).toBe(2);
+    noteCall();
+    vi.advanceTimersByTime(IDLE_MS + 1);
+    expect(aiRun.active).toBe(false);
+    revertRun();
+    expect(p.boxes[0].style.italic).toBeFalsy();
   });
 });
 

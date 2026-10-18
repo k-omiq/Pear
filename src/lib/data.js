@@ -1241,12 +1241,13 @@ export function normalizeAuto(a) {
 }
 
 // The line starts an outline fit chose (`auto.breaks`): offsets into the cased
-// text, rising from 0, and the key of the text and face they were chosen for
-// (`breaksKey` in measure.js). Anything else is no breaks, and the lines are
-// broken as before.
+// text, rising from 0, the key of the text and face they were chosen for
+// (`breaksKey` in measure.js), and the key of the words alone (`textKey`,
+// `breaksTextKey`), which lets held lines follow a change of face or size.
+// Anything else is no breaks, and the lines are broken as before.
 export function normalizeBreaks(b) {
   if (!b || typeof b !== 'object' || typeof b.key !== 'string' || !b.key || !Array.isArray(b.at)) return null;
   const at = b.at.map(Number);
   if (!at.length || at[0] !== 0 || at.some((v, i) => !Number.isInteger(v) || v < 0 || (i && v <= at[i - 1]))) return null;
-  return { key: b.key, at };
+  return { key: b.key, at, ...(typeof b.textKey === 'string' && b.textKey ? { textKey: b.textKey } : null) };
 }

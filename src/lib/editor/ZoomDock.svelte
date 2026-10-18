@@ -10,12 +10,15 @@
   // Canvas computeFit handler.
   let { onFit } = $props();
 
-  const zoomPct = $derived(Math.round(app.zoom * 100));
+  // A pinch still moving shows where it is going, not the zoom the page is
+  // still laid out at (`zoomGesture`).
+  const shownZoom = $derived(app.zoomGesture || app.zoom);
+  const zoomPct = $derived(Math.round(shownZoom * 100));
   // Display page resolution and zoom readout.
   const zoomTip = $derived.by(() => {
     const p = page();
-    const w = Math.round(p.w * app.zoom);
-    const h = Math.round(p.h * app.zoom);
+    const w = Math.round(p.w * shownZoom);
+    const h = Math.round(p.h * shownZoom);
     return `${p.w} × ${p.h} page px · ${w} × ${h} on screen - click for 100%`;
   });
 </script>
