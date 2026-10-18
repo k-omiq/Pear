@@ -1,6 +1,6 @@
 <script>
   // Editor canvas viewport and page rendering.
-  import { onMount, untrack } from 'svelte';
+  import { flushSync, onMount, untrack } from 'svelte';
   import TextBox from '../TextBox.svelte';
   import RegionsLayer from './RegionsLayer.svelte';
   import {
@@ -15,6 +15,7 @@
     applyFit,
     setZoom,
     setZoomLive,
+    normalizeZoom,
     isTranslateMode,
     isLongstrip,
     gotoPage,
@@ -572,7 +573,15 @@
   const DOUBLE_PX = 6;
   let firstClick = null;
   let presses = 0;
-  const countPress = () => presses++;
+  // A press during a pinch lands on the zoom it shows: the gesture is laid out
+  // first, before anything reads a rect.
+  const countPress = () => {
+    presses++;
+    if (pinchAt) {
+      endPinch();
+      flushSync();
+    }
+  };
   function secondClick(ev, hit) {
     const prev = firstClick;
     firstClick = null;
@@ -875,6 +884,112 @@
     });
   });
 
+  // ---------- a pinch, as one picture scaled ----------
+  //
+  // A pinch used to lay the page out again at every step: the frame, the art
+  // and every box at the new zoom. The art and DOM text land on device pixels
+  // when they are painted, but a box shown as the engine's picture is a canvas,
+  // and WebKit paints a canvas into a rect rounded to whole CSS px - two device
+  // px on a 2x display. So at every step each picture landed up to a device
+  // pixel off the art, and a different pixel each step: the shake. Measured in
+  // WKWebView: letters against the art moved 0.4-0.5 device px a step on
+  // average, 1.5 at worst, against 0.13 for DOM text.
+  //
+  // So while the gesture moves, the layout stays at the zoom it started at and
+  // the frame (the column, in a strip) is scaled with one CSS transform: the
+  // art and the boxes are one picture and move together. The zoom is laid out
+  // once, when the gesture settles. The transform puts the frame where the
+  // layout at the new zoom will put it (`placeOn`), so the settle does not
+  // jump: the same centring, the same scroll, clamped as the browser will
+  // clamp it.
+  //
+  // `pinch` is what the template reads; `pinchAt` is what the layout was when
+  // the gesture began, which the steps are worked out against.
+  let pinch = $state(null);
+  let pinchAt = null;
+  let pinchSettle = null;
+  const pinchCss = $derived(
+    pinch ? `transform-origin:0 0;transform:translate(${pinch.dx}px,${pinch.dy}px) scale(${pinch.s});` : '',
+  );
+
+  // Where the frame's leading edge sits in the viewport along one axis, at a
+  // frame of `size` px: `.stage` is the viewport at least and the frame plus
+  // its padding at most, and centres the frame in what is left (styles.css),
+  // and the scroll keeps its offset unless the content has become too short
+  // for it.
+  function placeOn(size, view, padA, padB, scroll) {
+    const content = Math.max(view, size + padA + padB);
+    return padA + (content - padA - padB - size) / 2 - clamp(scroll, 0, content - view);
+  }
+  // The frame's laid-out size at a zoom: the page, or the column - as wide as
+  // its widest page and as tall as its frames, which sit on the layout grid
+  // (`stripFrameHeight`).
+  function frameSize(z) {
+    if (strip) return { w: maxPageWidth(app.pages) * z, h: stripOffsets(app.pages, z).total };
+    return { w: p.w * z, h: p.h * z };
+  }
+
+  function pinchTo(target) {
+    const z = normalizeZoom(target);
+    if (!isFinite(z)) return;
+    if (!pinchAt) {
+      if (!scrollEl || !stageEl || !(strip ? stripEl : pageFrameEl)) {
+        setZoom(z);
+        return;
+      }
+      const cs = getComputedStyle(stageEl);
+      const px = (v) => parseFloat(v) || 0;
+      pinchAt = {
+        base: app.zoom,
+        page: app.pageIndex,
+        vw: scrollEl.clientWidth,
+        vh: scrollEl.clientHeight,
+        sl: scrollEl.scrollLeft,
+        st: scrollEl.scrollTop,
+        pl: px(cs.paddingLeft),
+        pr: px(cs.paddingRight),
+        pt: px(cs.paddingTop),
+        pb: px(cs.paddingBottom),
+      };
+      setZoomLive(true);
+    }
+    const a = pinchAt;
+    const from = frameSize(a.base);
+    const to = frameSize(z);
+    pinch = {
+      z,
+      s: z / a.base,
+      dx: placeOn(to.w, a.vw, a.pl, a.pr, a.sl) - placeOn(from.w, a.vw, a.pl, a.pr, a.sl),
+      dy: placeOn(to.h, a.vh, a.pt, a.pb, a.st) - placeOn(from.h, a.vh, a.pt, a.pb, a.st),
+    };
+    app.zoomGesture = z;
+  }
+
+  // The gesture over: laid out at the zoom it reached (`commit`), or dropped
+  // because something else has decided the zoom or the page meanwhile.
+  function endPinch(commit = true) {
+    clearTimeout(pinchSettle);
+    pinchSettle = null;
+    const z = pinch?.z;
+    const began = pinchAt;
+    pinch = null;
+    pinchAt = null;
+    app.zoomGesture = 0;
+    if (commit && began && z != null && z !== app.zoom) setZoom(z);
+    setZoomLive(false);
+  }
+
+  // Anything else that sets the zoom - the dock, a fit, a shortcut - or turns
+  // the page wins over a pinch in flight: the transform was worked out against
+  // a layout that is no longer there. A strip's index follows its scroll and
+  // is no reason to stop.
+  $effect(() => {
+    const z = app.zoom;
+    const i = app.pageIndex;
+    if (!pinchAt) return;
+    if (z !== pinchAt.base || (!strip && i !== pinchAt.page)) untrack(() => endPinch(false));
+  });
+
   // Zooming does not cancel a pan - a user who has pushed the page aside to see
   // a corner expects to be able to zoom into it - but it does change what
   // "almost off screen" means, so the offset is re-bounded against the new
@@ -951,24 +1066,18 @@
     // applied together lands on the same zoom as applying them one at a time.
     let wheelDelta = 0;
     let wheelRaf = 0;
-    let settleT = null;
     const applyWheel = () => {
       wheelRaf = 0;
       const dy = wheelDelta;
       wheelDelta = 0;
-      if (dy) setZoom(app.zoom * Math.exp(-dy * ZOOM_PER_PX));
-    };
-    const endZoomGesture = () => {
-      settleT = null;
-      setZoomLive(false);
+      if (dy) pinchTo((pinch?.z ?? app.zoom) * Math.exp(-dy * ZOOM_PER_PX));
     };
     const onWheel = (e) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         wheelDelta += e.deltaY;
-        setZoomLive(true);
-        clearTimeout(settleT);
-        settleT = setTimeout(endZoomGesture, ZOOM_SETTLE_MS);
+        clearTimeout(pinchSettle);
+        pinchSettle = setTimeout(() => endPinch(), ZOOM_SETTLE_MS);
         if (!wheelRaf) wheelRaf = requestAnimationFrame(applyWheel);
       }
     };
@@ -981,8 +1090,7 @@
       if (wheelRaf) cancelAnimationFrame(wheelRaf);
       // A canvas torn down mid-pinch must not leave the flag standing: every
       // box that reads it would defer its repaint forever.
-      clearTimeout(settleT);
-      setZoomLive(false);
+      endPinch(false);
     };
   });
 </script>
@@ -996,6 +1104,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="stage"
+    class:zooming={!!pinch}
     bind:this={stageEl}
     onpointerdown={onStagePointerDown}
     style={app.bulk.active
@@ -1033,8 +1142,9 @@
       <div
         class="strip"
         class:panning={panLive}
+        class:zooming={!!pinch}
         bind:this={stripEl}
-        style="translate:{pan.x}px {pan.y}px"
+        style="translate:{pan.x}px {pan.y}px;{pinchCss}"
       >
         {#each app.pages as pg, i (pg.id)}
           <div
@@ -1097,9 +1207,10 @@
           class="page-frame"
           class:panning={panLive && m.i === app.pageIndex}
           class:page-off={m.i !== app.pageIndex}
+          class:zooming={!!pinch && m.i === app.pageIndex}
           data-page-id={m.pg.id}
           bind:this={pagedFrameEls[m.i]}
-          style="width:{m.pg.w * app.zoom}px; height:{m.pg.h * app.zoom}px; translate:{pan.x}px {pan.y}px"
+          style="width:{m.pg.w * app.zoom}px; height:{m.pg.h * app.zoom}px; translate:{pan.x}px {pan.y}px;{m.i === app.pageIndex ? pinchCss : ''}"
         >
           {#if srcOf(m.pg)}
             <!-- See the strip's own page image above for why `decoding`. A

@@ -9,9 +9,14 @@
 //            line that does not fit its room is not a candidate.
 //   size     the reference size first; smaller only as far as the outline
 //            needs, and never below the floor (one size per kind of text).
-//   shape    a diamond / oval block: widest lines in the middle, short at the
-//            top and bottom; never an hourglass; no funnel or pyramid.
-//   words    no hyphens (they are the last resort), no short word alone.
+//   shape    in a balloon, a diamond / oval block: widest lines in the
+//            middle, short at the top and bottom; never an hourglass; no
+//            funnel or pyramid. In a rectangle (a caption frame, a box as its
+//            own outline: `isRectOutline`), a rectangular block: every line
+//            but the last as wide as the widest.
+//   words    no hyphens (the last resort, and only where the box's
+//            "Hyphenate long words" is on: `style.hyphenate`), no short word
+//            alone.
 //   fit      the block's aspect follows the balloon's: a tall balloon takes
 //            more, shorter lines.
 //   centre   the block's ink centred on the outline's visual centre, on the
@@ -24,7 +29,7 @@
 // metrics measure.js reads.
 
 import { applyCase, lineWidth, textInset, breaksFor, brokenLines, withFamiliesHeld } from './measure.js';
-import { fitPolygon, visualCentre, polyBounds, roomOver, turnPolygon } from './outline-geom.js';
+import { fitPolygon, visualCentre, polyBounds, roomOver, turnPolygon, isRectOutline } from './outline-geom.js';
 import { ovalProfile, neededHeight, balanceCandidates } from './typeset.js';
 import { placeBlock, containBox, inkHeight, linesInkRect, REVIEW_REASONS } from './contain.js';
 import { fitReport, shapeOf, orphanCount, addedHyphens } from './fit-report.js';
@@ -56,6 +61,7 @@ const W = {
   hyphen: 3,
   weak: 0.6, // a line ending on a word that leans on the next ("a", "the", "and")
   phrase: 0.25, // taken off for a line ending on a comma or a stop
+  even: 3, // in a rectangle: per unit each line but the last falls short of the widest
 };
 
 // Words a line should not end on: they belong with what follows.
@@ -189,7 +195,11 @@ function score(ctx, lines, size, rooms, measure, axisOf) {
   const L = lines.length;
   let s = (W.size * (ctx.ref - size)) / ctx.ref;
   const sh = shapeOf(ws);
-  if (L >= 3) {
+  if (!ctx.round) {
+    // A rectangle: the lines fill its width, the last may stop short.
+    const max = Math.max(...ws);
+    for (let i = 0; i < L - 1; i++) s += W.even * (1 - ws[i] / max);
+  } else if (L >= 3) {
     s += W.oval * (1 - (sh.oval ?? 0));
     if (sh.hourglass) s += W.hourglass;
     s += W.dip * sh.dip;
@@ -256,7 +266,7 @@ function candidatesAt(ctx, size, { soft = false, hyphens = false } = {}) {
       continue;
     }
     if (ctx.words.length <= OUTLINE_FIT.maxWords) {
-      const prof = L <= 2 ? new Array(L).fill(1) : ovalProfile(L).map((v, _, a) => v / Math.max(...a));
+      const prof = L <= 2 || !ctx.round ? new Array(L).fill(1) : ovalProfile(L).map((v, _, a) => v / Math.max(...a));
       const widest = Math.max(...rooms);
       const total = measure(ctx.text.replace(/\s+/g, ' ').trim());
       const natural = total / prof.reduce((s, v) => s + v, 0);
@@ -396,6 +406,8 @@ function solve({ text, style, refSize, region, locks, opts = {} }) {
     marginEm,
     height: b.h,
     minOrphan: style.minOrphan ?? 3,
+    round: region.kind !== 'rect' && !isRectOutline(pts),
+    hyphenate: style.hyphenate !== false,
     ti: textInset(style),
     minW: Number(opts.minW) > 0 ? Number(opts.minW) : 0,
     minH: Number(opts.minH) > 0 ? Number(opts.minH) : 0,
@@ -425,9 +437,10 @@ function solve({ text, style, refSize, region, locks, opts = {} }) {
   // the good one - so a size kept costs some air before it costs a size.
   const tight = Math.min(marginEm, OUTLINE_FIT.tight);
   ctx.goodEm = marginEm;
+  // Hyphens only where the box allows them (its "Hyphenate long words").
   const passes = [
     { margin: tight, hyphens: false },
-    { margin: tight, hyphens: true },
+    ...(ctx.hyphenate ? [{ margin: tight, hyphens: true }] : []),
   ];
   for (const pass of passes) {
     ctx.marginEm = pass.margin;
@@ -451,7 +464,7 @@ function solve({ text, style, refSize, region, locks, opts = {} }) {
   // Nothing holds: the floor size, every line priced for how far past its room
   // it is, flagged.
   ctx.marginEm = tight;
-  const soft = candidatesAt(ctx, sizes[sizes.length - 1], { soft: true, hyphens: true });
+  const soft = candidatesAt(ctx, sizes[sizes.length - 1], { soft: true, hyphens: ctx.hyphenate });
   soft.sort((a, z) => a.score - z.score);
   for (const cand of soft) {
     const c = boxFor(ctx, cand);

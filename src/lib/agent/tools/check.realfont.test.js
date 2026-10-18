@@ -31,3 +31,14 @@ describe('check against the outline', () => {
     expect(fits.in.widths.length).toBe(fits.in.lines);
   });
 });
+
+describe('the glyph check', () => {
+  it('names the letters a box\'s font has no glyph for, and passes a font that has them', () => {
+    const text = (id, font) => ({ ...box(id, 160), fit: null, outline: undefined, text: 'LOVE YOU ♥ ☆', style: { ...style, font } });
+    loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [], boxes: [text('comic', 'Comic Neue'), text('dejavu', 'DejaVu Sans')] }]);
+    const { matches } = selectBoxes({ pages: 'all' });
+    const by = Object.fromEntries(checksFor(matches).map((p) => [p.id, p.issues]));
+    expect(by.comic.find((i) => i.kind === 'glyph')?.detail).toEqual({ font: 'Comic Neue', letters: ['♥', '☆'] });
+    expect((by.dejavu ?? []).some((i) => i.kind === 'glyph')).toBe(false);
+  });
+});

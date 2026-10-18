@@ -54,6 +54,8 @@ import {
   tagSize,
   rememberTagSize,
   findTag,
+  kindOfTag,
+  withKinds,
   saveTagDefaults,
   TAG_STYLE_KEYS,
 } from './tags.svelte.js';
@@ -72,6 +74,9 @@ import {
   clearLayoutMemo,
   setTypesetEnabled,
   faceFor,
+  applyCase,
+  rekeyBreaks,
+  sizeToCover,
 } from './measure.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import { browserFaceReady } from './text-engine/browser.js';
@@ -114,7 +119,7 @@ import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
 import { guide, termById } from './guide.svelte.js';
-import { VOICE_ROLES } from './lettering.js';
+import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
@@ -569,6 +574,11 @@ export const app = $state({
   // re-rasterise themselves at the zoom read it to decide whether to repaint
   // now or once the gesture stops.
   zoomLive: false,
+  // The zoom a pinch is showing while it moves, or 0. The canvas scales the
+  // page as one picture during the gesture and lays it out at this zoom only
+  // when the gesture settles (see `pinchTo` in Canvas.svelte), so `zoom` keeps
+  // the starting value until then; this is what the readout shows meanwhile.
+  zoomGesture: 0,
   fmt: 'PNG',
   // `system` is what `scanSystemFonts` found installed on this machine - every
   // family, whether or not the menus offer it (that is a preference, see
@@ -780,8 +790,16 @@ export function boxEditRecords(key, before, after, geom) {
   }
   if (moved) out.push({ t: 'resize', ...key, before: geomOf(before), after: geomOf(after) });
   if (typed) out.push({ t: 'text', ...key, before: before.text ?? null, after: after.text, ...fit });
+  // A change to what the solver aims for and nothing else - the size aimed
+  // for, the least size, a lock, held lines - is an edit too, and the entry's
+  // geometry carries the record back on an undo. Not a solve's own bookkeeping
+  // (its stamp, its status), which follows the box and is no one's edit.
+  if (!out.length && autoAim(before.auto) !== autoAim(after.auto)) out.push({ t: 'style', ...key, before: before.style, after: after.style, ...fit });
   return out;
 }
+
+const autoAim = (a) =>
+  a ? JSON.stringify([a.on, a.refSize, a.minSize ?? null, a.locks, a.locks?.breaks ? (a.breaks?.at ?? null) : null]) : 'null';
 
 // ---------- many boxes, one edit ----------
 // The one path for an edit that reaches many boxes at once: the bulk panel's
@@ -1021,7 +1039,9 @@ const lineBoxGeoms = (p, n) =>
 // A change of flag alone is not a change to the document's layout and does not
 // count.
 export function autoFitBox(b, p = page()) {
-  if (!b?.style || !canMeasure()) return false;
+  if (!b?.style) return false;
+  keepHeldLines(b, boxText(b, p));
+  if (!canMeasure()) return false;
   // An edit's fit: the box is the user's from here, and no longer one the
   // notice counts as the engine's doing.
   noteEdited(b);
@@ -1046,6 +1066,17 @@ export function autoFitBox(b, p = page()) {
   const changed = writeFit(b, r);
   writeReview(b, r.review);
   return changed;
+}
+
+// Lines held by a lock (`locks.breaks`) outlive a change of face, size or
+// spacing - whoever made it, the Inspector, a tag, a preset or the agent: the
+// same words keep the lines they were given, keyed to the style the box now
+// stands in (`rekeyBreaks`). New words drop them, as they always did.
+function keepHeldLines(b, text) {
+  const a = b.auto;
+  if (!a?.locks?.breaks || !a.breaks) return;
+  const held = rekeyBreaks(a.breaks, applyCase(text, b.style), b.style, b.style.size);
+  if (held && held !== a.breaks) a.breaks = held;
 }
 
 // The smallest a ladder may shrink a box's font to. The larger of two floors:
@@ -2633,8 +2664,15 @@ function previousGroupBox(p, ln) {
 }
 
 // The size a box of `ln`'s group is born at - see above.
-function groupSizeFor(p, ln) {
+//
+// Except a sound effect, a title or a blocky word (`ART_SIZED_ROLES`): that is
+// drawn to the art it sits on, not to a reading size its kind shares, so the
+// size of the last SFX placed - a huge SHIING - is no size for the next, a
+// small PLINK. It is born at the size of the original it replaces, when its
+// line was detected (`artSizeFor`), else at its tag's own size.
+function groupSizeFor(p, ln, style) {
   const key = sizeKeyFor(ln);
+  if (ART_SIZED_ROLES.includes(kindOfTag(key))) return artSizeFor(p, ln, style) ?? findTag(key)?.size ?? defaultStyle().size;
   // With inheritance off, use the tag's configured default, not sizes learned
   // from boxes in this chapter or remembered from earlier chapters.
   if (!inheritBoxStyle) return findTag(key)?.size ?? defaultStyle().size;
@@ -2648,28 +2686,54 @@ function groupSizeFor(p, ln) {
 // with the size its group gives it (`groupSizeFor`). A reference size (see
 // above), which placement solves down from.
 //
-// A line's speaker can bring a tag of its own (TXT-6: a character linked to a
-// tag, so their font follows them). On a line that is only spoken - no tag, or
-// only the ways of speaking (`VOICE_ROLES`: speech, a shout) - the voice comes
-// first, so the character keeps their font however the series sets speech.
-// After any other tag the user put on the line (narration, an SFX), which
-// still wins. The same order holds when the line already carries the voice
-// tag itself. It feeds only the style, not the size group, which stays the
-// line's first tag.
-export function withSpeakerTag(ln) {
-  const tag = termById(ln?.speaker)?.tag;
-  if (!tag) return ln;
+// The order a line's tags style its boxes in, most particular first, since
+// each style key comes from the first tag that sets it (`styleForLine`):
+//   1. the user's own tags ("angry", "radio", "flashback"): each refines the
+//      kind of text the line is, so it beats that kind's look - and brings
+//      the kind it sits under, when it has one, so "angry" alone is speech;
+//   2. the kinds that are the text's own (narration, an SFX, a title): they
+//      beat a speaker's voice - a character narrating is in the narration face;
+//   3. the speaker's voice (TXT-6: a character linked to a tag, so their font
+//      follows them);
+//   4. the ways of speaking (`VOICE_ROLES`: speech, a shout), which add only
+//      what the voice and the user's tags leave unset - a shout's bold.
+// So the order the tags were put on in never decides a font. It feeds only
+// the style, not the size group, which stays the line's first tag.
+export function withStyleOrder(ln) {
+  const voice = termById(ln?.speaker)?.tag ?? null;
   const own = lineTags(ln);
-  const rest = own.filter((t) => t !== tag);
-  const tags = rest.every((t) => VOICE_ROLES.includes(t)) ? [tag, ...rest] : [...rest, tag];
-  return tags.every((t, i) => t === own[i]) && tags.length === own.length ? ln : { ...ln, tags };
+  const rank = (t) => (t === voice ? 2 : VOICE_ROLES.includes(t) ? 3 : ROLE_TAGS.includes(t) ? 1 : 0);
+  // A user's tag brings the kind it sits under (Settings ▸ Text styles).
+  const kinded = withKinds(own);
+  const tags = [...new Set(voice ? [...kinded, voice] : kinded)]
+    .map((t, i) => [t, i])
+    .sort((a, z) => rank(a[0]) - rank(z[0]) || a[1] - z[1])
+    .map(([t]) => t);
+  return tags.length === own.length && tags.every((t, i) => t === own[i]) ? ln : { ...ln, tags };
 }
 
 export function inheritedStyleFor(ln, p = page()) {
   const base = inheritBoxStyle ? cloneStyle(app.lastStyle) : defaultStyle();
-  const style = styleForLine(withSpeakerTag(ln), applyBoxDefaults(base));
-  style.size = groupSizeFor(p, ln);
+  const style = styleForLine(withStyleOrder(ln), applyBoxDefaults(base));
+  style.size = groupSizeFor(p, ln, style);
   return style;
+}
+
+// The size that lays `ln`'s English over the original its line was detected
+// as: one line along the block's long side, no taller than its short side
+// (an SFX is turned along its original later, by hand or by the agent) - or,
+// over a block of upright Japanese, a line run across it (`sizeToCover`).
+// Null with no block, no text or no style to measure it in.
+export const ART_SIZE_RANGE = [12, 300];
+export function artSizeFor(p, ln, style) {
+  const entry = ln && style ? detectedEntryFor(p, ln.n) : null;
+  const rect = entry?.box;
+  if (!Array.isArray(rect) || rect.length !== 4) return null;
+  const bw = Math.abs(rect[2] - rect[0]);
+  const bh = Math.abs(rect[3] - rect[1]);
+  const upright = typeof entry.vertical === 'boolean' ? entry.vertical : bh > bw * 1.5;
+  const size = sizeToCover(applyCase(lineText(ln), style), style, Math.max(bw, bh), Math.min(bw, bh), { upright });
+  return size > 0 ? clamp(Math.round(size * 2) / 2, ...ART_SIZE_RANGE) : null;
 }
 
 // ---------- export prefs persistence ----------
@@ -4488,6 +4552,7 @@ function bornBox(p, ln, imgX, imgY, measured) {
 // page, never by a whole longstrip (FIT-2).
 function solveBox(b, p, text, at, stay = false) {
   const a = b.auto;
+  keepHeldLines(b, text);
   const region = b.fit ?? { kind: 'hint', x: at.x, y: at.y, w: 0, h: 0 };
   const r = solveLayout({
     text,
@@ -5287,12 +5352,38 @@ export function outlineToBox(boxId = app.selectedId, p = page()) {
   const b = (p?.boxes ?? []).find((x) => x.id === boxId);
   if (!b) return false;
   settleEdits();
-  const { x, y, w, h } = b;
+  const { x, y, w, h } = boxOutlineRect(b, p);
   const fit = normalizeFit({ kind: 'poly', pts: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]] });
   if (!fit) return false;
   setBoxOutline(b, p, fit, { source: 'box', confidence: 1, approved: null });
   toast('Outline set to the box');
   return true;
+}
+
+// The rectangle "Outline = box" makes the outline. The box's own, when it was
+// sized by hand (a width or height held). Otherwise the solver cut the box to
+// its text at the size it last settled on, which may be a shrink: an outline
+// that tight would hold the text to that shrink, and outline fit's air would
+// shrink it again. So the rectangle is the box grown back to the size the
+// text aims for (`refSizeOf`), its lines as they are, with the air outline
+// fit asks for (`style.margin`) round it, about the box's centre, on the page.
+function boxOutlineRect(b, p) {
+  const { x, y, w, h } = b;
+  if (b.auto?.locks?.width || b.auto?.locks?.height) return { x, y, w, h };
+  const size = b.style.size;
+  const ref = refSizeOf(b);
+  const k = size > 0 && ref > size ? ref / size : 1;
+  const air = b.style.margin != null ? Math.max(0, Number(b.style.margin) || 0) * Math.max(size, ref) : 0;
+  let nw = w * k + 2 * air;
+  let nh = h * k + 2 * air;
+  if (p?.w > 0) nw = Math.min(nw, p.w);
+  if (p?.h > 0) nh = Math.min(nh, p.h);
+  let nx = x + w / 2 - nw / 2;
+  let ny = y + h / 2 - nh / 2;
+  if (p?.w > 0) nx = clamp(nx, 0, p.w - nw);
+  if (p?.h > 0) ny = clamp(ny, 0, p.h - nh);
+  const r = (v) => Math.round(v * 100) / 100;
+  return { x: r(nx), y: r(ny), w: r(nw), h: r(nh) };
 }
 
 // A point drag, live: the outline moves under the pointer and the text follows
@@ -6758,7 +6849,7 @@ function restyleForTags(boxes) {
   const items = [];
   for (const { page: p, line: ln, box: b } of boxes) {
     const before = cloneStyle(b.style);
-    const after = cloneStyle(styleForLine(withSpeakerTag(ln), before));
+    const after = cloneStyle(styleForLine(withStyleOrder(ln), before));
     if (sameStyle(before, after)) continue;
     const geomBefore = fitGeom(b);
     b.style = after;
@@ -6908,8 +6999,12 @@ export const ZOOM_MAX = 4;
 // assigning an unchanged primitive to a rune is not a change, so nothing
 // downstream re-runs at all.
 const ZOOM_QUANTUM = 1000;
+/** A zoom inside the range and on the quantum; NaN for one that is not a number. */
+export function normalizeZoom(z) {
+  return Math.round(clamp(z, ZOOM_MIN, ZOOM_MAX) * ZOOM_QUANTUM) / ZOOM_QUANTUM;
+}
 export function setZoom(z, isFit = false) {
-  const q = Math.round(clamp(z, ZOOM_MIN, ZOOM_MAX) * ZOOM_QUANTUM) / ZOOM_QUANTUM;
+  const q = normalizeZoom(z);
   app.zoom = isFinite(q) ? q : app.zoom;
   app.isFit = isFit;
 }

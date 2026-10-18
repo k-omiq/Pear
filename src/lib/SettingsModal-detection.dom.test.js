@@ -25,7 +25,7 @@ it('offers and persists the English-lettering switch in detection settings', asy
   setPref('keepEnglish', false);
   const view = render(SettingsModal, { open: true });
   await tick();
-  await fireEvent.click(view.getByRole('tab', { name: 'System' }));
+  await fireEvent.click(view.getByRole('tab', { name: 'Detection' }));
   const toggle = view.getByRole('switch', { name: 'Keep text that is already English' });
   expect(toggle.getAttribute('aria-checked')).toBe('false');
   view.getByText('Off: English lettering on the raw is not detected.');

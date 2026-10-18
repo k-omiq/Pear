@@ -23,7 +23,9 @@ export function parsePages(spec = 'current') {
     }
     numbers.add(n);
   };
-  if (Array.isArray(spec)) {
+  // A lone page number, as an agent writes it: one page.
+  if (typeof spec === 'number') add(spec);
+  else if (Array.isArray(spec)) {
     for (const n of spec) {
       if (typeof n !== 'number') throw new ToolError('Page arrays must contain numbers.', PAGE_HINT);
       add(n);

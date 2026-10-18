@@ -182,6 +182,28 @@ describe('a character\'s voice', () => {
     expect(inheritedStyleFor({ n: 9, tags: ['speech'] }).font).toBe('DaftBrush Text');
   });
 
+  it('a tag of the user\'s own beats the kind and the voice, whatever order the tags were put on in', async () => {
+    const { saveTagDefaults } = await import('../../tags.svelte.js');
+    await call({ action: 'set', fonts: { speech: 'DaftBrush Text' }, characters: [{ id: 'mom', font: 'SSGirlKisser' }] });
+    saveTagDefaults('angry', { style: { font: 'Stabby Thin' } });
+    expect(inheritedStyleFor({ n: 9, tags: ['speech', 'angry'] }).font).toBe('Stabby Thin');
+    expect(inheritedStyleFor({ n: 9, tags: ['angry', 'speech'] }).font).toBe('Stabby Thin');
+    expect(inheritedStyleFor({ n: 9, tags: ['speech', 'angry'], speaker: 'mom' }).font).toBe('Stabby Thin');
+    // A kind keeps the keys the user's tag leaves unset: narration's italic.
+    expect(inheritedStyleFor({ n: 9, tags: ['narration', 'angry'] })).toMatchObject({ font: 'Stabby Thin', italic: true });
+  });
+
+  it('a tag under a kind brings that kind: its look under the tag\'s, the voice between', async () => {
+    const { saveTagDefaults } = await import('../../tags.svelte.js');
+    await call({ action: 'set', fonts: { narration: 'CCMarianChurchland' }, characters: [{ id: 'mom', font: 'SSGirlKisser' }] });
+    saveTagDefaults('flashback', { kind: 'narration', style: { color: '#555555' } });
+    // Narration's font and italic, the flashback's colour, from the one tag.
+    expect(inheritedStyleFor({ n: 9, tags: ['flashback'] })).toMatchObject({ font: 'CCMarianChurchland', italic: true, color: '#555555' });
+    saveTagDefaults('whisper', { kind: 'speech', style: { italic: true } });
+    // Under speech, a character's voice still gives the font.
+    expect(inheritedStyleFor({ n: 9, tags: ['whisper'], speaker: 'mom' })).toMatchObject({ font: 'SSGirlKisser', italic: true });
+  });
+
   it('wins too when the line already carries the voice tag after a way of speaking', async () => {
     await call({ action: 'set', fonts: { shout: 'Stabby Thin' }, characters: [{ id: 'mom', font: 'SSGirlKisser' }] });
     expect(inheritedStyleFor({ n: 9, tags: ['shout', 'voice-mother'], speaker: 'mom' }).font).toBe('SSGirlKisser');

@@ -2,6 +2,7 @@
 // at commit d9be51e. Copyright (c) 2026 innominata.
 // Masks stay in cropped windows; only the returned polygon uses page pixels.
 import { lumaOf, interiorThreshold } from './balloon.js';
+import { intervalsAt } from './outline-geom.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -850,4 +851,73 @@ export function splitOutline(pts, box, neighbors = []) {
   if (!divided.split || !kept || kept > before * 0.97) return null;
   const out = simplifyClosed(trace(c, divided.mask)).map(([x, y]) => [r2(x + x0 + 0.5), r2(y + y0 + 0.5)]);
   return out.length >= 3 ? out : null;
+}
+
+// ===== the other bubble of a joined outline =====
+//
+// For an outline that may hold two bubbles: a point in the far one - the
+// middle of what is left once the piece holding `own` (page px
+// [x0, y0, x1, y1], the text) is cut off - or null when it is one bubble.
+// Two bubbles show as one outline two ways: joined by a neck (splitOutline
+// cuts it), or drawn overlapping, a stepped shape with no neck - two columns
+// set side by side, one higher (`overlapPieces`).
+export function farLobe(pts, own) {
+  const inside = (poly, [x, y]) => intervalsAt(poly, y).some(([l, r]) => x >= l && x <= r);
+  const ownAt = [(own[0] + own[2]) / 2, (own[1] + own[3]) / 2];
+  const near = splitOutline(pts, own) ?? overlapPieces(pts)?.find((piece) => inside(piece, ownAt));
+  if (!near) return null;
+  const xs = pts.map((q) => q[0]);
+  const ys = pts.map((q) => q[1]);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const step = Math.max(2, Math.min(x1 - x0, y1 - y0) / 40);
+  const rest = [];
+  for (let y = y0 + step / 2; y < y1; y += step) {
+    for (let x = x0 + step / 2; x < x1; x += step) if (inside(pts, [x, y]) && !inside(near, [x, y])) rest.push([x, y]);
+  }
+  if (!rest.length) return null;
+  const cx = rest.reduce((a, q) => a + q[0], 0) / rest.length;
+  const cy = rest.reduce((a, q) => a + q[1], 0) / rest.length;
+  // Kept to a point of the far piece itself.
+  return rest.reduce((best, q) => (Math.hypot(q[0] - cx, q[1] - cy) < Math.hypot(best[0] - cx, best[1] - cy) ? q : best));
+}
+
+// Two bubbles drawn overlapping: the outline turns in at two corners, one
+// each side, and the chord between them leaves two pieces that are each near
+// convex where the whole is not. A tail is cut off small, and a spiky or
+// cloud balloon stays spiky in halves, so neither reads as two. The two
+// pieces, or null.
+const OVERLAP = { whole: 0.95, piece: 0.96, gain: 0.03, share: 0.25 };
+function overlapPieces(pts) {
+  if (!Array.isArray(pts) || pts.length < 6 || pts.length > 400) return null;
+  const solidity = (poly) => Math.abs(signedArea(poly)) / (Math.abs(signedArea(convexHull(poly))) || 1);
+  const whole = solidity(pts);
+  if (!(whole <= OVERLAP.whole)) return null;
+  const area = Math.abs(signedArea(pts));
+  const n = pts.length;
+  const turn = Math.sign(signedArea(pts));
+  const inward = [];
+  for (let i = 0; i < n; i++) if (cross(pts[(i - 1 + n) % n], pts[i], pts[(i + 1) % n]) * turn < 0) inward.push(i);
+  let best = null;
+  for (let a = 0; a < inward.length; a++) for (let b = a + 1; b < inward.length; b++) {
+    const i = inward[a], j = inward[b];
+    if (j - i < 2 || n - (j - i) < 2) continue;
+    const p = pts[i], q = pts[j];
+    // The chord runs inside the outline: it crosses no edge but at its ends.
+    const mid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+    if (!intervalsAt(pts, mid[1]).some(([l, r]) => mid[0] > l && mid[0] < r)) continue;
+    let clear = true;
+    for (let k = 0; k < n && clear; k++) {
+      const e0 = pts[k], e1 = pts[(k + 1) % n];
+      if (k === i || k === j || (k + 1) % n === i || (k + 1) % n === j) continue;
+      if (segmentsCross(p, q, e0, e1)) clear = false;
+    }
+    if (!clear) continue;
+    const one = pts.slice(i, j + 1);
+    const two = pts.slice(j).concat(pts.slice(0, i + 1));
+    if (Math.min(Math.abs(signedArea(one)), Math.abs(signedArea(two))) < area * OVERLAP.share) continue;
+    const worst = Math.min(solidity(one), solidity(two));
+    if (worst < OVERLAP.piece || worst - whole < OVERLAP.gain) continue;
+    if (!best || worst > best.worst) best = { worst, pieces: [one, two] };
+  }
+  return best?.pieces ?? null;
 }

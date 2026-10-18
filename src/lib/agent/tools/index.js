@@ -11,3 +11,5 @@ import './tag.js';
 import './lettering.js';
 import './colors.js';
 import './font-sheet.js';
+import './footprint.js';
+import './split.js';

@@ -1,14 +1,11 @@
 <script>
-  // The series guide's sections in Settings ▸ Project: the glossary, and (as
-  // the guide grows) the text rules and the free notes. Everything here is in
+  // The series guide's sections in Settings ▸ Guide: the text rules, the
+  // glossary, the characters and the free notes. Everything here is in
   // project.json under `guide` (guide.svelte.js), so it travels with the
-  // series and applies to every chapter in it. `scope` is the modal's own
-  // chip snippet, handed down so the chips match the sections around these.
+  // series and applies to every chapter in it.
   import { guide, addTerm, updateTerm, removeTerm, setGuideRule, setGuideNotes } from './guide.svelte.js';
   import { knownTags } from './tags.svelte.js';
   import { app } from './store.svelte.js';
-
-  let { scope } = $props();
 
   // Characters (TXT-6) are glossary terms marked `character`: their names are
   // checked like any term, and a line's speaker points at one by id. Listed
@@ -58,38 +55,42 @@
 
 <!-- TXT-3. Checked in the check list; Keep checks nothing. A font that has
      no glyph for the chosen form is named by the queue's font notice. -->
-<div class="settings-section">
-  <div class="settings-title">TEXT RULES{@render scope('series')}</div>
-  <div class="field">
-    <span>Dashes</span>
-    <div class="seg" role="group" aria-label="Dashes">
-      {#each [['keep', 'Keep'], ['ascii', 'No long dash (-)'], ['em', 'Em dash (—)']] as [v, label]}
-        <button class:on={guide.rules.dashes === v} onclick={() => setGuideRule('dashes', v)}>{label}</button>
-      {/each}
-    </div>
-  </div>
-  <div class="field">
-    <span>Ellipsis</span>
-    <div class="seg" role="group" aria-label="Ellipsis">
-      {#each [['keep', 'Keep'], ['dots', 'Three dots (...)'], ['char', 'One glyph (…)']] as [v, label]}
-        <button class:on={guide.rules.ellipsis === v} onclick={() => setGuideRule('ellipsis', v)}>{label}</button>
-      {/each}
-    </div>
-  </div>
-  <div class="qhint">
+<section class="settings-section">
+  <h3 class="settings-title">Text rules</h3>
+  <p class="set-intro">
     A line that breaks a rule is listed in the check list. Keep checks
     nothing. Spaced dots (<code>. . .</code>) count as breaking either
     ellipsis rule.
+  </p>
+  <div class="set-item">
+    <div class="set-line">
+      <span class="set-label">Dashes</span>
+      <div class="seg" role="group" aria-label="Dashes">
+        {#each [['keep', 'Keep'], ['ascii', 'No long dash (-)'], ['em', 'Em dash (—)']] as [v, label]}
+          <button class:on={guide.rules.dashes === v} onclick={() => setGuideRule('dashes', v)}>{label}</button>
+        {/each}
+      </div>
+    </div>
   </div>
-</div>
+  <div class="set-item">
+    <div class="set-line">
+      <span class="set-label">Ellipsis</span>
+      <div class="seg" role="group" aria-label="Ellipsis">
+        {#each [['keep', 'Keep'], ['dots', 'Three dots (...)'], ['char', 'One glyph (…)']] as [v, label]}
+          <button class:on={guide.rules.ellipsis === v} onclick={() => setGuideRule('ellipsis', v)}>{label}</button>
+        {/each}
+      </div>
+    </div>
+  </div>
+</section>
 
-<div class="settings-section">
-  <div class="settings-title">GLOSSARY{@render scope('series')}</div>
-  <div class="qhint sg-lead">
+<section class="settings-section">
+  <h3 class="settings-title">Glossary</h3>
+  <p class="set-intro">
     Words this series always translates one way. A line whose source has a
     term and whose English does not is listed in the check list. Other
     spellings are other ways the source may write it.
-  </div>
+  </p>
   {#if terms.length > 8}
     <input class="qtf-input sg-filter" placeholder="Find a term…" aria-label="Find a term" bind:value={filter} />
   {/if}
@@ -109,22 +110,22 @@
       </button>
     </div>
   {:else}
-    <div class="qhint sg-empty">{terms.length ? 'No term matches.' : 'No terms yet.'}</div>
+    <p class="sg-empty">{terms.length ? 'No term matches.' : 'No terms yet.'}</p>
   {/each}
   <div class="sg-row sg-add">
     <input class="qtf-input" placeholder="Source…" aria-label="New term source" bind:this={sourceEl} bind:value={newSource} onkeydown={(e) => e.key === 'Enter' && add()} />
     <input class="qtf-input" placeholder="English…" aria-label="New term English" bind:value={newTarget} onkeydown={(e) => e.key === 'Enter' && add()} />
     <button class="btn tiny" disabled={!newSource.trim() || !newTarget.trim()} onclick={add}>Add</button>
   </div>
-</div>
+</section>
 
-<div class="settings-section">
-  <div class="settings-title">CHARACTERS{@render scope('series')}</div>
-  <div class="qhint sg-lead">
+<section class="settings-section">
+  <h3 class="settings-title">Characters</h3>
+  <p class="set-intro">
     Who speaks a line, picked in the Text Queue. A name is checked like a
     glossary term. A character with a tag gives their boxes that tag's
-    style when they are placed.
-  </div>
+    style when they are placed; their font is set in Text styles.
+  </p>
   {#if characters.length}
     <div class="sg-head sg-chars" aria-hidden="true">
       <span>Name</span><span>Source</span><span>Tag</span><span>Note</span><span></span>
@@ -145,19 +146,19 @@
       </button>
     </div>
   {:else}
-    <div class="qhint sg-empty">No characters yet.</div>
+    <p class="sg-empty">No characters yet.</p>
   {/each}
   <div class="sg-row sg-add">
     <input class="qtf-input" placeholder="Name…" aria-label="New character name" bind:this={nameEl} bind:value={newName} onkeydown={(e) => e.key === 'Enter' && addCharacter()} />
     <input class="qtf-input" placeholder="Source name…" aria-label="New character source name" bind:value={newNameSource} onkeydown={(e) => e.key === 'Enter' && addCharacter()} />
     <button class="btn tiny" disabled={!newName.trim()} onclick={addCharacter}>Add</button>
   </div>
-</div>
+</section>
 
 <!-- Free notes (AI_TYPESETTING_PLAN.md section 4): what no rule can hold.
      Saved when the field is left. -->
-<div class="settings-section">
-  <div class="settings-title">NOTES{@render scope('series')}</div>
+<section class="settings-section">
+  <h3 class="settings-title">Notes</h3>
   <textarea
     class="qtf-input sg-notes"
     rows="4"
@@ -166,78 +167,67 @@
     value={guide.notes}
     onchange={(e) => setGuideNotes(e.currentTarget.value)}
   ></textarea>
-</div>
+</section>
 
 <style>
-  /* The modal lays its own headings out this way; its rule is scoped to it. */
-  .settings-title {
-    display: flex;
-    align-items: center;
-  }
-  .btn.tiny {
-    padding: 4px 10px;
-    font-size: 12px;
-  }
-  .sg-lead {
-    margin: 0 0 10px;
-  }
+  /* The glossary and the character list are tables of inputs: a header line,
+     then one row per entry with the screen's hairline under it. */
   .sg-filter {
     width: 100%;
     max-width: 260px;
-    margin-bottom: 8px;
-    padding: 5px 8px;
+    height: 28px;
+    margin: 6px 0 8px;
+    padding: 0 8px;
     font-size: 12px;
   }
   .sg-head,
   .sg-row {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1.2fr 26px;
+    grid-template-columns: 1fr 1fr 1fr 1.2fr 28px;
     gap: 6px;
     align-items: center;
   }
   .sg-head {
-    padding: 0 0 4px;
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--t3, var(--t2));
+    padding: 8px 0 6px;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--t2);
   }
   .sg-row {
-    padding: 3px 0;
-  }
-  .sg-row select.qtf-input {
-    height: 26px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--line);
   }
   .sg-row .qtf-input {
     min-width: 0;
     width: 100%;
-    padding: 4px 7px;
+    height: 28px;
+    padding: 0 8px;
     font-size: 12px;
   }
   .sg-add {
     grid-template-columns: 1fr 1fr auto;
-    margin-top: 8px;
+    margin-top: 6px;
+    border-bottom: none;
   }
   .sg-del {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
+    width: 28px;
     padding: 0;
+    color: var(--t2);
+  }
+  .sg-del:hover {
+    color: var(--warn);
   }
   .sg-del svg {
     width: 12px;
     height: 12px;
   }
-  .sg-notes {
-    width: 100%;
-    box-sizing: border-box;
-    resize: vertical;
-    padding: 6px 8px;
-    font-size: 12px;
-    line-height: 1.45;
-  }
   .sg-empty {
-    padding: 4px 0;
+    margin: 0;
+    padding: 12px 0;
+    font-size: 12px;
+    color: var(--t2);
+    border-bottom: 1px solid var(--line);
   }
 </style>

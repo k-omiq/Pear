@@ -4216,6 +4216,68 @@ describe('resizeBox', () => {
 // ===========================================================================
 // Font size remembered per primary tag
 // ===========================================================================
+// An SFX (and a title, a blocky word) is drawn to the art it sits on: it is
+// born at the size that runs the original its line was detected as, else at
+// its tag's own size - never at the last SFX's, which is how a huge SHIING made
+// every later SFX 118 px.
+describe('an SFX is born at the size of the original it replaces', () => {
+  const sfxPage = (detect) => ({
+    id: 1, w: 800, h: 1200,
+    lines: [
+      { n: 1, type: 'sfx', jp: 'a', en: 'SHIING', tags: ['sfx'] },
+      { n: 2, type: 'sfx', jp: 'b', en: 'PLINK', tags: ['sfx'] },
+    ],
+    ...(detect ? { detect: { boxes: [{ n: 1, box: [100, 100, 700, 300] }, { n: 2, box: [100, 600, 260, 640] }] } } : null),
+    boxes: [],
+  });
+  beforeEach(() => {
+    app.chapterRef = null;
+    app.lastStyle = defaultStyle();
+    tags.sizes = {};
+  });
+  afterEach(() => unbindTags());
+
+  it('runs its detected block: one line along its length, no taller than its breadth', () => {
+    loadProjectPages([sfxPage(true)]);
+    activateLine(1);
+    placeActiveAt(400, 200);
+    activateLine(2);
+    placeActiveAt(180, 620);
+    const [big, small] = [1, 2].map((n) => page().boxes.find((b) => b.lineN === n));
+    // The stand-in metric is 0.55 em a letter: SHIING runs 600 px at 600 / 3.3,
+    // under the block's 200; PLINK's 160 px would be 58, over its 40.
+    expect(big.auto.refSize).toBe(182);
+    expect(small.auto.refSize).toBe(40);
+  });
+
+  it('over a block of upright Japanese, runs across it, not down it', () => {
+    // A column 100 wide, 400 tall: SHIING (3.3 em) takes a line as long as the
+    // mean of the sides, 200 px - 60.5, where down the column it would be 100.
+    const col = sfxPage(false);
+    col.detect = { boxes: [{ n: 1, box: [300, 100, 400, 500], vertical: true }] };
+    loadProjectPages([col]);
+    activateLine(1);
+    placeActiveAt(350, 300);
+    expect(page().boxes[0].auto.refSize).toBe(60.5);
+  });
+
+  it('with no block, takes its tag size, not the SFX before it', () => {
+    bindTags({ list: [{ name: 'sfx', size: 64 }] });
+    loadProjectPages([sfxPage(false)]);
+    activateLine(1);
+    placeActiveAt(400, 200);
+    const first = page().boxes[0];
+    selectBox(first.id);
+    first.style.size = 118;
+    rememberStyle(first);
+    activateLine(2);
+    placeActiveAt(180, 620);
+    expect(page().boxes.find((b) => b.lineN === 2).auto.refSize).toBe(64);
+  });
+});
+
+// A size group is a reading size its kind shares - speech, a shout. An SFX is
+// not one (it is sized to its art: below), so the groups are shown on shouts.
 describe('font size remembered per tag', () => {
   const chapter = () => [
     {
@@ -4224,9 +4286,9 @@ describe('font size remembered per tag', () => {
       h: 1200,
       lines: [
         { n: 1, type: 'dialogue', jp: 'one', en: '' },
-        { n: 2, type: 'sfx', jp: 'two', en: '', tags: ['sfx'] },
+        { n: 2, type: 'dialogue', jp: 'two', en: '', tags: ['shout'] },
         { n: 3, type: 'dialogue', jp: 'three', en: '' },
-        { n: 4, type: 'sfx', jp: 'four', en: '', tags: ['sfx'] },
+        { n: 4, type: 'dialogue', jp: 'four', en: '', tags: ['shout'] },
       ],
       boxes: [],
     },
@@ -4275,7 +4337,7 @@ describe('font size remembered per tag', () => {
   // placing the next one handed the new box the older box's size.
   it('follows the previous box of the same tag, not the last one edited', () => {
     const p = page();
-    p.lines.push({ n: 5, type: 'sfx', jp: 'five', en: '', tags: ['sfx'] });
+    p.lines.push({ n: 5, type: 'dialogue', jp: 'five', en: '', tags: ['shout'] });
     activateLine(2);
     placeActiveAt(100, 100);
     const first = p.boxes.find((b) => b.lineN === 2);
@@ -4320,8 +4382,8 @@ describe('font size remembered per tag', () => {
 
   it('follows the group onto the next page', () => {
     loadProjectPages([
-      { id: 1, w: 800, h: 1200, lines: [{ n: 1, type: 'sfx', jp: 'a', en: '', tags: ['sfx'] }], boxes: [] },
-      { id: 2, w: 800, h: 1200, lines: [{ n: 1, type: 'sfx', jp: 'b', en: '', tags: ['sfx'] }], boxes: [] },
+      { id: 1, w: 800, h: 1200, lines: [{ n: 1, type: 'dialogue', jp: 'a', en: '', tags: ['shout'] }], boxes: [] },
+      { id: 2, w: 800, h: 1200, lines: [{ n: 1, type: 'dialogue', jp: 'b', en: '', tags: ['shout'] }], boxes: [] },
     ]);
     activateLine(1);
     placeActiveAt(100, 100);
@@ -4337,7 +4399,7 @@ describe('font size remembered per tag', () => {
   });
 
   it("takes the tag's default size when nothing comes before and nothing is remembered", () => {
-    bindTags({ list: [{ name: 'sfx', size: 70 }] });
+    bindTags({ list: [{ name: 'shout', size: 70 }] });
     activateLine(2);
     placeActiveAt(100, 100);
     expect(page().boxes.find((b) => b.lineN === 2).style.size).toBe(70);
@@ -4368,7 +4430,7 @@ describe('font size remembered per tag', () => {
     selectBox(big.id);
     selectBox(sfx.id);
     selectBox(big.id);
-    expect(tags.sizes.sfx).toBe(60);
+    expect(tags.sizes.shout).toBe(60);
     expect(app.lastStyle.size).not.toBe(120);
   });
 

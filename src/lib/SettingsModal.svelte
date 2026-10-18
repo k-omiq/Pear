@@ -1,23 +1,14 @@
 <script>
 
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { app, saveExportPrefs, toast, toastError } from './store.svelte.js';
   import { checkSidecar, modelsCacheInfo, clearModelsCache } from './sidecar.js';
   import { theme, setTheme } from './theme.svelte.js';
   import { library, setRoot, scanLibrary, withinHome, projectById, setProjectOcrLanguage } from './library.svelte.js';
   import { settingsView, shownSettingsTab } from './settings-tabs.svelte.js';
-  import {
-    knownTags,
-    findTag,
-    saveTagDefaults,
-    tagFormFields,
-    tagFormDefaults,
-    normalizeTagName,
-    MAX_TAG_LEN,
-  } from './tags.svelte.js';
-  import TagDefaultsForm from './TagDefaultsForm.svelte';
   import SeriesGuide from './SeriesGuide.svelte';
   import LetteringSetup from './LetteringSetup.svelte';
+  import TextStyles from './TextStyles.svelte';
   import { resetPanels } from './editor/panels.svelte.js';
   import { processMemory, ROLE_LABELS } from './memory.js';
   import { prefs, setPref, typesetDefaults } from './prefs.svelte.js';
@@ -44,37 +35,48 @@
   // `tab` is bindable so the command palette can open Settings on one tab.
   let { open = $bindable() } = $props();
 
-  // ---------- tabs ----------
-  // Same shape as the Inspector's strip: a handful of panes, one job each,
-  // instead of one long scroll where the section you want is always elsewhere.
-  const TABS = [
-    { id: 'general', label: 'General', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" /><path d="M1 14h6M9 8h6M17 16h6" /></svg>' },
-    { id: 'typesetting', label: 'Typesetting', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7V4h16v3" /><path d="M9 20h6" /><path d="M12 4v16" /></svg>' },
-    { id: 'project', label: 'Project', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2z" /><path d="M4 21V5" /><path d="M8 7h6" /></svg>' },
-    { id: 'shortcuts', label: 'Shortcuts', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" /></svg>' },
-    { id: 'ai', label: 'AI', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" /><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" /></svg>' },
-    { id: 'system', label: 'System', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></svg>' },
+  // ---------- sections ----------
+  // A full-window screen with the sections down a sidebar, the way Manga
+  // Cleaner's Settings is laid out: one column of rows per section, a label on
+  // the left and its control on the right. Two groups. The app's own sections
+  // are saved on this computer; the series group, named after the open
+  // chapter's series, is saved with that series (project.json) and is there
+  // only while one of its chapters is open. The group a section sits in is
+  // what says where its settings are kept.
+  //
+  // Design contract (2026-10-18). THESIS: one full-window column of rows -
+  // label left, control right, a hairline, one sentence under the label -
+  // instead of a popup of boxed cards and scope chips. OWN-WORLD: the app's
+  // tokens only; the sidebar on --panel, the column on --bg. STORY: find a
+  // setting by section in one click, and know from its group whether it is
+  // yours or the series'. FIRST VIEWPORT: 224px sidebar, then a 680px column
+  // with the section's h2. FORM: the structure the user named (Manga Cleaner's
+  // Settings); a precisely specified Operate surface, so no concept roll.
+  const icon = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  const APP_TABS = [
+    { id: 'general', label: 'General', icon: icon('<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" /><path d="M1 14h6M9 8h6M17 16h6" />') },
+    { id: 'typesetting', label: 'Typesetting', icon: icon('<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 21l1.9-4.6A8.4 8.4 0 1 1 21 11.5z" />') },
+    { id: 'detection', label: 'Detection', icon: icon('<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" /><path d="M7 12h10" />') },
+    { id: 'ai', label: 'AI agents', icon: icon('<path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" /><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" />') },
+    { id: 'shortcuts', label: 'Shortcuts', icon: icon('<rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" />') },
+    { id: 'about', label: 'About', icon: icon('<circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" />') },
+  ];
+  const SERIES_TABS = [
+    { id: 'series', label: 'Series', icon: icon('<path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2z" /><path d="M4 21V5" /><path d="M8 7h6" />') },
+    { id: 'styles', label: 'Text styles', icon: icon('<path d="M4 7V4h16v3" /><path d="M9 20h6" /><path d="M12 4v16" />') },
+    { id: 'guide', label: 'Guide', icon: icon('<path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" />') },
   ];
 
-  // The open chapter's project, or null. The Project tab is shown only while
-  // there is one: everything on it is that project's, and with no chapter open
+  // The open chapter's project, or null. The series group is shown only while
+  // there is one: everything in it is that project's, and with no chapter open
   // there is no single project for it to mean.
   const project = $derived(app.chapterRef ? (projectById(app.chapterRef.projectId) ?? null) : null);
-  const tabs = $derived(project ? TABS : TABS.filter((t) => t.id !== 'project'));
-  // Which tab is open lives in `settings-tabs.svelte.js`, so the command palette
-  // and the panes that send the user here can choose it.
+  const tabs = $derived(project ? [...APP_TABS, ...SERIES_TABS] : APP_TABS);
+  // Which section is open lives in `settings-tabs.svelte.js`, so the command
+  // palette and the panes that send the user here can choose it.
   const tab = $derived(shownSettingsTab(!!project));
-
-  // ---------- scope ----------
-  // Every section says where what it changes is kept, because three kinds of
-  // setting sit side by side here and look alike: the series' (project.json,
-  // every chapter of it, and whoever the folder is handed to), one chapter's
-  // (chapter.json), and this person's on this computer (prefs, localStorage).
-  const SCOPES = {
-    series: { label: 'This series', title: 'Saved with the series, for every chapter in it' },
-    chapter: { label: 'This chapter', title: 'Saved with this chapter only' },
-    you: { label: 'Just you', title: 'Saved on this computer, for every series' },
-  };
+  const current = $derived(tabs.find((t) => t.id === tab) ?? APP_TABS[0]);
+  const inSeries = $derived(SERIES_TABS.some((t) => t.id === tab));
 
   // ---------- project ----------
   // The language goes through the same call the project screen makes, which
@@ -92,69 +94,78 @@
     }
   }
 
-  // The tag registry, edited here with the queue's own form (TagDefaultsForm)
-  // and the queue's own calls. One tag's form open at a time. A tag the open
-  // chapter uses that the registry has never seen is listed too, as the queue
-  // lists it, and saving its form admits it at the end of the list.
-  const projectTags = $derived(project ? knownTags(app.pages) : []);
-  let tagForm = $state(null);
-  let newTagName = $state('');
-
-  function openTagForm(name) {
-    tagForm = { name, edit: true, tools: true, existed: false, confirmDelete: false, ...tagFormFields(findTag(name)) };
-  }
-
-  function saveTagForm() {
-    if (!tagForm) return;
-    saveTagDefaults(tagForm.name, tagFormDefaults(tagForm));
-    tagForm = null;
-  }
-
-  // A tag made here has no line to go on, so it joins the end of the list with
-  // no defaults (`saveTagDefaults`, which never re-ranks) and its form opens for
-  // them. A name already there just opens its form.
-  function addTag() {
-    const name = normalizeTagName(newTagName);
-    if (!name) return;
-    if (!projectTags.some((t) => t.name === name)) saveTagDefaults(name, {});
-    newTagName = '';
-    openTagForm(name);
-  }
-
-  function tagSummary(t) {
-    const bits = [];
-    const st = t.style ?? {};
-    if (st.font) bits.push(st.font);
-    if (Array.isArray(st.strokes)) bits.push(st.strokes.length ? `outline ${st.strokes[0].width}px` : 'no outline');
-    if (t.size) bits.push(`${t.size}px`);
-    if (t.minSize) bits.push(`min ${t.minSize}px`);
-    const more = Object.keys(st).filter((k) => k !== 'font' && k !== 'strokes').length;
-    if (more) bits.push(`+${more} style`);
-    return bits.join(' · ') || 'No defaults';
-  }
 
   // ---------- typesetting defaults: yours, or the series' (FLOW-13) ----------
-  // With a project open, the series can hold its own set. The controls edit
-  // whichever set is in force; switching to the series copies yours over as
-  // its start, switching back drops the series' set.
+  // Yours are edited under Typesetting, in the app group, and are kept on this
+  // computer. A series can hold its own set instead: switched on under Series,
+  // it starts as a copy of yours and is kept with the series. Each page edits
+  // only its own set, so the group a row sits in is still where it is saved.
+  const TS_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'defaultBlockShape', 'defaultMinOrphan'];
   const seriesTs = $derived(project ? guide.typeset : null);
-  const ts = $derived(typesetDefaults());
-  function setTs(key, value) {
-    if (seriesTs) setSeriesTypeset({ [key]: value });
-    else setPref(key, value);
-  }
+  const mineTs = $derived(Object.fromEntries(TS_KEYS.map((k) => [k, prefs[k]])));
+  // The series' set over yours for any key it leaves out: what its boxes get.
+  const seriesValues = $derived(typesetDefaults());
+  const setMine = (key, value) => setPref(key, value);
+  const setSeries = (key, value) => setSeriesTypeset({ [key]: value });
   function useSeriesTs(on) {
     if (!project || on === !!seriesTs) return;
     if (!on) return setSeriesTypeset(null);
-    const mine = {};
-    for (const k of ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'defaultBlockShape', 'defaultMinOrphan']) mine[k] = prefs[k];
-    setSeriesTypeset(mine);
+    setSeriesTypeset({ ...mineTs });
   }
 
   function selectTab(id) {
     // A row waiting for keys stops waiting when its pane goes away.
     if (capturing) { capture.end(); capturing = null; captureErr = ''; }
     settingsView.tab = id;
+  }
+
+  // The sidebar is one vertical tab list across both groups: Up and Down move
+  // and open, Home and End go to the ends. Only the open section's tab is a
+  // tab stop, so the list costs one Tab to cross.
+  function onTabKey(e) {
+    const i = tabs.findIndex((t) => t.id === tab);
+    const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+    if (to == null) return;
+    e.preventDefault();
+    const next = tabs[(to + tabs.length) % tabs.length];
+    selectTab(next.id);
+    tick().then(() => document.getElementById(`set-tab-${next.id}`)?.focus());
+  }
+
+  // Focus moves in when the screen opens - to the open section's tab - and
+  // back to whatever had it when it closes. Tab and Shift+Tab stay inside:
+  // the editor under the screen is still mounted, and still focusable.
+  let screenEl = $state(null);
+  let panelEl = $state(null);
+  $effect(() => {
+    if (!open) return;
+    const before = document.activeElement;
+    const id = untrack(() => tab);
+    tick().then(() => document.getElementById(`set-tab-${id}`)?.focus());
+    return () => {
+      if (before?.isConnected) before.focus?.();
+    };
+  });
+  // A section opens at its top, not at the last one's scroll.
+  $effect(() => {
+    tab;
+    if (panelEl) panelEl.scrollTop = 0;
+  });
+
+  const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  function onScreenKey(e) {
+    if (e.key !== 'Tab' || !screenEl) return;
+    const all = [...screenEl.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null);
+    if (!all.length) return;
+    const first = all[0];
+    const last = all[all.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   // The registry shortcut groups follow preferences like the brush tool toggle,
@@ -266,10 +277,6 @@
   $effect(() => {
     if (open) loadMemory();
   });
-
-  function onOverlayClick(e) {
-    if (e.target.classList.contains('modal-overlay')) open = false;
-  }
 
   function isTauri() {
     return typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
@@ -452,8 +459,6 @@
       confirmResetKeys = false;
       capturing = null;
       captureErr = '';
-      tagForm = null;
-      newTagName = '';
       checkSidecar();
       loadCache();
     }
@@ -501,880 +506,719 @@
   ><span class="knob"></span></div>
 {/snippet}
 
-<!-- Where a section's settings are kept: see SCOPES. -->
-{#snippet scope(kind)}
-  <span class="scope-chip {kind}" title={SCOPES[kind].title}>{SCOPES[kind].label}</span>
+<!-- A two-step button: the first press asks, the second does it. Webviews may
+     block window.confirm, and a reset or a delete cannot be undone. -->
+{#snippet confirmButton(armed, label, armedLabel, onpress, oncancel, disabled = false)}
+  {#if armed}
+    <button class="btn tiny" onclick={oncancel}>Cancel</button>
+  {/if}
+  <button class="btn tiny" class:danger={armed} {disabled} onclick={onpress}>{armed ? armedLabel : label}</button>
 {/snippet}
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="modal-overlay" class:open onclick={onOverlayClick}>
-  <div class="modal">
-    <div class="modal-head">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-      <h3>Settings</h3>
-      <button class="x" aria-label="Close" onclick={() => (open = false)}>
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+<!-- The five defaults a new box is born with, for either set: yours (`v` is
+     your prefs, `set` writes them) or the series' (`v` is what its boxes get,
+     `set` writes its override). -->
+{#snippet tsRows(v, set)}
+  <div class="set-item">
+    <div class="set-line">
+      <span class="set-label">Auto height</span>
+      {@render toggle('defaultAutoHeight', 'Auto height', v.defaultAutoHeight, false, (on) => set('defaultAutoHeight', on))}
+    </div>
+    <p class="set-desc">The box’s height follows its text inside the balloon.</p>
+  </div>
+  <div class="set-item">
+    <div class="set-line">
+      <span class="set-label">Hyphenate long words</span>
+      {@render toggle('defaultHyphenate', 'Hyphenate long words', v.defaultHyphenate, false, (on) => set('defaultHyphenate', on))}
+    </div>
+    <p class="set-desc">Breaks lines to the balloon’s shape and hyphenates a word that fits nowhere. Off, lines wrap at the box edge.</p>
+  </div>
+  <!-- These mean nothing while hyphenation is off, so they dim with it rather
+       than vanishing: a control that disappears is one nobody finds again. -->
+  <div class="set-nested" class:dim={!v.defaultHyphenate}>
+    <!-- The silhouette a shaped block aims for (BRK-3). Auto picks an oval in
+         a balloon and a rectangle in a caption. -->
+    <div class="set-item">
+      <div class="set-line">
+        <span class="set-label">Block shape</span>
+        <div class="seg" role="group" aria-label="Block shape">
+          {#each [['auto', 'Auto'], ['oval', 'Oval'], ['rect', 'Rectangle']] as [val, label]}
+            <button class:on={v.defaultBlockShape === val} disabled={!v.defaultHyphenate} onclick={() => set('defaultBlockShape', val)}>{label}</button>
+          {/each}
+        </div>
+      </div>
+    </div>
+    <div class="set-item">
+      <div class="set-line">
+        <span class="set-label">Fit text to balloon</span>
+        {@render toggle('defaultBalloon', 'Fit text to balloon', v.defaultBalloon, !v.defaultHyphenate, (on) => set('defaultBalloon', on))}
+      </div>
+    </div>
+    <div class="set-item">
+      <div class="set-line">
+        <label class="set-label" for="ts-orphan">Shortest word left alone on a line</label>
+        <input
+          id="ts-orphan"
+          class="set-num"
+          type="number"
+          min="1"
+          max="8"
+          step="1"
+          disabled={!v.defaultHyphenate}
+          value={v.defaultMinOrphan}
+          title="A word shorter than this is never left alone at the end of a line"
+          onchange={(e) => { set('defaultMinOrphan', Math.round(+e.currentTarget.value)); e.currentTarget.value = v.defaultMinOrphan; }}
+        />
+      </div>
+    </div>
+  </div>
+{/snippet}
+
+{#if open}
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div
+  bind:this={screenEl}
+  class="settings-screen"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Settings"
+  tabindex="-1"
+  onkeydown={onScreenKey}
+>
+  <nav class="set-side" aria-label="Settings sections">
+    <div class="set-side-head">
+      <button class="set-back" aria-label="Close settings" title="Close (Esc)" onclick={() => (open = false)}>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
       </button>
+      <h1>Settings</h1>
     </div>
 
-    <div class="set-tabs" role="tablist" aria-label="Settings sections">
-      {#each tabs as t (t.id)}
-        <button
-          role="tab"
-          id="set-tab-{t.id}"
-          class="set-tab"
-          class:on={tab === t.id}
-          aria-selected={tab === t.id}
-          aria-controls="set-pane-{t.id}"
-          onclick={() => selectTab(t.id)}
-        >
-          {@html t.icon}
-          <span>{t.label}</span>
-        </button>
-      {/each}
+    {#snippet tabButton(t)}
+      <button
+        role="tab"
+        id="set-tab-{t.id}"
+        class="set-tab"
+        class:on={tab === t.id}
+        aria-selected={tab === t.id}
+        aria-controls="set-panel"
+        tabindex={tab === t.id ? 0 : -1}
+        onclick={() => selectTab(t.id)}
+        onkeydown={onTabKey}
+      >
+        {@html t.icon}
+        <span>{t.label}</span>
+      </button>
+    {/snippet}
+
+    <div class="set-tabs" role="tablist" aria-orientation="vertical" aria-label="App settings, saved on this computer">
+      {#each APP_TABS as t (t.id)}{@render tabButton(t)}{/each}
     </div>
 
-    <div class="modal-body">
-      {#if tab === 'general'}
-      <div class="set-pane" role="tabpanel" id="set-pane-general" aria-labelledby="set-tab-general">
-      <div class="settings-section">
-        <div class="settings-title">APPEARANCE{@render scope('you')}</div>
-        <div class="field">
-          <span>Theme</span>
-
-          <div class="seg">
-            <button class:on={theme.mode === 'light'} onclick={() => setTheme('light')}>Light</button>
-            <button class:on={theme.mode === 'dark'} onclick={() => setTheme('dark')}>Dark</button>
-            <button class:on={theme.mode === 'system'} onclick={() => setTheme('system')}>
-              System{theme.mode === 'system' ? ` · ${theme.resolved}` : ''}
-            </button>
-          </div>
-        </div>
-        <div class="field">
-          <span>Panel layout</span>
-          <div class="field-actions">
-            <button class="btn tiny" class:danger={confirmResetPanels} onclick={onResetPanels}>
-              {confirmResetPanels ? 'Confirm - reset?' : 'Reset'}
-            </button>
-            {#if confirmResetPanels}
-              <button class="btn tiny" onclick={() => (confirmResetPanels = false)}>Cancel</button>
-            {/if}
-          </div>
-        </div>
-        <div class="qhint">Puts the Text Box Options and Text Queue windows back to their starting size and place.</div>
+    {#if project}
+      <div class="set-group">
+        <div class="set-group-name" id="set-group-series" title={project.name}>{project.name}</div>
+        <div class="set-group-note">Saved with the series</div>
       </div>
-
-      <div class="settings-section">
-        <div class="settings-title">EDITOR{@render scope('you')}</div>
-        <div class="field">
-          <span>Inherit previous box settings</span>
-          {@render toggle('inheritBoxStyle', 'Inherit previous box settings', prefs.inheritBoxStyle)}
-        </div>
-        <div class="qhint">In Place and Text modes, reuse the previous box’s angle and text styling. Turn off to start new boxes with app and tag defaults.</div>
-        <div class="field">
-          <span>Brush tool (work in progress)</span>
-          {@render toggle('brushTool', 'Brush tool (work in progress)', prefs.brushTool)}
-        </div>
-        <div class="qhint">Unfinished and hidden by default.</div>
+      <div class="set-tabs" role="tablist" aria-orientation="vertical" aria-labelledby="set-group-series">
+        {#each SERIES_TABS as t (t.id)}{@render tabButton(t)}{/each}
       </div>
+    {/if}
+  </nav>
 
-      <div class="settings-section">
-        <div class="settings-title">LIBRARY{@render scope('you')}</div>
-        <div class="field">
-          <span>Folder</span>
-          <code class="path" title={library.root}>{library.root}</code>
-        </div>
-        <button
-          class="btn"
-          disabled={!isTauri() || !!app.chapterRef}
-          title={app.chapterRef ? 'Close the open chapter first' : 'Pick a different library folder'}
-          onclick={chooseRoot}
-        >
-          Change folder…
-        </button>
-        {#if app.chapterRef}
-          <div class="qhint">Close the open chapter before changing the library folder.</div>
+  <main
+    bind:this={panelEl}
+    class="set-panel"
+    id="set-panel"
+    role="tabpanel"
+    aria-labelledby="set-tab-{tab}"
+  >
+    <div class="set-column">
+      <header class="set-page-head">
+        <h2>{current.label}</h2>
+        {#if inSeries}
+          <p class="set-lead">Saved with <b>{project.name}</b>, for every chapter in it and whoever opens the folder.</p>
         {/if}
-      </div>
+      </header>
 
-      <div class="settings-section">
-        <div class="settings-title">EXPORT{@render scope('you')}</div>
-        <div class="model-card">
-          <div class="mc-top">
-            <div class="mc-title">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
-              <div>
-                <div class="mc-name">Default export folder</div>
-                <div class="mc-sub path" title={app.exportDir || ''}>
-                  {app.exportDir || 'Not set - the export dialog asks each time'}
-                </div>
+      {#if tab === 'general'}
+        <section class="settings-section">
+          <h3 class="settings-title">Appearance</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Theme</span>
+              <div class="seg" role="group" aria-label="Theme">
+                <button class:on={theme.mode === 'light'} onclick={() => setTheme('light')}>Light</button>
+                <button class:on={theme.mode === 'dark'} onclick={() => setTheme('dark')}>Dark</button>
+                <button class:on={theme.mode === 'system'} onclick={() => setTheme('system')}>
+                  System{theme.mode === 'system' ? ` · ${theme.resolved}` : ''}
+                </button>
               </div>
             </div>
           </div>
-          <p class="mc-desc">Where <b>Export</b> saves by default. You can still choose a different folder at export time.</p>
-          <div class="mc-actions">
-            <button class="btn" disabled={!isTauri()} onclick={onChangeExportDir}>Change…</button>
-            {#if app.exportDir}
-              <button class="btn" onclick={() => { saveExportPrefs('', app.exportName); toast('Cleared default export folder'); }}>Clear</button>
-            {/if}
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Panel layout</span>
+              <div class="set-ctl">
+                {@render confirmButton(confirmResetPanels, 'Reset', 'Reset panels', onResetPanels, () => (confirmResetPanels = false))}
+              </div>
+            </div>
+            <p class="set-desc">Puts the Text Box Options and Text Queue windows back to their starting size and place.</p>
           </div>
-          {#if !isTauri()}
-            <div class="qhint">Choosing a folder needs the desktop app; browser exports download to your default location.</div>
-          {/if}
-        </div>
-      </div>
-      </div>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-title">Editor</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Inherit previous box settings</span>
+              {@render toggle('inheritBoxStyle', 'Inherit previous box settings', prefs.inheritBoxStyle)}
+            </div>
+            <p class="set-desc">A new box takes the previous box’s angle and text style. Off, it starts from the tag’s style.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Brush tool <span class="set-badge">Work in progress</span></span>
+              {@render toggle('brushTool', 'Brush tool (work in progress)', prefs.brushTool)}
+            </div>
+            <p class="set-desc">Unfinished, and hidden until you turn it on.</p>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-title">Files</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Library folder</span>
+              <div class="set-ctl">
+                <button
+                  class="btn tiny"
+                  disabled={!isTauri() || !!app.chapterRef}
+                  title={app.chapterRef ? 'Close the open chapter first' : 'Pick a different library folder'}
+                  onclick={chooseRoot}
+                >Change…</button>
+              </div>
+            </div>
+            <p class="set-desc">
+              <span class="set-path" title={library.root}>{library.root || 'Not set'}</span>
+              {#if app.chapterRef}<br />Close the open chapter to change it.{/if}
+            </p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Default export folder</span>
+              <div class="set-ctl">
+                {#if app.exportDir}
+                  <button class="btn tiny" onclick={() => { saveExportPrefs('', app.exportName); toast('Cleared default export folder'); }}>Clear</button>
+                {/if}
+                <button class="btn tiny" disabled={!isTauri()} onclick={onChangeExportDir}>Change…</button>
+              </div>
+            </div>
+            <p class="set-desc">
+              {#if app.exportDir}<span class="set-path" title={app.exportDir}>{app.exportDir}</span><br />{/if}
+              Where Export saves unless you pick another folder at export time.{app.exportDir ? '' : ' Not set: Export asks each time.'}
+              {#if !isTauri()} Choosing a folder needs the desktop app; the browser downloads to its own place.{/if}
+            </p>
+          </div>
+        </section>
       {/if}
 
       {#if tab === 'typesetting'}
-      <div class="set-pane" role="tabpanel" id="set-pane-typesetting" aria-labelledby="set-tab-typesetting">
-      <!-- The defaults a new box is born with. The line breaking used to be a
-           switch per chapter, on here for new chapters and off for the ones
-           made before, so every old chapter needed turning on by hand. It is
-           each box's now, under one switch: "Hyphenate long words" is the
-           smart breaker, and what it does is set under it. A chapter saved
-           with the old switch off opens with its boxes plain, as they were
-           drawn (`openTypesetting` in data.js); Bulk style changes them. -->
-      <div class="settings-section ts-section">
-        <div class="settings-title">TYPESETTING{@render scope(seriesTs ? 'series' : 'you')}</div>
-        {#if project}
-          <div class="field">
-            <span>Defaults for <b>{project.name}</b></span>
-            <div class="seg" role="group" aria-label="Whose defaults">
-              <button class:on={!seriesTs} onclick={() => useSeriesTs(false)}>Mine</button>
-              <button class:on={!!seriesTs} onclick={() => useSeriesTs(true)}>This series' own</button>
-            </div>
-          </div>
-          <div class="qhint">
+        <!-- The defaults a new box is born with. The line breaking used to be a
+             switch per chapter, on here for new chapters and off for the ones
+             made before, so every old chapter needed turning on by hand. It is
+             each box's now, under one switch: "Hyphenate long words" is the
+             smart breaker, and what it does is set under it. A chapter saved
+             with the old switch off opens with its boxes plain, as they were
+             drawn (`openTypesetting` in data.js); Bulk style changes them. -->
+        <section class="settings-section">
+          <h3 class="settings-title">New text boxes</h3>
+          <p class="set-intro">
+            What a new box starts with. Boxes already on a page keep theirs; Bulk style changes them.
             {#if seriesTs}
-              This series sets its own defaults, saved with it. Your own are
-              kept for every other series.
-            {:else}
-              This series uses your defaults. Give it its own to keep them
-              with the series, for whoever opens it.
+              <b>{project.name}</b> uses its own, set under
+              <button class="set-link" onclick={() => selectTab('series')}>Series</button>; these are for every other series.
             {/if}
-          </div>
-        {/if}
-        <div class="group-label">Defaults for new text boxes</div>
-        <div class="field">
-          <span>Auto height</span>
-          {@render toggle('defaultAutoHeight', 'Auto height', ts.defaultAutoHeight, false, (on) => setTs('defaultAutoHeight', on))}
-        </div>
-        <div class="qhint">
-          A placed box's height follows its text inside its balloon: it grows
-          and shrinks as the text changes, and text the balloon cannot hold is
-          flagged. A box you drew yourself only grows, and never shrinks a box
-          you made roomier.
-        </div>
-        <div class="field">
-          <span>Hyphenate long words</span>
-          {@render toggle('defaultHyphenate', 'Hyphenate long words', ts.defaultHyphenate, false, (on) => setTs('defaultHyphenate', on))}
-        </div>
-        <div class="qhint">
-          Smart line breaking: lines break to the shape of the balloon, a word
-          that fits nowhere is hyphenated, and the text is laid out to the
-          fitted balloon. Off, lines wrap plainly at the box's edge.
-        </div>
-        <div class="ts-defaults ts-sub" class:dim={!ts.defaultHyphenate}>
-          <!-- The silhouette a shaped block aims for (BRK-3). Auto picks an oval
-               in a balloon and a rectangle in a caption. -->
-          <div class="field">
-            <span>Block shape</span>
-            <div class="seg" role="group" aria-label="Block shape">
-              {#each [['auto', 'Auto'], ['oval', 'Oval'], ['rect', 'Rectangle']] as [v, label]}
-                <button
-                  class:on={ts.defaultBlockShape === v}
-                  disabled={!ts.defaultHyphenate}
-                  onclick={() => setTs('defaultBlockShape', v)}
-                >{label}</button>
-              {/each}
+          </p>
+          {@render tsRows(mineTs, setMine)}
+        </section>
+
+        <!-- Who measures text. Here with the rest of typesetting and not in the
+             Inspector: it is one setting for the whole machine, and no box has a
+             say in it. Disabled, and saying why, in a build made without the
+             engine - the wasm is its own build step. -->
+        <section class="settings-section" data-section="text-engine">
+          <h3 class="settings-title">Text engine <span class="set-badge warn">Experimental</span></h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Measure text with the Rust engine</span>
+              {@render toggle(
+                'textEngine',
+                'Measure text with the Rust engine',
+                engineSwitch.available && prefs.textEngine === 'rust',
+                !engineSwitch.available,
+                (on) => setPref('textEngine', on ? 'rust' : 'browser'),
+              )}
             </div>
+            <p class="set-desc" title="Drawing is the same either way. Opening a chapter lettered before the engine changes nothing on disk; the Text Queue says what the engine would change.">
+              {#if !engineSwitch.available}
+                Not in this build, so text is measured by the browser.
+              {:else if engineSwitch.phase === 'starting'}
+                Starting: loading the engine and your fonts.
+              {:else if engineSwitch.phase === 'failed'}
+                Could not start - {engineSwitch.error}. Text is measured by the browser.
+              {:else if engineHasNoFont()}
+                Switched on, but nothing is measuring: the engine has no font it can read. Add one in the Font Library.
+              {:else if engineSwitch.phase === 'on'}
+                On. Line breaks and box sizes are measured from your font files; a font this computer lacks is set in {engineSwitch.lastResort}.
+              {:else}
+                Off: text is measured by the browser. On, line breaks come from your font files, the same on every computer.
+              {/if}
+            </p>
           </div>
-          <div class="field">
-            <span>Fit text to balloon</span>
-            {@render toggle('defaultBalloon', 'Fit text to balloon', ts.defaultBalloon, !ts.defaultHyphenate, (on) => setTs('defaultBalloon', on))}
-          </div>
-          <div class="field">
-            <label for="ts-orphan">Shortest word left alone on a line</label>
-            <input
-              id="ts-orphan"
-              class="ts-num"
-              type="number"
-              min="1"
-              max="8"
-              step="1"
-              disabled={!ts.defaultHyphenate}
-              value={ts.defaultMinOrphan}
-              title="A word shorter than this is never left alone at the end of a line"
-              onchange={(e) => { setTs('defaultMinOrphan', Math.round(+e.target.value)); e.target.value = typesetDefaults().defaultMinOrphan; }}
-            />
-          </div>
-        </div>
-        <div class="qhint">
-          Applies to new text boxes, in every chapter{seriesTs ? ' of this series' : ''} · per-box via Bulk style.
-          Boxes already on a page keep whatever they were given.
-        </div>
-      </div>
-
-      <!-- Who measures text. Here with the rest of typesetting and not in the
-           Inspector: it is one setting for the whole machine, and no box has a
-           say in it. Disabled, and saying why, in a build made without the
-           engine - the wasm is its own build step. -->
-      <div class="settings-section">
-        <div class="settings-title">TEXT ENGINE <span class="beta-badge">Experimental</span>{@render scope('you')}</div>
-        <div class="field">
-          <span>Measure text with the Rust engine</span>
-          {@render toggle(
-            'textEngine',
-            'Measure text with the Rust engine',
-            engineSwitch.available && prefs.textEngine === 'rust',
-            !engineSwitch.available,
-            (on) => setPref('textEngine', on ? 'rust' : 'browser'),
-          )}
-        </div>
-        <div class="qhint">
-          {#if !engineSwitch.available}
-            Not in this build. The engine is built separately
-            (<code>npm run build:engine</code>) and this copy of the app was made
-            without it, so text is measured by the browser.
-          {:else if engineSwitch.phase === 'starting'}
-            Starting: loading the engine and your fonts. Text is laid out again
-            once it is in.
-          {:else if engineSwitch.phase === 'failed'}
-            Could not start - {engineSwitch.error}. Text is measured by the
-            browser. Turn the switch off and on to try again.
-          {:else if engineHasNoFont()}
-            Switched on, but nothing is measuring: the Rust engine has no font
-            it can read, and it measures only in fonts this computer has. Add
-            a font in the Font Library and it starts by itself. Until then
-            text is laid out by estimate and no box is resized.
-          {:else if engineSwitch.phase === 'on'}
-            On. Line breaks and box sizes are measured from your font files and
-            this computer's fonts, the same on every system. A font this
-            computer does not have, the built-in web fonts included, is set in
-            {engineSwitch.lastResort} and listed as missing in the Text Queue.
-            A chapter lettered before this engine is not changed on disk by
-            opening it: the Text Queue says what the engine changed, and that
-            is saved when you edit the chapter or keep the changes.
-          {:else}
-            Off: text is measured by the browser, as before. On, line breaks
-            and box sizes are measured from your font files and this computer's
-            fonts instead. Drawing is unchanged. The switch is this computer's.
-            A chapter saved with it on is marked as fitted by the engine; one
-            that is not is told so in the Text Queue the first time it is
-            opened with the switch on, and nothing is saved by opening it.
-          {/if}
-        </div>
-      </div>
-
-      </div>
+        </section>
       {/if}
 
-      {#if tab === 'project' && project}
-      <!-- The open chapter's project: what used to be spread over the project
-           screen (language), the queue (tag defaults) and the new-project
-           dialog (layout). Everything here is in project.json, so it travels
-           with the series folder and applies to every chapter in it. -->
-      <div class="set-pane" role="tabpanel" id="set-pane-project" aria-labelledby="set-tab-project">
-      <div class="qhint pt-intro">Settings for <b>{project.name}</b>, shared by every chapter in it.</div>
-
-      <div class="settings-section">
-        <div class="settings-title">SOURCE LANGUAGE{@render scope('series')}</div>
-        <div class="field">
-          <span>Language</span>
-          <div class="seg" role="group" aria-label="Source language">
-            {#each [['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean']] as [v, label]}
-              <button
-                class:on={project.ocrLanguage === v}
-                disabled={changingLanguage}
-                onclick={() => onLanguage(v)}
-              >{label}</button>
-            {/each}
-          </div>
-        </div>
-        <div class="qhint">
-          What <b>Detect</b> reads on this series' pages. Text already read is
-          left as it is. The model for each language is under System.
-        </div>
-      </div>
-
-      <!-- How the series is lettered: a font per kind of text and per
-           character, and the AI's freedom. The fonts are the tags' below. -->
-      <LetteringSetup {scope} />
-
-      <div class="settings-section">
-        <div class="settings-title">TAGS{@render scope('series')}</div>
-        <div class="qhint pt-lead">
-          The style a box of each tag starts with. Save a box's whole look as
-          its tag's style from the Inspector. Boxes already placed keep their
-          style until you apply it with Bulk style.
-        </div>
-        {#each projectTags as t (t.name)}
-          <div class="pt-row">
-            <span class="pt-name">{t.name}</span>
-            <span class="pt-sum">{tagSummary(t)}</span>
-            <button
-              class="btn tiny"
-              aria-expanded={tagForm?.name === t.name}
-              onclick={() => (tagForm?.name === t.name ? (tagForm = null) : openTagForm(t.name))}
-            >{tagForm?.name === t.name ? 'Close' : 'Edit'}</button>
-          </div>
-          {#if tagForm?.name === t.name}
-            <div class="qtagform pt-form">
-              <TagDefaultsForm bind:form={tagForm} key="settings" onforget={() => (tagForm = null)} />
-              <span class="qtf-top">
-                <button class="qtf-go" onclick={saveTagForm}>Save</button>
+      {#if tab === 'detection'}
+        <section class="settings-section">
+          <h3 class="settings-title">Engine</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Detection engine</span>
+              <span class="set-status">
+                <span class="dot {sidecarOk ? 'ok' : app.sidecar?.status === 'error' ? 'err' : 'off'}" aria-hidden="true"></span>
+                {sidecarLabel}
               </span>
             </div>
-          {/if}
-        {:else}
-          <div class="qhint">No tags yet.</div>
-        {/each}
-        <div class="pt-add">
-          <input
-            class="qtf-input"
-            placeholder="New tag…"
-            aria-label="New tag name"
-            maxlength={MAX_TAG_LEN}
-            bind:value={newTagName}
-            onkeydown={(e) => e.key === 'Enter' && addTag()}
-          />
-          <button class="btn tiny" disabled={!normalizeTagName(newTagName)} onclick={addTag}>Add</button>
-        </div>
-      </div>
-
-      <!-- The series guide (docs/AI_TYPESETTING_PLAN.md section 4), in
-           project.json beside the tags above. -->
-      <SeriesGuide {scope} />
-
-      <div class="settings-section">
-        <div class="settings-title">LAYOUT{@render scope('series')}</div>
-        <div class="field">
-          <span>Layout</span>
-          <span class="pt-value">{project.layout === 'longstrip' ? 'Longstrip' : 'Pages'}</span>
-        </div>
-        <div class="qhint">
-          Set when the series was made. Longstrip pages are slices of one long
-          image, so they cannot be read as separate pages, or the other way round.
-        </div>
-      </div>
-      </div>
-      {/if}
-
-      {#if tab === 'shortcuts'}
-      <div class="set-pane" role="tabpanel" id="set-pane-shortcuts" aria-labelledby="set-tab-shortcuts">
-      <!-- Every key the editor answers to by name. The three contextual ones -
-           Escape, Tab and the arrows - are listed at the bottom as what they
-           are: fixed, because their meaning depends on what is selected. -->
-      <div class="settings-section">
-        <div class="settings-title">SHORTCUTS{@render scope('you')}</div>
-        <div class="qhint sc-intro">
-          Click a shortcut, then press the keys you want. <b>Esc</b> cancels.
-        </div>
-
-        {#each groups as g (g.name)}
-          <div class="group-label">{g.name}</div>
-          {#each g.items as s (s.id)}
-            <div class="sc-row" class:capturing={capturing === s.id}>
-              <span class="sc-label">{s.label}</span>
-              <button
-                class="sc-combo"
-                class:custom={isCustomCombo(s.id)}
-                class:listening={capturing === s.id}
-                title={capturing === s.id
-                  ? 'Press the keys - Esc cancels'
-                  : `Click to rebind · default ${formatCombo(defaultCombo(s.id))}`}
-                onclick={() => beginCapture(s.id)}
-              >
-                {capturing === s.id ? 'Press keys…' : formatCombo(comboFor(s.id))}
-              </button>
-              <button
-                class="btn tiny sc-reset"
-                disabled={!isCustomCombo(s.id)}
-                title="Back to {formatCombo(defaultCombo(s.id))}"
-                onclick={() => { resetCombo(s.id); if (capturing === s.id) { capture.end(); capturing = null; } }}
-              >
-                Default
-              </button>
-            </div>
-            {#if capturing === s.id && captureErr}
-              <div class="sc-err">{captureErr}</div>
+            {#if sidecarOk && app.sidecar.info?.gpu_build === false}
+              <p class="set-desc">
+                CPU-only build. GPU acceleration needs the Linux (GPU) download, which runs on
+                glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch or newer.
+              </p>
             {/if}
-          {/each}
-        {/each}
+          </div>
+        </section>
 
-        <div class="mc-actions">
-          <button class="btn" class:danger={confirmResetKeys} onclick={onResetKeys}>
-            {confirmResetKeys ? 'Confirm - reset every shortcut?' : 'Reset all shortcuts'}
-          </button>
-          {#if confirmResetKeys}
-            <button class="btn" onclick={() => (confirmResetKeys = false)}>Cancel</button>
-          {/if}
-        </div>
+        <section class="settings-section">
+          <h3 class="settings-title">What Detect reads</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Keep text that is already English</span>
+              {@render toggle('keepEnglish', 'Keep text that is already English', prefs.keepEnglish)}
+            </div>
+            <p class="set-desc">Off: English lettering on the raw is not detected.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Check Japanese with a second reader</span>
+              {@render toggle('secondReader', 'Check Japanese with a second reader', prefs.secondReader)}
+            </div>
+            <p class="set-desc">Reads each line again with PP-OCRv6 (77 MB) and lists the lines where the two readers differ.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Use a second text detector</span>
+              {@render toggle('secondDetector', 'Use a second text detector', prefs.secondDetector)}
+            </div>
+            <p class="set-desc">RT-DETR (168 MB) finds text the main detector misses.</p>
+          </div>
+        </section>
 
-        <div class="qhint">
-          Fixed, because what they do depends on what you have selected:
-          <b>Esc</b> closes whatever is open and then deselects,
-          <b>Tab</b> steps through the boxes on the page, and the
-          <b>arrows</b> nudge the selected box - or turn the page when nothing
-          is selected. Hold <b>Shift</b> with an arrow for a bigger nudge.
-        </div>
-      </div>
-      </div>
+        <section class="settings-section">
+          <h3 class="settings-title">Text readers</h3>
+          <p class="set-intro">The reader used after detection, for each source language. A changed model downloads on the next Detect; the series’ language is not changed.</p>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Japanese</span>
+              <span class="set-value">{OCR_MODEL_OPTIONS.ja[0].label}</span>
+            </div>
+            <p class="set-desc">{OCR_MODEL_OPTIONS.ja[0].detail}</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <label class="set-label" for="ocr-zh">Chinese</label>
+              <select id="ocr-zh" class="set-select" aria-label="Chinese OCR model" value={prefs.ocrModels.zh} onchange={(e) => setOcrModel('zh', e.currentTarget.value)}>
+                {#each OCR_MODEL_OPTIONS.zh as model (model.id)}
+                  <option value={model.id}>{model.label} — {model.detail}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <label class="set-label" for="ocr-ko">Korean</label>
+              <select id="ocr-ko" class="set-select" aria-label="Korean OCR model" value={prefs.ocrModels.ko} onchange={(e) => setOcrModel('ko', e.currentTarget.value)}>
+                {#each OCR_MODEL_OPTIONS.ko as model (model.id)}
+                  <option value={model.id}>{model.label} — {model.detail}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-title">Downloaded models</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">
+                On disk
+                <span class="set-label-sub">
+                  {#if cacheLoading}Measuring…{:else if cache}{fmtBytes(cache.total_bytes)}{:else}Unknown - desktop app only{/if}
+                </span>
+              </span>
+              <div class="set-ctl">
+                <button class="btn tiny" disabled={cacheLoading || !isTauri()} onclick={loadCache}>Recheck</button>
+                {@render confirmButton(
+                  confirmClear,
+                  clearing ? 'Clearing…' : 'Clear',
+                  'Delete the models',
+                  onClearCache,
+                  () => (confirmClear = false),
+                  clearing || !sidecarOk || !cache || cache.total_bytes === 0,
+                )}
+              </div>
+            </div>
+            {#if cache?.entries?.length}
+              <ul class="set-list">
+                {#each cache.entries as e}
+                  <li><span class="set-path" title={e.path}>{e.path}</span><span class="set-num-out">{e.exists ? fmtBytes(e.bytes) : '-'}</span></li>
+                {/each}
+              </ul>
+            {/if}
+            <p class="set-desc">
+              Clearing frees the space; they download again on the next Detect.
+              {#if !sidecarOk} The detection engine is not answering, so clearing needs the desktop app.{/if}
+            </p>
+          </div>
+        </section>
       {/if}
 
       {#if tab === 'ai'}
-      <div class="set-pane" role="tabpanel" id="set-pane-ai" aria-labelledby="set-tab-ai">
-      <div class="settings-section ts-section">
-        <div class="settings-title">AI AGENTS{@render scope('you')}</div>
-        <div class="field">
-          <span>Let AI agents use this app</span>
-          {@render toggle('agentDoor', 'Let AI agents use this app', door.on, !isTauri(), (on) => setDoorOn(on))}
-        </div>
-        <div class="qhint ai-lead">Claude Code, Codex or Antigravity can then typeset through the app. It listens on 127.0.0.1 only, and every request needs the token.</div>
+        <section class="settings-section">
+          <h3 class="settings-title">Access</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Let AI agents use this app</span>
+              {@render toggle('agentDoor', 'Let AI agents use this app', door.on, !isTauri(), (on) => setDoorOn(on))}
+            </div>
+            <p class="set-desc">Claude Code, Codex or Antigravity can then typeset through the app. It listens on 127.0.0.1 only, and every request needs the token.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Status</span>
+              <span class="set-status">
+                <span class="dot {isTauri() && door.running ? 'ok' : isTauri() && door.error ? 'err' : 'off'}" aria-hidden="true"></span>
+                {#if !isTauri()}Needs the desktop app
+                {:else if door.running}Listening on {doorUrl(door.port)}
+                {:else if door.on && !door.error}Starting…
+                {:else}Off{/if}
+              </span>
+            </div>
+            {#if isTauri() && door.error}
+              <p class="set-desc set-error">{door.error}</p>
+            {/if}
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <label class="set-label" for="ai-port">Port</label>
+              <input
+                id="ai-port"
+                class="set-num"
+                type="number"
+                min="1024"
+                max="65535"
+                step="1"
+                aria-label="Port"
+                placeholder={String(DEFAULT_PORT)}
+                value={door.port}
+                onchange={onDoorPort}
+              />
+            </div>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Token</span>
+              <div class="set-ctl">
+                <button class="btn tiny" onclick={onNewToken}>Make a new token</button>
+              </div>
+            </div>
+            <p class="set-desc">Every connected agent must paste its line again.</p>
+          </div>
+        </section>
 
-        <div class="srow ai-status">
-          <span class="slabel">Status</span>
-          <span class="dot {isTauri() && door.running ? 'ok' : isTauri() && door.error ? 'err' : 'off'}"></span>
-          <span class="sval">
-            {#if !isTauri()}Needs the desktop app
-            {:else if door.running}Listening on {doorUrl(door.port)}
-            {:else if door.on && !door.error}Starting…
-            {:else}Off{/if}
-          </span>
-        </div>
-        {#if isTauri() && door.error}
-          <div class="sc-err ai-err">{door.error}</div>
-        {/if}
+        <section class="settings-section">
+          <h3 class="settings-title">Connect</h3>
+          <p class="set-intro">Paste the line for your agent. Each line carries the port and the token.</p>
+          {#each connectBlocks as b (b.id)}
+            <div class="set-item set-connect">
+              <div class="set-connect-name">{b.name}</div>
+              {#each b.lines as l (l.label)}
+                {#if l.note}<p class="set-desc set-connect-note">{l.note}</p>{/if}
+                <div class="set-code-row">
+                  <pre class="set-code" aria-label={l.label}>{l.text}</pre>
+                  <button class="btn tiny" aria-label="Copy {l.label}" onclick={() => copyLine(l.text)}>Copy</button>
+                </div>
+              {/each}
+            </div>
+          {/each}
 
-        <div class="field">
-          <span>Port</span>
-          <input
-            class="ts-num ai-port"
-            type="number"
-            min="1024"
-            max="65535"
-            step="1"
-            aria-label="Port"
-            placeholder={String(DEFAULT_PORT)}
-            value={door.port}
-            onchange={onDoorPort}
-          />
-        </div>
-      </div>
+          <div class="set-note" role="note">
+            <div class="set-note-title">Keep Claude Code to our tools</div>
+            <p class="set-desc">
+              Page text (OCR and translations) can carry instructions, and a Claude
+              Code session can run commands. Start it this way so our tools are all
+              it has.
+            </p>
+            <div class="set-code-row">
+              <pre class="set-code" aria-label="Safe Claude Code start">{lines.claudeSafe}</pre>
+              <button class="btn tiny" aria-label="Copy Safe Claude Code start" onclick={() => copyLine(lines.claudeSafe)}>Copy</button>
+            </div>
+          </div>
+        </section>
+      {/if}
 
-      <div class="settings-section">
-        <div class="settings-title">CONNECT</div>
-        {#each connectBlocks as b (b.id)}
-          <div class="model-card ai-card">
-            <div class="mc-name">{b.name}</div>
-            {#each b.lines as l (l.label)}
-              {#if l.note}<div class="qhint ai-note">{l.note}</div>{/if}
-              <div class="ai-line-row">
-                <pre class="ai-line" aria-label={l.label}>{l.text}</pre>
-                <button class="btn tiny" aria-label="Copy {l.label}" onclick={() => copyLine(l.text)}>Copy</button>
+      {#if tab === 'shortcuts'}
+        <!-- Every key the editor answers to by name. The three contextual ones -
+             Escape, Tab and the arrows - are listed at the bottom as what they
+             are: fixed, because their meaning depends on what is selected. -->
+        <p class="set-lead set-lead-top">Click a shortcut, then press the keys you want. <b>Esc</b> cancels.</p>
+
+        {#each groups as g (g.name)}
+          <section class="settings-section">
+            <h3 class="settings-title">{g.name}</h3>
+            {#each g.items as s (s.id)}
+              <div class="set-item">
+                <div class="set-line sc-line" class:capturing={capturing === s.id}>
+                  <span class="set-label">{s.label}</span>
+                  <button
+                    class="sc-combo"
+                    class:custom={isCustomCombo(s.id)}
+                    class:listening={capturing === s.id}
+                    title={capturing === s.id
+                      ? 'Press the keys - Esc cancels'
+                      : `Click to rebind · default ${formatCombo(defaultCombo(s.id))}`}
+                    onclick={() => beginCapture(s.id)}
+                  >
+                    {capturing === s.id ? 'Press keys…' : formatCombo(comboFor(s.id))}
+                  </button>
+                  <button
+                    class="btn tiny sc-reset"
+                    disabled={!isCustomCombo(s.id)}
+                    title="Back to {formatCombo(defaultCombo(s.id))}"
+                    onclick={() => { resetCombo(s.id); if (capturing === s.id) { capture.end(); capturing = null; } }}
+                  >
+                    Default
+                  </button>
+                </div>
+                {#if capturing === s.id && captureErr}
+                  <p class="set-desc set-error">{captureErr}</p>
+                {/if}
               </div>
             {/each}
-          </div>
+          </section>
         {/each}
 
-        <div class="model-card ai-card ai-warn" role="note">
-          <div class="mc-name">Keep Claude Code to our tools</div>
-          <p class="mc-desc ai-warn-desc">
-            Page text (OCR and translations) can carry instructions, and a
-            Claude Code session can run commands.
+        <section class="settings-section">
+          <h3 class="settings-title">Fixed keys</h3>
+          <p class="set-intro">
+            What these do depends on what you have selected:
+            <b>Esc</b> closes whatever is open and then deselects,
+            <b>Tab</b> steps through the boxes on the page, and the
+            <b>arrows</b> nudge the selected box - or turn the page when nothing
+            is selected. Hold <b>Shift</b> with an arrow for a bigger nudge.
           </p>
-          <div class="ai-line-row">
-            <pre class="ai-line" aria-label="Safe Claude Code start">{lines.claudeSafe}</pre>
-            <button class="btn tiny" aria-label="Copy Safe Claude Code start" onclick={() => copyLine(lines.claudeSafe)}>Copy</button>
+          <div class="set-actions">
+            {@render confirmButton(confirmResetKeys, 'Reset all shortcuts', 'Reset every shortcut', onResetKeys, () => (confirmResetKeys = false))}
           </div>
-          <div class="qhint ai-note">Start Claude Code this way so our tools are all it has.</div>
-        </div>
-      </div>
-
-      <div class="settings-section ts-section">
-        <div class="settings-title">TOKEN</div>
-        <div class="field">
-          <span>Make a new token</span>
-          <div class="field-actions">
-            <button class="btn tiny" onclick={onNewToken}>New token</button>
-          </div>
-        </div>
-        <div class="qhint ai-note">Every connected agent must paste its line again.</div>
-      </div>
-      </div>
+        </section>
       {/if}
 
-      {#if tab === 'system'}
-      <div class="set-pane" role="tabpanel" id="set-pane-system" aria-labelledby="set-tab-system">
-      <div class="group-label">Updates{@render scope('you')}</div>
-
-      <div class="model-card">
-        <div class="mc-top">
-          <div class="mc-title">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12" /><path d="M8 11l4 4 4-4" /><path d="M4 19h16" /></svg>
-            <div>
-              <div class="mc-name">Manga Typesetter</div>
-              <div class="mc-sub">
-                {#if appVersion}Version {appVersion}
-                {:else if isTauri()}Reading version…
-                {:else}Desktop app only - a browser tab cannot update itself.{/if}
-              </div>
-            </div>
-          </div>
-          {#if upd}<span class="tag">v{upd.version}</span>{/if}
-        </div>
-
-        <p class="mc-desc">
-          Checks the release channel for a newer build. Found updates download
-          and install in place, then the app restarts.
-        </p>
-
-        <div class="mc-actions">
-          <button class="btn" disabled={checking || !isTauri()} onclick={onCheckUpdate}>
-            {checking ? 'Checking…' : 'Check for updates'}
-          </button>
-          {#if upd}
-            <button class="btn btn-accent" onclick={() => (updDialogOpen = true)}>
-              Update to v{upd.version}
-            </button>
-          {/if}
-        </div>
-
-        {#if updError}
-          <div class="qhint">Check failed: {updError}</div>
-        {:else if upd === false}
-          <div class="qhint">You are on the newest version.</div>
-        {/if}
-      </div>
-
-      <div class="group-label">Engine{@render scope('you')}</div>
-
-      <div class="srow">
-        <span class="slabel">Detection engine</span>
-        <span class="dot {sidecarOk ? 'ok' : app.sidecar?.status === 'error' ? 'err' : 'off'}"></span>
-        <span class="sval">{sidecarLabel}</span>
-      </div>
-      {#if sidecarOk && app.sidecar.info?.gpu_build === false}
-        <div class="qhint">
-          CPU-only build. GPU acceleration needs the Linux (GPU) download, which runs on
-          glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch or newer.
-        </div>
-      {/if}
-
-      <div class="settings-section">
-        <div class="field">
-          <span>Keep text that is already English</span>
-          {@render toggle('keepEnglish', 'Keep text that is already English', prefs.keepEnglish)}
-        </div>
-        <div class="qhint">Off: English lettering on the raw is not detected.</div>
-
-        <div class="field">
-          <span>Check Japanese with a second reader</span>
-          {@render toggle('secondReader', 'Check Japanese with a second reader', prefs.secondReader)}
-        </div>
-        <div class="qhint">Reads each line again with PP-OCRv6 (a 77 MB download). Lines where the two readers differ go on the check list. About twice the OCR time.</div>
-
-        <div class="field">
-          <span>Use a second text detector</span>
-          {@render toggle('secondDetector', 'Use a second text detector', prefs.secondDetector)}
-        </div>
-        <div class="qhint">RT-DETR (a 168 MB download) checks the main detector, finds text it misses and tells bubble text from free text.</div>
-      </div>
-
-      <div class="group-label">Models{@render scope('you')}</div>
-
-      <div class="model-card">
-        <div class="mc-top">
-          <div class="mc-title">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7V5a2 2 0 0 1 2-2h2" /><path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M21 17v2a2 2 0 0 1-2 2h-2" /><path d="M7 21H5a2 2 0 0 1-2-2v-2" /><path d="M7 12h10" /></svg>
-            <div>
-              <div class="mc-name">Language-specific OCR</div>
-              <div class="mc-sub">Choose the recognizer used after text detection</div>
-            </div>
-          </div>
-          <span class="tag auto">On demand</span>
-        </div>
-
-        <div class="ocr-model-grid">
-          <div class="ocr-model-row">
-            <span>
-              <b>Japanese</b>
-              <small>{OCR_MODEL_OPTIONS.ja[0].detail}</small>
-            </span>
-            <span class="ocr-fixed">{OCR_MODEL_OPTIONS.ja[0].label}</span>
-          </div>
-
-          <label class="ocr-model-row">
-            <span>
-              <b>Chinese</b>
-              <small>Used by Chinese projects</small>
-            </span>
-            <select
-              aria-label="Chinese OCR model"
-              value={prefs.ocrModels.zh}
-              onchange={(e) => setOcrModel('zh', e.currentTarget.value)}
-            >
-              {#each OCR_MODEL_OPTIONS.zh as model (model.id)}
-                <option value={model.id}>{model.label} — {model.detail}</option>
-              {/each}
-            </select>
-          </label>
-
-          <label class="ocr-model-row">
-            <span>
-              <b>Korean</b>
-              <small>Used by Korean projects</small>
-            </span>
-            <select
-              aria-label="Korean OCR model"
-              value={prefs.ocrModels.ko}
-              onchange={(e) => setOcrModel('ko', e.currentTarget.value)}
-            >
-              {#each OCR_MODEL_OPTIONS.ko as model (model.id)}
-                <option value={model.id}>{model.label} — {model.detail}</option>
-              {/each}
-            </select>
-          </label>
-        </div>
-
-        <p class="mc-desc">
-          Quality models are selected by default. The chosen model downloads on
-          the next <b>Detect</b>; changing it does not alter the project's saved language.
-        </p>
-      </div>
-
-      <!-- Model cache footprint + clear -->
-      <div class="model-card">
-        <div class="mc-top">
-          <div class="mc-title">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" /><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3" /></svg>
-            <div>
-              <div class="mc-name">Model cache</div>
-              <div class="mc-sub">
-                {#if cacheLoading}Measuring…{:else if cache}{fmtBytes(cache.total_bytes)} on disk{:else}Size unavailable - desktop app only{/if}
-              </div>
-            </div>
-          </div>
-          {#if cache}<span class="tag">{fmtBytes(cache.total_bytes)}</span>{/if}
-        </div>
-
-        {#if cache?.entries?.length}
-          <div class="paths">
-            {#each cache.entries as e}
-              <div class="path-row">
-                <span class="path" title={e.path}>{e.path}</span>
-                <span class="path-size">{e.exists ? fmtBytes(e.bytes) : '-'}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        <p class="mc-desc">
-          Downloaded detector/OCR weights. Clearing frees disk; they re-download
-          on the next <b>Detect</b>.
-        </p>
-
-        <div class="mc-actions">
-          <button
-            class="btn"
-            class:danger={confirmClear}
-            disabled={clearing || !sidecarOk || !cache || cache.total_bytes === 0}
-            onclick={onClearCache}
-          >
-            {#if clearing}Clearing…{:else if confirmClear}Confirm - delete weights?{:else}Clear cache{/if}
-          </button>
-          {#if confirmClear}
-            <button class="btn" disabled={clearing} onclick={() => (confirmClear = false)}>Cancel</button>
-          {/if}
-          <button class="btn" disabled={cacheLoading || !isTauri()} onclick={loadCache}>Recheck</button>
-        </div>
-
-        {#if !sidecarOk}
-          <div class="qhint">The detection engine isn't reporting - cache actions need the desktop app.</div>
-        {/if}
-      </div>
-
-      <div class="group-label">Memory{@render scope('you')}</div>
-
-
-      <div class="model-card">
-        <div class="mc-top">
-          <div class="mc-title">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="7" width="16" height="10" rx="2" /><path d="M8 7V4M12 7V4M16 7V4M8 20v-3M12 20v-3M16 20v-3" /></svg>
-            <div>
-              <div class="mc-name">Live footprint</div>
-              <div class="mc-sub">
-                {#if !mem}Desktop app only - a browser tab cannot see its own host process.
-                {:else if !mem.supported}Not available on this platform.
-                {:else}{mem.processes.length} process{mem.processes.length === 1 ? '' : 'es'}, this app and everything it is responsible for.{/if}
-              </div>
-            </div>
-          </div>
-          {#if mem?.supported}<span class="tag">{fmtBytes(mem.total)}</span>{/if}
-        </div>
-
-        {#if mem?.supported && mem.processes.length}
-          <div class="paths">
-            {#each mem.processes as pr (pr.pid)}
-              <div class="path-row">
-                <span class="path" title="{pr.name} · pid {pr.pid} · matched by {pr.via}">
-                  {ROLE_LABELS[pr.role] ?? pr.name}
+      {#if tab === 'about'}
+        <section class="settings-section">
+          <h3 class="settings-title">Updates</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">
+                Manga Typesetter
+                <span class="set-label-sub">
+                  {#if appVersion}Version {appVersion}
+                  {:else if isTauri()}Reading version…
+                  {:else}Desktop app only - a browser tab cannot update itself.{/if}
                 </span>
-                <span class="path-size">{fmtBytes(pr.bytes)}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        <p class="mc-desc">
-          Physical footprint, the same measure Activity Monitor's <b>Memory</b>
-          column uses - not RSS, which counts the shared system libraries once
-          per process and would make this total several times too big. The
-          web&nbsp;view is where page images live, so it is the row that moves
-          when you open a long chapter.
-        </p>
-
-        {#if mem?.supported && mem?.incomplete}
-          <div class="qhint">One or more processes went away while being measured - the total is short.</div>
-        {/if}
-
-        {#if mem?.processes?.some((pr) => pr.via === 'session')}
-          <div class="qhint">
-            Web view rows matched by launch session - this is a development build started
-            from a terminal. A released app matches its web view exactly.
-          </div>
-        {/if}
-
-        <div class="mc-actions">
-          <button class="btn" disabled={!isTauri()} onclick={loadMemory}>Refresh</button>
-
-          <button class="btn" class:btn-accent={memLive} disabled={!isTauri()} onclick={() => (memLive = !memLive)}>
-            {memLive ? 'Stop live' : 'Live (2s)'}
-          </button>
-        </div>
-      </div>
-
-      {#if DEV}
-        <div class="group-label">Developer{@render scope('you')}</div>
-
-
-        <div class="model-card">
-          <div class="mc-top">
-            <div class="mc-title">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6v4l4 10a3 3 0 0 1-3 4H8a3 3 0 0 1-3-4L9 7z" /><path d="M8 14h8" /></svg>
-              <div>
-                <div class="mc-name">PSD export self-test</div>
-                <div class="mc-sub">Runs on the page you have open</div>
+              </span>
+              <div class="set-ctl">
+                {#if upd}
+                  <button class="btn tiny btn-accent" onclick={() => (updDialogOpen = true)}>Update to v{upd.version}</button>
+                {/if}
+                <button class="btn tiny" disabled={checking || !isTauri()} onclick={onCheckUpdate}>
+                  {checking ? 'Checking…' : 'Check for updates'}
+                </button>
               </div>
             </div>
+            <p class="set-desc">
+              {#if updError}Check failed: {updError}
+              {:else if upd === false}You are on the newest version.
+              {:else}A found update downloads and installs in place, then the app restarts.{/if}
+            </p>
           </div>
-          <p class="mc-desc">
-            Builds a PSD from the current page, reads it back, and checks the round-tripped project, the
-            per-layer pixels, the flat-white composite and the group structure. Needs a real canvas, so
-            the test suite cannot run it.
-          </p>
-          <div class="mc-actions">
-            <button class="btn" disabled={selfTesting || !app.pages.length} onclick={onPsdSelfTest}>
-              {selfTesting ? 'Running…' : 'Run self-test'}
-            </button>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-title">Memory</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">
+                In use
+                <span class="set-label-sub">
+                  {#if !mem}Desktop app only - a browser tab cannot see its own host process.
+                  {:else if !mem.supported}Not available on this platform.
+                  {:else}{fmtBytes(mem.total)} across {mem.processes.length} process{mem.processes.length === 1 ? '' : 'es'}{/if}
+                </span>
+              </span>
+              <div class="set-ctl">
+                <button class="btn tiny" disabled={!isTauri()} onclick={loadMemory}>Refresh</button>
+                <button class="btn tiny" class:btn-accent={memLive} disabled={!isTauri()} onclick={() => (memLive = !memLive)}>
+                  {memLive ? 'Stop live' : 'Live'}
+                </button>
+              </div>
+            </div>
+            {#if mem?.supported && mem.processes.length}
+              <ul class="set-list">
+                {#each mem.processes as pr (pr.pid)}
+                  <li>
+                    <span class="set-path" title="{pr.name} · pid {pr.pid} · matched by {pr.via}">{ROLE_LABELS[pr.role] ?? pr.name}</span>
+                    <span class="set-num-out">{fmtBytes(pr.bytes)}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            <p class="set-desc" title="Physical footprint, not RSS. The web view holds the page images, so it is the row that grows with a long chapter.">
+              The same measure as Activity Monitor’s Memory column.
+              {#if mem?.supported && mem?.incomplete} A process went away while being measured, so the total is short.{/if}
+              {#if mem?.processes?.some((pr) => pr.via === 'session')} Web view rows are matched by launch session: this is a development build started from a terminal.{/if}
+            </p>
           </div>
-          {#if !app.pages.length}
-            <div class="qhint">Open a chapter first - the self-test runs on the page you are looking at.</div>
-          {/if}
-          {#if selfTest}
-            <pre class="mc-report" class:bad={!selfTest.ok}>{JSON.stringify(selfTest, null, 2)}</pre>
-          {/if}
-        </div>
+        </section>
+
+        {#if DEV}
+          <section class="settings-section">
+            <h3 class="settings-title">Developer</h3>
+            <div class="set-item">
+              <div class="set-line">
+                <span class="set-label">
+                  PSD export self-test
+                  <span class="set-label-sub">Runs on the page you have open</span>
+                </span>
+                <div class="set-ctl">
+                  <button class="btn tiny" disabled={selfTesting || !app.pages.length} onclick={onPsdSelfTest}>
+                    {selfTesting ? 'Running…' : 'Run self-test'}
+                  </button>
+                </div>
+              </div>
+              <p class="set-desc">
+                Builds a PSD from the current page, reads it back, and checks the
+                round-tripped project, the per-layer pixels, the flat-white
+                composite and the group structure.
+                {#if !app.pages.length} Open a chapter first.{/if}
+              </p>
+              {#if selfTest}
+                <pre class="set-code set-report" class:bad={!selfTest.ok}>{JSON.stringify(selfTest, null, 2)}</pre>
+              {/if}
+            </div>
+          </section>
+        {/if}
       {/if}
-      </div>
+
+      {#if tab === 'series' && project}
+        <section class="settings-section">
+          <h3 class="settings-title">Pages</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Source language</span>
+              <div class="seg" role="group" aria-label="Source language">
+                {#each [['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean']] as [v, label]}
+                  <button
+                    class:on={project.ocrLanguage === v}
+                    disabled={changingLanguage}
+                    onclick={() => onLanguage(v)}
+                  >{label}</button>
+                {/each}
+              </div>
+            </div>
+            <p class="set-desc">What Detect reads on this series’ pages. Text already read is left as it is. The reader for each language is under Detection.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Layout</span>
+              <span class="set-value">{project.layout === 'longstrip' ? 'Longstrip' : 'Pages'}</span>
+            </div>
+            <p class="set-desc">Set when the series was made. Longstrip pages are slices of one long image, so the two cannot be swapped.</p>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-title">New text boxes</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Own typesetting defaults</span>
+              {@render toggle('seriesTypeset', 'Own typesetting defaults', !!seriesTs, false, useSeriesTs)}
+            </div>
+            <p class="set-desc">
+              {#if seriesTs}This series starts new boxes with the settings below, not yours from Typesetting.
+              {:else}Off: this series uses yours from Typesetting. On, it starts from a copy of them.{/if}
+            </p>
+          </div>
+          {#if seriesTs}{@render tsRows(seriesValues, setSeries)}{/if}
+        </section>
+      {/if}
+
+      {#if tab === 'styles' && project}
+        <!-- Every look a box starts with, in one list: a font per kind of text,
+             the user's own styles under each kind, and the characters' voices
+             under Speech. Then how far the AI may go past them. -->
+        <TextStyles />
+        <LetteringSetup />
+      {/if}
+
+      {#if tab === 'guide' && project}
+        <!-- The series guide (docs/AI_TYPESETTING_PLAN.md section 4), in
+             project.json beside the text styles. -->
+        <SeriesGuide />
       {/if}
     </div>
-  </div>
+  </main>
 </div>
+{/if}
 
 <!-- The same dialog the home badge opens, mounted here too so a check made
      from Settings lands somewhere. -->
 <UpdateDialog bind:open={updDialogOpen} update={upd || null} />
 
 <style>
-  /* The tab strip, same grammar as the Inspector's: icon over label, the open
-     one filled with the accent. It lives between the head and the scrolling
-     body, so it never scrolls away. */
-  .set-tabs {
-    flex: 0 0 auto;
-    display: grid;
-    /* As many columns as there are tabs: Project comes and goes with the
-       open chapter. */
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(56px, 1fr);
-    gap: 4px;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--line);
-    background: var(--panel);
-  }
-  .set-tab {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
-    height: 46px;
-    padding: 0 2px;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--t2);
-    font-family: inherit;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    cursor: pointer;
-    min-width: 0;
-  }
-  .set-tab :global(svg) {
-    width: 18px;
-    height: 18px;
-  }
-  .set-tab span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-  }
-  .set-tab:hover {
-    color: var(--text);
-    background: var(--surface);
-  }
-  .set-tab.on {
-    color: var(--accent-fg);
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .set-tab:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+  /* The layout and the row grammar (.settings-screen, .set-*) are global, in
+     styles.css, because TextStyles, LetteringSetup and SeriesGuide draw their
+     rows into this screen with the same classes. What is here is this file's
+     own. */
+  .btn.danger {
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+    border-color: var(--warn);
+    color: var(--warn);
+    font-weight: 600;
   }
 
-  .srow {
-    display: flex;
+  .set-status {
+    display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
-    padding: 4px 2px 12px;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 14px;
-  }
-  .slabel {
+    min-width: 0;
+    font-size: 12px;
     color: var(--t2);
-  }
-  .sval {
-    margin-left: 2px;
-    color: var(--text);
+    overflow-wrap: anywhere;
+    text-align: right;
   }
   .dot {
-    width: 9px;
-    height: 9px;
+    flex: none;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--t3);
   }
@@ -1384,229 +1228,21 @@
   .dot.err {
     background: var(--warn);
   }
-  .group-label {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--t2);
-    margin-bottom: 8px;
-  }
-  .model-card {
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 14px;
-    margin-bottom: 12px;
-    background: var(--panel2);
-  }
-  .ocr-model-grid {
-    display: grid;
-    gap: 10px;
-    margin-top: 14px;
-  }
-  .ocr-model-row {
-    display: grid;
-    grid-template-columns: minmax(120px, 0.8fr) minmax(190px, 1.2fr);
-    align-items: center;
-    gap: 14px;
-  }
-  .ocr-model-row > span:first-child {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-  .ocr-model-row b {
-    color: var(--text);
-    font-size: 12.5px;
-  }
-  .ocr-model-row small,
-  .ocr-fixed {
-    color: var(--t2);
-    font-size: 11px;
-  }
-  .ocr-model-row select {
-    min-width: 0;
-    width: 100%;
-    height: 32px;
-    padding: 0 8px;
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    font-size: 12px;
-  }
-  .ocr-model-row select:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  .ocr-fixed {
-    padding: 0 9px;
-  }
-  .mc-top {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-  }
-  .mc-title {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: 1;
-    min-width: 0;
-  }
-  .mc-title svg {
-    flex: none;
-    color: var(--t2);
-  }
-  .mc-name {
-    font-size: 13.5px;
-    font-weight: 600;
-    color: var(--text);
-  }
-  .mc-sub {
-    font-size: 11.5px;
-    color: var(--t2);
-  }
-  .mc-desc {
-    font-size: 12.5px;
-    line-height: 1.5;
-    color: var(--t2);
-    margin: 10px 0 0;
-  }
-
-  .mc-report {
-    margin: 10px 0 0;
-    padding: 8px 10px;
-    max-height: 220px;
-    overflow: auto;
-    border-radius: 6px;
-    background: var(--panel2);
-    color: var(--t2);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
-    line-height: 1.45;
-    white-space: pre;
-  }
-  .mc-report.bad {
+  .set-error {
     color: var(--warn);
-  }
-  .mc-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-  }
-  .tag {
-    flex: none;
-    font-size: 10.5px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--panel2);
-    color: var(--t2);
-    height: fit-content;
-  }
-  .tag.auto {
-    background: var(--accent-soft);
-    color: var(--text);
-  }
-  .btn {
-    padding: 7px 14px;
-    border-radius: 7px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    font-size: 12.5px;
-    cursor: pointer;
-  }
-
-  .btn.tiny {
-    padding: 4px 10px;
-    font-size: 12px;
-  }
-  .field-actions {
-    margin-left: auto;
-    display: flex;
-    gap: 8px;
-  }
-  .btn.danger {
-    background: color-mix(in srgb, var(--warn) 16%, transparent);
-    border-color: var(--warn);
-    color: var(--warn);
-    font-weight: 600;
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .paths {
-    margin-top: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .path-row {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    font-size: 11.5px;
-  }
-  .path {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--t2);
-    font-family: ui-monospace, monospace;
-  }
-  .path-size {
-    flex: none;
-    color: var(--text);
-    font-variant-numeric: tabular-nums;
-  }
-  .qhint {
-    font-size: 12px;
-    color: var(--t2);
-    margin-top: 10px;
-    line-height: 1.4;
   }
 
   /* One shortcut: what it does on the left, the keys on the right. The keys are
      the button - there is no second "change" control to hunt for, and the row
      says what it is going to do when you press it. */
-  .sc-intro {
-    margin-top: 0;
-    margin-bottom: 12px;
-  }
-  /* The registry's own group headings sit between rows rather than above a
-     card, so they need the air the card gave the ones further down. */
-  .settings-section .group-label {
-    margin-top: 16px;
-  }
-  .sc-row {
-    display: flex;
-    align-items: center;
+  .sc-line {
     gap: 10px;
-    padding: 5px 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .sc-label {
-    flex: 1;
-    min-width: 0;
-    font-size: 12.5px;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .sc-combo {
     flex: none;
-    min-width: 92px;
-    padding: 4px 10px;
+    min-width: 96px;
+    height: 28px;
+    padding: 0 10px;
     border-radius: 6px;
     border: 1px solid var(--line2);
     background: var(--surface);
@@ -1618,10 +1254,13 @@
   .sc-combo:hover {
     background: var(--accent-soft);
   }
+  .sc-combo:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
   /* A rebound key is worth spotting at a glance when you are wondering why a
      press does something unexpected. */
   .sc-combo.custom {
-    border-color: var(--line2);
     font-weight: 600;
   }
   .sc-combo.listening {
@@ -1629,128 +1268,39 @@
     color: var(--warn);
     font-family: inherit;
   }
-  .sc-reset {
-    flex: none;
-  }
   .sc-reset:disabled {
     /* Present but silent on a default binding - the row keeps its shape, so
        nothing shifts sideways when a shortcut is changed. */
     opacity: 0.28;
   }
-  .sc-err {
-    font-size: 12px;
-    color: var(--warn);
-    padding: 4px 0 6px;
-    line-height: 1.4;
-  }
 
-  /* Typesetting. The rows here are sentences, not the two-word labels the fixed
-     110px column further up was cut for, so the label takes the room and the
-     control sits at the right edge - which also lines every switch in the
-     section up with every other one. */
-  .ts-section .field > span,
-  .ts-section .field > label {
-    width: auto;
-    flex: 1;
-    min-width: 0;
-    font-size: 11.5px;
-    color: var(--t2);
-  }
-  /* The settings under "Hyphenate long words" mean nothing while it is off,
-     so they dim with it rather than vanishing: a control that disappears is
-     one nobody finds again. Set in from it, as its own. */
-  .ts-sub {
-    margin-left: 14px;
-    padding-left: 10px;
-    border-left: 1px solid var(--line2);
-  }
-  .ts-defaults.dim {
-    opacity: 0.5;
-  }
-  .ts-section :global(.switch.disabled) {
-    cursor: default;
-  }
-  .ts-num {
-    flex: none;
-    width: 62px;
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    font-size: 12px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-  .ts-num:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-
-  /* The scope chip rides at the right end of a section's heading, where the
-     eye lands after reading the name. Quiet: it answers "where is this kept",
-     which matters when you go looking, not on every glance. The series one is
-     tinted, because it is the one whose change reaches other chapters and
-     other people. */
-  .settings-title,
-  .group-label {
-    display: flex;
-    align-items: center;
-  }
-  .scope-chip {
-    margin-left: auto;
-    flex: none;
-    padding: 1px 8px;
-    border: 1px solid var(--line2);
-    border-radius: 999px;
-    color: var(--t2);
-    font-size: 10px;
-    letter-spacing: 0.02em;
-    text-transform: none;
-    line-height: 1.5;
-    white-space: nowrap;
-  }
-  .scope-chip.series {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--text);
-  }
-  .scope-chip.chapter {
-    border-style: dashed;
-  }
-
-  /* AI tab. The lines are what the user pastes, token and all, so they wrap
-     rather than scroll: the whole line is always in sight, and the pane never
+  /* AI agents. The lines are what the user pastes, token and all, so they wrap
+     rather than scroll: the whole line is always in sight, and the column never
      grows sideways. */
-  .ai-lead {
-    margin-top: 0;
-    margin-bottom: 14px;
+  .set-connect {
+    padding: 12px 0 14px;
   }
-  .ai-status .sval {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  .ai-err {
-    margin: -8px 0 12px;
-  }
-  .ai-port {
-    width: 76px;
-  }
-  .ai-card .mc-name {
+  .set-connect-name {
+    font-size: 12.5px;
+    font-weight: 500;
     margin-bottom: 8px;
   }
-  .ai-note {
-    margin: 8px 0 6px;
+  .set-connect-note {
+    padding: 0 0 6px;
+    margin: 0;
   }
-  .ai-line-row {
+  .set-code-row {
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    margin-top: 6px;
   }
-  .ai-line {
+  .set-code-row + .set-connect-note {
+    margin-top: 10px;
+  }
+  .set-code-row .btn {
+    flex: none;
+  }
+  .set-code {
     flex: 1;
     min-width: 0;
     margin: 0;
@@ -1766,74 +1316,58 @@
     overflow-wrap: anywhere;
     user-select: text;
   }
-  .ai-line-row .btn {
-    flex: none;
+  .set-report {
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre;
+    margin-bottom: 12px;
+    color: var(--t2);
   }
-  .ai-warn {
-    border-color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 8%, var(--panel2));
-  }
-  .ai-warn .mc-name {
+  .set-report.bad {
     color: var(--warn);
   }
-  .ai-warn-desc {
-    margin: 0 0 4px;
+  .set-note {
+    margin-top: 20px;
+    padding: 14px 16px 16px;
+    border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn) 6%, transparent);
+  }
+  .set-note-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--warn);
+    margin-bottom: 4px;
+  }
+  .set-note .set-desc {
+    padding-bottom: 10px;
   }
 
-  /* Project tab. */
-  .pt-intro {
-    margin: 0 0 16px;
-  }
-  .pt-lead {
-    margin: 0 0 10px;
-  }
-  .field > .pt-value {
-    color: var(--text);
-    font-size: 12px;
-  }
-  .pt-row {
+  /* Downloaded files and memory: name on the left, size on the right. */
+  .set-list {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
     display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 5px 0;
-    border-bottom: 1px solid var(--line);
+    flex-direction: column;
+    gap: 3px;
   }
-  .pt-name {
-    flex: none;
-    max-width: 40%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text);
+  .set-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font-size: 11.5px;
   }
-  .pt-sum {
+  .set-list .set-path {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11.5px;
-    color: var(--t2);
   }
-  .pt-form {
-    margin: 6px 0 8px;
-  }
-  .pt-form .qtf-top {
-    justify-content: flex-end;
-  }
-  .pt-add {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 10px;
-  }
-  .pt-add .qtf-input {
-    max-width: 220px;
-    padding: 5px 8px;
-    font-size: 12px;
+  .set-num-out {
+    flex: none;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
   }
 </style>

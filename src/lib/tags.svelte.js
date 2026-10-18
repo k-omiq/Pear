@@ -26,6 +26,7 @@
 // for the one thing that has to happen inside placement.
 
 import { defaultStyle, normalizeStyle } from './data.js';
+import { ROLE_TAGS } from './lettering.js';
 
 // Every write here is a discrete click - created a tag, edited a tag, applied a
 // tag - never a drag or a key repeat, so there is nothing to coalesce: each one
@@ -96,6 +97,12 @@ function sanitizeTagStyle(style) {
   return Object.fromEntries(Object.keys(picked).map((k) => [k, vetted[k]]));
 }
 
+// The kind of text a user's own tag sits under (a role, lettering.js): a
+// style of that kind - "angry" under speech - whose look is laid over the
+// kind's, and which counts as that kind wherever a rule asks (an SFX is drawn
+// over the art). A role itself sits under nothing.
+const kindFor = (name, kind) => (ROLE_TAGS.includes(kind) && !ROLE_TAGS.includes(name) ? kind : null);
+
 // One entry, stored or carried in a package. The migration is a read-time
 // one, like the line tags': an entry written before tags held a style has
 // `font`, `outline` and `outlineWidth` instead, and reads as the patch those
@@ -114,7 +121,8 @@ export function sanitizeTagEntry(e) {
       style.strokes = width <= 0 ? [] : [{ color: e.outline ?? '#ffffff', width, opacity: 1 }];
     }
   }
-  return { name, style: sanitizeTagStyle(style), size: okSize(e?.size), minSize: okSize(e?.minSize) };
+  const kind = kindFor(name, e?.kind);
+  return { name, style: sanitizeTagStyle(style), size: okSize(e?.size), minSize: okSize(e?.minSize), ...(kind ? { kind } : null) };
 }
 
 // A stored registry is a preference of the least important kind, so the same rule
@@ -247,6 +255,26 @@ function seedSize(name, before, after) {
 
 export const findTag = (name) => tags.list.find((t) => t.name === name) ?? null;
 
+// The kind of text a tag is: a kind itself (a role), the kind a user's tag
+// sits under, or null.
+export const kindOfTag = (name) => (ROLE_TAGS.includes(name) ? name : (findTag(name)?.kind ?? null));
+
+// Tags with, after them, the kind each user's tag sits under: what the rules
+// that ask "is this an SFX?" or "is this speech?" read, and what a style is
+// laid over.
+export function withKinds(names) {
+  const out = [...names];
+  for (const n of names) {
+    const k = findTag(n)?.kind;
+    if (k && !out.includes(k)) out.push(k);
+  }
+  return out;
+}
+
+// Every tag of the given kinds: the roles themselves and the user's tags
+// under them.
+export const tagsOfKinds = (kinds) => [...kinds, ...tags.list.filter((t) => kinds.includes(t.kind)).map((t) => t.name)];
+
 // Registering and re-ranking are one operation because they are one event: the
 // user used this tag. A name that is not in the registry joins it at the front
 // with no defaults - which is how a tag that only ever existed in an imported
@@ -257,7 +285,7 @@ export function touchTag(name, defaults = null) {
   const n = normalizeTagName(name);
   if (!n) return null;
   const found = findTag(n);
-  const entry = found ?? sanitizeTagEntry({ name: n, style: defaults?.style, size: defaults?.size, minSize: defaults?.minSize });
+  const entry = found ?? sanitizeTagEntry({ name: n, style: defaults?.style, size: defaults?.size, minSize: defaults?.minSize, kind: defaults?.kind });
   if (!found) seedSize(n, null, entry.size);
   tags.list = [entry, ...tags.list.filter((t) => t.name !== n)];
   save();
@@ -288,6 +316,11 @@ export function updateTag(name, patch = {}) {
   if (!t) return null;
   if (patch.style !== undefined) t.style = sanitizeTagStyle(patch.style);
   if (patch.minSize !== undefined) t.minSize = okSize(patch.minSize);
+  if (patch.kind !== undefined) {
+    const kind = kindFor(t.name, patch.kind);
+    if (kind) t.kind = kind;
+    else delete t.kind;
+  }
   if (patch.size !== undefined) {
     const size = okSize(patch.size);
     seedSize(t.name, t.size, size);
@@ -309,7 +342,7 @@ export function saveTagDefaults(name, defaults = {}) {
   const n = normalizeTagName(name);
   if (!n) return null;
   if (findTag(n)) return updateTag(n, defaults);
-  const entry = sanitizeTagEntry({ name: n, style: defaults.style, size: defaults.size, minSize: defaults.minSize });
+  const entry = sanitizeTagEntry({ name: n, style: defaults.style, size: defaults.size, minSize: defaults.minSize, kind: defaults.kind });
   seedSize(n, null, entry.size);
   tags.list = [...tags.list, entry];
   save();
@@ -363,6 +396,8 @@ export function tagFormFields(t) {
     size: t?.size ?? '',
     minSize: t?.minSize ?? '',
     extra: Object.keys(style).filter((k) => k !== 'font' && k !== 'strokes').length,
+    // The kind a user's tag sits under; '' for none.
+    kind: t?.kind ?? '',
     // The patch the form was opened on, which a save starts from.
     style: $state.snapshot(style),
   };
@@ -384,6 +419,8 @@ export function tagFormDefaults(f, prevStyle = f.style ?? {}) {
     style: sanitizeTagStyle(style),
     size: f.size === '' || f.size == null ? null : +f.size,
     minSize: f.minSize === '' || f.minSize == null ? null : +f.minSize,
+    // A form that never showed a kind leaves it alone.
+    ...(f.kind !== undefined ? { kind: f.kind || null } : null),
   };
 }
 

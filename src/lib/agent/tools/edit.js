@@ -12,7 +12,7 @@ import { defineTool, ToolError, nearest } from '../registry.js';
 import { selectBoxes } from '../select.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
-import { applyCase, breaksFor, brokenLines } from '../../measure.js';
+import { applyCase, breaksFor } from '../../measure.js';
 import { normalizeAuto } from '../../data.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
@@ -40,9 +40,10 @@ import {
   lineByN,
   boxText,
   isTranslateMode,
-  withSpeakerTag,
+  withStyleOrder,
   setLineSpeaker,
   dropBoxOutline,
+  refSizeOf,
 } from '../../store.svelte.js';
 import { setLineTags, normalizeTagName, styleForLine } from '../../tags.svelte.js';
 import { applyTextRules } from '../../text-rules.js';
@@ -51,13 +52,15 @@ import { guide, guideBound, termById } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
 import { sfxAvailable, sfxPresets, applySfxPreset, clearSfx } from '../../sfx.js';
 import { WARP_PRESETS, WARP_PRESET_NOTES, warpPresetPts } from '../../warp-presets.js';
+import { SFX_LOOKS, SFX_LOOK_NOTES, sfxLookPatch } from '../sfx-looks.js';
+import { footprintIn, footprintRegion, matchFor } from './footprint.js';
 
-const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box'];
-const DO_NAMED = ['preset:', 'sfx:', 'warp:'];
+const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original'];
+const DO_NAMED = ['preset:', 'sfx:', 'sfx_look:', 'warp:'];
 // "warp:<kind>" alone bends by this much (percent of the kind's strongest).
 export const WARP_DEFAULT_AMOUNT = 50;
 const WARP_AMOUNT = /^[+-]?\d+(\.\d+)?$/;
-const DO_LATER = { match_angle: 'match_angle comes with chapter mode; set geometry.rotation for now.' };
+const DO_LATER = { match_angle: 'do "match_original" turns a box to the original\'s slant (and sizes, places and colours it).' };
 const SET_KEYS = ['text', 'style', 'sizing', 'geometry', 'breaks', 'tags', 'speaker', 'locks', 'outline', 'note'];
 const SIZE_RANGE = [4, 300];
 const GEOM_KEYS = ['x', 'y', 'w', 'h', 'rotation'];
@@ -81,13 +84,16 @@ const DESCRIPTION = [
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "free" (balloon fit off and the outline dropped: text drawn on the art, an SFX or sign the finder wrapped in an outline, laid out from itself where it stands), "refit_outline" (find the bubble under the box again),',
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
-  '"outline_to_box" (the box rectangle as its outline), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
-  '"preset:<name or id>", "sfx:<name or id>" (Rust engine only), "clear_sfx", "duplicate", "delete",',
+  '"outline_to_box" (an outline of the box\'s rectangle, grown to hold its text at the size it aims for with outline fit\'s air, or exactly the box when its width or height is held: geometry in the same op sets it first; shrunk in the result names a box that still fits only smaller), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
+  '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in its colours on a colour page or white or black with an outline of the other over the art; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
+  `"sfx_look:<look>" (effects every engine draws, scaled to the size: ${SFX_LOOKS.map((k) => `${k} (${SFX_LOOK_NOTES[k]})`).join(', ')}),`,
+  '"preset:<name or id>", "sfx:<name or id>" (per-letter recipes, Rust engine only), "clear_sfx", "duplicate", "delete",',
   `"warp:<kind>" or "warp:<kind>:<amount>" (a mesh bend of the whole box, Photoshop-style; amount -100..100, default ${WARP_DEFAULT_AMOUNT}, negative bends the other way; replaces any mesh the box had), "warp:off" (mesh off and cleared). Kinds: ` +
     WARP_PRESETS.map((k) => `${k} (${WARP_PRESET_NOTES[k]})`).join(', ') + '.',
   'Other curves: style.curve (a simple arc of the lines), style.circle (text round a ring), style.path (text along bezier anchors you give); path beats circle beats curve, and a warp bends whatever they drew.',
   'Numbers may be relative: "+2", "-2", "*1.1". All ops are checked first; any bad value changes nothing. dryRun: true checks and counts only.',
-  'Each page changed is one undo step for the user. The result gives matched, changed ids, the checks for the changed boxes, and fit: each box against its outline in numbers.',
+  'Each page changed is one undo step for the user. The result gives, per op, matched, changed ids, outcome, the checks for the changed boxes, and fit: each box against its outline in numbers.',
+  'outcome: "changed"; "changed some" (the app refused the rest: see notLockable, notApproved, notSplit or noBalloon); "refused" (nothing changed, and those say why); "nothing needed" (every box already was as asked, nothing to write); "nothing matched" (no box: fix the where).',
   '',
   styleSchemaText(),
 ].join('\n');
@@ -267,7 +273,7 @@ function compile(op, i) {
           }
           const text = applyCase(set.text ?? boxText(m.box, m.page), style);
           if (!breaksFor(text, style, style.size, set.breaks.map((t) => applyCase(t, style)))) {
-            fail(i, 'set.breaks', `the lines are not box ${m.box.id}'s text`, 'give every word of the text once, in order, split into lines, with its letters and capitals exactly as the text has them; box shows the text.');
+            fail(i, 'set.breaks', `the lines are not box ${m.box.id}'s text`, 'give every word of the text once, in order, split into lines, with its letters and punctuation as the text has them (capitals may differ); box shows the text.');
           }
         }
       }
@@ -322,6 +328,10 @@ function compile(op, i) {
     else if (d.startsWith('sfx:')) {
       if (!sfxAvailable()) fail(i, 'do', 'SFX lettering needs the Rust text engine', 'it is off in this app; leave SFX to the user.');
       out.do = { kind: 'sfx', preset: findNamed(sfxPresets(), d.slice(4), 'SFX preset', i) };
+    } else if (d.startsWith('sfx_look:')) {
+      const look = d.slice(9).trim().toLowerCase();
+      if (!SFX_LOOKS.includes(look)) fail(i, 'do', `no SFX look "${d.slice(9)}"`, `close: ${nearest(look, SFX_LOOKS).join(', ')}. Looks: ${SFX_LOOKS.join(', ')}.`);
+      out.do = { kind: 'sfx_look', look };
     } else if (d.startsWith('warp:')) {
       out.do = parseWarp(d.slice(5), i);
     } else {
@@ -338,12 +348,9 @@ function writeSet(set, matches) {
   if (!hasBoxPart) return [];
   const changed = editBoxes(
     matches.map((m) => ({ page: m.page, box: m.box })),
+    // Lines held by a lock follow a style change below on their own: the fit
+    // keys them to the new face and size (store.svelte.js `keepHeldLines`).
     (b, p) => {
-      // Lines held by a lock are kept keyed to the face and size they were
-      // measured in (measure.js `breaksKey`), so a style change below would
-      // void them while the lock still shows: read them now, key them to the
-      // new style at the end.
-      const held = set.text == null && !('breaks' in set) ? heldLines(b, p) : null;
       if (set.tags || 'speaker' in set) {
         const ln = lineByN(p, b.lineN);
         if (set.tags) setLineTags(ln, set.tags);
@@ -351,7 +358,7 @@ function writeSet(set, matches) {
         if ('speaker' in set) setLineSpeaker(p, ln.n, set.speaker);
         // The order placement reads them in: a speaker's voice first on a
         // spoken line, so re-tagging a character's box keeps their font.
-        b.style = cloneStyle(styleForLine(withSpeakerTag(ln), cloneStyle(b.style)));
+        b.style = cloneStyle(styleForLine(withStyleOrder(ln), cloneStyle(b.style)));
       }
       if (set.style) {
         const before = b.style.size;
@@ -411,22 +418,9 @@ function writeSet(set, matches) {
           }
         }
       }
-      if (held) {
-        const st = b.style;
-        const brk = breaksFor(applyCase(boxText(b, p), st), st, st.size, held.map((t) => applyCase(t, st)));
-        if (brk) b.auto.breaks = brk;
-      }
     },
   );
   return changed.map((t) => t.box.id);
-}
-
-// The lines a box holds under a breaks lock, as it draws them now. Null when
-// none are held, or they no longer match the box's text, face and size.
-function heldLines(b, p) {
-  if (!b.auto?.locks?.breaks || !b.auto.breaks) return null;
-  const st = b.style;
-  return brokenLines(applyCase(boxText(b, p), st), st, st.size, b.auto.breaks);
 }
 
 function writeNote(note, matches) {
@@ -482,6 +476,7 @@ function writeDo(d, matches) {
   const deleted = [];
   const unsplit = [];
   const noBalloon = [];
+  const shrunk = [];
   if (d.kind === 'approve_outline') {
     const byPage = new Map();
     for (const m of matches) byPage.set(m.page, [...(byPage.get(m.page) ?? []), m.box]);
@@ -496,7 +491,17 @@ function writeDo(d, matches) {
     const r = typesetMatches(matches, { auto: d.kind === 'auto' });
     return { changed: r, created, deleted };
   }
-  if (['preset', 'sfx', 'clear_sfx', 'apply_guide', 'warp'].includes(d.kind)) {
+  if (d.kind === 'match_original') {
+    const noOriginal = [];
+    const ids = drawOverArt(matches, (b, p) => {
+      const found = d.found?.get(b.id);
+      if (found?.fp) return { centre: found.fp.centre, ...matchFor(found.fp, p, { text: boxText(b, p), style: b.style }) };
+      noOriginal.push(b.id);
+      return lineBlockAt(b, p);
+    });
+    return { changed: ids, created, deleted, noOriginal };
+  }
+  if (['preset', 'sfx', 'sfx_look', 'clear_sfx', 'apply_guide', 'warp'].includes(d.kind)) {
     const out = editBoxes(
       matches.map((m) => ({ page: m.page, box: m.box })),
       (b, p) => {
@@ -511,6 +516,10 @@ function writeDo(d, matches) {
           }
         } else if (d.kind === 'sfx') {
           applySfxPreset(b.style, d.preset, b);
+        } else if (d.kind === 'sfx_look') {
+          const { style, errors } = applyStylePatch(cloneStyle(b.style), sfxLookPatch(d.look, b.style));
+          if (errors.length) return false;
+          b.style = style;
         } else if (d.kind === 'clear_sfx') {
           if (!b.style.sfx?.on) return false;
           clearSfx(b.style, b);
@@ -527,7 +536,7 @@ function writeDo(d, matches) {
           }
         } else {
           const ln = b.lineN != null ? lineByN(p, b.lineN) : null;
-          if (ln) b.style = cloneStyle(styleForLine(withSpeakerTag(ln), cloneStyle(b.style)));
+          if (ln) b.style = cloneStyle(styleForLine(withStyleOrder(ln), cloneStyle(b.style)));
           const text = boxText(b, p);
           const ruled = applyTextRules(text, guide.rules);
           if (ruled !== text) setBoxText(b, ruled, p, { fit: false });
@@ -553,7 +562,12 @@ function writeDo(d, matches) {
     else if (d.kind === 'refit_outline') {
       if (!refitBalloon(id, p)) noBalloon.push(id);
     }
-    else if (d.kind === 'outline_to_box') outlineToBox(id, p);
+    else if (d.kind === 'outline_to_box') {
+      outlineToBox(id, p);
+      // Grown to the size it aims for, the text may still not fit there.
+      const ref = refSizeOf(b);
+      if (b.auto && b.style.size < ref - 0.01) shrunk.push({ id, size: b.style.size, ref });
+    }
     else if (d.kind === 'split_outline') {
       const pts = splitBoxOutline(b, p);
       if (pts) commitOutlinePoints(id, pts, p);
@@ -569,7 +583,54 @@ function writeDo(d, matches) {
     }
     if (fingerprint(b) !== before) changed.push(id);
   }
-  return { changed, created, deleted, unsplit, noBalloon };
+  return { changed, created, deleted, unsplit, noBalloon, shrunk };
+}
+
+// Boxes drawn over the art rather than set in a balloon (rule C): balloon fit
+// off and no outline, no air round the ink (margin 0), and what `at(box,
+// page)` gives each: { centre, rotation, size, color, strokes }, any of them.
+// A size is the size aimed for, held (a least size a little under it); a
+// centre is held where it is put. What `place` does with an SFX, a title or a
+// blocky word, and what "match_original" does over the original. Returns the
+// ids that changed.
+export function drawOverArt(matches, at) {
+  const before = new Map(matches.map((m) => [m.box.id, fingerprint(m.box)]));
+  for (const { page: p, box: b } of matches) {
+    if (b.style.balloon !== false) toggleBalloonFit(b.id, p);
+    dropBoxOutline(b.id, p);
+  }
+  editBoxes(
+    matches.map((m) => ({ page: m.page, box: m.box })),
+    (b, p) => {
+      const a = at(b, p) ?? {};
+      b.style.margin = 0;
+      if (Number.isFinite(a.rotation)) b.style.rotation = a.rotation;
+      if (a.color) {
+        b.style.color = a.color;
+        b.style.autoContrast = false;
+      }
+      if (Array.isArray(a.strokes)) b.style.strokes = a.strokes.map((k) => ({ ...k }));
+      if (a.size > 0) {
+        const size = Math.min(SIZE_RANGE[1], Math.max(SIZE_RANGE[0], a.size));
+        b.style.size = size;
+        if (!b.auto) b.auto = normalizeAuto({ refSize: size });
+        b.auto.refSize = size;
+        b.auto.minSize = Math.max(SIZE_RANGE[0], Math.round(size * 0.85 * 2) / 2);
+      }
+      if (a.centre) {
+        resizeBox(p.id, b.id, { x: a.centre[0] - b.w / 2, y: a.centre[1] - b.h / 2 });
+        if (b.auto) b.auto.locks.pos = true;
+      }
+    },
+  );
+  return matches.filter((m) => fingerprint(m.box) !== before.get(m.box.id)).map((m) => m.box.id);
+}
+
+// Where a box's line was detected: the centre of the block the original sat
+// in, for a box with no footprint to go by. Nothing when there is none.
+export function lineBlockAt(b, p) {
+  const det = b.lineN != null ? (p.detect?.boxes ?? []).find((d) => d.n === b.lineN && Array.isArray(d.box) && d.box.length === 4) : null;
+  return det ? { centre: [(det.box[0] + det.box[2]) / 2, (det.box[1] + det.box[3]) / 2] } : {};
 }
 
 // The piece of a box's outline that holds its text, cut from a joined bubble
@@ -595,6 +656,9 @@ function runOp(c) {
   c.matches = c.matches.filter((m) => m.page.boxes.includes(m.box));
   const ids = new Set();
   const out = { matched: c.matches.length };
+  // Lines chosen by hand can cost size: the size each box had before them
+  // (unless the same op sets a size, which is the agent's own choice).
+  const sizedBefore = c.set?.breaks && !c.set.sizing && c.set.style?.size == null ? new Map(c.matches.map((m) => [m.box.id, m.box.style.size])) : null;
   if (c.set) {
     for (const id of writeSet(c.set, c.matches)) ids.add(id);
     if (c.set.locks) {
@@ -616,15 +680,40 @@ function runOp(c) {
     if (r.created.length) out.created = r.created;
     if (r.deleted.length) out.deleted = r.deleted;
     if (r.unsplit?.length) out.notSplit = { ids: r.unsplit, why: 'no neck found in the outline; draw the outline (set.outline) instead' };
+    if (r.noOriginal?.length) out.noOriginal = { ids: r.noOriginal, why: 'no original found where the cleaner worked (no cleaned image, or nothing cleaned there): laid on the detected line instead, at its size; turn and colour it by eye (view source "raw")' };
+    if (r.shrunk?.length) out.shrunk = { boxes: r.shrunk, why: 'the outline was made for the size each box aims for (ref), and its text still fits only smaller (size): allow it (sizing.min), give the box more room (geometry, then outline_to_box again), or a shorter line' };
     if (r.noBalloon?.length) out.noBalloon = { ids: r.noBalloon, why: 'no balloon found under the box (the box now lays out in a rectangle if it had an outline); draw the outline (set.outline) instead' };
     if (c.do.kind === 'approve_outline') {
       const open = c.matches.filter((m) => !m.box.fit).length;
       if (open) out.notApproved = { count: open, why: 'no outline to approve: draw one (set.outline) or use outline_to_box' };
     }
   }
+  if (sizedBefore) {
+    const costly = c.matches
+      .filter((m) => m.box.style.size < sizedBefore.get(m.box.id) * (1 - BREAKS_COST))
+      .map((m) => ({ id: m.box.id, before: sizedBefore.get(m.box.id), size: m.box.style.size }));
+    if (costly.length) out.breaksCost = { boxes: costly, why: 'these lines fit only smaller: past a tenth of the size, the smaller voice is worse than the orphan or shape they fix (rule 6). Try other lines - more and shorter in a narrow balloon - or give the choice back (breaks null).' };
+  }
   const deleted = new Set(out.deleted ?? []);
   out.changed = [...ids].filter((id) => !deleted.has(id));
+  out.outcome = outcomeOf(out);
   return out;
+}
+
+// The share of its size a box may give up for lines chosen by hand before the
+// result says so (instructions rule 6).
+const BREAKS_COST = 0.1;
+
+// What an op came to, in words that cannot be mistaken: an empty `changed`
+// alone is three different answers (the boxes already were so, the app
+// refused, or there were no boxes).
+const REFUSALS = ['notLockable', 'notApproved', 'notSplit', 'noBalloon'];
+function outcomeOf(out) {
+  if (!out.matched) return 'nothing matched';
+  const did = out.changed.length || out.created?.length || out.deleted?.length;
+  const refused = REFUSALS.some((k) => out[k]);
+  if (did) return refused ? 'changed some' : 'changed';
+  return refused ? 'refused' : 'nothing needed';
 }
 
 // Boxes by id, found where they now stand, as selector matches.
@@ -649,14 +738,23 @@ defineTool({
   description: DESCRIPTION,
   input,
   write: true,
-  run({ ops, dryRun = false }, ctx) {
+  async run({ ops, dryRun = false }, ctx) {
     if (!Array.isArray(ops) || !ops.length) throw new ToolError('ops must be a non-empty list', 'Use ops: [{ where: { selection: true }, set: { style: { size: "+2" } } }].');
     if (ops.length > MAX_OPS) throw new ToolError(`at most ${MAX_OPS} ops in one call`, 'Split the work, or use wider selectors.');
     if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes to edit');
     const compiled = ops.map(compile);
     if (dryRun) return { dryRun: true, ops: compiled.map((c) => ({ matched: c.matches.length, ids: c.matches.slice(0, 50).map((m) => m.box.id) })) };
+    // The originals "match_original" lays boxes over are read off the page
+    // images first, where the boxes stand now; then everything is written in
+    // one synchronous step.
+    for (const c of compiled) {
+      if (c.do?.kind !== 'match_original') continue;
+      c.do.found = new Map();
+      for (const m of c.matches) c.do.found.set(m.box.id, await footprintIn(m.page, footprintRegion(m.page, m.box), m.box));
+    }
+    if (compiled.some((c) => c.do?.found) && !ctx.stillPinned()) throw new ToolError('the chapter changed in the app, so nothing was changed');
     const pages = [...new Set(compiled.flatMap((c) => c.matches.map((m) => m.page)))];
-    if (!pages.length) return { ops: compiled.map(() => ({ matched: 0, changed: [] })), note: 'nothing matched; fix the where and call again' };
+    if (!pages.length) return { ops: compiled.map(() => ({ matched: 0, changed: [], outcome: 'nothing matched' })), note: 'nothing matched; fix the where and call again' };
     const results = ctx.write(pages, () => compiled.map(runOp));
     return {
       ops: results.map((r) => {

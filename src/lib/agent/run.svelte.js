@@ -9,15 +9,18 @@
 //                       edits, as one undo step per page (kind `restore`)
 //   Stop                ends the run between tool calls. Done work stays.
 //                       Writes are refused until the agent has been quiet for
-//                       IDLE_MS, so a door that keeps calling cannot simply
+//                       QUIET_MS, so a door that keeps calling cannot simply
 //                       start a new run over the user's Stop
 //   pinned              a run belongs to the chapter open when it began
 //                       (`chapterOpenSeq`); a chapter switch ends it, and a
 //                       write after that is refused
 //
 // A run through the MCP door (Door A) begins at its first write and ends after
-// IDLE_MS with no call. The in-app panel (Door B, M6) will begin and end its
-// own around one prompt.
+// IDLE_MS with no call. An agent thinks between calls - reads a page view,
+// weighs a fix - often for longer than a few seconds, so the run waits minutes
+// for it: a run ended early would start Revert over at its next write. Quiet
+// for QUIET_MS, the bar says the agent is thinking. The in-app panel (Door B,
+// M6) will begin and end its own around one prompt.
 import { app, pageById, settleEdits, markUnsaved, recordEdit, toast, quietly } from '../store.svelte.js';
 import { chapterOpenSeq } from '../library.svelte.js';
 import { inRun } from '../editor/history.svelte.js';
@@ -25,7 +28,8 @@ import { guideBound, snapshotGuide, restoreGuide } from '../guide.svelte.js';
 import { snapshotTags, emptyTagChanges, keepTagChanges, tagChangesKept, restoreTagChanges } from '../tags.svelte.js';
 import { ToolError } from './registry.js';
 
-export const IDLE_MS = 20000;
+export const QUIET_MS = 20000;
+export const IDLE_MS = 5 * 60 * 1000;
 
 // What the "AI is editing" bar reads.
 export const aiRun = $state({
@@ -34,6 +38,8 @@ export const aiRun = $state({
   edits: 0,
   pages: 0,
   stopped: false,
+  // No call for QUIET_MS: the agent is thinking, the run goes on.
+  quiet: false,
   // A finished run can still be reverted, until the next one begins or the
   // chapter changes.
   canRevert: false,
@@ -42,6 +48,8 @@ export const aiRun = $state({
 let current = null; // { id, seq, door, kept: Map(pageId -> page copy), guideBefore: { key: value }, tagsBefore }
 let seqCounter = 0;
 let idleT = null;
+let quietT = null;
+let quiet = false;
 let stoppedUntilQuiet = false;
 // Bumped by Stop, Revert and a chapter change. A call that began before a bump
 // writes nothing after it - a slow tool (place, detect) included.
@@ -62,6 +70,7 @@ function sync() {
   aiRun.edits = current?.edits ?? 0;
   aiRun.pages = current?.kept.size ?? 0;
   aiRun.stopped = stoppedUntilQuiet;
+  aiRun.quiet = quiet;
   aiRun.canRevert = !!current && current.seq === chapterOpenSeq() && (current.kept.size > 0 || seriesChanged(current));
 }
 
@@ -91,14 +100,23 @@ export function endRun() {
 }
 
 // Every call through a door, read or write, keeps the run alive and the Stop
-// standing; quiet for IDLE_MS ends both.
+// standing. Quiet for QUIET_MS lifts the Stop and shows the agent thinking;
+// quiet for IDLE_MS ends the run.
 export function noteCall() {
+  clearTimeout(quietT);
   clearTimeout(idleT);
+  quiet = false;
+  quietT = setTimeout(() => {
+    quietT = null;
+    quiet = true;
+    stoppedUntilQuiet = false;
+    sync();
+  }, QUIET_MS);
   idleT = setTimeout(() => {
     idleT = null;
-    stoppedUntilQuiet = false;
     endRun();
   }, IDLE_MS);
+  sync();
 }
 
 export function stopRun() {
@@ -244,7 +262,10 @@ export function revertRun() {
 // Test seam.
 export function __resetRun() {
   clearTimeout(idleT);
+  clearTimeout(quietT);
   idleT = null;
+  quietT = null;
+  quiet = false;
   current = null;
   stoppedUntilQuiet = false;
   epoch = 0;

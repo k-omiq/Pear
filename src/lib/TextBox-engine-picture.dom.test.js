@@ -213,15 +213,18 @@ describe('the scale the picture is painted at', () => {
     const f = footprint(m.box, m.pg);
     const el = m.canvas();
     const upright = css(el);
-    expect(el.width).toBe(Math.ceil(f.cw * 3));
+    // Padded to whole CSS px (`show` in box-picture.js): 2 texels each at 2x.
+    const whole = (n, unit) => Math.ceil(n / unit) * unit;
+    expect(el.width).toBe(whole(Math.ceil(f.cw * 3), 2));
     // The first degree repaints, once: the picture has to be made finer.
     m.box.style.rotation = 7;
     await tick();
     expect(m.paints()).toBe(2);
     expect(paintBoxPicture.mock.calls[1][3]).toBeCloseTo(3 * TURNED_OVERSAMPLE, 9);
-    expect(el.width).toBe(Math.ceil(f.cw * 3 * TURNED_OVERSAMPLE));
-    expect(css(el).width).toBeCloseTo(upright.width, 6);
-    expect(css(el).height).toBeCloseTo(upright.height, 6);
+    expect(el.width).toBe(whole(Math.ceil(f.cw * 3 * TURNED_OVERSAMPLE), 2 * TURNED_OVERSAMPLE));
+    // The same size within the padding: under a CSS px each way.
+    expect(Math.abs(css(el).width - upright.width)).toBeLessThan(1);
+    expect(Math.abs(css(el).height - upright.height)).toBeLessThan(1);
     // The rest of the turn is CSS's.
     for (const deg of [8, 21, -40, 179]) {
       m.box.style.rotation = deg;
@@ -232,7 +235,7 @@ describe('the scale the picture is painted at', () => {
     m.box.style.rotation = 90;
     await tick();
     expect(m.paints()).toBe(3);
-    expect(el.width).toBe(Math.ceil(f.cw * 3));
+    expect(el.width).toBe(whole(Math.ceil(f.cw * 3), 2));
     m.box.style.rotation = 270;
     await tick();
     expect(m.paints()).toBe(3);
@@ -244,12 +247,17 @@ describe('the scale the picture is painted at', () => {
       const m = await mounted('straight', { zoom });
       const f = footprint(m.box, m.pg);
       const el = m.canvas();
-      expect(el.width).toBe(Math.ceil(f.cw * zoom * dpr));
-      expect(el.height).toBe(Math.ceil(f.ch * zoom * dpr));
-      // The CSS box is the canvas over the pixel ratio: nothing is stretched.
+      // The footprint's pixels, padded to whole CSS px: WebKit paints a canvas
+      // into a rect rounded to whole CSS px, so a fraction of one would stretch.
+      expect(el.width).toBe(Math.ceil(Math.ceil(f.cw * zoom * dpr) / dpr) * dpr);
+      expect(el.height).toBe(Math.ceil(Math.ceil(f.ch * zoom * dpr) / dpr) * dpr);
+      // The CSS box is the canvas over the pixel ratio, a whole number of CSS
+      // px: nothing is stretched.
       const c = css(el);
       expect(c.width * dpr).toBeCloseTo(el.width, 6);
       expect(c.height * dpr).toBeCloseTo(el.height, 6);
+      expect(c.width).toBeCloseTo(Math.round(c.width), 6);
+      expect(c.height).toBeCloseTo(Math.round(c.height), 6);
       expect(paintBoxPicture.mock.calls[0][3]).toBeCloseTo(zoom * dpr, 9);
     });
   }
@@ -276,21 +284,19 @@ describe('the scale the picture is painted at', () => {
     expect(c.top).toBeCloseTo(-f.oy * 1.37, 9);
   });
 
-  it('is not snapped while a zoom gesture is moving, so it scales with the page', async () => {
-    // The picture is only stretched during the gesture, so there is no texel
-    // on a device pixel to keep; a snap worked out again at every step would
-    // only move the letters against the art.
+  it('keeps its place while a zoom gesture is moving: the canvas scales the page, not the box', async () => {
+    // A pinch scales the page frame as one picture and lays nothing out
+    // (Canvas.svelte), so the flag moves nothing here: the picture stays on
+    // the device grid it was set on.
     _setDisplayScale(2);
-    const m = await mounted('straight', { zoom: 1 });
-    const f = footprint(m.box, m.pg);
+    const m = await mounted('straight', { zoom: 1.37 });
+    const before = css(m.canvas());
     setZoomLive(true);
-    for (const z of [1.013, 1.37, 2.71]) {
-      setZoom(z);
-      flushSync();
-      const c = css(m.canvas());
-      expect(c.left).toBeCloseTo(-f.ox * z, 9);
-      expect(c.top).toBeCloseTo(-f.oy * z, 9);
-    }
+    flushSync();
+    expect(css(m.canvas())).toEqual(before);
+    const dev = (m.box.x * 1.37 + before.left) * 2;
+    expect(Math.abs(dev - Math.round(dev))).toBeLessThan(1e-6);
+    setZoomLive(false);
   });
 
   it('caps one box at the pixel budget by lowering its scale, and still shows it at its size', async () => {

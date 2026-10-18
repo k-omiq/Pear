@@ -4,7 +4,7 @@ import { untrusted } from '../fence.js';
 import { snapshot } from '../snapshot.svelte.js';
 import { app, page, boxText, lineText, pageCheckItems, allFonts, CHECK_REASONS } from '../../store.svelte.js';
 import { chapterById } from '../../library.svelte.js';
-import { knownTags, lineTags } from '../../tags.svelte.js';
+import { knownTags, lineTags, tagSize } from '../../tags.svelte.js';
 import { guide } from '../../guide.svelte.js';
 import { letteringSetUp } from '../../lettering.js';
 import { presets } from '../../presets.svelte.js';
@@ -163,9 +163,14 @@ defineTool({
 
 defineTool({
   name: 'tags',
-  description: 'Read known line tags from the series registry and chapter usage, each with its saved style patch, reference size and minSize. A tag used only in the chapter has an empty patch and null size defaults. These are placement defaults; existing boxes retain their own styles. Use these exact tag names in selectors.',
+  description: 'Read known line tags from the series registry and chapter usage, each with its saved style patch, size (the tag\'s own default) and minSize, kind (for one of the user\'s own tags: the kind of text it sits under, whose look it is laid over), and rememberedSize when the user set a size for the tag\'s boxes by hand: a new box takes the size of the box of its tag before it, else rememberedSize, else size (an SFX, title or blocky word takes the size of its original instead). A placed box\'s own size is in fit and sizes. A tag used only in the chapter has an empty patch and null size defaults. These are placement defaults; existing boxes retain their own styles. Use these exact tag names in selectors.',
   input: emptyInput,
-  run: () => ({ tags: snapshot(knownTags(app.pages)) }),
+  run: () => ({
+    tags: snapshot(knownTags(app.pages)).map((t) => {
+      const remembered = tagSize(t.name);
+      return remembered != null && remembered !== t.size ? { ...t, rememberedSize: remembered } : t;
+    }),
+  }),
 });
 
 defineTool({

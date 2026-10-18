@@ -46,10 +46,13 @@ export const PICTURE_MAX_PX = 8 * 1024 * 1024;
 // `flat` asks for the box unbent whatever the painter can do with its mesh
 // (`renderBoxTexture`): the gizmo's drag, which holds one texture and re-runs
 // the mesh over it every frame.
-export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false) {
+//
+// `at` is where the box's top-left lands on the screen in device px, for a
+// picture set on whole device pixels (`renderBoxTexture`'s `phase`).
+export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, at = null) {
   // The editor's smear is the coarse one (`paintBoxJob`): this picture is
   // painted again at every edit.
-  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true);
+  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true, at);
 }
 
 // A turned box is painted finer than the screen. Its turn is CSS's, so the
@@ -103,7 +106,14 @@ export const PICTURE_DRAG_PX = 1024 * 1024;
 // not - so a warped result over the budget is scaled down into it. Nothing
 // else comes in over: `renderBoxTexture` was handed the same budget, and the
 // row or column its rounding adds is the slack allowed here.
-function show(el, r, maxPx, release) {
+//
+// `unit` is texture pixels per CSS px when the picture is shown one texel to
+// the device pixel. The canvas is then padded with transparent pixels to a
+// whole number of CSS px each way: WebKit paints a canvas into a rect rounded
+// to whole CSS px (two device px on a 2x display), so a canvas a fraction of a
+// CSS px wide was stretched by up to one CSS px and landed off its device
+// pixels - a letter jump at every zoom (`pictureCss`). 1 pads nothing.
+function show(el, r, maxPx, release, unit = 1) {
   let w = r.canvas.width;
   let h = r.canvas.height;
   const over = (w * h) / maxPx;
@@ -114,10 +124,14 @@ function show(el, r, maxPx, release) {
     w = Math.max(1, Math.round(w * k));
     h = Math.max(1, Math.round(h * k));
   }
-  if (el.width !== w) el.width = w;
-  if (el.height !== h) el.height = h;
+  const pw = k === 1 && unit > 1 ? Math.ceil(w / unit) * unit : w;
+  const ph = k === 1 && unit > 1 ? Math.ceil(h / unit) * unit : h;
+  if (el.width !== pw) el.width = pw;
+  if (el.height !== ph) el.height = ph;
   const ctx = el.getContext('2d');
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // 'copy' replaces what the image covers; the padding is cleared by hand.
+  if (pw !== w || ph !== h) ctx.clearRect(0, 0, pw, ph);
   ctx.globalCompositeOperation = 'copy';
   // One to one there is nothing to smooth, and a canvas that filters anyway
   // (Skia's 'high' is a cubic at any scale) would hand back other bytes.
@@ -132,7 +146,8 @@ function show(el, r, maxPx, release) {
     r.canvas.width = 0;
     r.canvas.height = 0;
   }
-  return { ox: r.ox, oy: r.oy, cw: r.cw, ch: r.ch, k };
+  // The padding is page px too, at the bitmap's own page px per pixel.
+  return { ox: r.ox, oy: r.oy, cw: pw === w ? r.cw : (r.cw * pw) / w, ch: ph === h ? r.ch : (r.ch * ph) / h, k };
 }
 
 /**
@@ -142,12 +157,23 @@ function show(el, r, maxPx, release) {
  * and the `cw` x `ch` page px it spans - what `pictureCss` places the canvas
  * by - and `ss`, the device px per page px it was really painted at: `scale`
  * itself where no budget and no limit lowered it, and less where one did.
+ *
+ * `unit` is `scale` over the zoom - device px per CSS px, times the turned
+ * box's oversample - and pads the canvas to whole CSS px (`show`). Only a
+ * whole number pads, and only a picture painted at `scale`: one a budget
+ * lowered is resampled on screen whatever its size.
+ *
+ * `corner` is where the box's top-left lands on the screen, device px, for a
+ * box `pictureCss` sets on whole device pixels; the fraction of a pixel the
+ * picture was painted moved by comes back as `phase` (undefined when none).
  */
-export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX) {
-  const tex = pictureTexture(box, p, tips, scale, maxPx);
+export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null) {
+  const tex = pictureTexture(box, p, tips, scale, maxPx, false, corner);
   const ss = tex.ss;
-  const { k, ...at } = show(el, warpTexture(tex, box), maxPx, true);
-  return { ...at, ss: k === 1 ? ss : ss * k };
+  const phase = tex.phase ?? null;
+  const whole = ss === scale && Math.abs(unit - Math.round(unit)) < 1e-9 ? Math.round(unit) : 1;
+  const { k, ...at } = show(el, warpTexture(tex, box), maxPx, true, whole);
+  return { ...at, ss: k === 1 ? ss : ss * k, phase: k === 1 && phase ? phase : undefined };
 }
 
 /**
@@ -187,8 +213,12 @@ export function pictureCss(g, z, dpr = 1, at = null) {
     const snap = (v) => Math.round(v * dpr) / dpr;
     const px = g.page?.x ?? 0;
     const py = g.page?.y ?? 0;
-    left = snap(px + (at.x - g.ox) * z) - px - at.x * z;
-    top = snap(py + (at.y - g.oy) * z) - py - at.y * z;
+    // A picture painted moved by a fraction of a pixel (`phase`) is set that
+    // much earlier, so the letters - not the canvas - land where they belong.
+    const fx = (g.phase?.x ?? 0) / dpr;
+    const fy = (g.phase?.y ?? 0) / dpr;
+    left = snap(px + (at.x - g.ox) * z - fx) - px - at.x * z;
+    top = snap(py + (at.y - g.oy) * z - fy) - py - at.y * z;
   }
   return `left:${left}px;top:${top}px;width:${g.cw * z}px;height:${g.ch * z}px;`;
 }

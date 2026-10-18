@@ -27,6 +27,9 @@ import {
   knownTags,
   recentTags,
   boxesWithTag,
+  kindOfTag,
+  withKinds,
+  tagsOfKinds,
 } from './tags.svelte.js';
 import { app, loadProjectPages, placeActiveAt, byId } from './store.svelte.js';
 import { defaultStyle, normalizeStyle } from './data.js';
@@ -305,16 +308,16 @@ describe('the settings form’s round trip', () => {
     const f = tagFormFields(t);
     expect(f.extra).toBe(2);
     expect(f.minSize).toBe(24);
-    expect(tagFormDefaults(f, t.style)).toEqual({ style: t.style, size: null, minSize: 24 });
+    expect(tagFormDefaults(f, t.style)).toEqual({ style: t.style, size: null, minSize: 24, kind: null });
     expect(tagFormDefaults({ ...f, font: '', outlineOn: false, minSize: '' }, t.style)).toEqual({
-      style: { italic: true, color: '#123456' }, size: null, minSize: null,
+      style: { italic: true, color: '#123456' }, size: null, minSize: null, kind: null,
     });
   });
 
   it('reads unset as unset, both ways', () => {
     const f = tagFormFields(null);
-    expect(f).toEqual({ outlineOn: false, font: '', outline: '#ffffff', outlineWidth: 3, size: '', minSize: '', extra: 0, style: {} });
-    expect(tagFormDefaults(f)).toEqual({ style: {}, size: null, minSize: null });
+    expect(f).toEqual({ outlineOn: false, font: '', outline: '#ffffff', outlineWidth: 3, size: '', minSize: '', extra: 0, kind: '', style: {} });
+    expect(tagFormDefaults(f)).toEqual({ style: {}, size: null, minSize: null, kind: null });
   });
 
   it('keeps an explicit no-outline patch through the form', () => {
@@ -759,5 +762,32 @@ describe('the surface the bulk editor consumes', () => {
     expect(hits).toHaveLength(1);
     expect(hits[0].line).toBe(pages[0].lines[0]);
     expect(boxesWithTag('sfx', pages)).toEqual([]);
+  });
+});
+
+describe('a tag under a kind of text', () => {
+  it('keeps a kind only for a user\'s tag, and only a known kind', () => {
+    const list = sanitizeTags({ list: [{ name: 'angry', kind: 'speech' }, { name: 'boom', kind: 'nonsense' }, { name: 'shout', kind: 'speech' }] });
+    expect(list.map((t) => t.kind ?? null)).toEqual(['speech', null, null]);
+  });
+
+  it('is saved, moved and taken off through the form and the registry', () => {
+    saveTagDefaults('angry', { kind: 'speech' });
+    expect(findTag('angry').kind).toBe('speech');
+    const f = tagFormFields(findTag('angry'));
+    expect(f.kind).toBe('speech');
+    saveTagDefaults('angry', tagFormDefaults({ ...f, kind: 'shout' }));
+    expect(findTag('angry').kind).toBe('shout');
+    saveTagDefaults('angry', { kind: null });
+    expect('kind' in findTag('angry')).toBe(false);
+  });
+
+  it('counts as its kind: the kinds come after the tags, and a kind names its tags', () => {
+    saveTagDefaults('boom', { kind: 'sfx' });
+    expect(kindOfTag('boom')).toBe('sfx');
+    expect(kindOfTag('sfx')).toBe('sfx');
+    expect(kindOfTag('nothing')).toBeNull();
+    expect(withKinds(['boom', 'angry'])).toEqual(['boom', 'angry', 'sfx']);
+    expect(tagsOfKinds(['sfx'])).toEqual(['sfx', 'boom']);
   });
 });

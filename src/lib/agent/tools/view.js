@@ -12,8 +12,11 @@ import { app } from '../../store.svelte.js';
 
 export const MAX_IMAGES = 3;
 export const PER_SHEET = 20;
+// A compare sheet holds each box twice, so fewer to a sheet, in bigger cells.
+export const PER_COMPARE_SHEET = 12;
+const COMPARE_CELL = 480;
 
-const SOURCES = ['typeset', 'raw', 'clean'];
+const SOURCES = ['typeset', 'raw', 'clean', 'compare'];
 
 const input = {
   type: 'object',
@@ -38,7 +41,7 @@ const input = {
         rulers: { type: 'boolean' },
       },
     },
-    source: { type: 'string', enum: SOURCES, description: '"typeset" (default); "raw": the original scan, its Japanese lettering still on it, for matching an SFX; "clean": the cleaned page with none of our text - original letters that still show there were left by the cleaner.' },
+    source: { type: 'string', enum: SOURCES, description: '"typeset" (default); "raw": the original scan, its Japanese lettering still on it, for matching an SFX; "clean": the cleaned page with none of our text - original letters that still show there were left by the cleaner; "compare": the raw scan and ours of the same region at one scale, tabbed "original" and "ours" (side by side, or one above the other for a wide region) - with a where, each box as its own pair, its crop taking in where its original was detected. Judge every SFX this way: same place, slant, size, weight and colour as the original.' },
     scale: { type: 'number', description: `page and region views: image px per page px; default fits ${MAX_SIDE} px on the long side, never past 2.` },
   },
   required: ['target'],
@@ -77,10 +80,11 @@ async function viewRegion(target, marks, source, scale) {
   const img = await renderRegion(p, rect ?? null, { scale, marks, source });
   const [x, y, w, h] = img.rect;
   return {
-    images: [{ ...image(img), page: n, rect: img.rect, scale: Math.round(img.scale * 1e4) / 1e4 }],
+    images: [{ ...image(img), page: n, rect: img.rect, scale: Math.round(img.scale * 1e4) / 1e4, ...(img.panels ? { panels: img.panels } : null) }],
     legend: img.boxes.map((b) => ({ id: b.id, page: n, cell: { image: 0, x: b.x, y: b.y, w: b.w, h: b.h } })),
     note:
       `page ${n}, ${source}, page px [${x}, ${y}, ${w}, ${h}] at ${Math.round(img.scale * 1000) / 1000} image px per page px; ` +
+      (img.panels ? 'the raw scan ("original") then ours ("ours"), panels in image px; box cells are in ours; ' : '') +
       `${img.boxes.length} box${img.boxes.length === 1 ? '' : 'es'} in view.` +
       (marks.outlines ? ` ${OUTLINE_KEY}` : ''),
   };
@@ -99,7 +103,9 @@ async function viewWhere(where, source) {
     .filter(Boolean);
   if (!items.length) return { images: [], legend: [], note: '0 boxes matched; nothing to show. Check the selector.' };
   const ordered = proofOrder(items);
-  const { sheets, left } = await proofSheets(ordered, { perSheet: PER_SHEET, maxSheets: MAX_IMAGES, source });
+  const compare = source === 'compare';
+  const perSheet = compare ? PER_COMPARE_SHEET : PER_SHEET;
+  const { sheets, left } = await proofSheets(ordered, { perSheet, maxSheets: MAX_IMAGES, source, ...(compare ? { cell: COMPARE_CELL } : null) });
   const legend = [];
   let k = 0;
   sheets.forEach((sheet, i) => {
@@ -115,8 +121,10 @@ async function viewWhere(where, source) {
     note:
       `${items.length} box${items.length === 1 ? '' : 'es'} matched; ${shown} shown on ${sheets.length} proof sheet${sheets.length === 1 ? '' : 's'}, ` +
       'unapproved outlines first (lowest confidence first), then the approved' +
-      (left ? `; ${left} left out (at most ${MAX_IMAGES * PER_SHEET} a call): narrow the where, or ask again with the ids not shown.` : '.') +
-      ` Each cell is labelled with its box id and outline state. ${OUTLINE_KEY}`,
+      (left ? `; ${left} left out (at most ${MAX_IMAGES * perSheet} a call): narrow the where, or ask again with the ids not shown.` : '.') +
+      (compare
+        ? ' Each cell holds the raw scan (tabbed "<id> original") and ours ("ours") of the same crop.'
+        : ` Each cell is labelled with its box id and outline state. ${OUTLINE_KEY}`),
   };
 }
 
@@ -124,13 +132,13 @@ export const viewTool = defineTool({
   name: 'view',
   description:
     'See the page. A page or region as one picture, with optional marks (box ids, bubble outlines and their points, rulers in page px), ' +
-    'typeset or raw. A where returns proof sheets: each matching box as a labelled crop with its outline and points, ' +
+    'typeset, raw, clean, or compare (the raw scan beside ours, to match an SFX to its original). A where returns proof sheets: each matching box as a labelled crop with its outline and points (with compare, the raw scan beside ours), ' +
     `${PER_SHEET} to a sheet, at most ${MAX_IMAGES} sheets a call. Judge each outline and each fit by eye.`,
   input,
   write: false,
   async run(args) {
     const { target, source = 'typeset', scale } = args;
-    if (!SOURCES.includes(source)) throw new ToolError(`no source "${source}"`, 'source is "typeset", "raw" or "clean"');
+    if (!SOURCES.includes(source)) throw new ToolError(`no source "${source}"`, 'source is "typeset", "raw", "clean" or "compare"');
     if (target == null || typeof target !== 'object' || Array.isArray(target)) {
       throw new ToolError('target is required', '{ page }, { page, rect } or { where }');
     }

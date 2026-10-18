@@ -4,24 +4,75 @@
   import { toast, toastError } from '../store.svelte.js';
   import { relativeTime, plural } from '../format.js';
   import { exportChapterPackage, stayingNote } from '../package-flow.js';
+  import RowMenu from './RowMenu.svelte';
 
   let { onNewChapter, onSources, onVersions } = $props();
 
-  // Chapter progress state.
+  // Where a chapter stands, as a drawn mark and a word: no pages, raws only, or
+  // typeset.
   function status(c) {
-    if (!c.pageCount) return { mark: '·', label: 'No pages', on: false };
-    if (!c.typeset) return { mark: '○', label: 'Raws only', on: false };
-    return { mark: '●', label: 'Typeset', on: true };
+    if (!c.pageCount) return { kind: 'empty', label: 'No pages' };
+    if (!c.typeset) return { kind: 'raws', label: 'Raws only' };
+    return { kind: 'typeset', label: 'Typeset' };
   }
 
-  // "placed X / Y", and the last "N to check" when this session closed the
-  // chapter and nothing has touched it since - see `lastToCheck`. Nothing for a
-  // translate chapter (it has its own count, in the editor) or a chapter with no
-  // lines yet.
+  // "35 of 40 placed". Nothing for a translate chapter (it has its own count,
+  // in the editor) or a chapter with no lines yet.
   function progressNote(c) {
     if (c.unreadable || c.mode === 'translate' || !c.progress?.total) return '';
-    const left = lastToCheck(c);
-    return `placed ${c.progress.placed} / ${c.progress.total}${left ? ` · ${left} to check` : ''}`;
+    return `${c.progress.placed} of ${c.progress.total} placed`;
+  }
+
+  // The sub-line under a chapter's title: independent facts, never one
+  // sentence. "N to check" is the count this session left when it closed the
+  // chapter, while nothing has touched it since (`lastToCheck`).
+  function facts(c) {
+    const list = [plural(c.pageCount, 'page')];
+    if (c.mode === 'translate') list.push('opens to translate');
+    const left = c.mode === 'translate' ? 0 : lastToCheck(c);
+    if (left) list.push(`${left} to check`);
+    if (exportingId === c.id) list.push('exporting…');
+    return list;
+  }
+
+  // What the row's menu offers. The mode is a choice of how the chapter opens,
+  // so the item says what it changes it to.
+  function menuItems(c) {
+    return [
+      { id: 'open', label: 'Open' },
+      { id: 'mode', label: c.mode === 'translate' ? 'Switch to typesetting' : 'Switch to translating', disabled: switchingId === c.id },
+      { separator: true },
+      { id: 'export', label: exportingId === c.id ? 'Exporting…' : 'Export package…', disabled: !!exportingId },
+      { id: 'sources', label: 'Cleaned pages and translations…' },
+      { id: 'versions', label: 'Earlier versions…' },
+      { separator: true },
+      { id: 'delete', label: 'Delete chapter…', danger: true },
+    ];
+  }
+
+  function onMenu(c, id) {
+    if (id === 'open') goEditor(project.id, c.id);
+    else if (id === 'mode') onToggleMode(c);
+    else if (id === 'export') onExport(c);
+    else if (id === 'sources') onSources(project.id, c.id);
+    else if (id === 'versions') onVersions(project.id, c.id);
+    else if (id === 'delete') confirmingId = c.id;
+  }
+
+  // Right-click and the context-menu key open the same menu: at the pointer,
+  // or over the row's right end from the keyboard.
+  const menus = {};
+  function onRowContext(e, c) {
+    if (c.unreadable) return;
+    e.preventDefault();
+    menus[c.id]?.openAt(e.clientX, e.clientY);
+  }
+  function onRowKey(e, c) {
+    const shiftF10 = e.key === 'F10' && e.shiftKey;
+    if ((!shiftF10 && e.key !== 'ContextMenu') || c.unreadable) return;
+    e.preventDefault();
+    const r = e.currentTarget.getBoundingClientRect();
+    menus[c.id]?.openAt(r.left, r.top + r.height / 2, { focus: true, right: r.right });
   }
 
   const project = $derived(projectById(route.projectId));
@@ -82,10 +133,6 @@
   }
 
   async function onDelete(chapter) {
-    if (confirmingId !== chapter.id) {
-      confirmingId = chapter.id;
-      return;
-    }
     confirmingId = null;
     try {
       await deleteChapter(project.id, chapter.id);
@@ -97,99 +144,90 @@
 </script>
 
 {#if project}
-  <button class="back-link" onclick={goLibrary}>← Projects</button>
+  <button class="back-link" onclick={goLibrary}>
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+    Projects
+  </button>
 
   <div class="project-head">
     <div class="project-title">
-      <div class="project-name">{project.name}</div>
+      <h1 class="project-name">{project.name}</h1>
       <div class="project-meta">
-        {plural(project.chapters.length, 'chapter')} · {plural(pageTotal, 'page')}
+        <span>{plural(project.chapters.length, 'chapter')}</span>
+        <span>{plural(pageTotal, 'page')}</span>
+        <span>{project.layout === 'longstrip' ? 'Longstrip' : 'Pages'}</span>
+        <label class="project-language">
+          <span class="sr-only">Source language</span>
+          <select value={project.ocrLanguage} onchange={onLanguageChange} disabled={changingLanguage} title="What Detect reads on this series' pages">
+            <option value="ja">Japanese source</option>
+            <option value="zh">Chinese source</option>
+            <option value="ko">Korean source</option>
+          </select>
+        </label>
       </div>
     </div>
-    <label class="project-language">
-      Source language
-      <select value={project.ocrLanguage} onchange={onLanguageChange} disabled={changingLanguage}>
-        <option value="ja">Japanese</option>
-        <option value="zh">Chinese</option>
-        <option value="ko">Korean</option>
-      </select>
-    </label>
-    <button class="soft-btn" onclick={() => onNewChapter(project.id)}>New chapter</button>
+    <button class="accent-btn narrow" onclick={() => onNewChapter(project.id)}>New chapter</button>
   </div>
 
-  <div class="section-label spaced">CHAPTERS</div>
+  <h2 class="section-label spaced">CHAPTERS</h2>
 
-  <div class="chapter-table">
+  <ul class="chapter-table">
     {#each project.chapters as c (c.id)}
-      <div class="chapter-row" class:unreadable={c.unreadable}>
+      <li
+        class="chapter-row"
+        class:unreadable={c.unreadable}
+        class:confirming={confirmingId === c.id}
+        oncontextmenu={(e) => onRowContext(e, c)}
+      >
         <button
           class="chapter-open"
           onclick={() => goEditor(project.id, c.id)}
+          onkeydown={(e) => onRowKey(e, c)}
           disabled={c.unreadable}
+          aria-keyshortcuts="Shift+F10"
         >
-          <div class="chapter-mark" class:on={!c.unreadable && status(c).on} aria-hidden="true">
-            {c.unreadable ? '-' : status(c).mark}
-          </div>
-          <div class="chapter-num">{c.unreadable ? '-' : c.number}</div>
-          <div class="chapter-title">
+          <span class="chapter-mark {c.unreadable ? 'bad' : status(c).kind}" aria-hidden="true">
+            <svg viewBox="0 0 12 12" width="12" height="12">
+              {#if c.unreadable}<path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              {:else if status(c).kind === 'typeset'}<circle cx="6" cy="6" r="4" fill="currentColor" />
+              {:else if status(c).kind === 'raws'}<circle cx="6" cy="6" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+              {:else}<path d="M3 6h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />{/if}
+            </svg>
+          </span>
+          <span class="chapter-num">{c.unreadable ? '-' : `Ch. ${c.number}`}</span>
+          <span class="chapter-title">
             {#if c.duplicate}
-              <div class="warn">Same chapter as another folder</div>
-              <div class="chapter-sub">{c.slug} - rename or remove the copy</div>
+              <span class="chapter-name warn">Same chapter as another folder</span>
+              <span class="chapter-sub">{c.slug} - rename or remove the copy</span>
             {:else if c.unreadable}
-              <div class="warn">Unreadable chapter</div>
-              <div class="chapter-sub">{c.slug} - check this folder</div>
+              <span class="chapter-name warn">Unreadable chapter</span>
+              <span class="chapter-sub">{c.slug} - check this folder</span>
             {:else}
-              <div>{c.title || `Chapter ${c.number}`}</div>
-              <div class="chapter-sub">{c.slug}</div>
+              <span class="chapter-name">{c.title || `Chapter ${c.number}`}</span>
+              <span class="chapter-sub">{facts(c).join(' · ')}</span>
             {/if}
-          </div>
-          <div class="chapter-chip">
-            {c.unreadable ? '' : status(c).label}
-            {#if progressNote(c)}<div class="chapter-sub">{progressNote(c)}</div>{/if}
-          </div>
-          <div class="chapter-pages">{c.unreadable ? '' : plural(c.pageCount, 'page')}</div>
-          <div class="chapter-time">{c.unreadable ? '' : relativeTime(c.updatedAt)}</div>
+          </span>
+          <span class="chapter-status">{c.unreadable ? '' : status(c).label}</span>
+          <span class="chapter-progress">{progressNote(c)}</span>
+          <span class="chapter-time">{c.unreadable ? '' : relativeTime(c.updatedAt)}</span>
         </button>
-        <button
-          class="chapter-act chapter-mode"
-          class:on={c.mode === 'translate'}
-          onclick={() => onToggleMode(c)}
-          disabled={c.unreadable || switchingId === c.id}
-          title={c.mode === 'translate'
-            ? 'Opens as a translation workspace - click to typeset instead'
-            : 'Opens as the full typesetting editor - click to translate instead'}
-          >{c.mode === 'translate' ? 'Translate' : 'Typeset'}</button
-        >
-        <button
-          class="chapter-act"
-          onclick={() => onExport(c)}
-          disabled={c.unreadable || exportingId === c.id}
-          title="Export this chapter as a package (.mtchapter)"
-          >{exportingId === c.id ? 'Exporting…' : 'Export'}</button
-        >
-        <button
-          class="chapter-act"
-          onclick={() => onSources(project.id, c.id)}
-          disabled={c.unreadable}
-          title="Cleaned pages and translations">Sources</button
-        >
-        <button
-          class="chapter-act"
-          onclick={() => onVersions(project.id, c.id)}
-          disabled={c.unreadable}
-          title="Restore an earlier version of this chapter">Versions</button
-        >
-        <button class="chapter-del" onclick={() => onDelete(c)} title="Delete chapter">Delete</button>
-      </div>
+        {#if c.unreadable}
+          <button class="chapter-del" onclick={() => (confirmingId = c.id)} title="Delete chapter">Delete</button>
+        {:else}
+          <RowMenu bind:this={menus[c.id]} label="Chapter {c.number} actions" items={menuItems(c)} onpick={(id) => onMenu(c, id)} />
+        {/if}
+      </li>
       {#if confirmingId === c.id}
-        <div class="confirm-note warn" role="alert">
-          Moves this chapter's folder to the trash, including its {plural(c.pageCount, 'copied raw')}. Click Delete again to confirm.
-        </div>
+        <li class="confirm-row" role="alert">
+          <span>Move chapter {c.number} and its {plural(c.pageCount, 'copied raw')} to the trash?</span>
+          <button class="soft-btn" onclick={() => (confirmingId = null)}>Cancel</button>
+          <button class="soft-btn danger" onclick={() => onDelete(c)}>Move to trash</button>
+        </li>
       {/if}
     {:else}
-      <div class="home-empty">No chapters yet.</div>
+      <li class="home-empty">No chapters yet. New chapter copies your raws into this series.</li>
     {/each}
-  </div>
+  </ul>
 {:else}
   <div class="home-empty">That project is no longer in the library.</div>
 {/if}
