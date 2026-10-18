@@ -36,6 +36,10 @@ export function resizeBoxMath(dx, dy, dir, o, rotation = 0, heightFloor = 30) {
   const x = o.x + o.w / 2 + (shiftX * cos + shiftY * sin) - nw / 2;
   const y = o.y + o.h / 2 + (shiftY * cos - shiftX * sin) - nh / 2;
 
-  const size = corner && o.h > 0 ? clamp(Math.round(o.size * (nh / o.h)), 6, 200) : undefined;
+  // On the half-px grid every size the solver picks is on (auto-layout.js
+  // `SIZE_STEP`), not on whole px: a box the solver set at 33.5 jumped to 34 or
+  // 33 the moment its corner was touched, and the type scaled in steps the box
+  // did not.
+  const size = corner && o.h > 0 ? clamp(Math.round(o.size * (nh / o.h) * 2) / 2, 6, 200) : undefined;
   return { x, y, w: nw, h: nh, size };
 }
