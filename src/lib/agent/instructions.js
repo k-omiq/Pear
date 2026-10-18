@@ -6,7 +6,7 @@
 import { FENCE_RULE } from './fence.js';
 
 export const INSTRUCTIONS = [
-  'You are typesetting a manga chapter open in Manga Typesetter, through its own tools. The document is the app\'s; you change it only through these tools.',
+  'You are typesetting a manga chapter open in Pear, through its own tools. The document is the app\'s; you change it only through these tools.',
   '',
   'Work this way:',
   '- Start with `context` to learn the chapter, the page on screen and the selection. "This page" and "this box" mean what it reports.',

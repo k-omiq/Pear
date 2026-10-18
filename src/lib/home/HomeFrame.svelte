@@ -21,7 +21,7 @@
 <div class="home-scroll">
   <div class="home-frame">
     <header class="home-head">
-      <div class="wordmark">MANGA TYPESETTER</div>
+      <div class="wordmark">PEAR</div>
       <div class="spacer"></div>
       {#if update}
         <button

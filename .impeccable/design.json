@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "generatedAt": "2026-10-18T00:00:00Z",
-  "title": "Design System: Manga Typesetter",
+  "title": "Design System: Pear",
   "extensions": {
     "colorMeta": {
       "accent": { "role": "primary", "displayName": "Workbench Ink", "canonical": "var(--accent)", "tonalRamp": ["#141413", "#2c2b28", "#45433f", "#5f5d58", "#7c7a74", "#a3a19b", "#cfcdc7", "#f6f5f2"] },
@@ -30,7 +30,7 @@
       "body-sm": { "displayName": "Body small", "purpose": "The sentence under a row label and section intros, quiet ink, max 64ch." },
       "label": { "displayName": "Label", "purpose": "Uppercase floating-panel heads and Inspector field labels; tool chrome only." },
       "list-heading": { "displayName": "List heading", "purpose": "The single uppercase heading over a home list; never a lead-in above another heading." },
-      "wordmark": { "displayName": "Wordmark", "purpose": "MANGA TYPESETTER, spaced uppercase, top-left of the home frame." },
+      "wordmark": { "displayName": "Wordmark", "purpose": "PEAR, spaced uppercase, top-left of the home frame." },
       "mono": { "displayName": "Mono", "purpose": "Hex values, file paths, shortcut key combos only." }
     },
     "shadows": [

@@ -106,7 +106,7 @@ fn stage_gpu_libs() {
         // Dev builds find the dawn library beside the binary; installed builds
         // find it under the resource dir tauri.linux.conf.json ships it to.
         println!(
-            "cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN:$ORIGIN/../lib/Manga Typesetter/gpu-libs/lib"
+            "cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN:$ORIGIN/../lib/Pear/gpu-libs/lib"
         );
         if !webgpu && !cuda {
             println!(

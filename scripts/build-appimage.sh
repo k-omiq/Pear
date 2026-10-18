@@ -55,7 +55,7 @@ cat > "$APPDIR/AppRun" <<EOF
 # Runs the app against the host's GTK and WebKitGTK; see scripts/build-appimage.sh.
 HERE=\$(dirname "\$(readlink -f "\$0")")
 if ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4.1.so.0'; then
-  MSG="Manga Typesetter needs WebKitGTK 4.1 from your distribution.
+  MSG="Pear needs WebKitGTK 4.1 from your distribution.
 
 Install it and run the AppImage again:
   Debian / Ubuntu / Mint:  sudo apt install libwebkit2gtk-4.1-0

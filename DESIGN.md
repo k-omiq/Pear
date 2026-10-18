@@ -1,5 +1,5 @@
 ---
-name: Manga Typesetter
+name: Pear
 description: Warm-neutral greyscale desktop chrome that stays quiet around the manga page.
 colors:
   ground: "#e8e7e3"
@@ -176,7 +176,7 @@ components:
     height: "30px"
 ---
 
-# Design System: Manga Typesetter
+# Design System: Pear
 
 ## Overview
 
@@ -240,7 +240,7 @@ A single warm-grey family, tinted toward brown (hue of rgb 42,38,32), with the a
 - **Body small** (400, 11.5px, 1.5, quiet ink): the sentence under a row label and section intros, capped at 64ch.
 - **Label** (600, 11px, 0.4px tracking, uppercase, quiet ink): floating-panel heads and Inspector field labels. Tool chrome only.
 - **List heading** (400, 10.5px, 0.22em tracking, uppercase, faint ink): the single heading over a home list ("PROJECTS", "CHAPTERS"). It is the list's own heading, never a lead-in above another heading.
-- **Wordmark** (600, 12.5px, 0.3em tracking, uppercase): "MANGA TYPESETTER", top-left of the home frame. Brand commitment.
+- **Wordmark** (600, 12.5px, 0.3em tracking, uppercase): "PEAR", top-left of the home frame. Brand commitment.
 
 ### Named Rules
 **The Steady Weight Rule.** Selection never changes font weight; a selected tab or row brightens its colour and gains a fill, so labels never shift under the pointer.

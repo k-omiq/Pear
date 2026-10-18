@@ -1,5 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Manga Typesetter",
   "bundle": {
     "resources": {
       "gpu-libs/bin": ""
