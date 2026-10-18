@@ -21,12 +21,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="Manga Typesetter.app"
+APP="Pear.app"
 DEST="/Applications/$APP"
+# The app was called Manga Typesetter before. That copy carries the same bundle
+# identifier, so left in place it is a second registration of this same app.
+OLD_APP="Manga Typesetter.app"
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 echo "== ejecting leftover build volumes =="
-for v in /Volumes/dmg.* "/Volumes/Manga Typesetter"; do
+for v in /Volumes/dmg.* "/Volumes/Pear" "/Volumes/Manga Typesetter"; do
   [ -d "$v" ] || continue
   echo "  $v"
   hdiutil detach "$v" -force >/dev/null 2>&1 || true
@@ -37,8 +40,10 @@ rm -f src-tauri/target/release/bundle/macos/rw.*.dmg
 # Stale updater artifacts from a previous build sit in the same folder the DMG
 # is staged from; leaving them means they get packed INTO the DMG next to the
 # app.
-rm -f "src-tauri/target/release/bundle/macos/$APP.tar.gz" \
-      "src-tauri/target/release/bundle/macos/$APP.tar.gz.sig"
+for a in "$APP" "$OLD_APP"; do
+  rm -f "src-tauri/target/release/bundle/macos/$a.tar.gz" \
+        "src-tauri/target/release/bundle/macos/$a.tar.gz.sig"
+done
 
 echo "== building =="
 # Tauri's updater step hard-fails without the signing key; same source as
@@ -76,11 +81,13 @@ if [ "$STRAY" = 1 ]; then
 fi
 
 echo "== installing =="
-if pgrep -f "/Applications/$APP" >/dev/null; then
-  echo "  quitting the running app"
-  osascript -e 'quit app "Manga Typesetter"' 2>/dev/null || true
-  sleep 2
-fi
+for a in "$APP" "$OLD_APP"; do
+  if pgrep -f "/Applications/$a" >/dev/null; then
+    echo "  quitting ${a%.app}"
+    osascript -e "quit app \"${a%.app}\"" 2>/dev/null || true
+    sleep 2
+  fi
+done
 MOUNT=$(attach "$DMG" -nobrowse -readonly | grep -o '/Volumes/.*' | tail -1)
 [ -n "$MOUNT" ] || { echo "could not mount $DMG"; exit 1; }
 # Replaced rather than merged: a leftover file from an older version inside the
@@ -90,6 +97,10 @@ rm -rf "$DEST"
 ditto "$MOUNT/$APP" "$DEST"
 hdiutil detach "$MOUNT" -force >/dev/null
 echo "  installed to $DEST"
+if [ -d "/Applications/$OLD_APP" ]; then
+  rm -rf "/Applications/$OLD_APP"
+  echo "  removed the old /Applications/$OLD_APP"
+fi
 
 # The build output is a second real copy of the app on disk, so macOS re-scans
 # and re-registers it minutes after any unregister. Removing it is the only
@@ -103,7 +114,7 @@ echo "== dropping every registration that is not /Applications =="
 # unregister just as well as live ones, which is what clears the backlog from
 # every earlier build.
 $LSR -dump 2>/dev/null \
-  | grep -io "path: *[^ ].*/$APP" \
+  | grep -ioE "path: *[^ ].*/($APP|$OLD_APP)" \
   | sed 's/^path: *//' \
   | sort -u \
   | grep -v "^/Applications/$APP\$" \
@@ -113,4 +124,4 @@ $LSR -dump 2>/dev/null \
     done
 
 echo "== registered copies now =="
-$LSR -dump 2>/dev/null | grep -i "/$APP" | sed 's/^ *//' | sort -u
+$LSR -dump 2>/dev/null | grep -iE "/($APP|$OLD_APP)" | sed 's/^ *//' | sort -u

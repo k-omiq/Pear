@@ -114,7 +114,8 @@ jobs:
         shell: bash
         # Renamed to MangaTypesetter_<version>_<platform>.<ext>: the platform tag keeps
         # the two mac architectures from clobbering each other under one R2 key, and
-        # dropping the space in "Manga Typesetter" keeps update URLs unencoded-safe.
+        # a name with no spaces keeps update URLs unencoded-safe. The prefix is the
+        # app's old name, kept so download links and ship.sh's site rewrite still match.
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""

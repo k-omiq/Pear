@@ -1038,7 +1038,7 @@
           <div class="set-item">
             <div class="set-line">
               <span class="set-label">
-                Manga Typesetter
+                Pear
                 <span class="set-label-sub">
                   {#if appVersion}Version {appVersion}
                   {:else if isTauri()}Reading version…

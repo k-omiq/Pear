@@ -12,7 +12,7 @@ Scanlators who letter English onto cleaned manga, manhua and manhwa raws. Mostly
 
 ## Product Purpose
 
-Manga Typesetter is a desktop app (Tauri webview; macOS first, Windows and Linux builds too) for typesetting comics: it detects and reads the source text, holds the translation, and lets the letterer place, fit and style English text in balloons, captions and SFX, then export the pages. Success is a chapter lettered to a human letterer's standard in less time.
+Pear (formerly Manga Typesetter) is a desktop app (Tauri webview; macOS first, Windows and Linux builds too) for typesetting comics: it detects and reads the source text, holds the translation, and lets the letterer place, fit and style English text in balloons, captions and SFX, then export the pages. Success is a chapter lettered to a human letterer's standard in less time.
 
 ## Positioning
 
@@ -35,7 +35,7 @@ Lettering-first rather than translation-first: balloon-aware fitting, per-series
 
 ## Brand Commitments
 
-- Name and wordmark: "Manga Typesetter", set as a spaced uppercase wordmark.
+- Name and wordmark: "Pear", set as a spaced uppercase wordmark. The icon is a white pear on a near-black tile.
 - Warm-neutral greyscale UI in light and dark themes; colour belongs to the manga page, not the chrome.
 
 ## Product Principles

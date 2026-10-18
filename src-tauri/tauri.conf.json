@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Manga Typesetter",
+  "productName": "Pear",
   "version": "0.3.1",
   "identifier": "com.mangatypesetter.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Manga Typesetter",
+        "title": "Pear",
         "width": 1440,
         "height": 900,
         "minWidth": 1000,
