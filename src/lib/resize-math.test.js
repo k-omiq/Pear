@@ -75,6 +75,16 @@ describe('resizeBoxMath', () => {
       expect(res.size).toBe(40);
     });
 
+    it('scales the font size on the half-px grid the solver sizes on, not in whole px', () => {
+      // A box the solver set at 33.5: the first pixel of a corner drag keeps it
+      // there, rather than jumping it to 34 or 33.
+      const o = box({ w: 200, h: 200, size: 33.5 });
+      expect(resizeBoxMath(1, 1, 'se', o, 0).size).toBe(33.5);
+      // 33.5 x 1.05 = 35.175 and 33.5 x 0.975 = 32.66: the nearest half px.
+      expect(resizeBoxMath(0, 10, 'se', o, 0).size).toBe(35);
+      expect(resizeBoxMath(0, -5, 'se', o, 0).size).toBe(32.5);
+    });
+
     it('enforces min width 40 on E and W edge drags without touching height', () => {
       const o = box({ x: 100, w: 100, h: 100 });
       // Drag E edge inward past 40
