@@ -143,6 +143,32 @@ describe('setting and clearing locks', () => {
     expect({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size }).toEqual(geom);
   });
 
+  // The agent holds the lines it chose and nothing else (`set.breaks`). Read as
+  // a held layout, that box showed "Layout locked" while its size and width
+  // still moved, and the Lock layout key let every lock go instead of locking.
+  it('reads a box with only its lines held as that, not as a locked layout', () => {
+    setBoxLocks('b3', { breaks: true });
+    expect(boxLocks(byId('b3'))).toEqual({ breaks: true });
+    expect(layoutLocked(byId('b3'))).toBe(false);
+    selectBox('b3');
+    toggleLayoutLock();
+    expect(locksOf('b3')).toEqual({ ...NONE, size: true, width: true, pos: true, breaks: true });
+    expect(layoutLocked(byId('b3'))).toBe(true);
+  });
+
+  // The solver's size lock holds the reference size: turned on by itself at
+  // 24 on a box whose reference is 30, the next edit set the text at 30.
+  it('holds the size on the box when the size lock is turned on by itself', () => {
+    expect(setBoxLocks('b3', { size: true })).toBe(1);
+    expect(byId('b3').auto.refSize).toBe(24);
+    hist.undo();
+    expect(byId('b3').auto.refSize).toBe(30);
+    // Already locked: the reference it holds is left alone.
+    byId('b1').style.size = 20;
+    setBoxLocks('b1', { size: true, pos: true });
+    expect(byId('b1').auto.refSize).toBe(30);
+  });
+
   it('lets the breaks go with the size or the width, which they hold', () => {
     lockBoxLayout('b3');
     unlockBoxes('b3', 'size');

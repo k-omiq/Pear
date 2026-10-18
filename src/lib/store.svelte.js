@@ -5506,9 +5506,17 @@ export function boxLocks(b) {
   return Object.keys(on).length ? on : null;
 }
 
-// Whether the whole layout is held, as "Lock layout" holds it. The line breaks
-// are the one lock nothing else sets, so they are what marks it.
-export const layoutLocked = (b) => !!boxLocks(b)?.breaks;
+// Whether the whole layout is held, as "Lock layout" holds it: the size, the
+// width, the place and the line breaks, all four. Not the line breaks alone -
+// the agent holds the lines it chose and nothing else (`set.breaks`), and a box
+// read as layout-locked for that showed "Layout locked" while its size and
+// width still moved, and the Lock layout key let every lock go instead of
+// locking it.
+const LAYOUT_LOCKS = ['size', 'width', 'pos', 'breaks'];
+export const layoutLocked = (b) => {
+  const l = boxLocks(b);
+  return !!l && LAYOUT_LOCKS.every((k) => l[k]);
+};
 
 // What a lock change can move, as the `locks` history entry records it: the
 // locks, and the reference size, which "Lock layout" rewrites (below). Plain
@@ -5527,9 +5535,11 @@ const lockRecord = (b) => ({ locks: { ...$state.snapshot(b.auto.locks) }, refSiz
 // as they stand. The solver's size lock holds the REFERENCE size, not the one
 // on the box, so a box the solver had shrunk to 18 from 24 would jump back up
 // to 24 at its next edit - the opposite of holding it. So the size it stands at
-// becomes its reference, as a size typed on the box does (`rememberSizeFor`).
-// Only this box's: the tag's remembered size is left alone, because locking a
-// box is not saying anything about every other box of its kind.
+// becomes its reference, as a size typed on the box does (`rememberSizeFor`),
+// and the same for a size lock turned on by itself: a lock holds the size the
+// user can see. Only this box's: the tag's remembered size is left alone,
+// because locking a box is not saying anything about every other box of its
+// kind.
 //
 // Nothing is typeset again. A lock or an unlock is a statement about the next
 // solve, and a box that jumped the moment its lock was clicked away would be
@@ -5556,7 +5566,8 @@ export function setBoxLocks(ids, patch = {}, { hold = false } = {}) {
         const v = next[k] === true;
         if (b.auto.locks[k] !== v) b.auto.locks[k] = v;
       }
-      if (hold && b.style.size > 0 && b.auto.refSize !== b.style.size) b.auto.refSize = b.style.size;
+      const holdSize = hold || (next.size === true && !before.locks.size);
+      if (holdSize && b.style.size > 0 && b.auto.refSize !== b.style.size) b.auto.refSize = b.style.size;
       const after = lockRecord(b);
       if (JSON.stringify(after) === JSON.stringify(before)) continue;
       const items = byPage.get(pg.id) ?? [];
@@ -5573,14 +5584,14 @@ export function setBoxLocks(ids, patch = {}, { hold = false } = {}) {
   return changed;
 }
 
-// The chip's and the Bulk panel's commands, in words. `which` is 'size',
-// 'width' or 'all'.
+// The chip's and the Bulk panel's commands, in words. `which` is one of
+// `LOCK_KEYS`, or 'all'.
 export function unlockBoxes(ids, which = 'all') {
   const patch = which === 'all' ? Object.fromEntries(LOCK_KEYS.map((k) => [k, false])) : { [which]: false };
   return setBoxLocks(ids, patch);
 }
 
-export const lockBoxLayout = (ids) => setBoxLocks(ids, { size: true, width: true, pos: true, breaks: true }, { hold: true });
+export const lockBoxLayout = (ids) => setBoxLocks(ids, Object.fromEntries(LAYOUT_LOCKS.map((k) => [k, true])), { hold: true });
 
 // The keyboard's Lock layout (`box.layoutLock`): a switch on the selected box,
 // like the balloon fit's. Held already, it lets every lock go. Told in a toast
@@ -6152,9 +6163,13 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // every step of an edge drag re-sets the text, not only the steps that moved
   // the pointer sideways: each one writes the height back from the start.
   const widened = nw !== ow;
+  const heightened = nh !== oh;
+  // A corner drag, which sends the size it scales the type to.
+  const corner = Number.isFinite(geom.size);
+  const sized = corner && geom.size !== b.style.size;
   // A new place and nothing else - the Inspector's X or Y - is a move, and
   // carries the balloon fit and a standing solve with the box as a drag does.
-  const moveOnly = nw === b.w && nh === b.h && !Number.isFinite(geom.size) && (nx !== b.x || ny !== b.y);
+  const moveOnly = nw === b.w && nh === b.h && !corner && (nx !== b.x || ny !== b.y);
   b.w = nw;
   b.h = nh;
   if (moveOnly) moveBoxTo(b, nx, ny, p);
@@ -6162,17 +6177,35 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     b.x = nx;
     b.y = ny;
   }
-  if (Number.isFinite(geom.size)) {
+  if (corner) {
     b.style.size = geom.size;
   }
-  // A width set by hand is the box's from here on: the solver keeps it through
-  // every later edit and Refit (`auto.locks.width`), and an edge drag re-sets the
-  // text in it as it goes - the size back towards the reference and the height
-  // to what the lines now need, so a box made wider gives its height back
-  // (FIT-2). Not a corner drag, which sets the size too and is the user's size
-  // edit (`noteSizeEdit`).
-  if (widened && b.auto?.on) b.auto.locks.width = true;
-  if (widened && !Number.isFinite(geom.size) && b.auto?.on && isAutoBox(b)) {
+  // The lines an outline fit chose (`auto.breaks`) were chosen for the width
+  // and the size the box had. Drawn at another width they run past its sides,
+  // and nothing would break them again: they are keyed to the text, the face
+  // and the size, so a corner drag that leaves the size where it was, or any
+  // width change the solve below does not follow, kept them. So a width or a
+  // size set by hand lets them go, and the lines are broken again in the box as
+  // it now is - by the solve below, which chooses afresh, or by the breaker.
+  // Not lines held by a lock (`locks.breaks`): those are the user's or the
+  // agent's, and stay.
+  if ((widened || sized) && b.auto?.breaks && !b.auto.locks?.breaks) delete b.auto.breaks;
+  // A width or a height set by hand is the box's from here on: the solver keeps
+  // it through every later edit and Refit (`auto.locks.width`, `.height`). A
+  // height dragged used to last only until the next keystroke, whose solve set
+  // the height back to what the lines need. Not a corner drag's height, which
+  // follows the size the corner sets: that is the user's size edit
+  // (`noteSizeEdit`).
+  if (b.auto?.on) {
+    if (widened) b.auto.locks.width = true;
+    if (heightened && !corner) b.auto.locks.height = true;
+  }
+  // An edge drag of the width re-sets the text in it as it goes - the size back
+  // towards the reference and the height to what the lines now need, so a box
+  // made wider gives its height back (FIT-2). A height drag moves the edge and
+  // nothing else: a solve there could choose the box another width, which the
+  // user did not touch. The next edit sets the text in the height it holds.
+  if (widened && !corner && b.auto?.on && isAutoBox(b)) {
     if (resolveBox(b, p, boxText(b, p), true) != null) return b;
     // The face is on its way, so the text was not re-set in the new width:
     // owed for when it lands, as an edit's fit is (`autoFitBox`).

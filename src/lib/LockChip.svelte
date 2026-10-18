@@ -13,7 +13,7 @@
   // Every command is the store's (`setBoxLocks` and its two wrappers); this only
   // decides which of them to offer. None of them typesets the box again - see
   // `setBoxLocks` for why - so the menu says what will.
-  import { app, boxLocks, unlockBoxes, lockBoxLayout, isTranslateMode } from './store.svelte.js';
+  import { app, boxLocks, layoutLocked, unlockBoxes, lockBoxLayout, isTranslateMode, LOCK_KEYS } from './store.svelte.js';
   import { comboFor, formatCombo } from './shortcuts.svelte.js';
 
   let { box } = $props();
@@ -23,27 +23,30 @@
   // box", and the tick mark takes the same corner) and in a translate chapter,
   // where nothing on the page is laid out.
   const shown = $derived(!!locks && !app.bulk.active && !isTranslateMode());
-  const layout = $derived(!!locks?.breaks);
+  // The whole layout, as "Lock layout" holds it - not the line breaks alone,
+  // which the agent holds by themselves (`layoutLocked`).
+  const layout = $derived(!!locks && layoutLocked(box));
 
-  // The entries that apply, and no others: a box whose layout is held offers
-  // only "Unlock all", since letting one part of a held layout go is not
-  // holding it. "Unlock all" beside a single lock would be the same command
-  // twice, so it appears only when there is more than one lock, or one with no
-  // entry of its own (the place, the height).
-  const names = $derived(locks ? Object.keys(locks) : []);
+  // The entries that apply, and no others: one per lock that is on, so each
+  // can be let go by itself, and "Unlock all" once there is more than one. A
+  // box whose layout is held offers only "Unlock all", since letting one part
+  // of a held layout go is not holding it.
+  const WORDS = { size: 'size', width: 'width', height: 'height', pos: 'position', breaks: 'line breaks' };
+  const names = $derived(locks ? LOCK_KEYS.filter((k) => locks[k]) : []);
   const items = $derived.by(() => {
     if (!locks) return [];
     if (layout) return [{ id: 'all', label: 'Unlock all' }];
-    const out = [];
-    if (locks.size) out.push({ id: 'size', label: 'Unlock size' });
-    if (locks.width) out.push({ id: 'width', label: 'Unlock width' });
-    if (names.some((k) => k !== 'size' && k !== 'width') || out.length > 1) out.push({ id: 'all', label: 'Unlock all' });
+    const out = names.map((k) => ({ id: k, label: `Unlock ${WORDS[k]}` }));
+    if (out.length > 1) out.push({ id: 'all', label: 'Unlock all' });
     out.push({ id: 'layout', label: 'Lock layout', sep: true });
     return out;
   });
 
-  const WORDS = { size: 'size', width: 'width', height: 'height', pos: 'position', breaks: 'line breaks' };
   const summary = $derived(layout ? 'Layout locked' : `Locked: ${names.map((k) => WORDS[k]).join(', ')}`);
+  // The box turns, and the chip with it, as everything inside the box does. A
+  // padlock on its side reads as a cup, and its menu would open sideways, so
+  // the chip is turned back upright about its own centre, where it stays.
+  const upright = $derived(Number(box.style?.rotation) ? `transform: rotate(${-Number(box.style.rotation)}deg)` : '');
   // The key as the user has it bound, not as it shipped.
   const refitKey = $derived(formatCombo(comboFor('box.retypeset')));
 
@@ -112,7 +115,7 @@
 
 {#if shown}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="lock-chip-wrap" contenteditable="false" onpointerdown={stop} ondblclick={stop} onkeydown={onKey}>
+  <div class="lock-chip-wrap" style={upright} contenteditable="false" onpointerdown={stop} ondblclick={stop} onkeydown={onKey}>
     <button
       class="lock-chip"
       class:layout
@@ -155,6 +158,8 @@
     left: calc(100% + 9px);
     top: -1px;
     z-index: 8;
+    /* The chip's centre, for turning it upright on a turned box. */
+    transform-origin: 9.5px 9.5px;
     cursor: default;
     text-align: left;
     line-height: 1.3;
