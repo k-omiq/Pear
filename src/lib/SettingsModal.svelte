@@ -3,7 +3,7 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { app, saveExportPrefs, toast, toastError } from './store.svelte.js';
   import { checkSidecar, modelsCacheInfo, clearModelsCache } from './sidecar.js';
-  import { theme, setTheme } from './theme.svelte.js';
+  import ThemePicker from './ThemePicker.svelte';
   import { library, setRoot, scanLibrary, withinHome, projectById, setProjectOcrLanguage } from './library.svelte.js';
   import { settingsView, shownSettingsTab } from './settings-tabs.svelte.js';
   import SeriesGuide from './SeriesGuide.svelte';
@@ -646,14 +646,9 @@
           <div class="set-item">
             <div class="set-line">
               <span class="set-label">Theme</span>
-              <div class="seg" role="group" aria-label="Theme">
-                <button class:on={theme.mode === 'light'} onclick={() => setTheme('light')}>Light</button>
-                <button class:on={theme.mode === 'dark'} onclick={() => setTheme('dark')}>Dark</button>
-                <button class:on={theme.mode === 'system'} onclick={() => setTheme('system')}>
-                  System{theme.mode === 'system' ? ` · ${theme.resolved}` : ''}
-                </button>
-              </div>
             </div>
+            <ThemePicker />
+            <p class="set-desc">The app icon in the Dock and taskbar changes with it.</p>
           </div>
           <div class="set-item">
             <div class="set-line">

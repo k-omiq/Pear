@@ -1,5 +1,10 @@
 /* ===== Manga Typesetter - warm-neutral paper greyscale desktop UI ===== */
-:root{
+/* Every theme is a plain [data-theme] selector as well as the root's, so any
+   element can wear a theme locally: the theme picker in Settings draws each
+   swatch that way, from the same blocks that paint the app. Later blocks win at
+   equal specificity, so this light block must stay first. The names and the
+   pre-paint script in index.html mirror THEMES in src/lib/theme.svelte.js. */
+:root, [data-theme="light"]{
   --bg:#e8e7e3; --panel:#f6f5f2; --panel2:#efeeea;
   --card:#fbfaf8; --surface:#fcfbf9; --paper:#fefdfb;
   --art:#e4e2dd;
@@ -43,7 +48,7 @@
      is what made the bulk editor's dropdowns unreadable. */
   color-scheme:light;
 }
-:root[data-theme="dark"]{
+[data-theme="dark"]{
   --bg:#121313; --panel:#1a1b1c; --panel2:#202122;
   --card:#1a1b1c; --surface:#212223; --paper:#f6f5f2;
   --art:#0d0e0e;
@@ -61,6 +66,55 @@
   /* Geometry, so identical to light: see the note above. */
   --stage-pad:60px;
   /* The one line the theme cannot express as a token - see the note above. */
+  color-scheme:dark;
+}
+/* The colour themes, ported from Manga Cleaner's. Only the colours change:
+   --tint, --tintline and --flagline are on-page chrome drawn over paper, so they
+   keep the light values for the reason given above, and geometry tokens come
+   from the light block. --art is the field around the page. */
+/* Sakura: light, pink-tinted neutrals, a deep rose accent. */
+[data-theme="sakura"]{
+  --bg:#f0e6e7; --panel:#f9f3f3; --panel2:#f3eaeb;
+  --card:#fcf8f8; --surface:#fdfafa; --paper:#fefdfb;
+  --art:#e7dcdd;
+  --line:rgba(84,40,54,.09); --line2:rgba(84,40,54,.16);
+  --text:#2c1f24; --t2:rgba(44,31,36,.70); --t3:rgba(44,31,36,.58);
+  --accent:#a63b5f; --accent-fg:#fff8fa; --accent-soft:rgba(166,59,95,.10);
+  --tint:rgba(42,38,32,.45); --tintline:#2c2b28; --warn:#8a3f2a;
+  --flagline:#8a3f2a;
+  --edge:0 1px 1px rgba(84,40,54,.05), 0 5px 14px rgba(84,40,54,.08);
+  --edge-soft:0 1px 2px rgba(84,40,54,.06);
+  --scrim:rgba(84,40,54,.28);
+  color-scheme:light;
+}
+/* Jade: dark, green-black field, a pale jade accent. */
+[data-theme="jade"]{
+  --bg:#0f1513; --panel:#151d1a; --panel2:#1a2420;
+  --card:#151d1a; --surface:#1b2521; --paper:#f4f6f3;
+  --art:#0b100e;
+  --line:rgba(214,245,230,.07); --line2:rgba(214,245,230,.13);
+  --text:#e2ebe6; --t2:rgba(226,235,230,.64); --t3:rgba(226,235,230,.48);
+  --accent:#6fcfa2; --accent-fg:#0b1511; --accent-soft:rgba(111,207,162,.13);
+  --tint:rgba(42,38,32,.45); --tintline:#2c2b28; --warn:#e0937a;
+  --flagline:#8a3f2a;
+  --edge:0 0 0 1px rgba(214,245,230,.05), 0 6px 20px rgba(0,0,0,.45);
+  --edge-soft:0 0 0 1px rgba(214,245,230,.05);
+  --scrim:rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+/* Ocean: navy surfaces, a clear sea-blue accent. */
+[data-theme="ocean"]{
+  --bg:#22364b; --panel:#2b4157; --panel2:#334b62;
+  --card:#2d445b; --surface:#365068; --paper:#f4f6f9;
+  --art:#1b2e42;
+  --line:rgba(222,239,255,.11); --line2:rgba(222,239,255,.19);
+  --text:#edf4fa; --t2:rgba(237,244,250,.74); --t3:rgba(237,244,250,.60);
+  --accent:#9bccfb; --accent-fg:#142b40; --accent-soft:rgba(155,204,251,.16);
+  --tint:rgba(42,38,32,.45); --tintline:#2c2b28; --warn:#f2aa8c;
+  --flagline:#8a3f2a;
+  --edge:0 0 0 1px rgba(222,239,255,.07), 0 6px 20px rgba(4,15,28,.25);
+  --edge-soft:0 0 0 1px rgba(222,239,255,.07);
+  --scrim:rgba(4,15,28,.55);
   color-scheme:dark;
 }
 
