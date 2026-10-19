@@ -189,7 +189,7 @@ Structure is rows, not cards. The newest surfaces (Settings, the chapter list) f
 Copy is plain and short, and chrome states where a setting is kept: the Settings sidebar groups sections by owner (this computer vs. the series, headed by the series' own name) rather than tagging each row with a scope chip.
 
 **Key Characteristics:**
-- Warm-neutral greyscale in light and dark; the accent is the theme's own ink (near-black in light, near-white in dark).
+- Warm-neutral greyscale in light and dark; the accent is the theme's own ink (near-black in light, near-white in dark). The opt-in colour themes (Sakura, Jade, Ocean, from Manga Cleaner) tint the chrome and give it a coloured accent; the page and the on-page tints stay as they are.
 - The manga page sits on paper that does not invert; on-page affordances use their own non-inverting tint.
 - System UI font only, tabular numerals everywhere.
 - Rows and hairlines over boxed cards; selection is a soft fill, never a weight change.
@@ -223,7 +223,7 @@ A single warm-grey family, tinted toward brown (hue of rgb 42,38,32), with the a
 
 **The Paper Does Not Invert Rule.** Anything drawn over the page (outlines, handles, the review flag, source pills) uses page-tint, page-tintline or the flag rust, never accent, because accent goes near-white in dark mode and would vanish on paper.
 
-**The Theme Token Rule.** Every colour comes from a :root custom property with a light and a dark value. A new surface adds no literal colours.
+**The Theme Token Rule.** Every colour comes from a custom property with a value in each [data-theme] block (light, dark, sakura, jade, ocean). A new surface adds no literal colours.
 
 ## Typography
 

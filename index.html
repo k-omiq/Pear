@@ -17,7 +17,7 @@
 
          The duplication is deliberate and has to stay honest: KEY mirrors
          theme.svelte.js's `mt.theme`, and the resolution rule mirrors its
-         `apply()` - 'light'/'dark' are an explicit choice, anything else
+         `apply()` - a fixed theme name (THEMES) is an explicit choice, anything else
          (including no stored value, and including a value from an older build)
          follows the OS. A module import cannot be used here: it would be
          deferred, which is exactly the problem being fixed. -->
@@ -29,8 +29,9 @@
         } catch (e) {
           /* private mode, blocked storage - fall through to the system */
         }
+        var fixed = ['light', 'dark', 'sakura', 'jade', 'ocean'];
         var resolved =
-          saved === 'light' || saved === 'dark'
+          fixed.indexOf(saved) >= 0
             ? saved
             : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
               ? 'dark'

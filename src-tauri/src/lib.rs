@@ -1,5 +1,6 @@
 // The AI door: a local MCP server, off until Settings turns it on.
 mod agent_mcp;
+mod app_icon;
 // `pub` because the `.sut` parser and its scorer are reachable from the crate's
 // tests as well as from the `brush_import` command below.
 pub mod brush;
@@ -71,7 +72,8 @@ pub fn run() {
       agent_mcp::agent_door_stop,
       agent_mcp::agent_door_status,
       agent_mcp::agent_tools_set,
-      agent_mcp::agent_result
+      agent_mcp::agent_result,
+      app_icon::set_theme_icon
     ])
     .manage(agent_mcp::AgentDoor::default())
     .setup(|app| {

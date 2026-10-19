@@ -51,7 +51,7 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 trash = "5.2.9"
 sha2 = "0.10"
-tauri = { version = "2.11.2", features = ["protocol-asset"] }
+tauri = { version = "2.11.2", features = ["protocol-asset", "image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
@@ -121,7 +121,10 @@ bytes = "1"
 ort = { version = "2.0.0-rc.10", features = ["coreml"] }
 # The colour picker's eyedropper (src/screen_color.rs): AppKit's NSColorSampler,
 # because WKWebView has no EyeDropper. Both crates are already in the tree via tao.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSColor", "NSColorSampler", "NSColorSpace"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSColor", "NSColorSampler", "NSColorSpace", "NSApplication", "NSResponder", "NSImage"] }
+# The theme's Dock icon (src/app_icon.rs): NSApplication's icon image from PNG bytes.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
 block2 = "0.6"
 
 # One archive carries both: CUDA for NVIDIA machines with CUDA 13 + cuDNN 9

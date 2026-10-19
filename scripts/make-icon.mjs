@@ -3,14 +3,22 @@
 //
 //   node scripts/make-icon.mjs /tmp/pear-1024.png src-tauri/icons/pear.svg
 //   npx tauri icon /tmp/pear-1024.png
+//   rm -rf src-tauri/icons/android src-tauri/icons/ios   (no mobile build)
 //   cp src-tauri/icons/pear.svg public/favicon.svg
+//   cp src-tauri/icons/pear.svg site/favicon.svg
+//
+// The Dock / taskbar icon follows the app theme: one 512 PNG per theme, which
+// src-tauri/src/app_icon.rs embeds and swaps in at runtime.
+//
+//   node scripts/make-icon.mjs --themes src-tauri/icons/themes
 //
 // Hand-rolled rasterizer rather than a dependency: the art is a rounded square
 // and a pear made of cubic curves. Each curve is sampled into a fine polygon and
 // a scanline fill with 4x4 supersampling draws it within a small fraction of a
 // pixel of the SVG's true curves, and adding a native SVG renderer to a desktop
 // app's build chain for one file is a poor trade.
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 
 const SIZE = 1024;
@@ -37,10 +45,24 @@ const RADIUS = 200;
 // take it, so the art keeps its contrast in Dark appearance, and in Light
 // appearance the same icon reads as a crisp black tile rather than as a washed
 // one.
-const TILE = 0x11; // near-black, not pure black: a pure-black tile loses its
-// rounded silhouette against a dark Dock, and this is dark enough that the
+const TILE = 0x111111; // near-black, not pure black: a pure-black tile loses
+// its rounded silhouette against a dark Dock, and this is dark enough that the
 // system's treatment has nothing left to darken.
-const INK = 0xff;
+const INK = 0xffffff;
+
+// The runtime icons: the tile is the theme's surface and the pear its accent,
+// from the [data-theme] blocks in src/styles.css. Dark is the bundled icon.
+// These are set as NSApplication's icon image, not shipped in the .icns, so the
+// system's dark treatment described above does not reach them and a light tile
+// is safe here.
+const THEME_ICONS = {
+  light: [0xf6f5f2, 0x2c2b28],
+  dark: [TILE, INK],
+  sakura: [0xf9f3f3, 0xa63b5f],
+  jade: [0x151d1a, 0x6fcfa2],
+  ocean: [0x22364b, 0x9bccfb],
+};
+const THEME_ICON_SIZE = 512;
 
 // Shapes are a start point and cubic segments [c1x, c1y, c2x, c2y, x, y], in
 // the pear's own space: x centred on 50, the body from y 6 to 97.
@@ -170,40 +192,44 @@ function insideRoundRect(px, py) {
 }
 
 // One pass, 16 samples per pixel: coverage of the tile becomes alpha, coverage
-// of the pear lightens within it. The pear's parts overlap (stem into body,
-// leaf onto stem), so a sample is ink when any part holds it. Compositing at
-// sample level rather than layer level keeps the art's edge clean against the
-// tile instead of blending twice.
-const rgba = Buffer.alloc(SIZE * SIZE * 4);
-for (let y = 0; y < SIZE; y++) {
-  const rows = [];
-  for (let sy = 0; sy < SS; sy++) {
-    const py = y + (sy + 0.5) / SS;
-    rows.push({ py, spans: polys.map((p) => crossings(py, p)) });
-  }
-  for (let x = 0; x < SIZE; x++) {
-    let field = 0, ink = 0;
-    for (const { py, spans } of rows) {
-      for (let sx = 0; sx < SS; sx++) {
-        const px = x + (sx + 0.5) / SS;
-        if (!insideRoundRect(px, py)) continue;
-        field++;
-        if (spans.some((xs) => insideSpans(px, xs))) ink++;
-      }
+// of the pear shades within it. The pear's parts overlap (stem into body, leaf
+// onto stem), so a sample is ink when any part holds it. Compositing at sample
+// level rather than layer level keeps the art's edge clean against the tile
+// instead of blending twice. The art is laid out on the SIZE canvas; `out` is
+// the PNG's own size, and each output pixel samples its share of that canvas.
+function render(out, tile, ink) {
+  const k = SIZE / out;
+  const channels = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
+  const t = channels(tile);
+  const p = channels(ink);
+  const rgba = Buffer.alloc(out * out * 4);
+  for (let y = 0; y < out; y++) {
+    const rows = [];
+    for (let sy = 0; sy < SS; sy++) {
+      const py = (y + (sy + 0.5) / SS) * k;
+      rows.push({ py, spans: polys.map((poly) => crossings(py, poly)) });
     }
-    const n = SS * SS;
-    const i = (y * SIZE + x) * 4;
-    const alpha = field / n;
-    // Ink is expressed as a value, not as a second alpha: the pixel is the
-    // opaque tile colour where the field is covered and shades toward the
-    // pear's colour as the pear takes it, so a partially-covered edge pixel
-    // carries one honest colour.
-    const v = field ? Math.round(TILE + (INK - TILE) * (ink / field)) : TILE;
-    rgba[i] = v;
-    rgba[i + 1] = v;
-    rgba[i + 2] = v;
-    rgba[i + 3] = Math.round(alpha * 255);
+    for (let x = 0; x < out; x++) {
+      let field = 0, inked = 0;
+      for (const { py, spans } of rows) {
+        for (let sx = 0; sx < SS; sx++) {
+          const px = (x + (sx + 0.5) / SS) * k;
+          if (!insideRoundRect(px, py)) continue;
+          field++;
+          if (spans.some((xs) => insideSpans(px, xs))) inked++;
+        }
+      }
+      const i = (y * out + x) * 4;
+      // Ink is expressed as a colour, not as a second alpha: the pixel is the
+      // opaque tile colour where the field is covered and shades toward the
+      // pear's colour as the pear takes it, so a partially-covered edge pixel
+      // carries one honest colour.
+      const share = field ? inked / field : 0;
+      for (let c = 0; c < 3; c++) rgba[i + c] = Math.round(t[c] + (p[c] - t[c]) * share);
+      rgba[i + 3] = Math.round((field / (SS * SS)) * 255);
+    }
   }
+  return encodePng(out, rgba);
 }
 
 function crc32(buf) {
@@ -224,30 +250,43 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(SIZE, 0);
-ihdr.writeUInt32BE(SIZE, 4);
-ihdr[8] = 8; // bit depth
-ihdr[9] = 6; // truecolour with alpha
-const raw = Buffer.alloc((SIZE * 4 + 1) * SIZE);
-for (let y = 0; y < SIZE; y++) {
-  raw[y * (SIZE * 4 + 1)] = 0; // filter: none
-  rgba.copy(raw, y * (SIZE * 4 + 1) + 1, y * SIZE * 4, (y + 1) * SIZE * 4);
+function encodePng(size, rgba) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // truecolour with alpha
+  const raw = Buffer.alloc((size * 4 + 1) * size);
+  for (let y = 0; y < size; y++) {
+    raw[y * (size * 4 + 1)] = 0; // filter: none
+    rgba.copy(raw, y * (size * 4 + 1) + 1, y * size * 4, (y + 1) * size * 4);
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
 }
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0)),
-]);
 
-const hex = (v) => '#' + v.toString(16).padStart(2, '0').repeat(3);
+const hex = (v) => '#' + v.toString(16).padStart(6, '0');
 const f = (v) => v.toFixed(1);
 const pathD = (s) =>
   `M${f(s.start[0])} ${f(s.start[1])}` + s.segs.map((c) => `C${c.map(f).join(' ')}`).join('') + 'Z';
 
-const [outPng, outSvg] = process.argv.slice(2);
-writeFileSync(outPng, png);
+const args = process.argv.slice(2);
+if (args[0] === '--themes') {
+  const dir = args[1];
+  mkdirSync(dir, { recursive: true });
+  for (const [name, [tile, ink]] of Object.entries(THEME_ICONS)) {
+    writeFileSync(join(dir, `${name}.png`), render(THEME_ICON_SIZE, tile, ink));
+    console.log('wrote', join(dir, `${name}.png`));
+  }
+  process.exit(0);
+}
+
+const [outPng, outSvg] = args;
+writeFileSync(outPng, render(SIZE, TILE, INK));
 writeFileSync(
   outSvg,
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SIZE} ${SIZE}" width="${SIZE}" height="${SIZE}">

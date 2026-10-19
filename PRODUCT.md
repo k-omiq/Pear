@@ -36,7 +36,7 @@ Lettering-first rather than translation-first: balloon-aware fitting, per-series
 ## Brand Commitments
 
 - Name and wordmark: "Pear", set as a spaced uppercase wordmark. The icon is a white pear on a near-black tile.
-- Warm-neutral greyscale UI in light and dark themes; colour belongs to the manga page, not the chrome.
+- Warm-neutral greyscale UI in light and dark themes; colour belongs to the manga page, not the chrome. Sakura, Jade and Ocean (Manga Cleaner's themes) are opt-in colour themes, and the Dock icon follows the theme.
 
 ## Product Principles
 
