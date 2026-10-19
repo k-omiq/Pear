@@ -1220,24 +1220,6 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .home-frame{ min-height:100vh; display:flex; flex-direction:column; padding:26px 34px 64px; }
 .home-head{ display:flex; align-items:center; gap:16px; flex:none; }
 .home-head .spacer{ flex:1; }
-/* The app's name: the icon's pear and a rounded lowercase "pear" in Nunito,
-   which index.html already loads for lettering. The pear bobs on hover. */
-.wordmark{
-  display:inline-flex; align-items:center; gap:6px; cursor:default;
-  font-family:"Nunito",system-ui,sans-serif; font-size:21px; font-weight:800;
-  letter-spacing:-.01em; line-height:1; color:var(--text);
-}
-.wordmark-pear{ width:auto; height:24px; fill:var(--accent); overflow:visible; transform-origin:50% 90%; }
-.wordmark-pear .leaf{ opacity:.7; }
-/* Always a light shine: on a pale pear it fades out rather than reading as a hole. */
-.wordmark-pear .shine{ fill:#fff; opacity:.5; }
-.wordmark:hover .wordmark-pear{ animation:pear-bob .7s cubic-bezier(.3,.7,.4,1.4); }
-@keyframes pear-bob{
-  0%,100%{ transform:rotate(0) scale(1); }
-  30%{ transform:rotate(-10deg) scale(1.08,.94); }
-  65%{ transform:rotate(6deg) scale(.97,1.04); }
-}
-@media (prefers-reduced-motion:reduce){ .wordmark:hover .wordmark-pear{ animation:none; } }
 
 .soft-btn{
   height:28px; padding:0 12px; border:1px solid transparent; border-radius:7px;
