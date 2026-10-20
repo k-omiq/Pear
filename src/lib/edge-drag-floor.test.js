@@ -77,9 +77,9 @@ describe('with no font source, which is every session with the switch off', () =
     expect(edgeDragFloor(b, 's', 500, page())).toBe(1200);
     expect(edgeDragFloor(b, 's', 500, { h: 0 })).toBe(neededHeight(500, b.style, textInset(b.style)));
   });
-  it('is the plain minimum for a box that is not auto-sized, and for text with no lines to count', () => {
+  it('holds a box sized by hand to its text too, and is the plain minimum for text with no lines to count', () => {
     const fixed = open(box({ style: { autoHeight: false } }));
-    expect(edgeDragFloor(fixed, 's', 6, page())).toBe(EDGE_DRAG_MIN);
+    expect(edgeDragFloor(fixed, 's', 6, page())).toBe(neededHeight(6, fixed.style, textInset(fixed.style)));
     const curved = open(box());
     expect(edgeDragFloor(curved, 's', null, page())).toBe(EDGE_DRAG_MIN);
     expect(EDGE_DRAG_MIN).toBe(30);
@@ -144,8 +144,11 @@ describe('a drag that takes no floor', () => {
     // And they are: a floor of 350 stops the edges and nothing else.
     expect(resizeBoxMath(0, -300, 's', o, 0, 350).h).toBe(350);
     expect(resizeBoxMath(0, 300, 'n', o, 0, 350).h).toBe(350);
+    // A corner scales the box and the type by one factor, the axis dragged
+    // further leading.
     expect(resizeBoxMath(0, -300, 'se', o, 0, 350).h).toBe(100);
-    expect(resizeBoxMath(0, 300, 'nw', o, 0, 350).h).toBe(100);
+    expect(resizeBoxMath(-150, -300, 'se', o, 0, 350)).toMatchObject({ w: 50, h: 100, size: 7.5 });
+    expect(resizeBoxMath(150, 300, 'nw', o, 0, 350)).toMatchObject({ w: 50, h: 100, size: 7.5 });
     expect(resizeBoxMath(-50, 0, 'e', o, 0, 350).h).toBe(400);
   });
 

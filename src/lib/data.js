@@ -180,6 +180,8 @@ const boxDefaults = {
   autoHeight: true,
   shape: 'auto',
   hyphenate: true,
+  // `defaultStyle()`'s, as the rest are. The app starts it off ("Fit text to
+  // balloon" is a beta), and says so through `setBoxDefaults` at boot.
   balloon: true,
   minOrphan: 3,
 };

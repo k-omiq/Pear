@@ -63,6 +63,7 @@ const {
   reviewBox,
   setBoxText,
   resizeBox,
+  edgeDragWidthFloor,
   nudgeBox,
   fitBoxNow,
   toggleBalloonFit,
@@ -1636,12 +1637,29 @@ describe('placement chooses the size (FIT-1)', () => {
     // holds, which is the rectangle the solve laid out - so the ink flag goes and
     // the solver's, true again, is what is left. One undo puts back the box and
     // its flag as they were.
-    it('refits a box dragged shorter, back to the solve and its flag, in one undo step', () => {
+    // The size is the corners'. Made wider, the box the solver shrank to 30
+    // (its reference is 40) keeps 30 and re-breaks its lines in the new width,
+    // and made narrower stops at its widest word.
+    it('keeps its size through a side drag, either way, and never cuts a word', () => {
+      const b = overflowed();
+      resizeBox(page().id, b.id, { x: b.x - 40, w: b.w + 80 });
+      expect(b.style.size).toBe(30);
+      resizeBox(page().id, b.id, { w: 10 });
+      expect(b.style.size).toBe(30);
+      expect(b.w).toBe(edgeDragWidthFloor(b, page()));
+      expect(containBox(boxCandidate(b, LONGER)).fits).toBe(true);
+    });
+
+    it('refits a box made shorter than its text, back to the solve and its flag, in one undo step', () => {
       hist.initHistory();
       hist.resetHistory();
       const b = overflowed();
       const solved = { flag: flag(b), g: [b.x, b.y, b.w, b.h, b.style.size] };
-      resizeBox(page().id, b.id, { y: b.y + 20, h: b.h - 40 });
+      // Not by a drag, which never leaves a box shorter than its text: a file
+      // written by another build, say.
+      b.y += 20;
+      b.h -= 40;
+      reviewBox(b, page());
       const shrunk = flag(b);
       expect(shrunk.overflow.t + shrunk.overflow.b).toBeGreaterThan(0);
       const entries = hist.peekStack().undo.length;

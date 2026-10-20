@@ -77,6 +77,8 @@ import {
   applyCase,
   rekeyBreaks,
   sizeToCover,
+  lineWidth,
+  brokenLines,
 } from './measure.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import { browserFaceReady } from './text-engine/browser.js';
@@ -95,6 +97,8 @@ import {
   fitLimit,
   reviewFor,
   isAutoBox,
+  handPlacedBox,
+  keptBreaks,
   manualReason,
   REVIEW_REASONS,
 } from './contain.js';
@@ -348,6 +352,8 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
           // The solver's record (FIT-5), absent on a box it has never managed.
           // Carried and nothing more: a load re-checks, it never re-solves.
           ...autoField(b.auto),
+          // The user's lock (`boxLocked`), absent on a box that is not locked.
+          ...(b.locked === true ? { locked: true } : null),
         };
       }),
       activeLineN: null,
@@ -826,6 +832,8 @@ export function editBoxes(targets, mutate, { always = false, ...extra } = {}) {
     const b = t?.box;
     if (!pg || !b) continue;
     const before = boxSnap(b, pg);
+    // A locked box is passed over: nothing changes it until it is unlocked.
+    if (boxLocked(b)) continue;
     const geomBefore = fitGeom(b);
     if (mutate(b, pg) === false) continue;
     autoFitBox(b, pg);
@@ -1040,6 +1048,12 @@ const lineBoxGeoms = (p, n) =>
 // count.
 export function autoFitBox(b, p = page()) {
   if (!b?.style) return false;
+  // A locked box keeps its rectangle and its size; the flag still says
+  // whether its text fits.
+  if (boxLocked(b)) {
+    reviewBox(b, p);
+    return false;
+  }
   keepHeldLines(b, boxText(b, p));
   if (!canMeasure()) return false;
   // An edit's fit: the box is the user's from here, and no longer one the
@@ -1310,7 +1324,7 @@ function growAndReview(b, p, cand, place, lineCount) {
   // is the engine's doing, when the box is still as the engine last left it.
   const was = fitting(b);
   const held = solveStands(b, cand.text);
-  const changed = isAutoBox(cand) ? growHeightTo(b, lineCount, p, cand, place) : false;
+  const changed = isAutoBox(cand) && !boxLocked(b) ? growHeightTo(b, lineCount, p, cand, place) : false;
   if (changed && held) b.auto.stamp = solveStamp(b, cand.text);
   reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text)) : place);
   fitted(b, was);
@@ -1401,6 +1415,7 @@ export const fitGeom = (b) => ({
 // One undo entry, and none when nothing moved.
 export function fitBoxNow(boxId = app.selectedId, p = page()) {
   const b = (p?.boxes ?? []).find((x) => x.id === boxId);
+  if (refuseLocked(b)) return false;
   if (!b?.style || !canMeasure() || boxFaceArriving(b, p)) return false;
   settleEdits();
   const before = cloneStyle(b.style);
@@ -3426,6 +3441,7 @@ export function beginEdit(id, opts) {
   // since, and the undo would then only rewind as far as the last double-click.
   const already = app.editingId === id;
   selectBox(id, opts);
+  if (refuseLocked(byId(id))) return;
   app.editingId = id;
   // Remembered here, at the one moment it is still true, so whoever ends the
   // edit records one entry for the session rather than one per keystroke.
@@ -4550,16 +4566,19 @@ function bornBox(p, ln, imgX, imgY, measured) {
 // (`rowsFit`, `onPage` in auto-layout.js): an answer that would leave either is
 // no answer, so the text shrinks or the box is flagged. The best effort's growth is bounded by the balloon and the
 // page, never by a whole longstrip (FIT-2).
-function solveBox(b, p, text, at, stay = false) {
+//
+// `holdSize` sets the text at the size on the box, whatever its reference: a
+// side drag, which changes the width and never the size.
+function solveBox(b, p, text, at, stay = false, holdSize = false) {
   const a = b.auto;
   keepHeldLines(b, text);
   const region = b.fit ?? { kind: 'hint', x: at.x, y: at.y, w: 0, h: 0 };
   const r = solveLayout({
     text,
     style: b.style,
-    refSize: a.refSize,
+    refSize: holdSize ? b.style.size : a.refSize,
     region,
-    locks: stay ? { ...a.locks, pos: true } : a.locks,
+    locks: { ...a.locks, ...(stay ? { pos: true } : null), ...(holdSize ? { size: true, height: false } : null) },
     opts: {
       minSize: a.minSize > 0 ? Math.max(minFontSize, Math.min(a.refSize, a.minSize)) : solveFloor(a.refSize, b, p),
       minW: MIN_BOX_W,
@@ -4604,10 +4623,11 @@ function solveBox(b, p, text, at, stay = false) {
 // still loading, which it must not be measured against (DET-4) - so the caller
 // fits the box by the older rules; otherwise whether the box's rectangle or
 // size moved.
-function resolveBox(b, p, text, stay = !!b.auto.stamp) {
+function resolveBox(b, p, text, stay = !!b.auto.stamp, holdSize = false) {
+  if (boxLocked(b)) return false;
   if (!canMeasure() || !/\S/.test(text) || !faceReady(b.style, text)) return null;
   const before = fitGeom(b);
-  if (!solveBox(b, p, text, { x: b.x + b.w / 2, y: b.y + b.h / 2 }, stay)) return null;
+  if (!solveBox(b, p, text, { x: b.x + b.w / 2, y: b.y + b.h / 2 }, stay, holdSize)) return null;
   return ['x', 'y', 'w', 'h', 'size'].some((k) => before[k] !== (k === 'size' ? b.style.size : b[k]));
 }
 
@@ -4663,13 +4683,13 @@ function holdFit(b) {
 }
 // How short a drag of the handle `dir` may leave a box. That is a matter for
 // the top and bottom edges only (`takesHeightFloor`, resize-math.js: a corner
-// scales the type and takes no floor, a left or right edge leaves the height
+// scales the type with the box, a left or right edge leaves the height
 // alone); for any other handle it is the plain minimum and nothing else
-// happens here. Auto height keeps
-// its promise through the drag - an edge can make the box roomier, never
-// shorter than its text - so the floor is what `lineCount` lines need, capped
-// at the page as the fit itself is, and the plain minimum for a box that is
-// not auto-sized or has no lines to count (curved text).
+// happens here. A box is never made shorter than its text, auto height or
+// not - an edge can make it roomier, never cut a line off - so the floor is
+// what `lineCount` lines need, capped at the page as the fit itself is, and
+// the plain minimum for text placed by hand or with no lines to count
+// (curved text).
 //
 // It is here, beside the fits, because it is one of them and must stand down
 // when they do. While the box's face is arriving the count is of lines broken
@@ -4685,12 +4705,31 @@ export const EDGE_DRAG_MIN = 30;
 export function edgeDragFloor(b, dir, lineCount, p = page()) {
   const s = b?.style;
   if (!takesHeightFloor(dir)) return EDGE_DRAG_MIN;
-  if (!s || s.autoHeight === false || lineCount == null) return EDGE_DRAG_MIN;
+  if (!s || lineCount == null || handPlacedBox(b)) return EDGE_DRAG_MIN;
   if (faceArriving(s)) {
     holdFit(b);
     return EDGE_DRAG_MIN;
   }
   return Math.min(neededHeight(lineCount, s, textInset(s)), p?.h || Infinity);
+}
+
+// How narrow a drag may leave a box, at the size its text is set at: as wide
+// as its widest word, and as its widest held line when its lines are held
+// (`locks.breaks`), so a side never splits a word or leaves a line hanging out
+// of the box. The width a side drag takes and the Inspector's Width. The plain
+// minimum for text placed by hand, and while its face is arriving, for the
+// reason `edgeDragFloor` gives.
+export const EDGE_DRAG_MIN_W = 40;
+export function edgeDragWidthFloor(b, p = page()) {
+  const s = b?.style;
+  if (!s || !(s.size > 0) || !canMeasure() || handPlacedBox(b)) return EDGE_DRAG_MIN_W;
+  const text = boxText(b, p);
+  if (!/\S/.test(text ?? '') || faceArriving(s, text)) return EDGE_DRAG_MIN_W;
+  const cased = applyCase(text, s);
+  const held = b.auto?.locks?.breaks ? brokenLines(cased, s, s.size, keptBreaks(b)) : null;
+  let widest = 0;
+  for (const piece of held ?? cased.split(/\s+/)) widest = Math.max(widest, lineWidth(piece, s, s.size));
+  return Math.max(EDGE_DRAG_MIN_W, Math.ceil(widest + textInset(s) * 2));
 }
 
 // The held boxes of a page whose face is in by now, each with the geometry it
@@ -5196,7 +5235,7 @@ function measureBlock(p, det, pixels) {
 // step that does nothing.
 export function refitBalloon(boxId = app.selectedId, p = page()) {
   const b = (p?.boxes ?? []).find((x) => x.id === boxId);
-  if (!b) return false;
+  if (!b || refuseLocked(b)) return false;
   // A pending Inspector edit on this box would settle AFTER this one and record
   // on top of it - the same reason `toggleBalloonFit` settles first.
   settleEdits();
@@ -5340,7 +5379,7 @@ export function approveBoxes(p, boxes, by) {
 // say. One `refit` step when anything moved.
 export function retypesetBox(boxId, p = page()) {
   const b = (p?.boxes ?? []).find((x) => x.id === boxId);
-  if (!b) return false;
+  if (!b || refuseLocked(b)) return false;
   settleEdits();
   setBoxOutline(b, p, b.fit ?? null, b.outline ? $state.snapshot(b.outline) : null);
   return true;
@@ -5484,8 +5523,8 @@ function applyBubbleInk(b, p) {
 // auto-layout.js) used to be set only as a side effect - a size typed in, a
 // width dragged wider - and the only way to let one go was an undo, which also
 // took back the edit that set it. These are the commands that set and clear
-// them on purpose: the lock chip on the page and the Bulk panel call them, and
-// nothing else decides what a lock means.
+// them on purpose: the agent's tools call them, and nothing else decides what a
+// solver lock means. The user's lock is another thing (`boxLocked`, below).
 //
 // Only a box the solver manages has locks worth showing or changing. A manual
 // box - sizing off, text on a curve, a mesh warp, ink or a mask - is never laid
@@ -5505,18 +5544,6 @@ export function boxLocks(b) {
   for (const k of LOCK_KEYS) if (l[k] === true) on[k] = true;
   return Object.keys(on).length ? on : null;
 }
-
-// Whether the whole layout is held, as "Lock layout" holds it: the size, the
-// width, the place and the line breaks, all four. Not the line breaks alone -
-// the agent holds the lines it chose and nothing else (`set.breaks`), and a box
-// read as layout-locked for that showed "Layout locked" while its size and
-// width still moved, and the Lock layout key let every lock go instead of
-// locking it.
-const LAYOUT_LOCKS = ['size', 'width', 'pos', 'breaks'];
-export const layoutLocked = (b) => {
-  const l = boxLocks(b);
-  return !!l && LAYOUT_LOCKS.every((k) => l[k]);
-};
 
 // What a lock change can move, as the `locks` history entry records it: the
 // locks, and the reference size, which "Lock layout" rewrites (below). Plain
@@ -5591,21 +5618,61 @@ export function unlockBoxes(ids, which = 'all') {
   return setBoxLocks(ids, patch);
 }
 
-export const lockBoxLayout = (ids) => setBoxLocks(ids, Object.fromEntries(LAYOUT_LOCKS.map((k) => [k, true])), { hold: true });
+// ===== the lock =====
+//
+// One lock, and it holds everything: a locked box does not move, resize,
+// turn, restyle or fit itself again, and it cannot be typed into or deleted,
+// until it is unlocked. `box.locked`, saved with the chapter, absent on a box
+// that is not locked. The page shows a padlock on a locked box and on no other;
+// a click on the padlock unlocks it.
+//
+// Not the solver's locks above (`auto.locks`): those say what a fit may not
+// change - a width dragged, a size typed, lines the agent chose - and are set
+// as a side effect of those edits. They stay the solver's and are not shown.
+export const boxLocked = (b) => b?.locked === true;
 
-// The keyboard's Lock layout (`box.layoutLock`): a switch on the selected box,
-// like the balloon fit's. Held already, it lets every lock go. Told in a toast
-// either way, since nothing on the page moves to show it happened.
-export function toggleLayoutLock(boxId = app.selectedId) {
+// A change refused because the box is locked, said in a toast. True when it is.
+export function refuseLocked(b) {
+  if (!boxLocked(b)) return false;
+  toast('This box is locked - unlock it first');
+  return true;
+}
+
+// Locks or unlocks one box or several, anywhere in the chapter. One undo step
+// per page (`locks`, as `setBoxLocks` records), none when nothing changed.
+// Answers how many boxes changed.
+export function setBoxLocked(ids, on) {
+  const want = new Set(Array.isArray(ids) ? ids : [ids]);
+  if (!want.size) return 0;
+  settleEdits();
+  const byPage = new Map();
+  let changed = 0;
+  for (const pg of app.pages) {
+    for (const b of pg.boxes ?? []) {
+      if (!want.has(b.id) || boxLocked(b) === on) continue;
+      if (on) b.locked = true;
+      else delete b.locked;
+      // A box locked while it is typed into stops being typed into.
+      if (on && app.editingId === b.id) app.editingId = null;
+      const items = byPage.get(pg.id) ?? [];
+      items.push({ boxId: b.id, before: { locked: !on }, after: { locked: on } });
+      byPage.set(pg.id, items);
+      changed++;
+    }
+  }
+  for (const [pageId, items] of byPage) {
+    recordEdit({ t: 'locks', pageId, ...(items.length === 1 ? { boxId: items[0].boxId } : null), items });
+  }
+  if (changed) markUnsaved();
+  return changed;
+}
+
+// The keyboard's, the box menu's and the Inspector's Lock: a switch on the box.
+export function toggleBoxLock(boxId = app.selectedId) {
   const b = byId(boxId);
   if (!b) return false;
-  if (!lockableBox(b)) {
-    toast('This box is laid out by hand - it has no layout to lock');
-    return false;
-  }
-  if (layoutLocked(b)) {
-    if (unlockBoxes(boxId, 'all')) toast('Layout unlocked - Refit will lay this box out again');
-  } else if (lockBoxLayout(boxId)) toast('Layout locked - edits and Refit keep this box as it is');
+  const on = !boxLocked(b);
+  if (setBoxLocked(boxId, on)) toast(on ? 'Locked' : 'Unlocked');
   return true;
 }
 
@@ -5673,7 +5740,7 @@ const panelLike = (b) => b.fit?.kind === 'rect' || b.outline?.source === 'captio
 // halves are what the `style` entry kind already carries.
 export function toggleBalloonFit(boxId = app.selectedId, p = page()) {
   const b = (p?.boxes ?? []).find((x) => x.id === boxId);
-  if (!b) return false;
+  if (!b || refuseLocked(b)) return false;
   // A pending Inspector edit on this box would settle AFTER this one and record
   // on top of it - the same reason `pasteStyle`'s caller settles first.
   settleEdits();
@@ -6135,11 +6202,23 @@ export function setBoxInk(pageId, boxId, strokes) {
 export function resizeBox(pageId, boxId, geom, base = null) {
   const p = pageById(pageId) ?? page();
   const b = p?.boxes.find((x) => x.id === boxId);
-  if (!b || !geom) return null;
+  if (!b || !geom || refuseLocked(b)) return null;
   const ow = base?.w ?? b.w;
   const oh = base?.h ?? b.h;
-  const nw = Number.isFinite(geom.w) ? geom.w : b.w;
-  const nh = Number.isFinite(geom.h) ? geom.h : b.h;
+  // A corner drag, which sends the size it scales the type to.
+  const corner = Number.isFinite(geom.size);
+  // Never narrower or shorter than the text at the size it is set at, from
+  // any caller: a side drag works these out as it goes (TextBox), the
+  // Inspector's Width and Height do not. A corner scales the text with the
+  // box, so it takes neither.
+  let nw = Number.isFinite(geom.w) ? geom.w : b.w;
+  let nh = Number.isFinite(geom.h) ? geom.h : b.h;
+  if (!corner && nw < b.w) nw = Math.max(nw, Math.min(b.w, edgeDragWidthFloor(b, p)));
+  if (!corner && nh < b.h && nw === b.w) {
+    const cand = boxCandidate(b, boxText(b, p));
+    const lines = canMeasure() && !handPlacedBox(b) ? placeBlock(cand).lines?.length : null;
+    nh = Math.max(nh, Math.min(b.h, edgeDragFloor(b, 's', lines ?? null, p)));
+  }
   const nx = Number.isFinite(geom.x) ? geom.x : b.x;
   const ny = Number.isFinite(geom.y) ? geom.y : b.y;
 
@@ -6164,8 +6243,6 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // the pointer sideways: each one writes the height back from the start.
   const widened = nw !== ow;
   const heightened = nh !== oh;
-  // A corner drag, which sends the size it scales the type to.
-  const corner = Number.isFinite(geom.size);
   const sized = corner && geom.size !== b.style.size;
   // A new place and nothing else - the Inspector's X or Y - is a move, and
   // carries the balloon fit and a standing solve with the box as a drag does.
@@ -6200,16 +6277,33 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     if (widened) b.auto.locks.width = true;
     if (heightened && !corner) b.auto.locks.height = true;
   }
-  // An edge drag of the width re-sets the text in it as it goes - the size back
-  // towards the reference and the height to what the lines now need, so a box
-  // made wider gives its height back (FIT-2). A height drag moves the edge and
-  // nothing else: a solve there could choose the box another width, which the
-  // user did not touch. The next edit sets the text in the height it holds.
+  // An edge drag of the width re-sets the text in it as it goes, at the size
+  // it stands at - a side is the width and never the size; the corners are
+  // the size - and the height to what the lines now need, so a box made wider
+  // gives its height back (FIT-2). A height the user set (`locks.height`) is
+  // kept while the lines fit in it. A height drag moves the edge and nothing
+  // else: a solve there could choose the box another width, which the user did
+  // not touch. The next edit sets the text in the height it holds.
   if (widened && !corner && b.auto?.on && isAutoBox(b)) {
-    if (resolveBox(b, p, boxText(b, p), true) != null) return b;
+    const set = { y: b.y, h: b.h };
+    if (resolveBox(b, p, boxText(b, p), true, true) != null) {
+      if (b.auto.locks.height && b.h < set.h) Object.assign(b, set);
+      return b;
+    }
     // The face is on its way, so the text was not re-set in the new width:
     // owed for when it lands, as an edit's fit is (`autoFitBox`).
     if (boxFaceArriving(b, p)) holdFit(b);
+  }
+  // Any other box: the lines a narrower box breaks into get their height
+  // here, so it is never shorter than its text. Auto height grows it anchored
+  // by `valign` (`refitBox`); a box sized by hand grows from its top.
+  if (widened && !corner && canMeasure() && !handPlacedBox(b) && !boxFaceArriving(b, p)) {
+    if (b.style.autoHeight !== false) refitBox(b, p);
+    else {
+      const lines = placeBlock(boxCandidate(b, boxText(b, p))).lines?.length;
+      const need = lines ? edgeDragFloor(b, 's', lines, p) : 0;
+      if (need > b.h) b.h = need;
+    }
   }
   // Any other drag is the user choosing the box, so it never runs the ladder -
   // but the flag has to describe the box they chose. A height-only drag changes
@@ -6294,7 +6388,7 @@ export function nudgeBox(id, dx, dy) {
   if (isTranslateMode()) return false;
   const p = page();
   const b = p.boxes.find((x) => x.id === id);
-  if (!b) return false;
+  if (!b || refuseLocked(b)) return false;
   // A run on one box keeps its window open; anything else closes it first.
   if (nudgePending && (nudgePending.boxId !== id || nudgePending.pageId !== p.id)) settleNudge();
   else if (!nudgePending) settleEdits();
@@ -6327,7 +6421,7 @@ export function nudgeBox(id, dx, dy) {
 export function resetBoxRotation(id = app.selectedId) {
   if (isTranslateMode()) return false;
   const b = byId(id);
-  if (!b?.style) return false;
+  if (!b?.style || refuseLocked(b)) return false;
   if (!b.style.rotation) return false;
   settleEdits();
   const before = cloneStyle(b.style);
@@ -6353,7 +6447,7 @@ export function resetBoxRotation(id = app.selectedId) {
 export function deleteBox(id, p = page()) {
   if (isTranslateMode()) return;
   const b = p?.boxes.find((x) => x.id === id);
-  if (!b) return;
+  if (!b || refuseLocked(b)) return;
   // All three taken before the removal: the undo has to put the box back where
   // it was in the stacking order, not on the end, and take its line back out of
   // the queue.
@@ -6735,13 +6829,9 @@ function recordBulkByPage(items, lastStyleBefore = null, lastStyleAfter = null) 
   return byPage.size;
 }
 
-// The Bulk panel's two lock buttons (FIT-5): "Unlock selected" lets every lock
-// go on the boxes it has picked, "Lock layout of selected" holds each one's
-// layout as it stands. They act at once, like the page's lock chip, rather than
-// waiting for Apply: a lock is not a style, and the mask and the template have
-// nothing to say about it. A tag selection is resolved again first, for the
-// reason `applyBulk` gives. Manual boxes among the picks are passed over
-// (`lockableBox`); the toast counts what changed, one undo step per page.
+// The Bulk panel's Lock and Unlock: every picked box at once, not through
+// Apply, since a lock is not a style. A tag selection is resolved again first,
+// for the reason `applyBulk` gives. One undo step per page.
 export function lockBulkTargets(lock) {
   if (!app.bulk.active) return 0;
   if (app.bulk.tag) syncBulkTagTargets();
@@ -6750,10 +6840,10 @@ export function lockBulkTargets(lock) {
     toast('No boxes selected');
     return 0;
   }
-  const n = lock ? lockBoxLayout(ids) : unlockBoxes(ids, 'all');
+  const n = setBoxLocked(ids, lock);
   const boxes = `${n} box${n === 1 ? '' : 'es'}`;
-  if (lock) toast(n ? `Layout locked on ${boxes}` : 'Nothing to lock - those boxes are held already, or laid out by hand');
-  else toast(n ? `Unlocked ${boxes} - Refit lays each one out again` : 'None of those boxes has a lock');
+  if (lock) toast(n ? `Locked ${boxes}` : 'Those boxes are locked already');
+  else toast(n ? `Unlocked ${boxes}` : 'None of those boxes is locked');
   return n;
 }
 

@@ -6,6 +6,10 @@ export default defineConfig({
   plugins: [svelte()],
   test: {
     environment: 'node',
+    // The app starts on the Rust text engine; the tests measure with the
+    // stand-in metric, or a real font, and run the engine where they ask for
+    // it (prefs.svelte.js `ENGINE_DEFAULT`).
+    env: { VITE_MT_TEXT_ENGINE: 'browser' },
     // Four lanes, one `npx vitest run`.
     //
     //   unit      every test the app has always had: no canvas, and the stand-in

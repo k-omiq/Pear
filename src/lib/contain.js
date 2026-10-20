@@ -159,6 +159,10 @@ export function isAutoBox(cand) {
   return cand.w > 0;
 }
 
+// Whether the box's text is placed by hand - on a curve, through a mesh, as
+// ink or under a mask - whatever its sizing switch says.
+export const handPlacedBox = (cand) => handPlaced(cand) != null;
+
 // What makes a box manual whatever its sizing switch says, as the flag names it,
 // or null.
 function handPlaced(cand) {

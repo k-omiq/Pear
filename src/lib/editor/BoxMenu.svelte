@@ -21,7 +21,7 @@
   // action means, and each shows its key as the user has it bound. Nothing
   // here is the only way to anything.
   import { untrack } from 'svelte';
-  import { app, page, lineByN, layoutLocked, lockableBox, isTranslateMode } from '../store.svelte.js';
+  import { app, page, lineByN, boxLocked, isTranslateMode } from '../store.svelte.js';
   import { hasCopiedStyle } from '../presets.svelte.js';
   import { runShortcut, hasShortcutHandler, comboFor, formatCombo } from '../shortcuts.svelte.js';
   import { anchoredOverlay } from '../anchored-overlay.svelte.js';
@@ -90,21 +90,21 @@
   // fills it while the menu is up except the menu's own Copy style, which
   // closes it.
   function itemsFor(b) {
-    const locked = layoutLocked(b);
+    const locked = boxLocked(b);
     const line = b.lineN != null ? lineByN(page(), b.lineN) : null;
     const keyed = (id, label, ok = true, extra = {}) => ({ id, label, key: keyOf(id), ok: ok && hasShortcutHandler(id), run: () => runShortcut(id), ...extra });
     return [
-      keyed('box.retypeset', 'Refit'),
-      keyed('box.layoutLock', 'Lock layout', lockableBox(b), { checked: locked }),
+      keyed('box.retypeset', 'Refit', !locked),
+      keyed('box.layoutLock', 'Lock', true, { checked: locked }),
       keyed('box.approveOutline', 'Approve outline', !!b.fit && b.outline?.approved !== 'user'),
       { sep: true },
       keyed('box.duplicate', 'Duplicate'),
       keyed('style.copy', 'Copy style'),
-      keyed('style.paste', 'Paste style', hasCopiedStyle()),
+      keyed('style.paste', 'Paste style', hasCopiedStyle() && !locked),
       { sep: true },
       { id: 'queue.show', label: 'Show in queue', key: '', ok: !!line, run: () => showInQueue(line.n) },
       { sep: true },
-      keyed('box.delete', 'Delete'),
+      keyed('box.delete', 'Delete', !locked),
     ];
   }
 

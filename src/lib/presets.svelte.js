@@ -11,6 +11,7 @@ import {
   autoFitBox,
   markUnsaved,
   page,
+  refuseLocked,
 } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
 import { isAutoBox, boxCandidate } from './contain.js';
@@ -172,7 +173,7 @@ const MANUAL_KEYS = ['autoHeight', 'curve', 'circle', 'sfx'];
 const NOT_REMEMBERED = ['flipH', 'flipV'];
 
 export function pasteStyle(box) {
-  if (!box?.style || !clipboardStyle) return false;
+  if (!box?.style || !clipboardStyle || refuseLocked(box)) return false;
 
   const before = cloneStyle(box.style);
   const geomBefore = fitGeom(box);

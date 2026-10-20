@@ -312,10 +312,11 @@ const KINDS = {
       if (!hit) throw new Error(e.items?.length > 1 ? 'those text boxes are gone' : 'the text box is gone');
     },
   },
-  // A lock set or let go (`setBoxLocks`): the locks and the reference size of
-  // each box, exactly as they were on either side. Nothing is laid out again,
-  // because the command itself lays nothing out - putting back the locks is
-  // the whole of the edit.
+  // A lock set or let go: the user's lock (`setBoxLocked`, `{ locked }`), or
+  // the solver's (`setBoxLocks`, the locks and the reference size), each box
+  // exactly as it was on either side. Nothing is laid out again, because the
+  // command itself lays nothing out - putting back the locks is the whole of
+  // the edit.
   locks: {
     label: 'that lock change',
     apply(e, dir) {
@@ -324,8 +325,14 @@ const KINDS = {
       let hit = 0;
       for (const item of e.items ?? []) {
         const b = p.boxes.find((x) => x.id === item.boxId);
-        if (!b?.auto) continue;
         const g = dir === 'undo' ? item.before : item.after;
+        if (b && 'locked' in g) {
+          if (g.locked) b.locked = true;
+          else delete b.locked;
+          hit++;
+          continue;
+        }
+        if (!b?.auto) continue;
         b.auto.locks = { ...g.locks };
         if (g.refSize > 0) b.auto.refSize = g.refSize;
         hit++;

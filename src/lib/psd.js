@@ -208,6 +208,8 @@ export function serializePage(p) {
       // was shrunk to and ratchet smaller. Null for a box the solver never
       // managed, and always present, for the same reason `fit` is.
       auto: normalizeAuto(b.auto),
+      // The user's lock, only on a locked box.
+      ...(b.locked === true ? { locked: true } : null),
     })),
     detect: p.detect
       ? {

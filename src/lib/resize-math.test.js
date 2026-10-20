@@ -80,9 +80,22 @@ describe('resizeBoxMath', () => {
       // there, rather than jumping it to 34 or 33.
       const o = box({ w: 200, h: 200, size: 33.5 });
       expect(resizeBoxMath(1, 1, 'se', o, 0).size).toBe(33.5);
-      // 33.5 x 1.05 = 35.175 and 33.5 x 0.975 = 32.66: the nearest half px.
+      // 33.5 x 1.05 = 35.175 and 33.5 x 0.975 = 32.66: the half px under, so
+      // the type is never scaled past the box.
       expect(resizeBoxMath(0, 10, 'se', o, 0).size).toBe(35);
       expect(resizeBoxMath(0, -5, 'se', o, 0).size).toBe(32.5);
+    });
+
+    it('scales a corner drag by one factor, so the box keeps its shape round the text', () => {
+      const o = box({ w: 200, h: 100, size: 20 });
+      const g = resizeBoxMath(100, 10, 'se', o, 0);
+      expect(g).toMatchObject({ w: 300, h: 150, size: 30 });
+    });
+
+    it('stops a side at the floor it is given, and changes no size', () => {
+      const o = box({ x: 100, w: 200, h: 100, size: 20 });
+      expect(resizeBoxMath(-180, 0, 'e', o, 0, 30, 120)).toMatchObject({ w: 120, h: 100, size: undefined });
+      expect(resizeBoxMath(180, 0, 'w', o, 0, 30, 120)).toMatchObject({ x: 180, w: 120 });
     });
 
     it('enforces min width 40 on E and W edge drags without touching height', () => {
