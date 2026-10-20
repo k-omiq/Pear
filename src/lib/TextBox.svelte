@@ -26,6 +26,8 @@
     reviewBox,
     reviewOf,
     edgeDragFloor,
+    edgeDragWidthFloor,
+    boxLocked,
     isTranslateMode,
   } from './store.svelte.js';
   import { openBoxMenu } from './editor/BoxMenu.svelte';
@@ -915,7 +917,9 @@
   // The resize and rotate handles are on the box: while it is selected and
   // nothing else has its controls. A resize whose handles go away has had its
   // last frame as far as the picture is concerned (`settleResize`).
-  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn);
+  // A locked box has none: nothing on it moves until it is unlocked.
+  const locked = $derived(boxLocked(box));
+  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn && !locked);
   // The end of the handle gesture in flight (`startTransform`), or null.
   let transformEnd = null;
   $effect(() => {
@@ -1346,6 +1350,8 @@
     if (e.target.classList.contains('handle')) return;
     e.stopPropagation();
     if (!selected) selectBox(box.id);
+    // Selected, so the Inspector shows it and its lock, and not moved.
+    if (locked) return;
     startMove(e);
   }
 
@@ -1443,6 +1449,8 @@
     const fitBefore = isRot ? { y: box.y, h: box.h } : null;
     const cx = () => box.x + box.w / 2;
     const cy = () => box.y + box.h / 2;
+    // The size is the same all through a side drag, and so is its widest word.
+    const wFloor = isRot || dir.length > 1 ? 40 : edgeDragWidthFloor(box, pg);
 
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
@@ -1472,7 +1480,9 @@
         // stand-in's. `shaped` is null for curved and path text, which
         // auto-height does not fit either.
         const floor = edgeDragFloor(box, dir, shaped ? shaped.length : null, pg);
-        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, floor);
+        // And never narrower than its widest word: a side changes the width
+        // and never the size, so a word that no longer fits has nowhere to go.
+        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, floor, wFloor);
         // From the first move, not from the press: a handle pressed and let
         // go changes nothing and must repaint nothing.
         if (enginePaints && handlesOn) resizing = true;
@@ -2877,8 +2887,8 @@
     </div>
   {/if}
 
-  <!-- What the solver may not change on this box, and the way to let it go (FIT-5). -->
-  <LockChip {box} />
+  <!-- On a locked box only: the padlock, which unlocks it. -->
+  {#if locked}<LockChip {box} />{/if}
 
   <!-- The wrapper exists for the mask: `mask-image` needs an element whose
        (0,0) is the box's own top-left, and the text stack is a centred flex

@@ -960,8 +960,27 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
     // The line breaking's one switch: on is the shaped breaker, hyphenating.
     expect(prefs.defaultHyphenate).toBe(d.hyphenate && d.shape !== 'off');
     expect(prefs.defaultBlockShape).toBe(d.shape);
-    expect(prefs.defaultBalloon).toBe(d.balloon);
+    // The one that is not: "Fit text to balloon" is a beta and starts off,
+    // while a saved style with no `balloon` key still reads as on.
+    expect(prefs.defaultBalloon).toBe(false);
     expect(prefs.defaultMinOrphan).toBe(d.minOrphan);
+  });
+
+  // Every write stores every key, so a blob from before 2026-10-20 has the old
+  // defaults written out: "Fit text to balloon" on, the browser measuring.
+  // They move once, to the new ones; a blob written since keeps what it says.
+  it('moves a blob written under the old defaults to the new ones, once', async () => {
+    const old = await withStorage('{"defaultBalloon":true,"textEngine":"browser"}');
+    expect(old.prefs.defaultBalloon).toBe(false);
+    expect(old.prefs.textEngine).toBe('rust');
+    old.setPref('defaultBalloon', true);
+    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(1);
+    const since = await withStorage(old.map.get('mt.prefs'));
+    expect(since.prefs.defaultBalloon).toBe(true);
+    expect(since.prefs.textEngine).toBe('rust');
+    const chose = await withStorage('{"defaultBalloon":true,"textEngine":"browser","defaultsRev":1}');
+    expect(chose.prefs.defaultBalloon).toBe(true);
+    expect(chose.prefs.textEngine).toBe('browser');
   });
 
   it('takes stored box defaults, and refuses values of the wrong type or range', async () => {
@@ -970,8 +989,8 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
     expect(a.prefs.defaultMinOrphan).toBe(6);
     // A string where a boolean belongs, and a number outside the range the
     // control offers: one is dropped, the other is clamped into it.
-    const b = await withStorage('{"defaultBalloon":"yes","defaultMinOrphan":900}');
-    expect(b.prefs.defaultBalloon).toBe(true);
+    const b = await withStorage('{"defaultBalloon":"yes","defaultMinOrphan":900,"defaultsRev":1}');
+    expect(b.prefs.defaultBalloon).toBe(false);
     expect(b.prefs.defaultMinOrphan).toBe(8);
     // A block shape the control does not offer is dropped too (BRK-3).
     const c = await withStorage('{"defaultBlockShape":"rect"}');
@@ -983,7 +1002,7 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
   // "Shaped line breaks" off was the plain wrap. It is the one switch off now,
   // and the box it gives is plain whatever the rest say.
   it('reads an old "Shaped line breaks" off as the line breaking switched off', async () => {
-    const a = await withStorage('{"defaultShape":false,"defaultHyphenate":true,"defaultBalloon":true}');
+    const a = await withStorage('{"defaultShape":false,"defaultHyphenate":true,"defaultBalloon":true,"defaultsRev":1}');
     expect(a.prefs.defaultHyphenate).toBe(false);
     expect(a.prefs.defaultBalloon).toBe(true);
     const b = await withStorage('{"defaultShape":true,"defaultHyphenate":true}');

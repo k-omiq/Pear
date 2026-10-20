@@ -29,9 +29,25 @@ const KEY = 'mt.prefs';
 // switch) is only ever read for this; nothing sets it any more.
 let legacyTypeset = 'plain';
 
+// Which set of defaults the stored blob was written under. Every write stores
+// every key, so a blob carries the defaults of its day written out as values,
+// and a default changed since would never reach anyone who had ever touched a
+// setting. A blob from before a revision has that revision's changes made
+// once, in `load`; the stamp says they are made.
+//   1  2026-10-20: "Fit text to balloon" is a beta and starts off; the Rust
+//      engine measures text.
+const DEFAULTS_REV = 1;
+// The engine a build starts on: the Rust engine, unless the build says
+// otherwise (`VITE_MT_TEXT_ENGINE=browser`; the test lanes do, and measure
+// with the engine only where a test asks for it).
+const ENGINE_DEFAULT = import.meta.env?.VITE_MT_TEXT_ENGINE === 'browser' ? 'browser' : 'rust';
+
 export const prefs = $state({
   // The brush drawing tool (work in progress). Off by default until ready.
   brushTool: false,
+  // The SFX presets in the Inspector's Effects tab (beta). Off by default, and
+  // the SFX sub-tab is not there until it is turned on.
+  sfxPresets: false,
   // Place and Text tools can start from defaults instead of the last box's style.
   inheritBoxStyle: true,
   // ---- typesetting defaults for NEW text boxes ----
@@ -53,7 +69,9 @@ export const prefs = $state({
   // balloon layout. `applyBoxDefaults` does the translation.
   defaultHyphenate: true,
   defaultBlockShape: 'auto',
-  defaultBalloon: true,
+  // "Fit text to balloon" (beta): lines broken to the balloon's rows. Off by
+  // default.
+  defaultBalloon: false,
   defaultMinOrphan: 3,
   // The smallest size, in page px, the fit ladder may shrink a box's text to
   // when it does not fit (see `autoFitBox` in the store). The ladder's working
@@ -92,14 +110,12 @@ export const prefs = $state({
   // A second detector (DTC-2, RT-DETR) votes with the first and says which
   // text sits in a bubble. A 168 MB download, so off until asked for.
   secondDetector: false,
-  // Who measures text: 'browser', as the app always has, or 'rust', the Rust
-  // text engine on the user's own font files (engine-switch.svelte.js). Off by
-  // default while the port is being checked against the browser. A machine
-  // preference like the rest: it says how this computer measures, and a
-  // chapter carries nothing of it. The side-by-side test copy
-  // (scripts/install-sxs.sh) is built with VITE_MT_TEXT_ENGINE=rust and starts
-  // on the engine it exists to show; every other build starts on the browser.
-  textEngine: import.meta.env?.VITE_MT_TEXT_ENGINE === 'rust' ? 'rust' : 'browser',
+  // Who measures text: 'rust', the Rust text engine on the user's own font
+  // files (engine-switch.svelte.js), or 'browser', as the app did before it.
+  // A machine preference like the rest: it says how this computer measures,
+  // and a chapter carries nothing of it. A build without the engine measures
+  // with the browser whatever this says (`start`).
+  textEngine: ENGINE_DEFAULT,
 });
 
 // The two font lists are string arrays; anything else in them is dropped.
@@ -109,7 +125,7 @@ const cleanNames = (v) =>
 
 // The box defaults, split by what a value of theirs may be. Named once so the
 // setter's validation and the loader's validation cannot drift apart.
-const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector'];
+const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxPresets', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector'];
 const NUM_KEYS = { defaultMinOrphan: [1, 8], minFontSize: [4, 48] };
 const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'] };
 
@@ -157,6 +173,7 @@ function persist() {
         defaultMinOrphan: prefs.defaultMinOrphan,
         minFontSize: prefs.minFontSize,
         brushTool: prefs.brushTool,
+        sfxPresets: prefs.sfxPresets,
         inheritBoxStyle: prefs.inheritBoxStyle,
         shortcuts: $state.snapshot(prefs.shortcuts),
         hiddenBuiltinFonts: $state.snapshot(prefs.hiddenBuiltinFonts),
@@ -167,6 +184,7 @@ function persist() {
         secondDetector: prefs.secondDetector,
         textEngine: prefs.textEngine,
         legacyTypeset,
+        defaultsRev: DEFAULTS_REV,
       }),
     );
   } catch {
@@ -273,6 +291,13 @@ function load() {
     if (names) prefs[k] = names;
   }
   prefs.ocrModels = normalizeOcrModels(saved?.ocrModels);
+  // A blob written under older defaults (`DEFAULTS_REV`). Nothing is written
+  // here: the next write stamps it, and until then each launch makes the same
+  // change to the same blob.
+  if (saved && !(saved.defaultsRev >= 1)) {
+    prefs.defaultBalloon = false;
+    prefs.textEngine = 'rust';
+  }
   // Read before anything this session can persist, so the blob it reads is the
   // one the last build left. Until the first write stamps it, every launch
   // derives the same answer from the same unchanged blob.

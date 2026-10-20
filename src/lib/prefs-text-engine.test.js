@@ -34,7 +34,7 @@ async function launch(booted = async () => {}) {
 }
 
 describe('the textEngine preference', () => {
-  it('is the browser on a fresh install, and nothing of the engine is loaded', async () => {
+  it('is the browser on a fresh install of a build that says so (the test lanes), and nothing of the engine is loaded', async () => {
     const { sw, createEngine, prefs } = await launch();
     expect(prefs.textEngine).toBe('browser');
     expect(sw.engineSwitch).toMatchObject({ mode: 'browser', phase: 'off' });
@@ -68,7 +68,7 @@ describe('the textEngine preference', () => {
   });
 
   it.each([['skia'], [true], [null], [1]])('takes nothing but the two engines: %s', async (value) => {
-    storage['mt.prefs'] = JSON.stringify({ textEngine: value });
+    storage['mt.prefs'] = JSON.stringify({ textEngine: value, defaultsRev: 1 });
     const { sw, prefs, setPref } = await launch();
     expect(prefs.textEngine).toBe('browser');
     setPref('textEngine', value);

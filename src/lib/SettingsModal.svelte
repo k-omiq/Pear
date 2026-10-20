@@ -550,9 +550,10 @@
     </div>
     <div class="set-item">
       <div class="set-line">
-        <span class="set-label">Fit text to balloon</span>
-        {@render toggle('defaultBalloon', 'Fit text to balloon', v.defaultBalloon, !v.defaultHyphenate, (on) => set('defaultBalloon', on))}
+        <span class="set-label">Fit text to balloon <span class="set-badge">Beta</span></span>
+        {@render toggle('defaultBalloon', 'Fit text to balloon (beta)', v.defaultBalloon, !v.defaultHyphenate, (on) => set('defaultBalloon', on))}
       </div>
+      <p class="set-desc">Breaks lines to the balloon’s curve instead of the box’s straight sides.</p>
     </div>
     <div class="set-item">
       <div class="set-line">
@@ -676,6 +677,13 @@
               {@render toggle('brushTool', 'Brush tool (work in progress)', prefs.brushTool)}
             </div>
             <p class="set-desc">Unfinished, and hidden until you turn it on.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">SFX presets <span class="set-badge">Beta</span></span>
+              {@render toggle('sfxPresets', 'SFX presets (beta)', prefs.sfxPresets)}
+            </div>
+            <p class="set-desc">Adds an SFX tab to Effects, with ready-made sound-effect lettering.</p>
           </div>
         </section>
 

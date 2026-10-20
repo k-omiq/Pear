@@ -126,6 +126,7 @@ const {
   makeBoxAuto,
   flaggedBoxes,
   resizeBox,
+  edgeDragWidthFloor,
   setBoxText,
   beginEdit,
   endEdit,
@@ -1417,14 +1418,17 @@ describe('the grow-only paths', () => {
     expect(b.review.overflow.t).toBeGreaterThan(CONTAIN_TOL);
   });
 
-  it('a drag that makes the text overflow flags it and resizes nothing else', () => {
+  it('a drag never leaves the box narrower than its widest word, nor shorter than its lines', () => {
     const p = load([{ id: 'b1', lineN: null, text: 'HELLO THERE', x: 100, y: 100, w: 200, h: 60, style: style() }]);
     expect(byId('b1').review).toBeUndefined();
+    const floor = edgeDragWidthFloor(byId('b1'), p);
+    expect(floor).toBeGreaterThan(30);
     resizeBox(1, 'b1', { x: 100, y: 100, w: 30, h: 60 });
     const b = byId('b1');
-    expect(b.w).toBe(30);
-    expect(b.review).toMatchObject({ kind: 'overflow' });
-    resizeBox(1, 'b1', { x: 100, y: 100, w: 200, h: 60 });
+    expect(b.w).toBe(floor);
+    expect(b.style.size).toBe(20);
+    expect(b.review).toBeUndefined();
+    resizeBox(1, 'b1', { x: 100, y: 100, w: 200 });
     expect(byId('b1').review).toBeUndefined();
     expect(p.boxes).toHaveLength(1);
   });

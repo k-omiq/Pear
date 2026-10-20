@@ -1041,7 +1041,7 @@ window.__ec = {
     st.id = 'ec-bare';
     st.textContent = [
       '.tbox, .tbox:hover { outline-color: transparent !important; }',
-      '.tbox .handle, .tbox .rotate-stem, .tbox .mask-gizmo, .tbox .review-badge, .tbox .lock-chip-wrap, .tbox .tsel, .tbox .tcaret, .tbox .tcomp, .tbox .csel, .tbox .ccaret { visibility: hidden !important; }',
+      '.tbox .handle, .tbox .rotate-stem, .tbox .mask-gizmo, .tbox .review-badge, .tbox .lock-chip, .tbox .tsel, .tbox .tcaret, .tbox .tcomp, .tbox .csel, .tbox .ccaret { visibility: hidden !important; }',
       '.tbox .txt.editable { caret-color: transparent !important; }',
       '.tbox .txt.editable::selection, .tbox .txt.editable *::selection { background: transparent !important; }',
     ].join('\n');

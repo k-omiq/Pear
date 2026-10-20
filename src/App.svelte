@@ -20,7 +20,7 @@
   import ChapterSourcesSheet from './lib/home/ChapterSourcesSheet.svelte';
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, toggleBalloonFit, refitBalloon, approveOutline, toggleLayoutLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, isLongstrip, isTranslateMode, chapterSaveCycle } from './lib/store.svelte.js';
+  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, isLongstrip, isTranslateMode, chapterSaveCycle } from './lib/store.svelte.js';
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
   import { dispatchShortcut, registerShortcutHandlers } from './lib/shortcuts.svelte.js';
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
@@ -323,11 +323,11 @@
       if (isTranslateMode()) return false;
       app.showRegions = !app.showRegions;
     },
-    // Lock layout, as a switch on the selected box: the way to lock a box that
-    // has no lock chip yet, since the chip only shows once a box has a lock.
+    // Lock, as a switch on the selected box. The padlock on the page only
+    // shows on a locked box, so this and the box menu are how one is locked.
     'box.layoutLock': () => {
       if (isTranslateMode() || !app.selectedId) return false;
-      toggleLayoutLock(app.selectedId);
+      toggleBoxLock(app.selectedId);
     },
     // Declined whenever the press could mean copying text instead - text
     // selected somewhere on screen - so the browser's own copy still runs.
@@ -344,7 +344,7 @@
     'box.deleteAlt': deleteSelected,
     'box.resetRotation': () => {
       if (!app.selectedId || isTranslateMode()) return false;
-      if (!resetBoxRotation(app.selectedId)) toast('That box is already straight');
+      if (!resetBoxRotation(app.selectedId) && !byId(app.selectedId)?.locked) toast('That box is already straight');
     },
     'style.copy': () => {
       if (!app.selectedId || isTranslateMode()) return false;

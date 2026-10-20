@@ -25,9 +25,12 @@
     outlineState,
     toast,
     resizeBox,
+    boxLocked,
+    setBoxLocked,
   } from './store.svelte.js';
 
   import { record } from './editor/history.svelte.js';
+  import { prefs } from './prefs.svelte.js';
   import { fontGroups, fontCaveat } from './font-menu.js';
   import { modKey } from './format.js';
   import {
@@ -95,6 +98,8 @@
   let { onSettings = null } = $props();
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
+  // A locked box shows its settings and takes no change to them.
+  const locked = $derived(boxLocked(box));
   // The tag this box's style answers to (LET-1), for the Tag style section.
   const tagName = $derived(box ? boxTagName(box.id) : null);
 
@@ -129,8 +134,8 @@
     document.getElementById(`insp-tab-${next}`)?.focus();
   }
 
-  const EFFECTS_TABS = [
-    ['sfx', 'SFX'],
+  const ALL_EFFECTS_TABS = [
+    ['sfx', 'SFX presets (beta)'],
     ['stroke', 'Stroke'],
     ['shadow', 'Shadow'],
     ['warp', 'Warp'],
@@ -145,6 +150,10 @@
     ['edges', 'Edges'],
     ['mask', 'Mask'],
   ];
+  // The SFX presets are a beta, there only while Settings turns them on. A
+  // session left on their tab shows Stroke while they are off.
+  const EFFECTS_TABS = $derived(prefs.sfxPresets ? ALL_EFFECTS_TABS : ALL_EFFECTS_TABS.filter(([id]) => id !== 'sfx'));
+  const effectsTab = $derived(effectsSubTab.id === 'sfx' && !prefs.sfxPresets ? 'stroke' : effectsSubTab.id);
 
   function onSubTabKey(e, id) {
     const i = EFFECTS_TABS.findIndex(([t]) => t === id);
@@ -1116,6 +1125,18 @@
       {/each}
     </div>
 
+    <!-- A locked box: said once, at the top, with the way out beside it. The
+         tabs still switch, so its settings can be read; nothing below them
+         can be changed (`inert`) until it is unlocked. -->
+    {#if locked}
+      <div class="insp-locked" role="status">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>
+        <span>Locked. Unlock it to change anything.</span>
+        <button type="button" class="rbtn" onclick={() => setBoxLocked(box.id, false)}>Unlock</button>
+      </div>
+    {/if}
+
+    <div class="insp-body" class:locked inert={locked}>
     <!-- ===== Text ===== -->
     {#if tab === 'text'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-text" aria-labelledby="insp-tab-text">
@@ -1483,10 +1504,10 @@
               role="tab"
               id="insp-subtab-{id}"
               class="sub-tab"
-              class:on={effectsSubTab.id === id}
-              aria-selected={effectsSubTab.id === id}
+              class:on={effectsTab === id}
+              aria-selected={effectsTab === id}
               aria-label={label}
-              tabindex={effectsSubTab.id === id ? 0 : -1}
+              tabindex={effectsTab === id ? 0 : -1}
               title={label}
               onclick={() => setEffectsSubTab(id)}
               onkeydown={(e) => onSubTabKey(e, id)}
@@ -1496,14 +1517,14 @@
           {/each}
         </div>
 
-        {#if effectsSubTab.id === 'sfx'}
+        {#if effectsTab === 'sfx'}
           <!-- Inside this element, so the capture-phase pointerdown/keydown on
                `.insp` (armSnap) takes the undo snapshot before any control in the
                panel writes. -->
           <SfxPanel {box} pg={page()} {touch} {onSettings} />
         {/if}
 
-        {#if effectsSubTab.id === 'stroke'}
+        {#if effectsTab === 'stroke'}
           <!-- Strokes: innermost first, which is also the order they are listed. -->
           {@render secHead('Strokes · inner to outer')}
           <div class="grp">
@@ -1528,7 +1549,7 @@
           </div>
         {/if}
 
-        {#if effectsSubTab.id === 'shadow'}
+        {#if effectsTab === 'shadow'}
           <!-- Shadows: the first one is painted on top of the rest. -->
           {@render secHead('Shadows · first on top')}
           <div class="grp">
@@ -1554,7 +1575,7 @@
           </div>
         {/if}
 
-        {#if effectsSubTab.id === 'warp'}
+        {#if effectsTab === 'warp'}
           <div class="grp">
             <span class="lbl" title="Bend the baseline upward/downward">Arc</span>
             <div class="slider-row">
@@ -1642,7 +1663,7 @@
           {/if}
         {/if}
 
-        {#if effectsSubTab.id === 'transform'}
+        {#if effectsTab === 'transform'}
           <!-- The mesh. One setting at two grid sizes, exactly as CSP has it:
                Free is the four corner handles and a perspective map, Mesh is a
                grid the picture bends smoothly through. The handles are ON THE
@@ -1747,7 +1768,7 @@
           </div>
         {/if}
 
-        {#if effectsSubTab.id === 'liquify'}
+        {#if effectsTab === 'liquify'}
           <!-- Liquify: the tool that pushes the box's mesh around under the
                pointer. The controls are the tool's, not the box's - session
                state, like the mask tools - and what a drag writes is the same
@@ -1799,7 +1820,7 @@
           </div>
         {/if}
 
-        {#if effectsSubTab.id === 'blur'}
+        {#if effectsTab === 'blur'}
           <div class="grp">
             <span class="lbl">Blur</span>
             <div class="slider-row">
@@ -1845,7 +1866,7 @@
           </div>
         {/if}
 
-        {#if effectsSubTab.id === 'edges'}
+        {#if effectsTab === 'edges'}
           <div class="switch-row">
             <button type="button" class="switch" class:on={s.roughen.on} role="switch" aria-checked={s.roughen.on} aria-label="Roughen edges" onclick={() => { s.roughen.on = !s.roughen.on; touch(); }}><span class="knob"></span></button>
             <span class="lbl2">Roughen edges</span>
@@ -1875,7 +1896,7 @@
           </div>
         {/if}
 
-        {#if effectsSubTab.id === 'mask'}
+        {#if effectsTab === 'mask'}
           <div class="switch-row">
             <button
               type="button"
@@ -2102,10 +2123,18 @@
       </div>
     {/if}
 
-    <button class="btn-danger" onclick={onDeleteBox}>
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>
-      Delete box
-    </button>
+    </div>
+
+    <div class="insp-actions">
+      <button class="btn-lock" disabled={locked} title="Lock this box: nothing changes it until it is unlocked" onclick={() => setBoxLocked(box.id, true)}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>
+        Lock box
+      </button>
+      <button class="btn-danger" disabled={locked} onclick={onDeleteBox}>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>
+        Delete box
+      </button>
+    </div>
   </div>
 {/if}
 
@@ -2145,6 +2174,75 @@
   }
   .outline-btns .rbtn {
     width: 100%;
+  }
+  /* The panel body is a column of its own, as `.insp` lays its children out. */
+  .insp-body {
+    display: flex;
+    flex-direction: column;
+    gap: inherit;
+    min-width: 0;
+  }
+  .insp-body.locked {
+    opacity: 0.45;
+  }
+  .insp-locked {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px 7px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 7px;
+    background: var(--surface);
+    font-size: 12px;
+    color: var(--text);
+  }
+  .insp-locked span {
+    flex: 1;
+    min-width: 0;
+  }
+  .insp-locked svg,
+  .btn-lock svg {
+    flex: 0 0 auto;
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linejoin: round;
+  }
+  .insp-locked svg rect,
+  .btn-lock svg rect {
+    fill: currentColor;
+  }
+  .insp-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .insp-actions .btn-danger {
+    margin-top: 0;
+  }
+  .btn-lock {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .btn-lock:hover:not(:disabled) {
+    background: var(--surface);
+  }
+  .insp-actions button:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   /* The tab strip. It sticks to the top of the panel's own scroll, because the
       panel is a floating window a letterer resizes down to a few rows: a tab bar

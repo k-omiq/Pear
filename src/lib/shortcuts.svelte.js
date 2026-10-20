@@ -289,7 +289,7 @@ const DEFS = [
   // A key because a box with no lock yet shows no lock chip to click. L for
   // lock, with Alt beside Refit's Mod+Alt+F; Mod+L alone is the address bar to
   // a hand used to a browser.
-  { id: 'box.layoutLock', label: 'Lock layout (on/off)', group: 'Text box', combo: 'Mod+Alt+l', whenTyping: true },
+  { id: 'box.layoutLock', label: 'Lock box (on/off)', group: 'Text box', combo: 'Mod+Alt+l', whenTyping: true },
   // Bubble outlines (Bubble C): approve the selected box's outline, and the
   // Regions view that draws them all.
   { id: 'box.approveOutline', label: 'Approve outline', group: 'Text box', combo: 'Mod+Alt+a', whenTyping: true },

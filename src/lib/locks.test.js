@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // ===========================================================================
-// Locks, set and let go on purpose (FIT-5)
+// Locks
 // ===========================================================================
-// The lock chip and the Bulk panel only call the store, so this is where what
-// they do is proved: which locks each command sets or clears, that each press
-// is one undo step that puts the locks back exactly, that the Bulk panel's
-// buttons reach every picked box (one step per page), and that a manual box -
-// one the solver never lays out - is left alone.
+// Two kinds, and this proves both. The user's lock (`box.locked`): one lock
+// that holds everything - nothing moves, sizes, restyles or fits the box until
+// it is unlocked - set by the keyboard, the box menu, the Inspector and the
+// Bulk panel, each press one undo step. And the solver's locks (`auto.locks`,
+// FIT-5), which the agent's tools set and clear: which each command touches,
+// one undo step that puts them back exactly, and a manual box left alone.
 //
-// `canMeasure` is granted for the one test that runs Refit, as autofit.test.js
-// grants it: the stand-in metric is deterministic, and the solver is the thing
-// whose respect for the locks is being checked.
+// `canMeasure` is granted for the tests that run a fit, as autofit.test.js
+// grants it: the stand-in metric is deterministic.
 vi.mock('./measure.js', async (importOriginal) => ({
   ...(await importOriginal()),
   canMeasure: () => true,
@@ -26,14 +26,19 @@ const {
   closeBulk,
   toggleBulkTarget,
   boxLocks,
-  layoutLocked,
   lockableBox,
   setBoxLocks,
   unlockBoxes,
-  lockBoxLayout,
-  toggleLayoutLock,
+  boxLocked,
+  setBoxLocked,
+  toggleBoxLock,
   lockBulkTargets,
   refitBalloon,
+  resizeBox,
+  nudgeBox,
+  deleteBox,
+  beginEdit,
+  editBoxes,
 } = await import('./store.svelte.js');
 const hist = await import('./editor/history.svelte.js');
 
@@ -92,68 +97,118 @@ beforeEach(() => {
   hist.resetHistory();
 });
 
-describe('what the chip reads', () => {
-  it('shows only the locks a box has on, and nothing for a box with none', () => {
+describe('the lock', () => {
+  it('is on only where it was set, and is saved with the box', () => {
+    expect(boxLocked(byId('b1'))).toBe(false);
+    expect(setBoxLocked('b1', true)).toBe(1);
+    expect(boxLocked(byId('b1'))).toBe(true);
+    const saved = JSON.parse(JSON.stringify(app.pages));
+    expect(saved[0].boxes.find((b) => b.id === 'b1').locked).toBe(true);
+    expect(saved[0].boxes.find((b) => b.id === 'b2')).not.toHaveProperty('locked');
+    loadProjectPages(saved);
+    expect(boxLocked(byId('b1'))).toBe(true);
+    expect(boxLocked(byId('b2'))).toBe(false);
+  });
+
+  it('locks any box, a manual one too', () => {
+    expect(setBoxLocked(['ink', 'off'], true)).toBe(2);
+    expect(boxLocked(byId('ink'))).toBe(true);
+    expect(boxLocked(byId('off'))).toBe(true);
+  });
+
+  it('leaves the solver locks as they were', () => {
+    setBoxLocked('b1', true);
+    expect(locksOf('b1')).toEqual({ ...NONE, size: true, width: true });
+  });
+
+  it('holds the box: no resize, move, delete, typing, restyle or refit', () => {
+    setBoxLocked('b3', true);
+    const b = byId('b3');
+    const geom = () => [b.x, b.y, b.w, b.h, b.style.size];
+    const was = geom();
+    expect(resizeBox(1, 'b3', { w: 300, h: 200 })).toBeNull();
+    selectBox('b3');
+    expect(nudgeBox('b3', 10, 0)).toBe(false);
+    refitBalloon('b3', page());
+    expect(geom()).toEqual(was);
+    deleteBox('b3');
+    expect(byId('b3')).toBeTruthy();
+    beginEdit('b3');
+    expect(app.editingId).toBeNull();
+    expect(editBoxes([{ page: page(), box: b }], (x) => void (x.style.size = 40))).toEqual([]);
+    expect(b.style.size).toBe(24);
+    expect(undoDepth()).toBe(1);
+  });
+
+  it('is one undo step each way', () => {
+    setBoxLocked('b2', true);
+    setBoxLocked('b2', false);
+    expect(undoDepth()).toBe(2);
+    hist.undo();
+    expect(boxLocked(byId('b2'))).toBe(true);
+    hist.undo();
+    expect(boxLocked(byId('b2'))).toBe(false);
+    hist.redo();
+    expect(boxLocked(byId('b2'))).toBe(true);
+  });
+
+  it('records nothing when nothing changes', () => {
+    expect(setBoxLocked('b2', false)).toBe(0);
+    expect(undoDepth()).toBe(0);
+  });
+
+  it('switches from the keyboard', () => {
+    selectBox('b1');
+    expect(toggleBoxLock()).toBe(true);
+    expect(boxLocked(byId('b1'))).toBe(true);
+    expect(toggleBoxLock()).toBe(true);
+    expect(boxLocked(byId('b1'))).toBe(false);
+    expect(undoDepth()).toBe(2);
+  });
+
+  it('is set and let go from the Bulk panel, one step per page', () => {
+    openBulk();
+    for (const id of ['b1', 'ink', 'c1']) toggleBulkTarget(id);
+    expect(lockBulkTargets(true)).toBe(3);
+    expect(['b1', 'ink', 'c1'].every((id) => boxLocked(byId(id)))).toBe(true);
+    expect(hist.peekStack().undo.map((e) => [e.t, e.pageId, e.items.length])).toEqual([
+      ['locks', 1, 2],
+      ['locks', 2, 1],
+    ]);
+    // The panel stays open: a lock is not the style it is there to apply.
+    expect(app.bulk.active).toBe(true);
+    expect(lockBulkTargets(false)).toBe(3);
+    expect(['b1', 'ink', 'c1'].some((id) => boxLocked(byId(id)))).toBe(false);
+  });
+
+  it('does nothing from the Bulk panel with nothing picked', () => {
+    openBulk();
+    expect(lockBulkTargets(true)).toBe(0);
+    expect(undoDepth()).toBe(0);
+  });
+});
+
+describe('the solver locks', () => {
+  it('reads only the locks a box has on, and nothing on a manual box', () => {
     expect(boxLocks(byId('b1'))).toEqual({ size: true, width: true });
     expect(boxLocks(byId('b2'))).toEqual({ width: true });
     expect(boxLocks(byId('b3'))).toBeNull();
-    expect(layoutLocked(byId('b1'))).toBe(false);
-  });
-
-  it('shows nothing on a manual box, whatever its record says', () => {
     expect(lockableBox(byId('ink'))).toBe(false);
     expect(boxLocks(byId('ink'))).toBeNull();
     expect(lockableBox(byId('off'))).toBe(false);
     expect(boxLocks(byId('off'))).toBeNull();
   });
-});
 
-describe('setting and clearing locks', () => {
   it('sets a lock, and leaves the rest as they are', () => {
     expect(setBoxLocks('b3', { width: true })).toBe(1);
     expect(locksOf('b3')).toEqual({ ...NONE, width: true });
   });
 
-  it('unlocks the size alone', () => {
+  it('unlocks one, or all', () => {
     expect(unlockBoxes('b1', 'size')).toBe(1);
     expect(locksOf('b1')).toEqual({ ...NONE, width: true });
-  });
-
-  it('unlocks the width alone', () => {
-    expect(unlockBoxes('b1', 'width')).toBe(1);
-    expect(locksOf('b1')).toEqual({ ...NONE, size: true });
-  });
-
-  it('unlocks everything', () => {
     expect(unlockBoxes('c2', 'all')).toBe(1);
     expect(locksOf('c2')).toEqual(NONE);
-    expect(boxLocks(byId('c2'))).toBeNull();
-  });
-
-  it('locks the layout as it stands: size, width, place and breaks, at the size on the box', () => {
-    // A box the solver shrank: 24 on the page against a reference of 30. Held
-    // at 30 it would jump back up at its next edit, so 24 becomes its reference.
-    const b = byId('b3');
-    const geom = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
-    expect(lockBoxLayout('b3')).toBe(1);
-    expect(locksOf('b3')).toEqual({ ...NONE, size: true, width: true, pos: true, breaks: true });
-    expect(b.auto.refSize).toBe(24);
-    expect(layoutLocked(b)).toBe(true);
-    // Nothing is laid out again.
-    expect({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size }).toEqual(geom);
-  });
-
-  // The agent holds the lines it chose and nothing else (`set.breaks`). Read as
-  // a held layout, that box showed "Layout locked" while its size and width
-  // still moved, and the Lock layout key let every lock go instead of locking.
-  it('reads a box with only its lines held as that, not as a locked layout', () => {
-    setBoxLocks('b3', { breaks: true });
-    expect(boxLocks(byId('b3'))).toEqual({ breaks: true });
-    expect(layoutLocked(byId('b3'))).toBe(false);
-    selectBox('b3');
-    toggleLayoutLock();
-    expect(locksOf('b3')).toEqual({ ...NONE, size: true, width: true, pos: true, breaks: true });
-    expect(layoutLocked(byId('b3'))).toBe(true);
   });
 
   // The solver's size lock holds the reference size: turned on by itself at
@@ -163,135 +218,27 @@ describe('setting and clearing locks', () => {
     expect(byId('b3').auto.refSize).toBe(24);
     hist.undo();
     expect(byId('b3').auto.refSize).toBe(30);
-    // Already locked: the reference it holds is left alone.
-    byId('b1').style.size = 20;
-    setBoxLocks('b1', { size: true, pos: true });
-    expect(byId('b1').auto.refSize).toBe(30);
   });
 
   it('lets the breaks go with the size or the width, which they hold', () => {
-    lockBoxLayout('b3');
+    setBoxLocks('b3', { size: true, width: true, breaks: true });
     unlockBoxes('b3', 'size');
-    expect(locksOf('b3')).toEqual({ ...NONE, width: true, pos: true });
+    expect(locksOf('b3')).toEqual({ ...NONE, width: true });
   });
 
-  it('records nothing and moves nothing when the change changes nothing', () => {
-    const b = byId('b1');
-    const geom = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
+  it('records nothing and leaves a manual box alone', () => {
     expect(unlockBoxes('b3', 'all')).toBe(0);
-    expect(setBoxLocks('b1', { size: true })).toBe(0);
-    expect(undoDepth()).toBe(0);
-    unlockBoxes('b1', 'all');
-    expect({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size }).toEqual(geom);
-  });
-
-  it('leaves a manual box alone', () => {
     expect(unlockBoxes(['ink', 'off'], 'all')).toBe(0);
-    expect(lockBoxLayout(['ink', 'off'])).toBe(0);
     expect(locksOf('ink')).toEqual({ ...NONE, size: true });
-    expect(locksOf('off')).toEqual({ ...NONE, width: true });
     expect(undoDepth()).toBe(0);
   });
-});
 
-describe('undo and redo', () => {
-  it('makes every change one step that puts the locks back exactly', () => {
+  it('puts the locks back exactly on undo, and selects the box', () => {
+    selectBox('b2');
     unlockBoxes('b1', 'size');
-    expect(undoDepth()).toBe(1);
+    selectBox('b2');
     hist.undo();
     expect(locksOf('b1')).toEqual({ ...NONE, size: true, width: true });
-    hist.redo();
-    expect(locksOf('b1')).toEqual({ ...NONE, width: true });
-  });
-
-  it('puts the reference size back with the locks after a layout lock', () => {
-    lockBoxLayout('b3');
-    hist.undo();
-    expect(locksOf('b3')).toEqual(NONE);
-    expect(byId('b3').auto.refSize).toBe(30);
-    hist.redo();
-    expect(layoutLocked(byId('b3'))).toBe(true);
-    expect(byId('b3').auto.refSize).toBe(24);
-  });
-
-  it('selects the box it changed', () => {
-    selectBox('b2');
-    unlockBoxes('b1', 'all');
-    selectBox('b2');
-    hist.undo();
     expect(app.selectedId).toBe('b1');
-  });
-});
-
-describe('the keyboard switch', () => {
-  it('locks the layout, and the second press lets every lock go', () => {
-    selectBox('b1');
-    expect(toggleLayoutLock()).toBe(true);
-    expect(layoutLocked(byId('b1'))).toBe(true);
-    expect(toggleLayoutLock()).toBe(true);
-    expect(locksOf('b1')).toEqual(NONE);
-    expect(undoDepth()).toBe(2);
-  });
-
-  it('refuses a manual box', () => {
-    selectBox('ink');
-    expect(toggleLayoutLock()).toBe(false);
-    expect(undoDepth()).toBe(0);
-  });
-});
-
-describe('the Bulk panel', () => {
-  it('unlocks every picked box, skips the manual ones, one step per page', () => {
-    openBulk();
-    for (const id of ['b1', 'b2', 'ink', 'c1', 'c2']) toggleBulkTarget(id);
-    expect(lockBulkTargets(false)).toBe(4);
-    for (const id of ['b1', 'b2', 'c1', 'c2']) expect(locksOf(id)).toEqual(NONE);
-    expect(locksOf('ink')).toEqual({ ...NONE, size: true });
-    const entries = hist.peekStack().undo;
-    expect(entries.map((e) => [e.t, e.pageId, e.items.length])).toEqual([
-      ['locks', 1, 2],
-      ['locks', 2, 2],
-    ]);
-    // Walked back one page at a time.
-    hist.undo();
-    expect(locksOf('c2')).toEqual({ ...NONE, width: true, pos: true });
-    expect(locksOf('b1')).toEqual(NONE);
-    hist.undo();
-    expect(locksOf('b1')).toEqual({ ...NONE, size: true, width: true });
-    expect(locksOf('b2')).toEqual({ ...NONE, width: true });
-  });
-
-  it('locks the layout of every picked box', () => {
-    openBulk();
-    for (const id of ['b2', 'b3', 'off']) toggleBulkTarget(id);
-    expect(lockBulkTargets(true)).toBe(2);
-    expect(layoutLocked(byId('b2'))).toBe(true);
-    expect(layoutLocked(byId('b3'))).toBe(true);
-    expect(locksOf('off')).toEqual({ ...NONE, width: true });
-    // The panel stays open: a lock is not the style it is there to apply.
-    expect(app.bulk.active).toBe(true);
-  });
-
-  it('does nothing with nothing picked', () => {
-    openBulk();
-    expect(lockBulkTargets(false)).toBe(0);
-    expect(undoDepth()).toBe(0);
-  });
-});
-
-describe('what Refit then does', () => {
-  it('keeps a held layout, and lays the box out again once it is let go', () => {
-    const b = byId('b3');
-    // Somewhere the solver would never have put it, at a size it would not pick.
-    Object.assign(b, { x: 37, y: 411, w: 260 });
-    b.style.size = 19;
-    lockBoxLayout('b3');
-    refitBalloon('b3', page());
-    expect([b.x, b.w, b.style.size]).toEqual([37, 260, 19]);
-    unlockBoxes('b3', 'all');
-    // Unlocking alone moved nothing.
-    expect([b.x, b.w, b.style.size]).toEqual([37, 260, 19]);
-    refitBalloon('b3', page());
-    expect([b.x, b.w, b.style.size]).not.toEqual([37, 260, 19]);
   });
 });

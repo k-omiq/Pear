@@ -948,12 +948,13 @@ import {
       </div>
     </div>
 
-    <!-- Locks act on the picked boxes at once, not through Apply: a lock is not
-         a style, so the ticks have nothing to say about it (`lockBulkTargets`). -->
+    <!-- The lock acts on the picked boxes at once, not through Apply: a lock is
+         not a style, so the ticks have nothing to say about it (`lockBulkTargets`).
+         Apply passes locked boxes over. -->
     <div class="bulk-locks">
-      <span class="lbl">Locks</span>
-      <button class="btn btn-sm" disabled={count === 0} title="Let every lock go on the selected boxes. Nothing moves until Refit lays them out again." onclick={() => lockBulkTargets(false)}>Unlock selected</button>
-      <button class="btn btn-sm" disabled={count === 0} title="Hold each selected box's size, width, place and line breaks as they stand, through edits and Refit" onclick={() => lockBulkTargets(true)}>Lock layout of selected</button>
+      <span class="lbl">Lock</span>
+      <button class="btn btn-sm" disabled={count === 0} title="Unlock the selected boxes" onclick={() => lockBulkTargets(false)}>Unlock selected</button>
+      <button class="btn btn-sm" disabled={count === 0} title="Lock the selected boxes: nothing changes them until they are unlocked" onclick={() => lockBulkTargets(true)}>Lock selected</button>
     </div>
     <div class="bulk-foot">
       <span class="cnt">{ticked} ticked · {count} selected{tag ? ` · “${tag}”` : ''}</span>
