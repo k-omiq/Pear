@@ -459,7 +459,25 @@ export function defaultStyle() {
     // anchored by `valign`. Width is never touched automatically - the width is
     // what the user aimed at the bubble.
     autoHeight: true,
+    // "Fit to box": the box's width and height are the user's, and the font
+    // size is the largest that fills them, no larger than `fitMax` (0: the
+    // size the box had when it was switched on). It wins over `autoHeight`.
+    // `sizingOf` reads the three sizing modes off these two switches.
+    fitText: false,
+    fitMax: 0,
   };
+}
+
+// The three ways a box is sized, as the Inspector offers them:
+//   'auto'   Auto height - the user sets the width and the size; the height
+//            follows the text.
+//   'fixed'  Fixed - the user sets all three; text that does not fit is
+//            flagged, never resized.
+//   'fit'    Fit to box - the user sets the width and the height; the size
+//            is the largest that fits, up to `fitMax`.
+export function sizingOf(style) {
+  if (style?.fitText) return 'fit';
+  return style?.autoHeight === false ? 'fixed' : 'auto';
 }
 
 // merge older/partial styles up to the current schema (back-compat for saved data)
@@ -968,6 +986,8 @@ export function normalizeStyle(s) {
     shape: BLOCK_SHAPES.includes(flat.shape) ? flat.shape : d.shape,
     margin: normalizeMargin(src.margin),
     autoContrast: flat.autoContrast === true,
+    fitText: flat.fitText === true,
+    fitMax: Math.min(200, Math.max(0, num(flat.fitMax, 0))),
     blur: Math.max(0, num(src.blur, 0)),
     motionBlur: mb,
     path: pth,

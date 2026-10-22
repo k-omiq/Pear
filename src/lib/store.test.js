@@ -1217,6 +1217,8 @@ const BULK_VALUES = () => ({
   margin: 0.4,
   balloon: false,
   autoHeight: false,
+  fitText: true,
+  fitMax: 30,
   rotation: 25,
   flipH: true,
   flipV: true,

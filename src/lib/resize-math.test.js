@@ -66,35 +66,46 @@ describe('resizeBoxMath', () => {
   });
 
   describe('additional edge and corner coverage', () => {
-    it('scales font size on corner drag (se)', () => {
+    it('a plain corner drag changes the box and never the size', () => {
       const o = box({ w: 100, h: 100, size: 20 });
-      // Drag corner to double height: 100 -> 200
-      const res = resizeBoxMath(100, 100, 'se', o, 0, 50);
-      expect(res.w).toBe(200);
-      expect(res.h).toBe(200);
-      expect(res.size).toBe(40);
+      const res = resizeBoxMath(100, 50, 'se', o, 0, 50);
+      expect(res).toMatchObject({ w: 200, h: 150 });
+      expect(res.scale).toBeUndefined();
+    });
+
+    it('Shift keeps a corner drag in proportion', () => {
+      const o = box({ w: 200, h: 100, size: 20 });
+      expect(resizeBoxMath(100, 10, 'se', o, 0, 30, 40, { keepAspect: true })).toMatchObject({ w: 300, h: 150 });
+    });
+
+    it('Cmd scales the box and the size by one factor', () => {
+      const o = box({ w: 100, h: 100, size: 20 });
+      const res = resizeBoxMath(100, 100, 'se', o, 0, 50, 40, { scale: true });
+      expect(res).toMatchObject({ w: 200, h: 200, scale: 2 });
+      const g = resizeBoxMath(100, 10, 'se', box({ w: 200, h: 100, size: 20 }), 0, 30, 40, { scale: true });
+      expect(g).toMatchObject({ w: 300, h: 150 });
+      expect(20 * g.scale).toBe(30);
+      // A side scales by its own axis.
+      expect(resizeBoxMath(50, 0, 'e', o, 0, 30, 40, { scale: true })).toMatchObject({ w: 150, h: 150, scale: 1.5 });
     });
 
     it('scales the font size on the half-px grid the solver sizes on, not in whole px', () => {
-      // A box the solver set at 33.5: the first pixel of a corner drag keeps it
+      // A box the solver set at 33.5: the first pixel of a scale keeps it
       // there, rather than jumping it to 34 or 33.
       const o = box({ w: 200, h: 200, size: 33.5 });
-      expect(resizeBoxMath(1, 1, 'se', o, 0).size).toBe(33.5);
+      const size = (dx, dy) => 33.5 * resizeBoxMath(dx, dy, 'se', o, 0, 30, 40, { scale: true }).scale;
+      expect(size(1, 1)).toBeCloseTo(33.5, 9);
       // 33.5 x 1.05 = 35.175 and 33.5 x 0.975 = 32.66: the half px under, so
       // the type is never scaled past the box.
-      expect(resizeBoxMath(0, 10, 'se', o, 0).size).toBe(35);
-      expect(resizeBoxMath(0, -5, 'se', o, 0).size).toBe(32.5);
-    });
-
-    it('scales a corner drag by one factor, so the box keeps its shape round the text', () => {
-      const o = box({ w: 200, h: 100, size: 20 });
-      const g = resizeBoxMath(100, 10, 'se', o, 0);
-      expect(g).toMatchObject({ w: 300, h: 150, size: 30 });
+      expect(size(0, 10)).toBeCloseTo(35, 9);
+      expect(size(0, -5)).toBeCloseTo(32.5, 9);
     });
 
     it('stops a side at the floor it is given, and changes no size', () => {
       const o = box({ x: 100, w: 200, h: 100, size: 20 });
-      expect(resizeBoxMath(-180, 0, 'e', o, 0, 30, 120)).toMatchObject({ w: 120, h: 100, size: undefined });
+      const e = resizeBoxMath(-180, 0, 'e', o, 0, 30, 120);
+      expect(e).toMatchObject({ w: 120, h: 100 });
+      expect(e).not.toHaveProperty('scale');
       expect(resizeBoxMath(180, 0, 'w', o, 0, 30, 120)).toMatchObject({ x: 180, w: 120 });
     });
 

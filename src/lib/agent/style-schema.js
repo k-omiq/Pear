@@ -203,6 +203,8 @@ export const STYLE_SCHEMA = {
   margin: { ...number('outline fit: air from ink to the bubble outline in em (0.5 is a letter); null is the older layout', 0, 2), nullable: true },
   balloon: boolean('lay out to box.fit balloon'),
   autoHeight: boolean('text height at valign'),
+  fitText: boolean('size fills w x h'),
+  fitMax: number('fitText ceiling, 0 = size', 0, 200),
 };
 
 const RELATIVE = /^[+\-*]\d+(\.\d+)?$/;

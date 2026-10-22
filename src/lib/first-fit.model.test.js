@@ -1333,6 +1333,8 @@ const EVENTS = {
   unmarkedHandle() {
     if (!live()) return;
     if (!app.pages[0].boxes[0]) return;
+    // The handle sets the height by hand, which makes the box Fixed.
+    app.pages[0].boxes[0].style.autoHeight = false;
     app.pages[0].boxes[0].h += 7;
     choose('height', app.pages[0].boxes[0].h);
     state.touched = true;
@@ -1421,7 +1423,7 @@ const EVENTS = {
 };
 const UNMARKED = {
   text() { app.pages[0].boxes[0].text += ' UNMARKED'; choose('text', app.pages[0].boxes[0].text); },
-  height() { app.pages[0].boxes[0].h += 7; choose('height', app.pages[0].boxes[0].h); },
+  height() { app.pages[0].boxes[0].style.autoHeight = false; app.pages[0].boxes[0].h += 7; choose('height', app.pages[0].boxes[0].h); },
   style() { app.pages[0].boxes[0].style.color = '#123456'; choose('style', '#123456'); },
   fit() { app.pages[0].boxes[0].fit = { kind: 'rect', x: 0, y: 0, w: 120, h: 80 }; choose('fit', app.pages[0].boxes[0].fit); },
   file() { app.pages[0].file = 'changed.png'; choose('file', 'changed.png'); },

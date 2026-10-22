@@ -91,12 +91,17 @@ describe('a width made narrower breaks the lines again', () => {
     expect(linesOf(b)).toEqual(held);
   });
 
-  it('and lines held by a lock that no longer fit say so', () => {
+  // The edge stops at the widest held line, as it stops at the widest word:
+  // a drag never leaves lines hanging out of the box.
+  it('and lines held by a lock stop the edge where they would no longer fit', () => {
     const b = load();
     b.auto.locks.breaks = true;
     b.auto.locks.size = true;
+    const held = linesOf(b);
     drag(b, 'e', -80, 0);
-    expect(b.auto.status).toBe('overflow');
+    expect(linesOf(b)).toEqual(held);
+    expect(widest(b)).toBeLessThanOrEqual(room(b) + 0.5);
+    expect(b.review).toBeUndefined();
   });
 });
 

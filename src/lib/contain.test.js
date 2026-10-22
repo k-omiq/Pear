@@ -743,7 +743,7 @@ describe('the ladder, on an auto box', () => {
     expect(b.review.overflow.l).toBeGreaterThan(0);
     expect(b.review.overflow.r).toBeGreaterThan(0);
     // An edit runs the ladder.
-    expect(autoFitBox(b, p)).toBe(true);
+    expect(autoFitBox(b, p, { solve: true })).toBe(true);
     expect(verdict(b).fits).toBe(true);
     expect(b.review).toBeUndefined();
     expect(b.w).toBeGreaterThan(w);
@@ -779,10 +779,10 @@ describe('the ladder, on an auto box', () => {
     // Past the line-box height `neededHeight` gives it.
     expect(acc.h).toBeGreaterThan(neededHeight(1, acc.style, textInset(acc.style)));
     // Nothing for an edit to do to it; the italic is the edit's.
-    expect(autoFitBox(acc, p)).toBe(false);
+    expect(autoFitBox(acc, p, { solve: true })).toBe(false);
     const ita = byId('ita');
     expect(ita.review).toBeDefined();
-    autoFitBox(ita, p);
+    autoFitBox(ita, p, { solve: true });
     expect(verdict(ita).fits).toBe(true);
     expect(ita.review).toBeUndefined();
   });
@@ -797,7 +797,7 @@ describe('the ladder, on an auto box', () => {
     it('widens within the balloon when that is enough', () => {
       const p = load([tokenBox('KRRSSHHH!!')]);
       const b = byId('b1');
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(verdict(b).fits).toBe(true);
       expect(b.style.size).toBe(S);
       expect(b.w).toBeGreaterThan(100);
@@ -809,7 +809,7 @@ describe('the ladder, on an auto box', () => {
       // 20 characters: 220px at 20, in a balloon 200 across.
       const p = load([tokenBox('AAAAAARRRRRGGGGGHHHH')]);
       const b = byId('b1');
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(verdict(b).fits).toBe(true);
       expect(b.review).toBeUndefined();
       expect(b.style.size).toBeLessThan(S);
@@ -826,7 +826,7 @@ describe('the ladder, on an auto box', () => {
     it('flags it, at its own size, when nothing above the floor fits', () => {
       const p = load([tokenBox('AAAAAAAARRRRRRRRGGGGGGGHHHHHHH')]);
       const b = byId('b1');
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(b.style.size).toBe(S);
       // ...and says it is the word that does not fit (OVF-4).
       expect(b.review).toMatchObject({ kind: 'overflow', reason: REVIEW_REASONS.wideWord });
@@ -852,7 +852,7 @@ describe('the ladder, on an auto box', () => {
       const b = byId('b1');
       expect(sfx.length * 0.55 * 30).toBeCloseTo(478.5, 6);
       expect(placeBlock(boxCandidate(b, sfx)).lines).toEqual([sfx]);
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(b.review).toMatchObject({ kind: 'overflow', reason: REVIEW_REASONS.wideWord });
       // As wide as the balloon, at the size the user set: the smallest size the
       // ladder may use (22.5) is still 359px of word.
@@ -874,7 +874,7 @@ describe('the ladder, on an auto box', () => {
       expect(word).toHaveLength(30);
       const p = load([{ id: 'b1', lineN: null, text: `NO ${word} NO`, x: 350, y: 280, w: 100, h: 40, fit: balloon, style: style() }]);
       const b = byId('b1');
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(placeBlock(boxCandidate(b, b.text)).lines).toContain(word);
       expect(b.review?.reason).toBe(REVIEW_REASONS.wideWord);
     });
@@ -899,7 +899,7 @@ describe('the ladder, on an auto box', () => {
     it('shrinks the font once the page is full', () => {
       const p = load([{ id: 'b1', lineN: null, text: TEXT, x: 50, y: 5, w: 100, h: 40, style: style() }], { w: 200, h: 50 });
       const b = byId('b1');
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(verdict(b).fits).toBe(true);
       expect(b.style.size).toBeLessThan(S);
       expect(b.style.size).toBeGreaterThanOrEqual(15);
@@ -912,7 +912,7 @@ describe('the ladder, on an auto box', () => {
     it('flags it when even the floor size does not fit', () => {
       const p = load([{ id: 'b1', lineN: null, text: TEXT, x: 50, y: 2, w: 100, h: 16, style: style() }], { w: 200, h: 20 });
       const b = byId('b1');
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(b.style.size).toBe(S);
       expect(b.review?.reason).toBe(REVIEW_REASONS.minSize);
       expect(b.y).toBeGreaterThanOrEqual(0);
@@ -923,7 +923,7 @@ describe('the ladder, on an auto box', () => {
       setMinFontSize(19);
       const p = load([{ id: 'b1', lineN: null, text: TEXT, x: 50, y: 5, w: 100, h: 40, style: style() }], { w: 200, h: 50 });
       const b = byId('b1');
-      autoFitBox(b, p);
+      autoFitBox(b, p, { solve: true });
       expect(b.style.size).toBe(S);
       expect(b.review?.reason).toBe(REVIEW_REASONS.minSize);
     });
@@ -943,7 +943,7 @@ describe('the ladder, on an auto box', () => {
     const b = byId('b1');
     const before = geomOf(b);
     expect(verdict(b).overflow.l).toBeCloseTo(8 - (BOX_PAD - 0.01 * S), 6);
-    autoFitBox(b, p);
+    autoFitBox(b, p, { solve: true });
     expect(b.review?.reason).toBe(REVIEW_REASONS.alignedEdge);
     expect(b.review.overflow.l).toBe(7);
     // Nothing moved or shrank for it: the text moves with the edge it is
@@ -954,9 +954,9 @@ describe('the ladder, on an auto box', () => {
   it('is idempotent: run again on its own answer it changes nothing', () => {
     const p = load([{ id: 'b1', lineN: null, text: 'AAAAAARRRRRGGGGGHHHH', x: 350, y: 280, w: 100, h: 40, fit: { kind: 'ellipse', cx: 400, cy: 300, rx: 100, ry: 60 }, style: style() }]);
     const b = byId('b1');
-    expect(autoFitBox(b, p)).toBe(true);
+    expect(autoFitBox(b, p, { solve: true })).toBe(true);
     const once = geomOf(b);
-    expect(autoFitBox(b, p)).toBe(false);
+    expect(autoFitBox(b, p, { solve: true })).toBe(false);
     expect(geomOf(b)).toEqual(once);
   });
 
@@ -1311,7 +1311,7 @@ describe('what a line is drawn with that its advance does not say', () => {
     // content box.
     expect(verdict(b).overflow.l).toBeCloseTo(6 / 2 + 0.2 - BOX_PAD - 0.005, 6);
     expect(b.review?.reason).toBe(REVIEW_REASONS.stale);
-    autoFitBox(b, p);
+    autoFitBox(b, p, { solve: true });
     expect(verdict(b).fits).toBe(true);
     expect(b.review).toBeUndefined();
     expect(b.style.size).toBe(S);
@@ -1473,10 +1473,13 @@ describe('the flag in the document', () => {
     load([{ id: 'b1', lineN: null, text: 'OK', x: 350, y: 280, w: 100, h: 40, fit: { kind: 'ellipse', cx: 400, cy: 300, rx: 100, ry: 60 }, style: style() }]);
     const before = geomOf(byId('b1'));
     beginEdit('b1');
-    endEdit('AAAAAARRRRRGGGGGHHHH');
+    endEdit('AAAAAA RRRRRR GGGGG HHHH');
+    // Auto height: the height follows the text; the width and the size are
+    // the user's.
     const after = geomOf(byId('b1'));
-    expect(after.w).toBeGreaterThan(before.w);
-    expect(after.size).toBeLessThan(before.size);
+    expect(after.h).toBeGreaterThan(before.h);
+    expect(after.w).toBe(before.w);
+    expect(after.size).toBe(before.size);
     hist.undo();
     expect(geomOf(byId('b1'))).toEqual(before);
     hist.redo();

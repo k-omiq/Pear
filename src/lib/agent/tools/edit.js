@@ -419,6 +419,8 @@ function writeSet(set, matches) {
         }
       }
     },
+    // The AI lays the box out as a placement does (`autoFitBox`).
+    { solve: true },
   );
   return changed.map((t) => t.box.id);
 }
@@ -463,6 +465,8 @@ export function typesetMatches(matches, { auto = false } = {}) {
       for (const k of LOCK_KEYS) b.auto.locks[k] = false;
       delete b.auto.breaks;
     },
+    // The AI lays the box out as a placement does (`autoFitBox`).
+    { solve: true },
   );
   for (const m of matches) if (m.box.fit) retypesetBox(m.box.id, m.page);
   return matches.filter((m) => fingerprint(m.box) !== before.get(m.box.id)).map((m) => m.box.id);
@@ -542,6 +546,8 @@ function writeDo(d, matches) {
           if (ruled !== text) setBoxText(b, ruled, p, { fit: false });
         }
       },
+      // The AI lays the box out as a placement does (`autoFitBox`).
+      { solve: true },
     );
     return { changed: out.map((t) => t.box.id), created, deleted };
   }
@@ -622,6 +628,8 @@ export function drawOverArt(matches, at) {
         if (b.auto) b.auto.locks.pos = true;
       }
     },
+    // The AI lays the box out as a placement does (`autoFitBox`).
+    { solve: true },
   );
   return matches.filter((m) => fingerprint(m.box) !== before.get(m.box.id)).map((m) => m.box.id);
 }

@@ -73,10 +73,13 @@ export function isReloadKey(e) {
 
 /**
  * Watches a FontFaceSet for late font loads ('loadingdone' events) and calls
- * onChange debounced by delayMs.
+ * onChange debounced by delayMs, with the families that loaded in the burst.
+ *
+ * The set is empty when an event did not say which faces it was for: the
+ * caller cannot narrow anything down then, and must treat it as "any".
  *
  * @param {FontFaceSet|any} fontFaceSet
- * @param {() => void} onChange
+ * @param {(families: Set<string>) => void} onChange
  * @param {number} [delayMs=150]
  * @returns {() => void} Disposer
  */
@@ -86,12 +89,24 @@ export function watchFontLoads(fontFaceSet, onChange, delayMs = 150) {
   }
 
   let timer = null;
+  let families = new Set();
+  let unknown = false;
 
-  const onLoadingDone = () => {
+  const onLoadingDone = (event) => {
+    const faces = event?.fontfaces;
+    if (faces?.length) {
+      // WebKit hands the family back quoted ('"Comic Neue"').
+      for (const f of faces) families.add(String(f.family).replace(/^(["'])(.*)\1$/, '$2'));
+    } else {
+      unknown = true;
+    }
     if (timer != null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      onChange();
+      const done = unknown ? new Set() : families;
+      families = new Set();
+      unknown = false;
+      onChange(done);
     }, delayMs);
   };
 

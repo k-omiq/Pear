@@ -1606,14 +1606,16 @@ describe('placement chooses the size (FIT-1)', () => {
       expect(flaggedBoxes()).toEqual([]);
     });
 
-    // A width drag re-solves the box in its new width (FIT-2), and the text
-    // still does not fit its balloon; a move carries the balloon with the box,
-    // so the solve and its flag go with it.
-    it('is re-solved by a width drag, and kept through a move', () => {
+    // A width drag sets the text again in the new width at the size it has,
+    // and the height follows (Auto height): the box is no longer the one that
+    // was solved, so the solver's flag goes. A move carries the balloon with
+    // the box, so the solve and its flag go with it.
+    it('is left at its size by a width drag, and kept through a move', () => {
       const a = overflowed();
       resizeBox(page().id, a.id, { w: a.w - 10 });
       expect(a.auto.locks.width).toBe(true);
-      expect(flag(a)?.reason).toBe(REVIEW_REASONS.minSize);
+      expect(a.style.size).toBe(30);
+      expect(flag(a)).toBeNull();
       const b = overflowed();
       selectBox(b.id);
       nudgeBox(b.id, 5, 12);
@@ -1697,21 +1699,22 @@ describe('placement chooses the size (FIT-1)', () => {
     });
   });
 
-  // FIT-2: after placement an auto box is re-solved by every edit, inside its
-  // balloon. It used to be grown and never given anything back, capped only by
-  // the page - or by the whole strip in a longstrip chapter.
-  describe('an edit re-solves the box', () => {
+  // After placement an edit is Auto height's: the size and the width are the
+  // user's, and the height follows the text, both ways. The solver - which
+  // chooses the size and the width inside the balloon - runs again on Refit.
+  describe('an edit after placement', () => {
     const geomOf = (b) => [b.x, b.y, b.w, b.h, b.style.size];
 
-    it('gives the size and the height back when the text gets shorter, and lands where placement did', () => {
+    it('keeps the size and gives the height back when the text gets shorter, and Refit lands where placement did', () => {
       const b = placeAt(32);
       const placed = geomOf(b);
       expect(b.auto.status).toBe('shrunk');
       setBoxText(b, 'NO.', page());
-      expect(b.style.size).toBe(32);
+      expect(b.style.size).toBe(placed[4]);
+      expect(b.w).toBe(placed[2]);
       expect(b.h).toBeLessThan(placed[3]);
-      expect(b.auto.status).toBe('ok');
       setBoxText(b, TEXT, page());
+      refitBalloon(b.id);
       expect(geomOf(b)).toEqual(placed);
       expect(b.auto.status).toBe('shrunk');
     });
@@ -1724,9 +1727,12 @@ describe('placement chooses the size (FIT-1)', () => {
       expect(geomOf(b)).toEqual(once);
     });
 
-    it('stays inside its balloon when the text outgrows it, and is flagged', () => {
+    it('grows out of its balloon when the text outgrows it, and Refit puts it back inside, flagged', () => {
       const b = placeAt(26);
       setBoxText(b, `${TEXT} ${TEXT} ${TEXT} ${TEXT}`, page());
+      expect(b.style.size).toBe(26);
+      expect(b.h).toBeGreaterThan(bottom(b.fit) - top(b.fit));
+      refitBalloon(b.id);
       expect(b.y).toBeGreaterThanOrEqual(top(b.fit));
       expect(b.y + b.h).toBeLessThanOrEqual(bottom(b.fit));
       expect(b.auto.status).toBe('overflow');
@@ -1773,7 +1779,7 @@ describe('placement chooses the size (FIT-1)', () => {
       const n = hist.peekStack().undo.length;
       for (const v of ['N', 'NO', 'NO.']) setLineText(page(), ln.n, v);
       const edited = [...geomOf(b), { ...b.auto }];
-      expect(b.style.size).toBe(32);
+      expect(b.style.size).toBe(placed[4]);
       expect(edited).not.toEqual(placed);
       settleEdits();
       expect(hist.peekStack().undo.length).toBe(n + 1);
@@ -1892,9 +1898,9 @@ describe('placement chooses the size (FIT-1)', () => {
       expect(editorLines(b)).toEqual(lines);
     });
 
-    // The next edit re-solves the box where it stands (FIT-2), against the
-    // balloon it carried: nothing is shrunk for rows it was only moved across.
-    it('is re-solved by the next edit to what it was, where it now stands', () => {
+    // The next edit sets the text where the box stands, against the balloon
+    // it carried: nothing is shrunk for rows it was only moved across.
+    it('is set by the next edit as it was, where it now stands', () => {
       const b = placeAt(26);
       const lines = editorLines(b);
       const g = [b.w, b.h, b.style.size];
@@ -1998,8 +2004,9 @@ describe('placement chooses the size (FIT-1)', () => {
     b.style.size = 44;
     boxEdited(b, page());
     expect(b.style.size).toBe(44);
-    expect(b.auto).toMatchObject({ refSize: 44, status: 'overflow', locks: { size: true } });
-    expect(reviewOf(b, page())).not.toBeNull();
+    expect(b.auto).toMatchObject({ refSize: 44, locks: { size: true } });
+    // The height follows the size (Auto height).
+    expect(b.h).toBeGreaterThan(before.h);
     // Later edits keep it too.
     setBoxText(b, `${TEXT} NOW`, page());
     expect(b.style.size).toBe(44);
@@ -2013,9 +2020,9 @@ describe('placement chooses the size (FIT-1)', () => {
   });
 
   // The Inspector's width field (`commitGeom`): resize, then the fit. The
-  // re-solve changes the size as well as the rectangle, and the burst is one
-  // entry that puts both back.
-  it('records an Inspector width edit that re-sized the text as one undo step', () => {
+  // height follows the new width, the size stays, and the burst is one entry
+  // that puts the box back.
+  it('records an Inspector width edit as one undo step', () => {
     hist.initHistory();
     hist.resetHistory();
     const b = placeAt(32);
@@ -2023,7 +2030,8 @@ describe('placement chooses the size (FIT-1)', () => {
     const before = boxSnap(b);
     resizeBox(page().id, b.id, { w: b.w - 80 });
     boxEdited(b, page());
-    expect(b.style.size).not.toBe(before.style.size);
+    expect(b.style.size).toBe(before.style.size);
+    expect(b.h).not.toBe(before.h);
     const recs = boxEditRecords({ pageId: page().id, boxId: b.id }, before, boxSnap(b), true);
     expect(recs.map((e) => e.t)).toEqual(['resize']);
     for (const e of recs) hist.record(e);
@@ -2032,9 +2040,9 @@ describe('placement chooses the size (FIT-1)', () => {
     expect(b.auto).toEqual(before.auto);
   });
 
-  // The Inspector's text field (`setText`): the re-solve changes the size, and
-  // the edit is still one entry.
-  it('records an Inspector text edit that re-sized the text as one undo step', () => {
+  // The Inspector's text field (`setText`): the height follows the text, and
+  // the edit is one entry.
+  it('records an Inspector text edit as one undo step', () => {
     hist.initHistory();
     hist.resetHistory();
     const b = placeAt(32);
@@ -2042,7 +2050,8 @@ describe('placement chooses the size (FIT-1)', () => {
     const before = boxSnap(b);
     setBoxText(b, 'NO.', page());
     boxEdited(b, page());
-    expect(b.style.size).not.toBe(before.style.size);
+    expect(b.style.size).toBe(before.style.size);
+    expect(b.h).toBeLessThan(before.h);
     const recs = boxEditRecords({ pageId: page().id, boxId: b.id }, before, boxSnap(b), false);
     expect(recs.map((e) => e.t)).toEqual(['text']);
     for (const e of recs) hist.record(e);

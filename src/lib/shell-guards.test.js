@@ -174,10 +174,10 @@ describe('shell-guards: font load watching (DET-4)', () => {
     removeEventListener(type, fn) {
       if (type === 'loadingdone') this.handlers.delete(fn);
     }
-    dispatch(type) {
+    dispatch(type, event) {
       if (type === 'loadingdone') {
         for (const fn of Array.from(this.handlers)) {
-          fn();
+          fn(event);
         }
       }
     }
@@ -207,6 +207,25 @@ describe('shell-guards: font load watching (DET-4)', () => {
     // 1ms more (150ms after last event) -> fires exactly once
     vi.advanceTimersByTime(1);
     expect(onChange).toHaveBeenCalledTimes(1);
+
+    dispose();
+  });
+
+  it('hands over the families a burst loaded, unquoted', () => {
+    const ffs = new FakeFontFaceSet();
+    const onChange = vi.fn();
+    const dispose = watchFontLoads(ffs, onChange, 150);
+
+    ffs.dispatch('loadingdone', { fontfaces: [{ family: '"Comic Neue"' }] });
+    ffs.dispatch('loadingdone', { fontfaces: [{ family: 'Bangers' }] });
+    vi.advanceTimersByTime(150);
+    expect([...onChange.mock.calls[0][0]].sort()).toEqual(['Bangers', 'Comic Neue']);
+
+    // A burst with an event that names no faces cannot be narrowed: empty set.
+    ffs.dispatch('loadingdone', { fontfaces: [{ family: 'Bangers' }] });
+    ffs.dispatch('loadingdone');
+    vi.advanceTimersByTime(150);
+    expect(onChange.mock.calls[1][0].size).toBe(0);
 
     dispose();
   });

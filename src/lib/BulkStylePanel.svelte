@@ -17,7 +17,8 @@ import {
 } from './store.svelte.js';
   import { tagsInUse, boxesWithTag } from './tags.svelte.js';
   import { modKey } from './format.js';
-  import { fontGroups, fontCaveat } from './font-menu.js';
+  import FontPicker from './FontPicker.svelte';
+  import { sizingOf } from './data.js';
   import { PATTERN_KINDS, CANVAS_PATTERN_KINDS, GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { glyphPainter } from './text-engine/index.js';
@@ -207,6 +208,11 @@ import {
   // "-" impossible to enter and snapped partial values while they were being
   // typed. Sliders keep `oninput`; they never produce partial text.
   const num = (key, v, lo, hi) => set(key, clamp(+v || 0, lo, hi));
+  function setSizing(mode) {
+    set('autoHeight', mode === 'auto');
+    set('fitText', mode === 'fit');
+    set('fitMax', 0);
+  }
 
   // Stroke helpers
   function addStroke() {
@@ -473,16 +479,7 @@ import {
             <div class="brow" class:off={!app.bulk.mask.font}>
               {@render tick('font')}
               <span class="lbl">Font</span>
-              <select aria-label="Font" value={s.font} onchange={(e) => set('font', e.target.value)}>
-                {#if fontCaveat(s.font)}
-                  <option value={s.font}>{s.font} ({fontCaveat(s.font)})</option>
-                {/if}
-                {#each fontGroups() as g (g.key)}
-                  <optgroup label={g.label}>
-                    {#each g.fonts as f (f.name)}<option>{f.name}</option>{/each}
-                  </optgroup>
-                {/each}
-              </select>
+              <FontPicker value={s.font} label="Font" compact onpick={(name) => set('font', name)} />
             </div>
             <div class="brow" class:off={!app.bulk.mask.size}>
               {@render tick('size')}
@@ -938,10 +935,22 @@ import {
                 </button>
               </div>
             </div>
+            <!-- The Inspector's three sizing modes (`sizingOf`), as two switches
+                 set together. Fit to box starts from each box's own size. -->
             <div class="brow" class:off={!app.bulk.mask.autoHeight}>
-              {@render tick('autoHeight')}
-              <span class="lbl">Auto height</span>
-              <div class="switch" class:on={s.autoHeight} role="switch" aria-checked={s.autoHeight} aria-label="Auto height" tabindex="0" onclick={() => set('autoHeight', !s.autoHeight)} onkeydown={(e) => e.key === 'Enter' && set('autoHeight', !s.autoHeight)}><span class="knob"></span></div>
+              <input
+                class="btick"
+                type="checkbox"
+                checked={!!app.bulk.mask.autoHeight}
+                onchange={(e) => ['autoHeight', 'fitText', 'fitMax'].forEach((k) => setBulkProp(k, e.target.checked))}
+                title="Include this property in the bulk edit"
+              />
+              <span class="lbl">Sizing</span>
+              <div class="seg" role="group" aria-label="Sizing">
+                {#each [['auto', 'Auto height'], ['fixed', 'Fixed'], ['fit', 'Fit to box']] as [mode, label] (mode)}
+                  <button class:on={sizingOf(s) === mode} aria-pressed={sizingOf(s) === mode} onclick={() => setSizing(mode)}>{label}</button>
+                {/each}
+              </div>
             </div>
           </div>
         </div>

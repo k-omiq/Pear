@@ -178,7 +178,7 @@ describe('the primary tag minimum in both fit ladders', () => {
     b.style.size = 40;
     b.auto = null;
     fitBox.mockClear();
-    autoFitBox(b, page());
+    autoFitBox(b, page(), { solve: true });
     expect(fitBox).toHaveBeenCalled();
     expect(fitBox.mock.lastCall[1].minSize).toBe(floor);
     expect(b.style.size).toBeGreaterThanOrEqual(floor);
@@ -186,7 +186,7 @@ describe('the primary tag minimum in both fit ladders', () => {
     b.style.size = 40;
     b.auto = normalizeAuto({ on: true, refSize: 40 });
     solveLayout.mockClear();
-    autoFitBox(b, page());
+    autoFitBox(b, page(), { solve: true });
     expect(solveLayout).toHaveBeenCalled();
     expect(solveLayout.mock.lastCall[0].opts.minSize).toBe(floor);
     expect(b.style.size).toBeGreaterThanOrEqual(floor);

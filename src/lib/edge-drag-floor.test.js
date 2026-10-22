@@ -112,23 +112,28 @@ describe('with the Rust engine on', () => {
     expect(resizeBoxMath(0, -1, 's', o, 0, edgeDragFloor(b, 's', standIn, page())).h).toBe(need - 1);
   });
 
-  it('and the fit is held for when the face lands: a box dragged shorter than its text meanwhile is fitted then', () => {
+  it('and a box dragged shorter than its text meanwhile is Fixed where the drag left it, and flagged when the face lands', () => {
     setFontSource({ ready: () => arrived });
     const b = open(box());
     const need = neededHeight(linesOf(b), b.style, textInset(b.style));
     arrived = false;
     clearLayoutMemo();
     const floor = edgeDragFloor(b, 's', 9, page());
-    expect(fitHeld(b)).toBe(true);
-    // The user drags the bottom edge far up: allowed, the floor is the plain one.
+    expect(floor).toBe(EDGE_DRAG_MIN);
+    // The user drags the bottom edge far up: allowed, the floor is the plain
+    // one. A height set by hand makes the box Fixed, and a Fixed box has no
+    // fit to owe: the height is the user's.
     const geom = resizeBoxMath(0, -1000, 's', { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size }, 0, floor);
     resizeBox(1, 'b1', geom, { w: b.w, h: b.h });
     expect(b.h).toBe(EDGE_DRAG_MIN);
+    expect(b.style.autoHeight).toBe(false);
     arrived = true;
     clearLayoutMemo();
     noteFontsChanged();
     expect(fitHeld(b)).toBe(false);
-    expect(b.h).toBeGreaterThanOrEqual(need);
+    expect(b.h).toBe(EDGE_DRAG_MIN);
+    expect(need).toBeGreaterThan(EDGE_DRAG_MIN);
+    expect(b.review).toBeTruthy();
   });
 });
 
@@ -138,21 +143,22 @@ describe('with the Rust engine on', () => {
 // down, and nothing is owed for it when the face lands.
 describe('a drag that takes no floor', () => {
   it('is told which handles those are by the arithmetic of the drag itself', () => {
-    expect(['n', 's'].every(takesHeightFloor)).toBe(true);
-    expect(['e', 'w', 'ne', 'nw', 'se', 'sw'].some(takesHeightFloor)).toBe(false);
+    // Every handle that moves the top or the bottom edge sets the height.
+    expect(['n', 's', 'ne', 'nw', 'se', 'sw'].every(takesHeightFloor)).toBe(true);
+    expect(['e', 'w'].some(takesHeightFloor)).toBe(false);
     const o = { x: 0, y: 0, w: 200, h: 400, size: 30 };
-    // And they are: a floor of 350 stops the edges and nothing else.
+    // And they are: a floor of 350 stops the edges, the corners too.
     expect(resizeBoxMath(0, -300, 's', o, 0, 350).h).toBe(350);
     expect(resizeBoxMath(0, 300, 'n', o, 0, 350).h).toBe(350);
-    // A corner scales the box and the type by one factor, the axis dragged
-    // further leading.
-    expect(resizeBoxMath(0, -300, 'se', o, 0, 350).h).toBe(100);
-    expect(resizeBoxMath(-150, -300, 'se', o, 0, 350)).toMatchObject({ w: 50, h: 100, size: 7.5 });
-    expect(resizeBoxMath(150, 300, 'nw', o, 0, 350)).toMatchObject({ w: 50, h: 100, size: 7.5 });
+    expect(resizeBoxMath(0, -300, 'se', o, 0, 350).h).toBe(350);
+    // A scale takes none: the box and the type by one factor, the axis
+    // dragged further leading.
+    expect(resizeBoxMath(-150, -300, 'se', o, 0, 350, 40, { scale: true })).toMatchObject({ w: 50, h: 100, scale: 0.25 });
+    expect(resizeBoxMath(150, 300, 'nw', o, 0, 350, 40, { scale: true })).toMatchObject({ w: 50, h: 100, scale: 0.25 });
     expect(resizeBoxMath(-50, 0, 'e', o, 0, 350).h).toBe(400);
   });
 
-  for (const dir of ['e', 'w', 'ne', 'nw', 'se', 'sw']) {
+  for (const dir of ['e', 'w']) {
     it(`${dir}: the plain minimum, and with the face arriving no fit is held`, () => {
       setFontSource({ ready: () => arrived });
       const b = open(box());
@@ -175,10 +181,13 @@ describe('a drag that takes no floor', () => {
     const o = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
     const floor = edgeDragFloor(b, 'se', linesOf(b), page());
     const geom = resizeBoxMath(8, 30, 'se', o, 0, floor);
-    expect(geom).toMatchObject({ w: 48, h: 180, size: 120 });
+    expect(geom).toMatchObject({ w: 48, h: 180 });
+    // A corner sets the height, which makes an Auto height box Fixed
+    // (TextBox.svelte's drag does this before the store is told).
+    b.style.autoHeight = false;
     resizeBox(1, 'b1', geom, { w: o.w, h: o.h });
     const left = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
-    expect(left).toMatchObject({ x: 100, w: 48, h: 180, size: 120 });
+    expect(left).toMatchObject({ x: 100, w: 48, h: 180, size: 100 });
     arrived = true;
     clearLayoutMemo();
     noteFontsChanged();

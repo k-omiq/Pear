@@ -105,6 +105,8 @@ describe('every control in the panel', () => {
     expect(nameOf(rowControl('Size'))).toBe('Size');
     expect(nameOf(rowControl('Hyphenate'))).toBe('Hyphenate');
     expect(nameOf(rowControl('Balloon fit'))).toBe('Balloon fit');
-    expect(nameOf(rowControl('Auto height'))).toBe('Auto height');
+    const sizing = [...panel.querySelectorAll('.brow')].find((r) => r.querySelector(':scope > .lbl')?.textContent === 'Sizing');
+    expect(sizing.querySelector('[role="group"]').getAttribute('aria-label')).toBe('Sizing');
+    expect([...sizing.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Auto height', 'Fixed', 'Fit to box']);
   });
 });

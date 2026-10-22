@@ -83,18 +83,19 @@ describe('the bottom edge, dragged far up', () => {
   });
 });
 
-// A corner scales the type with the box and takes no floor (resize-math.js),
-// and a left or right edge leaves the height alone. Neither has a floor to
-// stand down, so neither leaves a fit owed for it: a fit that lands later, on
-// a box the user shaped by a corner, moves it under them.
-async function dragHandle(sel, dx, dy) {
+// A corner sets the box's width and height and never its size: it makes an
+// Auto height box Fixed, and a Fixed box has no fit to owe. A left or right
+// edge leaves the height alone. Neither leaves a fit owed for it: a fit that
+// lands later, on a box the user shaped by a corner, moves it under them.
+// Cmd on a corner scales the box and the type together.
+async function dragHandle(sel, dx, dy, mods = {}) {
   loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [BOX()] }]);
   const pg = page();
   const b = pg.boxes[0];
   const view = render(TextBox, { box: b, pageFrameEl: document.createElement('div'), pg });
   selectBox('b');
   await tick();
-  const ev = (type, x, y) => new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+  const ev = (type, x, y) => new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, ...mods });
   view.container.querySelector(sel).dispatchEvent(ev('pointerdown', 500, 500));
   document.dispatchEvent(ev('pointermove', 500 + dx, 500 + dy));
   await tick();
@@ -103,14 +104,16 @@ async function dragHandle(sel, dx, dy) {
   return b;
 }
 
-describe('a handle that takes no floor, with the box\'s face still arriving', () => {
+describe('a corner, with the box\'s face still arriving', () => {
   for (const dir of ['se', 'sw', 'ne', 'nw']) {
     it(`the ${dir} corner: no fit is held, and the box is where the drag left it when the face lands`, async () => {
       let arrived = false;
       setFontSource({ ready: () => arrived });
       const b = await dragHandle(`.handle.corner.${dir}`, dir.includes('e') ? 40 : -40, dir.includes('s') ? 60 : -60);
+      expect(b.w).toBe(280);
       expect(b.h).toBe(360);
-      expect(b.style.size).toBe(36);
+      expect(b.style.size).toBe(30);
+      expect(b.style.autoHeight).toBe(false);
       expect(fitHeld(b)).toBe(false);
       const left = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
       arrived = true;
@@ -119,6 +122,12 @@ describe('a handle that takes no floor, with the box\'s face still arriving', ()
       expect({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size }).toEqual(left);
     });
   }
+  it('Cmd scales the box and the type by one factor', async () => {
+    const b = await dragHandle('.handle.corner.se', 40, 60, { metaKey: true });
+    expect(b.h).toBe(360);
+    expect(b.style.size).toBe(36);
+    expect(b.style.autoHeight).toBe(true);
+  });
   it('the bottom edge still holds one: its floor did stand down', async () => {
     setFontSource({ ready: () => false });
     const b = await dragHandle('.handle.side.s', 0, -1000);

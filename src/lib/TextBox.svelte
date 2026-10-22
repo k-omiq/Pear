@@ -27,14 +27,18 @@
     reviewOf,
     edgeDragFloor,
     edgeDragWidthFloor,
+    heightFloorAt,
+    toast,
     boxLocked,
     isTranslateMode,
+    fontPreviewing,
   } from './store.svelte.js';
   import { openBoxMenu } from './editor/BoxMenu.svelte';
   import { stripDragYBounds } from './editor/strip.js';
 
   import { untrack, flushSync } from 'svelte';
-  import { resizeBoxMath } from './resize-math.js';
+  import { resizeBoxMath, takesHeightFloor } from './resize-math.js';
+  import { sizingOf } from './data.js';
   import { record } from './editor/history.svelte.js';
   import {
     createFieldUndo,
@@ -183,6 +187,8 @@
   // drag as well (`transformEnd`): a drag whose handles are gone is over, and
   // the box is painted in full.
   let resizing = $state(false);
+  // A handle being dragged (not the rotation one): the size chip shows.
+  let sizingDrag = $state(false);
   let dragSoft = false;
   function settleResize() {
     if (!resizing) return;
@@ -1245,7 +1251,9 @@
   // targets before either.
   const hitsOn = $derived(engineShown && !warped && !editing);
   const hitBlock = $derived.by(() => {
-    if (!hitsOn || !shaped) return null;
+    // Not for a family only being looked at: the box is not pressed while a
+    // font picker has the keys, and placing the block again costs a frame.
+    if (!hitsOn || !shaped || fontPreviewing(box.id)) return null;
     app.fontsVersion;
     const r = blockReach(placeBlock(boxCandidate(box, text)));
     if (!r || !(r.x1 > r.x0) || (r.x0 >= 0 && r.y0 >= 0 && r.x1 <= box.w && r.y1 <= box.h)) return null;
@@ -1299,6 +1307,9 @@
     box.fit;
     app.fontsVersion;
     const lines = shaped;
+    // A family only being looked at in a font picker grows nothing: the box
+    // is put back as it was when the look ends (`previewBoxFont`).
+    if (fontPreviewing(box.id)) return;
     untrack(() => (lines ? autoFitBoxTo(box, lines.length, pg) : refitBox(box, pg)));
   });
 
@@ -1449,8 +1460,14 @@
     const fitBefore = isRot ? { y: box.y, h: box.h } : null;
     const cx = () => box.x + box.w / 2;
     const cy = () => box.y + box.h / 2;
-    // The size is the same all through a side drag, and so is its widest word.
-    const wFloor = isRot || dir.length > 1 ? 40 : edgeDragWidthFloor(box, pg);
+    // The size is the same all through a drag that does not scale, and so is
+    // its widest word.
+    const wFloor = isRot ? 40 : edgeDragWidthFloor(box, pg);
+    // The style as the press found it: what a Cmd-drag scales from, and what
+    // a drag that changed the style - a scale, or Auto height giving way to
+    // Fixed - is recorded against.
+    const styleStart = isRot ? null : cloneStyle(box.style);
+    let scaled = false;
 
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
@@ -1473,24 +1490,48 @@
         const cos = Math.cos(rad), sin = Math.sin(rad);
         const sdx = (ev.clientX - sx) / zz, sdy = (ev.clientY - sy) / zz;
         const dx = sdx * cos - sdy * sin, dy = sdx * sin + sdy * cos;
-        // Auto-height keeps its promise through the drag: an edge can make the
-        // box roomier but never shorter than its text. The floor is the store's
-        // (`edgeDragFloor`), beside the fits it mirrors, so that it stands down
-        // with them while the box's face is arriving and these lines are a
-        // stand-in's. `shaped` is null for curved and path text, which
-        // auto-height does not fit either.
-        const floor = edgeDragFloor(box, dir, shaped ? shaped.length : null, pg);
-        // And never narrower than its widest word: a side changes the width
-        // and never the size, so a word that no longer fits has nowhere to go.
-        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, floor, wFloor);
+        // Cmd scales the box and the text together; any other drag changes the
+        // box alone (resize-math.js). Shift keeps a corner's proportions.
+        const scale = ev.metaKey;
+        const keepAspect = ev.shiftKey && dir.length > 1;
+        // A height set by hand is the box's: Auto height gives way to Fixed,
+        // as Figma's text boxes do, and the Inspector shows it.
+        if (!scale && takesHeightFloor(dir) && sizingOf(box.style) === 'auto' && dy !== 0) {
+          box.style.autoHeight = false;
+          toast('Height set by hand: this box is now Fixed');
+        }
+        // The floors the store holds the box to, worked out here too so the
+        // opposite edge stays put when one stops the drag (resize-math.js):
+        // never narrower than the widest word, and a Fixed box never shorter
+        // than its text at the width this move leaves. Fit to box has none -
+        // its size gives way - and a scale none, since the text scales too.
+        const floors = !scale && sizingOf(box.style) !== 'fit';
+        const wf = floors ? wFloor : 40;
+        let hf = 30;
+        if (floors && takesHeightFloor(dir) && sizingOf(box.style) === 'fixed') {
+          // A top or bottom edge leaves the width, so the lines on screen are
+          // the ones to hold (`edgeDragFloor`, which stands down while the face
+          // is arriving and they are a stand-in's). A corner moves the width
+          // too, and the lines are counted again at the width it leaves.
+          hf =
+            dir.length > 1
+              ? heightFloorAt(box, resizeBoxMath(dx, dy, dir, o, s.rotation, 30, wf, { keepAspect }).w, pg)
+              : edgeDragFloor(box, dir, shaped ? shaped.length : null, pg);
+        }
+        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, hf, wf, { scale, keepAspect });
+        // Once a gesture has scaled, every move says its factor - 1 when Cmd
+        // is let go - so the style goes back to where the press found it.
+        if (scale) scaled = true;
+        else if (scaled) geom.scale = 1;
         // From the first move, not from the press: a handle pressed and let
         // go changes nothing and must repaint nothing.
         if (enginePaints && handlesOn) resizing = true;
+        sizingDrag = true;
         resizeBox(
           pageId,
           box.id,
           geom,
-          inkBefore ? { w: o.w, h: o.h, ink: inkBefore } : { w: o.w, h: o.h }
+          { w: o.w, h: o.h, style: styleStart, ...(inkBefore ? { ink: inkBefore } : null) }
         );
       }
     };
@@ -1505,6 +1546,7 @@
       ac.abort();
       if (transformEnd === finish) transformEnd = null;
       settleResize();
+      sizingDrag = false;
       // Both gestures on this handle CHANGE THE STYLE - the rotation handle
       // writes `rotation`, a corner writes `size` - and the next box placed is
       // meant to follow the box the user just shaped. Nothing else on this path
@@ -1527,6 +1569,15 @@
             geomAfter: { y: box.y, h: box.h },
           });
         }
+        return;
+      }
+      // A drag that changed the style - a scale, or Auto height made Fixed -
+      // is recorded with it, so one undo puts back the outline, the tracking
+      // and the sizing mode as well as the rectangle.
+      const styleAfter = cloneStyle(box.style);
+      if (JSON.stringify(styleAfter) !== JSON.stringify(styleStart)) {
+        markUnsaved();
+        record({ t: 'style', pageId, boxId: box.id, before: styleStart, after: styleAfter, geomBefore: o, geomAfter: fitGeom(box) });
         return;
       }
       const before = { ...o };
@@ -3190,6 +3241,10 @@
       <div class="handle {kind} {dir}" onpointerdown={(e) => startTransform(e, dir)}></div>
     {/each}
     <div class="handle rot" onpointerdown={(e) => startTransform(e, 'rot')}></div>
+    {#if sizingDrag}
+      <!-- What the drag is setting, as it sets it: the box and the type. -->
+      <div class="size-chip" aria-hidden="true">{Math.round(box.w)} × {Math.round(box.h)} · {s.size} px</div>
+    {/if}
   {/if}
 </div>
 

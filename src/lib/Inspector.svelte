@@ -6,9 +6,10 @@
     deleteBox,
     beginEdit,
     cloneStyle,
-    fontCssFor,
     page,
     pageById,
+    previewBoxFont,
+    endFontPreview,
     setEditSettleHook,
     setBoxText,
     isFreeBox,
@@ -25,13 +26,15 @@
     outlineState,
     toast,
     resizeBox,
+    setBoxSizing,
     boxLocked,
     setBoxLocked,
   } from './store.svelte.js';
 
   import { record } from './editor/history.svelte.js';
   import { prefs } from './prefs.svelte.js';
-  import { fontGroups, fontCaveat } from './font-menu.js';
+  import FontPicker from './FontPicker.svelte';
+  import { sizingOf } from './data.js';
   import { modKey } from './format.js';
   import {
     PATTERN_KINDS,
@@ -226,6 +229,15 @@
     settleT = setTimeout(settle, SETTLE_MS);
   }
 
+  // The family a font picker settled on. Whatever it was showing goes back
+  // first, so the snapshot the edit is recorded against is the box as it was.
+  function pickFont(name) {
+    endFontPreview();
+    armSnap();
+    box.style.font = name;
+    touch();
+  }
+
   // Hook to settle pending edits on navigation or undo.
   const releaseSettleHook = setEditSettleHook(settle);
   onDestroy(() => {
@@ -342,8 +354,12 @@
     touch();
   }
 
+  // In Fit to box the size is the box's answer, and what the user sets is
+  // the most it may grow to (`fitMax`).
   function setSize(v) {
-    box.style.size = clamp(+v || 6, 6, 200);
+    const n = clamp(+v || 6, 6, 200);
+    if (box.style.fitText) box.style.fitMax = n;
+    else box.style.size = n;
     touch();
   }
 
@@ -352,7 +368,13 @@
   // fractional sizes this menu would otherwise have no way to show, so whatever
   // the box is at right now is always in the list.
   const SIZES = [6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 44, 48, 56, 64, 72];
-  const sizeNow = $derived(box ? Math.round(box.style.size * 10) / 10 : 0);
+  const sizeNow = $derived(box ? Math.round((box.style.fitText && box.style.fitMax > 0 ? box.style.fitMax : box.style.size) * 10) / 10 : 0);
+  const sizing = $derived(box ? sizingOf(box.style) : 'auto');
+  const SIZINGS = [
+    ['auto', 'Auto height', 'The height follows the text. You set the width and the size.'],
+    ['fixed', 'Fixed', 'You set the width, the height and the size. Text that does not fit is flagged.'],
+    ['fit', 'Fit to box', 'You set the width and the height. The size is the largest that fits.'],
+  ];
   const sizeList = $derived(
     SIZES.includes(sizeNow) ? SIZES : [...SIZES, sizeNow].sort((a, b) => a - b),
   );
@@ -1146,27 +1168,21 @@
         </div>
         <div class="grp">
           <label class="lbl" for="insp-font">Font</label>
-          <!-- Each option carries its own family, so the menu is the specimen
-               sheet: you pick a lettering face by looking at it. -->
-          <select id="insp-font" bind:value={s.font} onchange={touch} style="font-family:{fontCssFor(s.font)}">
-            {#if fontCaveat(s.font)}
-              <!-- The box is set in a family the menus do not offer, or one this
-                   machine has not got. The select still has to show it, and to
-                   say which of the two it is. -->
-              <option value={s.font} style="font-family:{fontCssFor(s.font)}">{s.font} ({fontCaveat(s.font)})</option>
-            {/if}
-            {#each fontGroups() as g (g.key)}
-              <optgroup label={g.label}>
-                {#each g.fonts as f (f.name)}<option value={f.name} style="font-family:{f.css}">{f.name}</option>{/each}
-              </optgroup>
-            {/each}
-          </select>
+          <!-- Moving through the list shows each family on the box; nothing is
+               an edit until a click or Enter (FontPicker.svelte). -->
+          <FontPicker
+            id="insp-font"
+            value={app.fontPreview?.boxId === box.id ? app.fontPreview.was : s.font}
+            label="Font"
+            onpreview={(name) => (name ? previewBoxFont(box, name) : endFontPreview())}
+            onpick={pickFont}
+          />
         </div>
         <!-- Size and the weight it is set in, side by side: they are one
              decision about the face, and they were three rows apart. -->
         <div class="row-size">
           <div class="field">
-            <label class="lbl" for="insp-size">Size</label>
+            <label class="lbl" for="insp-size">{sizing === 'fit' ? `Max size · ${Math.round(s.size * 10) / 10}` : 'Size'}</label>
             <select id="insp-size" value={String(sizeNow)} onchange={(e) => setSize(e.target.value)}>
               {#each sizeList as n (n)}<option value={String(n)}>{n} px</option>{/each}
             </select>
@@ -1979,17 +1995,23 @@
     <!-- ===== Layout ===== -->
     {#if tab === 'layout'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-layout" aria-labelledby="insp-tab-layout">
+        {@render secHead('Size')}
+        <div class="grp">
+          <span class="lbl" id="insp-sizing-lbl">Sizing</span>
+          <div class="seg sizing" role="radiogroup" aria-labelledby="insp-sizing-lbl">
+            {#each SIZINGS as [mode, label, tip] (mode)}
+              <button type="button" role="radio" class:on={sizing === mode} aria-checked={sizing === mode} title={tip} onclick={() => setBoxSizing(box, mode, page())}>{label}</button>
+            {/each}
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field"><label class="lbl" for="insp-w">Width</label><input id="insp-w" type="number" min="30" max="5000" step="1" value={Math.round(box.w)} title="Width, page px" onchange={(e) => commitGeom('w', e, 30, 5000, 40)} /></div>
+          <div class="field"><label class="lbl" for="insp-h">Height</label><input id="insp-h" type="number" min="30" max="5000" step="1" value={Math.round(box.h)} title={sizing === 'auto' ? 'Follows the text. Type a height to set it yourself (the box becomes Fixed)' : 'Height, page px'} onchange={(e) => commitGeom('h', e, 30, 5000, 30)} /></div>
+        </div>
         {@render secHead('Place')}
         <div class="row2">
           <div class="field"><label class="lbl" for="insp-x">X</label><input id="insp-x" type="number" min="-20000" max="20000" step="1" value={Math.round(box.x)} title="Left edge, page px" onchange={(e) => commitGeom('x', e, -20000, 20000)} /></div>
           <div class="field"><label class="lbl" for="insp-y">Y</label><input id="insp-y" type="number" min="-20000" max="20000" step="1" value={Math.round(box.y)} title="Top edge, page px" onchange={(e) => commitGeom('y', e, -20000, 20000)} /></div>
-        </div>
-        <div class="row2">
-          <div class="field"><label class="lbl" for="insp-w">Width</label><input id="insp-w" type="number" min="30" max="5000" step="1" value={Math.round(box.w)} title="Width, page px" onchange={(e) => commitGeom('w', e, 30, 5000, 40)} /></div>
-          <!-- Auto height is a global default now (Settings › Typesetting), with
-               the per-box override in the Bulk style panel. The field still has
-               to say why it is dead, so the tooltip names where the switch went. -->
-          <div class="field"><label class="lbl" for="insp-h">Height</label><input id="insp-h" type="number" min="30" max="5000" step="1" value={Math.round(box.h)} disabled={s.autoHeight} title={s.autoHeight ? 'Auto height is on - the box sizes itself to its text. Set it in Settings › Typesetting' : 'Height, page px'} onchange={(e) => commitGeom('h', e, 30, 5000, 30)} /></div>
         </div>
         <div class="row2">
           <div class="field">

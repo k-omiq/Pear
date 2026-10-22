@@ -114,11 +114,14 @@ describe('the box grows to its text, anchored where the text is', () => {
     expect(b.y + b.h / 2).toBe(500 + 20 / 2);
   });
 
-  it('never shrinks a box the user left roomier than its text', () => {
+  // Opening is grow-only; an edit's fit is Auto height's, which gives the
+  // height back too, about the same middle.
+  it('never shrinks a box the user left roomier than its text on opening, and an edit hugs it', () => {
     loadProjectPages(doc([twoLiner({ h: 400 })]));
     const b = page().boxes[0];
     expect(geom(b)).toEqual({ y: 500, h: 400 });
-    expect(autoFitBox(b, page())).toBe(false);
+    expect(autoFitBox(b, page())).toBe(true);
+    expect(geom(b)).toEqual({ y: 500 + (400 - NEED) / 2, h: NEED });
   });
 
   // The width is what the user aimed at the bubble, and nothing that is not an
@@ -133,14 +136,18 @@ describe('the box grows to its text, anchored where the text is', () => {
     expect(b.w).toBe(60);
   });
 
-  // ...and widens, symmetrically and no further than the text needs, when the
-  // height cannot: a page 30 tall holds one line of this text and not two.
-  it('widens on an edit only once the height is capped, and only as far as it must', () => {
+  // ...and the ladder (placement, Refit, the AI's edits) widens, symmetrically
+  // and no further than the text needs, when the height cannot: a page 30
+  // tall holds one line of this text and not two.
+  it('widens in the ladder only once the height is capped, and only as far as it must', () => {
     loadProjectPages(doc([twoLiner({ y: 0, style: { size: 20, lineHeight: 1.1, valign: 'top', outlineWidth: 0 } })], { h: 30 }));
     const b = page().boxes[0];
     // Opening capped the height at the page and moved nothing sideways.
     expect({ x: b.x, w: b.w, h: b.h }).toEqual({ x: 100, w: 60, h: 30 });
-    expect(autoFitBox(b, page())).toBe(true);
+    // An edit's fit is Auto height's: the width is the user's.
+    expect(autoFitBox(b, page())).toBe(false);
+    expect(b.w).toBe(60);
+    expect(autoFitBox(b, page(), { solve: true })).toBe(true);
     // One line: `AAAA BBBB` is 9 * 11 = 99 wide, plus the padding.
     expect(b.w).toBe(99 + 4);
     expect(b.x + b.w / 2).toBe(100 + 60 / 2);
