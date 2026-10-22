@@ -11,10 +11,10 @@
 //! between its parts (so `ド` does not get closer to its neighbour than to
 //! its own marks).
 //!
-//! A letter the user moved by hand is not moved. A pair with a space between
-//! keeps its space. Afterwards the group is moved back onto its middle and
-//! scaled so its first and last letters are as far apart as before, which
-//! keeps the run on its path.
+//! A pair with a space between keeps its space. Afterwards the group is
+//! moved back onto its middle and scaled so its first and last letters are
+//! as far apart as before, which keeps the run on its path. The user's hand
+//! edits are put on after all this (`place`), so one moves one letter.
 
 use std::collections::HashMap;
 
@@ -141,7 +141,7 @@ pub(crate) fn group(
         let d = [b.centre[0] - a.centre[0], b.centre[1] - a.centre[1]];
         let len = d[0].hypot(d[1]);
         let spaced = b.index > a.index + 1;
-        if len > 1e-9 && !b.hand && !spaced {
+        if len > 1e-9 && !spaced {
             let along = [d[0] / len, d[1] / len];
             let axis = [-along[1], along[0]];
             let (ca, ga) = &shapes[a.item.text(text)];

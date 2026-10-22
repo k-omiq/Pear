@@ -267,6 +267,9 @@ const DEFS = [
   { id: 'tool.text', label: 'Text mode (new box)', group: 'Modes', combo: 'Mod+2', whenTyping: true },
   { id: 'tool.brush', label: 'Brush mode (hand-letter)', group: 'Modes', combo: 'Mod+3', whenTyping: true },
   { id: 'tool.pan', label: 'Hand mode (pan)', group: 'Modes', combo: 'Mod+4', whenTyping: true },
+  // The SFX tool sits under Text on the rail, but its key is after the hand:
+  // the four above kept the digits they had when it came.
+  { id: 'tool.sfx', label: 'SFX mode (draw a sound)', group: 'Modes', combo: 'Mod+5', whenTyping: true },
 
   // Selected box. Duplicate and the style clipboard are pure Mod combos -
   // no layout produces one by typing - so they stay live in a text field.
@@ -338,8 +341,9 @@ export function defaultCombo(id) {
   return BY_ID.get(id)?.combo ?? null;
 }
 
-const activeShortcuts = () =>
-  prefs.brushTool ? SHORTCUTS : SHORTCUTS.filter((s) => s.id !== 'tool.brush');
+// A tool switched off in Settings has no key and no row.
+const toolOff = (id) => (id === 'tool.brush' && !prefs.brushTool) || (id === 'tool.sfx' && !prefs.sfxTool);
+const activeShortcuts = () => SHORTCUTS.filter((s) => !toolOff(s.id));
 
 // The groups, in registry order, for the settings screen.
 export function shortcutGroups() {
@@ -358,7 +362,7 @@ export function shortcutGroups() {
 // knows are honoured, so a preference written by a newer build (or by hand)
 // cannot bind a key to nothing.
 export function comboFor(id) {
-  if (id === 'tool.brush' && !prefs.brushTool) return null;
+  if (toolOff(id)) return null;
   const over = prefs.shortcuts?.[id];
   if (typeof over === 'string') {
     const c = normalizeCombo(over);
@@ -515,7 +519,7 @@ export function dispatchShortcut(e, { typing = false } = {}) {
 // box's right-click menu do, so a menu item and its key can never disagree.
 // The handler gets no event. False when there is no handler or it declined.
 export function runShortcut(id) {
-  if (id === 'tool.brush' && !prefs.brushTool) return false;
+  if (toolOff(id)) return false;
   const fn = handlers.get(id);
   if (!fn) return false;
   return fn(null) !== false;

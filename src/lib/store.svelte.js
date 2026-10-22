@@ -128,6 +128,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
+import { sfxAvailable, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, applyLook, looksJapanese } from './sfx.js';
 
 export { PAGE_W, PAGE_H };
 
@@ -3946,12 +3947,19 @@ export function setPageDimsForSrc(src, w, h) {
 // leave a box behind. Anything outside this list is refused rather than stored:
 // an unknown tool is not an inert no-op, it is a canvas where every press falls
 // through to `deselect` and the only way out is pressing another tool.
-export const TOOLS = ['place', 'text', 'brush', 'pan'];
+export const TOOLS = ['place', 'text', 'sfx', 'brush', 'pan'];
 let brushToolAllowed = false;
 export function setBrushToolAllowed(allowed) {
   brushToolAllowed = !!allowed;
 }
 export const isBrushToolAllowed = () => brushToolAllowed;
+// The SFX tool is a beta behind Settings (prefs.sfxTool, mirrored here the way
+// the brush is) and it draws with the Rust engine, so it needs both.
+let sfxToolAllowed = true;
+export function setSfxToolAllowed(allowed) {
+  sfxToolAllowed = !!allowed;
+}
+export const isSfxToolAllowed = () => sfxToolAllowed && sfxAvailable();
 
 export function setTool(t) {
   if (!TOOLS.includes(t)) return;
@@ -3963,6 +3971,7 @@ export function setTool(t) {
   // box. See `placeActiveAt`/`addEmptyBox` for the second, deeper guard.
   if (isTranslateMode() && t !== 'pan') return;
   if (t === 'brush' && !brushToolAllowed) return;
+  if (t === 'sfx' && !isSfxToolAllowed()) return;
   app.tool = t;
   // The brush is the one tool with a mode of its own. Choosing it from the rail
   // arms drawing; leaving it disarms, so a stray drag on the page after
@@ -6285,6 +6294,98 @@ export function addInkBox({ w, h, strokes, finish }, imgX, imgY, target = null) 
   markUnsaved();
   selectBox(b.id, { remember: false });
   return b.id;
+}
+
+// ---------- a box drawn with the SFX tool ----------
+// A press-drag-release on the page: `a` to `b`, page px on page `target`, is
+// the path the sound's first line runs along. The text is the queue's current
+// line when it is not on the page yet (and the queue moves on, as Place moves
+// it), else a new free line saying a stock sound. The type is the auto pick's
+// first, read from the line's Japanese when it has some; the size is the one
+// that makes the sound's natural length the drag's, so the outlines the type
+// sets are in proportion to the letters it draws. The box is centred on the
+// drag, the path stored in ems from that centre, and the box sized to the
+// letters. No balloon and no solver: an SFX sits where it was drawn.
+//
+// One `place` entry, like `placeActiveAt` and `addInkBox`. Returns the box id,
+// or null when nothing was made.
+const SFX_PAD = 0.25; // ems of air round the letters, inside the box
+export function addSfxBox(a, b, target = null) {
+  if (!app.pages.length || isTranslateMode() || !isSfxToolAllowed()) return null;
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!(len > 0)) return null;
+  settleEdits();
+  focusPage(target);
+  const p = target ?? page();
+  const active = p.activeLineN != null ? lineByN(p, p.activeLineN) : null;
+  let ln = active && !isFreeLine(active) && !isPlaced(p, active.n) ? active : null;
+  const free = !ln;
+  if (free) {
+    // Japanese on the page, or no source read yet in a Japanese project.
+    const read = p.lines.filter((l) => l?.jp);
+    const jp = read.length ? read.some((l) => looksJapanese(l.jp)) : app.projectOcrLanguage === 'ja';
+    ln = { n: nextFreeLineN(p), type: 'sfx', jp: '', en: sfxDefaultText(jp) };
+    p.lines.push(ln);
+  } else {
+    ln.placed = true;
+  }
+  const activeBefore = p.activeLineN;
+  const style = inheritedStyleFor(ln, p);
+  style.balloon = false;
+  style.autoHeight = false;
+  const text = applyCase(lineText(ln), style);
+  const pick = sfxPick(sfxPickText(text, ln.jp));
+  const kind = pick?.order?.find((id) => sfxKind(id)) ?? null;
+  if (kind) {
+    applySfxKind(style, kind);
+    if (Number.isFinite(pick.strength)) style.sfx.strength = Math.min(2, Math.max(0, pick.strength));
+    // The sound's own length in ems, from the path the engine makes for it
+    // when the box gives none.
+    const natural = sfxPlacement(text, style, 100)?.paths?.[0];
+    const ems = natural ? Math.hypot(natural.b[0] - natural.a[0], natural.b[1] - natural.a[1]) : 0;
+    if (ems > 0.1) {
+      style.size = clamp(Math.round((len / ems) * 2) / 2, ...ART_SIZE_RANGE);
+      // The outlines are the type's widths at the new size.
+      applyLook(style, sfxKind(kind));
+    }
+  }
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  const em = style.size;
+  const r = (v) => Math.round(v * 1000) / 1000;
+  style.sfx.paths = [{ a: [r((a.x - mx) / em), r((a.y - my) / em)], b: [r((b.x - mx) / em), r((b.y - my) / em)], bend: 0 }];
+  // Sized to the letters, about the drag's middle: SFX is placed from the
+  // box's centre, so the box is as far out on each side as the furthest ink.
+  const got = sfxPlacement(text, style, em);
+  const [x0, y0, x1, y1] = got?.bounds ?? [-len / 2, -em / 2, len / 2, em / 2];
+  const pad = SFX_PAD * em;
+  const w = Math.max(40, Math.ceil(2 * Math.max(-x0, x1) + 2 * pad));
+  const h = Math.max(40, Math.ceil(2 * Math.max(-y0, y1) + 2 * pad));
+  const box = {
+    id: 'b' + boxSeq++,
+    lineN: ln.n,
+    text: null,
+    x: Math.round(mx - w / 2),
+    y: Math.round(my - h / 2),
+    w,
+    h,
+    style,
+    fit: null,
+  };
+  // Born with its own verdict, as an inked box is: nothing fits it unasked.
+  reviewBox(box, p);
+  p.boxes.push(box);
+  if (!free) p.activeLineN = firstUnplaced(p);
+  recordEdit({
+    t: 'place',
+    pageId: p.id,
+    index: p.boxes.length - 1,
+    box: $state.snapshot(box),
+    ...(free ? freeLineRecord(p, box) : { activeBefore, activeAfter: p.activeLineN }),
+  });
+  markUnsaved();
+  selectBox(box.id, { remember: false });
+  return box.id;
 }
 
 // A box grown around its ink, with the ink carried the other way (OVF-7): the

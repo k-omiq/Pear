@@ -1,7 +1,7 @@
 // The faults the two real-app runs found in the agent's tools, each fixed:
 // outline_to_box keeps the size aimed for, an op's outcome is plain, a sizing
 // change is an edit, an SFX is drawn over its original (place, match_original,
-// sfx_look), and a result names a box's sizes apart.
+// the sound types), and a result names a box's sizes apart.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let seq = 1;
@@ -200,20 +200,19 @@ describe('an SFX is drawn over its original', () => {
     expect(s.x + s.w / 2).toBeCloseTo(480, 0);
   });
 
-  it('sfx_look puts effects together, scaled to the size, in one step', async () => {
-    Object.assign(pageById(1).boxes.find((b) => b.id === 's').style, { size: 50, color: '#ffffff', rotation: 0 });
-    let r = await call({ ops: [{ where: { ids: ['s'] }, do: 'sfx_look:impact' }] });
-    expect(r.ok, JSON.stringify(r)).toBe(true);
-    let s = pageById(1).boxes.find((b) => b.id === 's');
-    expect(s.style.bold).toBe(true);
-    expect(s.style.strokes.map((k) => k.color)).toEqual(['#000000', '#ffffff']);
-    expect(s.style.shadows).toHaveLength(1);
-    r = await call({ ops: [{ where: { ids: ['s'] }, do: 'sfx_look:speed' }] });
-    s = pageById(1).boxes.find((b) => b.id === 's');
-    expect(s.style.motionBlur).toMatchObject({ on: true, x: -2, y: 0 });
-    const bad = await call({ ops: [{ where: { ids: ['s'] }, do: 'sfx_look:sparkly' }] });
-    expect(bad.ok).toBe(false);
-    expect(bad.error).toMatch(/no SFX look/);
+  it('the sound types need the Rust engine: on the browser engine they change nothing and say so', async () => {
+    const before = JSON.stringify(pageById(1).boxes.find((b) => b.id === 's').style);
+    for (const d of ['sfx_kind:impact', 'sfx_pick']) {
+      const r = await call({ ops: [{ where: { ids: ['s'] }, do: d }] });
+      expect(r.ok, d).toBe(false);
+      expect(r.error).toMatch(/needs the Rust text engine/);
+    }
+    // clear_sfx on a box with no SFX is nothing to do, on any engine.
+    const r = await call({ ops: [{ where: { ids: ['s'] }, do: 'clear_sfx' }] });
+    expect(r.result.ops[0].outcome).toBe('nothing needed');
+    // The old looks are gone.
+    expect((await call({ ops: [{ where: { ids: ['s'] }, do: 'sfx_look:impact' }] })).ok).toBe(false);
+    expect(JSON.stringify(pageById(1).boxes.find((b) => b.id === 's').style)).toBe(before);
   });
 });
 
@@ -224,17 +223,6 @@ describe('sizes are named apart', () => {
     n.auto.refSize = 32;
     const { sizesOf } = await import('./check.js');
     expect(sizesOf(n, pageById(1))).toEqual({ size: 28, aimedFor: 32, tag: 'narration', tagSize: 26 });
-  });
-});
-
-describe('an SFX look stays in proportion on a big sound', () => {
-  it('bands of a few px, not a sticker, at any size', async () => {
-    const { sfxLookPatch } = await import('../sfx-looks.js');
-    for (const kind of ['heavy', 'hollow', 'impact', 'soft']) {
-      const patch = sfxLookPatch(kind, { size: 260, color: '#ffffff' });
-      for (const k of patch.strokes) expect(k.width, kind).toBeLessThanOrEqual(10);
-    }
-    expect(sfxLookPatch('glow', { size: 260, color: '#ffffff' }).shadows[0].blur).toBeLessThanOrEqual(24);
   });
 });
 

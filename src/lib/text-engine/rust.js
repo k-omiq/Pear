@@ -325,22 +325,21 @@ export async function createRustTextEngine(source, options = {}) {
       ? (face, text, letterSpacing = 0) => low.lineCarets(resolve(face), text, Number(letterSpacing) || 0)
       : undefined,
     /**
-     * SFX lettering (sfx.js): `sfxLayout(face, rows, params)` places every
-     * letter of `rows` (strings, one per row) on its own, `[{ ch, x, y, rot,
-     * sx, sy, skew, w }]` in px from the block's centre, and `sfxInfo()` is the
-     * engine's own table of move kinds and built-in presets. Only the Rust
-     * engine has them, and only a wasm built with them: the methods are absent
-     * otherwise, which is how `sfxAvailable` tells the browser engine and a
-     * stale wasm from this one.
+     * SFX lettering (sfx.js): `sfxPlace(face, text, params)` lays the text's
+     * groups along their paths (engine.mjs says what comes back),
+     * `sfxKinds()` is the engine's table of the twelve sound types and
+     * `sfxPick(text)` ranks them for a sound. Only the Rust engine has them,
+     * and only a wasm built with them: the methods are absent otherwise,
+     * which is how `sfxAvailable` tells the browser engine and a stale wasm
+     * from this one.
      */
-    ...(typeof low.sfxLayout === 'function' && low.hasSfx !== false
+    ...(typeof low.sfxPlace === 'function' && low.hasSfxPlace
       ? {
-          sfxLayout: (face, rows, params) => low.sfxLayout(resolve(face), rows, params),
-          sfxInfo: () => low.sfxInfo(),
+          sfxPlace: (face, text, params) => low.sfxPlace(resolve(face), text, params),
+          sfxKinds: () => low.sfxKinds(),
+          sfxPick: (text) => low.sfxPick(text),
         }
       : null),
-    // An envelope's mesh over a box (`style.warp.pts`), from a wasm that has it.
-    ...(typeof low.sfxEnvelope === 'function' && low.hasSfxEnvelope ? { sfxEnvelope: (...args) => low.sfxEnvelope(...args) } : null),
     loading() {
       return false;
     },

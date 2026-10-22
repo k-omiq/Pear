@@ -80,6 +80,8 @@
   import { maskTool } from './mask-tool.svelte.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
+  import SfxGizmo from './SfxGizmo.svelte';
+  import { prefs } from './prefs.svelte.js';
   import LockChip from './LockChip.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
   import { inkTipIds, settleTips } from './brush-tips.js';
@@ -918,6 +920,26 @@
       s.warp?.on === true &&
       inspectorTab.id === 'effects' &&
       effectsSubTab.id === 'transform',
+  );
+
+  // ---- the SFX handles ----
+  //
+  // On a selected box laid out as SFX, whatever tab the Inspector is on: the
+  // paths and the letters ARE the sound, as the text is a balloon's. The same
+  // gate as the transform gizmo's, less the sub-tab, and not while that one is
+  // up (both would want the box's middle), nor on a locked box, nor while the
+  // SFX beta is switched off. `layout` is the engine's placement having letters.
+  const sfxGizmoOn = $derived(
+    selected &&
+      !editing &&
+      !bulkOn &&
+      !brushArmed() &&
+      !!pageFrameEl &&
+      sfxCurve &&
+      !!layout &&
+      prefs.sfxTool &&
+      !warpGizmoOn &&
+      !boxLocked(box),
   );
 
   // The resize and rotate handles are on the box: while it is selected and
@@ -3223,6 +3245,12 @@
          mesh is stored in - and the gizmo takes it rather than working the same
          thing out a second time. -->
     <WarpGizmo {box} pageId={pg.id} {z} toLocal={maskLocal} painter={warpPainter} />
+  {/if}
+
+  {#if sfxGizmoOn}
+    <!-- Over the resize handles (z-index), which stay: a path's end can sit
+         near a side handle, and the one asked for by the SFX wins there. -->
+    <SfxGizmo {box} pageId={pg.id} {z} text={applyCase(text, s)} toLocal={maskLocal} />
   {/if}
 
   <!-- The box's own resize and rotate handles stand down while the gizmo is up.

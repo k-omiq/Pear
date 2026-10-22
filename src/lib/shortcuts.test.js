@@ -248,6 +248,17 @@ describe('the registry itself', () => {
     expect(groupsOn.flatMap((g) => g.items).some((s) => s.id === 'tool.brush')).toBe(true);
     expect(groupsOn.flatMap((g) => g.items).length).toBe(SHORTCUTS.length);
   });
+
+  it('has the SFX tool on Mod+5 while Settings has it on, and nothing when off', () => {
+    setPref('sfxTool', true);
+    expect(defaultCombo('tool.sfx')).toBe('Mod+5');
+    expect(lookupShortcut(press('Digit5', { mod: true }))?.id).toBe('tool.sfx');
+    setPref('sfxTool', false);
+    expect(comboFor('tool.sfx')).toBe(null);
+    expect(lookupShortcut(press('Digit5', { mod: true }))).toBe(null);
+    expect(shortcutGroups().flatMap((g) => g.items).some((s) => s.id === 'tool.sfx')).toBe(false);
+    setPref('sfxTool', true);
+  });
 });
 
 // ---------------------------------------------------------------------------

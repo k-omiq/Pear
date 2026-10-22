@@ -381,6 +381,33 @@ describe('edit: warp presets', () => {
   });
 });
 
+// The sound types themselves run on the real engine (sfx.engine.test.js).
+describe('edit: SFX', () => {
+  const a = () => pageById(1).boxes[0];
+  it('a sound type and SFX on or off go through their actions, not a style patch', async () => {
+    const start = copy(app.pages.map((p) => p.boxes));
+    for (const [sfx, path] of [[{ kind: 'impact' }, 'sfx.kind'], [{ on: true }, 'sfx.on'], [{ on: false, seed: 3 }, 'sfx.on']]) {
+      const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { sfx } } }] });
+      expect(r.ok, JSON.stringify(sfx)).toBe(false);
+      expect(r.error).toContain(`set.style.${path}`);
+      expect(r.hint).toMatch(/sfx_kind/);
+    }
+    expect(copy(app.pages.map((p) => p.boxes))).toEqual(start);
+  });
+
+  it('the type\'s own fields and the SFX effects are style edits', async () => {
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: {
+      sfx: { seed: 42, strength: 1.5, slant: -10, caption: { text: 'boom', side: 'below' } },
+      extrude: { on: true, length: 0.3 },
+    } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(a().style.sfx).toMatchObject({ on: false, seed: 42, strength: 1.5, slant: -10, caption: { text: 'boom', side: 'below' } });
+    expect(a().style.extrude).toMatchObject({ on: true, length: 0.3 });
+    const bad = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { sfx: { strength: 3 } } } }] });
+    expect(bad.ok).toBe(false);
+  });
+});
+
 describe('add', () => {
   it('places an unplaced line in a rect, one undo step', async () => {
     const r = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80] }, callContext('mcp'));

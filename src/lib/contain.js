@@ -90,7 +90,8 @@ import {
   pathLayout,
 } from './measure.js';
 import {
-  strokeExtent,
+  strokeReach,
+  boxShadows,
   motionBlurTaps,
   inkActive,
   inkBounds,
@@ -403,14 +404,14 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
   const ink = inkActive(s.ink) ? inkBounds(s.ink) : null;
   if (ink) r = unite(r, ink.minX, ink.minY, ink.maxX, ink.maxY);
   if (!r) return null;
-  const so = strokeExtent(s.strokes);
+  const so = strokeReach(s);
   const sil = grow(r, so, so);
   let u = sil;
-  for (const sh of s.shadows ?? []) {
+  for (const sh of boxShadows(s)) {
     if (!(Number(sh?.opacity ?? 1) > 0)) continue;
     const dx = Number(sh?.x) || 0;
     const dy = Number(sh?.y) || 0;
-    const spread = 2 * Math.max(0, Number(sh?.blur) || 0);
+    const spread = 2 * Math.max(0, Number(sh?.blur) || 0) + Math.max(0, Number(sh?.grow) || 0);
     u = unite(u, sil.x0 + dx - spread, sil.y0 + dy - spread, sil.x1 + dx + spread, sil.y1 + dy + spread);
   }
   const blur = Math.max(0, Number(s.blur) || 0);

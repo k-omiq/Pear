@@ -10,6 +10,9 @@ const join = (path, key) => path ? `${path}.${key}` : key;
 // with default items are walked too; empty-array item shapes are checked below
 // against their normalizers. readOnly payloads still have a schema entry.
 function drift(value, schema, path = '', errors = []) {
+  if (schema.readOnly && schema.type === 'any') return errors;
+  // A nullable field's default is null: the type's own value stands in.
+  if (value === null && schema.nullable) return errors;
   if (plain(value)) {
     if (schema.type !== 'object' || !schema.fields) {
       errors.push(`${path || '$'}: missing object fields`);
@@ -24,7 +27,6 @@ function drift(value, schema, path = '', errors = []) {
       if (!Object.hasOwn(value, key)) errors.push(`${join(path, key)}: stale schema`);
     }
   } else if (Array.isArray(value)) {
-    if (schema.readOnly && schema.type === 'any') return errors;
     if (schema.type !== 'array' || !schema.items) errors.push(`${path}: missing array items`);
     else for (const child of value) drift(child, schema.items, `${path}[]`, errors);
   } else if (schema.fields || schema.items) {
@@ -47,9 +49,9 @@ const stroke = { color: '#fff', width: 3, opacity: 1 };
 const shadow = { x: -2, y: 4, blur: 3, color: '#1234', opacity: 0.5 };
 const stop = { color: '#fff', pos: 0, opacity: 1 };
 const anchor = { x: 10, y: 20, ix: -5, iy: 0, ox: 5, oy: 0 };
-const move = { kind: 'tilt', a: 0, b: 0 };
+const sfxPath = { a: [0, 0], b: [1, 0], bend: 0 };
 // A drawable item for each list whose default is empty.
-const EMPTY_ITEMS = { shadows: shadow, moves: move, pts: anchor };
+const EMPTY_ITEMS = { shadows: shadow, paths: sfxPath, pts: anchor };
 const SHAPES = {
   ellipse: { kind: 'ellipse', cx: 40, cy: 30, rx: 20, ry: 10 },
   poly: { kind: 'poly', pts: [[0, 0], [50, 0], [25, 40]] },
@@ -77,7 +79,7 @@ describe('STYLE_SCHEMA drift', () => {
   it('covers item fields even for arrays whose defaults are empty', () => {
     for (const [key, value] of [
       ['strokes', normalizeStroke({})], ['shadows', normalizeShadow({})],
-      ['sfx.moves', normalizeSfx({ moves: [{ kind: 'tilt', a: 0, b: 0 }] }).moves[0]],
+      ['sfx.paths', normalizeSfx({ paths: [sfxPath] }).paths[0]],
       ['path.pts', normalizeStyle({ path: { pts: [{ x: 1, y: 2 }] } }).path.pts[0]],
     ]) {
       const [top, sub] = key.split('.');
@@ -118,7 +120,7 @@ describe('validateStylePatch', () => {
       gradient: { on: true, radius: 2, stops: { 1: { opacity: 0.4 } } },
       pattern: { kind: 'crosshatch' }, roughen: { grit: 2 },
       path: { on: true }, ink: { on: false }, warp: { cols: 4 },
-      sfx: { moves: [{ kind: 'engine-defined-kind', a: 1.5, b: -2 }] },
+      sfx: { kind: 'impact', flow: null, paths: [{ a: [0, 0], b: [1.5, -2], bend: 0.3 }] }, extrude: { on: true, edge: '' },
     };
     const before = structuredClone(patch);
     expect(validateStylePatch({})).toEqual([]);
@@ -212,12 +214,12 @@ describe('validateStylePatch', () => {
   it('requires actual booleans and strings', () => {
     for (const value of [0, 1, 'true', 'false', null, {}, []]) expect(validateStylePatch({ bold: value })).not.toEqual([]);
     for (const value of [0, false, null, {}, []]) expect(validateStylePatch({ font: value })).not.toEqual([]);
-    expect(validateStylePatch({ sfx: { moves: [{ kind: '', a: 0, b: 0 }] } })).not.toEqual([]);
+    expect(validateStylePatch({ sfx: { kind: '' } })).not.toEqual([]);
   });
 
   it('accepts full array replacements and partial index patches', () => {
     expect(validateStylePatch({ strokes: [stroke], shadows: [shadow], gradient: { stops: [stop, { ...stop, pos: 1 }] } })).toEqual([]);
-    expect(validateStylePatch({ strokes: [], shadows: [], sfx: { moves: [] } })).toEqual([]);
+    expect(validateStylePatch({ strokes: [], shadows: [], sfx: { paths: [] } })).toEqual([]);
     expect(validateStylePatch({ strokes: { 0: { width: '+2' } }, shadows: { 2: { x: -10 } }, gradient: { stops: { 0: { pos: 0.2 } } } })).toEqual([]);
     expect(validateStylePatch({ strokes: [{ ...stroke, width: -1 }] })[0].path).toBe('strokes[0].width');
     expect(validateStylePatch({ strokes: [{ width: 2 }] })).toEqual([]);
@@ -227,7 +229,7 @@ describe('validateStylePatch', () => {
   it('enforces normalized array lengths and reachable indexes', () => {
     expect(validateStylePatch({ gradient: { stops: [stop] } })[0].error).toContain('at least 2');
     expect(validateStylePatch({ gradient: { stops: Array.from({ length: 9 }, () => stop) } })[0].error).toContain('at most 8');
-    expect(validateStylePatch({ sfx: { moves: Array.from({ length: 9 }, () => ({ kind: 'tilt', a: 0, b: 0 })) } })[0].error).toContain('at most 8');
+    expect(validateStylePatch({ sfx: { paths: Array.from({ length: 5 }, () => sfxPath) } })[0].error).toContain('at most 4');
     expect(validateStylePatch({ gradient: { stops: { 7: { pos: 1 } } } })).toEqual([]);
     expect(validateStylePatch({ gradient: { stops: { 8: { pos: 1 } } } })[0].error).toContain('below 8');
     // Strokes and shadows have no length cap in the normalizers.
@@ -292,10 +294,11 @@ describe('normalizer numeric sanity', () => {
     it(`${path.join('.')} = ${value} survives normalization`, () => {
       const style = defaultStyle();
       style.shadows = [{ ...shadow }];
-      style.sfx.moves = [{ ...move }];
+      style.sfx.paths = [structuredClone(sfxPath)];
       style.path.pts = [{ ...anchor }];
       let target = style;
-      for (const key of path.slice(0, -1)) target = target[key];
+      // A nullable object (null by default) is given the one number.
+      for (const key of path.slice(0, -1)) target = target[key] ??= {};
       target[path.at(-1)] = value;
       const normalized = normalizeStyle({ ...defaultStyle(), ...style });
       // normalizeStroke preserves the 0 boundary; normalizeStyle then removes
@@ -312,10 +315,11 @@ describe('normalizer numeric sanity', () => {
 
 describe('styleSchemaText', () => {
   // The budget grew from 5200 when the path anchors and the mask shapes
-  // became writable: about 900 characters for two whole new item schemas.
-  it('describes every key, field and item in under 6200 characters', () => {
+  // became writable: about 900 characters for two whole new item schemas,
+  // and to 8600 for the sound types' layout fields and the SFX effects.
+  it('describes every key, field and item in under 8600 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(6200);
+    expect(text.length).toBeLessThan(8600);
     for (const [path, entry] of allEntries) {
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }

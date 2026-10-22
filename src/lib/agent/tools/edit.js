@@ -50,13 +50,12 @@ import { applyTextRules } from '../../text-rules.js';
 import { letteringSetUp } from '../../lettering.js';
 import { guide, guideBound, termById } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
-import { sfxAvailable, sfxPresets, applySfxPreset, clearSfx } from '../../sfx.js';
+import { sfxAvailable, sfxKinds, sfxPick, applySfxKind, clearSfx } from '../../sfx.js';
 import { WARP_PRESETS, WARP_PRESET_NOTES, warpPresetPts } from '../../warp-presets.js';
-import { SFX_LOOKS, SFX_LOOK_NOTES, sfxLookPatch } from '../sfx-looks.js';
 import { footprintIn, footprintRegion, matchFor } from './footprint.js';
 
-const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original'];
-const DO_NAMED = ['preset:', 'sfx:', 'sfx_look:', 'warp:'];
+const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original', 'sfx_pick'];
+const DO_NAMED = ['preset:', 'sfx_kind:', 'warp:'];
 // "warp:<kind>" alone bends by this much (percent of the kind's strongest).
 export const WARP_DEFAULT_AMOUNT = 50;
 const WARP_AMOUNT = /^[+-]?\d+(\.\d+)?$/;
@@ -86,8 +85,9 @@ const DESCRIPTION = [
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
   '"outline_to_box" (an outline of the box\'s rectangle, grown to hold its text at the size it aims for with outline fit\'s air, or exactly the box when its width or height is held: geometry in the same op sets it first; shrunk in the result names a box that still fits only smaller), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
   '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in its colours on a colour page or white or black with an outline of the other over the art; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
-  `"sfx_look:<look>" (effects every engine draws, scaled to the size: ${SFX_LOOKS.map((k) => `${k} (${SFX_LOOK_NOTES[k]})`).join(', ')}),`,
-  '"preset:<name or id>", "sfx:<name or id>" (per-letter recipes, Rust engine only), "clear_sfx", "duplicate", "delete",',
+  '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type, in its look; sfx_kinds lists them; seed, strength and caption stay, every other style.sfx field goes back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, at the strength it asks for), "clear_sfx" (SFX off, the look it wrote over put back);',
+  'then tune an SFX in a later op with set style.sfx (strength, seed for another arrangement, paths, flow, slant, jitter, caption) and the effects that draw only while SFX is on (negative, extrude, shake, trail, strokeShade, strokeOrder, strokeJoin).',
+  '"preset:<name or id>", "duplicate", "delete",',
   `"warp:<kind>" or "warp:<kind>:<amount>" (a mesh bend of the whole box, Photoshop-style; amount -100..100, default ${WARP_DEFAULT_AMOUNT}, negative bends the other way; replaces any mesh the box had), "warp:off" (mesh off and cleared). Kinds: ` +
     WARP_PRESETS.map((k) => `${k} (${WARP_PRESET_NOTES[k]})`).join(', ') + '.',
   'Other curves: style.curve (a simple arc of the lines), style.circle (text round a ring), style.path (text along bezier anchors you give); path beats circle beats curve, and a warp bends whatever they drew.',
@@ -171,6 +171,11 @@ function findNamed(list, name, what, i) {
   return hit;
 }
 
+// SFX lettering is laid out by the Rust engine alone.
+function needSfx(i) {
+  if (!sfxAvailable()) fail(i, 'do', 'SFX lettering needs the Rust text engine', 'it is off in this app; leave SFX to the user.');
+}
+
 // "arc", "arc:-30" or "off" (what follows "warp:"), as a `do`.
 function parseWarp(spec, i) {
   const [name = '', amount, ...extra] = spec.split(':').map((t) => t.trim());
@@ -227,6 +232,11 @@ function compile(op, i) {
         const e = errors[0];
         fail(i, `set.style${e.path && e.path !== '$' ? '.' + e.path : ''}`, e.error, [e.hint, errors.length > 1 ? `${errors.length - 1} more problem(s) in this patch` : null].filter(Boolean).join('; ') || undefined);
       }
+      // A sound type is more than its id (its look, what it wrote over), and
+      // SFX off puts that look back: both go through their actions.
+      const sfx = object(s.style.sfx) ? s.style.sfx : {};
+      if ('kind' in sfx) fail(i, 'set.style.sfx.kind', 'a sound type is applied, not set', 'use do "sfx_kind:<id>" (sfx_kinds lists them) or do "sfx_pick".');
+      if ('on' in sfx) fail(i, 'set.style.sfx.on', 'SFX is switched with its actions', 'use do "sfx_kind:<id>" or "sfx_pick" to switch it on, "clear_sfx" to switch it off.');
       set.style = { ...s.style };
       if (typeof set.style.font === 'string') set.style.font = findFont(set.style.font, i);
       // A relative value needs a number on every box it reaches.
@@ -323,15 +333,12 @@ function compile(op, i) {
     if (typeof op.do !== 'string') fail(i, 'do', 'expected a string');
     const d = op.do.trim();
     if (DO_LATER[d]) fail(i, 'do', `"${d}" is not here yet`, DO_LATER[d]);
+    if (d === 'sfx_pick') needSfx(i);
     if (DO_PLAIN.includes(d)) out.do = { kind: d };
     else if (d.startsWith('preset:')) out.do = { kind: 'preset', preset: findNamed(presets.list, d.slice(7), 'preset', i) };
-    else if (d.startsWith('sfx:')) {
-      if (!sfxAvailable()) fail(i, 'do', 'SFX lettering needs the Rust text engine', 'it is off in this app; leave SFX to the user.');
-      out.do = { kind: 'sfx', preset: findNamed(sfxPresets(), d.slice(4), 'SFX preset', i) };
-    } else if (d.startsWith('sfx_look:')) {
-      const look = d.slice(9).trim().toLowerCase();
-      if (!SFX_LOOKS.includes(look)) fail(i, 'do', `no SFX look "${d.slice(9)}"`, `close: ${nearest(look, SFX_LOOKS).join(', ')}. Looks: ${SFX_LOOKS.join(', ')}.`);
-      out.do = { kind: 'sfx_look', look };
+    else if (d.startsWith('sfx_kind:')) {
+      needSfx(i);
+      out.do = { kind: 'sfx_kind', type: findNamed(sfxKinds(), d.slice(9).trim(), 'sound type', i).id };
     } else if (d.startsWith('warp:')) {
       out.do = parseWarp(d.slice(5), i);
     } else {
@@ -505,7 +512,7 @@ function writeDo(d, matches) {
     });
     return { changed: ids, created, deleted, noOriginal };
   }
-  if (['preset', 'sfx', 'sfx_look', 'clear_sfx', 'apply_guide', 'warp'].includes(d.kind)) {
+  if (['preset', 'sfx_kind', 'sfx_pick', 'clear_sfx', 'apply_guide', 'warp'].includes(d.kind)) {
     const out = editBoxes(
       matches.map((m) => ({ page: m.page, box: m.box })),
       (b, p) => {
@@ -518,15 +525,21 @@ function writeDo(d, matches) {
             b.auto.refSize = b.style.size;
             b.auto.locks.size = true;
           }
-        } else if (d.kind === 'sfx') {
-          applySfxPreset(b.style, d.preset, b);
-        } else if (d.kind === 'sfx_look') {
-          const { style, errors } = applyStylePatch(cloneStyle(b.style), sfxLookPatch(d.look, b.style));
-          if (errors.length) return false;
-          b.style = style;
+        } else if (d.kind === 'sfx_kind') {
+          if (b.style.sfx?.on && b.style.sfx.kind === d.type) return false;
+          applySfxKind(b.style, d.type);
+        } else if (d.kind === 'sfx_pick') {
+          // The app's own auto pick (the SFX panel's), from the box's text.
+          const pick = sfxPick(boxText(b, p));
+          const best = pick?.order?.[0];
+          if (!best) return false;
+          const strength = Math.min(2, Math.max(0, Number(pick.strength) || 0));
+          if (b.style.sfx?.on && b.style.sfx.kind === best && b.style.sfx.strength === strength) return false;
+          applySfxKind(b.style, best);
+          b.style.sfx.strength = strength;
         } else if (d.kind === 'clear_sfx') {
           if (!b.style.sfx?.on) return false;
-          clearSfx(b.style, b);
+          clearSfx(b.style);
         } else if (d.kind === 'warp') {
           // Built on the box's own rectangle: the mesh is box-local, and a
           // warped box keeps its rectangle from here on (store.svelte.js,

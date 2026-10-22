@@ -298,6 +298,7 @@
     'tool.text': () => setTool('text'),
     'tool.brush': () => setTool('brush'),
     'tool.pan': () => setTool('pan'),
+    'tool.sfx': () => setTool('sfx'),
 
     'box.duplicate': () => {
       // Swallowed either way, so the browser's bookmark dialog never opens over

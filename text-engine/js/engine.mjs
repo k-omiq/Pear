@@ -67,9 +67,8 @@ function wrap(instance) {
 
   let textPtr = 0
   let textCap = 0
-  // `sfxInfo` fills both: the table, and each kind's number on the wire.
-  let sfxInfoCache = null
-  let sfxKindIds = null
+  // The sound types' table, parsed once (`sfxKinds`).
+  let sfxKindsCache = null
 
   /** Writes `text` as UTF-8 into the engine's text buffer, returns its byte length. */
   function putText(text) {
@@ -305,114 +304,117 @@ function wrap(instance) {
       return { at, x, length: view.getFloat64(n * 16, true), advance: view.getFloat64(n * 16 + 8, true) }
     },
 
-    /** Whether this wasm has `sfxLayout` and `sfxInfo` (it is newer than the ABI number). */
-    hasSfx: typeof ex.mt_sfx_layout === 'function' && typeof ex.mt_sfx_info === 'function',
-
-    /** Whether this wasm has `sfxEnvelope`. */
-    hasSfxEnvelope: typeof ex.mt_sfx_envelope === 'function',
+    /** Whether this wasm has the sound-type SFX calls (`sfxPlace`, `sfxKinds`, `sfxPick`). */
+    hasSfxPlace:
+      typeof ex.mt_sfx_place === 'function' && typeof ex.mt_sfx_kinds === 'function' && typeof ex.mt_sfx_pick === 'function',
 
     /**
-     * The kinds of SFX move and the built-in presets, as the engine's table
-     * has them (text-engine/src/sfx/table.rs): one JSON document, parsed once
-     * and the same object every time, so read it and do not change it.
-     * @returns {{ kinds: Array<{ kind: string, label: string, unit: 'em' | 'deg' | 'x',
-     *     min: number, max: number, step: number,
-     *     b: null | { label: string, min: number, max: number, step: number, default: number } }>,
-     *   presets: Array<{ id: string, name: string, group: string, flow: 'row' | 'stack',
-     *     rowShift: number, gap: number, lineHeight: number | null,
-     *     envelope: null | { kind: 'arch' | 'valley' | 'flag' | 'rise', bend: number, cols: number, rows: number },
-     *     moves: Array<{ kind: string, a: number, b: number }> }>,
-     *   envelopes: string[] }} `envelopes` are the warp ids; `sfxEnvelope` takes one
+     * The twelve sound types (text-engine/src/sfx/kinds.rs), parsed once and
+     * the same object every time: read it, do not change it.
+     * @returns {{ kinds: Array<{ id: string, name: string, example: string, tag: string,
+     *   dir: 'h' | 'v', flow: { from: number, to: number, pow: number }, follow: number,
+     *   gap: number, slant: number, rise: number, jitter: { rot: number, size: number, off: number },
+     *   look: { fill: object, outlines: Array<{ width: number, color: string }>, sharp: boolean } }> }}
      */
-    sfxInfo() {
-      if (sfxInfoCache) return sfxInfoCache
-      if (!engine.hasSfx) throw new Error('mt-text: this wasm has no mt_sfx_info; run npm run build:engine')
-      check(ex.mt_sfx_info(), 'sfxInfo')
-      sfxInfoCache = JSON.parse(decoder.decode(outBytes()))
-      sfxKindIds = new Map(sfxInfoCache.kinds.map((k, i) => [k.kind, i]))
-      return sfxInfoCache
+    sfxKinds() {
+      if (sfxKindsCache) return sfxKindsCache
+      if (!engine.hasSfxPlace) throw new Error('mt-text: this wasm has no mt_sfx_kinds; run npm run build:engine')
+      check(ex.mt_sfx_kinds(), 'sfxKinds')
+      sfxKindsCache = JSON.parse(decoder.decode(outBytes()))
+      return sfxKindsCache
     },
 
     /**
-     * Where each letter of an SFX word goes. The engine measures every code
-     * point in `face` (as `advance` measures that one code point) and places it:
-     * its centre, turn, scale and lean, relative to the centre of the whole
-     * block (text-engine/src/sfx/mod.rs says how, move by move).
+     * Auto pick (text-engine/src/sfx/pick.rs): every sound type ranked for
+     * `text`, best first, and the strength the sound asks for.
+     * @returns {{ order: string[], scores: number[], strength: number }} `scores` in `sfxKinds` order
+     */
+    sfxPick(text) {
+      if (!engine.hasSfxPlace) throw new Error('mt-text: this wasm has no mt_sfx_pick; run npm run build:engine')
+      check(ex.mt_sfx_pick(putText(String(text))), 'sfxPick')
+      return JSON.parse(decoder.decode(outBytes()))
+    },
+
+    /**
+     * Lays out an SFX of the sound types (text-engine/src/sfx/place.rs): the
+     * text's groups (lines, and the sides of a `/`) each along a path, the
+     * letters sized, turned, leaned and kerned by their ink.
      *
      * @param {{ font: number, size: number, flags: number }} face from `engine.face`
-     * @param {string[]} rows the lines of the text; a `\n` inside one starts another row
-     * @param {{ lineHeight: number, letterSpacing?: number, amount?: number, seed?: number,
-     *   flow?: 'row' | 'stack', rowShift?: number,
-     *   moves?: Array<{ kind: string, a: number, b?: number }> }} params
-     *   pixels for `lineHeight` and `letterSpacing`; `amount` scales every move (default 1);
-     *   `rowShift` in ems; at most eight moves count, and a kind the engine does not know is skipped
-     * @returns {Array<{ ch: string, x: number, y: number, rot: number, sx: number, sy: number,
-     *   skew: number, w: number, drip: number }>} one per code point, in order, newlines left out.
-     *   `x`, `y` in pixels; `rot` and `skew` in radians (rot clockwise; a positive skew leans the
-     *   top right); `w` the letter's advance before scaling; `drip` pixels (never negative) the
-     *   painter pulls the lower half of the letter's outline down while its top stays put. Feed
+     * @param {string} text
+     * @param {{ vertical?: boolean, joinBars?: boolean, kern?: boolean, seed?: number,
+     *   kind?: string | null, strength?: number, flow?: { from: number, to: number, pow: number },
+     *   follow?: number, gap?: number, bigTighter?: number, slant?: number, rise?: number,
+     *   jitter?: { rot: number, size: number, off: number },
+     *   paths?: Array<{ a: [number, number], b: [number, number], bend: number }>,
+     *   edits?: Array<{ group: number, index: number, dx: number, dy: number, rot: number, scale: number }> }} params
+     *   lengths in ems of the face's size, angles in degrees; `kind` makes the paths not given
+     * @returns {{ paths: Array<{ a: [number, number], b: [number, number], bend: number }>,
+     *   bounds: [number, number, number, number],
+     *   letters: Array<{ x: number, y: number, rot: number, sx: number, sy: number, skew: number,
+     *     start: number, end: number, group: number, index: number, dir: [number, number],
+     *     em: number, adv: number }> }}
+     *   pixels from the box's centre for `bounds` and the letters' `x, y`; `rot`, `skew` in radians;
+     *   `start`/`end` the UTF-16 range of the text the letter draws; `paths` in ems. Feed
      *   `x, y, rot, sx, sy, skew` to a curved paint job's run (`paint.mjs`).
      */
-    sfxLayout(face, rows, params) {
-      if (!engine.hasSfx) throw new Error('mt-text: this wasm has no mt_sfx_layout; run npm run build:engine')
-      engine.sfxInfo()
-      const lines = rows.flatMap((row) => String(row).split('\n'))
-      const chars = lines.flatMap((line) => Array.from(line))
-      const moves = (params.moves ?? []).filter((m) => sfxKindIds.has(m.kind))
-      const flow = params.flow ?? 'row'
-      if (flow !== 'row' && flow !== 'stack') throw new Error(`mt-text: unknown sfx flow ${JSON.stringify(flow)}`)
-      // The recipe: see text-engine/src/sfx/wire.rs. The size is the face's.
-      const wire = new DataView(new ArrayBuffer(44 + moves.length * 20))
-      const nums = [params.lineHeight, params.letterSpacing ?? 0, params.amount ?? 1, params.rowShift ?? 0]
-      nums.forEach((v, i) => wire.setFloat64(i * 8, +v, true))
-      wire.setUint32(32, (params.seed ?? 1) >>> 0, true)
-      wire.setUint32(36, flow === 'stack' ? 1 : 0, true)
-      wire.setUint32(40, moves.length, true)
-      moves.forEach((m, i) => {
-        const at = 44 + i * 20
-        wire.setUint32(at, sfxKindIds.get(m.kind), true)
-        wire.setFloat64(at + 4, +m.a, true)
-        wire.setFloat64(at + 12, +(m.b ?? 0), true)
-      })
-      const textLen = putText(lines.join('\n'))
+    sfxPlace(face, text, params = {}) {
+      const { kinds } = engine.sfxKinds()
+      const paths = (params.paths ?? []).slice(0, 4)
+      const edits = params.edits ?? []
+      const kind = params.kind == null ? -1 : kinds.findIndex((k) => k.id === params.kind)
+      // The params: see text-engine/src/sfx/params.rs.
+      const wire = new DataView(new ArrayBuffer(12 + 96 + 4 + paths.length * 40 + 4 + edits.length * 40))
+      let at = 0
+      const u32 = (v) => {
+        wire.setUint32(at, v >>> 0, true)
+        at += 4
+      }
+      const f64 = (v) => {
+        wire.setFloat64(at, +v, true)
+        at += 8
+      }
+      u32((params.vertical ? 1 : 0) | (params.joinBars ?? true ? 2 : 0) | (params.kern ?? true ? 4 : 0))
+      u32(Math.max(0, Math.min(0xffffffff, Math.round(params.seed ?? 1))))
+      u32(kind < 0 ? 0xffffffff : kind)
+      const flow = params.flow ?? { from: 1, to: 1, pow: 1 }
+      const jitter = params.jitter ?? { rot: 0, size: 0, off: 0 }
+      for (const v of [
+        params.strength ?? 1, flow.from, flow.to, flow.pow, params.follow ?? 0.5, params.gap ?? 0,
+        params.bigTighter ?? 0.5, params.slant ?? 0, params.rise ?? 0, jitter.rot, jitter.size, jitter.off,
+      ]) f64(v)
+      u32(paths.length)
+      for (const q of paths) for (const v of [q.a[0], q.a[1], q.b[0], q.b[1], q.bend ?? 0]) f64(v)
+      u32(edits.length)
+      for (const e of edits) {
+        u32(e.group)
+        u32(e.index)
+        for (const v of [e.dx ?? 0, e.dy ?? 0, e.rot ?? 0, e.scale ?? 1]) f64(v)
+      }
+      const textLen = putText(String(text))
       const ptr = ex.mt_sfx_params_reserve(wire.byteLength)
-      if (!ptr) throw new Error('mt-text: sfxLayout: the engine refused the recipe buffer')
+      if (!ptr) throw new Error('mt-text: sfxPlace: the engine refused the params buffer')
       new Uint8Array(memory.buffer, ptr, wire.byteLength).set(new Uint8Array(wire.buffer))
-      const n = check(ex.mt_sfx_layout(face.font, face.size, face.flags, textLen, wire.byteLength), 'sfxLayout')
-      if (n !== chars.length) throw new Error(`mt-text: sfxLayout: ${n} records for ${chars.length} letters`)
-      // Read through a view of its own: the out buffer is bytes and need not
-      // sit on an 8-byte boundary.
-      const view = new DataView(memory.buffer, ex.mt_out_ptr(), n * 64)
-      return chars.map((ch, i) => {
-        const f = (k) => view.getFloat64(i * 64 + k * 8, true)
-        return { ch, x: f(0), y: f(1), rot: f(2), sx: f(3), sy: f(4), skew: f(5), w: f(6), drip: f(7) }
-      })
-    },
-
-    /**
-     * Where the nodes of a warp grid go (text-engine/src/sfx/envelope.rs): the
-     * identity grid of `cols` by `rows` cells over a box `w` by `h`, bent into
-     * the envelope by `bend` (a fraction of `h`, held to -2..2). This is the
-     * app's `style.warp.pts`.
-     *
-     * @param {'arch' | 'valley' | 'flag' | 'rise'} kind one of `sfxInfo().envelopes`
-     * @param {number} bend
-     * @param {number} cols 1 to 64
-     * @param {number} rows 1 to 64
-     * @param {number} w pixels, above 0
-     * @param {number} h pixels, above 0
-     * @returns {Array<[number, number]>} `(cols + 1) * (rows + 1)` points, row-major, top-left first
-     */
-    sfxEnvelope(kind, bend, cols, rows, w, h) {
-      if (!engine.hasSfxEnvelope) throw new Error('mt-text: this wasm has no mt_sfx_envelope; run npm run build:engine')
-      const id = engine.sfxInfo().envelopes.indexOf(kind)
-      if (id < 0) throw new Error(`mt-text: unknown sfx envelope ${JSON.stringify(kind)}`)
-      const n = check(ex.mt_sfx_envelope(id, +bend, cols >>> 0, rows >>> 0, +w, +h), 'sfxEnvelope')
+      const n = check(ex.mt_sfx_place(face.font, face.size, face.flags, textLen, wire.byteLength), 'sfxPlace')
       // Read through a view of its own: the out buffer need not sit on an 8-byte boundary.
-      const view = new DataView(memory.buffer, ex.mt_out_ptr(), n * 16)
-      const pts = new Array(n)
-      for (let i = 0; i < n; i++) pts[i] = [view.getFloat64(i * 16, true), view.getFloat64(i * 16 + 8, true)]
-      return pts
+      const view = new DataView(memory.buffer, ex.mt_out_ptr(), ex.mt_out_len())
+      const f = (i) => view.getFloat64(i * 8, true)
+      const g = f(0)
+      const bounds = [f(1), f(2), f(3), f(4)]
+      const out = { paths: [], bounds, letters: [] }
+      for (let i = 0; i < g; i++) {
+        const b = 5 + i * 5
+        out.paths.push({ a: [f(b), f(b + 1)], b: [f(b + 2), f(b + 3)], bend: f(b + 4) })
+      }
+      for (let i = 0; i < n; i++) {
+        const b = 5 + g * 5 + i * 14
+        out.letters.push({
+          x: f(b), y: f(b + 1), rot: f(b + 2), sx: f(b + 3), sy: f(b + 4), skew: f(b + 5),
+          start: f(b + 6), end: f(b + 7), group: f(b + 8), index: f(b + 9),
+          dir: [f(b + 10), f(b + 11)], em: f(b + 12), adv: f(b + 13),
+        })
+      }
+      return out
     },
 
     /**

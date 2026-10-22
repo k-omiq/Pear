@@ -680,10 +680,10 @@
           </div>
           <div class="set-item">
             <div class="set-line">
-              <span class="set-label">SFX presets <span class="set-badge">Beta</span></span>
-              {@render toggle('sfxPresets', 'SFX presets (beta)', prefs.sfxPresets)}
+              <span class="set-label">SFX tool <span class="set-badge">Beta</span></span>
+              {@render toggle('sfxTool', 'SFX tool (beta)', prefs.sfxTool)}
             </div>
-            <p class="set-desc">Adds an SFX tab to Effects, with ready-made sound-effect lettering.</p>
+            <p class="set-desc">Draw sound effects on the page, and pick their type in Effects &gt; SFX.</p>
           </div>
         </section>
 

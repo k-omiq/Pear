@@ -1031,10 +1031,93 @@ export function shadowExtent(shadows) {
   for (const sh of shadows ?? []) {
     out = Math.max(
       out,
-      Math.hypot(Number(sh?.x) || 0, Number(sh?.y) || 0) + 2 * Math.max(0, Number(sh?.blur) || 0),
+      Math.hypot(Number(sh?.x) || 0, Number(sh?.y) || 0) +
+        2 * Math.max(0, Number(sh?.blur) || 0) +
+        Math.max(0, Number(sh?.grow) || 0),
     );
   }
   return out;
+}
+
+// ---- the SFX effects, as the shadows the painter casts them with ----
+//
+// An extrude, a shake and a shade side are copies of the box's silhouette
+// (the letters and their outlines) laid under it, moved and coloured: what a
+// shadow is. They are made here from the style's fields, and every place that
+// paints or measures a box's shadows takes `boxShadows` instead of
+// `style.shadows`, so the footprint holds what is painted. The Rust painter
+// paints a run of alike copies once and moves it (paint/boxjob.rs); the
+// canvas paints each, and leaves out an edge's grow.
+
+const dir = (deg) => [Math.cos((deg * Math.PI) / 180), Math.sin((deg * Math.PI) / 180)];
+const lum = (hex) => {
+  const [r, g, b] = channels(hex);
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+};
+
+// The darkest colour the letters are drawn in: a shake's copies are in it.
+function darkest(style) {
+  let best = style?.color ?? '#000000';
+  for (const k of style?.strokes ?? []) if (k?.color && lum(k.color) < lum(best)) best = k.color;
+  return best;
+}
+
+// The effects' shadows of `style`, as `{ top, under }`: `top` lies right under
+// the letters (the shade side, the shake), `under` beneath the box's own
+// shadows (the extrude). Lengths in the style's page px.
+export function effectShadows(style) {
+  const top = [];
+  const under = [];
+  const size = Number(style?.size) || 0;
+  // The effects are the SFX lettering's: a box with SFX off has none.
+  if (!(size > 0) || !style.sfx?.on) return { top, under };
+  const shade = Number(style.strokeShade) || 0;
+  if (shade > 0) {
+    const outer = style.strokes?.length ? style.strokes[style.strokes.length - 1].color : style.color;
+    const d = shade * 0.08 * size;
+    top.push({ color: outer, opacity: 1, x: d * Math.SQRT1_2, y: d * Math.SQRT1_2, blur: 0, grow: 0 });
+  }
+  const sh = style.shake;
+  if (sh?.on && sh.amp > 0) {
+    const [ux, uy] = dir(sh.angle ?? 0);
+    const color = darkest(style);
+    for (let k = 1; k <= sh.count; k++) {
+      const d = (sh.amp * size * k) / sh.count;
+      const opacity = 0.45 * (1 - (k - 1) / (sh.count + 1));
+      for (const s of [1, -1]) top.push({ color, opacity, x: s * ux * d, y: s * uy * d, blur: 0, grow: 0 });
+    }
+  }
+  const ex = style.extrude;
+  if (ex?.on && ex.length > 0) {
+    const [ux, uy] = dir(ex.angle ?? 45);
+    const len = ex.length * size;
+    // A step a page px and a half apart: the copies read as one solid.
+    const n = Math.max(1, Math.min(48, Math.ceil(len / 1.5)));
+    const steps = [];
+    for (let k = 1; k <= n; k++) steps.push([(ux * len * k) / n, (uy * len * k) / n]);
+    for (const [x, y] of steps) under.push({ color: ex.color, opacity: 1, x, y, blur: 0, grow: 0 });
+    if (ex.edge) {
+      const grow = Math.max(1, 0.03 * size);
+      for (const [x, y] of steps) under.push({ color: ex.edge, opacity: 1, x, y, blur: 0, grow });
+    }
+  }
+  return { top, under };
+}
+
+// Every shadow a box casts, first on top: the effects' and its own.
+export function boxShadows(style) {
+  const own = Array.isArray(style?.shadows) ? style.shadows : [];
+  const { top, under } = effectShadows(style);
+  return top.length || under.length ? [...top, ...own, ...under] : own;
+}
+
+// How far past the letters the box's outlines reach, page px: the strokes,
+// and a negative's blob they go round. An SFX letter's outlines grow with the
+// letter (to the 0.4 of its scale, `letterPen`), so an SFX box reaches up to
+// half as far again.
+export function strokeReach(style) {
+  const neg = style?.sfx?.on && style.negative?.on ? Math.max(0, Number(style.negative.grow) || 0) * (Number(style.size) || 0) : 0;
+  return (strokeExtent(style?.strokes) + neg) * (style?.sfx?.on ? 1.5 : 1);
 }
 
 // The box-local rectangle every stroke's ink reaches, or null for no ink. The
@@ -1081,7 +1164,7 @@ function finishOf(f) {
 // canvas and the export's footprint pad by.
 export function inkReach(style) {
   if (!inkActive(style?.ink)) return 0;
-  return inkExtent(style.ink) + Math.ceil(strokeExtent(style.strokes) + shadowExtent(style.shadows));
+  return inkExtent(style.ink) + Math.ceil(strokeReach(style) + shadowExtent(boxShadows(style)));
 }
 
 // The Euclidean distance from every pixel to the nearest one with alpha at or

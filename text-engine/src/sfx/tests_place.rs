@@ -428,6 +428,26 @@ fn an_edit_moves_turns_and_scales_its_letter_only() {
     assert!((b.em - 2.0 * a.em).abs() < 1e-9);
     assert_eq!(base.letters[0], l.letters[0]);
     assert_eq!(base.letters[2], l.letters[2]);
+    // Kerned, too: the neighbours are not kerned against the moved letter.
+    let kerned = Params {
+        kern: true,
+        gap: -0.2,
+        ..plain()
+    };
+    let base = place("ABC", 100.0, &kerned, &mut boxes()).unwrap();
+    let l = place(
+        "ABC",
+        100.0,
+        &Params {
+            edits: p.edits.clone(),
+            ..kerned
+        },
+        &mut boxes(),
+    )
+    .unwrap();
+    assert_eq!(base.letters[0], l.letters[0]);
+    assert_eq!(base.letters[2], l.letters[2]);
+    assert!((l.letters[1].x - base.letters[1].x - 0.5 * base.letters[1].em).abs() < 1e-6);
 }
 
 #[test]
@@ -546,7 +566,7 @@ fn kerning_never_brings_a_letter_closer_than_half_its_own_inner_gap() {
 }
 
 #[test]
-fn kerning_leaves_hand_moved_letters_and_spaces_alone() {
+fn kerning_leaves_spaces_alone() {
     let p = Params {
         kern: true,
         gap: -0.2,

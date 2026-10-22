@@ -342,6 +342,23 @@ export function defaultStyle() {
     // others). Empty array = no shadow. Each shadow uses the glyph outline plus
     // all strokes as its shape.
     shadows: [],
+    // How the outlines are laid: 'merged' (one shape under the fill) or
+    // 'each' (letter by letter, a later letter's rim over an earlier
+    // letter's fill), with 'round' or 'miter' corners. `strokeShade` (0..1)
+    // throws a hard copy of the outer outline down-right, a shade side.
+    strokeOrder: 'merged',
+    strokeJoin: 'round',
+    strokeShade: 0,
+    // Effects the SFX types use, any box may: a negative (the letters grown
+    // into one blob, `grow` ems, the outlines round the blob), an extrude
+    // (the letters stacked `length` ems along `angle` degrees, with an edge
+    // in `edge` when it is set), a shake (`count` copies each way, `amp`
+    // ems apart along `angle`) and a trail (SFX only: `count` fading copies
+    // `dist` ems back along each letter's path).
+    negative: { on: false, grow: 0.15, color: '#111111' },
+    extrude: { on: false, angle: 135, length: 0.3, color: '#111111', edge: '' },
+    shake: { on: false, count: 2, amp: 0.06, angle: 0 },
+    trail: { on: false, count: 3, dist: 0.25 },
     // Gaussian blur of the whole text (fill + strokes + shadows), page px.
     blur: 0,
     // Directional smear of the whole text, on top of (and after) `blur`.
@@ -399,17 +416,16 @@ export function defaultStyle() {
     // one; 0 means auto (the closed ring). With a radius set the text need not
     // reach round - it is an arc centred on `angle`.
     circle: { on: false, angle: 0, inside: false, r: 0 },
-    // SFX lettering: every letter placed on its own (offset, tilt, size, lean)
-    // by the Rust engine from a short recipe, `moves`. It is a fourth glyph-by-
-    // glyph layout and takes precedence over path, circle and arc, but it
-    // exists only while the Rust engine is the text engine: under the browser
-    // engine the recipe is kept and ignored, and the box is plain text (see
-    // `sfxActive`, sfx.js). `amount` (0..2) scales every move at once, `seed`
-    // picks the arrangement of the random ones, `flow: 'stack'` sets one
-    // letter per row, `rowShift` (ems) moves each row sideways from the one
-    // above. A move is `{ kind, a, b }`: the engine's kind name and its two
-    // numbers (`sfxInfo` says what each means). Letter gap and line height are
-    // the box's own `letterSpacing` and `lineHeight`, not repeated here.
+    // SFX lettering: one of the engine's twelve sound types (`kind`), its
+    // letters laid along a path per text group (a line, or a side of a `/`),
+    // sized, turned and kerned by the Rust engine (`sfxPlace`). It is a fourth
+    // glyph-by-glyph layout and takes precedence over path, circle and arc,
+    // but it exists only while the Rust engine is the text engine: under the
+    // browser engine the box is plain text (see `sfxActive`, sfx.js).
+    // Every layout number left null is the type's own; a number set is the
+    // user's. Lengths are ems of the box's size, angles degrees. `paths` are
+    // the box's own (ems from its centre), empty for the type's. `glyphs`
+    // holds hand edits by `group:index`. `caption` is small text beside it.
     sfx: sfxDefault(),
     uppercase: false,
     lineHeight: 1.1,
@@ -762,9 +778,12 @@ function normalizeStop(st) {
   };
 }
 
-export const SFX_FLOWS = ['row', 'stack'];
-// More than this is a recipe nobody reads; the Inspector's list stops here too.
-export const SFX_MAX_MOVES = 8;
+// At most this many text groups: a group past it joins the last.
+export const SFX_MAX_GROUPS = 4;
+export const SFX_DIRS = ['h', 'v'];
+export const SFX_CAPTION_SIDES = ['below', 'above', 'left', 'right'];
+export const STROKE_ORDERS = ['merged', 'each'];
+export const STROKE_JOINS = ['round', 'miter'];
 
 // What the Layout tab (and the bulk panel) accept for line height and letter
 // spacing. Wide enough for SFX lettering, where letters overlap and rows
@@ -779,44 +798,147 @@ export function letterSpacingRange(size) {
 }
 
 function sfxDefault() {
-  return { on: false, amount: 1, seed: 1, flow: 'row', rowShift: 0, moves: [], before: null };
-}
-
-// What a preset wrote over on the box, as it stood before SFX went on: the two
-// gaps, the bends SFX switches off, and the mesh. Remove SFX puts it back
-// (`clearSfx`, sfx.js). Null while SFX is off, and for a recipe that has none.
-function normalizeSfxBefore(b) {
-  if (!b || typeof b !== 'object') return null;
   return {
-    letterSpacing: num(b.letterSpacing, 0),
-    lineHeight: num(b.lineHeight, 1.1),
-    curve: num(b.curve, 0),
-    circle: b.circle === true,
-    path: b.path === true,
-    warp: normalizeWarp(b.warp),
+    on: false,
+    kind: null,
+    seed: 1,
+    strength: 1,
+    dir: null,
+    joinBars: true,
+    kern: true,
+    flow: null,
+    follow: null,
+    gap: null,
+    bigTighter: null,
+    slant: null,
+    rise: null,
+    jitter: null,
+    paths: [],
+    glyphs: {},
+    caption: { text: '', side: 'below', size: 0.3, color: '#111111' },
+    before: null,
   };
 }
 
-// The SFX recipe, gated field by field. Kinds are the engine's to know, so a
-// name is only checked to be a name; a move whose numbers are not finite
-// numbers is dropped rather than repaired.
+// What applying a type wrote over on the box, as it stood before SFX went on:
+// the bends SFX switches off and the look the type set. Remove SFX puts it
+// back (`clearSfx`, sfx.js). Null while SFX is off. The look is kept as it
+// was and normalised with the style when it is put back.
+function normalizeSfxBefore(b) {
+  if (!b || typeof b !== 'object') return null;
+  const out = { curve: num(b.curve, 0), circle: b.circle === true, path: b.path === true };
+  if (b.look && typeof b.look === 'object') out.look = structuredClone(b.look);
+  return out;
+}
+
+const finiteOr = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+const clampOrNull = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null);
+const pt = (q) => (Array.isArray(q) && q.length === 2 && q.every((v) => Number.isFinite(v)) ? [q[0], q[1]] : null);
+
+// One text group's path, ems from the box centre, or null when unreadable.
+function normalizeSfxPath(q) {
+  const a = pt(q?.a);
+  const b = pt(q?.b);
+  if (!a || !b) return null;
+  return { a, b, bend: Math.min(2, Math.max(-2, finiteOr(q.bend, 0))) };
+}
+
+// A recipe saved by the move-based SFX (before the sound types): it has
+// `moves`, `amount` or a `flow` name. Opened as the closest type, laid out
+// fresh; the look the box has stays (decision D4, docs/giongo).
+function isOldSfx(x) {
+  return Array.isArray(x?.moves) || typeof x?.flow === 'string' || typeof x?.amount === 'number';
+}
+
+// The SFX recipe, gated field by field. A type is the engine's to know, so a
+// name is only checked to be a name.
 export function normalizeSfx(x) {
   const d = sfxDefault();
-  const moves = [];
-  for (const m of Array.isArray(x?.moves) ? x.moves : []) {
-    if (moves.length >= SFX_MAX_MOVES) break;
-    if (typeof m?.kind !== 'string' || !m.kind || typeof m.a !== 'number' || typeof m.b !== 'number') continue;
-    if (!Number.isFinite(m.a) || !Number.isFinite(m.b)) continue;
-    moves.push({ kind: m.kind, a: m.a, b: m.b });
+  if (isOldSfx(x)) {
+    return { ...d, on: x.on === true, kind: x.flow === 'stack' ? 'small' : 'impact', seed: Math.min(9999, Math.max(1, Math.round(num(x.seed, 1)))) };
   }
+  const paths = [];
+  for (const q of Array.isArray(x?.paths) ? x.paths : []) {
+    if (paths.length >= SFX_MAX_GROUPS) break;
+    const p = normalizeSfxPath(q);
+    if (p) paths.push(p);
+  }
+  const glyphs = {};
+  for (const [key, g] of Object.entries(x?.glyphs && typeof x.glyphs === 'object' ? x.glyphs : {})) {
+    if (!/^\d+:\d+$/.test(key) || !g || typeof g !== 'object') continue;
+    const e = {
+      dx: Math.min(20, Math.max(-20, finiteOr(g.dx, 0))),
+      dy: Math.min(20, Math.max(-20, finiteOr(g.dy, 0))),
+      rot: Math.min(360, Math.max(-360, finiteOr(g.rot, 0))),
+      s: Math.min(5, Math.max(0.1, finiteOr(g.s, 1))),
+    };
+    if (e.dx || e.dy || e.rot || e.s !== 1) glyphs[key] = e;
+  }
+  const flow = x?.flow && typeof x.flow === 'object'
+    ? { from: Math.min(4, Math.max(0.1, finiteOr(x.flow.from, 1))), to: Math.min(4, Math.max(0.1, finiteOr(x.flow.to, 1))), pow: Math.min(5, Math.max(0.2, finiteOr(x.flow.pow, 1))) }
+    : null;
+  const jitter = x?.jitter && typeof x.jitter === 'object'
+    ? { rot: Math.min(45, Math.max(0, finiteOr(x.jitter.rot, 0))), size: Math.min(1, Math.max(0, finiteOr(x.jitter.size, 0))), off: Math.min(1, Math.max(0, finiteOr(x.jitter.off, 0))) }
+    : null;
+  const c = x?.caption && typeof x.caption === 'object' ? x.caption : {};
   return {
     on: x?.on === true,
-    amount: Math.min(2, Math.max(0, num(x?.amount, d.amount))),
+    kind: typeof x?.kind === 'string' && x.kind ? x.kind : null,
     seed: Math.min(9999, Math.max(1, Math.round(num(x?.seed, d.seed)))),
-    flow: SFX_FLOWS.includes(x?.flow) ? x.flow : d.flow,
-    rowShift: Math.min(2, Math.max(-2, num(x?.rowShift, d.rowShift))),
-    moves,
+    strength: Math.min(2, Math.max(0, num(x?.strength, d.strength))),
+    dir: SFX_DIRS.includes(x?.dir) ? x.dir : null,
+    joinBars: x?.joinBars !== false,
+    kern: x?.kern !== false,
+    flow,
+    follow: clampOrNull(x?.follow, 0, 1),
+    gap: clampOrNull(x?.gap, -1, 2),
+    bigTighter: clampOrNull(x?.bigTighter, 0, 1),
+    slant: clampOrNull(x?.slant, -45, 45),
+    rise: clampOrNull(x?.rise, -30, 30),
+    jitter,
+    paths,
+    glyphs,
+    caption: {
+      text: typeof c.text === 'string' ? c.text : '',
+      side: SFX_CAPTION_SIDES.includes(c.side) ? c.side : d.caption.side,
+      size: Math.min(1, Math.max(0.1, num(c.size, d.caption.size))),
+      color: hex(c.color, d.caption.color),
+    },
     before: normalizeSfxBefore(x?.before),
+  };
+}
+
+// The SFX effects' fields of a style, each checked (see `defaultStyle`).
+export function normalizeEffects(src) {
+  const d = defaultStyle();
+  const o = (v) => (v && typeof v === 'object' ? v : {});
+  const neg = o(src?.negative);
+  const ex = o(src?.extrude);
+  const sh = o(src?.shake);
+  const tr = o(src?.trail);
+  return {
+    strokeOrder: STROKE_ORDERS.includes(src?.strokeOrder) ? src.strokeOrder : d.strokeOrder,
+    strokeJoin: STROKE_JOINS.includes(src?.strokeJoin) ? src.strokeJoin : d.strokeJoin,
+    strokeShade: Math.min(1, Math.max(0, num(src?.strokeShade, 0))),
+    negative: { on: neg.on === true, grow: Math.min(1, Math.max(0, num(neg.grow, d.negative.grow))), color: hex(neg.color, d.negative.color) },
+    extrude: {
+      on: ex.on === true,
+      angle: num(ex.angle, d.extrude.angle),
+      length: Math.min(2, Math.max(0, num(ex.length, d.extrude.length))),
+      color: hex(ex.color, d.extrude.color),
+      edge: ex.edge === '' ? '' : hex(ex.edge, ''),
+    },
+    shake: {
+      on: sh.on === true,
+      count: Math.min(4, Math.max(1, Math.round(num(sh.count, d.shake.count)))),
+      amp: Math.min(1, Math.max(0, num(sh.amp, d.shake.amp))),
+      angle: num(sh.angle, d.shake.angle),
+    },
+    trail: {
+      on: tr.on === true,
+      count: Math.min(6, Math.max(1, Math.round(num(tr.count, d.trail.count)))),
+      dist: Math.min(2, Math.max(0, num(tr.dist, d.trail.dist))),
+    },
   };
 }
 
@@ -996,6 +1118,7 @@ export function normalizeStyle(s) {
     warp: normalizeWarp(src.warp),
     circle: circ,
     sfx: normalizeSfx(src.sfx),
+    ...normalizeEffects(src),
     gradient: g,
     pattern: pat,
     noFill: src.noFill === true,
@@ -1004,6 +1127,14 @@ export function normalizeStyle(s) {
     roughen: { ...d.roughen, ...(src.roughen || {}) },
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
+  // A move-based SFX wrote the box's gaps over with its preset's: they go
+  // back, and what it switched off stays in `before` for Remove SFX.
+  const oldBefore = isOldSfx(src.sfx) && src.sfx.on === true ? src.sfx.before : null;
+  if (oldBefore && typeof oldBefore === 'object') {
+    out.letterSpacing = num(oldBefore.letterSpacing, out.letterSpacing);
+    out.lineHeight = num(oldBefore.lineHeight, out.lineHeight);
+    out.sfx.before = normalizeSfxBefore(oldBefore);
+  }
   return out;
 }
 

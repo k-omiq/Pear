@@ -8,6 +8,7 @@
     page,
     placeActiveAt,
     addEmptyBox,
+    addSfxBox,
     setPageDims,
     setPageDimsForSrc,
     deselect,
@@ -41,6 +42,7 @@
   } from './strip.js';
   import { publishStripScroll, stripReveal } from './strip-sync.svelte.js';
   import { patternPick, finishPatternPick } from '../pattern-pick.svelte.js';
+  import { setInspectorTab, setEffectsSubTab } from '../inspector-tabs.svelte.js';
 
   // Handle for dock Fit button.
   let { onReady } = $props();
@@ -548,12 +550,68 @@
     }
     const hit = frameCoords(e);
     if (!hit) return;
+    if (app.tool === 'sfx') {
+      startSfxDrag(e, hit);
+      return;
+    }
     const pg = hit.pg;
     // The page under the pointer decides, not the current one, and it is handed
     // on so the box lands where the click did. `placeActiveAt` moves the index
     // onto it - see `focusPage`.
     if (pg.activeLineN != null && lineByN(pg, pg.activeLineN)) placeActiveAt(hit.x, hit.y, pg);
     else deselect();
+  }
+
+  // ---------- the SFX tool ----------
+  // Press, drag, let go: the drag is the path the sound's first line runs
+  // along (`addSfxBox`), drawn as a line while it is being made. A press that
+  // never travelled is a click, and a click only drops the selection, as it
+  // does on the empty page with the Place tool: a sound needs a direction.
+  // The drag is in the first page's px from where it started, as a pattern
+  // pick's corners are, so one that crosses a seam on a strip stays on its
+  // page. Escape drops it.
+  const SFX_MIN_PX = 6;
+  let sfxDrag = $state(null);
+  function startSfxDrag(e, hit) {
+    e.preventDefault();
+    const pid = e.pointerId;
+    e.target.setPointerCapture?.(pid);
+    sfxDrag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
+    const ac = new AbortController();
+    const end = () => {
+      ac.abort();
+      sfxDrag = null;
+    };
+    const move = (ev) => {
+      if (ev.pointerId !== pid || !sfxDrag) return;
+      sfxDrag.x1 = ev.clientX;
+      sfxDrag.y1 = ev.clientY;
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== pid) return;
+      const dx = ev.clientX - e.clientX;
+      const dy = ev.clientY - e.clientY;
+      end();
+      if (Math.hypot(dx, dy) < SFX_MIN_PX) {
+        deselect();
+        return;
+      }
+      const id = addSfxBox({ x: hit.x, y: hit.y }, { x: hit.x + dx / app.zoom, y: hit.y + dy / app.zoom }, hit.pg);
+      if (id == null) return;
+      // Straight to the controls the new sound is tuned with.
+      setInspectorTab('effects');
+      setEffectsSubTab('sfx');
+    };
+    const key = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      end();
+    };
+    document.addEventListener('pointermove', move, { signal: ac.signal });
+    document.addEventListener('pointerup', up, { signal: ac.signal });
+    document.addEventListener('pointercancel', (ev) => ev.pointerId === pid && end(), { signal: ac.signal });
+    document.addEventListener('keydown', key, { signal: ac.signal, capture: true });
   }
 
   // The Text tool adds a box on the SECOND of two clicks, not the first: one
@@ -1111,7 +1169,7 @@
       ? 'cursor:pointer'
       : app.tool === 'pan'
         ? 'cursor:grab'
-        : app.tool === 'text'
+        : app.tool === 'text' || app.tool === 'sfx'
           ? 'cursor:crosshair'
           : ''}
   >
@@ -1260,6 +1318,15 @@
   </div>
 {/if}
 
+{#if sfxDrag}
+  <!-- The path being drawn, in screen px: from the press to the pointer. -->
+  <svg class="sfx-drag" aria-hidden="true">
+    <line x1={sfxDrag.x0} y1={sfxDrag.y0} x2={sfxDrag.x1} y2={sfxDrag.y1} />
+    <circle cx={sfxDrag.x0} cy={sfxDrag.y0} r="4" />
+    <circle cx={sfxDrag.x1} cy={sfxDrag.y1} r="4" />
+  </svg>
+{/if}
+
 {#if !app.loaded}
   <div class="empty-state">
     <div class="dropzone">
@@ -1269,3 +1336,28 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* Over everything and deaf to the pointer: the drag's own listeners are on
+     the document. The page-facing palette the gizmos use (WarpGizmo.svelte),
+     since it is drawn over the paper in both themes. */
+  .sfx-drag {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 50;
+    overflow: visible;
+  }
+  .sfx-drag line {
+    stroke: var(--gizmo-accent, #00d5e0);
+    stroke-width: 2;
+    stroke-dasharray: 6 4;
+  }
+  .sfx-drag circle {
+    fill: #fff;
+    stroke: var(--gizmo-accent-deep, #00818a);
+    stroke-width: 1.5;
+  }
+</style>

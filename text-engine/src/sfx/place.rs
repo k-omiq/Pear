@@ -171,6 +171,9 @@ pub struct Letter {
     pub dir: [f64; 2],
     /// The letter's em in pixels.
     pub em: f64,
+    /// The drawn text's advance at the face's size, before the letter's
+    /// own scale.
+    pub adv: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -199,8 +202,9 @@ pub(crate) struct Work {
     /// Its drawn text's advance at the face's size, for the bounds.
     pub drawn: f64,
     pub dir: [f64; 2],
-    /// Moved by hand: kerning leaves it where the user put it.
-    pub hand: bool,
+    /// The user's hand edit, put on after kerning, so it moves this letter
+    /// and no other.
+    pub edit: Option<Edit>,
     /// Size relative to the face, for the gap.
     pub rel: f64,
 }
@@ -445,19 +449,12 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
             };
             let phi = dir[1].atan2(dir[0]);
             let (gi, ji) = (g as u32, j as u32);
-            let mut rot = p.follow.clamp(0.0, 1.0) * wrap(phi - base)
+            let rot = p.follow.clamp(0.0, 1.0) * wrap(phi - base)
                 + (jrot * gauss(p.seed, gi, ji, 1) * 0.6).to_radians();
             let push = joff * gauss(p.seed, gi, ji, 2) * 0.3 * em;
-            let mut centre = [pt[0] - dir[1] * push, pt[1] + dir[0] * push];
-            let mut k = em / size;
-            let mut hand = false;
-            if let Some(e) = p.edits.iter().find(|e| e.group == gi && e.index == ji) {
-                centre[0] += e.dx * em;
-                centre[1] += e.dy * em;
-                rot += e.rot.to_radians();
-                k *= e.scale.clamp(0.05, 20.0);
-                hand = e.dx.abs() + e.dy.abs() > 1e-9;
-            }
+            let centre = [pt[0] - dir[1] * push, pt[1] + dir[0] * push];
+            let k = em / size;
+            let edit = p.edits.iter().find(|e| e.group == gi && e.index == ji).copied();
             let nudge = if p.vertical && it.is_small_kana(text) {
                 [0.12 * size, -0.2 * size]
             } else {
@@ -474,7 +471,7 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
                 nudge,
                 drawn: drawn[j],
                 dir,
-                hand,
+                edit,
                 rel: factor[j],
             });
         }
@@ -484,6 +481,16 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
     if p.kern {
         for span in &spans {
             kern::group(&mut works[span.clone()], text, size, p, &shear, ink)?;
+        }
+    }
+    // The hand edits, in ems of the letter as it was laid out and kerned.
+    for w in works.iter_mut() {
+        if let Some(e) = w.edit {
+            let em = w.k * size;
+            w.centre[0] += e.dx * em;
+            w.centre[1] += e.dy * em;
+            w.rot += e.rot.to_radians();
+            w.k *= e.scale.clamp(0.05, 20.0);
         }
     }
 
@@ -513,6 +520,7 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
             index: w.index,
             dir: w.dir,
             em: w.k * size,
+            adv: w.drawn,
         });
     }
     let bounds = if letters.is_empty() {

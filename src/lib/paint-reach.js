@@ -5,7 +5,7 @@
 // out; these are the answers that do not need a layout, for the places that
 // must not pay for one.
 
-import { inkActive, inkBounds, strokeExtent, shadowExtent, motionBlurTaps } from './text-paint.js';
+import { inkActive, inkBounds, strokeReach, shadowExtent, boxShadows, motionBlurTaps } from './text-paint.js';
 
 const NONE = Object.freeze({ l: 0, t: 0, r: 0, b: 0 });
 
@@ -23,7 +23,7 @@ export function inkOverhang(style, w, h) {
   if (!inkActive(style?.ink)) return NONE;
   const k = inkBounds(style.ink);
   if (!k) return NONE;
-  const finish = strokeExtent(style.strokes) + shadowExtent(style.shadows);
+  const finish = strokeReach(style) + shadowExtent(boxShadows(style));
   const g = filterReach(style);
   const side = (v, grow) => Math.ceil(Math.max(0, v) + finish + grow);
   return { l: side(-k.minX, g.x), t: side(-k.minY, g.y), r: side(k.maxX - w, g.x), b: side(k.maxY - h, g.y) };
@@ -74,14 +74,14 @@ export function styleReach(style, w, h) {
       y1 = Math.max(y1, k.maxY);
     }
   }
-  const so = strokeExtent(style.strokes);
+  const so = strokeReach(style);
   const sil = { x0: x0 - so, y0: y0 - so, x1: x1 + so, y1: y1 + so };
   const u = { ...sil };
-  for (const sh of style.shadows ?? []) {
+  for (const sh of boxShadows(style)) {
     if (!(Number(sh?.opacity ?? 1) > 0)) continue;
     const dx = Number(sh?.x) || 0;
     const dy = Number(sh?.y) || 0;
-    const spread = 2 * Math.max(0, Number(sh?.blur) || 0);
+    const spread = 2 * Math.max(0, Number(sh?.blur) || 0) + Math.max(0, Number(sh?.grow) || 0);
     u.x0 = Math.min(u.x0, sil.x0 + dx - spread);
     u.y0 = Math.min(u.y0, sil.y0 + dy - spread);
     u.x1 = Math.max(u.x1, sil.x1 + dx + spread);

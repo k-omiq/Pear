@@ -52,6 +52,7 @@ const SHORTCUT_KEYWORDS = {
   'tool.place': 'tool paste place',
   'tool.text': 'tool new box add',
   'tool.brush': 'tool hand letter draw',
+  'tool.sfx': 'tool sound effect draw',
   'tool.pan': 'tool hand move scroll',
   'box.duplicate': 'clone copy',
   'box.delete': 'remove',
@@ -80,6 +81,7 @@ const SHORTCUT_KEYWORDS = {
 // too - this only keeps the list from offering what would be refused.
 function shortcutWhen(id) {
   if (id === 'tool.brush' && !prefs.brushTool) return false;
+  if (id === 'tool.sfx' && !prefs.sfxTool) return false;
   if (id === 'box.paste') return typeset() && hasCopiedBox();
   if (id.startsWith('box.') || id.startsWith('style.')) return boxSelected();
   return typeset();
