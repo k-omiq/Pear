@@ -40,7 +40,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 1;
+pub const BOX_WIRE_VERSION: u32 = 2;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -48,7 +48,7 @@ pub const BOX_WIRE_VERSION: u32 = 1;
 /// as long, as a person draws, and the canvas paints every one, so a count
 /// here would be a box the engine will not paint. What bounds them is what
 /// bounds any record, the bytes they arrive in and the painter's budget, and
-/// one layer serves every shadow (`paint_box_with`), so the 17th costs its 36
+/// one layer serves every shadow (`paint_box_with`), so the 17th costs its 44
 /// bytes and its time and no more memory than the first.
 pub const MAX_TAPS: usize = 512;
 /// Largest blur, and largest distance a shadow or a tap may state, in job
@@ -66,6 +66,9 @@ pub struct Shadow {
     pub y: f64,
     /// A canvas shadow's `blur`: twice the gaussian's sigma, job units.
     pub blur: f64,
+    /// The silhouette grown this much more, job units (times each run's
+    /// pen): an SFX extrude's edge. 0 for a canvas shadow.
+    pub grow: f64,
 }
 
 /// One copy in the motion blur's sum (`motionBlurTaps`).
@@ -240,7 +243,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     {
         return Err(Error::BadSpec);
     }
-    let n = r.count(usize::MAX, 36)?;
+    let n = r.count(usize::MAX, 44)?;
     let shadows = budget::collect((0..n).map(|_| {
         let b = r.take(4)?;
         Ok(Shadow {
@@ -249,6 +252,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
             x: r.within(MAX_THROW)?,
             y: r.within(MAX_THROW)?,
             blur: r.upto(MAX_BLUR)?,
+            grow: r.upto(MAX_BLUR)?,
         })
     }))?;
     let blur = r.upto(MAX_BLUR)?;
@@ -501,29 +505,40 @@ pub fn paint_box_with(
 
     let mut s = Surface::new(width, height)?;
     // Shadows, the last first, so the first is on top of the rest. One
-    // layer serves them all.
+    // layer serves them all, and a shadow like the one before it (an
+    // extrude's steps, a shake's copies) is the same layer moved again.
     let mut layer: Option<Surface> = None;
+    let mut painted_as: Option<(Rgba, f64, f64)> = None;
     let job_silhouette = request.request.job.silhouette;
+    let job_grow = request.request.job.effects.grow;
     for sh in request.shadows.iter().rev().filter(|s| positive(s.opacity)) {
-        request.request.job.silhouette = Some(sh.color);
-        let painted = paint_job_with(engine, &request.request, rasterizer);
-        request.request.job.silhouette = job_silhouette;
-        let Some(r) = painted? else {
-            continue;
-        };
-        let layer = match &mut layer {
-            Some(l) => {
-                l.clear();
-                l
-            }
-            none => none.insert(Surface::new(width, height)?),
-        };
-        layer.draw(&r.data, r.width as usize, r.x, r.y);
-        drop(r);
-        // A silhouette is one colour, so only its alpha needs the blur.
-        let [r, g, b, _] = sh.color.0;
-        blur::gaussian_flat(layer, sh.blur / 2.0 * scale, [r, g, b])?;
-        blur::over_moved(&mut s, layer, carried(sh.x, sh.y), sh.opacity)?;
+        let key = (sh.color, sh.grow, sh.blur);
+        if painted_as != Some(key) {
+            painted_as = Some(key);
+            request.request.job.silhouette = Some(sh.color);
+            request.request.job.effects.grow = sh.grow;
+            let painted = paint_job_with(engine, &request.request, rasterizer);
+            request.request.job.silhouette = job_silhouette;
+            request.request.job.effects.grow = job_grow;
+            let layer = match &mut layer {
+                Some(l) => {
+                    l.clear();
+                    l
+                }
+                none => none.insert(Surface::new(width, height)?),
+            };
+            let Some(r) = painted? else {
+                continue;
+            };
+            layer.draw(&r.data, r.width as usize, r.x, r.y);
+            drop(r);
+            // A silhouette is one colour, so only its alpha needs the blur.
+            let [r, g, b, _] = sh.color.0;
+            blur::gaussian_flat(layer, sh.blur / 2.0 * scale, [r, g, b])?;
+        }
+        if let Some(layer) = &layer {
+            blur::over_moved(&mut s, layer, carried(sh.x, sh.y), sh.opacity)?;
+        }
     }
     drop(layer);
 

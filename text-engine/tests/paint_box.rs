@@ -3,7 +3,7 @@
 #![cfg(feature = "paint")]
 
 use mt_text::paint::{
-    decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Fill,
+    decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects, Fill,
     Job, Mesh, Pt, Raster, Request, Rgba, Run, Shadow, Tap, BOX_MAGIC, BOX_WIRE_VERSION, MAGIC,
     WIRE_VERSION,
 };
@@ -36,6 +36,7 @@ fn request(font: FontId) -> Request {
             fill: Some(Fill::Solid(BLACK)),
             mesh: None,
             roughen: None,
+            effects: Effects::default(),
             runs: vec![Run {
                 text: "HI".to_owned(),
                 x: 40.0,
@@ -45,6 +46,8 @@ fn request(font: FontId) -> Request {
                 sy: 1.0,
                 skew: 0.0,
                 drip: 0.0,
+                pen: 1.0,
+                ghost: false,
                 fill: None,
             }],
         },
@@ -75,6 +78,7 @@ fn shadow(color: Rgba, x: f64, y: f64) -> Shadow {
         x,
         y,
         blur: 0.0,
+        grow: 0.0,
     }
 }
 
@@ -528,15 +532,19 @@ fn job_bytes(font: u32) -> Vec<u8> {
     u(&mut b, 0);
     f(&mut b, 0.0);
     b.extend_from_slice(&[0, 0, 0, 255]);
+    u(&mut b, 0); // round join
+    u(&mut b, 0); // no negative: its colour and grow
+    f(&mut b, 0.0);
     u(&mut b, 0); // no bands
     u(&mut b, 1); // solid fill
     b.extend_from_slice(&[0, 0, 0, 255]);
     u(&mut b, 0); // no mesh
     u(&mut b, 0); // not roughened
     u(&mut b, 1);
-    for v in [40.0, 100.0, 0.0, 1.0, 1.0, 0.0, 0.0] {
+    for v in [40.0, 100.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0] {
         f(&mut b, v);
     }
+    u(&mut b, 0); // not an afterimage
     u(&mut b, 0);
     u(&mut b, 2);
     b.extend_from_slice(b"HI");
@@ -555,7 +563,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 4]) {
     u(&mut b, 1);
     b.extend_from_slice(&[255, 0, 0, 255]);
     let opacity_at = b.len();
-    for v in [0.5, 6.0, -4.0, 3.0] {
+    for v in [0.5, 6.0, -4.0, 3.0, 0.0] {
         f(&mut b, v);
     }
     let blur_at = b.len();
@@ -602,7 +610,8 @@ fn the_wire_form_decodes_to_the_box_it_states() {
             opacity: 0.5,
             x: 6.0,
             y: -4.0,
-            blur: 3.0
+            blur: 3.0,
+            grow: 0.0,
         }]
     );
     assert_eq!(r.blur, 1.5);
@@ -635,7 +644,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 1));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 2));
 }
 
 #[test]
@@ -666,13 +675,15 @@ fn a_damaged_box_is_refused_not_guessed_at() {
         assert_eq!(with_f(blur_at, bad), Some(Error::BadSpec), "blur {bad}");
         // The shadow's own blur is three numbers past its opacity.
         assert_eq!(with_f(opacity_at + 24, bad), Some(Error::BadSpec), "shadow blur {bad}");
+        // And its grow, one past that.
+        assert_eq!(with_f(opacity_at + 32, bad), Some(Error::BadSpec), "shadow grow {bad}");
     }
     // A throw past the guard.
     assert_eq!(with_f(opacity_at + 8, 1e9), Some(Error::BadSpec));
     // A mode, a magic, a version and a surface that are not ones.
     assert_eq!(with_u(mode_at, 3), Some(Error::BadSpec));
     assert_eq!(with_u(0, MAGIC), Some(Error::BadSpec));
-    assert_eq!(with_u(4, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(4, 1), Some(Error::BadSpec));
     assert_eq!(with_u(8, 0), Some(Error::BadSpec));
     assert_eq!(with_u(8, 1 << 20), Some(Error::BadSpec));
     // Counts past their guards, and counts the bytes cannot hold.
@@ -709,7 +720,7 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     u(&mut b, n);
     for i in 0..n {
         b.extend_from_slice(&[255, 0, 0, 255]);
-        for v in [0.5, 2.0 + f64::from(i % 4), 2.0, 1.0] {
+        for v in [0.5, 2.0 + f64::from(i % 4), 2.0, 1.0, 0.0] {
             f(&mut b, v);
         }
     }

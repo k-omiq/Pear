@@ -10,6 +10,7 @@
 use super::geom::{Affine, Pt};
 use super::roughen::Roughen;
 use super::shade::Premul;
+use super::stroke::Join;
 use super::warp::{Mesh, MAX_MESH_SIDE};
 use super::BoldDraw;
 use crate::engine::{Face, Synth};
@@ -106,7 +107,57 @@ pub struct Run {
     pub drip: f64,
     /// This run's own fill; `None` means the job's.
     pub fill: Option<Fill>,
+    /// Curved text only: every band of this run's glyphs, and a negative's
+    /// grow, is this many times as wide. An SFX letter's rims follow its
+    /// size this way (less than in step, so small letters keep thin rims).
+    /// 1 for a run like any other.
+    pub pen: f64,
+    /// An afterimage: the run is painted first, under everything, with its
+    /// fill alone. It has no bands, no negative and no shadow, and a job
+    /// with no fill does not cut it out.
+    pub ghost: bool,
 }
+
+/// A negative: the letters grown into one blob of `color`, the bands round
+/// the blob instead of the letters, and the letters filled over it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Negative {
+    pub color: Rgba,
+    /// How far the blob reaches past the letters, job units (times each
+    /// run's pen).
+    pub grow: f64,
+}
+
+/// How the bands of a job are laid. The default is how every job but an
+/// SFX is painted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Effects {
+    /// How a band, a negative's blob and a silhouette are joined at a corner.
+    /// A fill made heavier by the weight is always round.
+    pub join: Join,
+    /// Letter by letter: each run's bands and then its fill, in run order,
+    /// so a later letter's rim lies over an earlier letter's fill. Otherwise
+    /// every band is one shape and the fill is laid over all of them.
+    pub each: bool,
+    pub negative: Option<Negative>,
+    /// With a silhouette: the shape grown this much more, job units (times
+    /// each run's pen). A box's shadow sets it; a job on the wire has 0.
+    pub grow: f64,
+}
+
+impl Default for Effects {
+    fn default() -> Self {
+        Self {
+            join: Join::Round,
+            each: false,
+            negative: None,
+            grow: 0.0,
+        }
+    }
+}
+
+/// The mitre limit of a mitred band, in half-widths: canvas's default.
+pub const MITER_LIMIT: f64 = 10.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Job {
@@ -138,6 +189,7 @@ pub struct Job {
     /// paints the job as it is. A fill is not moved with it: only the shape
     /// of a letter is roughened, not what it is filled with.
     pub roughen: Option<Roughen>,
+    pub effects: Effects,
     pub runs: Vec<Run>,
 }
 
@@ -206,7 +258,7 @@ pub struct Request {
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 8;
+pub const WIRE_VERSION: u32 = 9;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -413,14 +465,17 @@ impl<'a> Reader<'a> {
 /// f64 size
 /// f64 x 6 transform (a, b, c, d, e, f)
 /// f64 weight (device pixels, 0 to 64)
-/// u32 flags (1 curved, 2 silhouette, 4 no fill), u32 align (0 left, 1 centre, 2 right)
+/// u32 flags (1 curved, 2 silhouette, 4 no fill, 8 letter by letter,
+///     16 negative), u32 align (0 left, 1 centre, 2 right)
 /// f64 letter spacing
 /// rgba silhouette
+/// u32 join (0 round, 1 mitre), rgba negative colour, f64 negative grow
 /// u32 band count, then per band: rgba colour, f64 opacity, f64 line
 /// fill (the job's)
 /// mesh
 /// roughen
-/// u32 run count, then per run: f64 x, y, rot, sx, sy, skew, drip, fill,
+/// u32 run count, then per run: f64 x, y, rot, sx, sy, skew, drip, pen,
+///                              u32 run flags (1 afterimage), fill,
 ///                              u32 byte length, UTF-8 text
 /// u32 tile count, then per tile: u32 width, u32 height, RGBA8 pixels
 ///
@@ -453,7 +508,9 @@ impl<'a> Reader<'a> {
 ///
 /// A run's `sx` and `sy` are 0.01 to 100 in absolute value and its `skew` is
 /// within 1.4 radians, its `drip` is 0 to 4096, or the job is refused. A
-/// straight job's runs write 1, 1, 0, 0: only a curved job reads them. A mesh
+/// straight job's runs write 1, 1, 0, 0: only a curved job reads them. A
+/// run's `pen` is 0.01 to 100 (a straight run writes 1) and a negative's grow
+/// is 0 to 4096. A mesh
 /// has 1 to 64 cells each way and a rectangle with a size. A roughening's
 /// amount is within 4096 either way, its detail is 0 to 8 and its grit is 0
 /// to 4096.
@@ -489,6 +546,20 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     };
     let letter_spacing = r.f64()?;
     let silhouette = r.rgba()?;
+    let join = match r.u32()? {
+        0 => Join::Round,
+        1 => Join::Miter {
+            limit: MITER_LIMIT,
+        },
+        _ => return Err(Error::BadSpec),
+    };
+    let negative = Negative {
+        color: r.rgba()?,
+        grow: r.f64()?,
+    };
+    if !(0.0..=MAX_DRIP).contains(&negative.grow) {
+        return Err(Error::BadSpec);
+    }
     let bands = super::budget::collect((0..r.count(20)?).map(|_| {
         Ok(Band {
             color: r.rgba()?,
@@ -499,14 +570,17 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     let fill = r.fill()?;
     let mesh = r.mesh()?;
     let roughen = r.roughen()?;
-    let runs = super::budget::collect((0..r.count(64)?).map(|_| {
+    let runs = super::budget::collect((0..r.count(76)?).map(|_| {
         let (x, y, rot) = (r.f64()?, r.f64()?, r.f64()?);
         let (sx, sy, skew) = (r.f64()?, r.f64()?, r.f64()?);
-        let drip = r.f64()?;
+        let (drip, pen) = (r.f64()?, r.f64()?);
+        let run_flags = r.u32()?;
         if !SCALE_RANGE.contains(&sx.abs())
             || !SCALE_RANGE.contains(&sy.abs())
             || skew.abs() > MAX_SKEW
             || !(0.0..=MAX_DRIP).contains(&drip)
+            || !SCALE_RANGE.contains(&pen)
+            || run_flags > 1
         {
             return Err(Error::BadSpec);
         }
@@ -531,6 +605,8 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
             skew,
             drip,
             fill,
+            pen,
+            ghost: run_flags & 1 != 0,
         })
     }))?;
     let tiles = r.tiles()?;
@@ -548,6 +624,12 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
             fill,
             mesh,
             roughen,
+            effects: Effects {
+                join,
+                each: flags & 8 != 0,
+                negative: (flags & 16 != 0).then_some(negative),
+                grow: 0.0,
+            },
             runs,
         },
         face: Face {
