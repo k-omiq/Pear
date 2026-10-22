@@ -380,6 +380,15 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .handle.e{ right:-5px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
 .rotate-stem{ position:absolute; left:50%; top:-26px; width:1.5px; height:20px; background:var(--tintline); transform:translateX(-50%); z-index:7; }
 .handle.rot{ left:50%; top:-32px; transform:translateX(-50%); border-radius:50%; width:13px; height:13px; cursor:grab; background:var(--tintline); border-color:var(--paper); z-index:7; }
+/* A handle is grabbed by more than it shows: a 10px pad of its own all round,
+   so a corner or an edge is easy to catch without hunting for 9 px. */
+.handle::before{ content:''; position:absolute; inset:-10px; }
+/* What a handle drag is setting, as it sets it (TextBox.svelte). */
+.size-chip{
+  position:absolute; left:50%; top:calc(100% + 12px); transform:translateX(-50%); z-index:8;
+  padding:2px 8px; border-radius:6px; background:var(--tintline); color:var(--paper);
+  font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; pointer-events:none;
+}
 
 /* empty state */
 .empty-state{ position:absolute; inset:0; display:grid; place-items:center; }
@@ -802,6 +811,8 @@ input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; he
 .seg button:hover{ color:var(--text); }
 .seg button.on{ background:var(--accent); color:var(--accent-fg); }
 .seg button svg{ width:15px; height:15px; }
+/* The Inspector's three sizing modes: words, sharing the row evenly. */
+.seg.sizing button{ flex:1 1 0; min-width:0; padding:0 4px; font-size:11.5px; overflow:hidden; text-overflow:ellipsis; }
 
 /* color field */
 .color-field{ display:flex; align-items:center; gap:8px; }

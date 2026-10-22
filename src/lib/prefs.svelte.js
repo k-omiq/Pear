@@ -99,6 +99,9 @@ export const prefs = $state({
   // computer, and another machine's copy of the chapter has its own.
   hiddenBuiltinFonts: [],
   shownSystemFonts: [],
+  // The families last picked in a font picker, newest first (`noteRecentFont`
+  // in font-menu.js). A machine preference like the two above.
+  recentFonts: [],
   // Recognition quality/size is a preference of this installation, separate
   // for each project language. Project files continue to store only language.
   ocrModels: normalizeOcrModels(null),
@@ -119,7 +122,7 @@ export const prefs = $state({
 });
 
 // The two font lists are string arrays; anything else in them is dropped.
-const NAME_LIST_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts'];
+const NAME_LIST_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts', 'recentFonts'];
 const cleanNames = (v) =>
   Array.isArray(v) ? [...new Set(v.filter((n) => typeof n === 'string' && n.trim()))] : null;
 

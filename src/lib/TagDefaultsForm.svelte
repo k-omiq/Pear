@@ -11,7 +11,7 @@
   // means differs - the queue also puts a new tag on its line. `key` keeps the
   // label ids unique when more than one form is on screen; `onforget` runs after
   // a delete, for the caller to close its form.
-  import { fontGroups, fontCaveat } from './font-menu.js';
+  import FontPicker from './FontPicker.svelte';
   import { deleteTag, formOnlyStyle } from './tags.svelte.js';
   import { toast } from './store.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
@@ -29,17 +29,7 @@
 {#if form.tools}
   <span class="qtf-row">
     <label class="qtf-lbl" for="qtf-font-{key}">Font</label>
-    <select id="qtf-font-{key}" value={form.font} onchange={(e) => (form.font = e.currentTarget.value)}>
-      <option value="">-</option>
-      {#if fontCaveat(form.font)}
-        <option value={form.font}>{form.font} ({fontCaveat(form.font)})</option>
-      {/if}
-      {#each fontGroups() as g (g.key)}
-        <optgroup label={g.label}>
-          {#each g.fonts as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
-        </optgroup>
-      {/each}
-    </select>
+    <FontPicker id="qtf-font-{key}" value={form.font || null} label="Font" unset="-" compact onpick={(name) => (form.font = name ?? '')} />
   </span>
 
   <span class="qtf-row">

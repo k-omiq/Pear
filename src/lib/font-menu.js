@@ -27,7 +27,16 @@ export function fontGroups() {
 
 // Whether the menus currently offer `name`. A menu bound to a box set in a
 // family that is not offered still has to show that family as its value.
-export const isFontOffered = (name) => fontGroups().some((g) => g.fonts.some((f) => f.name === name));
+// Asked of each list directly rather than through `fontGroups`, which copies
+// the lists: the Inspector asks this on every render of a box.
+export function isFontOffered(name) {
+  const named = (f) => f.name === name;
+  return (
+    app.fonts.user.some(named) ||
+    (app.fonts.builtin.some(named) && !prefs.hiddenBuiltinFonts.includes(name)) ||
+    (app.fonts.system.some(named) && prefs.shownSystemFonts.includes(name))
+  );
+}
 
 // What a font select says beside the family a box is set in, when that family
 // needs a word. Two different things used to read "(not in menus)": a family
@@ -53,3 +62,10 @@ export function setSystemShown(name, show) {
   setPref('shownSystemFonts', show ? [...without(cur, name), name] : without(cur, name));
 }
 
+
+// The picker's Recent row: the last few families picked, newest first.
+const RECENT_MAX = 8;
+export function noteRecentFont(name) {
+  if (!name) return;
+  setPref('recentFonts', [name, ...without(prefs.recentFonts, name)].slice(0, RECENT_MAX));
+}

@@ -45,8 +45,8 @@ describe('Text styles', () => {
     expect(names.at(-1)).toBe('> radio');
     // A voice is not listed again as a tag of its own.
     expect(names).not.toContain('> voice-mother');
-    expect(view.getByLabelText('Main speech font').value).toBe('Anime Ace');
-    expect(view.getByLabelText('Mother font').value).toBe('SSGirlKisser');
+    expect(view.getByLabelText('Main speech font').textContent.trim()).toBe('Anime Ace');
+    expect(view.getByLabelText('Mother font').textContent.trim()).toBe('SSGirlKisser');
   });
 
   it('adds a style under a kind, and moves one under another', async () => {
@@ -67,7 +67,10 @@ describe('Text styles', () => {
 
   it('a font picked on a style row is that tag\'s font', async () => {
     const view = render(TextStyles);
-    await fireEvent.change(view.getByLabelText('angry font'), { target: { value: 'Anime Ace' } });
+    await fireEvent.click(view.getByLabelText('angry font'));
+    await tick();
+    const row = [...document.querySelectorAll('[role="option"]')].find((o) => o.textContent.trim() === 'Anime Ace');
+    await fireEvent.click(row);
     expect(findTag('angry').style).toEqual({ bold: true, font: 'Anime Ace' });
   });
 });

@@ -171,8 +171,10 @@ function chapter() {
   return pages;
 }
 
-describe('an edit re-solves only the box it edits', () => {
-  it('typing into one box of a 40 x 8 chapter solves that box, once a keystroke', () => {
+describe('typing solves nothing', () => {
+  // An edit is Auto height's: the box keeps its size and width, and its height
+  // follows the text. The solver runs at placement, on Refit and for the AI.
+  it('typing into one box of a 40 x 8 chapter solves no box at all', () => {
     loadProjectPages(chapter());
     app.pageIndex = 7;
     const p = page();
@@ -185,9 +187,8 @@ describe('an edit re-solves only the box it edits', () => {
       setBoxText(b, text, p);
       times.push(performance.now() - t0);
     }
-    // One solve a keystroke, each of the text just typed: no other box on the
-    // page or in the chapter was solved again.
-    expect(solves).toEqual(typed);
+    expect(solves).toEqual([]);
+    expect(b.text).toBe(typed.at(-1));
     if (PERF) {
       const s = stats(times);
       console.log(fmt('store setBoxText, chapter', s));

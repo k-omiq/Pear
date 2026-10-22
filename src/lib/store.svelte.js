@@ -19,6 +19,7 @@ import {
   LAYOUT_VERSION,
   LAYOUT_VERSION_RUST,
   plainStyle,
+  sizingOf,
 } from './data.js';
 // The tag module reaches back for nothing - it takes the pages it works on as
 // arguments - so this stays a one-way edge and the two cannot cycle. What comes
@@ -102,7 +103,7 @@ import {
   manualReason,
   REVIEW_REASONS,
 } from './contain.js';
-import { neededHeight, growToFit, hasHangul } from './typeset.js';
+import { neededHeight, growToFit, heightToFit, hasHangul } from './typeset.js';
 import { takesHeightFloor } from './resize-math.js';
 // The pixel half of balloon fitting, and the two halves of getting pixels to it.
 // `balloon.js` is pure and knows nothing about this app; `page-pixels.js` is the
@@ -595,6 +596,9 @@ export const app = $state({
   // layout derived from a text measurement can depend on "the fonts have
   // changed", which is otherwise not a reactive fact.
   fontsVersion: 0,
+  // The box a font picker is showing a family on, before it is picked
+  // (`previewBoxFont`): { boxId, font, was }. Null at any other time.
+  fontPreview: null,
   rawZoom: 0, // 0 = Fit, else scale
   saved: false,
   // The last autosave was rejected by the disk. There is no manual save in this
@@ -823,7 +827,7 @@ const autoAim = (a) =>
 // the panel, whose Apply has always been an undo step of its own.
 //
 // Returns the targets that changed (all of them, with `always`).
-export function editBoxes(targets, mutate, { always = false, ...extra } = {}) {
+export function editBoxes(targets, mutate, { always = false, solve = false, ...extra } = {}) {
   settleEdits();
   const byPage = new Map();
   const changed = [];
@@ -836,7 +840,7 @@ export function editBoxes(targets, mutate, { always = false, ...extra } = {}) {
     if (boxLocked(b)) continue;
     const geomBefore = fitGeom(b);
     if (mutate(b, pg) === false) continue;
-    autoFitBox(b, pg);
+    autoFitBox(b, pg, { solve });
     const after = boxSnap(b, pg);
     const entries = boxEditRecords({ pageId: pg.id, boxId: b.id }, before, after, true);
     if (!entries.length && !always) continue;
@@ -1046,7 +1050,18 @@ const lineBoxGeoms = (p, n) =>
 // Answers true when it changed the box's geometry or size, so a caller can tell.
 // A change of flag alone is not a change to the document's layout and does not
 // count.
-export function autoFitBox(b, p = page()) {
+//
+// `solve` is for the program laying a box out - a placement, the balloon
+// switch, Refit, the AI's edits: a box the solver manages is solved again in
+// its balloon, and any other auto box goes up the ladder. A user's edit is
+// none of those and changes only what the box's sizing mode says (`sizingOf`):
+//
+//   Auto height   the height becomes what the text needs, up or down. The
+//                 width and the size are the user's and stay.
+//   Fixed         nothing moves; text that no longer fits is flagged.
+//   Fit to box    the size becomes the largest that fits the box, up to
+//                 `fitMax`; the rectangle stays.
+export function autoFitBox(b, p = page(), { solve = false } = {}) {
   if (!b?.style) return false;
   // A locked box keeps its rectangle and its size; the flag still says
   // whether its text fits.
@@ -1068,10 +1083,12 @@ export function autoFitBox(b, p = page()) {
   noteSizeEdit(b, p);
   const text = boxText(b, p);
   const cand = boxCandidate(b, text);
+  if (b.style.fitText && !handPlacedBox(cand)) return fitTextToBox(b, p, cand);
   if (!isAutoBox(cand)) {
     reviewBox(b, p);
     return false;
   }
+  if (!solve) return hugBox(b, p, cand);
   if (b.auto?.on) {
     const solved = resolveBox(b, p, text);
     if (solved != null) return solved;
@@ -1080,6 +1097,68 @@ export function autoFitBox(b, p = page()) {
   const changed = writeFit(b, r);
   writeReview(b, r.review);
   return changed;
+}
+
+// Auto height: the height is what the lines and their ink need at the width
+// and size the box has, both ways, anchored by `valign` and kept on the page
+// (or the strip, in a long strip). Nothing else moves.
+function hugBox(b, p, cand) {
+  const place = placeBlock(cand);
+  const s = b.style;
+  const lines = place.lines?.length ?? 0;
+  const need = Math.max(MIN_BOX_H, neededHeight(lines, s, textInset(s)), inkHeight(cand, place));
+  const extent = stripOf(p);
+  const from = extent && extent.total > 0 ? b.y + extent.top : b.y;
+  const next = heightToFit({ y: from, h: b.h, valign: s.valign }, need, extent && extent.total > 0 ? extent.total : p?.h ?? 0);
+  if (extent && extent.total > 0) next.y -= extent.top;
+  const was = fitting(b);
+  let changed = false;
+  if (next.h !== b.h || next.y !== b.y) {
+    b.y = next.y;
+    b.h = next.h;
+    changed = true;
+  }
+  reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text)) : place);
+  fitted(b, was);
+  return changed;
+}
+
+// Fit to box: the largest size, on the half-px grid, at which the text fits
+// the box as it stands - from `fitMax` down to the preference's floor. Only
+// the size is written; what cannot fit even at the floor (the tag's own
+// minimum, if it sets one) is flagged.
+function fitTextToBox(b, p, cand) {
+  // No ceiling yet - switched on by a bulk edit or the AI - is the size it
+  // stands at, kept: read afresh each time it would ratchet down with every
+  // fit that shrank it.
+  if (!(b.style.fitMax > 0)) b.style.fitMax = b.style.size;
+  const max = b.style.fitMax;
+  const top = { ...cand, style: { ...cand.style, size: max } };
+  const r = fitBox(top, { page: p, strip: stripOf(p), minSize: Math.min(fitFloorFor(b, p), max), geometry: false });
+  const changed = b.style.size !== r.size;
+  if (changed) b.style.size = r.size;
+  seeSize(b);
+  writeReview(b, r.review);
+  return changed;
+}
+
+// Switch a box's sizing mode (`sizingOf`), as the Inspector's three buttons
+// do, and size it by the new mode's rule at once. One undo entry.
+export function setBoxSizing(b, mode, p = page()) {
+  if (!b?.style || refuseLocked(b) || sizingOf(b.style) === mode) return false;
+  settleEdits();
+  const before = cloneStyle(b.style);
+  const geomBefore = fitGeom(b);
+  const s = b.style;
+  s.autoHeight = mode === 'auto';
+  s.fitText = mode === 'fit';
+  // The size the box is set at is the most Fit to box may grow it to, until
+  // the user types another.
+  if (mode === 'fit') s.fitMax = s.size;
+  autoFitBox(b, p);
+  recordEdit({ t: 'style', pageId: p.id, boxId: b.id, before, after: cloneStyle(b.style), geomBefore, geomAfter: fitGeom(b) });
+  markUnsaved();
+  return true;
 }
 
 // Lines held by a lock (`locks.breaks`) outlive a change of face, size or
@@ -1123,6 +1202,13 @@ export function setMinFontSize(v) {
 function solveFloor(ref, b, p) {
   const line = b.lineN != null && p ? lineByN(p, b.lineN) : null;
   return Math.max(minFontSize, findTag(sizeKeyFor(line))?.minSize ?? 0.75 * ref);
+}
+// Fit to box's floor: the tag's minimum and nothing more. The solver's own
+// three-quarters of the reference size is a guess at how far a placement may
+// shrink; a box set to fill is shrunk as far as the text needs.
+function fitFloorFor(b, p) {
+  const line = b.lineN != null && p ? lineByN(p, b.lineN) : null;
+  return Math.max(minFontSize, findTag(sizeKeyFor(line))?.minSize ?? 0);
 }
 function minSizeFor(b, p) {
   const line = b.lineN != null && p ? lineByN(p, b.lineN) : null;
@@ -1455,7 +1541,8 @@ export function makeBoxAuto(boxId = app.selectedId, p = page()) {
   const was = b.style.autoHeight;
   const reviewBefore = b.review;
   b.style.autoHeight = true;
-  const moved = autoFitBox(b, p);
+  b.style.fitText = false;
+  const moved = autoFitBox(b, p, { solve: true });
   if (was !== false && !moved) {
     if (b.review !== reviewBefore) markUnsaved();
     return false;
@@ -2407,6 +2494,47 @@ function settleDisk() {
 export function noteFontsChanged() {
   return relayoutAll();
 }
+// ---------- a font shown on a box before it is picked ----------
+// A font picker shows each family on the box as the user moves through the
+// list. That is not an edit: nothing is recorded, saved, solved or fitted, and
+// the box is put back exactly as it was when the look ends. Only the family
+// changes, so the lines re-break in the box as it stands and the picture is
+// repainted; the grow-only fit in TextBox.svelte holds off while it lasts
+// (`fontPreviewing`). The family the user then picks is applied by the caller
+// through its normal edit path, after the look has ended.
+export function previewBoxFont(b, font) {
+  if (!b?.style || !font) return;
+  const cur = app.fontPreview;
+  if (cur && cur.boxId !== b.id) endFontPreview();
+  if (!app.fontPreview) app.fontPreview = { boxId: b.id, font, was: b.style.font, box: b };
+  else app.fontPreview.font = font;
+  if (b.style.font !== font) b.style.font = font;
+}
+export function endFontPreview() {
+  const cur = app.fontPreview;
+  if (!cur) return;
+  app.fontPreview = null;
+  if (cur.box.style && cur.box.style.font !== cur.was) cur.box.style.font = cur.was;
+}
+export const fontPreviewing = (boxId) => app.fontPreview?.boxId === boxId;
+
+// Whether a box of the open chapter is set in one of `families`, by the name
+// it asks for or the family that name resolves to (a missing face is drawn in
+// the fallback, so the fallback landing changes it too). A face the browser
+// loaded for anything else - a font menu drawing each name in its own face,
+// the interface's own type - changes no line on any page, and re-measuring
+// the whole chapter for it froze the editor for most of a second.
+export function chapterSetIn(families) {
+  if (!families?.size) return true;
+  for (const p of app.pages) {
+    for (const b of p.boxes ?? []) {
+      const name = b.style?.font;
+      if (!name) continue;
+      if (families.has(name) || families.has(fontNameFor(name))) return true;
+    }
+  }
+  return false;
+}
 // The same re-measure, for anything else that changes how every line lays out
 // without touching any box - the chapter's breaker switched wholesale
 // (`setChapterTypesetMode`), or the text engine. Bumping `fontsVersion` is what wakes the
@@ -2959,7 +3087,11 @@ export function setSaver(fn) {
 // saver that throws synchronously comes back as a rejection like any other, and
 // `Promise.all` hands on the first rejection untouched - flushSave's caller
 // reads that reason to decide whether the user may leave the chapter.
-const runSavers = () => Promise.resolve().then(() => Promise.all(savers.notify()));
+const runSavers = () =>
+  Promise.resolve().then(() => {
+    endFontPreview();
+    return Promise.all(savers.notify());
+  });
 // A save that failed has stamped nothing (`stampTypesetting`), and a Keep
 // that was waiting on it has kept nothing: the notice offers it again.
 const saveFailed = (e, ref, turn) => {
@@ -3123,6 +3255,9 @@ export function setEditSettleHook(fn) {
   return editSettleHooks.subscribe(fn);
 }
 export function settleEdits() {
+  // A font only being looked at is not an edit: it goes before anything is
+  // recorded, so no entry can carry it.
+  endFontPreview();
   // Subscribers first, then the store's own inline edit, because that is the
   // order the user made them in: a panel's pending entry has been sitting in its
   // settle window for up to 400ms while the box on the canvas is still being
@@ -4543,7 +4678,7 @@ function bornBox(p, ln, imgX, imgY, measured) {
   // text needs; an empty one is placed at the bubble's size and grows as it is
   // filled in, through `setBoxText`.
   if (!(solvable && solveBox(b, p, text, at))) {
-    autoFitBox(b, p);
+    autoFitBox(b, p, { solve: true });
     // Stamped as it now stands, so any edit before the face arrives - by
     // whatever path - hands it to the ladder instead (`solvePending`).
     if (measurable && !solvable) {
@@ -4711,6 +4846,15 @@ export function edgeDragFloor(b, dir, lineCount, p = page()) {
     return EDGE_DRAG_MIN;
   }
   return Math.min(neededHeight(lineCount, s, textInset(s)), p?.h || Infinity);
+}
+
+// How short a drag may leave a box at width `w`: the height its text needs
+// once it breaks again at that width. What a corner or a Fixed box's width
+// change floors the height at, worked out before the drag moves the edge.
+export function heightFloorAt(b, w, p = page()) {
+  if (!b?.style || !canMeasure() || handPlacedBox(b)) return EDGE_DRAG_MIN;
+  const lines = placeBlock(boxCandidate({ ...b, w }, boxText(b, p))).lines?.length;
+  return lines ? edgeDragFloor(b, 's', lines, p) : EDGE_DRAG_MIN;
 }
 
 // How narrow a drag may leave a box, at the size its text is set at: as wide
@@ -4907,7 +5051,7 @@ export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, styl
     // A size given is the size aimed for, as in an edit.
     if ('size' in style && b.auto && b.style.size > 0) b.auto.refSize = b.style.size;
   }
-  if (rect || style) autoFitBox(b, p);
+  if (rect || style) autoFitBox(b, p, { solve: true });
   p.boxes.push(b);
   if (!free) p.activeLineN = firstUnplaced(p);
   recordEdit({
@@ -5273,7 +5417,7 @@ function setBoxOutline(b, p, fit, outline, geomBefore = refitGeom(b)) {
     // The height follows: a box laid out to a curve breaks into a different
     // number of lines than the same box laid out flat, and the rectangle has to
     // describe that. What no longer fits is flagged.
-    autoFitBox(b, p);
+    autoFitBox(b, p, { solve: true });
   }
   const geomAfter = refitGeom(b);
   if (JSON.stringify(geomAfter) !== JSON.stringify(geomBefore)) {
@@ -5755,7 +5899,7 @@ export function toggleBalloonFit(boxId = app.selectedId, p = page()) {
   }
   // The height follows the flag: a box laid out to a curve breaks into a
   // different number of lines than the same box laid out flat.
-  autoFitBox(b, p);
+  autoFitBox(b, p, { solve: true });
   recordEdit({
     t: 'style',
     pageId: p.id,
@@ -6199,25 +6343,44 @@ export function setBoxInk(pageId, boxId, strokes) {
 // Resize or move a box, scaling hand-drawn ink strokes when present.
 // Updates the box geometry and scales stroke points and sizes. `base` is the
 // box as the gesture found it - its w/h, and its strokes when it is inked.
+//
+// What you set is what you get. A handle or the Inspector's Width and Height
+// change the box and nothing else: the text breaks again in it at the size it
+// is set at, and the box's sizing mode (`sizingOf`) says what follows -
+//
+//   Auto height   a width change gives the height the text needs; a height
+//                 the caller sets stays (the handles and the Inspector switch
+//                 such a box to Fixed first, `setBoxSizing`).
+//   Fixed         never narrower than the widest word, never shorter than the
+//                 text at the new width.
+//   Fit to box    the box is what was asked for; the size is the largest
+//                 that fits it.
+//
+// `geom.scale` is the one way a gesture changes the size: the box and every
+// length drawn in it - the size, the outline, the tracking, the shadows -
+// times one factor, as Photoshop's Cmd-drag on a text box does.
 export function resizeBox(pageId, boxId, geom, base = null) {
   const p = pageById(pageId) ?? page();
   const b = p?.boxes.find((x) => x.id === boxId);
   if (!b || !geom || refuseLocked(b)) return null;
   const ow = base?.w ?? b.w;
   const oh = base?.h ?? b.h;
-  // A corner drag, which sends the size it scales the type to.
-  const corner = Number.isFinite(geom.size);
-  // Never narrower or shorter than the text at the size it is set at, from
-  // any caller: a side drag works these out as it goes (TextBox), the
-  // Inspector's Width and Height do not. A corner scales the text with the
-  // box, so it takes neither.
+  const scale = Number.isFinite(geom.scale) && geom.scale > 0 ? geom.scale : null;
+  const hand = handPlacedBox(b);
+  // A height set by hand is the box's: Auto height gives way to Fixed, as
+  // Figma's text boxes do, so the next edit keeps it. A scale is not one -
+  // the text scales with the box.
+  if (!scale && !hand && sizingOf(b.style) === 'auto' && Number.isFinite(geom.h) && geom.h !== oh) b.style.autoHeight = false;
+  const mode = sizingOf(b.style);
   let nw = Number.isFinite(geom.w) ? geom.w : b.w;
   let nh = Number.isFinite(geom.h) ? geom.h : b.h;
-  if (!corner && nw < b.w) nw = Math.max(nw, Math.min(b.w, edgeDragWidthFloor(b, p)));
-  if (!corner && nh < b.h && nw === b.w) {
-    const cand = boxCandidate(b, boxText(b, p));
-    const lines = canMeasure() && !handPlacedBox(b) ? placeBlock(cand).lines?.length : null;
-    nh = Math.max(nh, Math.min(b.h, edgeDragFloor(b, 's', lines ?? null, p)));
+  // The floors, from any caller: a side never splits a word, and a Fixed box
+  // is never left shorter than its text. Fit to box has neither - its size
+  // gives way instead - and a scale has neither, since the text scales too.
+  const sized = Number.isFinite(geom.w) || Number.isFinite(geom.h);
+  if (sized && !scale && mode !== 'fit' && !hand) {
+    if (nw < b.w) nw = Math.max(nw, Math.min(b.w, edgeDragWidthFloor(b, p)));
+    if (mode === 'fixed') nh = Math.max(nh, heightFloorAt(b, nw, p));
   }
   const nx = Number.isFinite(geom.x) ? geom.x : b.x;
   const ny = Number.isFinite(geom.y) ? geom.y : b.y;
@@ -6238,15 +6401,21 @@ export function resizeBox(pageId, boxId, geom, base = null) {
       };
     }
   }
-  // Against the width the gesture started from when the caller says (`base`), so
-  // every step of an edge drag re-sets the text, not only the steps that moved
-  // the pointer sideways: each one writes the height back from the start.
-  const widened = nw !== ow;
-  const heightened = nh !== oh;
-  const sized = corner && geom.size !== b.style.size;
+  const widened = nw !== b.w;
   // A new place and nothing else - the Inspector's X or Y - is a move, and
   // carries the balloon fit and a standing solve with the box as a drag does.
-  const moveOnly = nw === b.w && nh === b.h && !corner && (nx !== b.x || ny !== b.y);
+  const moveOnly = nw === b.w && nh === b.h && !scale && (nx !== b.x || ny !== b.y);
+  if (scale) {
+    // Against the style the gesture started from, so the steps of a drag do
+    // not compound: each sets the factor from the start. Ink is scaled above.
+    const from = base?.style ?? b.style;
+    const k = scale;
+    const st = rescaleStyle({ ...from, ink: null }, k, k);
+    delete st.ink;
+    st.size = Math.min(200, Math.max(6, Math.round(from.size * k * 2) / 2));
+    if (from.fitMax > 0) st.fitMax = Math.min(200, Math.max(6, Math.round(from.fitMax * k * 2) / 2));
+    Object.assign(b.style, st);
+  }
   b.w = nw;
   b.h = nh;
   if (moveOnly) moveBoxTo(b, nx, ny, p);
@@ -6254,62 +6423,35 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     b.x = nx;
     b.y = ny;
   }
-  if (corner) {
-    b.style.size = geom.size;
-  }
   // The lines an outline fit chose (`auto.breaks`) were chosen for the width
   // and the size the box had. Drawn at another width they run past its sides,
   // and nothing would break them again: they are keyed to the text, the face
-  // and the size, so a corner drag that leaves the size where it was, or any
-  // width change the solve below does not follow, kept them. So a width or a
-  // size set by hand lets them go, and the lines are broken again in the box as
-  // it now is - by the solve below, which chooses afresh, or by the breaker.
-  // Not lines held by a lock (`locks.breaks`): those are the user's or the
-  // agent's, and stay.
-  if ((widened || sized) && b.auto?.breaks && !b.auto.locks?.breaks) delete b.auto.breaks;
-  // A width or a height set by hand is the box's from here on: the solver keeps
-  // it through every later edit and Refit (`auto.locks.width`, `.height`). A
-  // height dragged used to last only until the next keystroke, whose solve set
-  // the height back to what the lines need. Not a corner drag's height, which
-  // follows the size the corner sets: that is the user's size edit
-  // (`noteSizeEdit`).
-  if (b.auto?.on) {
+  // and the size. So a width or a size set by hand lets them go, and the
+  // lines are broken again in the box as it now is. Not lines held by a lock
+  // (`locks.breaks`): those are the user's or the agent's, and stay.
+  if ((widened || scale) && b.auto?.breaks && !b.auto.locks?.breaks) delete b.auto.breaks;
+  // A width or a height set by hand is the box's from here on: the solver -
+  // Refit, the AI's edits - keeps it too (`auto.locks.width`, `.height`). A
+  // scale is a size the user set (`noteSizeEdit`), and the box follows it.
+  if (b.auto?.on && !scale) {
     if (widened) b.auto.locks.width = true;
-    if (heightened && !corner) b.auto.locks.height = true;
+    if (nh !== oh) b.auto.locks.height = true;
   }
-  // An edge drag of the width re-sets the text in it as it goes, at the size
-  // it stands at - a side is the width and never the size; the corners are
-  // the size - and the height to what the lines now need, so a box made wider
-  // gives its height back (FIT-2). A height the user set (`locks.height`) is
-  // kept while the lines fit in it. A height drag moves the edge and nothing
-  // else: a solve there could choose the box another width, which the user did
-  // not touch. The next edit sets the text in the height it holds.
-  if (widened && !corner && b.auto?.on && isAutoBox(b)) {
-    const set = { y: b.y, h: b.h };
-    if (resolveBox(b, p, boxText(b, p), true, true) != null) {
-      if (b.auto.locks.height && b.h < set.h) Object.assign(b, set);
-      return b;
-    }
-    // The face is on its way, so the text was not re-set in the new width:
-    // owed for when it lands, as an edit's fit is (`autoFitBox`).
-    if (boxFaceArriving(b, p)) holdFit(b);
+  if (moveOnly || hand || !canMeasure()) {
+    reviewBox(b, p);
+    return b;
   }
-  // Any other box: the lines a narrower box breaks into get their height
-  // here, so it is never shorter than its text. Auto height grows it anchored
-  // by `valign` (`refitBox`); a box sized by hand grows from its top.
-  if (widened && !corner && canMeasure() && !handPlacedBox(b) && !boxFaceArriving(b, p)) {
-    if (b.style.autoHeight !== false) refitBox(b, p);
-    else {
-      const lines = placeBlock(boxCandidate(b, boxText(b, p))).lines?.length;
-      const need = lines ? edgeDragFloor(b, 's', lines, p) : 0;
-      if (need > b.h) b.h = need;
-    }
+  if (boxFaceArriving(b, p)) {
+    // The text was not set in the new box: owed for when the face lands, as
+    // an edit's fit is (`autoFitBox`). A Fixed box has no fit to owe.
+    if (mode !== 'fixed') holdFit(b);
+    reviewBox(b, p);
+    return b;
   }
-  // Any other drag is the user choosing the box, so it never runs the ladder -
-  // but the flag has to describe the box they chose. A height-only drag changes
-  // nothing the component's own fit effect watches, so this is the only place
-  // that would notice the text no longer fits.
-  reviewBox(b, p);
+  const cand = boxCandidate(b, boxText(b, p));
+  if (mode === 'fit') fitTextToBox(b, p, cand);
+  else if (mode === 'auto' && widened && nh === oh) hugBox(b, p, cand);
+  else reviewBox(b, p);
   return b;
 }
 
@@ -6565,6 +6707,8 @@ export const BULK_PROPS = [
   'margin',
   'balloon',
   'autoHeight',
+  'fitText',
+  'fitMax',
   // Transform
   'rotation',
   'flipH',
@@ -6589,7 +6733,7 @@ export const GROUPS = {
   shadow: ['shadows'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
-  transform: ['rotation', 'flipH', 'flipV', 'autoHeight'],
+  transform: ['rotation', 'flipH', 'flipV', 'autoHeight', 'fitText', 'fitMax'],
 };
 
 // The mask holds only the ticked keys, so "not ticked" and "absent" are the same

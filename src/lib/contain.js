@@ -154,7 +154,8 @@ export function curvedStyle(s) {
 // nothing, and again on the next edit.
 export function isAutoBox(cand) {
   const s = cand?.style;
-  if (!s || s.autoHeight === false) return false;
+  // Fit to box keeps the rectangle the user set and changes the size instead.
+  if (!s || s.autoHeight === false || s.fitText) return false;
   if (handPlaced(cand)) return false;
   return cand.w > 0;
 }

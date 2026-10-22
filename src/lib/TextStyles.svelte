@@ -13,7 +13,7 @@
   import { LETTERING_ROLES, ROLE_TAGS } from './lettering.js';
   import { tagFont, setTagFont, setVoiceFont } from './lettering-fonts.js';
   import { knownTags, findTag, saveTagDefaults, tagFormFields, tagFormDefaults, normalizeTagName, MAX_TAG_LEN } from './tags.svelte.js';
-  import { fontGroups, fontCaveat } from './font-menu.js';
+  import FontPicker from './FontPicker.svelte';
   import TagDefaultsForm from './TagDefaultsForm.svelte';
 
   const all = $derived(knownTags(app.pages));
@@ -67,15 +67,7 @@
 <!-- `unset` says what a row with no font of its own is set in: the app's
      font for a kind, the kind's font for a style or a voice under it. -->
 {#snippet fontSelect(value, label, onpick, unset)}
-  <select class="qtf-input" aria-label={label} value={value ?? ''} onchange={(e) => onpick(e.currentTarget.value || null)}>
-    <option value="">{unset}</option>
-    {#if value && fontCaveat(value)}<option {value}>{value} ({fontCaveat(value)})</option>{/if}
-    {#each fontGroups() as g (g.key)}
-      <optgroup label={g.label}>
-        {#each g.fonts as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
-      </optgroup>
-    {/each}
-  </select>
+  <FontPicker {value} {label} {unset} compact onpick={(name) => onpick(name || null)} />
 {/snippet}
 
 {#snippet editButton(name, label)}

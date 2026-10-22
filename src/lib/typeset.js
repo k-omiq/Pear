@@ -1548,6 +1548,21 @@ export function growToFit(geom, needH, pageH = 0) {
   return { y: ny, h: newH };
 }
 
+// The same edge rule both ways: the height becomes `needH` exactly, anchored
+// by `valign` and capped by the page. Auto height after an edit, where a box
+// whose text got shorter gives the height back as well as taking it.
+export function heightToFit(geom, needH, pageH = 0) {
+  const y = geom.y;
+  const h = geom.h;
+  const newH = pageH > 0 ? Math.min(needH, pageH) : needH;
+  if (!(newH > 0) || newH === h) return { y, h };
+  const d = newH - h;
+  const va = geom.valign;
+  let ny = va === 'top' ? y : va === 'bottom' ? y - d : y - d / 2;
+  if (pageH > 0) ny = Math.max(0, Math.min(ny, pageH - newH));
+  return { y: ny, h: newH };
+}
+
 // ===== auto-WIDTH, and the shape a placed box aims for =====
 //
 // Auto-height on its own is half a rule, and the missing half is what produced

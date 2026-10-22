@@ -346,7 +346,7 @@ describe('real glyph ink stays inside the box', () => {
   it('a full-width Bangers line aligned right, in the default outline: flagged on its aligned edge', () => {
     const { box, p } = fullWidthBox('Bangers', { align: 'right' });
     expect(containedOrFlagged(box, p)).toBeGreaterThan(TOLERANCE);
-    autoFitBox(box, p);
+    autoFitBox(box, p, { solve: true });
     expect(box.review?.reason).toBe(REVIEW_REASONS.alignedEdge);
     expect(box.review.overflow.r).toBeGreaterThan(0);
     containedOrFlagged(box, p);
@@ -362,7 +362,7 @@ describe('real glyph ink stays inside the box', () => {
     const past = containedOrFlagged(box, p);
     expect(past).toBeGreaterThan(TOLERANCE);
     expect(box.review.overflow.r).toBeGreaterThanOrEqual(Math.floor(past));
-    autoFitBox(box, p);
+    autoFitBox(box, p, { solve: true });
     expect(inkPastBox(box, p).worst).toBeLessThanOrEqual(TOLERANCE);
     expect(box.review).toBeUndefined();
   });
@@ -370,9 +370,9 @@ describe('real glyph ink stays inside the box', () => {
   // OVF-10: an italic leans past its advance, and the breaker fits advances.
   // At 60px the top of DejaVu Sans Oblique's final T leans past the 2px of
   // padding a full-width line has at its right edge. Opening a chapter may not
-  // widen a box, so it opens flagged; the first edit runs the ladder, which
-  // widens it by the lean.
-  it('a full-width DejaVu Sans Oblique line at 60px: flagged on opening, widened by an edit', () => {
+  // widen a box, so it opens flagged; the ladder (placement, Refit) widens it
+  // by the lean.
+  it('a full-width DejaVu Sans Oblique line at 60px: flagged on opening, widened by the ladder', () => {
     const text = 'WAIT';
     const s = styleFor('DejaVu Sans', { italic: true, align: 'left', strokes: [], size: 60 });
     const w = lineWidth(text, s, 60) + textInset(s) * 2 + 0.01;
@@ -392,7 +392,7 @@ describe('real glyph ink stays inside the box', () => {
     expect(inkPastBox(box, p).right).toBeGreaterThan(TOLERANCE);
     expect(box.review?.reason).toBe(REVIEW_REASONS.stale);
     expect(box.review.overflow.r).toBeGreaterThan(0);
-    autoFitBox(box, p);
+    autoFitBox(box, p, { solve: true });
     expect(box.review).toBeUndefined();
     expect(box.w).toBeGreaterThan(w);
     expect(inkPastBox(box, p).worst).toBeLessThanOrEqual(TOLERANCE);
@@ -446,7 +446,7 @@ describe('real glyph ink stays inside the box', () => {
     const p = page();
     const box = p.boxes[0];
     expect(placeBlock(boxCandidate(box, sfx)).lines).toEqual([sfx]);
-    autoFitBox(box, p);
+    autoFitBox(box, p, { solve: true });
     expect(box.review?.reason).toBe(REVIEW_REASONS.wideWord);
     expect(box.x).toBeCloseTo(300, 6);
     expect(box.w).toBeCloseTo(200, 6);

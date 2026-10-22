@@ -114,6 +114,8 @@ defineTool({
       editBoxes(
         boxes.map((box) => ({ page: p, box })),
         (box) => setBoxText(box, pieces[boxes.indexOf(box)], p, { fit: false }),
+        // The AI lays the box out as a placement does (`autoFitBox`).
+        { solve: true },
       );
       const how = [];
       // Seed i's piece goes to the box of the part that reads there.
