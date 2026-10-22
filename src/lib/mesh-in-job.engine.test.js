@@ -1,15 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { createCanvas } from '@napi-rs/canvas';
 import { rustEngine } from '../test/rust-engine.js';
-import { renderBoxTexture, warpTexture, boxFootprint, meshInJob, glyphJob } from './exporter.js';
+import { renderBoxTexture, warpTexture, boxFootprint, meshInJob } from './exporter.js';
 import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { createBrowserGlyphPainter } from './text-engine/browser-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
-import { boxCandidate, placeBlock } from './contain.js';
 import { defaultStyle, normalizeStyle } from './data.js';
 import { identityMesh } from './warp.js';
-import { sfxPresets, applySfxPreset } from './sfx.js';
 
 // ===========================================================================
 // The mesh in the glyph job, against the real engine
@@ -252,49 +250,5 @@ describe('under the browser painter', () => {
       setGlyphPainter(rustPainter);
     }
     expect(meshInJob(box)).toBe(true);
-  });
-});
-
-describe('a drip', () => {
-  const drip = () => sfxPresets().find((q) => q.id === 'drip');
-  // A box set up as the panel does it, with the seed stated.
-  function dripBox(amount) {
-    const box = boxOf({ font: 'Bangers', size: 40 }, 'BOOM!!', { w: 400, h: 120 });
-    applySfxPreset(box.style, drip(), box);
-    box.style.sfx.seed = 7;
-    box.style.sfx.moves = box.style.sfx.moves.map((m) => ({ ...m, a: amount }));
-    return box;
-  }
-  const place = (box) => placeBlock(boxCandidate(box, box.text));
-
-  it('lengthens some letters of the layout, and only some', () => {
-    const box = dripBox(0.45);
-    const layout = place(box).layout;
-    expect(layout).toHaveLength(6);
-    for (const g of layout) expect(g.drip ?? 0, g.ch).toBeGreaterThanOrEqual(0);
-    expect(layout.some((g) => g.drip > 0)).toBe(true);
-    expect(layout.some((g) => !(g.drip > 0))).toBe(true);
-  });
-
-  it('is in the glyph job as the run\'s own drip, on the same letters', () => {
-    const box = dripBox(0.45);
-    const pl = place(box);
-    const L = { s: box.style, ox: 0, oy: 0, isCurve: true, layout: pl.layout };
-    const job = glyphJob(box, L);
-    expect(job.runs).toHaveLength(pl.layout.length);
-    for (const run of job.runs) expect(run.drip ?? 0).toBeGreaterThanOrEqual(0);
-    expect(job.runs.some((r) => r.drip > 0)).toBe(true);
-    expect(job.runs.some((r) => r.drip == null)).toBe(true);
-    expect(job.runs.map((r) => r.drip > 0)).toEqual(pl.layout.map((g) => g.drip > 0));
-  });
-
-  it('reaches lower than the same letters with no drip', () => {
-    const wet = dripBox(0.45);
-    const dry = dripBox(0);
-    expect(place(dry).layout.every((g) => !(g.drip > 0))).toBe(true);
-    const a = renderBoxTexture(wet, pageOf(wet), null, 2);
-    const b = renderBoxTexture(dry, pageOf(dry), null, 2);
-    const low = (tex) => inkOf(tex).bottom;
-    expect(low(a)).toBeGreaterThan(low(b) + 2);
   });
 });

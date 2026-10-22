@@ -39,7 +39,7 @@ const fixture = () => [
       box('b5', 1, { font: 'Anime Ace', size: 30 }, { fit: rect, outline: { approved: 'user', source: 'manual' } }),
       box('b6', 2, {}, { fit: rect, outline: { approved: 'ai', source: 'ring' } }),
       box('b7', 3, { ink: { on: true, strokes: [{ pts: [[0, 0, 1], [10, 10, 1]] }] } }),
-      box('b8', null, { sfx: { on: true, moves: [{ kind: 'step', a: 0.1, b: 0 }] } }, { text: 'SWISH' }),
+      box('b8', null, { sfx: { on: true, kind: 'impact' } }, { text: 'SWISH' }),
       box('b9', null, { ink: { on: true, strokes: [] } }, { text: 'Plain' }),
     ],
   },

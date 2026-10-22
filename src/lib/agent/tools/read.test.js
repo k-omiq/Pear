@@ -98,8 +98,8 @@ afterEach(() => {
 
 describe('read tool registration', () => {
   it('registers all seven read-only tools with JSON input schemas and descriptions', () => {
-    const tools = listTools().filter((t) => ['context', 'query', 'box', 'fonts', 'tags', 'presets', 'sfx_presets'].includes(t.name));
-    expect(tools.map((t) => t.name)).toEqual(['context', 'query', 'box', 'fonts', 'tags', 'presets', 'sfx_presets']);
+    const tools = listTools().filter((t) => ['context', 'query', 'box', 'fonts', 'tags', 'presets', 'sfx_kinds'].includes(t.name));
+    expect(tools.map((t) => t.name)).toEqual(['context', 'query', 'box', 'fonts', 'tags', 'presets', 'sfx_kinds']);
     for (const t of tools) {
       expect(t.write).toBe(false);
       expect(t.description.length).toBeGreaterThan(80);
@@ -304,24 +304,37 @@ describe('catalogues', () => {
   });
 
   it('explains missing SFX on the browser engine', async () => {
-    expect(await read('sfx_presets')).toEqual({ presets: [], kinds: [], note: expect.stringContaining('browser engine') });
+    expect(await read('sfx_kinds')).toEqual({ kinds: [], note: expect.stringContaining('browser engine') });
     setTextEngine({ id: 'browser', onFontsChange: () => () => {} });
-    expect((await read('sfx_presets')).presets).toEqual([]);
+    expect((await read('sfx_kinds', { id: 'b1' })).kinds).toEqual([]);
   });
 
-  it('reads SFX preset names and move kinds from the active Rust engine', async () => {
-    const kinds = [{ kind: 'step', label: 'Step' }];
+  it('lists the sound types with a look in a line, and ranks them for a box or a text', async () => {
+    const kinds = [
+      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h', look: { fill: { type: 'solid' }, outlines: [{ width: 0.1, color: '#ffffff' }], sharp: false } },
+      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h', look: { fill: { type: 'negative', grow: 0.16 }, outlines: [{ width: 0.07, color: '#ffffff' }], sharp: true } },
+      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v', look: { fill: { type: 'gray', gray: 0.45 }, outlines: [{ width: 0.06, color: '#111111' }, { width: 0.08, color: '#ffffff' }], sharp: false } },
+    ];
+    const asked = [];
     setTextEngine({
-      id: 'rust', sfxLayout() {}, onFontsChange: () => () => {},
-      sfxInfo: () => ({ kinds, presets: [
-        { id: 'stairs', name: 'Stairs up', moves: [{ kind: 'step' }, { kind: 'step' }] },
-        { id: 'arch', name: 'Arch', envelope: 'arch' },
-      ] }),
+      id: 'rust', sfxPlace() {}, onFontsChange: () => () => {},
+      sfxKinds: () => ({ kinds }),
+      sfxPick: (text) => (asked.push(text), { order: ['pop', 'impact', 'explosion'], scores: [0.2, 0.1, 0.7], strength: 1.2 }),
     });
-    const result = await read('sfx_presets');
-    expect(result).toEqual({ presets: [{ id: 'stairs', name: 'Stairs up', kinds: ['step'] }, { id: 'arch', name: 'Arch', kinds: [] }], kinds });
-    result.kinds[0].label = 'changed';
-    expect((await read('sfx_presets')).kinds[0].label).toBe('Step');
+    const result = await read('sfx_kinds');
+    expect(result).toEqual({ kinds: [
+      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h', look: 'black letters, a white rim, round corners' },
+      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h', look: 'white letters cut out of a black blob, a thin white rim, sharp corners' },
+      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v', look: 'grey letters (45% ink), black then white rims, round corners' },
+    ] });
+    // A box's own text is asked for, and the pick names the box, not its text.
+    const byBox = await read('sfx_kinds', { id: 'b2' });
+    expect(asked).toEqual([payload]);
+    expect(byBox.pick).toEqual({ id: 'b2', order: ['pop', 'impact', 'explosion'], strength: 1.2 });
+    const byText = await read('sfx_kinds', { text: payload });
+    expect(byText.pick.text).toEqual({ untrusted: payload });
+    const both = await callTool('sfx_kinds', { id: 'b2', text: 'x' });
+    expect(both.ok).toBe(false);
   });
 });
 
@@ -330,7 +343,7 @@ it('all reads leave document data, selection, chapter and saved state unchanged'
   const before = JSON.stringify({ pages: app.pages, ref: app.chapterRef, selected: app.selectedId, saved: app.saved });
   for (const [name, args] of [
     ['context'], ['query', { where: { pages: 'all', flagged: true } }], ['box', { id: 'b1' }],
-    ['fonts'], ['tags'], ['presets'], ['sfx_presets'],
+    ['fonts'], ['tags'], ['presets'], ['sfx_kinds'], ['sfx_kinds', { id: 'b1' }],
   ]) await read(name, args);
   expect(JSON.stringify({ pages: app.pages, ref: app.chapterRef, selected: app.selectedId, saved: app.saved })).toBe(before);
 });

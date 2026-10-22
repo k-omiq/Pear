@@ -6,15 +6,15 @@ import { textEngine, setTextEngine, setGlyphPainter, glyphPainter } from './text
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { sfxPresets, applySfxPreset } from './sfx.js';
-import { cardSpec, cardText, paintCard, paintStage, CARD_W, CARD_H } from './sfx-preview.js';
+import { sfxKinds, applySfxKind } from './sfx.js';
+import { cardSpec, cardKey, cardText, cardStyle, paintCard, paintStage, CARD_W, CARD_H } from './sfx-preview.js';
 
 // ===========================================================================
 // The SFX panel's pictures, painted by the real engine
 // ===========================================================================
 // The panel's own cases (SfxPanel.dom.test.js) stand the painters in. This is
-// the painter: a card for every built-in preset and the stage, through the
-// exporter's texture, on a real canvas, read back as pixels.
+// the painter: a card for every sound type, the variations and the stage,
+// through the exporter's texture, on a real canvas, read back as pixels.
 
 const hadDocument = 'document' in globalThis;
 const oldDocument = globalThis.document;
@@ -66,60 +66,74 @@ async function ink(url) {
   return { n, width, height, x0, x1, y0, y1 };
 }
 
-describe('a card', () => {
-  it('is painted for every built-in preset, inside its tile, with ink in it', async () => {
-    const presets = sfxPresets();
-    expect(presets.length).toBeGreaterThan(0);
-    const spec = cardSpec(style(), 'BOOM\nBAM');
-    for (const p of presets) {
-      const url = paintCard(spec, p, 1);
-      expect(url, p.id).toMatch(/^data:image\/png;base64,/);
+describe('a type card', () => {
+  it('is painted for every sound type, inside its tile, with ink in it', async () => {
+    const kinds = sfxKinds();
+    expect(kinds).toHaveLength(12);
+    const spec = cardSpec(style(), 'BOOM');
+    for (const k of kinds) {
+      const url = paintCard(spec, { kind: k.id, seed: 1 }, 1);
+      expect(url, k.id).toMatch(/^data:image\/png;base64,/);
       const r = await ink(url);
       expect([r.width, r.height]).toEqual([CARD_W, CARD_H]);
-      expect(r.n, p.id).toBeGreaterThan(20);
+      expect(r.n, k.id).toBeGreaterThan(20);
       // Cut to its ink and contained: nothing touches the tile's edge.
-      expect(r.x0, p.id).toBeGreaterThan(0);
-      expect(r.y0, p.id).toBeGreaterThan(0);
-      expect(r.x1, p.id).toBeLessThan(CARD_W - 1);
-      expect(r.y1, p.id).toBeLessThan(CARD_H - 1);
+      expect(r.x0, k.id).toBeGreaterThan(0);
+      expect(r.y0, k.id).toBeGreaterThan(0);
+      expect(r.x1, k.id).toBeLessThan(CARD_W - 1);
+      expect(r.y1, k.id).toBeLessThan(CARD_H - 1);
     }
   });
 
-  it('differs from one preset to the next, and follows the box colour', async () => {
-    const [a, b] = sfxPresets();
+  it('differs from one type to the next', () => {
     const spec = cardSpec(style(), 'BOOM');
-    expect(paintCard(spec, a, 1)).not.toBe(paintCard(spec, b, 1));
-    const red = paintCard(cardSpec(style({ color: '#ff0000', strokes: [] }), 'BOOM'), a, 1);
-    const black = paintCard(cardSpec(style({ color: '#000000', strokes: [] }), 'BOOM'), a, 1);
-    expect(red).not.toBe(black);
+    const urls = new Set(sfxKinds().map((k) => paintCard(spec, { kind: k.id, seed: 1 }, 1)));
+    expect(urls.size).toBeGreaterThan(6);
   });
 
-  // A Shape preset bends the whole box with a mesh, and the drip pulls
-  // letters down: a card is the same picture of each, cut to the word first.
-  it('is painted for the Shape preset and the drip, and they differ', async () => {
-    const spec = cardSpec(style(), 'BOOM\nBAM');
-    const byId = Object.fromEntries(sfxPresets().map((p) => [p.id, p]));
-    const urls = {};
-    for (const id of ['valley', 'drip']) {
-      expect(byId[id], id).toBeTruthy();
-      urls[id] = paintCard(spec, byId[id], 1);
-      expect(urls[id], id).toMatch(/^data:image\/png;base64,/);
-      const r = await ink(urls[id]);
-      expect([r.width, r.height], id).toEqual([CARD_W, CARD_H]);
-      expect(r.n, id).toBeGreaterThan(20);
-      expect(r.x0, id).toBeGreaterThan(0);
-      expect(r.y0, id).toBeGreaterThan(0);
-      expect(r.x1, id).toBeLessThan(CARD_W - 1);
-      expect(r.y1, id).toBeLessThan(CARD_H - 1);
-    }
-    expect(urls.valley).not.toBe(urls.drip);
+  it('is the type laid over the box: its look, the box seed', () => {
+    const st = cardStyle(cardSpec(style({ color: '#ff0000' }), 'BOOM'), { kind: 'explosion', seed: 7 });
+    expect(st.sfx.on).toBe(true);
+    expect(st.sfx.kind).toBe('explosion');
+    expect(st.sfx.seed).toBe(7);
+    expect(st.color).not.toBe('#ff0000');
+  });
+
+  it('has a key that leaves out the box look, and keeps the text and the font', () => {
+    const a = cardSpec(style({ color: '#ff0000' }), 'BOOM');
+    const b = cardSpec(style({ color: '#000000' }), 'BOOM');
+    const c = cardSpec(style(), 'BAM');
+    const d = cardSpec(style({ font: 'Comic Neue' }), 'BOOM');
+    const key = (s) => cardKey(s, { kind: 'impact', seed: 1 }, 0, 1);
+    expect(key(a)).toBe(key(b));
+    expect(key(a)).not.toBe(key(c));
+    expect(key(a)).not.toBe(key(d));
+    // A variation is the box as it is: its look is in its key.
+    const vkey = (s) => cardKey(s, { kind: null, seed: 1 }, 0, 1);
+    expect(vkey(a)).not.toBe(vkey(b));
   });
 
   it('paints at twice the pixels on a dense screen', async () => {
-    const r = await ink(paintCard(cardSpec(style(), 'BAM'), sfxPresets()[0], 2));
+    const r = await ink(paintCard(cardSpec(style(), 'BAM'), { kind: 'impact', seed: 1 }, 2));
     expect([r.width, r.height]).toEqual([CARD_W * 2, CARD_H * 2]);
   });
+});
 
+describe('a variation', () => {
+  it('is the box sound with another seed', async () => {
+    const st = style();
+    applySfxKind(st, 'explosion');
+    const spec = cardSpec(st, 'BOOM');
+    const one = paintCard(spec, { seed: 1 }, 1);
+    const two = paintCard(spec, { seed: 2 }, 1);
+    expect(one).toMatch(/^data:image\/png;base64,/);
+    expect((await ink(one)).n).toBeGreaterThan(20);
+    // Explosion jitters: two seeds are two shapes.
+    expect(one).not.toBe(two);
+  });
+});
+
+describe('the card text', () => {
   it('cuts the text to eight code points and falls back to SFX', () => {
     expect(cardText('ABCDEFGHIJ')).toBe('ABCDEFGH');
     // Line breaks count as code points, and a cut that ends on one drops it.
@@ -132,10 +146,10 @@ describe('a card', () => {
 });
 
 describe('the stage', () => {
-  it('paints the box as it is, plain or with a preset, cut to its ink', () => {
+  it('paints the box as it is, plain or with a type, cut to its ink', () => {
     const plain = style();
     const sfx = style();
-    applySfxPreset(sfx, sfxPresets()[0]);
+    applySfxKind(sfx, 'impact');
     const grab = (st) => {
       const canvas = createCanvas(300, 132);
       expect(paintStage(canvas, { style: st, text: 'BOOM', w: 240, h: 90 }, 1)).toBe(true);

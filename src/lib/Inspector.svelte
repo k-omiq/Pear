@@ -138,7 +138,7 @@
   }
 
   const ALL_EFFECTS_TABS = [
-    ['sfx', 'SFX presets (beta)'],
+    ['sfx', 'SFX (beta)'],
     ['stroke', 'Stroke'],
     ['shadow', 'Shadow'],
     ['warp', 'Warp'],
@@ -153,10 +153,10 @@
     ['edges', 'Edges'],
     ['mask', 'Mask'],
   ];
-  // The SFX presets are a beta, there only while Settings turns them on. A
-  // session left on their tab shows Stroke while they are off.
-  const EFFECTS_TABS = $derived(prefs.sfxPresets ? ALL_EFFECTS_TABS : ALL_EFFECTS_TABS.filter(([id]) => id !== 'sfx'));
-  const effectsTab = $derived(effectsSubTab.id === 'sfx' && !prefs.sfxPresets ? 'stroke' : effectsSubTab.id);
+  // SFX is a beta, there only while Settings has the SFX tool on. A session
+  // left on its tab shows Stroke while it is off.
+  const EFFECTS_TABS = $derived(prefs.sfxTool ? ALL_EFFECTS_TABS : ALL_EFFECTS_TABS.filter(([id]) => id !== 'sfx'));
+  const effectsTab = $derived(effectsSubTab.id === 'sfx' && !prefs.sfxTool ? 'stroke' : effectsSubTab.id);
 
   function onSubTabKey(e, id) {
     const i = EFFECTS_TABS.findIndex(([t]) => t === id);
@@ -180,9 +180,9 @@
   // SFX is laid out before the path, the ring and the arc (`curvedStyle`), so a
   // bend asked for while it is on would be ignored without a word. Asking for
   // one switches SFX off, as switching SFX on switches them off (`enableSfx`),
-  // and the gaps the preset wrote go back to the box's own.
+  // and the look the sound type wrote goes back to the box's own.
   function sfxOff(st) {
-    if (st.sfx?.on) clearSfx(st, box, true);
+    if (st.sfx?.on) clearSfx(st, true);
   }
 
   // Percentages are what the panel shows for every 0..1 alpha; the style keeps
@@ -1536,8 +1536,8 @@
         {#if effectsTab === 'sfx'}
           <!-- Inside this element, so the capture-phase pointerdown/keydown on
                `.insp` (armSnap) takes the undo snapshot before any control in the
-               panel writes. -->
-          <SfxPanel {box} pg={page()} {touch} {onSettings} />
+               panel writes; a colour picked in a popover arms it itself. -->
+          <SfxPanel {box} pg={page()} {touch} arm={armSnap} {onSettings} />
         {/if}
 
         {#if effectsTab === 'stroke'}

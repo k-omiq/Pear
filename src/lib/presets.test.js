@@ -8,7 +8,7 @@ import {
   pasteStyle,
 } from './presets.svelte.js';
 import { defaultStyle, normalizeWarp } from './data.js';
-import { applySfxPreset, clearSfx } from './sfx.js';
+import { applySfxKind, clearSfx } from './sfx.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import {
   app,
@@ -309,17 +309,14 @@ describe('style copy and paste', () => {
     expect(app.lastStyle.flipV).toBe(defaultStyle().flipV);
   });
 
-  // SFX remembers what it wrote over (`sfx.before`), mesh included, to put
-  // back when it goes off. Pasted, the recipe came with the record of the box
-  // it was copied from, while the mesh itself stayed behind: a preset that
-  // takes its envelope off later (Valley, then Remove SFX) laid the OTHER box's
-  // hand-made mesh onto this one.
-  it('pastes an SFX recipe that puts back this box’s own mesh, not the copied box’s', () => {
+  // SFX remembers what it wrote over (`sfx.before`), to put back when it goes
+  // off. Pasted, the recipe came with the record of the box it was copied
+  // from, while the box's own geometry stayed behind: Remove SFX would switch
+  // this box's path by the OTHER box's record.
+  it('pastes an SFX recipe that puts back this box’s own path, not the copied box’s', () => {
     const original = textEngine();
-    const VALLEY = { id: 'valley', name: 'Valley', moves: [], envelope: { kind: 'valley', bend: 0.5, cols: 1, rows: 1 } };
-    const GROW = { id: 'grow', name: 'Grow', moves: [{ kind: 'grow', a: 0.5, b: 0 }] };
-    // An engine of arithmetic that knows the two presets and makes Valley's
-    // mesh; it lays no SFX out (`sfxLayout`), so both boxes stay auto boxes.
+    // An engine of arithmetic that knows one sound type; it lays no SFX out
+    // (`sfxPlace` answers no letters), so both boxes stay plain.
     const ink = (face, text) => ({ width: [...text].length * face.size * 0.55, left: 0, right: [...text].length * face.size * 0.55, ascent: face.size * 0.7, descent: face.size * 0.2 });
     setTextEngine({
       id: 'sfx-tables',
@@ -330,31 +327,26 @@ describe('style copy and paste', () => {
       loading: () => false,
       onFontsChange: () => () => {},
       faceReady: () => true,
-      sfxInfo: () => ({ kinds: [], presets: [GROW, VALLEY] }),
-      sfxEnvelope: (kind, bend, cols, rows, w, h) => [[0, 0], [w, 0], [0, h * 0.6], [w, h]],
+      sfxKinds: () => ({ kinds: [{ id: 'impact', name: 'Impact', tag: 'no-such-tag', look: { fill: { type: 'solid' }, outlines: [], sharp: false } }] }),
+      sfxPlace: () => ({ paths: [], bounds: [0, 0, 0, 0], letters: [] }),
     });
     try {
       const b1 = byId('b1');
       const b2 = byId('b2');
-      const handmade = { on: true, cols: 1, rows: 1, pts: [[-5, 3], [120, -8], [2, 44], [97, 51]] };
-      b1.style.warp = handmade;
-      applySfxPreset(b1.style, GROW, b1);
-      expect(b1.style.sfx.before.warp.pts).toEqual(handmade.pts);
+      // The copied box was on a path when SFX went on; this one is on none.
+      b1.style.path = { on: true, pts: [{ x: 0, y: 0 }, { x: 50, y: 10 }] };
+      b2.style.path = { on: false, pts: [] };
+      expect(applySfxKind(b1.style, 'impact')).toBe(true);
+      expect(b1.style.sfx.before.path).toBe(true);
       copyStyle(b1);
-      const own = normalizeWarp(b2.style.warp);
       expect(pasteStyle(b2)).toBe(true);
-      // The recipe came across; the mesh did not, and neither did its record.
+      // The recipe came across, and the record is this box's.
       expect(b2.style.sfx.on).toBe(true);
-      expect(b2.style.warp).toEqual(own);
-      expect(b2.style.sfx.before.warp).toEqual(own);
-      expect(b2.style.sfx.before.path).toBe(!!b2.style.path?.on);
-      // Valley, then Remove SFX: the envelope goes, and b2 is as it was.
-      applySfxPreset(b2.style, VALLEY, b2);
-      expect(b2.style.warp.pts).toEqual([[0, 0], [b2.w, 0], [0, b2.h * 0.6], [b2.w, b2.h]]);
-      clearSfx(b2.style, b2);
-      expect(b2.style.warp).toEqual(own);
+      expect(b2.style.sfx.before.path).toBe(false);
+      clearSfx(b2.style);
+      expect(b2.style.path.on).toBe(false);
       // The copied box keeps its own record.
-      expect(b1.style.sfx.before.warp.pts).toEqual(handmade.pts);
+      expect(b1.style.sfx.before.path).toBe(true);
     } finally {
       setTextEngine(original);
     }

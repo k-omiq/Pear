@@ -21,6 +21,8 @@
   } from '../store.svelte.js';
   import { prefs } from '../prefs.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
+  import { sfxAvailable } from '../sfx.js';
+  import { engineSwitch } from '../engine-switch.svelte.js';
   import { panels, setHidden, raisePanel } from './panels.svelte.js';
 
   // A translate chapter has no reference sidebar - the canvas is already showing
@@ -30,6 +32,13 @@
   // rail in either case, so it sits at 0 and the resize is inert.
   const translate = $derived(isTranslateMode());
   const noSide = $derived(translate || app.sidebarHidden);
+
+  // The SFX tool draws with the Rust engine. The engine is module state, so
+  // what stands for "it changed" is read here (as the SFX panel does).
+  const sfxReady = $derived.by(() => {
+    engineSwitch.phase;
+    return sfxAvailable();
+  });
 
   // The ceiling moves with the window - see `sidebarMaxWidth`. Tracked here so
   // the separator's `aria-valuemax` is the width the drag would actually stop
@@ -199,6 +208,19 @@
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7V5h16v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>
       </button>
+      {#if prefs.sfxTool}
+        <!-- Press, drag, let go: a sound effect along the drag. Off (not gone)
+             under the browser engine, which has no SFX layout. -->
+        <button
+          class:on={app.tool === 'sfx'}
+          onclick={() => setTool('sfx')}
+          disabled={!sfxReady}
+          aria-label="SFX tool"
+          data-tip={sfxReady ? 'SFX tool - drag to draw a sound effect' : 'SFX tool - needs the Rust text engine'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17c4-1 6-6 9-9" /><path d="M13 8l-1 4 4-1" /><path d="M16 4l1-2" /><path d="M19 7l2-1" /><path d="M18 11h3" /></svg>
+        </button>
+      {/if}
       {#if prefs.brushTool}
         <!-- The brush is a pointer mode, not an effect: arming it changes what a
              press on the page does, the way the hand tool does. Every other ink
@@ -248,3 +270,13 @@
   {/if}
   </div>
 </div>
+
+<style>
+  /* The one rail button that can be off: the SFX tool under the browser
+     engine. Dimmed, and no hover, so it does not offer what it refuses. */
+  .ed-rail-tools button:disabled {
+    opacity: 0.4;
+    cursor: default;
+    background: none;
+  }
+</style>

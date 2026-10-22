@@ -14,7 +14,7 @@
 // which is what keeps that import-time apply safe: nothing here can run before
 // the module it is writing into has finished evaluating.
 import { setBoxDefaults, setLegacyTypeset } from './data.js';
-import { app, setTool, setBrushToolAllowed, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
+import { app, setTool, setBrushToolAllowed, setSfxToolAllowed, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
 import { normalizeOcrModels } from './ocr-models.js';
 import { useTextEngine } from './engine-switch.svelte.js';
 import { guide, onSeriesTypeset, SERIES_TYPESET_KEYS } from './guide.svelte.js';
@@ -45,9 +45,9 @@ const ENGINE_DEFAULT = import.meta.env?.VITE_MT_TEXT_ENGINE === 'browser' ? 'bro
 export const prefs = $state({
   // The brush drawing tool (work in progress). Off by default until ready.
   brushTool: false,
-  // The SFX presets in the Inspector's Effects tab (beta). Off by default, and
-  // the SFX sub-tab is not there until it is turned on.
-  sfxPresets: false,
+  // The SFX tool on the rail and the SFX sub-tab of Effects (beta). On by
+  // default; turned off, both go, and boxes that have SFX keep it.
+  sfxTool: true,
   // Place and Text tools can start from defaults instead of the last box's style.
   inheritBoxStyle: true,
   // ---- typesetting defaults for NEW text boxes ----
@@ -128,7 +128,7 @@ const cleanNames = (v) =>
 
 // The box defaults, split by what a value of theirs may be. Named once so the
 // setter's validation and the loader's validation cannot drift apart.
-const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxPresets', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector'];
+const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector'];
 const NUM_KEYS = { defaultMinOrphan: [1, 8], minFontSize: [4, 48] };
 const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'] };
 
@@ -176,7 +176,7 @@ function persist() {
         defaultMinOrphan: prefs.defaultMinOrphan,
         minFontSize: prefs.minFontSize,
         brushTool: prefs.brushTool,
-        sfxPresets: prefs.sfxPresets,
+        sfxTool: prefs.sfxTool,
         inheritBoxStyle: prefs.inheritBoxStyle,
         shortcuts: $state.snapshot(prefs.shortcuts),
         hiddenBuiltinFonts: $state.snapshot(prefs.hiddenBuiltinFonts),
@@ -228,6 +228,12 @@ export function setPref(key, value) {
     if (!value && app.tool === 'brush') {
       setTool('pan');
     }
+  }
+  // The same for the SFX tool, falling back to Place: a drag with the tool
+  // that is gone must not still draw a sound.
+  if (key === 'sfxTool') {
+    setSfxToolAllowed(!!value);
+    if (!value && app.tool === 'sfx') setTool('place');
   }
   // Mirrored into the store the way the box defaults are mirrored into data.js.
   // No relayout: it bounds what the next fit may do, and moves nothing already
@@ -314,6 +320,7 @@ function load() {
   applyBoxDefaults();
   setMinFontSize(prefs.minFontSize);
   setBrushToolAllowed(prefs.brushTool);
+  setSfxToolAllowed(prefs.sfxTool);
   setInheritBoxStyle(prefs.inheritBoxStyle);
   // Here and not at first use: a chapter can open before anything asks, and
   // the engine has to be standing in the way of its first fit by then. A

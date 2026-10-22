@@ -1,24 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import v8 from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import { defaultStyle, normalizeStyle, applyBoxDefaults, SFX_MAX_MOVES } from './data.js';
+import { defaultStyle, normalizeStyle, normalizeSfx, applyBoxDefaults, SFX_MAX_GROUPS } from './data.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import { clearLayoutMemo } from './measure.js';
-import { boxCandidate, placeBlock, curvedStyle, isAutoBox, manualReason, turnedInk, boxInkRect, REVIEW_REASONS } from './contain.js';
+import { placeBlock, curvedStyle, isAutoBox, manualReason, turnedInk, boxInkRect, REVIEW_REASONS } from './contain.js';
 import { glyphJob } from './exporter.js';
 import { isRasterOnly } from './psd.js';
-import { sfxActive, sfxAvailable, sfxLayout, sfxInfo, sfxPresets, sfxKinds, applySfxPreset, clearSfx, enableSfx } from './sfx.js';
+import { boxShadows, effectShadows, strokeReach, strokeExtent } from './text-paint.js';
+import {
+  sfxActive, sfxAvailable, sfxLayout, sfxKinds, sfxKind, sfxPick, sfxParams, sfxResolved, sfxEdits,
+  applySfxKind, clearSfx, enableSfx, rebaseSfx, letterPen,
+} from './sfx.js';
 
 // ===========================================================================
-// SFX lettering: the style model, the recipe helpers and the seam
+// SFX lettering: the style model, the glue to the engine, the effects
 // ===========================================================================
 // The Rust engine lays SFX out, and the unit lane has none, so these tests
 // bring an engine of arithmetic: it measures the stand-in way and answers
-// `sfxLayout` with a layout it can be checked against. The real one is
+// `sfxPlace` with a layout it can be checked against. The real one is
 // exercised in sfx.engine.test.js.
 
-const MOVES = [{ kind: 'step', a: 0.2, b: 0 }];
-const PARAMS = [];
+const KINDS = [
+  {
+    id: 'impact', name: 'Impact', example: 'ドン', tag: 'no-such-tag', dir: 'h',
+    flow: { from: 1, to: 1.4, pow: 1 }, follow: 0.6, gap: -0.05, slant: 0, rise: 0,
+    jitter: { rot: 4, size: 0.1, off: 0.05 },
+    look: { fill: { type: 'solid' }, outlines: [{ width: 0.1, color: '#ffffff' }, { width: 0.05, color: '#000000' }], sharp: true },
+  },
+  {
+    id: 'small', name: 'Small', example: 'コソ', tag: 'no-such-tag', dir: 'v',
+    flow: { from: 1, to: 1, pow: 1 }, follow: 0.2, gap: 0.1, slant: 5, rise: 0,
+    jitter: { rot: 0, size: 0, off: 0 },
+    look: { fill: { type: 'negative', grow: 0.2 }, outlines: [], sharp: false },
+  },
+];
+const CALLS = [];
 function fakeEngine({ sfx = true } = {}) {
   const ink = (face, text) => ({ width: [...text].length * face.size * 0.55, left: 0, right: [...text].length * face.size * 0.55, ascent: face.size * 0.7, descent: face.size * 0.2 });
   const e = {
@@ -34,24 +51,34 @@ function fakeEngine({ sfx = true } = {}) {
     faceReady: () => true,
   };
   if (sfx) {
-    // One glyph per non-newline code point: row by row down the lines, each
-    // letter a step wider than the one before it.
-    e.sfxLayout = (face, rows, params) => {
-      PARAMS.push({ face, rows, params });
-      const out = [];
-      rows.forEach((row, r) => {
-        [...row].forEach((ch, i) => out.push({ ch, x: i * 10, y: r * params.lineHeight, rot: 0.1, sx: 1 + i * 0.5, sy: 1, skew: 0.2, w: face.size * 0.55 }));
-      });
-      return out;
+    e.sfxKinds = () => ({ kinds: KINDS });
+    e.sfxPick = (text) => ({ order: /ン/.test(text) ? ['impact', 'small'] : ['small', 'impact'], scores: [0.9, 0.1], strength: 1.2 });
+    // A letter for each code point but spaces, newlines and `/`, a step to
+    // the right and a step bigger than the one before; a run of long bars is
+    // one letter, as the engine joins them.
+    e.sfxPlace = (face, text, params) => {
+      CALLS.push({ face, text, params });
+      const letters = [];
+      let u = 0;
+      let i = 0;
+      for (const ch of text) {
+        const last = letters.at(-1);
+        if (ch === 'ー' && last && last.end === u && text.slice(last.start, last.end).endsWith('ー')) last.end += ch.length;
+        else if (!/[\s/]/.test(ch)) {
+          letters.push({ x: i * 10, y: 0, rot: 0.1, sx: 1 + i * 0.5, sy: 1, skew: 0.2, start: u, end: u + ch.length, group: 0, index: i, dir: [1, 0], em: face.size, adv: face.size * 0.55 });
+          i++;
+        }
+        u += ch.length;
+      }
+      return { paths: [{ a: [-1, 0], b: [1, 0], bend: 0 }], bounds: [-10, -10, i * 10, 10], letters };
     };
-    e.sfxInfo = () => ({ kinds: [{ kind: 'step', label: 'Step' }], presets: [{ id: 'stairs', name: 'Stairs up', moves: MOVES }] });
   }
   return e;
 }
 
 const original = textEngine();
 beforeEach(() => {
-  PARAMS.length = 0;
+  CALLS.length = 0;
   setTextEngine(fakeEngine());
   clearLayoutMemo();
 });
@@ -63,177 +90,243 @@ afterEach(() => {
 const sfxStyle = (over = {}) => {
   const s = defaultStyle();
   s.size = 20;
-  s.sfx = { on: true, amount: 1, seed: 3, flow: 'row', rowShift: 0, moves: MOVES.map((m) => ({ ...m })) };
+  s.sfx = normalizeSfx({ on: true, kind: 'impact', seed: 3 });
   return Object.assign(s, over);
 };
 const cand = (style, text = 'BOOM') => ({ x: 0, y: 0, w: 200, h: 100, style, text, fit: null });
 
 describe('the sfx field of a style', () => {
-  it('is off, with no moves, in a new style and in an old chapter', () => {
-    const plain = { on: false, amount: 1, seed: 1, flow: 'row', rowShift: 0, moves: [], before: null };
-    expect(defaultStyle().sfx).toEqual(plain);
-    const old = defaultStyle();
-    delete old.sfx;
-    expect(normalizeStyle(old).sfx).toEqual(plain);
-    expect(normalizeStyle(undefined).sfx).toEqual(plain);
+  it('is off, with no type, paths or edits, in a new style and in an old chapter', () => {
+    for (const s of [defaultStyle(), normalizeStyle({})]) {
+      expect(s.sfx).toMatchObject({ on: false, kind: null, seed: 1, strength: 1, paths: [], glyphs: {}, before: null });
+      expect(s.sfx.caption).toEqual({ text: '', side: 'below', size: 0.3, color: '#111111' });
+    }
   });
 
   it('round-trips a good recipe', () => {
-    const sfx = { on: true, amount: 1.5, seed: 42, flow: 'stack', rowShift: -0.4, moves: [{ kind: 'wave', a: 0.3, b: -2 }, { kind: 'grow', a: 0.5, b: 0 }], before: null };
-    const once = normalizeStyle({ ...defaultStyle(), sfx });
-    expect(once.sfx).toEqual(sfx);
-    expect(normalizeStyle(once).sfx).toEqual(sfx);
+    const x = {
+      on: true, kind: 'impact', seed: 42, strength: 1.5, dir: 'v', joinBars: false, kern: false,
+      flow: { from: 0.8, to: 2, pow: 1.5 }, follow: 0.3, gap: 0.2, bigTighter: 0.4, slant: -10, rise: 5,
+      jitter: { rot: 10, size: 0.2, off: 0.1 },
+      paths: [{ a: [-1, 0.5], b: [1.5, -0.5], bend: 0.3 }],
+      glyphs: { '0:2': { dx: 0.1, dy: -0.2, rot: 15, s: 1.2 } },
+      caption: { text: 'boom', side: 'right', size: 0.5, color: '#ff0000' },
+      before: { curve: 10, circle: false, path: true, look: { color: '#000000' } },
+    };
+    expect(normalizeSfx(x)).toEqual(x);
+    expect(normalizeSfx(JSON.parse(JSON.stringify(normalizeSfx(x))))).toEqual(x);
   });
 
   it('repairs every field it can and drops what it cannot', () => {
-    const fix = (sfx) => normalizeStyle({ sfx }).sfx;
-    expect(fix({ amount: 9 }).amount).toBe(2);
-    expect(fix({ amount: -1 }).amount).toBe(0);
-    expect(fix({ amount: 'x' }).amount).toBe(1);
-    expect(fix({ seed: 0 }).seed).toBe(1);
-    expect(fix({ seed: 12.6 }).seed).toBe(13);
-    expect(fix({ seed: 1e6 }).seed).toBe(9999);
-    expect(fix({ flow: 'diagonal' }).flow).toBe('row');
-    expect(fix({ flow: 'stack' }).flow).toBe('stack');
-    expect(fix({ rowShift: 7 }).rowShift).toBe(2);
-    expect(fix({ rowShift: -7 }).rowShift).toBe(-2);
-    expect(fix({ on: 'yes' }).on).toBe(false);
-    expect(fix({ moves: 'wave' }).moves).toEqual([]);
-    expect(
-      fix({
-        moves: [
-          { kind: 'ok', a: 1, b: 2 },
-          { kind: '', a: 1, b: 2 },
-          { kind: 7, a: 1, b: 2 },
-          { kind: 'nan', a: NaN, b: 0 },
-          { kind: 'inf', a: 0, b: Infinity },
-          { kind: 'str', a: '1', b: 0 },
-          { kind: 'gap', a: 1 },
-          null,
-          { kind: 'extra', a: 1, b: 2, c: 3 },
-        ],
-      }).moves,
-    ).toEqual([{ kind: 'ok', a: 1, b: 2 }, { kind: 'extra', a: 1, b: 2 }]);
+    const s = normalizeSfx({
+      on: 'yes', kind: '', seed: 0, strength: 9, dir: 'up', flow: { from: 0, to: 'x' }, follow: 3, gap: NaN,
+      slant: 90, rise: -90, jitter: { rot: 99 },
+      paths: [{ a: [0, 0] }, { a: [0, 0], b: [1, Infinity] }, { a: [0, 0], b: [1, 1], bend: 7 }],
+      glyphs: { bad: { dx: 1 }, '1:1': { dx: 0, dy: 0, rot: 0, s: 1 }, '0:0': { dx: 50, s: 0 } },
+      caption: { text: 3, side: 'middle', size: 5, color: 'red' },
+    });
+    expect(s).toMatchObject({ on: false, kind: null, seed: 1, strength: 2, dir: null, follow: 1, gap: null, slant: 45, rise: -30 });
+    expect(s.flow).toEqual({ from: 0.1, to: 1, pow: 1 });
+    expect(s.jitter).toEqual({ rot: 45, size: 0, off: 0 });
+    // A path with an end missing or not a number is dropped; a bend clamped.
+    expect(s.paths).toEqual([{ a: [0, 0], b: [1, 1], bend: 2 }]);
+    // A key that is no letter, and an edit that moves nothing, are dropped.
+    expect(s.glyphs).toEqual({ '0:0': { dx: 20, dy: 0, rot: 0, s: 0.1 } });
+    expect(s.caption).toEqual({ text: '', side: 'below', size: 1, color: '#111111' });
   });
 
-  it('keeps at most SFX_MAX_MOVES moves', () => {
-    const moves = Array.from({ length: SFX_MAX_MOVES + 5 }, (_, i) => ({ kind: `k${i}`, a: i, b: 0 }));
-    const got = normalizeStyle({ sfx: { moves } }).sfx.moves;
-    expect(got).toHaveLength(SFX_MAX_MOVES);
-    expect(got[0].kind).toBe('k0');
+  it('keeps at most one path per group the engine lays out', () => {
+    const p = { a: [0, 0], b: [1, 0], bend: 0 };
+    expect(normalizeSfx({ paths: Array.from({ length: 9 }, () => p) }).paths).toHaveLength(SFX_MAX_GROUPS);
   });
 
   it('is plain text again on a newborn box', () => {
-    const s = sfxStyle();
-    applyBoxDefaults(s);
-    expect(s.sfx).toEqual(defaultStyle().sfx);
+    const s = applyBoxDefaults(sfxStyle());
+    expect(s.sfx.on).toBe(false);
+    expect(s.sfx.kind).toBe(null);
   });
 });
 
-describe('applying a preset', () => {
-  const preset = (over = {}) => ({ id: 'p', name: 'P', group: 'Move', flow: 'stack', rowShift: 0.3, gap: -0.1, lineHeight: null, moves: [{ kind: 'step', a: 0.2, b: 0 }, { kind: 'tilt', a: 5, b: 1 }], ...over });
+// Decision D4 (docs/giongo): a box saved by the move-based SFX opens as the
+// closest sound type, laid out fresh, with its own gaps and the look it has.
+describe('an SFX box from before the sound types', () => {
+  const old = (over = {}) => ({ on: true, amount: 1.2, seed: 77, flow: 'row', rowShift: 0.5, moves: [{ kind: 'tilt', a: 0, b: 0 }], ...over });
 
-  it('writes the recipe, the gaps, and keeps the box seed', () => {
-    const s = sfxStyle({ lineHeight: 1.3 });
-    applySfxPreset(s, preset());
-    expect(s.sfx).toEqual({ on: true, amount: 1, seed: 3, flow: 'stack', rowShift: 0.3, moves: [{ kind: 'step', a: 0.2, b: 0 }, { kind: 'tilt', a: 5, b: 1 }], before: null });
-    expect(s.letterSpacing).toBeCloseTo(-2);
+  it('opens as the closest type, with its seed', () => {
+    expect(normalizeSfx(old())).toMatchObject({ on: true, kind: 'impact', seed: 77, strength: 1, paths: [], glyphs: {} });
+    expect(normalizeSfx(old({ flow: 'stack' })).kind).toBe('small');
+    expect(normalizeSfx(old({ on: false })).on).toBe(false);
+    expect(normalizeSfx({ amount: 1 }).kind).toBe('impact');
+  });
+
+  it('gets its own gaps back, and Remove SFX its bends', () => {
+    const s = normalizeStyle({
+      ...defaultStyle(), letterSpacing: -8, lineHeight: 0.7, color: '#123456',
+      sfx: old({ before: { letterSpacing: 2, lineHeight: 1.3, curve: 25, circle: true, path: false } }),
+    });
+    expect(s.letterSpacing).toBe(2);
     expect(s.lineHeight).toBe(1.3);
-    applySfxPreset(s, preset({ lineHeight: 0.8 }));
-    expect(s.lineHeight).toBe(0.8);
-  });
-
-  it('copies the moves, so editing the style does not edit the preset', () => {
-    const p = preset();
-    const s = sfxStyle();
-    applySfxPreset(s, p);
-    s.sfx.moves[0].a = 99;
-    expect(p.moves[0].a).toBe(0.2);
-  });
-
-  it('switches the other glyph layouts off', () => {
-    const s = sfxStyle({ curve: 40 });
-    s.circle.on = true;
-    s.path.on = true;
-    s.sfx.on = false;
-    applySfxPreset(s, preset());
-    expect(s.sfx.on).toBe(true);
-    expect(s.curve).toBe(0);
-    expect(s.circle.on).toBe(false);
-    expect(s.path.on).toBe(false);
-  });
-
-  it('leaves colour and strokes alone, whatever the preset says', () => {
-    const s = sfxStyle({ color: '#123456', strokes: [{ color: '#abcdef', width: 5, opacity: 0.5 }] });
-    applySfxPreset(s, preset({ look: 'outline' }));
     expect(s.color).toBe('#123456');
-    expect(s.strokes).toEqual([{ color: '#abcdef', width: 5, opacity: 0.5 }]);
+    expect(s.sfx.before).toEqual({ curve: 25, circle: true, path: false });
+    clearSfx(s);
+    expect(s.curve).toBe(25);
+    expect(s.circle.on).toBe(true);
+    expect(s.color).toBe('#123456');
+    expect(s.sfx.on).toBe(false);
   });
 
-  it('clearSfx keeps the recipe, enableSfx brings it back', () => {
-    const s = sfxStyle({ curve: 30 });
-    clearSfx(s);
-    expect(s.sfx.on).toBe(false);
-    expect(s.sfx.moves).toEqual(MOVES);
-    enableSfx(s);
-    expect(s.sfx.on).toBe(true);
-    expect(s.curve).toBe(0);
+  it('is left as it is when it was off', () => {
+    const s = normalizeStyle({ ...defaultStyle(), letterSpacing: -8, sfx: old({ on: false, before: { letterSpacing: 2 } }) });
+    expect(s.letterSpacing).toBe(-8);
+    expect(s.sfx.before).toBe(null);
   });
 });
 
-describe('Remove SFX', () => {
-  const preset = (over = {}) => ({ id: 'p', name: 'P', group: 'Move', flow: 'row', rowShift: 0, gap: -0.1, lineHeight: 0.8, moves: MOVES, ...over });
-  const plain = (over = {}) => {
-    const s = normalizeStyle({ ...defaultStyle(), size: 20, letterSpacing: 3, lineHeight: 1.3, color: '#123456', ...over });
-    return s;
-  };
+describe('the effects of a style', () => {
+  it('default to none, and normalise to their ranges', () => {
+    const d = defaultStyle();
+    expect(d).toMatchObject({ strokeOrder: 'merged', strokeJoin: 'round', strokeShade: 0 });
+    for (const k of ['negative', 'extrude', 'shake', 'trail']) expect(d[k].on).toBe(false);
+    const s = normalizeStyle({
+      ...d, strokeOrder: 'zigzag', strokeJoin: 'miter', strokeShade: 4,
+      negative: { on: true, grow: 9 }, extrude: { on: true, length: -1, edge: 'nope' },
+      shake: { on: true, count: 10, amp: 3 }, trail: { on: true, count: 0, dist: 5 },
+    });
+    expect(s).toMatchObject({ strokeOrder: 'merged', strokeJoin: 'miter', strokeShade: 1 });
+    expect(s.negative).toEqual({ on: true, grow: 1, color: '#111111' });
+    expect(s.extrude).toMatchObject({ on: true, length: 0, edge: '' });
+    expect(s.shake).toMatchObject({ count: 4, amp: 1 });
+    expect(s.trail).toEqual({ on: true, count: 1, dist: 2 });
+  });
 
-  it('puts the gaps and the bends back as they were', () => {
-    const s = plain({ curve: 40 });
-    s.circle.on = true;
-    const was = JSON.parse(JSON.stringify(s));
-    applySfxPreset(s, preset());
-    expect(s.letterSpacing).toBeCloseTo(-2);
-    expect(s.lineHeight).toBe(0.8);
-    expect(s.curve).toBe(0);
-    expect(s.sfx.before).toMatchObject({ letterSpacing: 3, lineHeight: 1.3, curve: 40, circle: true, path: false });
-    clearSfx(s);
+  it('cast nothing while SFX is off', () => {
+    const s = sfxStyle({ strokeShade: 0.5, shake: { on: true, count: 2, amp: 0.1, angle: 0 }, extrude: { on: true, angle: 90, length: 0.3, color: '#ff0000', edge: '#000000' } });
+    s.sfx.on = false;
+    expect(effectShadows(s)).toEqual({ top: [], under: [] });
+    expect(boxShadows(s)).toBe(s.shadows);
+  });
+
+  it('cast the shade and the shake on top of the box’s own shadows, the extrude under', () => {
+    const own = { color: '#00ff00', opacity: 1, x: 1, y: 1, blur: 0 };
+    const s = sfxStyle({
+      size: 30, strokeShade: 0.5, shadows: [own],
+      shake: { on: true, count: 2, amp: 0.1, angle: 0 },
+      extrude: { on: true, angle: 90, length: 0.3, color: '#ff0000', edge: '#0000ff' },
+    });
+    const { top, under } = effectShadows(s);
+    expect(boxShadows(s)).toEqual([...top, own, ...under]);
+    // The shade, then the shake's copies each side.
+    expect(top).toHaveLength(1 + 2 * 2);
+    expect(top[1].x).toBeCloseTo(1.5);
+    expect(top[2].x).toBeCloseTo(-1.5);
+    // 9 px of extrude straight down, a step every 1.5 px, then the edge.
+    const steps = under.filter((x) => x.color === '#ff0000');
+    expect(steps).toHaveLength(6);
+    expect(steps.at(-1).x).toBeCloseTo(0);
+    expect(steps.at(-1).y).toBeCloseTo(9);
+    expect(under.filter((x) => x.color === '#0000ff').every((x) => x.grow === 1)).toBe(true);
+  });
+
+  it('a negative reaches past the strokes, and an SFX box reaches half as far again', () => {
+    const s = sfxStyle({ size: 20, strokes: [{ color: '#fff', width: 4, opacity: 1 }], negative: { on: true, grow: 0.5, color: '#000000' } });
+    expect(strokeReach(s)).toBeCloseTo((strokeExtent(s.strokes) + 10) * 1.5);
+    s.sfx.on = false;
+    expect(strokeReach(s)).toBeCloseTo(strokeExtent(s.strokes));
+  });
+});
+
+describe('applying a sound type', () => {
+  it('refuses a type the engine does not know', () => {
+    const s = defaultStyle();
+    expect(applySfxKind(s, 'nope')).toBe(false);
     expect(s.sfx.on).toBe(false);
-    expect(s.sfx.before).toBe(null);
-    // Everything but the recipe SFX keeps is the box as it stood.
-    expect({ ...s, sfx: null }).toEqual({ ...was, sfx: null });
   });
 
-  it('goes back to the box, not to the preset picked before', () => {
-    const s = plain();
-    applySfxPreset(s, preset());
-    applySfxPreset(s, preset({ gap: 0.2, lineHeight: null }));
-    // A preset with no line gap of its own has the box's, not the last preset's.
-    expect(s.lineHeight).toBe(1.3);
-    expect(s.letterSpacing).toBeCloseTo(4);
-    expect(s.sfx.before.letterSpacing).toBe(3);
-    clearSfx(s);
-    expect(s.letterSpacing).toBe(3);
-    expect(s.lineHeight).toBe(1.3);
+  it('writes the type, its look and SFX on, and keeps the seed, the strength and the caption', () => {
+    const s = defaultStyle();
+    s.size = 40;
+    s.curve = 30;
+    s.path.on = true;
+    s.sfx = normalizeSfx({ seed: 9, strength: 1.5, slant: 20, caption: { text: 'bang' } });
+    expect(applySfxKind(s, 'impact')).toBe(true);
+    expect(s.sfx).toMatchObject({ on: true, kind: 'impact', seed: 9, strength: 1.5, slant: null });
+    expect(s.sfx.caption.text).toBe('bang');
+    expect(s.curve).toBe(0);
+    expect(s.path.on).toBe(false);
+    // Outline widths are ems of the size, innermost first; sharp corners mitre.
+    expect(s.strokes).toEqual([{ color: '#ffffff', width: 4, opacity: 1 }, { color: '#000000', width: 2, opacity: 1 }]);
+    expect(s.strokeJoin).toBe('miter');
+    expect(s.color).toBe('#111111');
   });
 
-  it('survives a save and a load, and an undo snapshot', () => {
-    const s = plain();
-    applySfxPreset(s, preset());
+  it('turns a negative fill into white letters on a blob', () => {
+    const s = defaultStyle();
+    applySfxKind(s, 'small');
+    expect(s.color).toBe('#ffffff');
+    expect(s.negative).toEqual({ on: true, grow: 0.2, color: '#111111' });
+    expect(s.strokes).toEqual([]);
+    expect(s.strokeJoin).toBe('round');
+  });
+
+  it('puts the box’s own look and bends back on Remove, after any number of types', () => {
+    const s = defaultStyle();
+    s.color = '#336699';
+    s.strokes = [{ color: '#ff0000', width: 3, opacity: 1 }];
+    s.circle.on = true;
+    applySfxKind(s, 'impact');
+    applySfxKind(s, 'small');
+    expect(s.sfx.before.look.color).toBe('#336699');
+    // Through a save and a load, and an undo snapshot.
     const back = normalizeStyle(JSON.parse(JSON.stringify(s)));
-    expect(back.sfx.before).toEqual(s.sfx.before);
     clearSfx(back);
-    expect(back.letterSpacing).toBe(3);
+    expect(back.color).toBe('#336699');
+    expect(back.strokes).toEqual([{ color: '#ff0000', width: 3, opacity: 1 }]);
+    expect(back.negative.on).toBe(false);
+    expect(back.circle.on).toBe(true);
+    expect(back.sfx).toMatchObject({ on: false, before: null, kind: 'small' });
   });
 
   it('leaves the bends to a caller that is switching one on', () => {
-    const s = plain({ curve: 40 });
-    applySfxPreset(s, preset());
-    s.circle.on = true;
-    clearSfx(s, null, true);
-    expect(s.letterSpacing).toBe(3);
+    const s = defaultStyle();
+    s.curve = 25;
+    applySfxKind(s, 'impact');
+    s.path.on = true;
+    clearSfx(s, true);
     expect(s.curve).toBe(0);
-    expect(s.circle.on).toBe(true);
+    expect(s.path.on).toBe(true);
+  });
+
+  it('enableSfx switches the other glyph layouts off', () => {
+    const s = defaultStyle();
+    s.curve = 10;
+    s.circle.on = true;
+    s.path.on = true;
+    enableSfx(s);
+    expect([s.sfx.on, s.curve, s.circle.on, s.path.on]).toEqual([true, 0, false, false]);
+  });
+
+  it('a pasted recipe puts back this box’s path switch, not the copied one’s', () => {
+    const s = sfxStyle();
+    s.sfx.before = { curve: 0, circle: false, path: true };
+    s.path.on = false;
+    rebaseSfx(s);
+    expect(s.sfx.before.path).toBe(false);
+  });
+});
+
+describe('the recipe the engine is handed', () => {
+  it('takes every null layout field from the type', () => {
+    const r = sfxResolved(normalizeSfx({ kind: 'small', gap: 0.5 }));
+    expect(r).toEqual({ vertical: true, flow: KINDS[1].flow, follow: 0.2, gap: 0.5, bigTighter: 0.5, slant: 5, rise: 0, jitter: KINDS[1].jitter });
+    // No type: the plain values.
+    expect(sfxResolved(normalizeSfx({ dir: 'v' })).vertical).toBe(true);
+    expect(sfxResolved(normalizeSfx({})).flow).toEqual({ from: 1, to: 1, pow: 1 });
+  });
+
+  it('passes the hand edits by group and letter, and a type only when the engine knows it', () => {
+    expect(sfxEdits({ '1:3': { dx: 0.5, dy: 0, rot: 10, s: 2 } })).toEqual([{ group: 1, index: 3, dx: 0.5, dy: 0, rot: 10, scale: 2 }]);
+    const p = sfxParams(normalizeSfx({ kind: 'gone', seed: 5, kern: false }));
+    expect(p).toMatchObject({ kind: null, seed: 5, kern: false, joinBars: true, strength: 1, paths: [], edits: [] });
   });
 });
 
@@ -247,9 +340,10 @@ describe('under the browser engine SFX is inert', () => {
     expect(sfxAvailable()).toBe(false);
     expect(sfxActive(sfxStyle())).toBe(false);
     expect(sfxLayout('BOOM', sfxStyle(), 20)).toEqual([]);
-    expect(sfxInfo()).toEqual({ kinds: [], presets: [] });
-    expect(sfxPresets()).toEqual([]);
     expect(sfxKinds()).toEqual([]);
+    expect(sfxKind('impact')).toBe(null);
+    expect(sfxPick('ドン')).toBe(null);
+    expect(applySfxKind(defaultStyle(), 'impact')).toBe(false);
   });
 
   it('is not available with no engine at all', () => {
@@ -277,24 +371,34 @@ describe('under the browser engine SFX is inert', () => {
   });
 });
 
-describe('sfxActive', () => {
-  it('wants the switch, a move and an engine that can', () => {
+describe('sfxActive and the type table', () => {
+  it('wants the switch and an engine that can', () => {
     expect(sfxActive(sfxStyle())).toBe(true);
     expect(sfxActive(sfxStyle({ sfx: { ...sfxStyle().sfx, on: false } }))).toBe(false);
-    expect(sfxActive(sfxStyle({ sfx: { ...sfxStyle().sfx, moves: [] } }))).toBe(false);
     expect(sfxActive({})).toBe(false);
     expect(sfxActive(null)).toBe(false);
   });
 
   it('asks the engine once and keeps its table', () => {
-    expect(sfxKinds()).toEqual([{ kind: 'step', label: 'Step' }]);
-    expect(sfxPresets()[0].id).toBe('stairs');
-    expect(sfxInfo()).toBe(sfxInfo());
+    const spy = vi.spyOn(textEngine(), 'sfxKinds');
+    expect(sfxKinds().map((k) => k.id)).toEqual(['impact', 'small']);
+    expect(sfxKind('small').dir).toBe('v');
+    expect(sfxKinds()).toBe(sfxKinds());
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  // The table was kept beside the last engine that gave one, and the browser
-  // engine gives none: switching Rust off left the Rust engine, and all of its
-  // wasm memory, held by the SFX panel's table for as long as the app ran.
+  it('ranks the types for a sound', () => {
+    expect(sfxPick('ドン').order[0]).toBe('impact');
+    expect(sfxPick('コソ').order[0]).toBe('small');
+    textEngine().sfxPick = () => {
+      throw new Error('no');
+    };
+    expect(sfxPick('x')).toBe(null);
+  });
+
+  // The table is kept by the engine that gave it: kept beside the last one,
+  // switching Rust off would leave the Rust engine, and all of its wasm
+  // memory, held for as long as the app ran.
   it('does not keep alive an engine the app has let go of', async () => {
     v8.setFlagsFromString('--expose-gc');
     const gc = runInNewContext('gc');
@@ -303,10 +407,10 @@ describe('sfxActive', () => {
       const e = fakeEngine();
       ref = new WeakRef(e);
       setTextEngine(e);
-      expect(sfxPresets()[0].id).toBe('stairs');
+      expect(sfxKinds()).toHaveLength(2);
     })();
     setTextEngine(fakeEngine({ sfx: false }));
-    expect(sfxPresets()).toEqual([]);
+    expect(sfxKinds()).toEqual([]);
     clearLayoutMemo();
     await new Promise((r) => setTimeout(r, 0));
     gc();
@@ -321,8 +425,7 @@ describe('placeBlock with the Rust engine', () => {
     const p = placeBlock(cand(s));
     expect(p.isCurve).toBe(true);
     expect(p.layout.map((g) => g.ch)).toEqual([...'BOOM']);
-    for (const g of p.layout) for (const k of ['x', 'y', 'rot', 'sx', 'sy', 'skew', 'w']) expect(Number.isFinite(g[k])).toBe(true);
-    expect(PARAMS).toHaveLength(1);
+    for (const g of p.layout) for (const k of ['x', 'y', 'rot', 'sx', 'sy', 'skew', 'w', 'em', 'pen']) expect(Number.isFinite(g[k])).toBe(true);
   });
 
   it('is a manual box, never fitted', () => {
@@ -333,47 +436,75 @@ describe('placeBlock with the Rust engine', () => {
     expect(isRasterOnly(c.style)).toBe(true);
   });
 
-  it('hands the engine the rows, the line height and the spacing, scaled to the size', () => {
-    const s = sfxStyle({ lineHeight: 1.5, letterSpacing: 4, size: 20 });
-    s.sfx = { ...s.sfx, amount: 1.25, seed: 77, flow: 'stack', rowShift: 0.5 };
+  it('hands the engine the face at the size, the text and the resolved recipe, once', () => {
+    const s = sfxStyle({ size: 20 });
+    s.sfx.glyphs = { '0:1': { dx: 0.5, dy: 0, rot: 0, s: 1 } };
     sfxLayout('GR\nIP!', s, 40);
-    const { face, rows, params } = PARAMS[0];
-    expect(rows).toEqual(['GR', 'IP!']);
+    sfxLayout('GR\nIP!', s, 40);
+    expect(CALLS).toHaveLength(1);
+    const { face, text, params } = CALLS[0];
     expect(face.size).toBe(40);
-    expect(params).toEqual({ lineHeight: 60, letterSpacing: 8, amount: 1.25, seed: 77, flow: 'stack', rowShift: 0.5, moves: MOVES });
-    // A style with no line height is one line high.
-    sfxLayout('A', sfxStyle({ lineHeight: 0 }), 20);
-    expect(PARAMS[1].params.lineHeight).toBe(20);
+    expect(text).toBe('GR\nIP!');
+    expect(params).toMatchObject({ kind: 'impact', seed: 3, vertical: false, follow: 0.6, edits: [{ group: 0, index: 1, dx: 0.5, dy: 0, rot: 0, scale: 1 }] });
+    s.sfx.seed = 4;
+    sfxLayout('GR\nIP!', s, 40);
+    expect(CALLS).toHaveLength(2);
   });
 
-  it('keeps one glyph per code point, a newline getting one of no advance', () => {
-    const l = sfxLayout('GR\nIP!', sfxStyle(), 20);
-    expect(l.map((g) => g.ch)).toEqual([...'GR\nIP!']);
-    expect(l[2]).toEqual({ ch: '\n', x: l[1].x, y: l[1].y, rot: 0, sx: 1, sy: 1, skew: 0, w: 0 });
-    expect(l[3].ch).toBe('I');
+  it('keeps one entry per code point, what draws nothing empty where the letter before it is', () => {
+    const l = sfxLayout('GR\nIーー!', sfxStyle(), 20);
+    expect(l.map((g) => g.ch)).toEqual(['G', 'R', '', 'I', 'ーー', '', '!']);
+    expect(l[2]).toEqual({ ch: '', x: l[1].x, y: l[1].y, rot: l[1].rot, sx: 1, sy: 1, skew: 0, w: 0, drip: 0 });
+    expect(l[4]).toMatchObject({ group: 0, index: 3, dir: [1, 0], em: 20, pen: letterPen(l[4].sx, l[4].sy) });
     expect(sfxLayout('', sfxStyle(), 20)).toEqual([]);
     expect(placeBlock(cand(sfxStyle(), '   ')).isCurve).toBe(false);
   });
 
   it('is the plain block when the engine refuses the recipe', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-    textEngine().sfxLayout = () => {
+    textEngine().sfxPlace = () => {
       throw new Error('BadSpec');
     };
-    expect(sfxLayout('BOOM', sfxStyle(), 20)).toEqual([]);
-    const p = placeBlock(cand(sfxStyle()));
+    expect(sfxLayout('BOOM', sfxStyle({ size: 21 }), 21)).toEqual([]);
+    const p = placeBlock(cand(sfxStyle({ size: 22 })));
     expect(p.isCurve).toBe(false);
     expect(p.lines).toEqual(['BOOM']);
-    expect(err).toHaveBeenCalledTimes(1);
+    // Said once for the whole session, not once a frame.
+    expect(err.mock.calls.length).toBeLessThanOrEqual(1);
     err.mockRestore();
   });
+});
 
-  it('puts the extra fields on the exporter run, and only when there are any', () => {
+describe('the glyph job of an SFX box', () => {
+  const layoutOf = (s, text = 'BOOM') => ({ ...placeBlock(cand(s, text)), ox: 0, oy: 0 });
+
+  it('puts the scale, the lean and the pen on each run, and only on the SFX ones', () => {
     const s = sfxStyle();
-    const layout = { s, ox: 0, oy: 0, isCurve: true, layout: [{ ch: 'B', x: 1, y: 2, rot: 0.1, sx: 2, sy: 1.5, skew: -0.3, w: 5 }, { ch: 'O', x: 3, y: 4, rot: 0, w: 5 }] };
+    const layout = { s, ox: 0, oy: 0, isCurve: true, layout: [{ ch: 'B', x: 1, y: 2, rot: 0.1, sx: 2, sy: 1.5, skew: -0.3, w: 5, pen: 1.3 }, { ch: 'O', x: 3, y: 4, rot: 0, w: 5 }] };
     const runs = glyphJob({ w: 100, h: 50 }, layout).runs;
-    expect(runs[0]).toMatchObject({ text: 'B', x: 51, y: 27, rot: 0.1, sx: 2, sy: 1.5, skew: -0.3 });
+    expect(runs[0]).toMatchObject({ text: 'B', x: 51, y: 27, rot: 0.1, sx: 2, sy: 1.5, skew: -0.3, pen: 1.3 });
     expect(Object.keys(runs[1]).sort()).toEqual(['fill', 'rot', 'text', 'x', 'y']);
+  });
+
+  it('carries the rim order, the corners and the negative only while SFX is on', () => {
+    const s = sfxStyle({ strokeOrder: 'each', strokeJoin: 'miter', negative: { on: true, grow: 0.5, color: '#0000ff' } });
+    const job = glyphJob({ w: 200, h: 100 }, layoutOf(s));
+    expect(job).toMatchObject({ strokeOrder: 'each', strokeJoin: 'miter', negative: { color: '#0000ff', grow: 10 } });
+    const off = sfxStyle({ ...s, sfx: { ...s.sfx, on: false } });
+    const plainJob = glyphJob({ w: 200, h: 100 }, layoutOf(off));
+    for (const k of ['strokeOrder', 'strokeJoin', 'negative']) expect(plainJob).not.toHaveProperty(k);
+  });
+
+  it('paints a trail as afterimages first, back along each letter’s path', () => {
+    const s = sfxStyle({ trail: { on: true, count: 2, dist: 0.5 } });
+    const runs = glyphJob({ w: 200, h: 100 }, layoutOf(s, 'BO')).runs;
+    const ghosts = runs.filter((r) => r.ghost);
+    expect(ghosts).toHaveLength(4);
+    expect(runs.slice(0, 4).every((r) => r.ghost)).toBe(true);
+    const b = runs.find((r) => !r.ghost && r.text === 'B');
+    const back = ghosts.filter((r) => r.text === 'B').map((r) => b.x - r.x).sort((x, y) => x - y);
+    expect(back[0]).toBeCloseTo(10);
+    expect(back[1]).toBeCloseTo(20);
   });
 });
 

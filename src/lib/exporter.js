@@ -5,7 +5,6 @@ import { glyphPainter, engineDraws, enginesNow, enginesAre } from './text-engine
 import { boxCandidate, placeBlock, blockRect, linesInkRect, turnedInk } from './contain.js';
 import {
   strokeBands,
-  strokeExtent,
   gradientEndpoints,
   radialEndpoints,
   patternTilePx,
@@ -22,9 +21,12 @@ import {
   inkBounds,
   inkReach,
   shadowExtent,
+  boxShadows,
+  strokeReach,
   drawInk,
 } from './text-paint.js';
 import { warpActive, meshMap } from './warp.js';
+import { findTag } from './tags.svelte.js';
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
@@ -224,8 +226,8 @@ function layoutBox(box, p) {
   // the tail of its gaussian: `paintShadows` blurs at sigma = blur/2, and a
   // gaussian is done at about three sigma, so 2x the named blur clears it with
   // room to spare where the old `+ blur` cut into it.
-  const strokeOut = strokeExtent(s.strokes);
-  const shadowOut = shadowExtent(s.shadows);
+  const strokeOut = strokeReach(s);
+  const shadowOut = shadowExtent(boxShadows(s));
   const pad = Math.ceil(
     Math.max(
       strokeOut,
@@ -267,6 +269,10 @@ function layoutBox(box, p) {
       minY = 0,
       maxY = 0;
     const half = s.size * 0.75; // generous half-glyph margin around each anchor
+    // An SFX trail paints each letter again up to this far back along its
+    // path (`glyphJob`): the margin holds the furthest copy too.
+    const trail = s.sfx?.on && s.trail?.on ? s.trail : null;
+    const back = (g) => (trail && g.dir && g.em > 0 ? trail.count * trail.dist * g.em : 0);
     for (const g of layout) {
       // An SFX glyph is scaled and leaned about its anchor: its margin grows
       // with the larger scale, and a lean slides its top and bottom sideways by
@@ -291,6 +297,15 @@ function layoutBox(box, p) {
       minY = Math.min(minY, g.y - hy);
       // A dripping glyph's foot is pulled that much lower.
       maxY = Math.max(maxY, g.y + hy + (g.drip > 0 ? g.drip : 0));
+      const b = back(g);
+      if (b > 0) {
+        const tx = g.x - g.dir[0] * b;
+        const ty = g.y - g.dir[1] * b;
+        minX = Math.min(minX, tx - hx);
+        maxX = Math.max(maxX, tx + hx);
+        minY = Math.min(minY, ty - hy);
+        maxY = Math.max(maxY, ty + hy);
+      }
     }
     leftExtra = Math.max(0, -minX - box.w / 2);
     rightExtra = Math.max(0, maxX - box.w / 2);
@@ -309,11 +324,16 @@ function layoutBox(box, p) {
       for (const g of layout) {
         const k = glyphInk(g.ch, s, s.size);
         if (!k) continue;
-        const [x0, y0, x1, y1] = turnedInk(k, g.rot, cx + g.x, cy + g.y, g.sx, g.sy, g.skew);
-        leftExtra = Math.max(leftExtra, -x0 - PAD_SPARE);
-        topExtra = Math.max(topExtra, -y0 - PAD_SPARE);
-        rightExtra = Math.max(rightExtra, x1 - box.w - PAD_SPARE);
-        bottomExtra = Math.max(bottomExtra, y1 + (g.drip > 0 ? g.drip : 0) - box.h - PAD_SPARE);
+        const b = back(g);
+        for (const t of b > 0 ? [0, b] : [0]) {
+          const ax = cx + g.x - (t ? g.dir[0] * t : 0);
+          const ay = cy + g.y - (t ? g.dir[1] * t : 0);
+          const [x0, y0, x1, y1] = turnedInk(k, g.rot, ax, ay, g.sx, g.sy, g.skew);
+          leftExtra = Math.max(leftExtra, -x0 - PAD_SPARE);
+          topExtra = Math.max(topExtra, -y0 - PAD_SPARE);
+          rightExtra = Math.max(rightExtra, x1 - box.w - PAD_SPARE);
+          bottomExtra = Math.max(bottomExtra, y1 + (g.drip > 0 ? g.drip : 0) - box.h - PAD_SPARE);
+        }
       }
     }
   } else {
@@ -403,6 +423,16 @@ function layoutBox(box, p) {
     }
   }
 
+  // An SFX's caption, beside its letters: the footprint holds it too.
+  const caption = isCurve ? captionPlan(s, layout) : null;
+  if (caption) {
+    const [x0, y0, x1, y1] = caption.rect;
+    leftExtra = Math.max(leftExtra, -(box.w / 2 + x0));
+    topExtra = Math.max(topExtra, -(box.h / 2 + y0));
+    rightExtra = Math.max(rightExtra, x1 - box.w / 2);
+    bottomExtra = Math.max(bottomExtra, y1 - box.h / 2);
+  }
+
   leftExtra = Math.ceil(leftExtra);
   rightExtra = Math.ceil(rightExtra);
   topExtra = Math.ceil(topExtra);
@@ -414,7 +444,67 @@ function layoutBox(box, p) {
   // Where each line's baseline sits inside its line box - the browser's own
   // placement, so the raster draws the glyphs where the editor does.
   const baseY = isCurve ? 0 : place.baseY;
-  return { s, lineH, baseY, pad, isCurve, lines, layout, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
+  return { s, lineH, baseY, pad, isCurve, lines, layout, caption, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
+}
+
+// The caption beside an SFX (`style.sfx.caption`): a line of small straight
+// text with a white halo, set off the letters on its side, in the font of the
+// series' `note` tag or the box's own. Positions in px from the box centre;
+// `rect` the generous box it can ink. Null for none.
+function captionPlan(s, layout) {
+  const c = s.sfx?.on ? s.sfx.caption : null;
+  const text = c?.text?.trim();
+  if (!text || !layout?.length) return null;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const g of layout) {
+    if (!g.ch) continue;
+    const r = (g.em > 0 ? g.em : s.size) * 0.55;
+    x0 = Math.min(x0, g.x - r);
+    y0 = Math.min(y0, g.y - r);
+    x1 = Math.max(x1, g.x + r);
+    y1 = Math.max(y1, g.y + r);
+  }
+  if (!Number.isFinite(x0)) return null;
+  const size = c.size * s.size;
+  const gap = 0.3 * size;
+  const halo = Math.max(1, 0.15 * size);
+  // A letter is never wider than an em: the box the caption can ink.
+  const w = [...text].length * size + 2 * halo;
+  const font = findTag('note')?.style?.font || s.font;
+  let x;
+  let y;
+  let align;
+  if (c.side === 'above' || c.side === 'below') {
+    align = 'center';
+    x = (x0 + x1) / 2;
+    y = c.side === 'below' ? y1 + gap + 0.8 * size : y0 - gap - 0.25 * size;
+  } else {
+    align = c.side === 'left' ? 'right' : 'left';
+    x = c.side === 'left' ? x0 - gap : x1 + gap;
+    y = (y0 + y1) / 2 + 0.3 * size;
+  }
+  const left = align === 'center' ? x - w / 2 : align === 'right' ? x - w : x;
+  const rect = [left - halo, y - size - halo, left + w + halo, y + 0.4 * size + halo];
+  return { text, font, size, color: c.color, halo, x, y, align, rect };
+}
+
+// The caption as a straight glyph job, in the layout's coordinates.
+function captionJob(box, L) {
+  const c = L.caption;
+  const cs = { ...L.s, font: c.font, size: c.size, bold: false, italic: false };
+  return {
+    face: faceFor(cs, c.size),
+    curved: false,
+    align: c.align,
+    letterSpacing: 0,
+    bands: [{ color: '#ffffff', opacity: 1, line: c.halo * 2 }],
+    silhouette: null,
+    fill: { kind: 'solid', color: c.color },
+    runs: [{ text: c.text, x: L.ox + box.w / 2 + c.x, y: L.oy + box.h / 2 + c.y }],
+  };
 }
 
 // The rectangle a gradient or a pattern is measured against, in the same
@@ -559,6 +649,13 @@ export function glyphJob(box, L) {
     fill: null,
     runs: [],
   };
+  // How the bands are laid (letter by letter, mitred) and a negative's blob
+  // (`negative.grow` is ems of the box's size), for the Rust painter. They
+  // are the SFX lettering's effects; a job with none is the job it always was.
+  const fx = !!s.sfx?.on;
+  if (fx && s.strokeOrder === 'each') job.strokeOrder = 'each';
+  if (fx && s.strokeJoin === 'miter') job.strokeJoin = 'miter';
+  if (fx && s.negative?.on) job.negative = { color: s.negative.color, grow: s.negative.grow * s.size };
   // No fill: no run and no job carries one, and the painter cuts the letters
   // out of the bands instead of filling them. Every job of the box says so,
   // the silhouette a shadow is cast from included, so a hollow letter throws
@@ -585,10 +682,16 @@ export function glyphJob(box, L) {
     // A curved box has no wrapped lines, so its gradient spans the box - which
     // is what 'box' scope means and the only scope the curved path has.
     const rect = { x: L.ox, y: L.oy, w: box.w, h: box.h };
+    // An SFX trail: each letter's afterimages, moved back along its path and
+    // fading, painted first and with their fill alone.
+    const trail = s.sfx?.on && s.trail?.on ? s.trail : null;
+    const ghosts = [];
     job.runs = L.layout.map((g) => {
       const x = cx + g.x;
       const y = cy + g.y;
       const run = { text: g.ch, x, y, rot: g.rot };
+      // An SFX letter's outlines follow its size.
+      if (g.pen != null) run.pen = g.pen;
       // SFX glyphs are also scaled and leaned about their anchor.
       if (g.sx != null) run.sx = g.sx;
       if (g.sy != null) run.sy = g.sy;
@@ -605,8 +708,24 @@ export function glyphJob(box, L) {
       // shows, and most visible on the letters furthest around the arc.
       // The silhouette pass wants one flat colour, not the real fill.
       if (!L.silhouette && !hollow) run.fill = runFill(s, rect, (px, py) => [px - x, py - y], page);
+      if (trail && g.ch && g.dir && g.em > 0) {
+        for (let k = 1; k <= trail.count; k++) {
+          const d = trail.dist * g.em * k;
+          const alpha = Math.round(255 * 0.5 * 0.62 ** (k - 1)).toString(16).padStart(2, '0');
+          ghosts.push({
+            ...run,
+            x: x - g.dir[0] * d,
+            y: y - g.dir[1] * d,
+            ghost: true,
+            fill: { kind: 'solid', color: `#888888${alpha}` },
+          });
+        }
+      }
       return run;
     });
+    // A letter that draws nothing (a mark drawn with the letter before it, a
+    // space, the `/` between SFX groups) is no run.
+    job.runs = [...ghosts, ...job.runs.filter((r) => r.text !== '')];
   } else {
     // Both from `layoutBox`, which is where the padding is applied and the only
     // place it should be. `textAlign` decides which edge of the line its x
@@ -639,6 +758,8 @@ export function glyphJob(box, L) {
 // one down that path.
 function paintBox(ctx, box, L) {
   glyphPainter().paint(ctx, glyphJob(box, L));
+  // A caption is a note beside the letters: it casts no shadow.
+  if (L.caption && !L.silhouette) glyphPainter().paint(ctx, captionJob(box, L));
 }
 
 // The shadows a box casts, painted under it. Each one is the box's own
@@ -659,14 +780,15 @@ function paintBox(ctx, box, L) {
 // a shadow is the bent letters' shadow, thrown straight.
 function paintShadows(ctx, box, L, SS, F = L) {
   const s = L.s;
-  if (!(s.shadows ?? []).length) return;
+  const shadows = boxShadows(s);
+  if (!shadows.length) return;
   const sil = document.createElement('canvas');
   // The texture's own size (see `renderBoxTexture`): whole pixels at any scale.
   sil.width = Math.ceil(F.cw * SS);
   sil.height = Math.ceil(F.ch * SS);
   const sctx = sil.getContext('2d');
-  for (let i = s.shadows.length - 1; i >= 0; i--) {
-    const sh = s.shadows[i];
+  for (let i = shadows.length - 1; i >= 0; i--) {
+    const sh = shadows[i];
     sctx.setTransform(1, 0, 0, 1, 0, 0);
     sctx.clearRect(0, 0, sil.width, sil.height);
     sctx.scale(SS, SS);
@@ -821,12 +943,13 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
     job: glyphJob(box, L),
     // The footprint in the layout's coordinates: every pixel the box can ink.
     rect: { x: L.ox - foot.ox, y: L.oy - foot.oy, w: foot.cw, h: foot.ch },
-    shadows: s.shadows ?? [],
+    shadows: boxShadows(s),
     blur: s.blur > 0 ? s.blur : 0,
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
     // The mask's shapes are the box's own, so the box's corner goes with them.
     clip: clipActive(s.clip) ? { mode: s.clip.mode === 'include' ? 'include' : 'exclude', x: L.ox, y: L.oy, shapes: s.clip.shapes } : null,
   });
+  if (L.caption) glyphPainter().paint(ctx, captionJob(box, L));
 }
 
 //
@@ -1185,7 +1308,7 @@ function paintBoxOnPage(ctx, box, p, tips) {
     // the direct-angle draw has no texture to carry - so it takes the raster
     // path however plain its type is.
     warpActive(s, box.w, box.h) ||
-    (s.shadows ?? []).length > 0 ||
+    boxShadows(s).length > 0 ||
     (s.blur ?? 0) > 0 ||
     (s.motionBlur?.on && ((s.motionBlur.x ?? 0) !== 0 || (s.motionBlur.y ?? 0) !== 0)) ||
     clipActive(s.clip) ||

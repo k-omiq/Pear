@@ -1,31 +1,33 @@
 // ===== Pictures of SFX lettering for the Inspector's SFX panel =====
 //
-// Two pictures, both painted by the same painter that draws the box on the
+// Three pictures, all painted by the same painter that draws the box on the
 // page and in the export (`pictureTexture`, then `warpTexture`), so a preview
 // is the engine's own picture and not a second drawing of it:
 //
-//   the stage   the selected box's own text and style, as it paints now
-//   a card      the box's font, colour and strokes with one preset applied,
-//               on the first eight code points of its text
+//   the stage      the selected box's own text and style, as it paints now
+//   a type card    the box's text and font as one of the engine's sound
+//                  types draws them (`applySfxKind`): the type's own path,
+//                  look and numbers, with the box's seed and strength
+//   a variation    the box's sound exactly as it is, with another seed
 //
-// Both are cut to the ink they hold (the box's frame is often far larger than
-// its letters, and a sound effect spreads past it) and scaled to fit. The
-// cards are small PNG data URLs kept in a bounded cache, so painting one is a
-// thing that happens once per (text, look, preset, seed) and never again.
+// The cards show the first eight code points of the text. All are cut to the
+// ink they hold (a sound effect spreads well past its frame) and scaled to
+// fit. The cards are small PNG data URLs kept in a bounded cache, so painting
+// one is a thing that happens once per (text, look, type, seed) and never
+// again.
 import { defaultStyle, normalizeStyle } from './data.js';
-import { applySfxPreset } from './sfx.js';
+import { applySfxKind } from './sfx.js';
 import { pictureTexture } from './editor/box-picture.js';
 import { warpTexture } from './exporter.js';
-import { boxCandidate, placeBlock, blockRect } from './contain.js';
 
 // A card's tile, in CSS px. The panel shows it with `background-size: contain`,
 // so a card a little wider or narrower than this only gets more or less margin.
 export const CARD_W = 96;
 export const CARD_H = 44;
 const CARD_PAD = 4;
-// The size the card's text is set at. The preset's gaps are in ems and the
-// strokes are scaled with the size, so any size gives the same picture; this
-// one keeps eight letters inside a texture a few hundred pixels across.
+// The size the card's text is set at. Paths, gaps and effects are in ems and
+// the outlines are scaled with the size, so any size gives the same picture;
+// this one keeps eight letters inside a texture a few hundred pixels across.
 const CARD_SIZE = 30;
 // Texture px per page px for a card: sharper than the tile, then scaled down.
 const CARD_SCALE = 1.5;
@@ -77,30 +79,59 @@ export function cardText(text) {
   return cut.trim() === '' ? CARD_WORD : cut;
 }
 
+// A plain copy of a value that may be a Svelte state proxy.
+const plain = (v) => JSON.parse(JSON.stringify(v ?? null));
+
 /**
- * Everything a card's picture depends on, as plain data: it is the cache key,
- * and the painter reads nothing else of the box. Strokes are kept in the
- * box's own units here (`size` is in the key) and made proportional to the
- * card's size when painted.
+ * Everything a card's picture depends on, as plain data: it is in the cache
+ * key, and the painter reads nothing else of the box. The box's style with
+ * what a card does not draw taken out: the page's (ink, mask, mesh, turn and
+ * flip), the caption, the frame's own layout, and the seed (the card's own).
+ * Outline and shadow sizes are kept as shares of the size, so a box made
+ * bigger is the same card.
  */
 export function cardSpec(style, text) {
+  const st = plain(style);
+  const size = st.size > 0 ? st.size : CARD_SIZE;
+  const rel = (v) => Math.round((v / size) * 1e4) / 1e4;
   return {
     text: cardText(text),
-    font: style.font,
-    bold: !!style.bold,
-    italic: !!style.italic,
-    uppercase: !!style.uppercase,
-    color: style.color,
-    noFill: !!style.noFill,
-    size: style.size > 0 ? style.size : CARD_SIZE,
-    lineHeight: style.lineHeight,
-    strokes: (style.strokes ?? []).map((s) => ({ color: s.color, width: s.width, opacity: s.opacity })),
-    seed: style.sfx?.seed ?? 1,
+    font: st.font,
+    bold: !!st.bold,
+    italic: !!st.italic,
+    uppercase: !!st.uppercase,
+    color: st.color,
+    noFill: !!st.noFill,
+    gradient: st.gradient,
+    pattern: st.pattern,
+    strokes: (st.strokes ?? []).map((k) => ({ color: k.color, width: rel(k.width), opacity: k.opacity })),
+    shadows: (st.shadows ?? []).map((k) => ({ ...k, x: rel(k.x ?? 0), y: rel(k.y ?? 0), blur: rel(k.blur ?? 0) })),
+    strokeOrder: st.strokeOrder,
+    strokeJoin: st.strokeJoin,
+    strokeShade: st.strokeShade,
+    negative: st.negative,
+    extrude: st.extrude,
+    shake: st.shake,
+    trail: st.trail,
+    sfx: st.sfx ? { ...st.sfx, seed: 1, caption: null, before: null } : null,
   };
 }
 
-/** The cache key of one preset's card for a spec at one density. */
-export const cardKey = (spec, presetId, fonts, dpr) => `${presetId}|${fonts}|${dpr}|${JSON.stringify(spec)}`;
+// The part of a spec a type card reads: the text and the face, the box's
+// strength, and the effects a type does not set. The type writes the rest.
+function typeSpec(spec) {
+  const { text, font, bold, italic, uppercase, shadows, strokeOrder, strokeShade, extrude, shake, trail, sfx } = spec;
+  return { text, font, bold, italic, uppercase, shadows, strokeOrder, strokeShade, extrude, shake, trail, strength: sfx?.strength ?? 1, joinBars: sfx?.joinBars, kern: sfx?.kern };
+}
+
+/**
+ * The cache key of one card at one density: a type card (`kind` set) or a
+ * variation (`kind` null). `seed` is the card's.
+ */
+export function cardKey(spec, { kind = null, seed = 1 }, fonts, dpr) {
+  const of = kind ? typeSpec(spec) : spec;
+  return `${kind ? 't:' + kind : 'v'}|${seed}|${fonts}|${dpr}|${JSON.stringify(of)}`;
+}
 
 // The page-less box a preview is painted from. Nothing here is the user's
 // box: its id is its own, its ink and mask are off, and its text is stated.
@@ -149,49 +180,54 @@ function drawFit(ctx, tex, W, H, pad, cap) {
   ctx.drawImage(tex, r.x, r.y, r.w, r.h, (W - dw) / 2, (H - dh) / 2, dw, dh);
 }
 
+// The style a card paints: the spec at the card's size, SFX on with the
+// card's seed, and for a type card the type laid over it.
+export function cardStyle(spec, { kind = null, seed = 1 } = {}) {
+  const abs = (v) => v * CARD_SIZE;
+  const style = normalizeStyle({
+    ...defaultStyle(),
+    font: spec.font,
+    bold: spec.bold,
+    italic: spec.italic,
+    uppercase: spec.uppercase,
+    color: spec.color,
+    noFill: spec.noFill,
+    gradient: spec.gradient,
+    pattern: spec.pattern,
+    strokes: spec.strokes.map((k) => ({ ...k, width: abs(k.width) })),
+    shadows: spec.shadows.map((k) => ({ ...k, x: abs(k.x), y: abs(k.y), blur: abs(k.blur) })),
+    strokeOrder: spec.strokeOrder,
+    strokeJoin: spec.strokeJoin,
+    strokeShade: spec.strokeShade,
+    negative: spec.negative,
+    extrude: spec.extrude,
+    shake: spec.shake,
+    trail: spec.trail,
+    sfx: { ...(spec.sfx ?? {}), on: true },
+    size: CARD_SIZE,
+    align: 'center',
+    valign: 'middle',
+    autoHeight: false,
+    balloon: false,
+  });
+  if (kind) applySfxKind(style, kind);
+  style.sfx.seed = seed;
+  return style;
+}
+
 /**
- * One card: the preset on the spec's text and look, as a PNG data URL, or null
- * when the engine could not paint it.
+ * One card as a PNG data URL, or null when the engine could not paint it:
+ * `{ kind }` a type card, `{ seed }` a variation (or both).
  */
-export function paintCard(spec, preset, dpr = 1) {
+export function paintCard(spec, card, dpr = 1) {
   let raw = null;
   let tex = null;
   try {
-    const k = CARD_SIZE / spec.size;
-    const style = normalizeStyle({
-      ...defaultStyle(),
-      font: spec.font,
-      bold: spec.bold,
-      italic: spec.italic,
-      uppercase: spec.uppercase,
-      color: spec.color,
-      noFill: spec.noFill,
-      size: CARD_SIZE,
-      lineHeight: spec.lineHeight,
-      strokes: spec.strokes.map((s) => ({ ...s, width: s.width * k })),
-      align: 'center',
-      valign: 'middle',
-      autoHeight: false,
-    });
-    style.sfx.seed = spec.seed;
+    const style = cardStyle(spec, card);
     // SFX is placed from the box's centre, so the frame is only a place for
-    // the centre to be. An envelope is laid over the frame itself, so for one
-    // the frame is cut to the word first: the card then shows the whole bend.
+    // the centre to be; the picture holds the ink wherever it reaches.
     const box = previewBox(style, spec.text, 4 * CARD_SIZE, 2 * CARD_SIZE, 'sfx-card');
-    if (preset.envelope) {
-      const place = placeBlock(boxCandidate(box, spec.text));
-      if (!place.isCurve) {
-        const { x0, x1 } = blockRect(place);
-        if (x1 - x0 > 1 && place.blockH > 1) {
-          box.w = Math.ceil(x1 - x0) + CARD_SIZE / 2;
-          box.h = Math.ceil(place.blockH);
-        }
-      }
-    }
-    applySfxPreset(style, preset, box);
     raw = pictureTexture(box, undefined, undefined, CARD_SCALE, CARD_MAX_PX);
-    // Bent already when the painter bends (`meshInJob`); through the texture
-    // otherwise.
     tex = warpTexture(raw, box);
     const out = document.createElement('canvas');
     out.width = Math.round(CARD_W * dpr);

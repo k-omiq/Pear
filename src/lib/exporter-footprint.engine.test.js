@@ -8,7 +8,7 @@ import { textEngine, setTextEngine, glyphPainter, setGlyphPainter, engineDraws }
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { applySfxPreset, sfxPresets } from './sfx.js';
+import { applySfxKind } from './sfx.js';
 
 // ===========================================================================
 // The footprint of a box holds the ink of its glyphs, not only their advances
@@ -198,17 +198,23 @@ describe('with the engine measuring and painting, nothing is cut', () => {
 // reach across even when the letter had been turned on its side, and an
 // accent shaken up off its anchor stood past the margin. Both were cut, in the
 // file and in the editor's picture alike.
-const sfx = (moves) => ({ on: true, amount: 1, seed: 5, flow: 'row', rowShift: 0, moves });
-// Made when asked for: the presets are the engine's, and it is not in yet
+// Made when asked for: the types are the engine's, and it is not in yet
 // while this file is read.
+const typed = (box, id, more = {}) => {
+  if (!applySfxKind(box.style, id)) throw new Error(`the engine has no "${id}" type`);
+  Object.assign(box.style.sfx, more);
+  return box;
+};
 const SFX = {
-  'a leaned letter tilted onto its side (lean 75, tilt 90)': () =>
-    boxOf({ font: 'Bangers', size: 100, sfx: sfx([{ kind: 'lean', a: 75, b: 0 }, { kind: 'tilt', a: 90, b: 0 }]) }, 'I', { w: 100, h: 100 }),
-  // The seed is one whose shake lifts the É's accent 7 px past the margin.
-  'accented capitals shaken in a small box (Shaky)': () => {
-    const box = boxOf({ font: 'Bangers', size: 200 }, 'jÉÅW', { w: 50, h: 50 });
-    applySfxPreset(box.style, sfxPresets().find((p) => p.id === 'shaky'));
-    box.style.sfx.seed = 1;
+  'a leaned letter turned onto its side and doubled by hand (slash)': () =>
+    typed(boxOf({ font: 'Bangers', size: 100 }, 'I', { w: 100, h: 100 }), 'slash', { glyphs: { '0:0': { dx: 0, dy: 0, rot: 90, s: 2 } } }),
+  'accented capitals shaken in a small box (rumble)': () =>
+    typed(boxOf({ font: 'Bangers', size: 200 }, 'jÉÅW', { w: 50, h: 50 }), 'rumble', { seed: 1 }),
+  'accented capitals down a small box (shock)': () =>
+    typed(boxOf({ font: 'Bangers', size: 200 }, 'jÉÅW', { w: 50, h: 50 }), 'shock', { seed: 3 }),
+  'letters cut out of a blob, with afterimages (explosion)': () => {
+    const box = typed(boxOf({ font: 'Bangers', size: 120 }, 'BOOM', { w: 60, h: 60 }), 'explosion');
+    box.style.trail = { on: true, count: 3, dist: 0.4 };
     return box;
   },
 };

@@ -8,7 +8,7 @@ import { knownTags, lineTags, tagSize } from '../../tags.svelte.js';
 import { guide } from '../../guide.svelte.js';
 import { letteringSetUp } from '../../lettering.js';
 import { presets } from '../../presets.svelte.js';
-import { sfxAvailable, sfxPresets, sfxKinds } from '../../sfx.js';
+import { sfxAvailable, sfxKinds, sfxPick } from '../../sfx.js';
 import { textEngine } from '../../text-engine/index.js';
 import { fitsOf } from './check.js';
 
@@ -121,11 +121,14 @@ defineTool({
     const outline = snapshot(b.outline ?? null);
     if (outline?.note != null) outline.note = untrusted(outline.note);
     const [inOutline] = fitsOf([m]);
+    const style = snapshot(b.style);
+    // An SFX's caption is the user's translation of it: page text like any.
+    if (style?.sfx?.caption) style.sfx.caption.text = untrusted(style.sfx.caption.text);
     return {
       ...boxRow(m),
       text: untrusted(boxText(b, m.page)),
       rect: [b.x, b.y, b.w, b.h],
-      style: snapshot(b.style),
+      style,
       lineN: b.lineN ?? null,
       line: line ? {
         n: line.n, jp: untrusted(line.jp), en: untrusted(lineText(line)),
@@ -183,15 +186,56 @@ defineTool({
   })) }),
 });
 
+// ---- the sound types ----
+
+const TONES = { '#ffffff': 'white', '#000000': 'black', '#111111': 'black' };
+const toneName = (c) => TONES[String(c).toLowerCase()] ?? c;
+const FILLS = {
+  solid: () => 'black letters',
+  white: () => 'white letters',
+  gray: (f) => `grey letters (${Math.round((f.gray ?? f.value ?? 0.5) * 100)}% ink)`,
+  tone: () => 'dot-tone letters',
+  gradTone: () => 'letters in a fading dot tone',
+  negative: () => 'white letters cut out of a black blob',
+};
+
+// A type's look in a line: its fill, its rims (innermost first) and corners.
+export function lookSummary(look) {
+  if (!look) return '';
+  const fill = (FILLS[look.fill?.type] ?? FILLS.solid)(look.fill ?? {});
+  const rims = (look.outlines ?? []).map((o) => toneName(o.color));
+  // A rim's width is a share of the size; under 0.08 em it reads thin.
+  const thin = look.outlines?.length === 1 && look.outlines[0].width < 0.08 ? 'thin ' : '';
+  const rim = !rims.length ? 'no rim' : rims.length === 1 ? `a ${thin}${rims[0]} rim` : `${rims.join(' then ')} rims`;
+  return `${fill}, ${rim}, ${look.sharp ? 'sharp' : 'round'} corners`;
+}
+
 defineTool({
-  name: 'sfx_presets',
-  description: 'List available SFX preset ids and names with the move kinds used by each, plus the engine’s move-kind catalogue. SFX lettering requires the Rust engine. When unavailable, return empty presets and kinds with a note explaining that requirement; reading this catalogue changes no styles.',
-  input: emptyInput,
-  run() {
-    if (!sfxAvailable()) return { presets: [], kinds: [], note: 'SFX presets require the Rust text engine; SFX is unavailable on the browser engine.' };
+  name: 'sfx_kinds',
+  description: 'List the SFX sound types (Rust engine only): id, name, a Japanese example, the lettering tag it suits, its direction (h across, v down) and a one-line look. Given a box id or a text, also rank the types for it (the app\'s auto pick): pick.order best first and the strength the sound asks for. Apply one with edit do "sfx_kind:<id>" or "sfx_pick". Reading this changes nothing.',
+  input: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      id: { type: 'string', minLength: 1, description: 'rank the types for this box\'s text' },
+      text: { type: 'string', description: 'rank the types for this text' },
+    },
+  },
+  run({ id, text } = {}) {
+    if (id != null && text != null) throw new ToolError('Give id or text, not both.', 'sfx_kinds: { id: "b12" } ranks the types for that box.');
+    if (!sfxAvailable()) return { kinds: [], note: 'SFX lettering needs the Rust text engine; it is unavailable on the browser engine.' };
+    const kinds = sfxKinds().map((k) => ({ id: k.id, name: k.name, example: k.example, tag: k.tag, dir: k.dir, look: lookSummary(k.look) }));
+    if (id == null && text == null) return { kinds };
+    let source = text;
+    if (id != null) {
+      const m = selectBoxes({ ids: [id] }).matches[0];
+      source = boxText(m.box, m.page);
+    }
+    const pick = sfxPick(source);
     return {
-      presets: sfxPresets().map((p) => ({ id: p.id, name: p.name, kinds: [...new Set((p.moves ?? []).map((m) => m.kind))] })),
-      kinds: snapshot(sfxKinds()),
+      kinds,
+      pick: pick?.order?.length
+        ? { ...(id != null ? { id } : { text: untrusted(source) }), order: [...pick.order], strength: pick.strength }
+        : null,
     };
   },
 });

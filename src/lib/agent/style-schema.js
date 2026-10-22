@@ -1,6 +1,6 @@
 import {
   GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
-  WARP_MIN_GRID, WARP_MAX_GRID, SFX_FLOWS, SFX_MAX_MOVES,
+  WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -170,18 +170,68 @@ export const STYLE_SCHEMA = {
     inside: boolean('text on inner face'),
     r: number('radius px; 0=auto', 0, 4000),
   }),
-  sfx: object('per-letter recipe (Rust)', {
-    on: boolean('enable SFX'),
-    amount: number('move strength', 0, 2),
+  sfx: object('sound-effect lettering (Rust); null layout fields follow the type', {
+    on: boolean('on via sfx_kind/sfx_pick, off via clear_sfx'),
+    kind: { ...string('sound type id from sfx_kinds; applied by sfx_kind:<id>'), minLength: 1 },
     seed: integer('arrangement seed', 1, 9999),
-    flow: choice('letter flow', SFX_FLOWS),
-    rowShift: number('row shift in ems', -2, 2),
-    moves: array('engine moves', object('move', {
-      kind: { ...string('engine kind from sfxInfo'), minLength: 1 },
-      a: number('move parameter a'),
-      b: number('move parameter b'),
-    }), { maxItems: SFX_MAX_MOVES }),
-    before: readOnly('set through the SFX preset tool'),
+    strength: number('how strongly the type shapes the letters', 0, 2),
+    dir: { ...choice('h=across, v=down; null=type', SFX_DIRS), nullable: true },
+    joinBars: boolean('join runs of long bars into one'),
+    kern: boolean('kern letters by their ink'),
+    flow: { ...object('letter size along the path: first, last, curve', {
+      from: number('first letter scale', 0.1, 4),
+      to: number('last letter scale', 0.1, 4),
+      pow: number('curve power', 0.2, 5),
+    }), nullable: true },
+    follow: { ...number('how much letters turn with the path', 0, 1), nullable: true },
+    gap: { ...number('gap between letters in em', -1, 2), nullable: true },
+    bigTighter: { ...number('how much closer big letters sit', 0, 1), nullable: true },
+    slant: { ...number('lean degrees', -45, 45), nullable: true },
+    rise: { ...number('each letter climbs this many degrees', -30, 30), nullable: true },
+    jitter: { ...object('random turn/size/offset', {
+      rot: number('turn degrees', 0, 45),
+      size: number('size share', 0, 1),
+      off: number('offset in em', 0, 1),
+    }), nullable: true },
+    paths: array('one path per text group, em from box centre', object('path', {
+      a: point('start [x,y] em'),
+      b: point('end [x,y] em'),
+      bend: number('bend, + bows left of a->b', -2, 2),
+    }, ['a', 'b']), { maxItems: SFX_MAX_GROUPS }),
+    glyphs: readOnly('set through the SFX gizmo'),
+    caption: object('small translation beside the SFX', {
+      text: string('caption text; empty=none'),
+      side: choice('side of the SFX', SFX_CAPTION_SIDES),
+      size: number('size share of the SFX size', 0.1, 1),
+      color: color('caption colour'),
+    }),
+    before: readOnly('set through sfx_kind and clear_sfx'),
+  }),
+  strokeOrder: choice('SFX only: merged=one rim under all fills; each=letter by letter', STROKE_ORDERS),
+  strokeJoin: choice('SFX only: rim corners', STROKE_JOINS),
+  strokeShade: number('SFX only: drop shade of the outer rim', 0, 1),
+  negative: object('SFX only: letters cut out of a blob', {
+    on: boolean('enable negative'),
+    grow: number('blob reach in em', 0, 1),
+    color: color('blob colour'),
+  }),
+  extrude: object('SFX only: 3D depth behind the letters', {
+    on: boolean('enable extrude'),
+    angle: number('direction degrees, 0=right, 90=down'),
+    length: number('depth in em', 0, 2),
+    color: color('depth colour'),
+    edge: string('edge colour hex; empty=none'),
+  }),
+  shake: object('SFX only: vibration copies', {
+    on: boolean('enable shake'),
+    count: integer('copies each side', 1, 4),
+    amp: number('reach in em', 0, 1),
+    angle: number('shake direction degrees'),
+  }),
+  trail: object('SFX only: afterimages behind each letter', {
+    on: boolean('enable trail'),
+    count: integer('afterimages', 1, 6),
+    dist: number('step in em', 0, 2),
   }),
   uppercase: boolean('display uppercase'),
   lineHeight: number('line multiplier'),

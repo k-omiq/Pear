@@ -917,7 +917,9 @@ describe('the tool enum', () => {
 
   it('takes each tool the canvas answers to', () => {
     setPref('brushTool', true);
-    for (const t of TOOLS) {
+    // The SFX tool also wants the Rust engine, which this lane has not got:
+    // SfxTool.dom.test.js takes it with the engine in.
+    for (const t of TOOLS.filter((x) => x !== 'sfx')) {
       setTool(t);
       expect(app.tool).toBe(t);
     }
@@ -1276,13 +1278,19 @@ describe('the bulk edit mask', () => {
     // `ink` and `warp` are box-local geometry - drawn against this box, by
     // hand, in this box's own px - so they stay the Inspector's along with
     // x/y/w/h. `sfx` is the Rust engine's per-letter lettering and has no row
-    // in the panel (its moves are tuned against one box's text). `autoContrast`
+    // in the panel (its paths are drawn against one box's text), nor do its
+    // effects (the rim order and corners, the shade, the negative, extrude,
+    // shake and trail), which belong with it. `autoContrast`
     // is a box's own flag, not a look: a bulk colour clears it on every target
     // (`mergeMaskedInto`) rather than copying it. Every other
     // group is still one row per field.
     const WHOLE = new Set(BULK_WHOLE_LEAVES);
+    const NOT_BULK = new Set([
+      'path', 'ink', 'warp', 'sfx', 'autoContrast',
+      'strokeOrder', 'strokeJoin', 'strokeShade', 'negative', 'extrude', 'shake', 'trail',
+    ]);
     const leaves = Object.entries(defaultStyle())
-      .filter(([k]) => k !== 'path' && k !== 'ink' && k !== 'warp' && k !== 'sfx' && k !== 'autoContrast')
+      .filter(([k]) => !NOT_BULK.has(k))
       .flatMap(([k, v]) =>
         v && typeof v === 'object' && !WHOLE.has(k) ? Object.keys(v).map((f) => `${k}.${f}`) : [k],
       );
