@@ -16,6 +16,20 @@
 //! tests.rs   hand-computed expectations, one per kind
 //! ```
 //!
+//! The sound types that replace the moves (being swapped in, see
+//! `docs/giongo/03-integration-plan.md`):
+//!
+//! ```text
+//! kinds.rs   the twelve sound types: layout numbers, look, font tag
+//! pick.rs    auto pick: a type from how a sound is spelt
+//! items.rs   a text cut into groups and items
+//! path.rs    the curve a group runs along, walked by arc length
+//! place.rs   every letter placed on its path (`mt_sfx_place`)
+//! kern.rs    shape kerning by the ink between letters
+//! ink.rs     advances and outlines from the engine
+//! params.rs  the params as the bytes `mt_sfx_place` reads
+//! ```
+//!
 //! Conventions. Lengths are pixels, `size` the font size, "em" in a move is
 //! `a * amount * size`. A rotation is positive clockwise on the screen (y
 //! points down); a positive skew leans the top of the letter to the right.
@@ -23,15 +37,26 @@
 //! same seed paints the same way on every platform.
 
 mod envelope;
+mod ink;
+mod items;
 mod json;
+mod kern;
+pub mod kinds;
+pub mod params;
+pub mod path;
+pub mod pick;
+pub mod place;
 mod table;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_place;
 mod wire;
 
 pub use envelope::{mesh, Envelope, ENVELOPES, MAX_ENVELOPE_GRID};
 pub use json::info_json;
 pub use table::{Env, Kind, KindInfo, Preset, KINDS, PRESETS};
+pub use ink::EngineInk;
 pub use wire::decode_params;
 
 use crate::paint::budget;

@@ -56,6 +56,7 @@ pub use job::{
     WIRE_VERSION,
 };
 pub use outline::FLATTEN_TOLERANCE;
+pub(crate) use outline::glyph_polys;
 pub use pattern::{tile as pattern_tile, Kind as PatternKind, MAX_TILE_SIDE};
 pub use raster::{Coverage, Exact, Part, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
