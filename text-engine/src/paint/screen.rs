@@ -851,7 +851,7 @@ mod tests {
             job::decode_swatch(&b).unwrap().2,
             Some(Fill::Screen(s.clone()))
         );
-        // Exercise the actual job decoder too, including the v8 header.
+        // Exercise the actual job decoder too, including the job header.
         let mut j = Vec::new();
         for v in [job::MAGIC, job::WIRE_VERSION, 1, 0, 0, 0] {
             u(&mut j, v);
@@ -863,6 +863,10 @@ mod tests {
         u(&mut j, 0);
         f(&mut j, 0.0);
         u(&mut j, 0);
+        // Round join, and a negative's colour and grow.
+        u(&mut j, 0);
+        u(&mut j, 0);
+        f(&mut j, 0.0);
         u(&mut j, 0);
         j.extend(wire(&s));
         for _ in 0..4 {

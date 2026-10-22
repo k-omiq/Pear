@@ -4,7 +4,7 @@
 #![cfg(feature = "paint")]
 
 use mt_text::paint::{
-    decode, paint_job, Affine, Align, Band, BoldDraw, Fill, Job, Mesh, Pt, Raster, Request, Rgba,
+    decode, paint_job, Affine, Align, Band, BoldDraw, Effects, Fill, Job, Mesh, Pt, Raster, Request, Rgba,
     Roughen, Run, Stop, Tile, MAGIC, MAX_MESH_SIDE, MAX_SIDE, WIRE_VERSION,
 };
 use mt_text::{bold_outset, BoldAdvance, Engine, Error, Face, FontId, Synth, WEBKIT_BOLD_ADVANCE};
@@ -31,6 +31,8 @@ fn run(text: &str, x: f64, y: f64) -> Run {
         sy: 1.0,
         skew: 0.0,
         drip: 0.0,
+        pen: 1.0,
+        ghost: false,
         fill: None,
     }
 }
@@ -46,6 +48,7 @@ fn job(runs: Vec<Run>) -> Job {
         fill: Some(Fill::Solid(BLACK)),
         mesh: None,
         roughen: None,
+        effects: Effects::default(),
         runs,
     }
 }
@@ -998,6 +1001,8 @@ fn curved(text: &str, rot: f64, sx: f64, sy: f64, skew: f64) -> Job {
         sy,
         skew,
         drip: 0.0,
+        pen: 1.0,
+        ghost: false,
         fill: Some(Fill::Solid(BLACK)),
         ..run(text, 200.0, 150.0)
     }]);
@@ -1188,6 +1193,8 @@ fn only_a_curved_job_reads_scale_and_skew() {
         sy: 0.5,
         skew: 1.0,
         drip: 0.0,
+        pen: 1.0,
+        ghost: false,
         ..run("HI", 30.0, 80.0)
     }]);
     assert_eq!(paint(&mut e, &request(odd, face)), plain);
@@ -1543,6 +1550,9 @@ fn wire(font: u32, text: &str) -> Vec<u8> {
     u(&mut b, 1); // centre
     f(&mut b, 1.5);
     b.extend_from_slice(&[1, 2, 3, 4]);
+    u(&mut b, 0); // round join
+    b.extend_from_slice(&[0, 0, 0, 0]); // no negative: its colour and grow
+    f(&mut b, 0.0);
     u(&mut b, 1); // one band
     b.extend_from_slice(&[255, 255, 255, 255]);
     f(&mut b, 0.5);
@@ -1559,9 +1569,10 @@ fn wire(font: u32, text: &str) -> Vec<u8> {
     u(&mut b, 0); // no mesh
     u(&mut b, 0); // not roughened
     u(&mut b, 1); // one run
-    for v in [100.0, 40.0, 0.0, 1.0, 1.0, 0.0, 0.0] {
+    for v in [100.0, 40.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0] {
         f(&mut b, v);
     }
+    u(&mut b, 0); // not an afterimage
     u(&mut b, 4); // its own fill: a pattern
     u(&mut b, 0);
     f(&mut b, 12.0);
@@ -1608,6 +1619,7 @@ fn the_wire_form_decodes_to_the_job_it_states() {
             }),
             mesh: None,
             roughen: None,
+            effects: Effects::default(),
             runs: vec![Run {
                 text: "Héllo".to_owned(),
                 x: 100.0,
@@ -1617,6 +1629,8 @@ fn the_wire_form_decodes_to_the_job_it_states() {
                 sy: 1.0,
                 skew: 0.0,
                 drip: 0.0,
+                pen: 1.0,
+                ghost: false,
                 fill: Some(Fill::Pattern {
                     tile: 0,
                     pitch: 12.0,
@@ -1636,9 +1650,11 @@ fn the_wire_form_decodes_to_the_job_it_states() {
 fn a_runs_scale_and_skew_are_read_and_their_range_is_checked() {
     let good = wire(1, "abc");
     // The pattern fill (36 bytes) and the text length sit after the run's
-    // x, y, rot, sx, sy, skew, drip.
+    // x, y, rot, sx, sy, skew, drip, pen and its flags.
     let len_at = good.len() - 20 - 3 - 4;
-    let drip_at = len_at - 36 - 8;
+    let flags_at = len_at - 36 - 4;
+    let pen_at = flags_at - 8;
+    let drip_at = pen_at - 8;
     let skew_at = drip_at - 8;
     let (sy_at, sx_at) = (skew_at - 8, skew_at - 16);
     let f = |at: usize| f64::from_le_bytes(good[at..at + 8].try_into().unwrap());
@@ -1673,11 +1689,23 @@ fn a_runs_scale_and_skew_are_read_and_their_range_is_checked() {
     for bad in [-0.5, 4096.5, f64::NAN, f64::INFINITY] {
         assert_eq!(with(drip_at, bad).err(), Some(Error::BadSpec), "{bad}");
     }
+    // A pen within the scale's range; an afterimage flag and no other.
+    assert_eq!(run(pen_at, 0.5).unwrap().pen, 0.5);
+    for bad in [0.0, 0.009, -1.0, 100.5, f64::NAN] {
+        assert_eq!(with(pen_at, bad).err(), Some(Error::BadSpec), "pen {bad}");
+    }
+    let flagged = |v: u32| {
+        let mut b = good.clone();
+        b[flags_at..flags_at + 4].copy_from_slice(&v.to_le_bytes());
+        decode(&b).map(|r| r.job.runs[0].ghost)
+    };
+    assert_eq!(flagged(1), Ok(true));
+    assert_eq!(flagged(2), Err(Error::BadSpec));
     // The version before this one is not read.
     let mut old = good.clone();
-    old[4] = 6;
+    old[4] = 8;
     assert_eq!(decode(&old).err(), Some(Error::BadSpec));
-    assert_eq!(WIRE_VERSION, 8);
+    assert_eq!(WIRE_VERSION, 9);
 }
 
 #[test]
@@ -2259,9 +2287,9 @@ fn a_drip_pulls_the_foot_down_and_keeps_the_top_level() {
 fn wire_with_mesh(block: &[u8]) -> Vec<u8> {
     let good = wire(1, "abc");
     // From the end: the tile (20), the text (3) and its length (4), the
-    // run's pattern fill (36) and seven numbers (56), the run count (4),
-    // the roughening's `0` (4), and before that the mesh's `0`.
-    let mesh_at = good.len() - 20 - 3 - 4 - 36 - 56 - 4 - 4 - 4;
+    // run's pattern fill (36), its flags (4) and eight numbers (64), the run
+    // count (4), the roughening's `0` (4), and before that the mesh's `0`.
+    let mesh_at = good.len() - 20 - 3 - 4 - 36 - 4 - 64 - 4 - 4 - 4;
     assert_eq!(good[mesh_at..mesh_at + 12], [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
     let mut b = good[..mesh_at].to_vec();
     b.extend_from_slice(block);
@@ -2276,7 +2304,7 @@ fn wire_with_roughen(amount: f64, detail: f64, seed: f64, origin: [f64; 2]) -> V
 
 fn wire_with_grit(amount: f64, detail: f64, seed: f64, origin: [f64; 2], grit: f64) -> Vec<u8> {
     let good = wire(1, "abc");
-    let at = good.len() - 20 - 3 - 4 - 36 - 56 - 4 - 4;
+    let at = good.len() - 20 - 3 - 4 - 36 - 4 - 64 - 4 - 4;
     let mut b = good[..at].to_vec();
     b.extend_from_slice(&1u32.to_le_bytes());
     for v in [amount, detail, seed, origin[0], origin[1], grit] {

@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 8
+export const WIRE_VERSION = 9
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -327,11 +327,26 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   f64(weight)
   // 4: no fill. The letters are cut out of the bands (or, with 2, out of the
   // silhouette, which is then the widest band's outer half alone).
-  u32((job.curved ? 1 : 0) | (job.silhouette ? 2 : 0) | (job.noFill ? 4 : 0))
+  // 8: bands and fill letter by letter (`strokeOrder: 'each'`). 16: a
+  // negative, the letters grown into one blob the bands go round.
+  const negative = job.negative ?? null
+  u32(
+    (job.curved ? 1 : 0) |
+      (job.silhouette ? 2 : 0) |
+      (job.noFill ? 4 : 0) |
+      (job.strokeOrder === 'each' ? 8 : 0) |
+      (negative ? 16 : 0),
+  )
   // An alignment the canvas does not know leaves its `textAlign` at "start".
   u32(ALIGN[job.align] ?? 0)
   f64(job.letterSpacing || 0)
   rgba(job.silhouette || '#000000')
+  if (job.strokeJoin != null && job.strokeJoin !== 'round' && job.strokeJoin !== 'miter') {
+    throw new Error(`mt-text: unknown strokeJoin ${JSON.stringify(job.strokeJoin)}`)
+  }
+  u32(job.strokeJoin === 'miter' ? 1 : 0)
+  rgba(negative?.color || '#000000')
+  f64(negative?.grow ?? 0)
   u32(job.bands.length)
   for (const band of job.bands) {
     rgba(band.color)
@@ -353,6 +368,11 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
     f64(run.sy ?? 1)
     f64(run.skew ?? 0)
     f64(run.drip ?? 0)
+    // Curved text only: how many times as wide its bands are (an SFX
+    // letter's rims follow its size), and whether it is an afterimage,
+    // painted first with its fill alone.
+    f64(run.pen ?? 1)
+    u32(run.ghost ? 1 : 0)
     fill(run.fill, tileIndex)
     const text = String(run.text)
     // A UTF-16 unit is at most 3 UTF-8 bytes.
@@ -364,7 +384,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 1
+export const BOX_WIRE_VERSION = 2
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 
@@ -407,8 +427,9 @@ function clipShape(sh) {
  * @param {object} request everything `encodeJob` takes for the glyph job, and
  * @param {number} request.width the surface, device pixels; its corner is (0, 0)
  * @param {number} request.height
- * @param {{color: string, opacity: number, x: number, y: number, blur: number}[]} [request.shadows]
- *   `style.shadows`, first on top
+ * @param {{color: string, opacity: number, x: number, y: number, blur: number, grow?: number}[]} [request.shadows]
+ *   `style.shadows`, first on top; `grow` widens the silhouette (an extrude's edge).
+ *   A run of shadows alike but for `x`, `y` and `opacity` paints the silhouette once.
  * @param {number} [request.blur] the whole-box blur, a gaussian's sigma
  * @param {{dx: number, dy: number, w: number}[]} [request.taps] `motionBlurTaps`
  * @param {{mode: 'include' | 'exclude', x: number, y: number, shapes: object[]} | null} [request.clip]
@@ -430,6 +451,7 @@ export function encodeBox(request) {
     f64(sh.x)
     f64(sh.y)
     f64(sh.blur)
+    f64(sh.grow ?? 0)
   }
   f64(blur)
   u32(taps.length)

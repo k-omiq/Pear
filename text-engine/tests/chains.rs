@@ -351,7 +351,7 @@ fn line_fonts_also_refuses_a_freed_chain_without_touching_caller_memory() {
 #[cfg(feature = "paint")]
 #[test]
 fn painter_validates_chains_before_every_no_paint_return_and_recovers() {
-    use mt_text::paint::{paint_job, Affine, Align, Fill, Job, Request, Rgba, Run};
+    use mt_text::paint::{paint_job, Affine, Align, Effects, Fill, Job, Request, Rgba, Run};
     let mut engine = Engine::new();
     let font = load(&mut engine, "ComicNeue-Regular.ttf");
     let empty = engine.chain_new();
@@ -380,6 +380,7 @@ fn painter_validates_chains_before_every_no_paint_return_and_recovers() {
                 fill: fill.then_some(Fill::Solid(Rgba([0, 0, 0, 255]))),
                 mesh: None,
                 roughen: None,
+                effects: Effects::default(),
                 runs: texts
                     .into_iter()
                     .map(|text| Run {
@@ -391,6 +392,8 @@ fn painter_validates_chains_before_every_no_paint_return_and_recovers() {
                         sy: 1.,
                         skew: 0.,
                         drip: 0.0,
+                        pen: 1.0,
+                        ghost: false,
                         fill: None,
                     })
                     .collect(),

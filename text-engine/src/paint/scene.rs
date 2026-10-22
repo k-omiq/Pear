@@ -13,7 +13,8 @@ use super::outline::FLATTEN_TOLERANCE;
 use super::raster::Exact;
 use super::shade::Shader;
 use super::shape::shape_run;
-use super::{finish, plan, BoldDraw, Glyphs, Planned, MAX_PIXELS, MAX_SIDE};
+use super::stroke::Join;
+use super::{finish, plan, BoldDraw, Glyphs, Planned, Reach, MAX_PIXELS, MAX_SIDE};
 use crate::engine::{Engine, Face};
 use crate::Error;
 
@@ -84,6 +85,7 @@ impl Scene {
             &Affine::translate(x, y),
             BoldDraw::Outset,
             0.0,
+            1.0,
             tol,
         );
         if result.is_err() {
@@ -149,8 +151,9 @@ impl Scene {
                     Op::Stroke(n, line, color) if line > 0.0 => {
                         let parts = self.glyphs.parts(
                             0..n,
-                            line / 2.0,
+                            Reach::flat(line / 2.0),
                             true,
+                            Join::Round,
                             super::Bends::default(),
                             &self.transform,
                             tol,
@@ -161,7 +164,15 @@ impl Scene {
                     Op::Fill(n, color) => {
                         let parts =
                             self.glyphs
-                                .parts(0..n, 0.0, false, super::Bends::default(), &self.transform, tol)?;
+                                .parts(
+                                    0..n,
+                                    Reach::flat(0.0),
+                                    false,
+                                    Join::Round,
+                                    super::Bends::default(),
+                                    &self.transform,
+                                    tol,
+                                )?;
                         shader(color).and_then(|s| plan(parts, s, 1.0))
                     }
                 };
