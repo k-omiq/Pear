@@ -49,6 +49,9 @@ export const PICTURE_MAX_PX = 8 * 1024 * 1024;
 //
 // `at` is where the box's top-left lands on the screen in device px, for a
 // picture set on whole device pixels (`renderBoxTexture`'s `phase`).
+//
+// The texture says where its ink is (`ink`, canvas px, or null when the
+// painter could not say): the SFX panel's previews cut to it from there.
 export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, at = null) {
   // The editor's smear is the coarse one (`paintBoxJob`): this picture is
   // painted again at every edit.

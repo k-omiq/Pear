@@ -5,7 +5,7 @@
 // the text's groups (its lines, and the sides of a `/`) each run along a path,
 // every letter sized, turned, leaned and kerned by its ink. One of the
 // engine's twelve sound types (`sfxKinds`) gives every number the box leaves
-// unset (null), and the look the type is drawn with.
+// unset (null). A type is a layout only: the box keeps its own look.
 //
 //   layout   [{ ch, x, y, rot, sx, sy, skew, w, ... }], one per code point of
 //            the text, positions in px from the box centre, `rot` and `skew`
@@ -20,11 +20,16 @@
 // It works ONLY with the Rust engine. `sfxActive` is false under the browser
 // engine, and every reader in the app asks that one question: an SFX style
 // under the browser engine is plain text.
+//
+// Every number is the engine's: what a type and the macros make of the box's
+// unset fields (`sfxResolved`), where each letter is and its ink box, and the
+// handles' maths (`sfxHit`, `sfxTurn`, `sfxScale`, `sfxMove`, `sfxBendFor`,
+// `sfxCurve`). This file only forwards the box's recipe and hands back what
+// comes out; without the engine those calls answer null.
 
 import { textEngine } from './text-engine/index.js';
 import { faceFor } from './measure.js';
 import { normalizeSfx, normalizeStyle } from './data.js';
-import { findTag } from './tags.svelte.js';
 
 export function sfxAvailable() {
   return typeof textEngine()?.sfxPlace === 'function';
@@ -56,8 +61,9 @@ export function sfxKinds() {
 
 export const sfxKind = (id) => sfxKinds().find((k) => k.id === id) ?? null;
 
-// Every type ranked for `text` (auto pick), best first, and the strength the
-// sound asks for; null without the engine.
+// Every type ranked for `text` (auto pick), best first, and the three macros
+// the sound asks for (`{ order, scores, power, rough, momentum }`); null
+// without the engine.
 export function sfxPick(text) {
   const e = textEngine();
   if (typeof e?.sfxPick !== 'function') return null;
@@ -71,19 +77,18 @@ export function sfxPick(text) {
 
 // ---- the recipe as the engine reads it ----
 
-// Every layout number of `sfx`, the type's where the box leaves it null.
+// Every layout number of `sfx` as the layout will use it: `{ vertical,
+// flow: { from, to, pow }, follow, gap, bigTighter, slant, rise,
+// jitter: { rot, size, off } }`. The engine fills each the box leaves null
+// from the type, moved by the macros; null without the engine.
 export function sfxResolved(sfx) {
-  const k = sfxKind(sfx?.kind) ?? {};
-  return {
-    vertical: (sfx?.dir ?? k.dir ?? 'h') === 'v',
-    flow: sfx?.flow ?? k.flow ?? { from: 1, to: 1, pow: 1 },
-    follow: sfx?.follow ?? k.follow ?? 0.5,
-    gap: sfx?.gap ?? k.gap ?? 0,
-    bigTighter: sfx?.bigTighter ?? 0.5,
-    slant: sfx?.slant ?? k.slant ?? 0,
-    rise: sfx?.rise ?? k.rise ?? 0,
-    jitter: sfx?.jitter ?? k.jitter ?? { rot: 0, size: 0, off: 0 },
-  };
+  const e = textEngine();
+  if (!sfx || typeof e?.sfxResolve !== 'function') return null;
+  try {
+    return e.sfxResolve(sfxParams(sfx));
+  } catch {
+    return null;
+  }
 }
 
 // The hand edits of `glyphs` (`{ 'g:i': { dx, dy, rot, s } }`) as the engine's.
@@ -96,15 +101,26 @@ export function sfxEdits(glyphs) {
   return out;
 }
 
+// The box's recipe as the engine takes it. What the box leaves null goes as
+// null, and the engine fills it from the type: no type default is copied here.
 export function sfxParams(sfx) {
   return {
-    ...sfxResolved(sfx),
+    vertical: sfx.dir == null ? null : sfx.dir === 'v',
     joinBars: sfx.joinBars !== false,
     kern: sfx.kern !== false,
     seed: sfx.seed,
     kind: sfxKind(sfx.kind) ? sfx.kind : null,
-    strength: sfx.strength,
-    paths: sfx.paths,
+    power: sfx.power ?? null,
+    rough: sfx.rough ?? null,
+    momentum: sfx.momentum ?? null,
+    flow: sfx.flow ?? null,
+    follow: sfx.follow ?? null,
+    gap: sfx.gap ?? null,
+    bigTighter: sfx.bigTighter ?? null,
+    slant: sfx.slant ?? null,
+    rise: sfx.rise ?? null,
+    jitter: sfx.jitter ?? null,
+    paths: sfx.paths ?? [],
     edits: sfxEdits(sfx.glyphs),
   };
 }
@@ -117,9 +133,10 @@ const placed = new Map();
 const PLACED_MAX = 96;
 
 // The engine's placement of `text` at `sizePx`, or null when the style is not
-// SFX: `{ letters, paths, bounds }` as `sfxPlace` gives it. Kept for the last
-// few recipes asked, so a box drawn, measured and hit-tested in one frame is
-// laid out once.
+// SFX: `{ letters, paths, bounds, cp }` as `sfxPlace` gives it
+// (text-engine/js/engine.mjs: each letter's place and ink `quad`, each
+// path's `ctrl` and `mid`). Kept for the last few recipes asked, so a box
+// drawn, measured and hit-tested in one frame is laid out once.
 export function sfxPlacement(text, style, sizePx) {
   if (!text || !(sizePx > 0) || !(style?.size > 0) || !sfxActive(style)) return null;
   const face = faceFor(style, sizePx);
@@ -148,10 +165,6 @@ export function sfxPlacement(text, style, sizePx) {
   return got;
 }
 
-// How much wider than at the face's size a letter's outlines are: its scale
-// to the 0.4, so small letters do not get fat rims.
-export const letterPen = (sx, sy) => Math.max(0.01, Math.min(100, Math.sqrt(Math.abs(sx * sy)) ** 0.4));
-
 // The layout for the (already case-applied) `text` at `sizePx`, or [] when the
 // style is not SFX. One entry per code point of `text`, newlines included: the
 // other curves give one, and what reads them by index (the caret on a curve,
@@ -160,24 +173,23 @@ export function sfxLayout(text, style, sizePx) {
   const p = sfxPlacement(text, style, sizePx);
   if (!p) return [];
   const s = String(text);
-  const starts = new Map(p.letters.map((l) => [l.start, l]));
   const out = [];
-  let u = 0;
   let last = null;
-  for (const ch of s) {
-    const l = starts.get(u);
+  // `cp` has one entry per code point: the letter that draws it, or -1. A
+  // placement without one has no letters to draw.
+  for (const i of p.cp ?? []) {
+    const l = p.letters[i];
     if (l) {
       out.push({
         ch: s.slice(l.start, l.end),
         x: l.x, y: l.y, rot: l.rot, sx: l.sx, sy: l.sy, skew: l.skew,
         w: l.adv, drip: 0,
-        group: l.group, index: l.index, dir: l.dir, em: l.em, pen: letterPen(l.sx, l.sy),
+        group: l.group, index: l.index, dir: l.dir, em: l.em, pen: l.pen,
       });
       last = l;
     } else {
       out.push({ ch: '', x: last?.x ?? 0, y: last?.y ?? 0, rot: last?.rot ?? 0, sx: 1, sy: 1, skew: 0, w: 0, drip: 0 });
     }
-    u += ch.length;
   }
   return out;
 }
@@ -193,90 +205,32 @@ export function enableSfx(style) {
   style.path.on = false;
 }
 
-// The style fields a type's look writes. Remove SFX puts them back.
-const LOOK_KEYS = ['font', 'color', 'gradient', 'pattern', 'noFill', 'strokes', 'strokeJoin', 'negative'];
-
 // A plain copy of a value that may be a Svelte state proxy (`structuredClone`
 // refuses a proxy).
 const plain = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 
-const gray = (v) => {
-  const c = Math.round(255 * (1 - Math.min(1, Math.max(0, v))));
-  const h = c.toString(16).padStart(2, '0');
-  return `#${h}${h}${h}`;
-};
-
-// Writes the type's look onto `style`: the fill, the outlines and the
-// corners, and the font of the type's lettering tag when the series has set
-// one.
-export function applyLook(style, kind) {
-  const look = kind?.look;
-  if (!look) return;
-  const ink = '#111111';
-  const fill = look.fill ?? { type: 'solid' };
-  style.noFill = false;
-  style.gradient = { ...plain(style.gradient), on: false };
-  style.pattern = { ...plain(style.pattern), on: false };
-  style.negative = { ...plain(style.negative), on: false };
-  style.color = ink;
-  if (fill.type === 'white') style.color = '#ffffff';
-  else if (fill.type === 'gray') style.color = gray(fill.gray ?? 0.5);
-  else if (fill.type === 'tone' || fill.type === 'gradTone') {
-    const density = fill.type === 'tone' ? fill.density : Math.max(fill.from, fill.to);
-    style.pattern = {
-      ...style.pattern,
-      on: true,
-      kind: 'dots',
-      fg: ink,
-      bg: '#ffffff',
-      density: Math.min(1, Math.max(0, density ?? 0.5)),
-      fade: fill.type === 'gradTone'
-        ? { on: true, angle: fill.angle ?? 90, from: Math.min(fill.from, fill.to) / (density || 1), to: 1 }
-        : { ...style.pattern.fade, on: false },
-    };
-  } else if (fill.type === 'negative') {
-    style.color = '#ffffff';
-    style.negative = { on: true, grow: fill.grow ?? 0.15, color: ink };
-  }
-  // The box's strokes are bands from the letter out, innermost first, each
-  // its own width (text-paint.js `strokeBands`), as the table has them.
-  style.strokes = (look.outlines ?? []).map((o) => ({
-    color: o.color,
-    width: Math.round(o.width * style.size * 10) / 10,
-    opacity: 1,
-  }));
-  style.strokeJoin = look.sharp ? 'miter' : 'round';
-  const font = findTag(kind.tag)?.style?.font;
-  if (typeof font === 'string' && font) style.font = font;
-}
-
-// Mutates `style` to the sound type `id`: its layout (every number back to
-// the type's), its look, and SFX on. The seed, the strength, the caption and
-// the box's own text, place and size stay. What it writes over is kept in
-// `sfx.before`, taken once, when SFX goes on, so a second type is laid over
-// the first one's look and Remove SFX still finds the box's own.
+// Mutates `style` to the sound type `id`, as the reference's preset click
+// does (docs/giongo/04-reference-controls.md 1.7) less the look: a fresh
+// recipe of that type with SFX on, every layout number unset (the type's),
+// the macros at 50, the paths the type's own (none stored), no letter hand
+// edits, the switches back on. Only the seed, the caption and `sfx.before`
+// stay. A type is a layout and nothing else: the box's font, fill, outlines,
+// corners and effects are the user's and are not touched. `sfx.before` (the
+// arc, the ring and the path SFX switches off, for Remove SFX) is taken
+// once, when SFX goes on.
 export function applySfxKind(style, id) {
   const kind = sfxKind(id);
   if (!kind) return false;
   const before = style.sfx?.on && style.sfx.before
     ? plain(style.sfx.before)
-    : {
-        curve: style.curve,
-        circle: !!style.circle?.on,
-        path: !!style.path?.on,
-        look: Object.fromEntries(LOOK_KEYS.map((k) => [k, plain(style[k])])),
-      };
+    : { curve: style.curve, circle: !!style.circle?.on, path: !!style.path?.on };
   style.sfx = normalizeSfx({
     on: true,
     kind: id,
     seed: style.sfx?.seed,
-    strength: style.sfx?.strength,
-    joinBars: style.sfx?.joinBars,
-    kern: style.sfx?.kern,
     caption: plain(style.sfx?.caption),
     before,
   });
-  applyLook(style, kind);
   enableSfx(style);
   return true;
 }
@@ -290,21 +244,19 @@ export function rebaseSfx(style) {
   before.path = !!style.path?.on;
 }
 
-// Switches SFX off and puts back what applying a type wrote over: the look
-// and the bends SFX switched off. `keepBends` leaves the arc, the ring and the
-// path as they are now, for a caller that is switching one of them on.
+// Switches SFX off and puts back the bends SFX switched off. `keepBends`
+// leaves the arc, the ring and the path as they are now, for a caller that is
+// switching one of them on.
 export function clearSfx(style, keepBends = false) {
   const before = style.sfx.before;
-  if (before) {
-    if (before.look) {
-      const back = normalizeStyle({ ...plain(style), ...before.look });
-      for (const k of LOOK_KEYS) if (k in before.look) style[k] = back[k];
-    }
-    if (!keepBends) {
-      style.curve = before.curve;
-      style.circle.on = before.circle;
-      style.path.on = before.path;
-    }
+  if (before?.look) {
+    const back = normalizeStyle({ ...plain(style), ...before.look });
+    for (const k of Object.keys(before.look)) if (k in back) style[k] = back[k];
+  }
+  if (before && !keepBends) {
+    style.curve = before.curve;
+    style.circle.on = before.circle;
+    style.path.on = before.path;
   }
   style.sfx.on = false;
   style.sfx.before = null;
@@ -324,29 +276,69 @@ export const sfxPickText = (text, jp) => (looksJapanese(jp) ? String(jp) : Strin
 // one over a Japanese page, an English one otherwise.
 export const sfxDefaultText = (jpSource) => (jpSource ? 'ドン!!' : 'BOOM!!');
 
-// The point a path's bend is dragged by: the middle of the curve (half way
-// from the chord's middle to the control point), so the handle sits on the
-// line it bends. In the units of the path.
-export function bendHandle(path) {
-  const [ax, ay] = path.a;
-  const [bx, by] = path.b;
-  const k = (path.bend ?? 0) / 2;
-  return [(ax + bx) / 2 - (by - ay) * k, (ay + by) / 2 + (bx - ax) * k];
+// ---- the handles' maths, the engine's (text-engine/src/sfx/gizmo.rs) ----
+//
+// Each is null without the engine. Points are px in the frame the letters
+// were placed in (`sfxPlacement` at the size on screen), except a path's,
+// which are its own ems.
+
+// The engine's, or null.
+function engineCall(name, ...args) {
+  const e = textEngine();
+  if (typeof e?.[name] !== 'function') return null;
+  try {
+    return e[name](...args);
+  } catch {
+    return null;
+  }
 }
 
-// The bend that puts the curve's middle at `pt`: the reverse of `bendHandle`,
-// the share of the chord `pt` sits off its middle, on the engine's side (the
-// control point is the middle plus `bend` times the chord turned a quarter,
-// text-engine/src/sfx/path.rs). Kept to the range data.js allows.
-export function bendFor(path, pt) {
-  const [ax, ay] = path.a;
-  const [bx, by] = path.b;
-  const nx = -(by - ay);
-  const ny = bx - ax;
-  const len2 = nx * nx + ny * ny;
-  if (!(len2 > 1e-12)) return 0;
-  const mx = (ax + bx) / 2;
-  const my = (ay + by) / 2;
-  const bend = (2 * ((pt[0] - mx) * nx + (pt[1] - my) * ny)) / len2;
-  return Math.min(2, Math.max(-2, Math.round(bend * 1000) / 1000));
+// The letter at `x, y`: the index into `letters` (sfxPlacement's) of the
+// topmost whose ink quad holds the point, else of the nearest within `slop`
+// px, else -1.
+export const sfxHit = (letters, x, y, slop = 0) => (letters?.length ? engineCall('sfxHit', letters, x, y, slop) : -1);
+
+// One pointer move on the ring, Blender style: `{ total, shown }`. Hand the
+// previous pointer point as `from` and the last `total` back each move (start
+// it at the letter's turn at grab): the total counts on past half a turn.
+// `shown` is what the letter's edit stores: whole degrees, -180..180,
+// clockwise positive, snapped to `snapDeg` when above 0 (Shift: 15).
+export const sfxTurn = (centre, from, to, total, snapDeg = 0) => engineCall('sfxTurn', centre, from, to, total, snapDeg);
+
+// One pointer move on the scale handle: `startScale` times the distance from
+// `centre` now over at grab, 0.2..5, two decimals, steps of 0.05 with `snap`.
+export const sfxScale = (centre, start, now, startScale, snap = false) => engineCall('sfxScale', centre, start, now, startScale, snap);
+
+// One pointer move dragging a letter: its edit's `[dx, dy]` in its own ems
+// (three decimals) from `[startDx, startDy]` at grab. Pass the letter from
+// `sfxPlacement` (its `unit`, the em its edit is in), not its `em`.
+export const sfxMove = (letter, start, now, startDx, startDy) => engineCall('sfxMove', letter, start, now, startDx, startDy);
+
+// The bend (-2..2, three decimals) that puts the middle of `path`'s curve
+// nearest `pt`, both in the path's ems.
+export const sfxBendFor = (path, pt) => engineCall('sfxBendFor', path, pt);
+
+// `path`'s curve in its ems: `{ ctrl, mid }`, the control point the overlay
+// draws it with and its middle, where the bend handle sits. A placed path
+// (`sfxPlacement(...).paths`) has both already.
+export const sfxCurve = (path) => engineCall('sfxCurve', path);
+
+// The bend handle's place (the curve's middle) and the bend for a handle
+// dragged to `pt`: the old names of `sfxCurve(path).mid` and `sfxBendFor`.
+export const bendHandle = (path) => sfxCurve(path)?.mid ?? null;
+export const bendFor = sfxBendFor;
+
+// The outline of letter `index` (into `sfxPlacement(...).letters`) as an SVG
+// path `d`, holes included, px from the box's centre at `sizePx`: the picked
+// letter's highlight. '' when the style is not SFX or without the engine.
+let outlineMemo = { key: '', d: '' };
+export function sfxOutline(text, style, sizePx, index) {
+  if (!text || !(sizePx > 0) || !(style?.size > 0) || !sfxActive(style) || !(index >= 0)) return '';
+  const face = faceFor(style, sizePx);
+  const params = sfxParams(style.sfx);
+  const key = JSON.stringify([text, face, params, index]);
+  if (outlineMemo.key === key) return outlineMemo.d;
+  const d = engineCall('sfxOutline', face, String(text), params, index) ?? '';
+  outlineMemo = { key, d };
+  return d;
 }

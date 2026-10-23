@@ -35,6 +35,7 @@ mod screen;
 mod shade;
 mod shape;
 mod stroke;
+mod sweep;
 mod warp;
 
 #[cfg(any(
@@ -47,7 +48,7 @@ pub mod compare;
 
 use geom::positive;
 pub use boxjob::{
-    decode_box, paint_box, paint_box_with, BoxRequest, Clip, ClipMode, ClipShape, Shadow, Tap,
+    decode_box, paint_box, paint_box_copy_by_copy, paint_box_with, BoxRequest, Clip, ClipMode, ClipShape, Shadow, Tap,
     BOX_MAGIC, BOX_WIRE_VERSION,
 };
 pub use geom::{Affine, IBox, Polys, Pt};

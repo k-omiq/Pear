@@ -309,28 +309,28 @@ describe('catalogues', () => {
     expect((await read('sfx_kinds', { id: 'b1' })).kinds).toEqual([]);
   });
 
-  it('lists the sound types with a look in a line, and ranks them for a box or a text', async () => {
+  it('lists the sound types, and ranks them for a box or a text', async () => {
     const kinds = [
-      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h', look: { fill: { type: 'solid' }, outlines: [{ width: 0.1, color: '#ffffff' }], sharp: false } },
-      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h', look: { fill: { type: 'negative', grow: 0.16 }, outlines: [{ width: 0.07, color: '#ffffff' }], sharp: true } },
-      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v', look: { fill: { type: 'gray', gray: 0.45 }, outlines: [{ width: 0.06, color: '#111111' }, { width: 0.08, color: '#ffffff' }], sharp: false } },
+      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h' },
+      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h' },
+      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v' },
     ];
     const asked = [];
     setTextEngine({
       id: 'rust', sfxPlace() {}, onFontsChange: () => () => {},
       sfxKinds: () => ({ kinds }),
-      sfxPick: (text) => (asked.push(text), { order: ['pop', 'impact', 'explosion'], scores: [0.2, 0.1, 0.7], strength: 1.2 }),
+      sfxPick: (text) => (asked.push(text), { order: ['pop', 'impact', 'explosion'], scores: [0.2, 0.1, 0.7], power: 70, rough: 40, momentum: 55 }),
     });
     const result = await read('sfx_kinds');
     expect(result).toEqual({ kinds: [
-      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h', look: 'black letters, a white rim, round corners' },
-      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h', look: 'white letters cut out of a black blob, a thin white rim, sharp corners' },
-      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v', look: 'grey letters (45% ink), black then white rims, round corners' },
+      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h' },
+      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h' },
+      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v' },
     ] });
     // A box's own text is asked for, and the pick names the box, not its text.
     const byBox = await read('sfx_kinds', { id: 'b2' });
     expect(asked).toEqual([payload]);
-    expect(byBox.pick).toEqual({ id: 'b2', order: ['pop', 'impact', 'explosion'], strength: 1.2 });
+    expect(byBox.pick).toEqual({ id: 'b2', order: ['pop', 'impact', 'explosion'], power: 70, rough: 40, momentum: 55 });
     const byText = await read('sfx_kinds', { text: payload });
     expect(byText.pick.text).toEqual({ untrusted: payload });
     const both = await callTool('sfx_kinds', { id: 'b2', text: 'x' });

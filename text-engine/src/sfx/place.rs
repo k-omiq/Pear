@@ -25,6 +25,7 @@
 //! the wire are degrees; rotations are radians, clockwise on the screen.
 
 use core::f64::consts::{FRAC_PI_2, PI};
+use std::collections::HashMap;
 
 use super::items::{groups, Item, ItemKind};
 use super::kern;
@@ -61,9 +62,6 @@ pub struct Params {
     pub join_bars: bool,
     pub kern: bool,
     pub seed: u32,
-    /// Scales the type's character: the size flow's spread, the jitter, the
-    /// slant and the rise. 1 is as set.
-    pub strength: f64,
     /// Size at the start, at the end, and the ease power.
     pub flow: (f64, f64, f64),
     pub follow: f64,
@@ -90,7 +88,6 @@ impl Default for Params {
             join_bars: true,
             kern: true,
             seed: 1,
-            strength: 1.0,
             flow: (1.0, 1.0, 1.0),
             follow: 0.5,
             gap: 0.0,
@@ -174,6 +171,29 @@ pub struct Letter {
     /// The drawn text's advance at the face's size, before the letter's
     /// own scale.
     pub adv: f64,
+    /// Pixels per em of the letter's hand edit: its em before the edit's own
+    /// scale, which is the em an edit's `dx` and `dy` are in. `em` is this
+    /// times the edit's scale.
+    pub unit: f64,
+    /// The letter's ink box: the bounds of its outline in glyph space, their
+    /// corners taken through the letter's whole map (size, turn, lean, the
+    /// item's frame), pixels from the box's centre. Top left, top right,
+    /// bottom right, bottom left of the glyph; a letter with no ink has its
+    /// advance by the face's height instead.
+    pub quad: [[f64; 2]; 4],
+    /// The middle of `quad`, which the gizmo turns and scales the letter
+    /// about.
+    pub centre: [f64; 2],
+    /// Glyph-centred pixels at the face's size to pixels from `x, y`, in
+    /// canvas order (`x' = a x + c y`, `y' = b x + d y`): the map `rot`,
+    /// `sx`, `sy` and `skew` state, kept whole for the outline export.
+    pub map: [f64; 4],
+    /// The text to draw, in bytes of the input.
+    pub bytes: core::ops::Range<usize>,
+    /// How much wider than at the face's size the letter's outlines are
+    /// drawn: its area scale to the 0.4, so small letters do not get fat rims
+    /// and big ones are not left with hairlines.
+    pub pen: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,6 +203,55 @@ pub struct Layout {
     /// The letters' boxes together: x0, y0, x1, y1 in pixels.
     pub bounds: [f64; 4],
     pub letters: Vec<Letter>,
+    /// For each code point of the text, the index of the letter that draws
+    /// it, or -1: a letter's later code points (a voiced mark, the rest of a
+    /// bar run, the second `!`), spaces, newlines and the `/` between groups
+    /// draw nothing. JS keeps one layout entry per code point (`sfxLayout`)
+    /// and reads this rather than matching offsets itself.
+    pub cp: Vec<i32>,
+}
+
+type Contours = Vec<Vec<[f64; 2]>>;
+
+/// An ink that asks for each drawn text's outline once: kerning and the
+/// letters' ink boxes both read them.
+struct Kept<'a, I: Ink> {
+    ink: &'a mut I,
+    outlines: HashMap<String, Contours>,
+}
+
+impl<I: Ink> Kept<'_, I> {
+    fn contours(&mut self, text: &str) -> Result<&Contours, Error> {
+        if !self.outlines.contains_key(text) {
+            let c = self.ink.outline(text)?;
+            self.outlines.insert(text.to_string(), c);
+        }
+        Ok(&self.outlines[text])
+    }
+
+    /// The bounds of `text`'s outline, x0, y0, x1, y1, or `None` with no ink.
+    fn ink_box(&mut self, text: &str) -> Result<Option<[f64; 4]>, Error> {
+        let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for p in self.contours(text)?.iter().flatten() {
+            b = [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ];
+        }
+        Ok((b[0] <= b[2] && b[1] <= b[3]).then_some(b))
+    }
+}
+
+impl<I: Ink> Ink for Kept<'_, I> {
+    fn advance(&mut self, text: &str) -> Result<f64, Error> {
+        self.ink.advance(text)
+    }
+
+    fn outline(&mut self, text: &str) -> Result<Contours, Error> {
+        self.contours(text).cloned()
+    }
 }
 
 /// A letter on its way out: where it is and its map, before the painter's
@@ -218,6 +287,8 @@ impl Work {
             .after(&self.frame)
     }
 
+    /// A point of the letter's outline (glyph-centred pixels at the face's
+    /// size) in the box.
     pub fn place(&self, shear: &Lin, p: [f64; 2]) -> [f64; 2] {
         let m = self.map(shear);
         let q = m.apply([p[0] + self.nudge[0], p[1] + self.nudge[1]]);
@@ -249,9 +320,8 @@ fn wrap(a: f64) -> f64 {
 }
 
 pub(crate) fn shear(p: &Params) -> Lin {
-    let s = p.strength;
-    let ts = (p.slant * s).clamp(-45.0, 45.0).to_radians().tan();
-    let tr = (p.rise * s).clamp(-30.0, 30.0).to_radians().tan();
+    let ts = p.slant.clamp(-45.0, 45.0).to_radians().tan();
+    let tr = p.rise.clamp(-30.0, 30.0).to_radians().tan();
     // Leaning the verticals moves a point's x by its height; lifting the
     // horizontals moves its y by its x. Up is negative y.
     Lin([1.0, -tr, -ts, 1.0])
@@ -260,7 +330,6 @@ pub(crate) fn shear(p: &Params) -> Lin {
 fn finite(p: &Params, size: f64) -> bool {
     let nums = [
         size,
-        p.strength,
         p.flow.0,
         p.flow.1,
         p.flow.2,
@@ -321,12 +390,14 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
     if !finite(p, size) || size <= 0.0 {
         return Err(Error::BadSpec);
     }
+    let ink = &mut Kept {
+        ink,
+        outlines: HashMap::new(),
+    };
     let groups = groups(text, p.join_bars).ok_or(Error::BadSpec)?;
-    let s = p.strength.clamp(0.0, 2.0);
-    let from = 1.0 + (p.flow.0 - 1.0) * s;
-    let to = 1.0 + (p.flow.1 - 1.0) * s;
+    let (from, to) = (p.flow.0, p.flow.1);
     let pow = p.flow.2.clamp(0.2, 5.0);
-    let (jrot, jsize, joff) = (p.jitter.0 * s, p.jitter.1 * s, p.jitter.2 * s);
+    let (jrot, jsize, joff) = p.jitter;
     let shear = shear(p);
     let bar_adv = if groups
         .iter()
@@ -454,7 +525,11 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
             let push = joff * gauss(p.seed, gi, ji, 2) * 0.3 * em;
             let centre = [pt[0] - dir[1] * push, pt[1] + dir[0] * push];
             let k = em / size;
-            let edit = p.edits.iter().find(|e| e.group == gi && e.index == ji).copied();
+            let edit = p
+                .edits
+                .iter()
+                .find(|e| e.group == gi && e.index == ji)
+                .copied();
             let nudge = if p.vertical && it.is_small_kana(text) {
                 [0.12 * size, -0.2 * size]
             } else {
@@ -484,7 +559,9 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
         }
     }
     // The hand edits, in ems of the letter as it was laid out and kerned.
+    let mut units = Vec::with_capacity(works.len());
     for w in works.iter_mut() {
+        units.push(w.k * size);
         if let Some(e) = w.edit {
             let em = w.k * size;
             w.centre[0] += e.dx * em;
@@ -496,7 +573,7 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
 
     let mut letters = Vec::with_capacity(works.len());
     let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-    for w in &works {
+    for (w, &unit) in works.iter().zip(&units) {
         let m = w.map(&shear);
         let (rot, sx, sy, skew) = m.decompose().ok_or(Error::BadSpec)?;
         let at = w.place(&shear, [0.0, 0.0]);
@@ -508,6 +585,19 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
             x1 = x1.max(q[0]);
             y1 = y1.max(q[1]);
         }
+        // The outline is drawn centred on `at` and mapped by `m` (the
+        // painter's curved run), so a glyph-space corner lands at `at + m c`.
+        let [gx0, gy0, gx1, gy1] = ink
+            .ink_box(w.item.text(text))?
+            .unwrap_or([-hw, -hh, hw, hh]);
+        let quad = [[gx0, gy0], [gx1, gy0], [gx1, gy1], [gx0, gy1]].map(|c| {
+            let q = m.apply(c);
+            [at[0] + q[0], at[1] + q[1]]
+        });
+        let centre = [
+            (quad[0][0] + quad[2][0]) / 2.0,
+            (quad[0][1] + quad[2][1]) / 2.0,
+        ];
         letters.push(Letter {
             x: at[0],
             y: at[1],
@@ -521,6 +611,12 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
             dir: w.dir,
             em: w.k * size,
             adv: w.drawn,
+            unit,
+            quad,
+            centre,
+            map: m.0,
+            bytes: w.item.bytes.clone(),
+            pen: (sx * sy).abs().sqrt().powf(0.4).clamp(0.01, 100.0),
         });
     }
     let bounds = if letters.is_empty() {
@@ -529,16 +625,59 @@ pub fn place(text: &str, size: f64, p: &Params, ink: &mut impl Ink) -> Result<La
         [x0, y0, x1, y1]
     };
     let sound = letters.iter().all(|l| {
-        [l.x, l.y, l.rot, l.sx, l.sy, l.skew, l.em]
+        [l.x, l.y, l.rot, l.sx, l.sy, l.skew, l.em, l.unit]
             .iter()
+            .chain(l.quad.iter().flatten())
             .all(|v| v.is_finite())
     }) && bounds.iter().all(|v| v.is_finite());
     if !sound {
         return Err(Error::BadSpec);
     }
+    let cp = code_points(text, &letters);
     Ok(Layout {
         paths,
         bounds,
         letters,
+        cp,
     })
+}
+
+/// [`Layout::cp`]: a letter draws the code point its text starts at.
+fn code_points(text: &str, letters: &[Letter]) -> Vec<i32> {
+    let mut starts: Vec<(u32, i32)> = letters
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.utf16.start, i as i32))
+        .collect();
+    starts.sort_unstable();
+    let mut out = Vec::with_capacity(text.len());
+    let mut u = 0u32;
+    for c in text.chars() {
+        let at = starts.binary_search_by_key(&u, |s| s.0);
+        out.push(at.map_or(-1, |i| starts[i].1));
+        u += c.len_utf16() as u32;
+    }
+    out
+}
+
+/// The outline of letter `index` of `text`'s layout, as the painter draws
+/// it: closed contours, holes included, pixels from the box's centre. For
+/// the gizmo's picked letter (`mt_sfx_outline`). A letter past the layout
+/// is `BadSpec`.
+pub fn letter_outline(
+    text: &str,
+    size: f64,
+    p: &Params,
+    ink: &mut impl Ink,
+    index: usize,
+) -> Result<Contours, Error> {
+    let layout = place(text, size, p, ink)?;
+    let l = layout.letters.get(index).ok_or(Error::BadSpec)?;
+    let m = Lin(l.map);
+    let mut c = ink.outline(&text[l.bytes.clone()])?;
+    for q in c.iter_mut().flatten() {
+        let v = m.apply(*q);
+        *q = [l.x + v[0], l.y + v[1]];
+    }
+    Ok(c)
 }

@@ -931,6 +931,8 @@ export function boxInJob(box) {
 // the texture's scale, a turn, a mirror - is the picture's: the painter
 // states every pass in the layout's units and the transform carries them, so
 // a turned box is painted turned and not painted straight and resampled.
+// Hands back where the painter's pixels landed in the canvas's device pixels
+// (`inkUnion`), for `renderBoxTexture`'s `ink`.
 function paintBoxJob(ctx, box, L, foot, coarse = false) {
   const s = L.s;
   const mb = s.motionBlur;
@@ -939,7 +941,7 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
   // browser engine's editor shows (`motionBlurPreviewTaps`), same reach and
   // same tone. A file is always the whole list.
   const taps = coarse ? motionBlurPreviewTaps : motionBlurTaps;
-  glyphPainter().paintBox(ctx, {
+  const body = glyphPainter().paintBox(ctx, {
     job: glyphJob(box, L),
     // The footprint in the layout's coordinates: every pixel the box can ink.
     rect: { x: L.ox - foot.ox, y: L.oy - foot.oy, w: foot.cw, h: foot.ch },
@@ -949,7 +951,32 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
     // The mask's shapes are the box's own, so the box's corner goes with them.
     clip: clipActive(s.clip) ? { mode: s.clip.mode === 'include' ? 'include' : 'exclude', x: L.ox, y: L.oy, shapes: s.clip.shapes } : null,
   });
-  if (L.caption) glyphPainter().paint(ctx, captionJob(box, L));
+  const caption = L.caption ? glyphPainter().paint(ctx, captionJob(box, L)) : null;
+  return inkUnion([body, caption], ctx.canvas);
+}
+
+// The rectangle the painted rasters cover, in the canvas's pixels and cut to
+// it: `{ x, y, w, h }`, all zero when nothing was painted, or null when a
+// painter did not say where it painted (one that returns nothing: only the
+// Rust painter does).
+function inkUnion(rects, canvas) {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const r of rects) {
+    if (r === undefined) return null;
+    if (!r || !(r.w > 0 && r.h > 0)) continue;
+    x0 = Math.min(x0, r.x);
+    y0 = Math.min(y0, r.y);
+    x1 = Math.max(x1, r.x + r.w);
+    y1 = Math.max(y1, r.y + r.h);
+  }
+  x0 = Math.max(0, x0);
+  y0 = Math.max(0, y0);
+  x1 = Math.min(canvas.width, x1);
+  y1 = Math.min(canvas.height, y1);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : { x: 0, y: 0, w: 0, h: 0 };
 }
 
 //
@@ -961,6 +988,12 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
 // half a pixel off - a different half at every zoom. Only for a box the
 // painter paints whole and that no texture warp resamples afterwards, and
 // only at the scale asked for; null paints at the corner, as the export does.
+//
+// `ink` in the result is where the picture's pixels are, in the canvas's own
+// pixels (`{ x, y, w, h }`, all zero for an empty picture): the painter's
+// rasters are cut to what they ink, so it costs nothing to know. Null where
+// the canvas drew part of the box (the passes below the job) or the painter
+// did not say: a caller then has the whole canvas.
 export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null) {
   const { L, F, foot } = boxPlan(box, p, flat);
   const s = L.s;
@@ -987,8 +1020,8 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
   // The whole box in one job where the painter does that: every pass below
   // is the engine's, in this order, and the canvas only holds the result.
   if (job) {
-    paintBoxJob(ctx, box, L, foot, coarse);
-    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, phase: phased ? { x: fx, y: fy } : null };
+    const ink = paintBoxJob(ctx, box, L, foot, coarse);
+    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, phase: phased ? { x: fx, y: fy } : null, ink };
   }
   paintShadows(ctx, box, L, SS, foot);
   paintBox(ctx, box, L);
@@ -1043,7 +1076,7 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
   // lands on whole pixels - at 2 always - and a fraction of a pixel more where
   // the size above was rounded up, so a caller that places or stretches the
   // bitmap by these numbers maps one texture pixel to `1 / SS` page px.
-  return { canvas: out, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F };
+  return { canvas: out, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, ink: null };
 }
 
 // Whether a box's roughening goes to the glyph painter in the job, to move

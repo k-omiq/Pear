@@ -81,6 +81,7 @@
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
+  import { sfxLive } from './sfx-live.svelte.js';
   import { prefs } from './prefs.svelte.js';
   import LockChip from './LockChip.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
@@ -189,6 +190,14 @@
   // drag as well (`transformEnd`): a drag whose handles are gone is over, and
   // the box is painted in full.
   let resizing = $state(false);
+  // AN SFX GESTURE ON THIS BOX (a drag on its SFX handles, a slider of the
+  // SFX panel held down: `sfxLive`, the selected box's) is the same: every
+  // frame rewrites the recipe and the picture follows it, so it is painted
+  // within the drag budget while the gesture lasts and once in full when it
+  // ends (the effect below `sfxGizmoOn`). Its own flag rather than the shared
+  // one, so the paint effect is run again by the settle, after what was drawn
+  // for a soft picture has been forgotten.
+  let sfxDragging = $state(false);
   // A handle being dragged (not the rotation one): the size chip shows.
   let sizingDrag = $state(false);
   let dragSoft = false;
@@ -702,7 +711,8 @@
       warpGeom = paintWarpedBox(el, box, pg, z, tips);
       return;
     }
-    const budget = resizing || keying ? PICTURE_DRAG_PX : PICTURE_MAX_PX;
+    const live = resizing || sfxDragging;
+    const budget = live || keying ? PICTURE_DRAG_PX : PICTURE_MAX_PX;
     // An IME's text is not the box's until the composition ends, so the box
     // is painted with it standing in for its own.
     const of = editing && composeText != null ? { ...box, text: composeText } : box;
@@ -715,7 +725,7 @@
     const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner);
     // Lower than asked for under the drag's budget: to be painted again when
     // the drag settles (`settleResize`), or the keys do (`settleKeys`).
-    dragSoft = resizing && g.ss < pictureRes;
+    dragSoft = live && g.ss < pictureRes;
     keySoft = keying && g.ss < pictureRes;
     warpGeom = { ...g, page };
     keepReach(warpGeom);
@@ -814,6 +824,7 @@
     // the keys settling (`settleKeys`): the key is the same and only what was
     // drawn for it has been forgotten.
     resizing;
+    sfxDragging;
     keying;
     if (!el) {
       // Warp switched off, or the box is going away: hand the pixels back and
@@ -941,6 +952,29 @@
       !warpGizmoOn &&
       !boxLocked(box),
   );
+  // An SFX gesture on this box, from its press to its commit or cancel: the
+  // picture is painted within the drag budget meanwhile, and once in full at
+  // the end (`sfxDragging`, above).
+  $effect(() => {
+    const on = sfxLive.on && selected && !!sfxCurve;
+    untrack(() => {
+      if (on) {
+        if (enginePaints) sfxDragging = true;
+        return;
+      }
+      if (!sfxDragging) return;
+      if (dragSoft) warpDrawn = '';
+      dragSoft = false;
+      sfxDragging = false;
+    });
+  });
+  // The pointer for the SFX handles: the box's own client -> box-local page
+  // px (as `maskLocal`), from the page frame's rect the press measured, so a
+  // drag's moves do not each measure it again.
+  const sfxFrameRect = () => pageFrameEl?.getBoundingClientRect() ?? null;
+  function sfxLocal(ev, rect) {
+    return flipPoint(screenPoint(ev.clientX, ev.clientY, rect ?? pageFrameEl.getBoundingClientRect(), app.zoom, box), box);
+  }
 
   // The resize and rotate handles are on the box: while it is selected and
   // nothing else has its controls. A resize whose handles go away has had its
@@ -3250,7 +3284,7 @@
   {#if sfxGizmoOn}
     <!-- Over the resize handles (z-index), which stay: a path's end can sit
          near a side handle, and the one asked for by the SFX wins there. -->
-    <SfxGizmo {box} pageId={pg.id} {z} text={applyCase(text, s)} toLocal={maskLocal} />
+    <SfxGizmo {box} pageId={pg.id} {z} text={applyCase(text, s)} toLocal={sfxLocal} frameRect={sfxFrameRect} />
   {/if}
 
   <!-- The box's own resize and rotate handles stand down while the gizmo is up.

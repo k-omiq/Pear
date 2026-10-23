@@ -1,14 +1,16 @@
-//! The twelve sound types: how each one lays its letters out and how it
-//! looks, as data.
+//! The twelve sound types: how each one lays its letters out, as data.
 //!
-//! A type is a starting point, not a mode: applying one writes the layout
-//! fields of the box's `sfx` and the look below into the box style, and the
-//! user edits from there. The layout numbers are read by [`super::place`];
-//! the look is only handed to JS (`mt_sfx_kinds`), which maps it onto the
-//! box's effect fields.
+//! A type is a layout and nothing else: it never changes the box's look
+//! (font, fill, outlines are the user's). Applying one resets the box's
+//! layout fields to unset, and [`super::params`] fills every unset number
+//! from here, so this table is the one place a type's numbers live.
 //!
 //! The names and the character of each type follow the manga convention the
-//! Giongo generator also uses. The numbers are ours, set by eye.
+//! Giongo generator also uses, and so do the numbers: the user asked for its
+//! presets exactly, as measured in `docs/giongo/04-reference-controls.md`
+//! (sections 1.1, 1.2 and 1.4). A path's centre there is in the reference's
+//! design units; here it is that divided by the em of the type's own example
+//! text, as the doc's table works it out.
 //!
 //! Lengths are in ems of the box's font size, angles in degrees.
 
@@ -23,39 +25,6 @@ pub struct PathShape {
     pub angle: f64,
     /// Pushes the curve's control point sideways, as a share of its length.
     pub bend: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum FillLook {
-    Solid,
-    White,
-    /// Gray, 0 white .. 1 black.
-    Gray(f64),
-    /// A dot screen: ink share, cell size in ems.
-    Tone {
-        density: f64,
-        pitch: f64,
-    },
-    /// A dot screen that fades along `angle`: ink share at the start and at
-    /// the end.
-    GradTone {
-        from: f64,
-        to: f64,
-        angle: f64,
-    },
-    /// White letters cut out of a dark shape grown `grow` ems around them.
-    Negative {
-        grow: f64,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Look {
-    pub fill: FillLook,
-    /// Outlines, innermost first: width in ems, colour.
-    pub outlines: &'static [(f64, &'static str)],
-    /// Sharp corners on the outlines instead of round ones.
-    pub sharp: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,22 +48,17 @@ pub struct Kind {
     pub jitter: (f64, f64, f64),
     /// One shape per group; a group past the end is stacked.
     pub paths: &'static [PathShape],
-    pub look: Look,
 }
 
-const fn path(angle: f64, bend: f64) -> PathShape {
+/// A path shape: its angle, its bend, and its centre off the box's (ems).
+const fn path(angle: f64, bend: f64, dx: f64, dy: f64) -> PathShape {
     PathShape {
-        dx: 0.0,
-        dy: 0.0,
+        dx,
+        dy,
         angle,
         bend,
     }
 }
-
-const WHITE_RIM: &[(f64, &str)] = &[(0.10, "#ffffff")];
-const THIN_WHITE_RIM: &[(f64, &str)] = &[(0.07, "#ffffff")];
-const BLACK_WHITE_RIMS: &[(f64, &str)] = &[(0.06, "#111111"), (0.08, "#ffffff")];
-const WHITE_BLACK_RIMS: &[(f64, &str)] = &[(0.08, "#ffffff"), (0.06, "#111111")];
 
 pub const KINDS: &[Kind] = &[
     Kind {
@@ -103,18 +67,13 @@ pub const KINDS: &[Kind] = &[
         example: "ドン!!",
         tag: "blocky",
         vertical: false,
-        flow: (0.8, 1.3, 1.0),
+        flow: (0.78, 1.3, 1.0),
         follow: 0.35,
-        gap: 0.08,
+        gap: 0.10,
         slant: 0.0,
-        rise: 5.0,
-        jitter: (6.0, 0.0, 0.0),
-        paths: &[path(-12.0, 0.05)],
-        look: Look {
-            fill: FillLook::Solid,
-            outlines: WHITE_RIM,
-            sharp: false,
-        },
+        rise: 6.0,
+        jitter: (7.0, 0.0, 0.0),
+        paths: &[path(-16.4, 0.05, 0.0, 0.077)],
     },
     Kind {
         id: "rumble",
@@ -126,14 +85,9 @@ pub const KINDS: &[Kind] = &[
         follow: 0.6,
         gap: -0.08,
         slant: 0.0,
-        rise: 4.0,
+        rise: 5.0,
         jitter: (4.0, 0.0, 0.0),
-        paths: &[path(10.0, -0.05)],
-        look: Look {
-            fill: FillLook::Solid,
-            outlines: WHITE_BLACK_RIMS,
-            sharp: false,
-        },
+        paths: &[path(12.6, -0.05, 0.0, 0.02)],
     },
     Kind {
         id: "slash",
@@ -145,14 +99,9 @@ pub const KINDS: &[Kind] = &[
         follow: 0.7,
         gap: -0.08,
         slant: 12.0,
-        rise: 5.0,
+        rise: 6.0,
         jitter: (0.0, 0.0, 0.0),
-        paths: &[path(30.0, 0.06)],
-        look: Look {
-            fill: FillLook::Solid,
-            outlines: WHITE_RIM,
-            sharp: true,
-        },
+        paths: &[path(33.7, 0.06, 0.0, 0.0)],
     },
     Kind {
         id: "explosion",
@@ -166,12 +115,7 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 4.0,
         jitter: (9.0, 0.1, 0.3),
-        paths: &[path(-6.0, 0.04)],
-        look: Look {
-            fill: FillLook::Negative { grow: 0.16 },
-            outlines: THIN_WHITE_RIM,
-            sharp: true,
-        },
+        paths: &[path(-6.2, 0.04, 0.0, 0.021)],
     },
     Kind {
         id: "splash",
@@ -185,16 +129,7 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 4.0,
         jitter: (0.0, 0.0, 0.0),
-        paths: &[path(88.0, 0.08)],
-        look: Look {
-            fill: FillLook::GradTone {
-                from: 0.0,
-                to: 0.85,
-                angle: 90.0,
-            },
-            outlines: BLACK_WHITE_RIMS,
-            sharp: false,
-        },
+        paths: &[path(88.1, 0.08, 0.057, 0.0)],
     },
     Kind {
         id: "soft",
@@ -208,12 +143,7 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 4.0,
         jitter: (10.0, 0.0, 0.6),
-        paths: &[path(-8.0, 0.15)],
-        look: Look {
-            fill: FillLook::White,
-            outlines: BLACK_WHITE_RIMS,
-            sharp: false,
-        },
+        paths: &[path(-8.9, 0.15, 0.0, 0.025)],
     },
     Kind {
         id: "drip",
@@ -227,12 +157,7 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 4.0,
         jitter: (0.0, 0.0, 0.0),
-        paths: &[path(8.0, -0.12)],
-        look: Look {
-            fill: FillLook::Solid,
-            outlines: WHITE_RIM,
-            sharp: false,
-        },
+        paths: &[path(9.8, -0.12, 0.0, 0.023)],
     },
     Kind {
         id: "small",
@@ -246,12 +171,7 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 4.0,
         jitter: (0.0, 0.0, 0.0),
-        paths: &[path(90.0, 0.0)],
-        look: Look {
-            fill: FillLook::Solid,
-            outlines: THIN_WHITE_RIM,
-            sharp: false,
-        },
+        paths: &[path(90.0, 0.0, 0.0, 0.0)],
     },
     Kind {
         id: "glare",
@@ -265,25 +185,8 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 8.0,
         jitter: (6.0, 0.0, 0.0),
-        paths: &[
-            PathShape {
-                dx: 1.4,
-                dy: -1.1,
-                angle: 92.0,
-                bend: 0.0,
-            },
-            PathShape {
-                dx: -1.4,
-                dy: 1.1,
-                angle: 86.0,
-                bend: 0.05,
-            },
-        ],
-        look: Look {
-            fill: FillLook::Solid,
-            outlines: WHITE_RIM,
-            sharp: false,
-        },
+        // Group one top left, group two lower right, both 85.6 degrees.
+        paths: &[path(85.6, 0.0, -1.42, -0.84), path(85.6, 0.05, 1.53, 0.6)],
     },
     Kind {
         id: "pop",
@@ -297,12 +200,7 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 5.0,
         jitter: (8.0, 0.0, 0.0),
-        paths: &[path(-9.0, 0.08)],
-        look: Look {
-            fill: FillLook::Gray(0.45),
-            outlines: BLACK_WHITE_RIMS,
-            sharp: false,
-        },
+        paths: &[path(-9.5, 0.08, 0.0, 0.0)],
     },
     Kind {
         id: "silence",
@@ -316,12 +214,7 @@ pub const KINDS: &[Kind] = &[
         slant: 0.0,
         rise: 0.0,
         jitter: (0.0, 0.0, 0.0),
-        paths: &[path(90.0, 0.0)],
-        look: Look {
-            fill: FillLook::Solid,
-            outlines: THIN_WHITE_RIM,
-            sharp: false,
-        },
+        paths: &[path(90.0, 0.0, 0.0, 0.0)],
     },
     Kind {
         id: "shock",
@@ -335,16 +228,7 @@ pub const KINDS: &[Kind] = &[
         slant: -8.0,
         rise: 3.0,
         jitter: (0.0, 0.0, 0.0),
-        paths: &[path(84.0, -0.1)],
-        look: Look {
-            fill: FillLook::GradTone {
-                from: 0.8,
-                to: 0.05,
-                angle: 90.0,
-            },
-            outlines: BLACK_WHITE_RIMS,
-            sharp: false,
-        },
+        paths: &[path(84.6, -0.1, 0.035, 0.0)],
     },
 ];
 
@@ -375,45 +259,6 @@ fn text(out: &mut String, s: &str) {
 fn key(out: &mut String, name: &str) {
     text(out, name);
     out.push(':');
-}
-
-fn fill(out: &mut String, f: &FillLook) {
-    out.push('{');
-    key(out, "type");
-    match *f {
-        FillLook::Solid => text(out, "solid"),
-        FillLook::White => text(out, "white"),
-        FillLook::Gray(g) => {
-            text(out, "gray");
-            out.push(',');
-            key(out, "gray");
-            num(out, g);
-        }
-        FillLook::Tone { density, pitch } => {
-            text(out, "tone");
-            out.push(',');
-            key(out, "density");
-            num(out, density);
-            out.push(',');
-            key(out, "pitch");
-            num(out, pitch);
-        }
-        FillLook::GradTone { from, to, angle } => {
-            text(out, "gradTone");
-            for (k, v) in [("from", from), ("to", to), ("angle", angle)] {
-                out.push(',');
-                key(out, k);
-                num(out, v);
-            }
-        }
-        FillLook::Negative { grow } => {
-            text(out, "negative");
-            out.push(',');
-            key(out, "grow");
-            num(out, grow);
-        }
-    }
-    out.push('}');
 }
 
 fn kind_json(out: &mut String, k: &Kind) {
@@ -465,31 +310,6 @@ fn kind_json(out: &mut String, k: &Kind) {
     out.push(',');
     key(out, "off");
     num(out, k.jitter.2);
-    out.push('}');
-    out.push(',');
-    key(out, "look");
-    out.push('{');
-    key(out, "fill");
-    fill(out, &k.look.fill);
-    out.push(',');
-    key(out, "outlines");
-    out.push('[');
-    for (i, (w, c)) in k.look.outlines.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push('{');
-        key(out, "width");
-        num(out, *w);
-        out.push(',');
-        key(out, "color");
-        text(out, c);
-        out.push('}');
-    }
-    out.push(']');
-    out.push(',');
-    key(out, "sharp");
-    out.push_str(if k.look.sharp { "true" } else { "false" });
     out.push('}');
     out.push('}');
 }

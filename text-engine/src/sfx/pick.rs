@@ -210,15 +210,39 @@ fn latin_kind(text: &str) -> Option<&'static str> {
         .map(|(_, k)| *k)
 }
 
-/// The answer: every type's score and the strength the sound asks for.
+/// The answer: every type's score and the three macros the sound asks for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pick {
     /// Indices into [`KINDS`], best first. Ties keep the table's order.
     pub order: Vec<usize>,
     /// Scores in [`KINDS`] order.
     pub scores: Vec<f64>,
-    /// 0.5 .. 1.5: heavy, harsh sounds get more.
-    pub strength: f64,
+    /// 0..100 each, 50 the type as designed (`params::macros`): how hard,
+    /// how rough and how driven the sound reads. See [`macros_for`].
+    pub power: f64,
+    pub rough: f64,
+    pub momentum: f64,
+}
+
+/// The macros a sound asks for, from three things about how it is spelt:
+/// its share of voiced kana (`v`, ド against ト: heavier and harsher), its
+/// bangs (`b`, 0..2: louder and thrown harder) and its share of hiragana
+/// (`h`: softer, smoother, slower). Each macro is 50 moved by up to half its
+/// range, whole numbers:
+///
+/// - power    50 + 50 (0.6 v + 0.12 b - 0.25 h), the old strength's weights
+///   (strength 1 + that sum), so a sound reads as heavy as it did;
+/// - rough    50 + 50 (0.6 v - 0.4 h): voiced sounds are gritty, hiragana
+///   smooth; bangs are loud, not rough;
+/// - momentum 50 + 50 (0.25 b + 0.3 v - 0.25 h): bangs throw the run
+///   forward, a voiced sound pushes, hiragana drifts.
+fn macros_for(voiced: f64, bangs: f64, hiragana: f64) -> (f64, f64, f64) {
+    let m = |sum: f64| (50.0 + 50.0 * sum).clamp(0.0, 100.0).round();
+    (
+        m(0.6 * voiced + 0.12 * bangs - 0.25 * hiragana),
+        m(0.6 * voiced - 0.4 * hiragana),
+        m(0.25 * bangs + 0.3 * voiced - 0.25 * hiragana),
+    )
 }
 
 pub fn pick(text: &str) -> Pick {
@@ -349,16 +373,18 @@ pub fn pick(text: &str) -> Pick {
     }
     let mut order: Vec<usize> = (0..KINDS.len()).collect();
     order.sort_by(|&x, &y| scores[y].total_cmp(&scores[x]));
-    let strength = (1.0 + 0.6 * f.voiced + 0.12 * bangs - 0.25 * f.hiragana_share).clamp(0.5, 1.5);
+    let (power, rough, momentum) = macros_for(f.voiced, bangs, f.hiragana_share);
     Pick {
         order,
         scores,
-        strength,
+        power,
+        rough,
+        momentum,
     }
 }
 
 /// The pick as one ASCII JSON document:
-/// `{"order":["impact",...],"scores":[...],"strength":1.2}`.
+/// `{"order":["impact",...],"scores":[...],"power":62,"rough":58,"momentum":55}`.
 pub fn pick_json(p: &Pick) -> String {
     let mut out = String::from("{\"order\":[");
     for (n, &i) in p.order.iter().enumerate() {
@@ -377,8 +403,17 @@ pub fn pick_json(p: &Pick) -> String {
         // Two decimals: a score is a ranking, not a measurement.
         out.push_str(&((s * 100.0).round() / 100.0).to_string());
     }
-    out.push_str("],\"strength\":");
-    out.push_str(&((p.strength * 100.0).round() / 100.0).to_string());
+    out.push(']');
+    for (name, v) in [
+        ("power", p.power),
+        ("rough", p.rough),
+        ("momentum", p.momentum),
+    ] {
+        out.push_str(",\"");
+        out.push_str(name);
+        out.push_str("\":");
+        out.push_str(&v.to_string());
+    }
     out.push('}');
     out
 }

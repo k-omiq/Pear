@@ -5,7 +5,7 @@
 
 use super::items::{groups, ItemKind, MAX_GROUPS};
 use super::kinds::{index_of, kinds_json, KINDS};
-use super::params::{decode, encode};
+use super::params::{decode, encode, macros, number_at, resolved, PLAIN};
 use super::path::{Path, Walker};
 use super::pick::{pick, pick_json};
 use super::place::{place, Edit, Ink, Lin, Params};
@@ -120,10 +120,13 @@ fn the_table_has_the_twelve_types_with_unique_ids_and_ascii_json() {
     for (i, k) in KINDS.iter().enumerate() {
         assert_eq!(index_of(k.id), Some(i));
         assert!(!k.paths.is_empty());
-        assert!(!k.look.outlines.is_empty());
     }
     let json = kinds_json();
     assert!(json.is_ascii());
+    // A type is a layout only: nothing of a look is handed out.
+    for look in ["look", "fill", "outlines", "sharp"] {
+        assert!(!json.contains(&format!("\"{look}\"")), "{look}");
+    }
     assert!(json.starts_with("{\"kinds\":[{\"id\":\"impact\""));
     assert_eq!(json.matches("\"id\":").count(), 12);
     // ドン!! as escapes.
@@ -177,8 +180,20 @@ fn auto_pick_ranks_near_sounds_in_its_top_three() {
 }
 
 #[test]
-fn heavy_sounds_get_more_strength_than_light_ones() {
-    assert!(pick("ドゴォン!!").strength > pick("ぽちゃん").strength);
+fn heavy_sounds_get_stronger_macros_than_light_ones() {
+    let (heavy, light) = (pick("ドゴォン!!"), pick("ぽちゃん"));
+    assert!(heavy.power > light.power);
+    assert!(heavy.rough > light.rough);
+    assert!(heavy.momentum > light.momentum);
+    for m in [heavy.power, heavy.rough, heavy.momentum, light.power] {
+        assert!((0.0..=100.0).contains(&m) && m.fract() == 0.0, "{m}");
+    }
+    let json = pick_json(&heavy);
+    assert!(
+        json.contains(&format!("\"power\":{}", heavy.power)),
+        "{json}"
+    );
+    assert!(!json.contains("strength"));
     let p = pick("");
     assert_eq!(p.order.len(), 12);
     let json = pick_json(&pick("ドン"));
@@ -217,9 +232,113 @@ fn params_go_round_the_wire_and_bad_bytes_are_refused() {
     let mut bad_kind = bytes.clone();
     bad_kind[8..12].copy_from_slice(&99u32.to_le_bytes());
     assert_eq!(decode(&bad_kind), Err(Error::BadSpec));
+    let mut inf = bytes.clone();
+    inf[number_at(4)..number_at(4) + 8].copy_from_slice(&f64::INFINITY.to_le_bytes());
+    assert_eq!(decode(&inf), Err(Error::BadSpec));
+    // NaN is "unset" where a number can be filled in, and refused in a path.
+    let path_ax = number_at(14) + 4;
     let mut nan = bytes;
-    nan[12..20].copy_from_slice(&f64::NAN.to_le_bytes());
+    nan[path_ax..path_ax + 8].copy_from_slice(&f64::NAN.to_le_bytes());
     assert_eq!(decode(&nan), Err(Error::BadSpec));
+}
+
+/// `p`'s bytes with numbers `unset` (of the fourteen, macros first) as NaN
+/// and the macros at `m`, and the direction unset when `dir_unset`.
+fn wire(p: &Params, m: [f64; 3], unset: &[usize], dir_unset: bool) -> Vec<u8> {
+    let mut b = encode(p);
+    for (i, v) in m.iter().enumerate() {
+        b[number_at(i)..number_at(i) + 8].copy_from_slice(&v.to_le_bytes());
+    }
+    for &i in unset {
+        b[number_at(i)..number_at(i) + 8].copy_from_slice(&f64::NAN.to_le_bytes());
+    }
+    if dir_unset {
+        b[0] |= super::params::DIR_UNSET as u8;
+    }
+    b
+}
+
+const ALL_LAYOUT: [usize; 11] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+
+#[test]
+fn unset_numbers_come_from_the_type_or_plain_and_set_ones_stay() {
+    let glare = index_of("glare").unwrap();
+    let k = &KINDS[glare];
+    let p = Params {
+        kind: Some(glare),
+        gap: 0.7,
+        ..Params::default()
+    };
+    // Everything but the gap unset, the direction too.
+    let unset: Vec<usize> = ALL_LAYOUT.iter().copied().filter(|&i| i != 7).collect();
+    let got = decode(&wire(&p, [50.0; 3], &unset, true)).unwrap();
+    assert!(got.vertical, "glare runs down");
+    assert_eq!(got.flow, k.flow);
+    assert_eq!(
+        (got.follow, got.slant, got.rise),
+        (k.follow, k.slant, k.rise)
+    );
+    assert_eq!(got.jitter, k.jitter);
+    assert_eq!(got.gap, 0.7);
+    assert_eq!(got.big_tighter, PLAIN[5]);
+    // No type: the plain row.
+    let none = Params::default();
+    let got = decode(&wire(&none, [f64::NAN; 3], &ALL_LAYOUT, true)).unwrap();
+    assert_eq!(resolved(&got)[1..], PLAIN);
+    assert!(!got.vertical);
+}
+
+#[test]
+fn the_macros_move_the_types_numbers_as_the_reference_measured() {
+    let impact = index_of("impact").unwrap();
+    let p = Params {
+        kind: Some(impact),
+        ..Params::default()
+    };
+    let at = |m: [f64; 3]| decode(&wire(&p, m, &ALL_LAYOUT, true)).unwrap();
+    // 50 is the type as designed.
+    let mid = at([50.0; 3]);
+    assert_eq!(mid.flow, KINDS[impact].flow);
+    // Power on Impact's 78 % .. 130 %: 92 / 107 at 0, 64 / 153 at 100.
+    let f = at([0.0, 50.0, 50.0]).flow;
+    assert_eq!(
+        ((f.0 * 100.0).round(), (f.1 * 100.0).round()),
+        (92.0, 107.0)
+    );
+    let f = at([100.0, 50.0, 50.0]).flow;
+    assert_eq!(
+        ((f.0 * 100.0).round(), (f.1 * 100.0).round()),
+        (64.0, 153.0)
+    );
+    // Rough: turn jitter +-8 (never below 0), size jitter up only.
+    let lo = at([50.0, 0.0, 50.0]);
+    let hi = at([50.0, 100.0, 50.0]);
+    assert_eq!(lo.jitter.0, 0.0);
+    assert!((hi.jitter.0 - 15.0).abs() < 1e-9 && (hi.jitter.1 - 0.2).abs() < 1e-9);
+    assert_eq!(lo.jitter.1, 0.0);
+    // Momentum on Impact: lean 0 .. 70, slant -12 .. 12, rise 3 .. 9.
+    let lo = at([50.0, 50.0, 0.0]);
+    let hi = at([50.0, 50.0, 100.0]);
+    assert!(lo.follow.abs() < 1e-9 && (hi.follow - 0.7).abs() < 1e-9);
+    assert_eq!((lo.slant, hi.slant), (-12.0, 12.0));
+    assert_eq!((lo.rise, hi.rise), (3.0, 9.0));
+    // A type that leans back is pushed further back.
+    let shock = macros(
+        [0.9, 1.3, 1.0, 0.5, -0.05, 0.5, -8.0, 3.0, 0.0, 0.0, 0.0],
+        50.0,
+        50.0,
+        100.0,
+    );
+    assert_eq!(shock[6], -20.0);
+    // A number the box sets is not moved.
+    let set = Params {
+        follow: 0.2,
+        ..p.clone()
+    };
+    let unset: Vec<usize> = ALL_LAYOUT.iter().copied().filter(|&i| i != 6).collect();
+    let got = decode(&wire(&set, [50.0, 50.0, 100.0], &unset, true)).unwrap();
+    assert_eq!(got.follow, 0.2);
+    assert_eq!(got.slant, 12.0);
 }
 
 // ---- maps and paths ------------------------------------------------------
@@ -320,7 +439,7 @@ fn a_missing_path_is_made_at_the_natural_length_so_letters_keep_the_face_size() 
 }
 
 #[test]
-fn the_size_flows_from_start_to_end_and_strength_scales_it() {
+fn the_size_flows_from_start_to_end() {
     let p = Params {
         flow: (0.5, 1.5, 1.0),
         ..plain()
@@ -328,12 +447,6 @@ fn the_size_flows_from_start_to_end_and_strength_scales_it() {
     let l = place("ABC", 100.0, &p, &mut boxes()).unwrap();
     let r = l.letters[2].em / l.letters[0].em;
     assert!((r - 3.0).abs() < 1e-9, "{r}");
-    let flat = Params {
-        strength: 0.0,
-        ..p.clone()
-    };
-    let l = place("ABC", 100.0, &flat, &mut boxes()).unwrap();
-    assert!((l.letters[2].em - l.letters[0].em).abs() < 1e-9);
 }
 
 #[test]
@@ -476,8 +589,9 @@ fn a_type_makes_its_own_paths_glare_two_apart() {
     };
     let l = place("ギ/ロッ", 100.0, &p, &mut boxes()).unwrap();
     assert_eq!(l.paths.len(), 2);
+    // As the reference: the first group top left, the second lower right.
     let (g0, g1) = (&l.letters[0], &l.letters[1]);
-    assert!(g0.x > g1.x && g0.y < g1.y, "{g0:?} {g1:?}");
+    assert!(g0.x < g1.x && g0.y < g1.y, "{g0:?} {g1:?}");
 }
 
 #[test]
@@ -634,4 +748,80 @@ fn the_engine_ink_measures_and_outlines_a_real_font() {
     .unwrap();
     let d = |l: &super::place::Layout| (l.letters[1].x - l.letters[0].x) / l.letters[0].em;
     assert!(d(&k) < d(&n) - 0.05, "{} vs {}", d(&k), d(&n));
+}
+
+// ---- what the handles read -------------------------------------------------
+
+#[test]
+fn a_letters_quad_is_its_ink_box_through_its_map() {
+    // Unturned: the Boxes rectangle, 0.8 adv by 0.7 em, round the letter.
+    let l = place("AB", 100.0, &plain(), &mut boxes()).unwrap();
+    let a = &l.letters[0];
+    let w = 60.0 * 0.8 / 2.0;
+    assert!((a.quad[0][0] - (a.x - w)).abs() < 1e-9 && (a.quad[0][1] - (a.y - 35.0)).abs() < 1e-9);
+    assert!((a.quad[2][0] - (a.x + w)).abs() < 1e-9 && (a.quad[2][1] - (a.y + 35.0)).abs() < 1e-9);
+    assert_eq!(a.centre, [a.x, a.y]);
+    assert_eq!(a.unit, a.em);
+    // Turned a quarter by hand and doubled: the box stands up, twice as big,
+    // and the edit's em is still the one before the scale.
+    let p = Params {
+        edits: vec![Edit {
+            group: 0,
+            index: 1,
+            dx: 0.0,
+            dy: 0.0,
+            rot: 90.0,
+            scale: 2.0,
+        }],
+        ..plain()
+    };
+    let l = place("AB", 100.0, &p, &mut boxes()).unwrap();
+    let b = &l.letters[1];
+    let xs = b.quad.map(|q| q[0]);
+    let ys = b.quad.map(|q| q[1]);
+    let span = |v: [f64; 4]| {
+        v.iter().copied().fold(f64::MIN, f64::max) - v.iter().copied().fold(f64::MAX, f64::min)
+    };
+    assert!(
+        (span(xs) - 140.0).abs() < 1e-6 && (span(ys) - 96.0).abs() < 1e-6,
+        "{:?}",
+        b.quad
+    );
+    assert!((b.unit * 2.0 - b.em).abs() < 1e-9);
+    // The box is 140 across and 96 down now: in at 60 across, out at 55 down,
+    // where the letter unturned would have been hit.
+    let hit = super::gizmo::hit(&[b.quad], [b.x + 60.0, b.y], 0.0);
+    assert_eq!(hit, Some(0));
+    assert_eq!(super::gizmo::hit(&[b.quad], [b.x, b.y + 55.0], 0.0), None);
+}
+
+#[test]
+fn every_code_point_names_the_letter_that_draws_it() {
+    let l = place("A ーーB/\u{1F600}!!", 100.0, &plain(), &mut boxes()).unwrap();
+    // A, space, the bar run (one letter), B, the slash, the emoji, the bangs.
+    assert_eq!(l.cp, [0, -1, 1, -1, 2, -1, 3, 4, -1]);
+}
+
+#[test]
+fn a_letters_outline_lands_in_its_quad() {
+    let p = Params {
+        follow: 1.0,
+        slant: 10.0,
+        paths: vec![Path {
+            a: [-1.0, 0.5],
+            b: [1.0, -0.5],
+            bend: 0.2,
+        }],
+        ..plain()
+    };
+    let l = place("AB", 100.0, &p, &mut boxes()).unwrap();
+    let c = super::place::letter_outline("AB", 100.0, &p, &mut boxes(), 1).unwrap();
+    let q = l.letters[1].quad;
+    for (got, want) in c[0].iter().zip(q) {
+        assert!((got[0] - want[0]).abs() < 1e-9 && (got[1] - want[1]).abs() < 1e-9);
+    }
+    assert_eq!(
+        super::place::letter_outline("AB", 100.0, &p, &mut boxes(), 2),
+        Err(Error::BadSpec)
+    );
 }

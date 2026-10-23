@@ -40,17 +40,31 @@ impl Surface {
 
     /// The box of pixels with any alpha, or `None` for a clear surface.
     pub(crate) fn ink(&self) -> Option<IBox> {
-        let (w, h) = (self.width, self.height);
-        let row_has = |y: usize| self.data[y * w * 4..(y + 1) * w * 4].chunks_exact(4).any(|p| p[3] != 0);
-        let y0 = (0..h).find(|&y| row_has(y))?;
-        let y1 = (y0..h).rev().find(|&y| row_has(y))? + 1;
-        let (mut x0, mut x1) = (w, 0);
+        self.ink_in(self.bounds())
+    }
+
+    /// [`Surface::ink`] for a surface clear outside `within`: only that is
+    /// read. A shadow's layer is a raster laid on a clear surface, so its ink
+    /// is inside the raster, and the rest need not be read.
+    pub(crate) fn ink_in(&self, within: IBox) -> Option<IBox> {
+        let bx = within.intersect(&self.bounds());
+        if bx.is_empty() {
+            return None;
+        }
+        let w = self.width;
+        let (c0, c1) = (bx.x0 as usize, bx.x1 as usize);
+        let row = |y: usize| &self.data[(y * w + c0) * 4..(y * w + c1) * 4];
+        let row_has = |y: usize| row(y).chunks_exact(4).any(|p| p[3] != 0);
+        let (r0, r1) = (bx.y0 as usize, bx.y1 as usize);
+        let y0 = (r0..r1).find(|&y| row_has(y))?;
+        let y1 = (y0..r1).rev().find(|&y| row_has(y))? + 1;
+        let (mut x0, mut x1) = (c1, c0);
         for y in y0..y1 {
-            let row = &self.data[y * w * 4..(y + 1) * w * 4];
+            let row = row(y);
             if let Some(a) = row.chunks_exact(4).position(|p| p[3] != 0) {
-                x0 = x0.min(a);
+                x0 = x0.min(c0 + a);
                 let b = row.chunks_exact(4).rposition(|p| p[3] != 0).unwrap_or(a);
-                x1 = x1.max(b + 1);
+                x1 = x1.max(c0 + b + 1);
             }
         }
         Some(IBox {
@@ -153,7 +167,7 @@ fn div255(v: u32) -> u32 {
     (v + 127) / 255
 }
 
-fn to_u8(v: f32) -> u8 {
+pub(super) fn to_u8(v: f32) -> u8 {
     // A NaN is 0, and anything past the ends is the end.
     (v + 0.5).clamp(0.0, 255.0) as u8
 }
@@ -500,14 +514,14 @@ pub(crate) struct Moved {
 /// how much of each: the pixel `(ix, iy)` further back, its right-hand and
 /// lower neighbours, and the one diagonal to it. A move by whole pixels
 /// reads one.
-struct Taps {
-    ix: i64,
-    iy: i64,
-    k: [f32; 4],
+pub(super) struct Taps {
+    pub ix: i64,
+    pub iy: i64,
+    pub k: [f32; 4],
 }
 
 impl Taps {
-    fn new(m: &Moved) -> Self {
+    pub(super) fn new(m: &Moved) -> Self {
         // The pixel at `x` shows the source at `x - dx`.
         let (sx, sy) = (-m.dx, -m.dy);
         let (fx, fy) = (sx.floor(), sy.floor());
@@ -529,7 +543,7 @@ impl Taps {
 /// Adds to `acc`, which is one row of premultiplied pixels as `f32`, the row
 /// `y` of `src` seen through one move: only the columns `x0..x1`, and only
 /// from inside `ink`, outside which `src` is clear.
-fn add_row(acc: &mut [f32], src: &Surface, ink: IBox, y: i64, (x0, x1): (usize, usize), t: &Taps) {
+pub(super) fn add_row(acc: &mut [f32], src: &Surface, ink: IBox, y: i64, (x0, x1): (usize, usize), t: &Taps) {
     let w = src.width as i64;
     for (row, k) in [(y + t.iy, [t.k[0], t.k[1]]), (y + t.iy + 1, [t.k[2], t.k[3]])] {
         if row < i64::from(ink.y0) || row >= i64::from(ink.y1) || (k[0] == 0.0 && k[1] == 0.0) {
@@ -604,8 +618,8 @@ pub(crate) fn sum_moved(src: &mut Surface, moves: &[Moved]) -> Result<(), Error>
     Ok(())
 }
 
-/// `layer` moved by `(dx, dy)` pixels, laid source-over on `dst` at
-/// `opacity`. The two are the same size.
+/// [`over_moved_in`] for one copy, its ink found here.
+#[cfg(test)]
 pub(crate) fn over_moved(
     dst: &mut Surface,
     layer: &Surface,
@@ -615,22 +629,51 @@ pub(crate) fn over_moved(
     let Some(ink) = layer.ink() else {
         return Ok(());
     };
+    let mut acc = budget::filled(dst.width * 4, 0.0f32)?;
+    over_moved_in(dst, layer, ink, (dx, dy), opacity, &mut acc);
+    Ok(())
+}
+
+/// `layer` moved by `(dx, dy)` pixels, laid source-over on `dst` at
+/// `opacity`. The two are the same size.
+///
+/// `ink` is the layer's own ([`Surface::ink`]) and `acc` a row of at least
+/// `dst.width * 4` values: a box's shadows lay one layer two dozen times and
+/// more, and finding its ink and making a row for every copy was as much
+/// work as laying it, so the caller does both once for all of them.
+pub(crate) fn over_moved_in(
+    dst: &mut Surface,
+    layer: &Surface,
+    ink: IBox,
+    (dx, dy): (f64, f64),
+    opacity: f64,
+    acc: &mut [f32],
+) {
     let m = Moved {
         dx,
         dy,
         weight: opacity.clamp(0.0, 1.0),
     };
-    let bx = dst.grown(ink, 0).union_moved(&m).intersect(&dst.bounds());
-    if bx.is_empty() {
-        return Ok(());
-    }
     let t = Taps::new(&m);
-    let mut acc = budget::filled(dst.width * 4, 0.0f32)?;
-    let (x0, x1) = (bx.x0 as usize, bx.x1 as usize);
-    for y in bx.y0..bx.y1 {
+    // Only where the moved copy can land: the pixel at `x` reads the source
+    // at `x + ix` and the one after, so it has ink only from one before the
+    // ink, less the shift, to its end, less the shift.
+    let landed = |lo: i32, hi: i32, shift: i64| {
+        let lo = (i64::from(lo) - 1 - shift).clamp(-(1 << 40), 1 << 40);
+        let hi = (i64::from(hi) - shift).clamp(-(1 << 40), 1 << 40);
+        (lo, hi)
+    };
+    let (x0, x1) = landed(ink.x0, ink.x1, t.ix);
+    let (y0, y1) = landed(ink.y0, ink.y1, t.iy);
+    let (x0, x1) = (x0.max(0) as usize, x1.clamp(0, dst.width as i64) as usize);
+    let (y0, y1) = (y0.max(0) as usize, y1.clamp(0, dst.height as i64) as usize);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    for y in y0..y1 {
         acc[x0 * 4..x1 * 4].fill(0.0);
-        add_row(&mut acc, layer, ink, i64::from(y), (x0, x1), &t);
-        let to = (y as usize * dst.width + x0) * 4;
+        add_row(acc, layer, ink, y as i64, (x0, x1), &t);
+        let to = (y * dst.width + x0) * 4;
         let pairs = dst.data[to..to + (x1 - x0) * 4]
             .chunks_exact_mut(4)
             .zip(acc[x0 * 4..x1 * 4].chunks_exact(4));
@@ -642,23 +685,6 @@ pub(crate) fn over_moved(
             for c in 0..4 {
                 d[c] = to_u8(s[c] + f32::from(d[c]) * keep);
             }
-        }
-    }
-    Ok(())
-}
-
-impl IBox {
-    /// The box, and where a move carries it: both, as one box.
-    fn union_moved(&self, m: &Moved) -> IBox {
-        let far = |v: f64, lo: bool| {
-            let v = if lo { v.floor() } else { v.ceil() };
-            v.clamp(-1e9, 1e9) as i32
-        };
-        IBox {
-            x0: self.x0.saturating_add(far(m.dx, true).min(0)),
-            y0: self.y0.saturating_add(far(m.dy, true).min(0)),
-            x1: self.x1.saturating_add(far(m.dx, false).max(0) + 1),
-            y1: self.y1.saturating_add(far(m.dy, false).max(0) + 1),
         }
     }
 }

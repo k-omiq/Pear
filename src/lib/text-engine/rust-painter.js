@@ -82,10 +82,17 @@ export function createRustGlyphPainter(rust, options = {}) {
     };
   }
 
+  // Both paints hand back where their pixels landed, in the canvas's device
+  // pixels: the engine's raster is cut to what the job inks (strokes, shadows
+  // and the smear included), so this is the ink's rectangle, and a caller that
+  // wants the picture cut to its ink (the SFX panel's previews) reads it here
+  // instead of scanning the pixels back. Null when the job drew nothing.
   function paint(ctx, job) {
     const m = ctx.getTransform();
     const raster = paintJob(rust.low, request(job, [m.a, m.b, m.c, m.d, m.e, m.f]));
-    if (raster) blit(ctx, raster, raster.x, raster.y);
+    if (!raster) return null;
+    blit(ctx, raster, raster.x, raster.y);
+    return { x: raster.x, y: raster.y, w: raster.width, h: raster.height };
   }
 
   // A finished box in one job: its glyphs, and the shadows, the blur, the
@@ -117,7 +124,7 @@ export function createRustGlyphPainter(rust, options = {}) {
     y0 = Math.floor(y0 + EPS);
     const width = Math.ceil(x1 - EPS) - x0;
     const height = Math.ceil(y1 - EPS) - y0;
-    if (!(width > 0 && height > 0)) return;
+    if (!(width > 0 && height > 0)) return null;
     const raster = paintBoxJob(rust.low, {
       ...request(spec.job, [m.a, m.b, m.c, m.d, m.e - x0, m.f - y0]),
       width,
@@ -127,7 +134,9 @@ export function createRustGlyphPainter(rust, options = {}) {
       taps: spec.taps,
       clip: spec.clip,
     });
-    if (raster) blit(ctx, raster, x0 + raster.x, y0 + raster.y);
+    if (!raster) return null;
+    blit(ctx, raster, x0 + raster.x, y0 + raster.y);
+    return { x: x0 + raster.x, y: y0 + raster.y, w: raster.width, h: raster.height };
   }
 
   // The engine's pixels onto the canvas at device pixel (x, y).

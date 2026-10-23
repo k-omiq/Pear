@@ -8,7 +8,10 @@ import { clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeSfx, normalizeStyle } from './data.js';
 import { placeBlock, curvedStyle, isAutoBox, boxInkRect } from './contain.js';
 import { glyphJob } from './exporter.js';
-import { sfxAvailable, sfxLayout, sfxKinds, sfxPick, sfxPlacement, applySfxKind, clearSfx } from './sfx.js';
+import {
+  sfxAvailable, sfxLayout, sfxKinds, sfxPick, sfxPlacement, applySfxKind, clearSfx, sfxResolved, sfxParams,
+  sfxHit, sfxTurn, sfxScale, sfxMove, sfxBendFor, sfxCurve, bendHandle, sfxOutline,
+} from './sfx.js';
 
 // ===========================================================================
 // SFX lettering against the real Rust engine
@@ -64,8 +67,8 @@ describe('the engine behind the SFX seam', () => {
     expect(new Set(kinds.map((k) => k.id)).size).toBe(12);
     for (const k of kinds) {
       expect(['h', 'v'], k.id).toContain(k.dir);
-      expect(k.look.fill.type, k.id).toBeTruthy();
-      expect(Array.isArray(k.look.outlines), k.id).toBe(true);
+      // A type is a layout only.
+      expect(k.look, k.id).toBe(undefined);
     }
   });
 
@@ -74,7 +77,25 @@ describe('the engine behind the SFX seam', () => {
     const pick = sfxPick('BOOM!!');
     expect([...pick.order].sort()).toEqual(sfxKinds().map((k) => k.id).sort());
     expect(pick.scores).toHaveLength(12);
-    expect(pick.strength).toBeGreaterThan(0);
+    for (const m of ['power', 'rough', 'momentum']) {
+      expect(pick[m], m).toBeGreaterThanOrEqual(0);
+      expect(pick[m], m).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it('resolves what the box leaves null from the type, moved by the macros', () => {
+    use();
+    const s = typed('impact');
+    const impact = sfxKinds().find((k) => k.id === 'impact');
+    const r = sfxResolved(s.sfx);
+    expect(r).toMatchObject({ vertical: false, follow: impact.follow, gap: impact.gap, flow: impact.flow, bigTighter: 0.5 });
+    s.sfx.power = 100;
+    expect(Math.round(sfxResolved(s.sfx).flow.from * 100)).toBe(64);
+    s.sfx.gap = 0.4;
+    expect(sfxResolved(s.sfx).gap).toBe(0.4);
+    // The layout reads the same numbers.
+    expect(sfxParams(s.sfx).gap).toBe(0.4);
+    expect(sfxResolved(typed('small').sfx).vertical).toBe(true);
   });
 });
 
@@ -118,7 +139,7 @@ describe('placeBlock with the real engine', () => {
     expect(before.paths.length).toBeGreaterThan(0);
     s.sfx.paths = [{ a: [-2, 1], b: [2, -1], bend: 0 }];
     const tilted = sfxPlacement('BOOM', s, 40);
-    expect(tilted.paths[0]).toEqual({ a: [-2, 1], b: [2, -1], bend: 0 });
+    expect(tilted.paths[0]).toMatchObject({ a: [-2, 1], b: [2, -1], bend: 0, ctrl: [0, 0], mid: [0, 0] });
     expect(tilted.letters[3].y).toBeLessThan(tilted.letters[0].y);
     s.sfx.glyphs = { '0:1': { dx: 1, dy: 0, rot: 0, s: 1 } };
     const moved = sfxPlacement('BOOM', s, 40);
@@ -190,5 +211,52 @@ describe('a painted SFX box', () => {
       expect(ink.y0, id).toBeGreaterThanOrEqual(Math.floor(r.y) - 1);
       expect(ink.y1, id).toBeLessThanOrEqual(Math.ceil(r.y + r.h) + 1);
     }
+  });
+});
+
+describe('the handles against the real engine', () => {
+  it('hits each letter by its ink quad and turns, scales, moves and bends by the engine', () => {
+    use();
+    const s = typed('impact');
+    const p = sfxPlacement('BOOM', s, 40);
+    const { letters, paths } = p;
+    expect(p.cp).toEqual([0, 1, 2, 3]);
+    letters.forEach((l, i) => {
+      expect(l.quad).toHaveLength(4);
+      expect(sfxHit(letters, l.centre[0], l.centre[1])).toBe(i);
+    });
+    expect(sfxHit(letters, 1e5, 1e5)).toBe(-1);
+    // Blender style: the total keeps counting, what is stored wraps.
+    const t = sfxTurn([0, 0], [10, 0], [0, 10], 170);
+    expect(t.total).toBeCloseTo(260, 9);
+    expect(t.shown).toBe(-100);
+    expect(sfxTurn([0, 0], [10, 0], [10, 1], 0, 15).shown).toBe(0);
+    expect(sfxScale([0, 0], [10, 0], [20, 0], 1)).toBe(2);
+    expect(sfxScale([0, 0], [10, 0], [100, 0], 1)).toBe(5);
+    const l = letters[1];
+    expect(sfxMove(l, [0, 0], [l.unit / 2, 0], 0, 0)).toEqual([0.5, 0]);
+    // The bend handle sits on the curve's middle, and dragging it there
+    // keeps the bend.
+    const q = paths[0];
+    expect(sfxCurve(q)).toEqual({ ctrl: q.ctrl, mid: q.mid });
+    expect(bendHandle(q)).toEqual(q.mid);
+    expect(sfxBendFor(q, q.mid)).toBeCloseTo(q.bend, 3);
+  });
+
+  it('a hand edit moves the letter by its unit, and its outline goes with it', () => {
+    use();
+    const s = typed('impact');
+    const before = sfxPlacement('BOOM', s, 40).letters[1];
+    s.sfx.glyphs = { '0:1': { dx: 1, dy: 0, rot: 0, s: 2 } };
+    const after = sfxPlacement('BOOM', s, 40).letters[1];
+    expect(after.unit * 2).toBeCloseTo(after.em, 9);
+    expect(Math.abs(after.x - before.x - after.unit)).toBeLessThan(0.05 * after.unit);
+    const d = sfxOutline('BOOM', s, 40, 1);
+    // An O: two closed contours, round the moved letter.
+    expect(d.match(/M/g)).toHaveLength(2);
+    const xs = [...d.matchAll(/[ML](-?[\d.]+) /g)].map((m) => +m[1]);
+    expect(Math.min(...xs)).toBeLessThan(after.x);
+    expect(Math.max(...xs)).toBeGreaterThan(after.x);
+    expect(sfxOutline('BOOM', s, 40, 9)).toBe('');
   });
 });

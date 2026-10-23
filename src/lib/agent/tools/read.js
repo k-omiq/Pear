@@ -188,31 +188,9 @@ defineTool({
 
 // ---- the sound types ----
 
-const TONES = { '#ffffff': 'white', '#000000': 'black', '#111111': 'black' };
-const toneName = (c) => TONES[String(c).toLowerCase()] ?? c;
-const FILLS = {
-  solid: () => 'black letters',
-  white: () => 'white letters',
-  gray: (f) => `grey letters (${Math.round((f.gray ?? f.value ?? 0.5) * 100)}% ink)`,
-  tone: () => 'dot-tone letters',
-  gradTone: () => 'letters in a fading dot tone',
-  negative: () => 'white letters cut out of a black blob',
-};
-
-// A type's look in a line: its fill, its rims (innermost first) and corners.
-export function lookSummary(look) {
-  if (!look) return '';
-  const fill = (FILLS[look.fill?.type] ?? FILLS.solid)(look.fill ?? {});
-  const rims = (look.outlines ?? []).map((o) => toneName(o.color));
-  // A rim's width is a share of the size; under 0.08 em it reads thin.
-  const thin = look.outlines?.length === 1 && look.outlines[0].width < 0.08 ? 'thin ' : '';
-  const rim = !rims.length ? 'no rim' : rims.length === 1 ? `a ${thin}${rims[0]} rim` : `${rims.join(' then ')} rims`;
-  return `${fill}, ${rim}, ${look.sharp ? 'sharp' : 'round'} corners`;
-}
-
 defineTool({
   name: 'sfx_kinds',
-  description: 'List the SFX sound types (Rust engine only): id, name, a Japanese example, the lettering tag it suits, its direction (h across, v down) and a one-line look. Given a box id or a text, also rank the types for it (the app\'s auto pick): pick.order best first and the strength the sound asks for. Apply one with edit do "sfx_kind:<id>" or "sfx_pick". Reading this changes nothing.',
+  description: 'List the SFX sound types (Rust engine only): id, name, a Japanese example, the lettering tag it suits, its direction (h across, v down). A type is a layout only; the box keeps its font, fill and outlines. Given a box id or a text, also rank the types for it (the app\'s auto pick): pick.order best first and the power, rough and momentum dials the sound asks for. Apply one with edit do "sfx_kind:<id>" or "sfx_pick". Reading this changes nothing.',
   input: {
     type: 'object', additionalProperties: false,
     properties: {
@@ -223,7 +201,7 @@ defineTool({
   run({ id, text } = {}) {
     if (id != null && text != null) throw new ToolError('Give id or text, not both.', 'sfx_kinds: { id: "b12" } ranks the types for that box.');
     if (!sfxAvailable()) return { kinds: [], note: 'SFX lettering needs the Rust text engine; it is unavailable on the browser engine.' };
-    const kinds = sfxKinds().map((k) => ({ id: k.id, name: k.name, example: k.example, tag: k.tag, dir: k.dir, look: lookSummary(k.look) }));
+    const kinds = sfxKinds().map((k) => ({ id: k.id, name: k.name, example: k.example, tag: k.tag, dir: k.dir }));
     if (id == null && text == null) return { kinds };
     let source = text;
     if (id != null) {
@@ -234,7 +212,7 @@ defineTool({
     return {
       kinds,
       pick: pick?.order?.length
-        ? { ...(id != null ? { id } : { text: untrusted(source) }), order: [...pick.order], strength: pick.strength }
+        ? { ...(id != null ? { id } : { text: untrusted(source) }), order: [...pick.order], power: pick.power, rough: pick.rough, momentum: pick.momentum }
         : null,
     };
   },
