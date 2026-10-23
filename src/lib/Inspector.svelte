@@ -7,15 +7,10 @@
     beginEdit,
     cloneStyle,
     page,
-    pageById,
     previewBoxFont,
     endFontPreview,
-    setEditSettleHook,
     setBoxText,
     isFreeBox,
-    boxEdited,
-    boxSnap,
-    boxEditRecords,
     refitBalloon,
     approveOutline,
     approvePageOutlines,
@@ -31,8 +26,7 @@
     setBoxLocked,
   } from './store.svelte.js';
 
-  import { record } from './editor/history.svelte.js';
-  import { prefs } from './prefs.svelte.js';
+  import { editBurst } from './edit-burst.js';
   import FontPicker from './FontPicker.svelte';
   import { sizingOf } from './data.js';
   import { modKey } from './format.js';
@@ -58,7 +52,6 @@
   import { liquifyTool, setLiquifyMode, LIQUIFY_RADIUS_MIN, LIQUIFY_RADIUS_MAX } from './liquify-tool.svelte.js';
   import { LIQUIFY_MODES } from './liquify.js';
   import BrushPanel from './BrushPanel.svelte';
-  import SfxPanel from './SfxPanel.svelte';
   import { clearSfx } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { glyphPainter } from './text-engine/index.js';
@@ -95,10 +88,6 @@
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
   import { onDestroy } from 'svelte';
-
-  // `onSettings` opens the Settings modal; the SFX pane offers it when the
-  // engine it needs is not the one running.
-  let { onSettings = null } = $props();
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
   // A locked box shows its settings and takes no change to them.
@@ -137,8 +126,8 @@
     document.getElementById(`insp-tab-${next}`)?.focus();
   }
 
-  const ALL_EFFECTS_TABS = [
-    ['sfx', 'SFX (beta)'],
+  // SFX is not here: it has its own window (SfxWindow.svelte).
+  const EFFECTS_TABS = [
     ['stroke', 'Stroke'],
     ['shadow', 'Shadow'],
     ['warp', 'Warp'],
@@ -153,10 +142,7 @@
     ['edges', 'Edges'],
     ['mask', 'Mask'],
   ];
-  // SFX is a beta, there only while Settings has the SFX tool on. A session
-  // left on its tab shows Stroke while it is off.
-  const EFFECTS_TABS = $derived(prefs.sfxTool ? ALL_EFFECTS_TABS : ALL_EFFECTS_TABS.filter(([id]) => id !== 'sfx'));
-  const effectsTab = $derived(effectsSubTab.id === 'sfx' && !prefs.sfxTool ? 'stroke' : effectsSubTab.id);
+  const effectsTab = $derived(effectsSubTab.id);
 
   function onSubTabKey(e, id) {
     const i = EFFECTS_TABS.findIndex(([t]) => t === id);
@@ -189,45 +175,13 @@
   // the fraction.
   const pct = (v) => Math.round((v ?? 0) * 100);
 
-  // Debounce history recording during continuous adjustments.
-  const SETTLE_MS = 400;
-  let pending = null;
-  let settleT;
-
-  // The box as it stood BEFORE the change `touch` is being told about. Every
-  // handler in this panel mutates first and calls `touch` after, so a snapshot
-  // taken inside `touch` is already the after - and a one-click edit (a
-  // switch, a mode button) then diffed as before === after and recorded
-  // nothing: single-click changes were simply not undoable, and a slider
-  // burst lost its first tick. So the snapshot is taken where the change has
-  // provably not happened yet: a capture-phase pointerdown/keydown on the
-  // panel itself, which runs before any control's own handler. `armSnap`
-  // refreshes it only while no entry is pending - two edits inside one settle
-  // window are one burst, and the burst diffs against its own start.
-  let preSnap = null;
-  function armSnap() {
-    if (!box) return;
-    if (pending && pending.boxId === box.id) return;
-    preSnap = { boxId: box.id, snap: boxSnap(box) };
-  }
-
-  // Explicit geometry edits record resize history.
-  function touch(opts) {
-
-    if (pending && pending.boxId !== box?.id) settle();
-
-    if (box && !pending) {
-      pending = {
-        pageId: page().id,
-        boxId: box.id,
-        before: preSnap?.boxId === box.id ? preSnap.snap : boxSnap(box),
-      };
-    }
-    if (pending && opts?.geom) pending.geom = true;
-    boxEdited(box);
-    clearTimeout(settleT);
-    settleT = setTimeout(settle, SETTLE_MS);
-  }
+  // Debounce history recording during continuous adjustments: a burst of
+  // edits is one undo step (edit-burst.js, which the SFX window shares).
+  // `armSnap` runs capture-phase on the panel, before any control writes.
+  const burst = editBurst(() => box);
+  const armSnap = burst.arm;
+  const touch = burst.touch;
+  const settle = burst.settle;
 
   // The family a font picker settled on. Whatever it was showing goes back
   // first, so the snapshot the edit is recorded against is the box as it was.
@@ -238,42 +192,14 @@
     touch();
   }
 
-  // Hook to settle pending edits on navigation or undo.
-  const releaseSettleHook = setEditSettleHook(settle);
   onDestroy(() => {
-    // Settle pending changes on panel unmount, then release the hook so a
-    // later settle cannot record against whatever document is open by then.
-    settle();
-    releaseSettleHook();
-    clearTimeout(settleT);
+    burst.dispose();
     // The delete-preset arming timer too. It is one 2.5s timer rather than a
     // leak that grows, but it holds this component's closure past its unmount
     // and then writes `delArm` - state belonging to an Inspector that is no
     // longer on screen.
     clearTimeout(delArmT);
-    pending = null;
   });
-
-  function settle() {
-    clearTimeout(settleT);
-    const pend = pending;
-    pending = null;
-    // The armed snapshot served the burst that just closed. Cleared so a later
-    // mutation that somehow arrives without its own pointerdown/keydown (a
-    // scripted write, a test) falls back to a fresh snapshot instead of
-    // blaming this burst's start for changes it never saw.
-    preSnap = null;
-    if (!pend) return;
-    // Ignore pending edits for previous pages.
-    if (pend.pageId !== page().id) return;
-
-    const b = pageById(pend.pageId)?.boxes.find((x) => x.id === pend.boxId);
-    if (!b) return;
-    // The box as the history sees it, and the entries the burst makes, are the
-    // store's: one per kind of edit, each with everything its fit moved.
-    const key = { pageId: pend.pageId, boxId: b.id };
-    for (const e of boxEditRecords(key, pend.before, boxSnap(b), pend.geom)) record(e);
-  }
 
   // One setter for every plain numeric field: clamp, write, touch. Saves the
   // panel from spelling the same three lines out forty times.
@@ -1532,13 +1458,6 @@
             </button>
           {/each}
         </div>
-
-        {#if effectsTab === 'sfx'}
-          <!-- Inside this element, so the capture-phase pointerdown/keydown on
-               `.insp` (armSnap) takes the undo snapshot before any control in the
-               panel writes; a colour picked in a popover arms it itself. -->
-          <SfxPanel {box} pg={page()} {touch} arm={armSnap} {onSettings} />
-        {/if}
 
         {#if effectsTab === 'stroke'}
           <!-- Strokes: innermost first, which is also the order they are listed. -->

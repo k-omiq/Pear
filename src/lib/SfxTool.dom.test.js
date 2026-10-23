@@ -5,7 +5,7 @@ import Canvas from './editor/Canvas.svelte';
 import RailTools from './editor/RailTools.svelte';
 import { app, loadProjectPages, page, setTool, addSfxBox } from './store.svelte.js';
 import { setPref, prefs } from './prefs.svelte.js';
-import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
+import { panels, setHidden } from './editor/panels.svelte.js';
 import { initHistory, resetHistory, undo } from './editor/history.svelte.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import { defaultStyle, normalizeStyle } from './data.js';
@@ -35,6 +35,7 @@ afterAll(() => {
   setTypesetEnabled(original.typeset);
 });
 beforeEach(() => {
+  setHidden('sfx', true);
   setTextEngine(rust);
   clearLayoutMemo();
   setPref('inheritBoxStyle', true);
@@ -125,10 +126,9 @@ describe('a drag on the page', () => {
     expect(cy + p.a[1] * em).toBeCloseTo(200, 0);
     expect(cx + p.b[0] * em).toBeCloseTo(400, 0);
     expect(cy + p.b[1] * em).toBeCloseTo(260, 0);
-    // Selected, and the Inspector on its controls.
+    // Selected, and the SFX window open on it.
     expect(app.selectedId).toBe(b.id);
-    expect(inspectorTab.id).toBe('effects');
-    expect(effectsSubTab.id).toBe('sfx');
+    expect(panels.sfx.hidden).toBe(false);
   });
 
   it('is one undo step, line and all', async () => {
