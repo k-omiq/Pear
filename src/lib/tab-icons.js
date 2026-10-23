@@ -97,7 +97,6 @@ export const iconEffectMask = wrap('<rect x="3" y="5" width="10" height="10" rx=
 export const iconEffectSfx = wrap('<path d="M4.5 16v-3.5"/><path d="M10 16V9.5"/><path d="M15.5 16V5"/>');
 
 export const effectsSubTabIcons = {
-  sfx: iconEffectSfx,
   stroke: iconEffectStroke,
   shadow: iconEffectShadow,
   warp: iconEffectWarp,

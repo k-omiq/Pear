@@ -19,6 +19,8 @@
   import Pager from './Pager.svelte';
   import FloatingPanel from './FloatingPanel.svelte';
   import Inspector from '../Inspector.svelte';
+  import SfxWindow from '../SfxWindow.svelte';
+  import { prefs } from '../prefs.svelte.js';
   import Queue from '../Queue.svelte';
   import BulkStylePanel from '../BulkStylePanel.svelte';
   import BoxMenu from './BoxMenu.svelte';
@@ -185,8 +187,13 @@
     <!-- The title follows the body: the panel says what it is showing, and while
          the brush is armed it is not showing a text box's options. -->
     <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'}>
-      <Inspector {onSettings} />
+      <Inspector />
     </FloatingPanel>
+    {#if prefs.sfxTool}
+      <FloatingPanel id="sfx" title="SFX">
+        <SfxWindow {onSettings} />
+      </FloatingPanel>
+    {/if}
   {/if}
   <FloatingPanel
     id="queue"

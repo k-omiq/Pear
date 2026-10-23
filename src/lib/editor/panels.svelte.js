@@ -11,7 +11,7 @@
 // document.
 import { PREF_SAVE_MS } from '../store.svelte.js';
 
-export const PANEL_IDS = ['options', 'queue'];
+export const PANEL_IDS = ['options', 'sfx', 'queue'];
 
 export const MIN_W = 220;
 export const MIN_H = 160;
@@ -25,6 +25,7 @@ const GAP = 16;
 // caps it below any panel at 50. So the panels open below the band instead.
 const CHROME_BAND = 84;
 const DEF_OPTIONS_H = 420;
+const DEF_SFX_H = 640;
 // However far a panel is dragged, this much of it stays inside the window. It
 // is the difference between a layout the user can undo by hand and one that
 // needs the reset button.
@@ -42,6 +43,10 @@ export function defaultGeometry(vw) {
     // Stacked directly under the options panel, computed rather than written
     // out, so moving the band cannot leave the two overlapping.
     queue: { x, y: CHROME_BAND + DEF_OPTIONS_H + GAP, w: DEF_W, h: 360, hidden: false, z: 2 },
+    // The SFX window opens beside the options panel, to its left, and starts
+    // hidden: its tab waits under the options panel's on the tool strip, and
+    // drawing a sound opens it.
+    sfx: { x: Math.max(GAP, x - DEF_W - GAP), y: CHROME_BAND, w: DEF_W, h: DEF_SFX_H, hidden: true, z: 3 },
   };
 }
 
@@ -183,8 +188,8 @@ export function setHidden(id, hidden) {
   save();
 }
 
-// Clicking a panel brings it forward. Two panels only, so the z values stay
-// small and never need normalising.
+// Clicking a panel brings it forward. A handful of panels, so the z values
+// stay small and never need normalising.
 // The test is against the *other* panels, not against the overall top: a
 // layout where both carry the same z - which a stored blob written without
 // them produces - would otherwise satisfy "I am already the top" forever, and

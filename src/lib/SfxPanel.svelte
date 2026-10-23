@@ -1,8 +1,6 @@
 <script>
-  // The Inspector's SFX pane: the sound type a box is lettered as, and every
-  // number of it.
-  //
-  // It is the Effects tab's first sub-tab, top to bottom:
+  // The SFX pane: the sound type a box is lettered as, and every number of
+  // it. It is the body of the SFX window (SfxWindow.svelte), top to bottom:
   //
   //   stage        the box's own text as the engine paints it
   //   type         twelve cards, the box's text and look laid out as each
@@ -23,12 +21,12 @@
   // box leaves null is the type's: its slider shows the resolved number
   // (`sfxResolved`) until it is moved, and Reset gives the type's back.
   //
-  // Every write is followed by the Inspector's `touch`, handed in as a prop,
-  // so an edit is one more `style` entry in the same undo flow. The
-  // Inspector's capture-phase pointerdown/keydown (`armSnap`) takes the
+  // Every write is followed by the host's `touch`, handed in as a prop, so an
+  // edit is one more `style` entry in the same undo flow (edit-burst.js). The
+  // host's capture-phase pointerdown/keydown (`arm`) takes the
   // before-snapshot, and this component is rendered inside the element it is
   // set on, so nothing here arms it - except a colour picked in a popover,
-  // which lives outside that element: `arm` is the Inspector's `armSnap`.
+  // which lives outside that element and calls `arm` itself.
   //
   // Under the browser engine there is no SFX layout (`sfxAvailable`), so the
   // pane is one sentence and, when the host can open Settings, a button.
@@ -728,12 +726,12 @@
 {/if}
 
 <style>
-  /* The preview stays under the Inspector's tab strip (54px of it shows while
-     the panel is scrolled) so a card can be picked while watching it. Opaque
-     ground, as the strip has, so cards do not show through. */
+  /* The preview stays pinned to the top of the window while it is scrolled,
+     so a card can be picked while watching it. Opaque ground, so cards do not
+     show through. */
   .sfx-preview {
     position: sticky;
-    top: 54px;
+    top: 0;
     z-index: 1;
     margin: 0 -12px;
     padding: 4px 12px 8px;

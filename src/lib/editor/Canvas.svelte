@@ -43,7 +43,7 @@
   } from './strip.js';
   import { publishStripScroll, stripReveal } from './strip-sync.svelte.js';
   import { patternPick, finishPatternPick } from '../pattern-pick.svelte.js';
-  import { setInspectorTab, setEffectsSubTab } from '../inspector-tabs.svelte.js';
+  import { setHidden, raisePanel } from './panels.svelte.js';
 
   // Handle for dock Fit button.
   let { onReady } = $props();
@@ -599,9 +599,9 @@
       }
       const id = addSfxBox({ x: hit.x, y: hit.y }, { x: hit.x + dx / app.zoom, y: hit.y + dy / app.zoom }, hit.pg);
       if (id == null) return;
-      // Straight to the controls the new sound is tuned with.
-      setInspectorTab('effects');
-      setEffectsSubTab('sfx');
+      // Straight to the controls the new sound is tuned with: its window.
+      setHidden('sfx', false);
+      raisePanel('sfx');
     };
     const key = (ev) => {
       if (ev.key !== 'Escape') return;
