@@ -327,17 +327,29 @@ export async function createRustTextEngine(source, options = {}) {
     /**
      * SFX lettering (sfx.js): `sfxPlace(face, text, params)` lays the text's
      * groups along their paths (engine.mjs says what comes back),
-     * `sfxKinds()` is the engine's table of the twelve sound types and
-     * `sfxPick(text)` ranks them for a sound. Only the Rust engine has them,
-     * and only a wasm built with them: the methods are absent otherwise,
-     * which is how `sfxAvailable` tells the browser engine and a stale wasm
-     * from this one.
+     * `sfxKinds()` is the engine's table of the twelve sound types,
+     * `sfxPick(text)` ranks them for a sound, `sfxResolve(params)` gives the
+     * numbers a layout will use and `sfxOutline(face, text, params, index)`
+     * one letter's outline. `sfxHit`, `sfxTurn`, `sfxScale`, `sfxMove`,
+     * `sfxBendFor` and `sfxCurve` are the handles' maths (SfxGizmo.svelte).
+     * Every number is the engine's; this only passes them through. Only the
+     * Rust engine has them, and only a wasm built with them: the methods are
+     * absent otherwise, which is how `sfxAvailable` tells the browser engine
+     * and a stale wasm from this one.
      */
     ...(typeof low.sfxPlace === 'function' && low.hasSfxPlace
       ? {
           sfxPlace: (face, text, params) => low.sfxPlace(resolve(face), text, params),
+          sfxOutline: (face, text, params, index) => low.sfxOutline(resolve(face), text, params, index),
           sfxKinds: () => low.sfxKinds(),
           sfxPick: (text) => low.sfxPick(text),
+          sfxResolve: (params) => low.sfxResolve(params),
+          sfxHit: (letters, x, y, slop) => low.sfxHit(letters, x, y, slop),
+          sfxTurn: (centre, from, to, total, snapDeg) => low.sfxTurn(centre, from, to, total, snapDeg),
+          sfxScale: (centre, start, now, startScale, snap) => low.sfxScale(centre, start, now, startScale, snap),
+          sfxMove: (letter, start, now, startDx, startDy) => low.sfxMove(letter, start, now, startDx, startDy),
+          sfxBendFor: (path, pt) => low.sfxBendFor(path, pt),
+          sfxCurve: (path) => low.sfxCurve(path),
         }
       : null),
     loading() {

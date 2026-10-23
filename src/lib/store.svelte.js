@@ -128,7 +128,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
-import { sfxAvailable, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, applyLook, looksJapanese } from './sfx.js';
+import { sfxAvailable, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
 
 export { PAGE_W, PAGE_H };
 
@@ -6338,15 +6338,13 @@ export function addSfxBox(a, b, target = null) {
   const kind = pick?.order?.find((id) => sfxKind(id)) ?? null;
   if (kind) {
     applySfxKind(style, kind);
-    if (Number.isFinite(pick.strength)) style.sfx.strength = Math.min(2, Math.max(0, pick.strength));
+    for (const k of ['power', 'rough', 'momentum']) if (Number.isFinite(pick[k])) style.sfx[k] = Math.min(100, Math.max(0, pick[k]));
     // The sound's own length in ems, from the path the engine makes for it
     // when the box gives none.
     const natural = sfxPlacement(text, style, 100)?.paths?.[0];
     const ems = natural ? Math.hypot(natural.b[0] - natural.a[0], natural.b[1] - natural.a[1]) : 0;
     if (ems > 0.1) {
       style.size = clamp(Math.round((len / ems) * 2) / 2, ...ART_SIZE_RANGE);
-      // The outlines are the type's widths at the new size.
-      applyLook(style, sfxKind(kind));
     }
   }
   const mx = (a.x + b.x) / 2;

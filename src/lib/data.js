@@ -802,7 +802,12 @@ function sfxDefault() {
     on: false,
     kind: null,
     seed: 1,
-    strength: 1,
+    // The three intensity dials, 0..100, 50 the type as designed: how big
+    // the size flow runs, how rough the letters jitter, how much they lean
+    // and climb (the engine applies them to the type's numbers).
+    power: 50,
+    rough: 50,
+    momentum: 50,
     dir: null,
     joinBars: true,
     kern: true,
@@ -820,14 +825,14 @@ function sfxDefault() {
   };
 }
 
-// What applying a type wrote over on the box, as it stood before SFX went on:
-// the bends SFX switches off and the look the type set. Remove SFX puts it
-// back (`clearSfx`, sfx.js). Null while SFX is off. The look is kept as it
-// was and normalised with the style when it is put back.
+// The bends SFX switched off on the box, as they stood before SFX went on.
+// Remove SFX puts them back (`clearSfx`, sfx.js). Null while SFX is off.
+// `look` is only on boxes from the first SFX tool build, which still changed
+// the look; Remove SFX gives it back once and new boxes never write it.
 function normalizeSfxBefore(b) {
   if (!b || typeof b !== 'object') return null;
   const out = { curve: num(b.curve, 0), circle: b.circle === true, path: b.path === true };
-  if (b.look && typeof b.look === 'object') out.look = structuredClone(b.look);
+  if (b.look && typeof b.look === 'object') out.look = JSON.parse(JSON.stringify(b.look));
   return out;
 }
 
@@ -848,6 +853,20 @@ function normalizeSfxPath(q) {
 // fresh; the look the box has stays (decision D4, docs/giongo).
 function isOldSfx(x) {
   return Array.isArray(x?.moves) || typeof x?.flow === 'string' || typeof x?.amount === 'number';
+}
+
+// The intensity dials. A recipe saved with one `strength` (0..2, 1 the type
+// as designed) has all three set from it.
+function sfxMacros(x, d) {
+  const dial = (v, def) => Math.min(100, Math.max(0, num(v, def)));
+  const old = typeof x?.strength === 'number' && Number.isFinite(x.strength) && x.power === undefined
+    ? dial(50 + (x.strength - 1) * 50, 50)
+    : null;
+  return {
+    power: old ?? dial(x?.power, d.power),
+    rough: old ?? dial(x?.rough, d.rough),
+    momentum: old ?? dial(x?.momentum, d.momentum),
+  };
 }
 
 // The SFX recipe, gated field by field. A type is the engine's to know, so a
@@ -878,14 +897,14 @@ export function normalizeSfx(x) {
     ? { from: Math.min(4, Math.max(0.1, finiteOr(x.flow.from, 1))), to: Math.min(4, Math.max(0.1, finiteOr(x.flow.to, 1))), pow: Math.min(5, Math.max(0.2, finiteOr(x.flow.pow, 1))) }
     : null;
   const jitter = x?.jitter && typeof x.jitter === 'object'
-    ? { rot: Math.min(45, Math.max(0, finiteOr(x.jitter.rot, 0))), size: Math.min(1, Math.max(0, finiteOr(x.jitter.size, 0))), off: Math.min(1, Math.max(0, finiteOr(x.jitter.off, 0))) }
+    ? { rot: Math.min(45, Math.max(0, finiteOr(x.jitter.rot, 0))), size: Math.min(1, Math.max(0, finiteOr(x.jitter.size, 0))), off: Math.min(1.5, Math.max(0, finiteOr(x.jitter.off, 0))) }
     : null;
   const c = x?.caption && typeof x.caption === 'object' ? x.caption : {};
   return {
     on: x?.on === true,
     kind: typeof x?.kind === 'string' && x.kind ? x.kind : null,
     seed: Math.min(9999, Math.max(1, Math.round(num(x?.seed, d.seed)))),
-    strength: Math.min(2, Math.max(0, num(x?.strength, d.strength))),
+    ...sfxMacros(x, d),
     dir: SFX_DIRS.includes(x?.dir) ? x.dir : null,
     joinBars: x?.joinBars !== false,
     kern: x?.kern !== false,

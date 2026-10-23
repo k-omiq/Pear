@@ -2,6 +2,7 @@
   // Editor canvas viewport and page rendering.
   import { flushSync, onMount, untrack } from 'svelte';
   import TextBox from '../TextBox.svelte';
+  import { gizmoUi } from '../SfxGizmo.svelte';
   import RegionsLayer from './RegionsLayer.svelte';
   import {
     app,
@@ -1074,7 +1075,14 @@
     // box, and each of them re-measures. The floating panels do not - they are
     // deliberately ignored, so a panel dragged over the page covers it rather
     // than reflowing it.
+    // The SFX gizmo is sized from the stage's visible size (SfxGizmo.svelte).
+    const measureStage = () => {
+      gizmoUi.stageW = scrollEl.clientWidth;
+      gizmoUi.stageH = scrollEl.clientHeight;
+    };
+    measureStage();
     const ro = new ResizeObserver(() => {
+      measureStage();
       // A fit re-fits (and drops the pan with it); anything else keeps the pan
       // but re-bounds it, so shrinking the window cannot strand a page that was
       // pushed out to the edge of the old one.
@@ -1327,6 +1335,17 @@
   </svg>
 {/if}
 
+{#if gizmoUi.letter}
+  <!-- The SFX gizmo's key, while a letter is picked: each part in its colour. -->
+  <div class="sfx-legend" role="note" aria-label="Letter handles">
+    <span><svg viewBox="0 0 12 12" aria-hidden="true"><path class="lg-x" d="M1 6h7" /><path class="lg-xh" d="M7 2.5 11 6 7 9.5z" /></svg>Sideways</span>
+    <span><svg viewBox="0 0 12 12" aria-hidden="true"><path class="lg-y" d="M6 11V4" /><path class="lg-yh" d="M2.5 5 6 1l3.5 4z" /></svg>Up/down</span>
+    <span><svg viewBox="0 0 12 12" aria-hidden="true"><rect class="lg-free" x="2" y="2" width="8" height="8" /></svg>Free</span>
+    <span><svg viewBox="0 0 12 12" aria-hidden="true"><circle class="lg-ring" cx="6" cy="6" r="4.2" /></svg>Rotate</span>
+    <span><svg viewBox="0 0 12 12" aria-hidden="true"><rect class="lg-scale" x="2" y="2" width="8" height="8" /></svg>Scale</span>
+  </div>
+{/if}
+
 {#if !app.loaded}
   <div class="empty-state">
     <div class="dropzone">
@@ -1354,6 +1373,71 @@
     stroke: var(--gizmo-accent, #00d5e0);
     stroke-width: 2;
     stroke-dasharray: 6 4;
+  }
+  /* The SFX gizmo's key: drawn over the paper in both themes, in the gizmo's
+     own colours (SfxGizmo.svelte), at the canvas's bottom-right, level with
+     the zoom dock and clear of it. */
+  .sfx-legend {
+    position: absolute;
+    right: 16px;
+    bottom: 22px;
+    z-index: 31;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 5px 10px;
+    border-radius: 7px;
+    background: rgba(32, 33, 36, 0.86);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+    color: #e9e9ea;
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+  .sfx-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .sfx-legend svg {
+    width: 12px;
+    height: 12px;
+    flex: none;
+    overflow: visible;
+  }
+  .lg-x {
+    stroke: #75d9ff;
+    stroke-width: 1.8;
+    fill: none;
+  }
+  .lg-xh {
+    fill: #75d9ff;
+  }
+  .lg-y {
+    stroke: #f2c94c;
+    stroke-width: 1.8;
+    fill: none;
+  }
+  .lg-yh {
+    fill: #f2c94c;
+  }
+  .lg-free {
+    fill: rgba(255, 140, 115, 0.45);
+    stroke: #f4f4f4;
+    stroke-width: 1.2;
+  }
+  .lg-ring {
+    fill: none;
+    stroke: #ff8c73;
+    stroke-width: 1.8;
+  }
+  .lg-scale {
+    fill: #d8d8d8;
+    stroke: #303030;
+    stroke-width: 1.1;
   }
   .sfx-drag circle {
     fill: #fff;

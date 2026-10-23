@@ -397,13 +397,13 @@ describe('edit: SFX', () => {
 
   it('the type\'s own fields and the SFX effects are style edits', async () => {
     const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: {
-      sfx: { seed: 42, strength: 1.5, slant: -10, caption: { text: 'boom', side: 'below' } },
+      sfx: { seed: 42, power: 80, slant: -10, caption: { text: 'boom', side: 'below' } },
       extrude: { on: true, length: 0.3 },
     } } }] });
     expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(a().style.sfx).toMatchObject({ on: false, seed: 42, strength: 1.5, slant: -10, caption: { text: 'boom', side: 'below' } });
+    expect(a().style.sfx).toMatchObject({ on: false, seed: 42, power: 80, slant: -10, caption: { text: 'boom', side: 'below' } });
     expect(a().style.extrude).toMatchObject({ on: true, length: 0.3 });
-    const bad = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { sfx: { strength: 3 } } } }] });
+    const bad = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { sfx: { power: 300 } } } }] });
     expect(bad.ok).toBe(false);
   });
 });

@@ -55,21 +55,21 @@ afterEach(() => {
 });
 
 describe('sfx_kinds', () => {
-  it('lists every sound type with a one-line look, and changes nothing', async () => {
+  it('lists every sound type, and changes nothing', async () => {
     const r = await callTool('sfx_kinds', {});
     expect(r.ok, JSON.stringify(r)).toBe(true);
     expect(r.result.kinds.map((k) => k.id)).toEqual(sfxKinds().map((k) => k.id));
     expect(r.result.kinds).toHaveLength(12);
     for (const k of r.result.kinds) {
-      expect(Object.keys(k)).toEqual(['id', 'name', 'example', 'tag', 'dir', 'look']);
-      expect(k.look).toMatch(/letters.*, (a (thin )?\w+ rim|[\w ]+ rims|no rim), (sharp|round) corners$/);
+      expect(Object.keys(k)).toEqual(['id', 'name', 'example', 'tag', 'dir']);
     }
     expect(r.result.pick).toBeUndefined();
   });
 
   it('ranks the types for a box or a text, as the app\'s auto pick does', async () => {
     const byBox = (await callTool('sfx_kinds', { id: 's' })).result.pick;
-    expect(byBox).toEqual({ id: 's', order: sfxPick('BOOM!!').order, strength: sfxPick('BOOM!!').strength });
+    const p = sfxPick('BOOM!!');
+    expect(byBox).toEqual({ id: 's', order: p.order, power: p.power, rough: p.rough, momentum: p.momentum });
     expect(byBox.order).toHaveLength(12);
     const byText = (await callTool('sfx_kinds', { text: 'ドン!!' })).result.pick;
     expect(isFenced(byText.text)).toBe(true);
@@ -80,7 +80,7 @@ describe('sfx_kinds', () => {
 });
 
 describe('edit: sound types', () => {
-  it('sfx_kind lays the box out as that type, in its look, one undo step', async () => {
+  it('sfx_kind lays the box out as that type, its look untouched, one undo step', async () => {
     const before = JSON.stringify(s().style);
     const r = await edit([{ where: { ids: ['s'] }, do: 'sfx_kind:impact' }]);
     expect(r.ok, JSON.stringify(r)).toBe(true);
@@ -88,7 +88,9 @@ describe('edit: sound types', () => {
     expect(s().style.sfx).toMatchObject({ on: true, kind: 'impact' });
     // SFX is one glyph layout among four: the arc it replaces is off.
     expect(s().style.curve).toBe(0);
-    expect(s().style.strokes.length).toBeGreaterThan(0);
+    // A type is a layout: the look stays the box's own.
+    const look = (st) => JSON.stringify([st.font, st.color, st.strokes, st.pattern, st.negative, st.strokeJoin]);
+    expect(look(s().style)).toBe(look(JSON.parse(before)));
     expect(sfxPlacement('BOOM!!', s().style, 48)?.letters.length).toBeGreaterThan(0);
     // By name too, any case; again is nothing needed.
     expect((await edit([{ where: { ids: ['s'] }, do: 'sfx_kind:IMPACT' }])).result.ops[0].outcome).toBe('nothing needed');
@@ -104,25 +106,25 @@ describe('edit: sound types', () => {
     expect(s().style.sfx.on).toBe(false);
   });
 
-  it('sfx_pick applies the best type for each box\'s own text, at the strength it asks for', async () => {
+  it('sfx_pick applies the best type for each box\'s own text, with the dials it asks for', async () => {
     const r = await edit([{ where: { ids: ['s', 't'] }, do: 'sfx_pick' }]);
     expect(r.ok, JSON.stringify(r)).toBe(true);
     for (const [id, text] of [['s', 'BOOM!!'], ['t', 'Caption?']]) {
       const b = pageById(1).boxes.find((x) => x.id === id);
       const pick = sfxPick(text);
       expect(b.style.sfx).toMatchObject({ on: true, kind: pick.order[0] });
-      expect(b.style.sfx.strength).toBeCloseTo(Math.min(2, Math.max(0, pick.strength)), 5);
+      for (const k of ['power', 'rough', 'momentum']) expect(b.style.sfx[k]).toBeCloseTo(Math.min(100, Math.max(0, pick[k])), 5);
     }
   });
 
   it('field edits tune the type; the type and SFX itself go through the actions', async () => {
     await edit([{ where: { ids: ['s'] }, do: 'sfx_kind:rumble' }]);
     const r = await edit([{ where: { ids: ['s'] }, set: { style: {
-      sfx: { seed: 77, strength: 1.4, paths: [{ a: [-2, 0], b: [2, -1], bend: 0.3 }], caption: { text: 'rumble' } },
+      sfx: { seed: 77, power: 70, paths: [{ a: [-2, 0], b: [2, -1], bend: 0.3 }], caption: { text: 'rumble' } },
       shake: { on: true },
     } } }]);
     expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(s().style.sfx).toMatchObject({ kind: 'rumble', seed: 77, strength: 1.4, caption: { text: 'rumble' } });
+    expect(s().style.sfx).toMatchObject({ kind: 'rumble', seed: 77, power: 70, caption: { text: 'rumble' } });
     expect(s().style.sfx.paths).toHaveLength(1);
     expect(s().style.shake.on).toBe(true);
     // The box read fences the caption: it is the user's translation.
@@ -134,15 +136,15 @@ describe('edit: sound types', () => {
       expect(bad.ok).toBe(false);
       expect(bad.hint).toMatch(/sfx_kind/);
     }
-    // A new type keeps the seed, strength and caption.
+    // A new type keeps the seed and the caption; the dials and paths go back.
     await edit([{ where: { ids: ['s'] }, do: 'sfx_kind:slash' }]);
-    expect(s().style.sfx).toMatchObject({ kind: 'slash', seed: 77, strength: 1.4, caption: { text: 'rumble' } });
+    expect(s().style.sfx).toMatchObject({ kind: 'slash', seed: 77, power: 50, paths: [], caption: { text: 'rumble' } });
   });
 
-  it('clear_sfx puts back the look and the bends SFX wrote over', async () => {
+  it('clear_sfx puts back the bends SFX switched off', async () => {
     const look = JSON.stringify([s().style.color, s().style.strokes, s().style.curve]);
     await edit([{ where: { ids: ['s'] }, do: 'sfx_kind:explosion' }]);
-    expect(s().style.negative.on).toBe(true);
+    expect(s().style.curve).toBe(0);
     const r = await edit([{ where: { ids: ['s'] }, do: 'clear_sfx' }]);
     expect(r.result.ops[0].changed).toEqual(['s']);
     expect(s().style.sfx.on).toBe(false);

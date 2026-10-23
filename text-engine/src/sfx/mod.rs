@@ -9,7 +9,9 @@
 //! place.rs   every letter placed on its path (`mt_sfx_place`)
 //! kern.rs    shape kerning by the ink between letters
 //! ink.rs     advances and outlines from the engine
-//! params.rs  the params as the bytes `mt_sfx_place` reads
+//! params.rs  the params as the bytes `mt_sfx_place` reads, unset numbers
+//!            filled from the type and the three macros
+//! gizmo.rs   the handles' maths: hit test, turn, scale, move, bend
 //! ```
 //!
 //! Conventions. Lengths are ems of the face's size in the params and pixels
@@ -18,6 +20,7 @@
 //! numbers come from [`noise`], a small integer hash, so the same seed lays
 //! out the same way on every platform.
 
+pub mod gizmo;
 mod ink;
 mod items;
 mod kern;

@@ -27,6 +27,7 @@
 //! `text-engine/js/paint.mjs` writes.
 
 use super::blur::{self, Moved, Surface};
+use super::sweep;
 use super::geom::{positive, Affine, IBox, Polys, Pt};
 use super::job::{decode, Fill, Request, Rgba};
 use super::raster::{Part, Rasterizer};
@@ -461,6 +462,45 @@ pub fn paint_box_with(
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
+    paint(engine, request, rasterizer, true)
+}
+
+/// [`paint_box_with`] with every shadow laid a copy at a time, as the box job
+/// once laid them: what the one pass an extrude's steps take is measured
+/// against. For tests and benchmarks; the picture is the same within a level.
+#[doc(hidden)]
+pub fn paint_box_copy_by_copy(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
+    paint(engine, request, rasterizer, false)
+}
+
+/// Where a layer whose ink is `ink`, moved by `(dx, dy)` pixels, can leave
+/// ink: a move by a share of a pixel reaches one pixel further.
+fn landed(ink: IBox, (dx, dy): (f64, f64)) -> IBox {
+    let at = |v: i32, d: f64| (f64::from(v) + d).clamp(-1e9, 1e9) as i32;
+    IBox {
+        x0: at(ink.x0, dx.floor() - 1.0),
+        y0: at(ink.y0, dy.floor() - 1.0),
+        x1: at(ink.x1, dx.ceil() + 1.0),
+        y1: at(ink.y1, dy.ceil() + 1.0),
+    }
+}
+
+/// What a shadow's layer is painted from: shadows alike in these are one
+/// layer, moved.
+fn layer_key(sh: &Shadow) -> (Rgba, f64, f64) {
+    (sh.color, sh.grow, sh.blur)
+}
+
+fn paint(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+    sweeps: bool,
+) -> Result<Option<Raster>, Error> {
     let _budget = budget::Scope::new();
     let (width, height) = (request.width as usize, request.height as usize);
     if width == 0
@@ -504,17 +544,37 @@ pub fn paint_box_with(
     }
 
     let mut s = Surface::new(width, height)?;
+    // Where anything has been laid on the surface, so that finding what of
+    // it has ink reads only that.
+    let mut laid: Option<IBox> = None;
+    let mut lay = |b: IBox| laid = Some(laid.map_or(b, |l| l.union(&b)));
     // Shadows, the last first, so the first is on top of the rest. One
     // layer serves them all, and a shadow like the one before it (an
     // extrude's steps, a shake's copies) is the same layer moved again.
+    let mut order = budget::Buffer::new();
+    for sh in request.shadows.iter().rev().filter(|s| positive(s.opacity)) {
+        budget::push(&mut order, *sh)?;
+    }
     let mut layer: Option<Surface> = None;
+    // Where the layer has ink, found once for every copy of it.
+    let mut ink: Option<IBox> = None;
+    // Where its rows have ink, for a layer laid more than once.
+    let mut runs: Option<sweep::Runs> = None;
+    let mut acc = budget::Buffer::new();
+    if !order.is_empty() {
+        acc = budget::filled(width * 4, 0.0f32)?;
+    }
+    let mut moves = budget::Buffer::new();
     let mut painted_as: Option<(Rgba, f64, f64)> = None;
     let job_silhouette = request.request.job.silhouette;
     let job_grow = request.request.job.effects.grow;
-    for sh in request.shadows.iter().rev().filter(|s| positive(s.opacity)) {
-        let key = (sh.color, sh.grow, sh.blur);
+    let mut i = 0;
+    while let Some(sh) = order.get(i).copied() {
+        let key = layer_key(&sh);
         if painted_as != Some(key) {
             painted_as = Some(key);
+            ink = None;
+            runs = None;
             request.request.job.silhouette = Some(sh.color);
             request.request.job.effects.grow = sh.grow;
             let painted = paint_job_with(engine, &request.request, rasterizer);
@@ -527,23 +587,75 @@ pub fn paint_box_with(
                 }
                 none => none.insert(Surface::new(width, height)?),
             };
-            let Some(r) = painted? else {
-                continue;
-            };
-            layer.draw(&r.data, r.width as usize, r.x, r.y);
-            drop(r);
-            // A silhouette is one colour, so only its alpha needs the blur.
-            let [r, g, b, _] = sh.color.0;
-            blur::gaussian_flat(layer, sh.blur / 2.0 * scale, [r, g, b])?;
+            if let Some(r) = painted? {
+                layer.draw(&r.data, r.width as usize, r.x, r.y);
+                // A silhouette is one colour, so only its alpha needs the blur.
+                let [red, green, blue, _] = sh.color.0;
+                let sigma = sh.blur / 2.0 * scale;
+                blur::gaussian_flat(layer, sigma, [red, green, blue])?;
+                // The ink is the raster's, and as far round it as the blur
+                // spread it.
+                let reach = blur::blur_reach(sigma);
+                let drawn = IBox {
+                    x0: r.x.saturating_sub(reach),
+                    y0: r.y.saturating_sub(reach),
+                    x1: r.x.saturating_add(r.width as i32).saturating_add(reach),
+                    y1: r.y.saturating_add(r.height as i32).saturating_add(reach),
+                };
+                drop(r);
+                ink = layer.ink_in(drawn);
+                // Finding the runs costs about what laying a copy along them
+                // saves, so only a layer laid again finds them.
+                let again = order.get(i + 1).is_some_and(|n| layer_key(n) == key);
+                if let (Some(ink), true) = (ink, sweeps && again) {
+                    runs = Some(sweep::Runs::new(layer, ink)?);
+                }
+            }
         }
-        if let Some(layer) = &layer {
-            blur::over_moved(&mut s, layer, carried(sh.x, sh.y), sh.opacity)?;
+        // The shadows after it laid from the same layer, opaque like it: an
+        // extrude's steps, laid in one pass when there are two or more.
+        let mut end = i + 1;
+        if sweeps && sh.opacity >= 1.0 {
+            while order
+                .get(end)
+                .is_some_and(|n| layer_key(n) == key && n.opacity >= 1.0)
+            {
+                end += 1;
+            }
         }
+        let (Some(layer), Some(ink)) = (&layer, ink) else {
+            i = end;
+            continue;
+        };
+        for n in &order[i..end] {
+            lay(landed(ink, carried(n.x, n.y)));
+        }
+        match &runs {
+            Some(runs) if end - i >= 2 => {
+                moves.clear();
+                for n in &order[i..end] {
+                    budget::push(&mut moves, carried(n.x, n.y))?;
+                }
+                sweep::over_swept(&mut s, layer, ink, runs, &moves)?;
+            }
+            // A faded copy, as a shake's are: along the rows' runs.
+            Some(runs) => {
+                sweep::over_runs(&mut s, layer, ink, runs, carried(sh.x, sh.y), sh.opacity, &mut acc);
+            }
+            None => blur::over_moved_in(&mut s, layer, ink, carried(sh.x, sh.y), sh.opacity, &mut acc),
+        }
+        i = end;
     }
     drop(layer);
 
     if let Some(r) = paint_job_with(engine, &request.request, rasterizer)? {
         s.draw(&r.data, r.width as usize, r.x, r.y);
+        lay(IBox {
+            x0: r.x,
+            y0: r.y,
+            x1: r.x.saturating_add(r.width as i32),
+            y1: r.y.saturating_add(r.height as i32),
+        });
     }
     blur::gaussian(&mut s, blur_sigma)?;
     if taps.clone().next().is_some() {
@@ -571,7 +683,14 @@ pub fn paint_box_with(
         }
     }
 
-    let Some(ink) = s.ink() else {
+    // A blur and a smear carry ink past where it was laid; a mask only
+    // takes it away.
+    let ink = if positive(blur_sigma) || request.taps.iter().any(|t| positive(t.weight)) {
+        s.ink()
+    } else {
+        laid.and_then(|b| s.ink_in(b))
+    };
+    let Some(ink) = ink else {
         return Ok(None);
     };
     Ok(Some(Raster {

@@ -85,8 +85,8 @@ const DESCRIPTION = [
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
   '"outline_to_box" (an outline of the box\'s rectangle, grown to hold its text at the size it aims for with outline fit\'s air, or exactly the box when its width or height is held: geometry in the same op sets it first; shrunk in the result names a box that still fits only smaller), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
   '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in its colours on a colour page or white or black with an outline of the other over the art; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
-  '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type, in its look; sfx_kinds lists them; seed, strength and caption stay, every other style.sfx field goes back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, at the strength it asks for), "clear_sfx" (SFX off, the look it wrote over put back);',
-  'then tune an SFX in a later op with set style.sfx (strength, seed for another arrangement, paths, flow, slant, jitter, caption) and the effects that draw only while SFX is on (negative, extrude, shake, trail, strokeShade, strokeOrder, strokeJoin).',
+  '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type; a type is a layout only, the box keeps its font, fill and outlines; sfx_kinds lists them; seed and caption stay; paths, letter hand edits, the power/rough/momentum dials and every other style.sfx field go back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, with the dials it asks for), "clear_sfx" (SFX off, the arc, ring or path it switched off put back);',
+  'then tune an SFX in a later op with set style.sfx (power, rough, momentum dials 0..100 with 50 the type as designed, seed for another arrangement, paths, flow, slant, jitter, caption) and the effects that draw only while SFX is on (negative, extrude, shake, trail, strokeShade, strokeOrder, strokeJoin).',
   '"preset:<name or id>", "duplicate", "delete",',
   `"warp:<kind>" or "warp:<kind>:<amount>" (a mesh bend of the whole box, Photoshop-style; amount -100..100, default ${WARP_DEFAULT_AMOUNT}, negative bends the other way; replaces any mesh the box had), "warp:off" (mesh off and cleared). Kinds: ` +
     WARP_PRESETS.map((k) => `${k} (${WARP_PRESET_NOTES[k]})`).join(', ') + '.',
@@ -232,8 +232,9 @@ function compile(op, i) {
         const e = errors[0];
         fail(i, `set.style${e.path && e.path !== '$' ? '.' + e.path : ''}`, e.error, [e.hint, errors.length > 1 ? `${errors.length - 1} more problem(s) in this patch` : null].filter(Boolean).join('; ') || undefined);
       }
-      // A sound type is more than its id (its look, what it wrote over), and
-      // SFX off puts that look back: both go through their actions.
+      // A sound type is more than its id (it resets the layout and keeps what
+      // SFX switched off), and SFX off puts that back: both go through their
+      // actions.
       const sfx = object(s.style.sfx) ? s.style.sfx : {};
       if ('kind' in sfx) fail(i, 'set.style.sfx.kind', 'a sound type is applied, not set', 'use do "sfx_kind:<id>" (sfx_kinds lists them) or do "sfx_pick".');
       if ('on' in sfx) fail(i, 'set.style.sfx.on', 'SFX is switched with its actions', 'use do "sfx_kind:<id>" or "sfx_pick" to switch it on, "clear_sfx" to switch it off.');
@@ -533,10 +534,10 @@ function writeDo(d, matches) {
           const pick = sfxPick(boxText(b, p));
           const best = pick?.order?.[0];
           if (!best) return false;
-          const strength = Math.min(2, Math.max(0, Number(pick.strength) || 0));
-          if (b.style.sfx?.on && b.style.sfx.kind === best && b.style.sfx.strength === strength) return false;
+          const dials = Object.fromEntries(['power', 'rough', 'momentum'].map((k) => [k, Math.min(100, Math.max(0, Number(pick[k]) || 50))]));
+          if (b.style.sfx?.on && b.style.sfx.kind === best && Object.entries(dials).every(([k, v]) => b.style.sfx[k] === v)) return false;
           applySfxKind(b.style, best);
-          b.style.sfx.strength = strength;
+          Object.assign(b.style.sfx, dials);
         } else if (d.kind === 'clear_sfx') {
           if (!b.style.sfx?.on) return false;
           clearSfx(b.style);

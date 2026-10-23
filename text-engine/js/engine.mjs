@@ -69,6 +69,67 @@ function wrap(instance) {
   let textCap = 0
   // The sound types' table, parsed once (`sfxKinds`).
   let sfxKindsCache = null
+  // The bytes of each layout's letter quads (`sfxHit`), kept by the layout.
+  const quadWires = new WeakMap()
+  // Bytes of params last written by `putParams`.
+  let paramsLen = 0
+
+  /**
+   * @typedef {{ vertical?: boolean | null, joinBars?: boolean, kern?: boolean, seed?: number,
+   *   kind?: string | null, power?: number | null, rough?: number | null, momentum?: number | null,
+   *   flow?: { from?: number | null, to?: number | null, pow?: number | null } | null,
+   *   follow?: number | null, gap?: number | null, bigTighter?: number | null,
+   *   slant?: number | null, rise?: number | null,
+   *   jitter?: { rot?: number | null, size?: number | null, off?: number | null } | null,
+   *   paths?: Array<{ a: [number, number], b: [number, number], bend: number }>,
+   *   edits?: Array<{ group: number, index: number, dx: number, dy: number, rot: number, scale: number }> }} SfxParams
+   */
+
+  /**
+   * Writes the SFX params in their wire form (text-engine/src/sfx/params.rs)
+   * into the engine's params buffer. A number left null or out goes as NaN,
+   * "unset", which the engine fills from the type: no type default is
+   * copied here.
+   */
+  function putParams(params, what) {
+    const { kinds } = engine.sfxKinds()
+    const paths = (params.paths ?? []).slice(0, 4)
+    const edits = params.edits ?? []
+    const kind = params.kind == null ? -1 : kinds.findIndex((k) => k.id === params.kind)
+    const wire = new DataView(new ArrayBuffer(12 + 14 * 8 + 4 + paths.length * 40 + 4 + edits.length * 40))
+    let at = 0
+    const u32 = (v) => {
+      wire.setUint32(at, v >>> 0, true)
+      at += 4
+    }
+    const f64 = (v) => {
+      wire.setFloat64(at, +v, true)
+      at += 8
+    }
+    const num = (v) => f64(v == null ? NaN : v)
+    const dir = params.vertical == null ? 8 : params.vertical ? 1 : 0
+    u32(dir | ((params.joinBars ?? true) ? 2 : 0) | ((params.kern ?? true) ? 4 : 0))
+    u32(Math.max(0, Math.min(0xffffffff, Math.round(params.seed ?? 1))))
+    u32(kind < 0 ? 0xffffffff : kind)
+    const flow = params.flow ?? {}
+    const jitter = params.jitter ?? {}
+    for (const v of [
+      params.power, params.rough, params.momentum, flow.from, flow.to, flow.pow, params.follow, params.gap,
+      params.bigTighter, params.slant, params.rise, jitter.rot, jitter.size, jitter.off,
+    ]) num(v)
+    u32(paths.length)
+    for (const q of paths) for (const v of [q.a[0], q.a[1], q.b[0], q.b[1], q.bend ?? 0]) f64(v)
+    u32(edits.length)
+    for (const e of edits) {
+      u32(e.group)
+      u32(e.index)
+      for (const v of [e.dx ?? 0, e.dy ?? 0, e.rot ?? 0, e.scale ?? 1]) f64(v)
+    }
+    const ptr = ex.mt_sfx_params_reserve(wire.byteLength)
+    if (!ptr) throw new Error(`mt-text: ${what}: the engine refused the params buffer`)
+    bytes().set(new Uint8Array(wire.buffer), ptr)
+    paramsLen = wire.byteLength
+  }
 
   /** Writes `text` as UTF-8 into the engine's text buffer, returns its byte length. */
   function putText(text) {
@@ -100,6 +161,12 @@ function wrap(instance) {
     const ptr = ex.mt_out_ptr()
     const len = ex.mt_out_len()
     return bytes().subarray(ptr, ptr + len)
+  }
+  // The out buffer's `f64`s, read through a view of their own: the buffer
+  // is bytes and need not sit on an 8-byte boundary.
+  const outF64 = () => {
+    const view = new DataView(memory.buffer, ex.mt_out_ptr(), ex.mt_out_len())
+    return (i) => view.getFloat64(i * 8, true)
   }
   const outU32 = (count) => {
     const ptr = ex.mt_out_ptr()
@@ -304,17 +371,24 @@ function wrap(instance) {
       return { at, x, length: view.getFloat64(n * 16, true), advance: view.getFloat64(n * 16 + 8, true) }
     },
 
-    /** Whether this wasm has the sound-type SFX calls (`sfxPlace`, `sfxKinds`, `sfxPick`). */
-    hasSfxPlace:
-      typeof ex.mt_sfx_place === 'function' && typeof ex.mt_sfx_kinds === 'function' && typeof ex.mt_sfx_pick === 'function',
+    /**
+     * Whether this wasm has the sound-type SFX calls (`sfxPlace`, `sfxKinds`,
+     * `sfxPick`, `sfxResolve`, `sfxOutline` and the handles' maths). All or
+     * none: a wasm older than this loader reads its records differently.
+     */
+    hasSfxPlace: [
+      'mt_sfx_place', 'mt_sfx_kinds', 'mt_sfx_pick', 'mt_sfx_resolve', 'mt_sfx_outline',
+      'mt_sfx_hit', 'mt_sfx_turn', 'mt_sfx_scale', 'mt_sfx_move', 'mt_sfx_bend_for', 'mt_sfx_curve',
+    ].every((name) => typeof ex[name] === 'function'),
 
     /**
      * The twelve sound types (text-engine/src/sfx/kinds.rs), parsed once and
-     * the same object every time: read it, do not change it.
+     * the same object every time: read it, do not change it. A type is a
+     * layout only; it carries no look.
      * @returns {{ kinds: Array<{ id: string, name: string, example: string, tag: string,
      *   dir: 'h' | 'v', flow: { from: number, to: number, pow: number }, follow: number,
-     *   gap: number, slant: number, rise: number, jitter: { rot: number, size: number, off: number },
-     *   look: { fill: object, outlines: Array<{ width: number, color: string }>, sharp: boolean } }> }}
+     *   gap: number, slant: number, rise: number, jitter: { rot: number, size: number, off: number } }> }}
+     *   the type as designed (the macros at 50)
      */
     sfxKinds() {
       if (sfxKindsCache) return sfxKindsCache
@@ -326,13 +400,39 @@ function wrap(instance) {
 
     /**
      * Auto pick (text-engine/src/sfx/pick.rs): every sound type ranked for
-     * `text`, best first, and the strength the sound asks for.
-     * @returns {{ order: string[], scores: number[], strength: number }} `scores` in `sfxKinds` order
+     * `text`, best first, and the three macros the sound asks for.
+     * @returns {{ order: string[], scores: number[], power: number, rough: number, momentum: number }}
+     *   `scores` in `sfxKinds` order; the macros whole numbers 0..100, 50 the type as designed
      */
     sfxPick(text) {
       if (!engine.hasSfxPlace) throw new Error('mt-text: this wasm has no mt_sfx_pick; run npm run build:engine')
       check(ex.mt_sfx_pick(putText(String(text))), 'sfxPick')
       return JSON.parse(decoder.decode(outBytes()))
+    },
+
+    /**
+     * The numbers an SFX lays out with: every one `params` leaves null or
+     * out taken from its type and moved by the macros
+     * (text-engine/src/sfx/params.rs), the ones it sets as they are.
+     * @param {SfxParams} params as `sfxPlace` takes them (paths and edits are not read)
+     * @returns {{ vertical: boolean, flow: { from: number, to: number, pow: number }, follow: number,
+     *   gap: number, bigTighter: number, slant: number, rise: number,
+     *   jitter: { rot: number, size: number, off: number } }}
+     */
+    sfxResolve(params = {}) {
+      putParams({ ...params, paths: [], edits: [] }, 'sfxResolve')
+      check(ex.mt_sfx_resolve(paramsLen), 'sfxResolve')
+      const f = outF64()
+      return {
+        vertical: f(0) === 1,
+        flow: { from: f(1), to: f(2), pow: f(3) },
+        follow: f(4),
+        gap: f(5),
+        bigTighter: f(6),
+        slant: f(7),
+        rise: f(8),
+        jitter: { rot: f(9), size: f(10), off: f(11) },
+      }
     },
 
     /**
@@ -342,79 +442,150 @@ function wrap(instance) {
      *
      * @param {{ font: number, size: number, flags: number }} face from `engine.face`
      * @param {string} text
-     * @param {{ vertical?: boolean, joinBars?: boolean, kern?: boolean, seed?: number,
-     *   kind?: string | null, strength?: number, flow?: { from: number, to: number, pow: number },
-     *   follow?: number, gap?: number, bigTighter?: number, slant?: number, rise?: number,
-     *   jitter?: { rot: number, size: number, off: number },
-     *   paths?: Array<{ a: [number, number], b: [number, number], bend: number }>,
-     *   edits?: Array<{ group: number, index: number, dx: number, dy: number, rot: number, scale: number }> }} params
-     *   lengths in ems of the face's size, angles in degrees; `kind` makes the paths not given
-     * @returns {{ paths: Array<{ a: [number, number], b: [number, number], bend: number }>,
+     * @param {SfxParams} params
+     *   lengths in ems of the face's size, angles in degrees. A layout number
+     *   left null or out is the type's (`kind`) moved by the macros, or the
+     *   plain value with no type; `vertical` null is the type's direction.
+     *   `power`, `rough`, `momentum` are 0..100, 50 (and null) the type as designed.
+     * @returns {{ paths: Array<{ a: [number, number], b: [number, number], bend: number,
+     *     ctrl: [number, number], mid: [number, number] }>,
      *   bounds: [number, number, number, number],
      *   letters: Array<{ x: number, y: number, rot: number, sx: number, sy: number, skew: number,
      *     start: number, end: number, group: number, index: number, dir: [number, number],
-     *     em: number, adv: number }> }}
-     *   pixels from the box's centre for `bounds` and the letters' `x, y`; `rot`, `skew` in radians;
-     *   `start`/`end` the UTF-16 range of the text the letter draws; `paths` in ems. Feed
-     *   `x, y, rot, sx, sy, skew` to a curved paint job's run (`paint.mjs`).
+     *     em: number, adv: number, unit: number,
+     *     quad: [[number, number], [number, number], [number, number], [number, number]],
+     *     centre: [number, number], pen: number }>,
+     *   cp: number[] }}
+     *   pixels from the box's centre for `bounds`, the letters' `x, y`, `quad` and `centre`;
+     *   `rot`, `skew` in radians; `start`/`end` the UTF-16 range of the text the letter
+     *   draws; `paths` in ems, `ctrl` the curve's control point and `mid` its point at
+     *   t = 0.5 (where the bend handle sits); `unit` the letter's px per em of its hand
+     *   edit (its em before the edit's scale); `quad` its ink box corners (top left, top
+     *   right, bottom right, bottom left of the glyph) through its whole transform, and
+     *   `centre` the quad's middle; `pen` how much wider than at the face's size its outlines
+     *   are drawn; `cp` per code point of `text` the index of the letter
+     *   that draws it, or -1. Feed `x, y, rot, sx, sy, skew` to a curved paint job's run
+     *   (`paint.mjs`).
      */
     sfxPlace(face, text, params = {}) {
-      const { kinds } = engine.sfxKinds()
-      const paths = (params.paths ?? []).slice(0, 4)
-      const edits = params.edits ?? []
-      const kind = params.kind == null ? -1 : kinds.findIndex((k) => k.id === params.kind)
-      // The params: see text-engine/src/sfx/params.rs.
-      const wire = new DataView(new ArrayBuffer(12 + 96 + 4 + paths.length * 40 + 4 + edits.length * 40))
-      let at = 0
-      const u32 = (v) => {
-        wire.setUint32(at, v >>> 0, true)
-        at += 4
-      }
-      const f64 = (v) => {
-        wire.setFloat64(at, +v, true)
-        at += 8
-      }
-      u32((params.vertical ? 1 : 0) | (params.joinBars ?? true ? 2 : 0) | (params.kern ?? true ? 4 : 0))
-      u32(Math.max(0, Math.min(0xffffffff, Math.round(params.seed ?? 1))))
-      u32(kind < 0 ? 0xffffffff : kind)
-      const flow = params.flow ?? { from: 1, to: 1, pow: 1 }
-      const jitter = params.jitter ?? { rot: 0, size: 0, off: 0 }
-      for (const v of [
-        params.strength ?? 1, flow.from, flow.to, flow.pow, params.follow ?? 0.5, params.gap ?? 0,
-        params.bigTighter ?? 0.5, params.slant ?? 0, params.rise ?? 0, jitter.rot, jitter.size, jitter.off,
-      ]) f64(v)
-      u32(paths.length)
-      for (const q of paths) for (const v of [q.a[0], q.a[1], q.b[0], q.b[1], q.bend ?? 0]) f64(v)
-      u32(edits.length)
-      for (const e of edits) {
-        u32(e.group)
-        u32(e.index)
-        for (const v of [e.dx ?? 0, e.dy ?? 0, e.rot ?? 0, e.scale ?? 1]) f64(v)
-      }
       const textLen = putText(String(text))
-      const ptr = ex.mt_sfx_params_reserve(wire.byteLength)
-      if (!ptr) throw new Error('mt-text: sfxPlace: the engine refused the params buffer')
-      new Uint8Array(memory.buffer, ptr, wire.byteLength).set(new Uint8Array(wire.buffer))
-      const n = check(ex.mt_sfx_place(face.font, face.size, face.flags, textLen, wire.byteLength), 'sfxPlace')
-      // Read through a view of its own: the out buffer need not sit on an 8-byte boundary.
-      const view = new DataView(memory.buffer, ex.mt_out_ptr(), ex.mt_out_len())
-      const f = (i) => view.getFloat64(i * 8, true)
+      putParams(params, 'sfxPlace')
+      const n = check(ex.mt_sfx_place(face.font, face.size, face.flags, textLen, paramsLen), 'sfxPlace')
+      const f = outF64()
       const g = f(0)
       const bounds = [f(1), f(2), f(3), f(4)]
-      const out = { paths: [], bounds, letters: [] }
+      const out = { paths: [], bounds, letters: [], cp: [] }
       for (let i = 0; i < g; i++) {
-        const b = 5 + i * 5
-        out.paths.push({ a: [f(b), f(b + 1)], b: [f(b + 2), f(b + 3)], bend: f(b + 4) })
+        const b = 5 + i * 9
+        out.paths.push({
+          a: [f(b), f(b + 1)], b: [f(b + 2), f(b + 3)], bend: f(b + 4),
+          ctrl: [f(b + 5), f(b + 6)], mid: [f(b + 7), f(b + 8)],
+        })
       }
       for (let i = 0; i < n; i++) {
-        const b = 5 + g * 5 + i * 14
+        const b = 5 + g * 9 + i * 26
         out.letters.push({
           x: f(b), y: f(b + 1), rot: f(b + 2), sx: f(b + 3), sy: f(b + 4), skew: f(b + 5),
           start: f(b + 6), end: f(b + 7), group: f(b + 8), index: f(b + 9),
-          dir: [f(b + 10), f(b + 11)], em: f(b + 12), adv: f(b + 13),
+          dir: [f(b + 10), f(b + 11)], em: f(b + 12), adv: f(b + 13), unit: f(b + 14),
+          quad: [[f(b + 15), f(b + 16)], [f(b + 17), f(b + 18)], [f(b + 19), f(b + 20)], [f(b + 21), f(b + 22)]],
+          centre: [f(b + 23), f(b + 24)], pen: f(b + 25),
         })
       }
+      const c0 = 5 + g * 9 + n * 26
+      const c = f(c0)
+      for (let i = 0; i < c; i++) out.cp.push(f(c0 + 1 + i))
       return out
+    },
+
+    /**
+     * The outline of letter `index` (into `sfxPlace`'s `letters`) of the
+     * layout the same arguments make: an SVG path `d`, one closed contour
+     * per `M .. Z`, holes included, px from the box's centre (two decimals).
+     */
+    sfxOutline(face, text, params, index) {
+      const textLen = putText(String(text))
+      putParams(params ?? {}, 'sfxOutline')
+      const len = check(ex.mt_sfx_outline(face.font, face.size, face.flags, textLen, paramsLen, index >>> 0), 'sfxOutline')
+      return decoder.decode(outBytes().subarray(0, len))
+    },
+
+    /**
+     * The letter at `x, y` (px, the frame `sfxPlace` gave the letters in):
+     * the index of the topmost whose `quad` holds the point (later letters
+     * are on top), else of the nearest within `slop` px, else -1.
+     * @param {Array<{ quad: number[][] }>} letters `sfxPlace`'s, as they came
+     */
+    sfxHit(letters, x, y, slop = 0) {
+      // The quads go over as bytes, made once per layout: a pointer move
+      // copies them into the params buffer and nothing else.
+      let wire = quadWires.get(letters)
+      if (!wire) {
+        const view = new DataView(new ArrayBuffer(letters.length * 64))
+        letters.forEach((l, i) => l.quad.flat().forEach((v, k) => view.setFloat64(i * 64 + k * 8, v, true)))
+        wire = new Uint8Array(view.buffer)
+        quadWires.set(letters, wire)
+      }
+      const ptr = ex.mt_sfx_params_reserve(Math.max(1, wire.byteLength))
+      if (!ptr) throw new Error('mt-text: sfxHit: the engine refused the params buffer')
+      bytes().set(wire, ptr)
+      // -1 is "no letter" here, not a status.
+      const i = ex.mt_sfx_hit(letters.length, x, y, +slop || 0)
+      return i < -1 ? check(i, 'sfxHit') : i
+    },
+
+    /**
+     * One pointer move on the ring (Blender style): the angle swept round
+     * `centre` from `from` (the previous pointer point) to `to`, added to
+     * `total` (the running turn so far, degrees). Call it on every move and
+     * hand back the `total` it returns: it counts on past half a turn and is
+     * never rounded, so many small moves add up exactly.
+     * @returns {{ total: number, shown: number }} `shown` is what the letter's
+     *   edit stores: `total` snapped to `snapDeg` when that is above 0 (Shift: 15),
+     *   in whole degrees, wrapped to -180..180, positive clockwise on screen
+     */
+    sfxTurn(centre, from, to, total, snapDeg = 0) {
+      ex.mt_sfx_turn(centre[0], centre[1], from[0], from[1], to[0], to[1], +total || 0, +snapDeg || 0)
+      const f = outF64()
+      return { total: f(0), shown: f(1) }
+    },
+
+    /**
+     * One pointer move on the scale handle: `startScale` times the pointer's
+     * distance from `centre` now over at grab (`start`), 0.2..5, to two
+     * decimals, or to steps of 0.05 when `snap`.
+     */
+    sfxScale(centre, start, now, startScale, snap = false) {
+      return ex.mt_sfx_scale(centre[0], centre[1], start[0], start[1], now[0], now[1], +startScale, snap ? 1 : 0)
+    },
+
+    /**
+     * One pointer move dragging a letter: the hand edit's `[dx, dy]` (ems of
+     * the letter, three decimals, -20..20) from its value at grab plus the
+     * pointer's travel from `start` to `now` (px).
+     * @param {number | { unit: number }} letter the letter from `sfxPlace` (its `unit`
+     *   is used), or its px per em of edit; NOT its `em`, which includes its own scale
+     */
+    sfxMove(letter, start, now, startDx, startDy) {
+      const unit = typeof letter === 'number' ? letter : letter.unit
+      ex.mt_sfx_move(+unit, start[0], start[1], now[0], now[1], +startDx || 0, +startDy || 0)
+      const f = outF64()
+      return [f(0), f(1)]
+    },
+
+    /**
+     * The bend (-2..2, three decimals) that puts the middle of `path`'s curve
+     * (its t = 0.5 point) nearest `pt`. In the path's units (ems).
+     */
+    sfxBendFor(path, pt) {
+      return ex.mt_sfx_bend_for(path.a[0], path.a[1], path.b[0], path.b[1], +path.bend || 0, pt[0], pt[1])
+    },
+
+    /** `path`'s curve: its control point `ctrl` and its middle `mid` (t = 0.5), in its units. */
+    sfxCurve(path) {
+      ex.mt_sfx_curve(path.a[0], path.a[1], path.b[0], path.b[1], +path.bend || 0)
+      const f = outF64()
+      return { ctrl: [f(0), f(1)], mid: [f(2), f(3)] }
     },
 
     /**

@@ -1,23 +1,89 @@
 // ===== What the SFX handles change on a box, and how it is recorded =====
 //
-// The handles themselves are `SfxGizmo.svelte`: a dot at each end of
-// every text group's path, a diamond that bends it, and, on a letter picked
-// by a click, a ring that turns it and a square that sizes it. What a drag
-// writes is worked out here, like `warp-gizmo.js` does for the mesh, so that
-// "one history step per gesture" is something a node test can check.
+// The handles themselves are `SfxGizmo.svelte`: each text group's path with a
+// dot at each end and a diamond on its curve, and, on a letter picked by a
+// press, the reference's gizmo (docs/giongo/04-reference-controls.md 2): a
+// ring that turns it, two arrows that move it along the screen's x or y, a
+// square that moves it freely and an arm that sizes it. What a drag writes is
+// worked out by the engine (`sfxTurn`, `sfxScale`, `sfxMove`, `sfxBendFor`,
+// sfx.js); what it does to the box's recipe, and the one history step it
+// makes, is here, so that a node test can check it.
 //
 // Units are the recipe's (`style.sfx`, data.js): a path's ends are ems of the
 // box's size from the box's centre; a letter's move is ems of that LETTER (the
-// engine's `em` for it, which a letter grown along the path has more of), its
-// turn degrees and its scale a factor.
+// engine's `unit` for it), its turn degrees and its scale a factor.
 
 import { cloneStyle, markUnsaved, reviewBox, pageById, settleEdits } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
 
-// The arrows' steps: page px for a path's point, ems for a letter. Shift is ten.
-export const NUDGE_SETTLE_MS = 400;
-export const PATH_NUDGE_PX = 1;
-export const LETTER_NUDGE_EM = 0.02;
+// A second press within this long and this near, on the same part, is a
+// double: it resets what that part changes.
+export const DOUBLE_MS = 400;
+export const DOUBLE_PX = 12;
+
+// What a double press on each part of the gizmo puts back.
+export const GLYPH_RESET = Object.freeze({
+  ring: { rot: 0 },
+  scale: { s: 1 },
+  x: { dx: 0 },
+  y: { dy: 0 },
+  plane: { dx: 0, dy: 0 },
+  centre: { dx: 0, dy: 0 },
+  letter: { dx: 0, dy: 0, rot: 0, s: 1 },
+});
+
+// Whether a press on `part` at `t` ms, client `x, y`, is the second of a
+// double after `prev` ({ part, t, x, y } of the last press, or null).
+export function isDouble(prev, part, t, x, y) {
+  return !!prev && prev.part === part && t - prev.t <= DOUBLE_MS && Math.hypot(x - prev.x, y - prev.y) <= DOUBLE_PX;
+}
+
+// The gizmo's size for a stage `w` x `h` CSS px: 1 on a big canvas, down to
+// 0.6 on a small one. An unmeasured stage is a big one.
+export function gizmoScale(w, h) {
+  if (!(w > 0) || !(h > 0)) return 1;
+  return Math.min(1, Math.max(0.6, Math.min(w, h) / 560));
+}
+
+// The screen's x (`axis` 'x') or y axis in the box's stored frame: the box's
+// turn undone, then its flip. A step along it is a step along the screen's
+// axis once the box is turned and mirrored back.
+export function screenAxis(rotDeg, flipH, flipV, axis) {
+  const r = ((rotDeg || 0) * Math.PI) / 180;
+  const c = Math.cos(r);
+  const sn = Math.sin(r);
+  const u = axis === 'x' ? [c, -sn] : [sn, c];
+  return [flipH ? -u[0] : u[0], flipV ? -u[1] : u[1]];
+}
+
+// Pointer moves to writes, at most one per animation frame: `push` keeps the
+// latest move and asks for a frame, the frame applies it. `flush` applies a
+// waiting move now (the release), `cancel` drops it.
+export function frameLoop(apply) {
+  let pending = null;
+  let raf = 0;
+  const run = () => {
+    raf = 0;
+    const ev = pending;
+    pending = null;
+    if (ev) apply(ev);
+  };
+  return {
+    push(ev) {
+      pending = ev;
+      if (!raf) raf = requestAnimationFrame(run);
+    },
+    flush() {
+      if (raf) cancelAnimationFrame(raf);
+      run();
+    },
+    cancel() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      pending = null;
+    },
+  };
+}
 
 export const glyphKey = (group, index) => `${group}:${index}`;
 
