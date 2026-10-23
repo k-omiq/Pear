@@ -9,8 +9,8 @@
 //                  the engine's sound types (`applySfxKind`: the type's
 //                  layout, every number and dial back to the type's, no hand
 //                  edits and no drawn paths), with the box's seed
-//   a variation    the box's sound as it is, with another seed, less the
-//                  letters moved by hand and the paths drawn on the page
+//   a variation    the box's sound as it is, with another seed: what a click
+//                  on it leaves the box (its paths and hand edits stay)
 //
 // The cards show the first eight code points of the text. All are cut to the
 // ink they hold (a sound effect spreads well past its frame) and scaled to
@@ -95,19 +95,19 @@ export function cardText(text) {
 const plain = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v)));
 
 // The fields of `style.sfx` a variation is painted from: the recipe less the
-// seed (the card's own), the hand edits, the drawn paths, the caption and
-// what Remove SFX puts back. Read one by one, so that a caller tracking what
-// this reads (the panel's `$derived`) is not woken by a letter dragged by
-// hand or a path end moved: neither is in any card.
-const SFX_LAYOUT = ['kind', 'power', 'rough', 'momentum', 'dir', 'joinBars', 'kern', 'flow', 'follow', 'gap', 'bigTighter', 'slant', 'rise', 'jitter'];
+// seed (the card's own), the caption and what Remove SFX puts back. Picking a
+// variation changes only the seed, so the drawn paths and hand edits are in
+// it. While a letter or path is dragged the panel reads none of this
+// (`sfxLive`); the variations repaint once when the drag ends.
+const SFX_LAYOUT = ['kind', 'power', 'rough', 'momentum', 'dir', 'joinBars', 'kern', 'flow', 'follow', 'gap', 'bigTighter', 'slant', 'rise', 'jitter', 'paths', 'glyphs'];
 
 /**
  * Everything a card's picture depends on, as plain data: it is in the cache
  * key, and the painter reads nothing else of the box. The box's look (font,
  * fill, outlines, shadows, the SFX effects) and its SFX layout, less what a
  * card does not draw: the page's (ink, mask, mesh, turn and flip), the
- * caption, the frame, the seed (the card's own), the letters moved by hand and
- * the drawn paths. Outline and shadow sizes are kept as shares of the size, so
+ * caption, the frame and the seed (the card's own). Outline and shadow sizes
+ * are kept as shares of the size, so
  * a box made bigger is the same card.
  */
 export function cardSpec(style, text) {

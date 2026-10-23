@@ -40,9 +40,10 @@
   // writes at most once a frame. The stage is painted at the pixels it shows.
   // The cards are painted three a frame by one pump that always paints the
   // latest look and waits out a run of changes (a colour dragged), and a card
-  // keeps its last picture until its new one is in; their keys hold neither
-  // the letters moved by hand nor the paths, so a drag on the page repaints no
-  // card at all.
+  // keeps its last picture until its new one is in. A type card's key holds
+  // neither the letters moved by hand nor the paths, so a drag on the page
+  // repaints no type card; the variations, which keep both, repaint once
+  // when it ends.
   import { onDestroy, untrack } from 'svelte';
   import { app, boxText, lineByN } from './store.svelte.js';
   import { engineSwitch } from './engine-switch.svelte.js';

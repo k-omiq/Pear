@@ -221,14 +221,22 @@ describe('a variation', () => {
     expect(one).not.toBe(two);
   });
 
-  it('has a key that holds the layout and dials, and not the paths, the hand edits or the caption', () => {
+  it('has a key that holds the layout, dials, paths and hand edits, and not the caption', () => {
     const vkey = (st) => cardKey(cardSpec(st, 'BOOM'), { kind: null, seed: 1 }, 0, 1);
+    const tkey = (st) => cardKey(cardSpec(st, 'BOOM'), { kind: 'drip', seed: 1 }, 0, 1);
     const a = sfxStyle('impact');
     const b = sfxStyle('impact');
-    b.sfx.paths = [{ a: [-2, 0], b: [2, 1], bend: 0.2 }];
-    b.sfx.glyphs = { '0:1': { dx: 0.5, dy: 0, rot: 10, s: 1 } };
     b.sfx.caption.text = 'a note';
     expect(vkey(b)).toBe(vkey(a));
+    // A variation is what a click on it leaves the box: its paths and edits.
+    b.sfx.paths = [{ a: [-2, 0], b: [2, 1], bend: 0.2 }];
+    expect(vkey(b)).not.toBe(vkey(a));
+    const e = sfxStyle('impact');
+    e.sfx.glyphs = { '0:1': { dx: 0.5, dy: 0, rot: 10, s: 1 } };
+    expect(vkey(e)).not.toBe(vkey(a));
+    // A type card resets both, so neither is in its key.
+    expect(tkey(b)).toBe(tkey(a));
+    expect(tkey(e)).toBe(tkey(a));
     const c = sfxStyle('impact');
     c.sfx.gap = 0.4;
     expect(vkey(c)).not.toBe(vkey(a));

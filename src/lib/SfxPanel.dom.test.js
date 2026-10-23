@@ -445,7 +445,7 @@ describe('painting', () => {
     expect(paintStage.mock.calls.length).toBe(after + 1);
   });
 
-  it('repaints no card for a letter moved by hand or a path drawn', async () => {
+  it('repaints only the variations for a letter moved by hand or a path drawn', async () => {
     fakeFrames();
     const { box } = await on();
     await settle();
@@ -454,7 +454,9 @@ describe('painting', () => {
     box.style.sfx.glyphs = { '0:1': { dx: 0.5, dy: 0, rot: 10, s: 1 } };
     box.style.sfx.paths = [{ a: [-2, 0], b: [2, 1], bend: 0.2 }];
     await settle();
-    expect(paintCard).not.toHaveBeenCalled();
+    // The 8 variations keep the box's paths and edits; the 12 type cards don't.
+    expect(paintCard).toHaveBeenCalledTimes(8);
+    expect(paintCard.mock.calls.every(([, card]) => !card?.kind)).toBe(true);
     expect(paintStage).toHaveBeenCalledTimes(1);
   });
 
