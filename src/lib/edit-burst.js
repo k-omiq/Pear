@@ -78,5 +78,5 @@ export function editBurst(getBox) {
     pending = null;
   }
 
-  return { arm, touch, settle, dispose };
+  return { arm, touch, settle, dispose, isOpen: () => pending != null };
 }

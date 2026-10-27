@@ -83,11 +83,10 @@ describe('the bottom edge, dragged far up', () => {
   });
 });
 
-// A corner sets the box's width and height and never its size: it makes an
-// Auto height box Fixed, and a Fixed box has no fit to owe. A left or right
-// edge leaves the height alone. Neither leaves a fit owed for it: a fit that
-// lands later, on a box the user shaped by a corner, moves it under them.
-// Cmd on a corner scales the box and the type together.
+// A corner sets the size: the box and the type by one factor, so the lines
+// stay the lines they were. It leaves Auto height as it was, and no fit is
+// owed for it: a fit that lands later, on a box the user sized by a corner,
+// moves it under them. A side never changes the size.
 async function dragHandle(sel, dx, dy, mods = {}) {
   loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [BOX()] }]);
   const pg = page();
@@ -110,10 +109,10 @@ describe('a corner, with the box\'s face still arriving', () => {
       let arrived = false;
       setFontSource({ ready: () => arrived });
       const b = await dragHandle(`.handle.corner.${dir}`, dir.includes('e') ? 40 : -40, dir.includes('s') ? 60 : -60);
-      expect(b.w).toBe(280);
+      expect(b.w).toBe(288);
       expect(b.h).toBe(360);
-      expect(b.style.size).toBe(30);
-      expect(b.style.autoHeight).toBe(false);
+      expect(b.style.size).toBe(36);
+      expect(b.style.autoHeight).toBe(true);
       expect(fitHeld(b)).toBe(false);
       const left = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
       arrived = true;
@@ -122,11 +121,16 @@ describe('a corner, with the box\'s face still arriving', () => {
       expect({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size }).toEqual(left);
     });
   }
-  it('Cmd scales the box and the type by one factor', async () => {
+  it('Cmd changes nothing: a corner scales by one factor either way', async () => {
     const b = await dragHandle('.handle.corner.se', 40, 60, { metaKey: true });
     expect(b.h).toBe(360);
     expect(b.style.size).toBe(36);
     expect(b.style.autoHeight).toBe(true);
+  });
+  it('a side never changes the size, Cmd or not', async () => {
+    const b = await dragHandle('.handle.side.e', 40, 0, { metaKey: true });
+    expect(b.w).toBe(280);
+    expect(b.style.size).toBe(30);
   });
   it('the bottom edge still holds one: its floor did stand down', async () => {
     setFontSource({ ready: () => false });

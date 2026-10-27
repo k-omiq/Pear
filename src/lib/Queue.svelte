@@ -66,7 +66,6 @@
   // than one pass per row - see `placedLineNs`.
   const placedNs = $derived(placedLineNs(p));
   const imported = $derived(p.lines.filter((l) => !isFreeLine(l)));
-  const activeIndex = $derived(imported.findIndex((l) => l.n === p.activeLineN));
   // How many bubbles on THIS page still want a box. Drives the top button's
   // label and its disabled state.
   const pagePlaceable = $derived(placeableDetectedLines(p).length);
@@ -94,14 +93,98 @@
     return hit ? hit.meanings.join(' / ') : '';
   };
 
+  // ---- reading order ----
+  // A row is dragged to where it belongs: past a few pixels it follows the
+  // pointer, a line shows where it will land, and the drop is one `moveLine`
+  // (one undo step). From the keyboard, Alt+Up / Alt+Down moves the focused
+  // row one place. Only imported lines have a place in the order: a free-typed
+  // row neither drags nor is dropped between.
+  const DRAG_START = 4;
+  // The list scrolls under a drag held near its top or bottom edge.
+  const EDGE = 28;
+  // { n, on, to, mark: { n, after } | null }. `to` is the 1-based place the
+  // line drops into, null while the drop would leave it where it is.
+  let drag = $state(null);
+
   // Moving a keyed DOM row can drop its focused descendant even though the
-  // node survives. Finish that move before restoring focus, so repeated Enter
-  // presses keep moving this content. At an edge, stop on the row itself.
-  function move(e, line, position) {
-    const button = e.currentTarget;
-    const focused = document.activeElement === button;
+  // node survives. Finish the move before restoring focus, so repeated presses
+  // keep moving this content.
+  function moveTo(line, position) {
+    const focused = document.activeElement;
     flushSync(() => moveLine(line.n, position, p));
-    if (focused) (button.disabled ? button.closest('.qrow') : button)?.focus({ preventScroll: true });
+    focused?.focus?.({ preventScroll: true });
+  }
+
+  function rowKey(e, line, editing) {
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !isFreeLine(line) && !e.target.closest('textarea, input')) {
+      // Taken here, so the window's handler does not nudge the box as well.
+      e.preventDefault();
+      const at = imported.findIndex((l) => l.n === line.n);
+      moveTo(line, e.key === 'ArrowUp' ? at : at + 2);
+    } else if (!editing && e.key === 'Enter') activateLine(line.n);
+  }
+
+  // Where a drag at `y` would drop: the rows it would land between, measured
+  // live because the list scrolls under it.
+  function dropAt(n, y) {
+    const rows = [...listEl.querySelectorAll('.qrow[data-n]')];
+    const from = rows.findIndex((r) => +r.dataset.n === n);
+    const others = rows.filter((_, i) => i !== from);
+    let k = others.findIndex((r) => {
+      const b = r.getBoundingClientRect();
+      return y < b.top + b.height / 2;
+    });
+    if (k < 0) k = others.length;
+    if (k === from) return { to: null, mark: null };
+    const mark = k < others.length ? { n: +others[k].dataset.n, after: false } : { n: +others[k - 1].dataset.n, after: true };
+    return { to: k + 1, mark };
+  }
+
+  function onRowDown(e, line) {
+    if (e.button !== 0 || isFreeLine(line) || imported.length < 2) return;
+    // The source text is for selecting and copying (a drag over it selects);
+    // the rest of the row is the handle.
+    if (e.target.closest('textarea, input, select, [contenteditable], .qmenu, .qtagform, .qjp, .qalt-text')) return;
+    const y0 = e.clientY;
+    const scroller = listEl.closest('.fpanel-body');
+    let y = y0;
+    let raf = 0;
+    drag = { n: line.n, on: false, to: null, mark: null };
+    const update = () => Object.assign(drag, dropAt(line.n, y));
+    const edgeScroll = () => {
+      raf = 0;
+      if (!drag?.on || !scroller) return;
+      const r = scroller.getBoundingClientRect();
+      const v = y < r.top + EDGE ? -8 : y > r.bottom - EDGE ? 8 : 0;
+      if (!v) return;
+      scroller.scrollTop += v;
+      update();
+      raf = requestAnimationFrame(edgeScroll);
+    };
+    const onMove = (ev) => {
+      y = ev.clientY;
+      if (!drag.on && Math.abs(y - y0) < DRAG_START) return;
+      drag.on = true;
+      update();
+      if (!raf) raf = requestAnimationFrame(edgeScroll);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      cancelAnimationFrame(raf);
+      const { on, to } = drag;
+      drag = null;
+      if (!on) return;
+      // The click a drag ends in is not a click on whatever it ended over.
+      const swallow = (ev) => ev.stopPropagation();
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+      if (to != null) moveTo(line, to);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   }
 
   // Undo/redo for each text field.
@@ -305,7 +388,7 @@
 
 <svelte:window onkeydown={cancelOnEscape} />
 
-<div class="qlist" bind:this={listEl}>
+<div class="qlist" class:reordering={drag?.on} bind:this={listEl}>
   <!-- The batch placement, at the top of the panel rather than under the queue.
        It is the first thing a letterer does to a detected page - one press
        instead of one click per bubble - and at the foot of a list of forty lines
@@ -387,7 +470,7 @@
     {@const badge = free ? 'T' : line.n}
     {@const badgeTitle = free ? 'Typed on the page - not from the translation' : `Line ${line.n}`}
 
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_static_element_interactions -->
     <div
       class="qrow"
       class:editing
@@ -395,10 +478,21 @@
       class:placed
       class:sfx={tagged.includes('sfx')}
       class:narration={tagged.includes('narration')}
+      class:lifted={drag?.on && drag.n === line.n}
+      class:drop-before={drag?.mark?.n === line.n && !drag.mark.after}
+      class:drop-after={drag?.mark?.n === line.n && drag.mark.after}
+      data-n={free ? undefined : line.n}
       role={editing ? undefined : 'button'}
       tabindex={editing ? -1 : 0}
-      onclick={editing ? undefined : () => activateLine(line.n)}
-      onkeydown={editing ? undefined : (e) => e.key === 'Enter' && activateLine(line.n)}
+      aria-keyshortcuts={free ? undefined : 'Alt+ArrowUp Alt+ArrowDown'}
+      onclick={editing ? undefined : () => {
+        // A drag over the source to copy it ends in a click; it selects, it
+        // does not open the row (which would swap the text for a field).
+        if (window.getSelection?.()?.toString()) return;
+        activateLine(line.n);
+      }}
+      onkeydown={(e) => rowKey(e, line, editing)}
+      onpointerdown={(e) => onRowDown(e, line)}
     >
       {#if editing}
         {@const hits = glossaryHits(line.jp, lineText(line), guide.glossary)}
@@ -406,12 +500,6 @@
 
         <button class="badge" class:free title="Select this line's box" onclick={() => activateLine(line.n)}>{badge}</button>
         <span class="qcol">
-          {#if !free}
-            <span class="qorder" role="group" aria-label="Reading order">
-              <button class="qtop-btn" disabled={activeIndex <= 0} onclick={(e) => move(e, line, activeIndex)}>Move up</button>
-              <button class="qtop-btn" disabled={activeIndex >= imported.length - 1} onclick={(e) => move(e, line, activeIndex + 2)}>Move down</button>
-            </span>
-          {/if}
           <span class="qtags">
             {#each chips(line) as c (c.name)}
               <button class="qtag" class:on={c.on} title={c.on ? `Remove ${c.name}` : `Apply ${c.name}`} onclick={() => toggle(line, c.name)}>{c.name}</button>

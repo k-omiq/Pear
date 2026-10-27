@@ -20,8 +20,10 @@
   import ChapterSourcesSheet from './lib/home/ChapterSourcesSheet.svelte';
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, chapterSaveCycle } from './lib/store.svelte.js';
+  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, chapterSaveCycle } from './lib/store.svelte.js';
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
+  import { editBurst } from './lib/edit-burst.js';
+  import { sizeSetting, setSizeSetting, steppedSize } from './lib/data.js';
   import { dispatchShortcut, registerShortcutHandlers } from './lib/shortcuts.svelte.js';
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
@@ -33,13 +35,14 @@
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
   import { isTauri } from './lib/importer.js';
   import { checkSidecar } from './lib/sidecar.js';
-  import { initDoor } from './lib/agent/door.svelte.js';
+  import { initDoor, initChapterWindowDoor, closeDoorForQuit } from './lib/agent/door.svelte.js';
+  import { windowRole, parseChapterKey, agentWindowReady, closeAgentWindows } from './lib/agent/windows.js';
   import { initTheme } from './lib/theme.svelte.js';
   // Side-effect import: reading the stored preferences also applies them, and
   // the typesetting switch has to be applied before the first line is measured.
   import './lib/prefs.svelte.js';
-  import { library, initRoot, openChapter, flushBeforeLeaving, leaveApprovalCurrent, checkOutsideChange } from './lib/library.svelte.js';
-  import { route, goBack } from './lib/route.svelte.js';
+  import { library, initRoot, scanLibrary, openChapter, flushBeforeLeaving, leaveApprovalCurrent, checkOutsideChange, watchProjectRecords } from './lib/library.svelte.js';
+  import { route, goBack, goEditor } from './lib/route.svelte.js';
   import { watchFontLoads, installContextMenuGuard, isReloadKey, isEditableTarget } from './lib/shell-guards.js';
 
   let fontModalOpen = $state(false);
@@ -59,6 +62,12 @@
   let releaseUnloadFlush = null;
   let releaseFontWatch = null;
   let releaseContextMenu = null;
+
+  // What this window is for: the user's main window, or one opened for an AI
+  // agent's chapter (agent/windows.js), which opens that chapter at boot.
+  // Read once at boot; until it answers this is the main window.
+  let role = { label: 'main', agent: false, chapter: null };
+  const roleRead = windowRole().then((r) => (role = r));
 
   onMount(async () => {
     initTheme();
@@ -81,6 +90,9 @@
       // Mark booted regardless of success.
       booted = true;
     }
+    // Every window writes the series records it shares with the others, so
+    // each follows the others' writes.
+    watchProjectRecords();
     restoreFonts();
     // What this machine has installed, so a system font the user shows is in
     // the menus from the start. Not awaited: nothing on screen needs it yet.
@@ -90,11 +102,45 @@
     armQuitFlush();
     // Probe detection engine (Tauri only).
     checkSidecar().then((h) => {
-      if (h) toast(`Detection ready · ${h.device}`);
+      if (h && !role.agent) toast(`Detection ready · ${h.device}`);
     });
-    // The AI door opens only if the user left it on (Settings, AI).
-    initDoor();
+    await roleRead;
+    if (role.agent) {
+      await initChapterWindowDoor(role.label);
+      await openAgentChapter(role.chapter);
+    } else {
+      // The AI door opens only if the user left it on (Settings, AI).
+      initDoor();
+    }
   });
+
+  // A window opened for an agent goes straight to its chapter, and tells the
+  // main window it is ready (or why not: the window then closes).
+  let agentChapterShown = $state(false);
+  // It exists for that one chapter. Leaving it (the back pill) has already
+  // saved and let go of the chapter, so the window goes too: kept, it would sit
+  // on the project screen holding nothing while the agent's next open_chapter
+  // built a second window, and a chapter picked there would be open in a
+  // window the door routes no calls to.
+  $effect(() => {
+    if (!agentChapterShown || route.name === 'editor') return;
+    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().close());
+  });
+  async function openAgentChapter(key) {
+    const ref = parseChapterKey(key);
+    try {
+      if (!ref) throw new Error('no chapter was named for this window');
+      // The catalogue first: a new window has read none of the library yet.
+      await scanLibrary();
+      for (let i = 0; library.loading && i < 300; i++) await new Promise((r) => setTimeout(r, 100));
+      await openChapter(ref.projectId, ref.chapterId);
+      await goEditor(ref.projectId, ref.chapterId);
+      agentChapterShown = true;
+      await agentWindowReady(true);
+    } catch (e) {
+      await agentWindowReady(false, String(e?.message ?? e));
+    }
+  }
 
   // The last thing that can be done synchronously on the way out of the process.
   //
@@ -171,6 +217,11 @@
           // Flush preferences when closing without an open chapter.
           flushSidebar();
           flushPanels();
+          // The main window going takes the AI windows with it, each saved.
+          if (!role.agent) {
+            e.preventDefault();
+            if (await agentWindowsClosed()) await w.destroy();
+          }
           return;
         }
         e.preventDefault();
@@ -178,8 +229,10 @@
       });
 
       // Route 2: Cmd+Q and the Quit menu item. macOS only because the MENU is
-      // macOS only - see `patchDefaultMenu`.
-      await patchDefaultMenu(safeToQuit, w);
+      // macOS only - see `patchDefaultMenu`. The menu is the app's, so only the
+      // main window puts its Quit there: an AI window's would close only itself.
+      await roleRead;
+      if (!role.agent) await patchDefaultMenu(safeToQuit, w);
     } catch (e) {
       // Not swallowed any more. This used to be a bare `catch {}`, so a build
       // where the window API moved, or a platform that refused the menu, quietly
@@ -192,7 +245,22 @@
     }
   }
 
+  // Before the main window quits: the AI door shut, so no agent edits it while
+  // it saves, and every AI window saved and closed. False when one would not
+  // close (its save failed and it is asking the user): the main window stays.
+  async function agentWindowsClosed() {
+    if (role.agent) return true;
+    await closeDoorForQuit();
+    const left = await closeAgentWindows();
+    if (left > 0) {
+      toastError(`An AI window could not close (${left} left) - save or close it first, then quit again`);
+      return false;
+    }
+    return true;
+  }
+
   async function destroyWhenSaved(safeToQuit, w) {
+    if (!(await agentWindowsClosed())) return;
     const ref = app.chapterRef, turn = chapterSaveCycle();
     const original = safeToQuit();
     if (!(await original)) return;
@@ -285,6 +353,21 @@
   const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   const NUDGE_FAST = 10;
 
+  // The bigger/smaller keys. A held key or a run of presses is one undo step,
+  // as a scrub in the Inspector is: the same burst, not one entry per press.
+  // An Inspector edit still pending is settled before the run starts, so the
+  // two never record the same change.
+  const sizeBurst = editBurst(() => byId(app.selectedId));
+  function stepSelectedSize(d) {
+    if (!app.selectedId || isTranslateMode()) return false;
+    const b = byId(app.selectedId);
+    if (!b?.style || refuseLocked(b)) return;
+    if (!sizeBurst.isOpen()) settleEdits();
+    sizeBurst.arm();
+    setSizeSetting(b.style, steppedSize(sizeSetting(b.style), d));
+    sizeBurst.touch();
+  }
+
   // Every named shortcut in the app dispatches through here - the registry in
   // shortcuts.svelte.js owns which keys reach which of these, and the settings
   // screen rebinds them. A handler returning exactly `false` declines the press
@@ -349,6 +432,8 @@
       if (!app.selectedId || isTranslateMode()) return false;
       if (!resetBoxRotation(app.selectedId) && !byId(app.selectedId)?.locked) toast('That box is already straight');
     },
+    'box.sizeUp': () => stepSelectedSize(1),
+    'box.sizeDown': () => stepSelectedSize(-1),
     'style.copy': () => {
       if (!app.selectedId || isTranslateMode()) return false;
       const b = byId(app.selectedId);
@@ -395,6 +480,7 @@
   });
   onDestroy(() => {
     releaseShortcuts();
+    sizeBurst.dispose();
     releaseUnloadFlush?.();
     releaseUnloadFlush = null;
     releaseFontWatch?.();

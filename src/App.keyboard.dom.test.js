@@ -10,6 +10,7 @@ vi.mock('./lib/library.svelte.js', () => ({
   openChapter: (projectId, chapterId) => new Promise((resolve, reject) => calls.opens.push({ projectId, chapterId, resolve, reject })),
   flushBeforeLeaving: async () => true,
   leaveApprovalCurrent: () => true,
+  watchProjectRecords: () => {},
 }));
 vi.mock('./lib/fonts.js', async (original) => ({ ...await original(), restoreFonts: async () => {}, scanSystemFonts: async () => {} }));
 vi.mock('./lib/importer.js', async (original) => ({ ...await original(), isTauri: () => false }));
@@ -103,4 +104,53 @@ it('the Inspector tab strip takes its arrows without moving the selected box', a
   arrow(sub);
   await settle();
   expect(b.x).toBe(100);
+});
+
+// ===========================================================================
+// Bigger / smaller text
+// ===========================================================================
+const sizeKey = (code) => {
+  const ev = new KeyboardEvent('keydown', { code, key: code === 'Period' ? '>' : '<', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+  document.body.dispatchEvent(ev);
+  return ev;
+};
+
+it('the size keys step the selected box a whole size at a time, one undo for the run', async () => {
+  const { undo } = await import('./lib/editor/history.svelte.js');
+  const b = await openEditor();
+  b.style.size = 23.4;
+  expect(sizeKey('Period').defaultPrevented).toBe(true);
+  expect(b.style.size).toBe(24);
+  sizeKey('Period');
+  expect(b.style.size).toBe(25);
+  sizeKey('Comma'); sizeKey('Comma');
+  expect(b.style.size).toBe(23);
+  expect(undo()).toBe(true);
+  expect(b.style.size).toBe(23.4);
+});
+
+it('in Fit to box the size keys step the most the fit may grow to', async () => {
+  const b = await openEditor();
+  b.style.fitText = true;
+  b.style.fitMax = 30;
+  sizeKey('Comma');
+  expect(b.style.fitMax).toBe(29);
+  expect(b.style.size).toBeLessThanOrEqual(29);
+});
+
+it('the Inspector size field steps with its buttons and arrows', async () => {
+  const b = await openEditor();
+  b.style.size = 20;
+  render(Inspector, { onSettings: () => {} }); await settle();
+  const field = document.getElementById('insp-size');
+  expect(field.value).toBe('20');
+  document.querySelector('button[aria-label="Bigger"]').click(); await settle();
+  expect(b.style.size).toBe(21);
+  field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true, cancelable: true })); await settle();
+  expect(b.style.size).toBe(11);
+  expect(field.value).toBe('11');
+  field.value = '300';
+  field.dispatchEvent(new Event('change', { bubbles: true })); await settle();
+  expect(b.style.size).toBe(200);
+  expect(field.value).toBe('200');
 });

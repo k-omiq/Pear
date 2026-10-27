@@ -496,6 +496,27 @@ export function sizingOf(style) {
   return style?.autoHeight === false ? 'fixed' : 'auto';
 }
 
+// The type size the user sets. In Fit to box the size itself is the fit's
+// answer, so what the user sets there is the most it may grow to (`fitMax`).
+// The Inspector's size field and the bigger/smaller keys both go through these,
+// so they agree on which number they change.
+export const SIZE_MIN = 6;
+export const SIZE_MAX = 200;
+export function sizeSetting(style) {
+  return style.fitText && style.fitMax > 0 ? style.fitMax : style.size;
+}
+export function setSizeSetting(style, v) {
+  const n = Math.min(SIZE_MAX, Math.max(SIZE_MIN, +v || SIZE_MIN));
+  if (style.fitText) style.fitMax = n;
+  else style.size = n;
+}
+// A step bigger or smaller lands on a whole size: autofit leaves fractional
+// sizes behind, and 23.4 stepped up should read 24, not 24.4.
+export function steppedSize(v, d) {
+  const n = d > 0 ? Math.floor(v) + d : Math.ceil(v) + d;
+  return Math.min(SIZE_MAX, Math.max(SIZE_MIN, n));
+}
+
 // merge older/partial styles up to the current schema (back-compat for saved data)
 //
 // The flat spread is the whole migration for a flat key: a style saved before
@@ -1416,10 +1437,17 @@ export function normalizeAuto(a) {
 // text, rising from 0, the key of the text and face they were chosen for
 // (`breaksKey` in measure.js), and the key of the words alone (`textKey`,
 // `breaksTextKey`), which lets held lines follow a change of face or size.
+// `scaled` marks the lines a corner scale kept (`resizeBox`): drawn on any
+// box, outline fit or not, until a side, an edit or a solve breaks them again.
 // Anything else is no breaks, and the lines are broken as before.
 export function normalizeBreaks(b) {
   if (!b || typeof b !== 'object' || typeof b.key !== 'string' || !b.key || !Array.isArray(b.at)) return null;
   const at = b.at.map(Number);
   if (!at.length || at[0] !== 0 || at.some((v, i) => !Number.isInteger(v) || v < 0 || (i && v <= at[i - 1]))) return null;
-  return { key: b.key, at, ...(typeof b.textKey === 'string' && b.textKey ? { textKey: b.textKey } : null) };
+  return {
+    key: b.key,
+    at,
+    ...(typeof b.textKey === 'string' && b.textKey ? { textKey: b.textKey } : null),
+    ...(b.scaled === true ? { scaled: true } : null),
+  };
 }

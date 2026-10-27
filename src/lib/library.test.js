@@ -991,6 +991,29 @@ describe('tag registry per project', () => {
     closeChapter();
   });
 
+  it('keeps another window\'s change to the same record, and takes it in', async () => {
+    const a = await createProject('Series A');
+    const ca = await chapterIn(a);
+    // As this window last read it: the base a merge starts from.
+    await scanLibrary();
+    await openChapter(a.id, ca.id);
+    // Another window (an AI agent's chapter of the same series) wrote first.
+    const path = `${projectById(a.id).dir}/project.json`;
+    const theirs = JSON.parse(fsx._tree.files.get(path));
+    theirs.tags = [{ name: 'calm', style: { font: 'Komika' }, size: null, minSize: null }];
+    theirs.guide = { ...theirs.guide, notes: 'from the other window' };
+    fsx._tree.files.set(path, JSON.stringify(theirs));
+    createTag('sfx', { style: { font: 'Bangers' } });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    const record = JSON.parse(fsx._tree.files.get(path));
+    expect(record.tags.map((t) => t.name).sort()).toEqual(['calm', 'sfx']);
+    expect(record.guide.notes).toBe('from the other window');
+    // And this window's registry has the other's tag now.
+    expect(findTag('calm')?.style.font).toBe('Komika');
+    closeChapter();
+  });
+
   it('survives a chapter import, which rewrites project.json whole', async () => {
     const a = await createProject('Series A');
     const ca = await chapterIn(a);

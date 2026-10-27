@@ -114,12 +114,19 @@ const NO_CACHE = { cache: false };
 
 // The lines an outline fit chose (`auto.breaks`), for a box still laid out by
 // it: drawn while they are for this text, face and size (`brokenLines` in
-// measure.js). A box set back to the older layout breaks its lines again.
-export const keptBreaks = (box) => (box?.style?.margin != null ? (box.auto?.breaks ?? null) : null);
+// measure.js). A box set back to the older layout breaks its lines again -
+// except for lines a corner scale kept (`scaled`), which any box draws.
+export const keptBreaks = (box) => (box?.style?.margin != null || box?.auto?.breaks?.scaled ? (box.auto?.breaks ?? null) : null);
+
+// Whether a box splits a word too wide for it (`breakWords` in typeset.js): a
+// box whose width the user set by hand (`auto.locks.width`), which the text
+// has to fit at its size. Every other box is the app's to size, and a word too
+// wide for it widens the box or shrinks the type.
+export const breaksWords = (box) => box?.auto?.locks?.width === true;
 
 // A box as the functions below take it.
 export function boxCandidate(box, text) {
-  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: keptBreaks(box) };
+  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: keptBreaks(box), breakWords: breaksWords(box) };
 }
 
 // Glyph-by-glyph text - SFX lettering, the bezier path, the closed ring, the arc
@@ -233,7 +240,9 @@ export function placeBlock(cand, opts) {
   // the field is one line height to every reader rather than 0 to one of them.
   const lineH = size * (s.lineHeight > 0 ? s.lineHeight : 1);
   const rows = balloonWidthsFor(cand, s, size);
-  const lines = brokenLines(text, s, size, cand.breaks) ?? layoutLines(text, s, size, contentWidth(cand.w, s), rows, opts);
+  const lines =
+    brokenLines(text, s, size, cand.breaks) ??
+    layoutLines(text, s, size, contentWidth(cand.w, s), rows, cand.breakWords ? { ...opts, breakWords: true } : opts);
   if (lines === null) return null;
   const { inks, shift } = blockInk(lines, s, size);
   const blockH = lines.length * lineH;

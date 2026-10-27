@@ -3,7 +3,7 @@ import { setTypesetEnabled, clearLayoutMemo, lineWidth, textInset } from './meas
 import { defaultStyle, normalizeStyle, normalizeAuto } from './data.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { resizeBoxMath } from './resize-math.js';
-import { app, loadProjectPages, page, resizeBox, retypesetBox, setBoxText, boxText, edgeDragFloor } from './store.svelte.js';
+import { app, loadProjectPages, page, resizeBox, retypesetBox, setBoxText, boxText, edgeDragFloor, edgeDragWidthFloor, heightFloorAt, widthForHeight } from './store.svelte.js';
 
 // ===========================================================================
 // A box sized by hand, on real advances
@@ -127,5 +127,105 @@ describe('a height set by hand', () => {
     drag(b, 's', 0, 40);
     expect([b.x, b.w, b.style.size]).toEqual([x, w, size]);
     expect(linesOf(b)).toEqual(lines);
+  });
+});
+
+// A side drag never changes the size. Narrower than the widest word, the word
+// is hyphenated when the box allows it, so the side goes on past it; a top or
+// bottom edge dragged past the text widens the box instead of squashing it.
+describe('a side past the text', () => {
+  const loadWord = (extra = {}) => {
+    app.chapterRef = null;
+    loadProjectPages([
+      {
+        id: 1, w: 1000, h: 1400,
+        lines: [{ n: 1, en: 'UNBELIEVABLE COMPREHENSION', tags: [] }],
+        boxes: [{ id: 'a', lineN: 1, text: null, x: 300, y: 300, w: 400, h: 120, style: style(extra), fit: null }],
+      },
+    ]);
+    return page().boxes[0];
+  };
+  const wordWidth = (b) => Math.ceil(lineWidth('COMPREHENSION', b.style, b.style.size) + 2 * textInset(b.style));
+
+  it('hyphenates: the width goes below the widest word, every line fits, the size stays', () => {
+    const b = loadWord();
+    const word = wordWidth(b);
+    const floor = edgeDragWidthFloor(b, page());
+    expect(floor).toBeLessThan(word);
+    resizeBox(1, b.id, { w: floor }, { w: b.w, h: b.h });
+    expect(b.w).toBe(floor);
+    expect(b.style.size).toBe(20);
+    expect(linesOf(b).some((l) => l.trim().endsWith('-'))).toBe(true);
+    expect(widest(b)).toBeLessThanOrEqual(room(b) + 0.5);
+  });
+
+  it('splits a word with no syllable to cut when the width goes below it', () => {
+    app.chapterRef = null;
+    loadProjectPages([
+      {
+        id: 1, w: 1000, h: 1400,
+        lines: [{ n: 1, en: 'BEAM TRUTH', tags: [] }],
+        boxes: [{ id: 'a', lineN: 1, text: null, x: 300, y: 300, w: 400, h: 120, style: style(), fit: null, auto: normalizeAuto({ refSize: 20 }) }],
+      },
+    ]);
+    const b = page().boxes[0];
+    const word = Math.ceil(lineWidth('TRUTH', b.style, b.style.size) + 2 * textInset(b.style));
+    const floor = edgeDragWidthFloor(b, page());
+    expect(floor).toBeLessThan(word);
+    resizeBox(1, b.id, { w: floor }, { w: b.w, h: b.h });
+    expect(b.w).toBe(floor);
+    expect(b.style.size).toBe(20);
+    expect(linesOf(b).some((l) => l.trim().endsWith('-'))).toBe(true);
+    expect(widest(b)).toBeLessThanOrEqual(room(b) + 0.5);
+  });
+
+  it('with "Hyphenate long words" off it stops at the widest word', () => {
+    const b = loadWord({ hyphenate: false });
+    expect(edgeDragWidthFloor(b, page())).toBe(wordWidth(b));
+  });
+
+  it('a height below the text widens the box until the text stands in it', () => {
+    const b = loadWord();
+    resizeBox(1, b.id, { w: 120 }, { w: b.w, h: b.h });
+    const lines = linesOf(b).length;
+    expect(lines).toBeGreaterThan(2);
+    const one = heightFloorAt(b, 2000, page());
+    const w = widthForHeight(b, b.w, one, 1000, page());
+    expect(w).toBeGreaterThan(120);
+    expect(heightFloorAt(b, w, page())).toBeLessThanOrEqual(one);
+    expect(heightFloorAt(b, w - 1, page())).toBeGreaterThan(one);
+  });
+});
+
+// A corner sets the size and nothing else: the lines are the lines they were,
+// at every step of the drag, outline fit or not. A side after it breaks them
+// again.
+describe('a corner scale keeps the layout', () => {
+  const scaleBy = (b, dx, dy) => {
+    const o = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
+    const base = { w: o.w, h: o.h, style: JSON.parse(JSON.stringify(b.style)) };
+    for (const f of [0.25, 0.5, 0.75, 1]) resizeBox(1, b.id, resizeBoxMath(dx * f, dy * f, 'se', o, 0, 30, 40, { scale: true }), base);
+  };
+  for (const [name, opts] of [['an outline-fit box', {}], ['a box on bare paper', { fit: null, margin: null }]]) {
+    for (const [dx, dy] of [[37, 23], [-31, -19], [80, 61]]) {
+      it(`${name}, scaled by (${dx}, ${dy})`, () => {
+        const b = load(opts);
+        const before = linesOf(b).map((l) => l.trim());
+        const size = b.style.size;
+        scaleBy(b, dx, dy);
+        expect(b.style.size).not.toBe(size);
+        expect(linesOf(b).map((l) => l.trim())).toEqual(before);
+      });
+    }
+  }
+  it('a side after a scale breaks the lines again', () => {
+    const b = load({ fit: null, margin: null });
+    scaleBy(b, 40, 30);
+    expect(b.auto.breaks?.scaled).toBe(true);
+    const held = linesOf(b);
+    drag(b, 'e', -80, 0);
+    expect(b.auto.breaks).toBeUndefined();
+    expect(linesOf(b).length).toBeGreaterThan(held.length);
+    expect(widest(b)).toBeLessThanOrEqual(room(b) + 0.5);
   });
 });

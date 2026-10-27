@@ -26,7 +26,8 @@
 
 import { renderPageCanvas, pageSpace } from '../exporter.js';
 import { withPageImages } from '../page-images.js';
-import { outlinePoints, outlineState, fontsSettling } from '../store.svelte.js';
+import { pagePixelsFor, rememberPagePixels, pageRasterSrc } from '../page-pixels.js';
+import { app, outlinePoints, outlineState, fontsSettling } from '../store.svelte.js';
 import { ToolError } from './registry.js';
 
 export const MAX_SIDE = 1568;
@@ -575,6 +576,49 @@ export async function regionPixels(p, rect, { source = 'raw', maxSide = PIXELS_M
       release(out);
     }
   });
+}
+
+// ---------- pixels for the balloon finder ----------
+
+// The finder reads a page's pixels from the editor's cache (page-pixels.js),
+// which holds only pages the canvas has drawn - and an agent writes to pages
+// nobody is looking at, often in a window of its own. So a write runs with
+// its pages held and read in first. At most the cache's size: past that, the
+// first ones read would be gone again before `fn` runs.
+const PIXEL_PAGES = 6;
+export async function withPagePixels(pages, fn) {
+  const held = [...new Set(pages ?? [])].slice(0, PIXEL_PAGES);
+  const step = async (i) => {
+    const p = held[i];
+    if (!p) {
+      if (held.some((pg) => !app.pages.includes(pg))) throw new ToolError('the chapter changed in the app, so nothing was changed');
+      return fn();
+    }
+    return withPageImages(p, async () => {
+      if (!pagePixelsFor(p)) await readPagePixels(p);
+      return step(i + 1);
+    });
+  };
+  return step(0);
+}
+
+async function readPagePixels(p) {
+  const src = pageRasterSrc(p);
+  if (!src || typeof Image === 'undefined') return;
+  const img = new Image();
+  img.decoding = 'async';
+  // Before `src`: an asset-protocol page read without it taints the canvas
+  // (chapter-fit.js `readRaster`).
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  try {
+    await img.decode?.();
+    rememberPagePixels(p.id, src, img);
+  } catch {
+    /* a page that will not decode has no balloons to find, as before */
+  } finally {
+    img.removeAttribute('src');
+  }
 }
 
 // ---------- font sheets ----------

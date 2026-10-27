@@ -80,6 +80,8 @@ import {
   sizeToCover,
   lineWidth,
   brokenLines,
+  breaksFor,
+  contentWidth,
 } from './measure.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import { browserFaceReady } from './text-engine/browser.js';
@@ -101,8 +103,10 @@ import {
   handPlacedBox,
   keptBreaks,
   manualReason,
+  linesInkRect,
   REVIEW_REASONS,
 } from './contain.js';
+import { fitPolygon, visualCentre } from './outline-geom.js';
 import { neededHeight, growToFit, heightToFit, hasHangul } from './typeset.js';
 import { takesHeightFloor } from './resize-math.js';
 // The pixel half of balloon fitting, and the two halves of getting pixels to it.
@@ -778,8 +782,8 @@ export const boxSnap = (b, p = page()) => ({
 // and for a move the ink carried with the rectangle - is no entry of its own:
 // the `resize` or `text` entry puts it back with the rectangle, and one edit is
 // one undo. A burst that also changed the look records that as its own `style`
-// entry, as two edits. The balloon fit rides along, since a typed X or Y moves
-// it with the box (`moveBoxTo`).
+// entry, as two edits. The balloon fit rides along, since a refit or a solve
+// can change it.
 export function boxEditRecords(key, before, after, geom) {
   const out = [];
   const withFit = (g, snap) => ('fit' in snap ? { ...g, fit: snap.fit } : g);
@@ -961,6 +965,24 @@ export function setLineSpeaker(p, n, id) {
   else delete ln.speaker;
   recordEdit({ t: 'line', field: 'speaker', pageId: p.id, lineN: n, before, after, boxes: [] });
   markUnsaved();
+}
+
+// A line's words written in one go and recorded at once, as one step: the AI's
+// text tool, which has no burst of keystrokes to wait for. `field` is 'en'
+// (the English, which every box showing the line draws and is fitted to) or
+// 'jp' (the source).
+// The boxes showing the line are laid out again as a placement lays them out
+// (`solve`), as every other AI edit does, before the step is recorded with
+// their geometry.
+export function writeLineText(p, n, field, v) {
+  if (field === 'jp') {
+    setLineSource(p, n, v);
+    settleSource();
+  } else {
+    setLineText(p, n, v);
+    for (const b of p?.boxes ?? []) if (b.lineN === n) autoFitBox(b, p, { solve: true });
+    settleLine();
+  }
 }
 
 function settleLine() {
@@ -1306,8 +1328,8 @@ function solverReview(b, p) {
 // rotation, a refit to another balloon - run the ladder or nothing, not the
 // solver, and it is not theirs to keep a solver's record up to date; they
 // change the box, and the stamp stops matching. A move and a rescale are the
-// exceptions: they carry the fit with the box, so the solve is the same one
-// somewhere else, and they renew the stamp (`moveBoxTo`). An undo that puts
+// exceptions: they keep the solve as the one that stands, and renew the stamp
+// (`moveBoxTo`). An undo that puts
 // the box back as it was solved makes it match again. One comparison wherever
 // the status is read, instead of a guard in every path that can edit a box.
 //
@@ -3809,7 +3831,7 @@ export const scaleFit = (f, sx, sy) => {
   return null;
 };
 
-// The same fit carried by (dx, dy), for a box the user moves (`moveBoxTo`).
+// The same fit carried by (dx, dy), for a pasted copy (`duplicateBox`).
 // A new object every time, so a fit shared with the gesture's starting copy -
 // or with anything else - is never moved under it.
 export const translateFit = (f, dx, dy) => {
@@ -4857,21 +4879,34 @@ export function edgeDragFloor(b, dir, lineCount, p = page()) {
   return Math.min(neededHeight(lineCount, s, textInset(s)), p?.h || Infinity);
 }
 
+// The box at width `w` as a resize leaves it: the lines it keeps go when its
+// width changes (`resizeBox`), unless a lock holds them, and the width is the
+// user's, so a word too wide for it is split (`breaksWords`).
+const rebrokenAt = (b, w, text) => {
+  const c = boxCandidate({ ...b, w }, text);
+  if (w === b.w) return c;
+  return { ...c, ...(b.auto?.locks?.breaks ? null : { breaks: null }), breakWords: c.breakWords || !!b.auto?.on };
+};
+
 // How short a drag may leave a box at width `w`: the height its text needs
 // once it breaks again at that width. What a corner or a Fixed box's width
 // change floors the height at, worked out before the drag moves the edge.
 export function heightFloorAt(b, w, p = page()) {
   if (!b?.style || !canMeasure() || handPlacedBox(b)) return EDGE_DRAG_MIN;
-  const lines = placeBlock(boxCandidate({ ...b, w }, boxText(b, p))).lines?.length;
+  const lines = placeBlock(rebrokenAt(b, w, boxText(b, p))).lines?.length;
   return lines ? edgeDragFloor(b, 's', lines, p) : EDGE_DRAG_MIN;
 }
 
-// How narrow a drag may leave a box, at the size its text is set at: as wide
-// as its widest word, and as its widest held line when its lines are held
-// (`locks.breaks`), so a side never splits a word or leaves a line hanging out
-// of the box. The width a side drag takes and the Inspector's Width. The plain
-// minimum for text placed by hand, and while its face is arriving, for the
-// reason `edgeDragFloor` gives.
+// How narrow a drag may leave a box, at the size its text is set at: the
+// narrowest width at which its text still breaks into lines that fit, so a
+// side never leaves a line hanging out of the box. A word too long for the
+// line is hyphenated where the box's "Hyphenate long words" is on
+// (`style.hyphenate`), so the side goes on past the word, down to the widest
+// piece the breaker can cut it into; where it is off, or the breaker cannot
+// cut the word, the floor is the widest word. Held lines (`locks.breaks`) are
+// not broken again: the widest of them is the floor. The width a side drag
+// takes and the Inspector's Width. The plain minimum for text placed by hand,
+// and while its face is arriving, for the reason `edgeDragFloor` gives.
 export const EDGE_DRAG_MIN_W = 40;
 export function edgeDragWidthFloor(b, p = page()) {
   const s = b?.style;
@@ -4882,7 +4917,43 @@ export function edgeDragWidthFloor(b, p = page()) {
   const held = b.auto?.locks?.breaks ? brokenLines(cased, s, s.size, keptBreaks(b)) : null;
   let widest = 0;
   for (const piece of held ?? cased.split(/\s+/)) widest = Math.max(widest, lineWidth(piece, s, s.size));
-  return Math.max(EDGE_DRAG_MIN_W, Math.ceil(widest + textInset(s) * 2));
+  const whole = Math.max(EDGE_DRAG_MIN_W, Math.ceil(widest + textInset(s) * 2));
+  // Only the shaped breaker hyphenates (`PLAIN_BREAKS`).
+  if (held || s.hyphenate === false || (s.shape ?? 'auto') === 'off') return whole;
+  // Whether the lines broken at width `w` all fit it. A curve has no lines.
+  const fits = (w) => {
+    const place = placeBlock(rebrokenAt(b, w, text));
+    if (!place || place.isCurve) return false;
+    const room = contentWidth(w, place.s) + 0.5;
+    return place.lines.every((line) => lineWidth(line.trim(), place.s, place.s.size) <= room);
+  };
+  let lo = EDGE_DRAG_MIN_W, hi = whole;
+  if (fits(lo)) return lo;
+  if (!fits(hi)) return whole;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fits(mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
+
+// How wide a box has to be for its text to stand in height `h`: the narrowest
+// width from `w` up to `max` at which the lines it breaks into need no more
+// than `h`. What a top or bottom edge dragged past the text widens the box to,
+// so the lines get longer and fewer and the type keeps its size. `max` when
+// even that is not wide enough.
+export function widthForHeight(b, w, h, max, p = page()) {
+  const fits = (x) => heightFloorAt(b, x, p) <= h;
+  if (fits(w)) return w;
+  let lo = Math.ceil(w), hi = Math.max(lo, Math.floor(max));
+  if (!fits(hi)) return hi;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fits(mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
 }
 
 // The held boxes of a page whose face is in by now, each with the geometry it
@@ -5496,6 +5567,70 @@ export function approveOutline(boxId = app.selectedId, p = page(), by = 'user') 
   const n = approveBoxes(p, [b], by);
   if (n) toast('Outline approved');
   return n > 0;
+}
+
+// ===== centre in bubble =====
+// The selected box moved so its text sits in the middle of its outline: the
+// glyphs' measured ink - not the line boxes, so descenders and a short last
+// line do not pull it off - centred on the outline's visual centre, the point
+// the solver centres a block on (outline-fit.js `boxFor`). Only the box moves.
+// The rows hang from where the block is drawn (`balloonWidthsFor`), so a move
+// can break the text again and shift its ink; a few rounds settle it, each
+// grown to the lines it now has as the editor would grow it (`autoFitBoxTo`).
+// One undo step.
+const CENTRE_ROUNDS = 4;
+const CENTRE_NEAR = 0.25;
+
+// The middle of the box's glyph ink in page coordinates: mirrored by the box's
+// flips and turned with it about its centre, as the export draws it. The box's
+// own centre for a curve, which has no straight block to measure.
+function inkCentre(b, text) {
+  const s = b.style;
+  const place = placeBlock(boxCandidate(b, text));
+  const r = linesInkRect(place);
+  let ix = r ? (r.x0 + r.x1) / 2 : b.w / 2;
+  let iy = r ? (r.y0 + r.y1) / 2 : b.h / 2;
+  if (s.flipH) ix = b.w - ix;
+  if (s.flipV) iy = b.h - iy;
+  const t = ((Number(s.rotation) || 0) * Math.PI) / 180;
+  const ox = ix - b.w / 2;
+  const oy = iy - b.h / 2;
+  return {
+    x: b.x + b.w / 2 + ox * Math.cos(t) - oy * Math.sin(t),
+    y: b.y + b.h / 2 + ox * Math.sin(t) + oy * Math.cos(t),
+    lines: place?.lines?.length ?? 0,
+  };
+}
+
+export function centreTextInOutline(boxId = app.selectedId, p = page()) {
+  const b = (p?.boxes ?? []).find((x) => x.id === boxId);
+  if (!b || refuseLocked(b)) return false;
+  const pts = fitPolygon(b.fit);
+  if (!pts) {
+    toast('No outline to centre in - use Find outline first');
+    return false;
+  }
+  if (!canMeasure()) return false;
+  settleEdits();
+  const [tx, ty] = visualCentre(pts);
+  const text = boxText(b, p);
+  const before = fitGeom(b);
+  for (let i = 0; i < CENTRE_ROUNDS; i++) {
+    const c = inkCentre(b, text);
+    const dx = tx - c.x;
+    const dy = ty - c.y;
+    if (Math.abs(dx) < CENTRE_NEAR && Math.abs(dy) < CENTRE_NEAR) break;
+    moveBoxTo(b, b.x + dx, b.y + dy, p);
+    autoFitBoxTo(b, inkCentre(b, text).lines, p);
+  }
+  const after = fitGeom(b);
+  if (after.x === before.x && after.y === before.y && after.h === before.h) {
+    toast('Already centred');
+    return false;
+  }
+  recordEdit({ t: 'resize', pageId: p.id, boxId: b.id, before, after });
+  markUnsaved();
+  return true;
 }
 
 // Approve every fitted, unapproved outline on the page, in one undo step.
@@ -6156,7 +6291,7 @@ function placeSnapshot(p, snap, x, y, select = true) {
     fit: null,
   };
   // The fit is the box's width profile, carried to the offset the copy sits
-  // at as a move carries it (`moveBoxTo`): its rows hang from where the box
+  // at: its rows hang from where the box
   // draws its block (`balloonWidthsFor`), so a fit left where the original's
   // balloon is would break the copy's lines on other rows. With it carried,
   // the copy breaks exactly where the original does.
@@ -6502,8 +6637,14 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   }
   const widened = nw !== b.w;
   // A new place and nothing else - the Inspector's X or Y - is a move, and
-  // carries the balloon fit and a standing solve with the box as a drag does.
+  // keeps a standing solve as a drag does (`moveBoxTo`).
   const moveOnly = nw === b.w && nh === b.h && !scale && (nx !== b.x || ny !== b.y);
+  // A scale keeps the lines: the ones the box draws now, which every step of
+  // the drag has kept since the press. Broken again at the new size and width
+  // they could fall otherwise - the inset does not scale, and a measure need
+  // not scale exactly with the size.
+  const text = scale && b.auto ? boxText(b, p) : null;
+  const keepLines = text != null ? placeBlock(boxCandidate(b, text)) : null;
   if (scale) {
     // Against the style the gesture started from, so the steps of a drag do
     // not compound: each sets the factor from the start. Ink is scaled above.
@@ -6528,7 +6669,12 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // and the size. So a width or a size set by hand lets them go, and the
   // lines are broken again in the box as it now is. Not lines held by a lock
   // (`locks.breaks`): those are the user's or the agent's, and stay.
+  // A scale keeps the lines it found (`scaled`), keyed to the new size.
   if ((widened || scale) && b.auto?.breaks && !b.auto.locks?.breaks) delete b.auto.breaks;
+  if (keepLines?.lines?.length && !keepLines.isCurve) {
+    const kept = breaksFor(applyCase(text, b.style), b.style, b.style.size, keepLines.lines);
+    if (kept) b.auto.breaks = { ...kept, scaled: true };
+  }
   // A width or a height set by hand is the box's from here on: the solver -
   // Refit, the AI's edits - keeps it too (`auto.locks.width`, `.height`). A
   // scale is a size the user set (`noteSizeEdit`), and the box follows it.
@@ -6556,33 +6702,20 @@ export function resizeBox(pageId, boxId, geom, base = null) {
 
 
 // ---------- moving a box ----------
-// A box the user moves - a drag or the arrow keys - takes its balloon fit with
-// it, so its lines stay the lines it had (GEO-2). The rows a fitted block is
-// broken to hang from where the box draws it (`balloonWidthsFor`), and that is
-// right for everything that places a box: the solver, a refit, a resize, auto
-// height. A move is not one of those. Measured against the balloon where it
-// stands, a box dragged a few pixels up drew every line on another row, and its
-// breaks changed under the pointer - and then again at the next keystroke,
-// when the solver held it where it now stood and checked each line against the
-// balloon's rows there (`rowsFit`), shrinking the text or flagging it for a
-// balloon it had only been nudged within.
+// A box the user moves - a drag, the arrow keys, a typed X or Y - moves alone.
+// Its balloon fit is the bubble on the page, in page coordinates, and the
+// bubble does not move: the outline the Regions view draws stays on the art,
+// and so does its approval. The rows a fitted block is broken to hang from
+// where the box draws it (`balloonWidthsFor`), so a box moved inside its bubble
+// is set again for the rows it now stands on, as a box placed there would be.
+// Centre in bubble (`centreTextInOutline`) puts the text back in the middle.
 //
-// So the fit is the box's width profile, as `duplicateBox` has always treated
-// it, and it rides with the box: the lines, their indents, the solver's verdict
-// and the export are all the same as before the move, only somewhere else. What
-// the user has put where the balloon is narrower is theirs, as it is sideways,
-// where the rows were already centred on the box; Refit is the command that
-// sets the text again in the balloon under the box (`refitBalloon`, which
-// measures it afresh there).
+// A solve that described the box before the move is kept as the one that
+// stands: its stamp moves with it, so a move alone does not mark the layout
+// stale. Not a box still waiting for its face: its stamp says it is as it was
+// placed, and a move is the user's (`solvePending`).
 //
-// A solve that described the box before the move describes it after, as after a
-// rescale: its stamp moves with it, so an overflow the solver flagged stays
-// flagged (`solverReview`). Not a box still waiting for its face: its stamp
-// says it is as it was placed, and a move is the user's (`solvePending`).
-//
-// `from` is where the gesture started - `moveGeom` taken then - so a drag moves
-// the fit from one place by the whole distance rather than by every pointer
-// step in turn.
+// `moveGeom` is what a move's history entry records, both ways.
 export const moveGeom = (b) => ({
   x: b.x,
   y: b.y,
@@ -6591,14 +6724,11 @@ export const moveGeom = (b) => ({
   ...(b.auto ? { auto: $state.snapshot(b.auto) } : null),
 });
 
-export function moveBoxTo(b, x, y, p = page(), from = moveGeom(b)) {
+export function moveBoxTo(b, x, y, p = page()) {
   const text = b.auto?.stamp && b.auto.status !== 'pending' ? boxText(b, p) : null;
   const stood = text != null && solveStands(b, text);
   b.x = x;
   b.y = y;
-  if (from.fit) b.fit = translateFit(from.fit, x - from.x, y - from.y);
-  // The outline went with the box, off the bubble it was approved on.
-  if (b.outline?.approved && (x !== from.x || y !== from.y)) b.outline.approved = null;
   if (stood) b.auto.stamp = solveStamp(b, text);
 }
 

@@ -62,6 +62,32 @@ describe('the MCP door, webview side', () => {
     expect(args.result.isError).toBe(true);
   });
 
+  it('lists every chapter tool with a chapter argument, the library tools with their own', async () => {
+    await initDoor();
+    await setDoorOn(true);
+    const set = calls.find(([c]) => c === 'agent_tools_set')[1];
+    const tool = (n) => set.tools.find((t) => t.name === n);
+    expect(tool('edit').inputSchema.properties.chapter.type).toBe('string');
+    expect(tool('text').inputSchema.properties.chapter).toBeTruthy();
+    expect(tool('open_chapter').inputSchema.required).toEqual(['chapter']);
+    expect(tool('chapters').inputSchema.properties.chapter).toBeUndefined();
+  });
+
+  it('answers only the calls sent to its window, and refuses one for a chapter it no longer has', async () => {
+    await initDoor();
+    await setDoorOn(true);
+    calls.length = 0;
+    await handler({ payload: { id: 8, name: 'context', args: {}, target: 'agent-3' } });
+    expect(calls).toEqual([]);
+    await handler({ payload: { id: 9, name: 'context', args: { chapter: 'p_x/c_y' }, target: 'main' } });
+    const [, args] = calls.at(-1);
+    expect(args.result.isError).toBe(true);
+    expect(args.result.content[0].text).toMatch(/no longer open/);
+    // The library's tools keep chapter as their own argument.
+    await handler({ payload: { id: 10, name: 'open_chapter', args: { chapter: 'p_x/c_y' }, target: 'main' } });
+    expect(calls.at(-1)[1].result.content[0].text).toMatch(/no chapter \\"p_x\/c_y\\"/);
+  });
+
   it('refuses a call that arrives after the door was turned off', async () => {
     await initDoor();
     await setDoorOn(true);

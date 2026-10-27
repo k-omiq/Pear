@@ -10,10 +10,13 @@ vi.mock('./lib/library.svelte.js', () => ({
   openChapter: (projectId, chapterId) => new Promise((resolve, reject) => calls.opens.push({ projectId, chapterId, resolve, reject })),
   flushBeforeLeaving: () => new Promise((resolve) => calls.quits.push({ resolve })),
   leaveApprovalCurrent: () => calls.approval,
+  watchProjectRecords: () => {},
 }));
 vi.mock('./lib/fonts.js', async (original) => ({ ...await original(), restoreFonts: async () => {}, scanSystemFonts: async () => {} }));
 vi.mock('./lib/importer.js', async (original) => ({ ...await original(), isTauri: () => true }));
 vi.mock('./lib/sidecar.js', () => ({ checkSidecar: async () => null }));
+// One window: no AI windows to close before a quit.
+vi.mock('./lib/agent/windows.js', async (original) => ({ ...await original(), windowRole: async () => ({ label: 'main', agent: false, chapter: null }), closeAgentWindows: async () => 0 }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({
   onCloseRequested: async (callback) => { calls.close = callback; }, destroy: calls.destroy,
 }) }));

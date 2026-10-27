@@ -57,6 +57,8 @@ const SHORTCUT_KEYWORDS = {
   'box.duplicate': 'clone copy',
   'box.delete': 'remove',
   'box.resetRotation': 'rotate straighten angle',
+  'box.sizeUp': 'size font larger increase',
+  'box.sizeDown': 'size font reduce decrease',
   'box.fitBalloon': 'bubble auto',
   'box.retypeset': 'refit bubble balloon',
   'box.layoutLock': 'lock unlock freeze',

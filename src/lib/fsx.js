@@ -19,7 +19,9 @@ async function path() {
 // Temp names are unique per write. Two writes to one path can overlap (the
 // debounced autosave and a flush both landing on chapter.json), and one
 // clearing up after itself must never delete the other's half-written file.
-let tmpSeq = 0;
+// Each window of the app numbers its temp files from a start of its own, so
+// two windows writing the same record at once never share a temp name.
+let tmpSeq = Math.floor(Math.random() * 1e6) * 1e3;
 
 // Every temp path that has been created and not yet renamed or removed.
 //
@@ -241,6 +243,11 @@ export const fsx = {
   },
   async exists(p) {
     return (await fs()).exists(p);
+  },
+  // { mtime: Date | null, ... }: the sweep's way to tell another window's write
+  // still under way from a leftover.
+  async stat(p) {
+    return (await fs()).stat(p);
   },
   async join(...parts) {
     return (await path()).join(...parts);

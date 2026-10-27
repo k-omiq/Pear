@@ -21,7 +21,7 @@
 // for it: a run ended early would start Revert over at its next write. Quiet
 // for QUIET_MS, the bar says the agent is thinking. The in-app panel (Door B,
 // M6) will begin and end its own around one prompt.
-import { app, pageById, settleEdits, markUnsaved, recordEdit, toast, quietly } from '../store.svelte.js';
+import { app, pageById, settleEdits, markUnsaved, recordEdit, toast, quietly, gotoPage } from '../store.svelte.js';
 import { chapterOpenSeq } from '../library.svelte.js';
 import { inRun } from '../editor/history.svelte.js';
 import { guideBound, snapshotGuide, restoreGuide } from '../guide.svelte.js';
@@ -165,6 +165,19 @@ function runForWrite(door, since) {
   return current?.active ? current : begin(door);
 }
 
+// A window opened for an agent shows what the agent does: each write turns it
+// to the page written. The user's own window stays where the user put it.
+let followWrites = false;
+export function followWritesOnScreen(on) {
+  followWrites = !!on;
+}
+
+function showWritten(pages) {
+  if (!followWrites) return;
+  const i = app.pages.indexOf(pages?.[0]);
+  if (i >= 0 && i !== app.pageIndex) gotoPage(i);
+}
+
 // The context a tool's `run` gets (registry.js). `write(pages, fn)` is the one
 // way a tool changes the document: it checks the run may write, keeps each
 // page before its first change, and runs `fn` - synchronous, store calls
@@ -186,6 +199,7 @@ export function callContext(door) {
       const out = inRun(run.id, () => quietly(fn));
       run.edits++;
       sync();
+      showWritten(pages);
       return out;
     },
     // The series record is part of a run too: the guide (`guide`,

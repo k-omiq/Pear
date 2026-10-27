@@ -281,6 +281,10 @@ const DEFS = [
   { id: 'box.delete', label: 'Delete box', group: 'Text box', combo: 'Delete' },
   { id: 'box.deleteAlt', label: 'Delete box (alternate)', group: 'Text box', combo: 'Backspace' },
   { id: 'box.resetRotation', label: 'Reset rotation to 0°', group: 'Text box', combo: 'Mod+0', whenTyping: true },
+  // Type size, a step at a time: the keys Photoshop and Illustrator use for it.
+  // In Fit to box they step the most the fit may grow to, as the field does.
+  { id: 'box.sizeUp', label: 'Bigger text', group: 'Text box', combo: 'Mod+Shift+.', whenTyping: true },
+  { id: 'box.sizeDown', label: 'Smaller text', group: 'Text box', combo: 'Mod+Shift+,', whenTyping: true },
   { id: 'box.fitBalloon', label: 'Fit to balloon (on/off)', group: 'Text box', combo: 'Mod+Shift+f', whenTyping: true },
   // The Refit button's own key (UX-3): measure the balloon again and typeset
   // the box in it. Beside the switch above rather than on it - one turns balloon

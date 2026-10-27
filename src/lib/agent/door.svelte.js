@@ -7,11 +7,30 @@
 // The token is made here, 32 random bytes, and kept with this machine's
 // settings; Rust refuses any request without it. A new token cuts every
 // client off until the user pastes the new line.
+//
+// Every window answers the calls for its own chapter (agent_mcp.rs routes
+// them by the `chapter` they name): the main window starts the door and
+// lists the tools; a chapter window opened for an agent only listens.
 import { isTauri } from '../importer.js';
 import { listTools, callTool } from './registry.js';
-import { callContext, noteCall, stopRun } from './run.svelte.js';
+import { callContext, noteCall, stopRun, followWritesOnScreen } from './run.svelte.js';
 import { INSTRUCTIONS } from './instructions.js';
+import { app } from '../store.svelte.js';
+import { chapterKey } from './windows.js';
 import './tools/index.js';
+
+// What every chapter tool takes besides its own arguments: the chapter it is
+// for. The library's tools name their chapter themselves.
+const LIBRARY_TOOLS = ['chapters', 'open_chapter', 'close_chapter'];
+const CHAPTER_ARG = {
+  type: 'string',
+  description: 'The chapter this call is for, as chapters lists it ("projectId/chapterId"), after open_chapter. Leave it out only to work on the chapter open in the user\'s main window.',
+};
+export function withChapterArg(tool) {
+  if (LIBRARY_TOOLS.includes(tool.name)) return tool;
+  const schema = tool.inputSchema ?? { type: 'object', properties: {} };
+  return { ...tool, inputSchema: { ...schema, properties: { ...(schema.properties ?? {}), chapter: CHAPTER_ARG } } };
+}
 
 const KEY = 'mt.agentDoor';
 export const DEFAULT_PORT = 7811;
@@ -72,8 +91,20 @@ export function toMcpResult(r) {
 
 // One call from the door. Never throws: a failure is an error result.
 export async function answerCall(payload) {
-  const { name, args } = payload ?? {};
+  const { name, args: given } = payload ?? {};
   if (!door.on) return toMcpResult({ ok: false, error: 'the user turned the AI door off' });
+  const all = given && typeof given === 'object' && !Array.isArray(given) ? given : {};
+  // The library's tools take `chapter` as their own argument; every other
+  // tool's `chapter` only routed the call here.
+  const library = LIBRARY_TOOLS.includes(name);
+  const { chapter, ...rest } = all;
+  const args = library ? all : rest;
+  // The door sent the call here for the chapter it names; if this window has
+  // since moved to another, the call is refused rather than run on that one.
+  const here = app.chapterRef ? chapterKey(app.chapterRef.projectId, app.chapterRef.chapterId) : null;
+  if (chapter != null && !library && chapter !== here) {
+    return toMcpResult({ ok: false, error: `chapter "${chapter}" is no longer open in its window`, hint: 'call open_chapter for it again' });
+  }
   noteCall();
   let r;
   try {
@@ -98,13 +129,12 @@ async function tauri() {
   return core;
 }
 
-async function start() {
+// This window answers the calls the door sends it: those for its chapter.
+export async function listenForCalls(label = 'main') {
+  if (!isTauri()) return;
   const { invoke, listen } = await tauri();
-  await invoke('agent_tools_set', {
-    tools: listTools().map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
-    instructions: INSTRUCTIONS,
-  });
   unlisten ??= await listen('agent:call', async (e) => {
+    if (e.payload?.target != null && e.payload.target !== label) return;
     const result = await answerCall(e.payload);
     try {
       await invoke('agent_result', { id: e.payload?.id, result });
@@ -112,6 +142,15 @@ async function start() {
       /* the call timed out on the Rust side already */
     }
   });
+}
+
+async function start() {
+  const { invoke } = await tauri();
+  await invoke('agent_tools_set', {
+    tools: listTools().map(({ name, description, inputSchema }) => withChapterArg({ name, description, inputSchema })),
+    instructions: INSTRUCTIONS,
+  });
+  await listenForCalls('main');
   await invoke('agent_door_start', { port: door.port, token: door.token });
   door.running = true;
   door.error = null;
@@ -166,4 +205,20 @@ export async function initDoor() {
   load();
   persist();
   if (door.on) await apply();
+}
+
+// Quitting: the door shuts for good this session (the setting stays on for the
+// next launch), and a run going on stops, so nothing edits while the app saves.
+export async function closeDoorForQuit() {
+  if (!door.running) return;
+  stopRun();
+  await stop().catch(() => {});
+}
+
+// Boot, in a chapter window opened for an agent: the door is the main
+// window's; this one reads whether it is on and answers its own calls.
+export async function initChapterWindowDoor(label) {
+  followWritesOnScreen(true);
+  load();
+  await listenForCalls(label);
 }

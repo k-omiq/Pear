@@ -151,12 +151,48 @@ describe('an SFX is drawn over its original', () => {
     expect(s.style.margin).toBe(0);
     expect(s.style.rotation).toBeGreaterThanOrEqual(-22);
     expect(s.style.rotation).toBeLessThanOrEqual(-18);
-    // Black on light art, a white band round it, about 3 px on a 1500 px page.
+    // Exactly the original's colours: its near-black, and no outline, as it had none.
     expect(s.style.color).toBe('#000000');
-    expect(s.style.strokes).toEqual([{ color: '#ffffff', width: 1.6, opacity: 1 }]);
+    expect(s.style.strokes).toEqual([]);
+    expect(s.style.gradient.on).toBe(false);
     // PLINK runs the bar's ~118 px at 118 / 2.75, no taller than its 24.
     expect(s.auto.refSize).toBe(24);
     expect(s.auto.locks.pos).toBe(true);
+  });
+
+  it('check names an SFX whose fill or outline is not its original\'s, until it is', async () => {
+    pictures.clean = picture(200, 90, [120, 120, 120]);
+    pictures.raw = picture(200, 90, [120, 120, 120], { cx: 100, cy: 45, len: 150, thick: 40, deg: 0, ink: [5, 5, 5] });
+    const inner = picture(200, 90, [0, 0, 0], { cx: 100, cy: 45, len: 136, thick: 26, deg: 0, ink: [252, 252, 252] });
+    for (let i = 0; i < inner.data.length; i += 4) if (inner.data[i] === 252) pictures.raw.data.set([252, 252, 252, 255], i);
+    await import('./check.js');
+    const check = () => callTool('check', { where: { ids: ['s'] } }, callContext('mcp'));
+    const s = () => pageById(1).boxes.find((b) => b.id === 's');
+    Object.assign(s().style, { color: '#ffd400', strokes: [{ color: '#ffffff', width: 3, opacity: 1 }] });
+    let r = await check();
+    const issue = r.result.problems[0]?.issues.find((i) => i.kind === 'sfx_colour');
+    expect(issue?.detail).toEqual({ fill: { want: '#ffffff', got: '#ffd400' }, outline: { want: '#000000', got: ['#ffffff'] } });
+    await call({ ops: [{ where: { ids: ['s'] }, do: 'match_original' }] });
+    expect(s().style.color).toBe('#ffffff');
+    expect(s().style.strokes[0].color).toBe('#000000');
+    r = await check();
+    expect(r.result.problems.flatMap((p) => p.issues).some((i) => i.kind === 'sfx_colour')).toBe(false);
+  });
+
+  it('check reads the colours under a box set apart from its line\'s block', async () => {
+    // s sits at 300-600 by 300-600; its line's block (400-560 by 600-640) is
+    // below it, not under it. Placed there on purpose, it is checked where it is.
+    const { regionPixels } = await import('../render.js');
+    regionPixels.mockClear();
+    pictures.clean = picture(200, 90, [120, 120, 120]);
+    pictures.raw = picture(200, 90, [120, 120, 120], { cx: 100, cy: 45, len: 150, thick: 40, deg: 0, ink: [5, 5, 5] });
+    await import('./check.js');
+    await callTool('check', { where: { ids: ['s'] } }, callContext('mcp'));
+    const [x, y, w, h] = regionPixels.mock.calls.at(-1)[1];
+    expect(x).toBeLessThanOrEqual(300);
+    expect(y).toBeLessThanOrEqual(300);
+    expect(x + w).toBeGreaterThanOrEqual(600);
+    expect(y + h).toBeGreaterThanOrEqual(600);
   });
 
   it('match_original finds the original on a page whose images are not loaded yet', async () => {

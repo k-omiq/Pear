@@ -9,15 +9,15 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 // edges. A drag of one of these is the user setting the height by hand.
 export const takesHeightFloor = (dir) => dir.includes('n') || dir.includes('s');
 
-// What you set is what you get: every handle changes the box and never the
-// type. The sides move one edge, the corners two, and the text breaks again
-// in what they leave at the size it is set at. `keepAspect` (Shift on a
-// corner) keeps the box's proportions.
+// The sides change the box and never the type: each moves one edge, and the
+// text breaks again in what it leaves at the size it is set at.
+// `keepAspect` keeps a corner's proportions without scaling.
 //
-// `scale` (Cmd) is the one gesture that changes the type: the box and the
-// text by one factor, so the lines stay the lines they were and the box stays
-// exactly round them. A corner takes the factor of the axis dragged further,
-// a side its own axis. The answer then carries `scale`, the factor.
+// `scale` (the corners, in TextBox.svelte) is the gesture that changes the
+// type: the box and the text by one factor, so the lines stay the lines they
+// were and the box stays exactly round them. A corner takes the factor of the
+// axis dragged further, a side its own axis. The answer then carries `scale`,
+// the factor.
 //
 // `o` is the box at pointer-down ({ x, y, w, h, size }), `dx`/`dy` the pointer
 // travel already turned into the box's own frame, `rotation` its angle in

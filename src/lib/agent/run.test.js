@@ -6,7 +6,7 @@ vi.mock('../library.svelte.js', () => ({ chapterOpenSeq: () => seq }));
 
 const { app, loadProjectPages, pageById, editBoxes, settleEdits, cloneStyle } = await import('../store.svelte.js');
 const { initHistory, resetHistory, undo, peekStack } = await import('../editor/history.svelte.js');
-const { callContext, revertRun, stopRun, noteCall, aiRun, QUIET_MS, IDLE_MS, __resetRun } = await import('./run.svelte.js');
+const { callContext, revertRun, stopRun, noteCall, aiRun, QUIET_MS, IDLE_MS, __resetRun, followWritesOnScreen } = await import('./run.svelte.js');
 const { ToolError } = await import('./registry.js');
 const { bindGuide, unbindGuide, guide, addTerm } = await import('../guide.svelte.js');
 const { defaultStyle } = await import('../data.js');
@@ -51,6 +51,19 @@ describe('a run', () => {
     expect(peekStack().undo).toHaveLength(1);
     undo();
     expect(copy(p.boxes)).toEqual(start);
+  });
+
+  it('turns an agent\'s own window to the page it writes, and leaves the user\'s alone', () => {
+    const ctx = callContext('mcp');
+    write(ctx, pageById(2), italic);
+    expect(app.pageIndex).toBe(0);
+    followWritesOnScreen(true);
+    try {
+      write(ctx, pageById(2), (b) => void (b.x += 3));
+      expect(app.pageIndex).toBe(1);
+    } finally {
+      followWritesOnScreen(false);
+    }
   });
 
   it('reverts every page it touched, over later edits, as an undoable step', () => {

@@ -11,7 +11,7 @@
 
 import { defineTool, ToolError } from '../registry.js';
 import { regionPixels, boxBounds } from '../render.js';
-import { footprintOf, slantOf, lookFor, isUpright } from '../footprint.js';
+import { footprintOf, slantOf, lookFor, isUpright, colourMismatch } from '../footprint.js';
 import { app, boxText, lineByN } from '../../store.svelte.js';
 import { applyCase, sizeToCover } from '../../measure.js';
 import { lineTags, withKinds } from '../../tags.svelte.js';
@@ -27,10 +27,27 @@ export const outlineWidthFor = (p) => Math.max(1, Math.round(((p?.w > 0 ? p.w : 
 // Where to look for the original under box `b`: its line's detected block,
 // which is where the original sat, else the box; grown, on the page.
 export function footprintRegion(p, b) {
-  const det = b.lineN != null ? (p.detect?.boxes ?? []).find((d) => d.n === b.lineN && Array.isArray(d.box) && d.box.length === 4) : null;
-  const base = det ? [det.box[0], det.box[1], det.box[2] - det.box[0], det.box[3] - det.box[1]] : boxBounds(b);
-  return grown(base, p);
+  const block = lineBlock(p, b);
+  return grown(block ?? boxBounds(b), p);
 }
+
+function lineBlock(p, b) {
+  const det = b.lineN != null ? (p.detect?.boxes ?? []).find((d) => d.n === b.lineN && Array.isArray(d.box) && d.box.length === 4) : null;
+  return det ? [det.box[0], det.box[1], det.box[2] - det.box[0], det.box[3] - det.box[1]] : null;
+}
+
+// Where the original a box's colours are checked against lies: its line's
+// block while the box is on it, else under the box itself. A box set apart
+// from its block was put there on purpose - a split, a sound placed by hand
+// over its original, a block numbered for another line - and checking it
+// against the block would ask it for another sound's colours.
+export function placedRegion(p, b) {
+  const own = boxBounds(b);
+  const block = lineBlock(p, b);
+  return grown(block && touches(block, own) ? block : own, p);
+}
+
+const touches = ([ax, ay, aw, ah], [bx, by, bw, bh]) => ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
 
 function grown([x, y, w, h], p) {
   const gx = Math.max(MIN_GROW, w * GROW);
@@ -95,6 +112,53 @@ export async function footprintIn(p, region, b = null) {
     : { fp: null, region: raw.rect, why: 'the cleaner changed nothing here besides other lines\' text: no original under it, or it was left uncleaned (view source "clean" shows)' };
 }
 
+// The original last read under each box, per page: what `check` compares an
+// SFX's colours against. Every fresh read (`originalOf`, the footprint tool,
+// match_original) writes it; a check reads it, and reads the page only for a
+// box it has none for. Kept with the region and the images it was read from,
+// so a moved line or a new cleaned page reads again.
+const kept = new WeakMap(); // page -> Map(boxId -> { key, found })
+const keyOf = (p, region) => JSON.stringify([p.file ?? p.raw ?? null, p.cleanedFile ?? p.cleaned ?? null, region]);
+
+// The original under box `b` on page `p`, read off the page images now.
+export async function originalOf(p, b, region = footprintRegion(p, b)) {
+  const found = await footprintIn(p, region, b);
+  if (!kept.has(p)) kept.set(p, new Map());
+  kept.get(p).set(b.id, { key: keyOf(p, region), found });
+  return found;
+}
+
+// The original last read under box `b`, when it was read from where the box's
+// line now is: { fp, why } or undefined (never read).
+export function keptOriginalOf(p, b, region = footprintRegion(p, b)) {
+  const k = kept.get(p)?.get(b.id);
+  return k && k.key === keyOf(p, region) ? k.found : undefined;
+}
+
+// Tags whose boxes take their original's colours exactly (rule C): the sounds
+// and titles drawn over the art.
+export const MATCHED_COLOUR_TAGS = ['sfx', 'sfx-sharp', 'sfx-soft', 'title'];
+const matchesColour = (p, b) => withKinds(lineTags(lineByN(p, b.lineN))).some((t) => MATCHED_COLOUR_TAGS.includes(t));
+
+// Reads the original under every matched SFX box not read yet, so `check` can
+// compare its colours. Pages with no cleaned image have nothing to read.
+export async function readOriginals(matches) {
+  for (const { page: p, box: b } of matches) {
+    const region = placedRegion(p, b);
+    if (!matchesColour(p, b) || !(p.cleanedFile || p.cleaned) || keptOriginalOf(p, b, region) !== undefined) continue;
+    await originalOf(p, b, region);
+  }
+}
+
+// The `sfx_colour` issue for box `b`: its fill and outline are not its
+// original's, as last read. Null when they are, or when no original is known.
+export function sfxColourIssue(p, b) {
+  if (!matchesColour(p, b)) return null;
+  const ink = keptOriginalOf(p, b, placedRegion(p, b))?.fp?.ink;
+  const off = ink ? colourMismatch(b.style, ink) : null;
+  return off ? { kind: 'sfx_colour', detail: off } : null;
+}
+
 // What an English SFX over `fp` takes: its turn, a size for `text` that runs
 // the original's length (across it, over an upright one), and its colours.
 // `style` is the box's (for the face).
@@ -120,7 +184,7 @@ defineTool({
   description:
     'Find the original lettering (an SFX, a title, a sign) under a box or in a rect, where the cleaner removed it: the raw scan against the cleaned page. ' +
     'Returns centre [x, y], length (along its slant) and breadth, angle (its axis, degrees, clockwise on screen), elongation, stroke (px) and weight (thin|medium|heavy), ' +
-    'ink { fill, outline, colour (a colour page), accent }, under { tone } (the art left under it), and suggest: the turn, the size the box\'s text needs to run its length (with id), and the colours an English SFX takes over it (rules A and B). ' +
+    'ink { fill (the colour deepest in its letters), outline (the band round them, or null: it had none), outlineWidth (px), shade (two fill colours, top to bottom: a gradient), colour (a colour page), accent }, under { tone } (the art left under it), and suggest: the turn, the size the box\'s text needs to run its length (with id), and the colours an English SFX takes over it: exactly the original\'s (rule C). ' +
     'id looks round the box\'s detected line (or the box); rect is [x, y, w, h] in page px. Null footprint with a why when the page has no cleaned image or nothing was cleaned there. ' +
     'To lay a box over it in one step: edit with do "match_original".',
   input: {
@@ -150,7 +214,7 @@ defineTool({
       if (page == null) throw new ToolError('page is required with rect');
       p = pageAt(page);
     }
-    const { fp, region, why } = await footprintIn(p, box ? footprintRegion(p, box) : rect.map(Math.round), box);
+    const { fp, region, why } = box ? await originalOf(p, box) : await footprintIn(p, rect.map(Math.round));
     const n = app.pages.indexOf(p) + 1;
     if (!fp) return { page: n, ...(id ? { id } : null), region, footprint: null, why };
     return {

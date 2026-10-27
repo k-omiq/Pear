@@ -23,6 +23,7 @@ import { splitOutline, farLobe } from '../../bubble-outline.js';
 import { fitPolygon, intervalsAt } from '../../outline-geom.js';
 import { matchesOf, checksOf, fitsFor, typesetMatches } from './edit.js';
 import { sizesOf } from './check.js';
+import { withPagePixels } from '../render.js';
 
 export const MAX_PARTS = 4;
 
@@ -67,7 +68,7 @@ defineTool({
     },
   },
   write: true,
-  run({ id, parts, at } = {}, ctx) {
+  async run({ id, parts, at } = {}, ctx) {
     if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes');
     const p = app.pages.find((pg) => pg.boxes?.some((b) => b.id === id));
     if (!p) throw new ToolError(`no box "${id}"`, 'query lists the box ids');
@@ -104,7 +105,7 @@ defineTool({
     const joined = seeds.map((q) => !!(q && pts && inside(pts, q)));
     const seedBox = (i) => (i === 0 ? own : dot(seeds[i]));
 
-    const out = ctx.write([p], () => {
+    const out = await withPagePixels([p], () => ctx.write([p], () => {
       const ids = [b.id];
       for (let i = 1; i < pieces.length; i++) ids.push(duplicateBox(b.id, p, { select: false }));
       if (ids.some((x) => !x)) return null;
@@ -138,7 +139,7 @@ defineTool({
       }
       typesetMatches(matchesOf(ids));
       return { ids, how };
-    });
+    }));
     if (!out) throw new ToolError('the box could not be copied', 'is a chapter open in typeset mode?');
     return {
       page: app.pages.indexOf(p) + 1,

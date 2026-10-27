@@ -917,7 +917,7 @@ function trimMeasureMemo() {
 // top and the bottom, and a block laid out against one flat number runs into the
 // curve at both ends. `contentWidthPx` stays required and stays the answer when
 // no callback is supplied, so every existing caller means exactly what it did.
-export function shapedLines(text, style, sizePx, contentWidthPx, widthsFor, stopAbove) {
+export function shapedLines(text, style, sizePx, contentWidthPx, widthsFor, stopAbove, breakWords = false) {
   const measureFn = lineWidthIn(style, sizePx);
   const run = (widths, stop = stopAbove) =>
     balanceLines(text, widths, measureFn, {
@@ -935,6 +935,8 @@ export function shapedLines(text, style, sizePx, contentWidthPx, widthsFor, stop
       // 'auto' fills each row, 'oval' tapers to the ends, 'rect' keeps the lines
       // even. 'off' never gets here - `layoutLines` wraps plainly for it.
       shape: style.shape ?? 'auto',
+      // A width set by hand: a word too wide for it is split (typeset.js).
+      breakWords,
     });
   // Centred 'auto' text in an oval balloon is set to the balloon's rows cut to
   // an oval (`balloonWidthsFor`'s `round`), and filling those is a round
@@ -1334,7 +1336,7 @@ const memo = new Map();
 //
 // Null - meaning "do not cache this one" - for a `widthsFor` this module did not
 // build, since there is nothing to say about what it will return.
-function memoKey(text, style, sizePx, w, widthsFor) {
+function memoKey(text, style, sizePx, w, widthsFor, breakWords) {
   if (widthsFor && !widthsFor.key) return null;
   return JSON.stringify([
     _typeset,
@@ -1353,6 +1355,7 @@ function memoKey(text, style, sizePx, w, widthsFor) {
     style.hyphenate ?? true,
     w,
     widthsFor ? widthsFor.key : 0,
+    breakWords ? 1 : 0,
   ]);
 }
 
@@ -1430,7 +1433,7 @@ export function layoutLines(text, style, sizePx, contentWidthPx, widthsFor, opts
   // Asked and answered - see the memo above. A hit promotes, so what survives
   // eviction is what the editor is actually laying out rather than whatever a
   // chapter export happened to walk past last.
-  const key = memoKey(text, style, sizePx, w, widthsFor);
+  const key = memoKey(text, style, sizePx, w, widthsFor, !!opts?.breakWords);
   if (key !== null) {
     const hit = memo.get(key);
     if (hit) {
@@ -1442,7 +1445,7 @@ export function layoutLines(text, style, sizePx, contentWidthPx, widthsFor, opts
   const lines =
     !typesetEnabled() || (style.shape ?? 'auto') === 'off'
       ? wrapLinesDOM(text, style, sizePx, w)
-      : shapedLines(text, style, sizePx, w, widthsFor, opts?.stopAbove);
+      : shapedLines(text, style, sizePx, w, widthsFor, opts?.stopAbove, !!opts?.breakWords);
   if (lines === null) return null;
   let a = 0;
   let b = lines.length;

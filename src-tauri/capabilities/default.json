@@ -3,7 +3,8 @@
   "identifier": "default",
   "description": "enables the default permissions. The fs:scope allow and deny lists below are mirrored in tauri.conf.json under app.security.assetProtocol.scope - asset:// is a separate scope that inherits nothing from here, so BOTH pairs of lists must be edited together and must stay identical; the test `the_two_scope_deny_lists_are_identical` in src/lib.rs enforces that rather than trusting this sentence. The deny list covers three platforms: $HOME resolves to %USERPROFILE% on Windows, where - unlike unix - a leading dot is NOT literal, so $HOME/** reaches dotfiles there too and the AppData entries are what stand in for the unix dot-directories. Consequence of the $HOME/** allow: a library root outside the home directory (an external volume, a network share) is not supported in this slice. Widening it means widening the asset scope in the same commit.",
   "windows": [
-    "main"
+    "main",
+    "agent-*"
   ],
   "permissions": [
     "core:default",
@@ -21,6 +22,7 @@
     "fs:allow-mkdir",
     "fs:allow-remove",
     "fs:allow-exists",
+    "fs:allow-stat",
     "fs:allow-rename",
     {
       "identifier": "fs:scope",

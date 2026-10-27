@@ -10,6 +10,7 @@ import { defineTool, ToolError } from '../registry.js';
 import { parsePages } from '../select.js';
 import { matchesOf, checksOf, fitsFor, typesetMatches, drawOverArt, lineBlockAt } from './edit.js';
 import { sizesOf } from './check.js';
+import { withPagePixels } from '../render.js';
 import { validateStylePatch } from '../style-schema.js';
 import { app, measureForPlace, commitPlace, addBoxAt, isTranslateMode, placeableDetectedLines, lineByN, sizeKeyFor } from '../../store.svelte.js';
 import { ART_SIZED_ROLES } from '../../lettering.js';
@@ -104,7 +105,7 @@ defineTool({
     },
   },
   write: true,
-  run({ page: n, line, text, at, rect, style } = {}, ctx) {
+  async run({ page: n, line, text, at, rect, style } = {}, ctx) {
     const [p] = pagesOf([n]);
     if ((line == null) === (text == null)) throw new ToolError('give line or text, not both and not neither', 'line: 3 places line 3; text: "..." adds free text.');
     if ((at == null) === (rect == null)) throw new ToolError('give at or rect', 'at: [x, y] fits the balloon there; rect: [x, y, w, h] is exact.');
@@ -118,12 +119,15 @@ defineTool({
       const e = validateStylePatch(style)[0];
       if (e) throw new ToolError(`style.${e.path}: ${e.error}`, e.hint);
     }
-    const b = ctx.write([p], () => {
+    const b = await withPagePixels([p], () => ctx.write([p], () => {
       const got = addBoxAt(p, { lineN: line ?? null, text: text ?? null, x: at?.[0], y: at?.[1], rect, style });
+      // Upright unless asked: a new box takes the last box's style, and the
+      // turn set on one sound is not the next box's.
+      if (typeof got !== 'string' && got.style.rotation && !(style && 'rotation' in style)) got.style.rotation = 0;
       // In a balloon: set by outline fit, unless the style says otherwise.
       if (typeof got !== 'string' && got.fit && !(style && 'margin' in style)) typesetMatches(matchesOf([got.id]));
       return got;
-    });
+    }));
     if (typeof b === 'string') throw new ToolError(b);
     return { id: b.id, page: n, rect: [b.x, b.y, b.w, b.h].map(Math.round), checks: checksOf([b.id]), fit: fitsFor([b.id]), sizes: sizesFor([b.id]) };
   },
