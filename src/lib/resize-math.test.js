@@ -75,14 +75,14 @@ describe('resizeBoxMath', () => {
 
     it('Shift keeps a corner drag in proportion', () => {
       const o = box({ w: 200, h: 100, size: 20 });
-      expect(resizeBoxMath(100, 10, 'se', o, 0, 30, 40, { keepAspect: true })).toMatchObject({ w: 300, h: 150 });
+      expect(resizeBoxMath(100, 50, 'se', o, 0, 30, 40, { keepAspect: true })).toMatchObject({ w: 300, h: 150 });
     });
 
     it('Cmd scales the box and the size by one factor', () => {
       const o = box({ w: 100, h: 100, size: 20 });
       const res = resizeBoxMath(100, 100, 'se', o, 0, 50, 40, { scale: true });
       expect(res).toMatchObject({ w: 200, h: 200, scale: 2 });
-      const g = resizeBoxMath(100, 10, 'se', box({ w: 200, h: 100, size: 20 }), 0, 30, 40, { scale: true });
+      const g = resizeBoxMath(100, 50, 'se', box({ w: 200, h: 100, size: 20 }), 0, 30, 40, { scale: true });
       expect(g).toMatchObject({ w: 300, h: 150 });
       expect(20 * g.scale).toBe(30);
       // A side scales by its own axis.
@@ -97,8 +97,21 @@ describe('resizeBoxMath', () => {
       expect(size(1, 1)).toBeCloseTo(33.5, 9);
       // 33.5 x 1.05 = 35.175 and 33.5 x 0.975 = 32.66: the half px under, so
       // the type is never scaled past the box.
-      expect(size(0, 10)).toBeCloseTo(35, 9);
-      expect(size(0, -5)).toBeCloseTo(32.5, 9);
+      expect(size(10, 10)).toBeCloseTo(35, 9);
+      expect(size(-5, -5)).toBeCloseTo(32.5, 9);
+    });
+
+    it('moves the size smoothly as a corner drag wobbles, never by whole jumps', () => {
+      // A wide box dragged out along a shaky diagonal: the factor followed
+      // whichever axis had moved further, so a few px of y flipped it and the
+      // size leapt back and forth by tens of px.
+      const o = box({ w: 400, h: 60, size: 60 });
+      let last = 60;
+      for (let i = 1; i <= 80; i++) {
+        const size = 60 * resizeBoxMath(i * 2, i * 0.3 + (i % 2 ? 4 : -4), 'se', o, 0, 30, 40, { scale: true }).scale;
+        expect(Math.abs(size - last)).toBeLessThanOrEqual(1);
+        last = size;
+      }
     });
 
     it('stops a side at the floor it is given, and changes no size', () => {

@@ -15,9 +15,9 @@ export const takesHeightFloor = (dir) => dir.includes('n') || dir.includes('s');
 //
 // `scale` (the corners, in TextBox.svelte) is the gesture that changes the
 // type: the box and the text by one factor, so the lines stay the lines they
-// were and the box stays exactly round them. A corner takes the factor of the
-// axis dragged further, a side its own axis. The answer then carries `scale`,
-// the factor.
+// were and the box stays exactly round them. A corner takes the pointer's
+// travel along the box's diagonal, a side its own axis.
+// The answer then carries `scale`, the factor.
 //
 // `o` is the box at pointer-down ({ x, y, w, h, size }), `dx`/`dy` the pointer
 // travel already turned into the box's own frame, `rotation` its angle in
@@ -36,11 +36,17 @@ export function resizeBoxMath(dx, dy, dir, o, rotation = 0, heightFloor = 30, wi
   let k = null;
   const fx = (hasE ? o.w + dx : hasW ? o.w - dx : o.w) / o.w;
   const fy = (hasS ? o.h + dy : hasN ? o.h - dy : o.h) / o.h;
+  // A corner's one factor: the pointer projected onto the diagonal from the
+  // opposite corner, so every pixel of travel moves it a little, both axes at
+  // once. Taking whichever axis had moved further instead flipped between
+  // the two as the hand wobbled - on a wide box a few px of y outweigh tens
+  // of x - and the size jumped by whole steps back and forth.
+  const df = 1 + ((hasE ? dx : -dx) * o.w + (hasS ? dy : -dy) * o.h) / (o.w * o.w + o.h * o.h);
   if (scale && o.w > 0 && o.h > 0) {
     // On the half-px grid every size the solver picks is on (auto-layout.js
     // `SIZE_STEP`), rounded down so the type is never scaled past the box, and
     // the box then scaled by the size's own factor, so the two stay in step.
-    const f = corner ? (Math.abs(fx - 1) > Math.abs(fy - 1) ? fx : fy) : hasE || hasW ? fx : fy;
+    const f = corner ? df : hasE || hasW ? fx : fy;
     const least = Math.max(o.size > 0 ? 6 / o.size : 0, 40 / o.w, 30 / o.h);
     if (o.size > 0) {
       const size = clamp(Math.floor(o.size * Math.max(f, least) * 2) / 2, 6, 200);
@@ -49,7 +55,7 @@ export function resizeBoxMath(dx, dy, dir, o, rotation = 0, heightFloor = 30, wi
     nw = o.w * k;
     nh = o.h * k;
   } else if (corner && keepAspect && o.w > 0 && o.h > 0) {
-    const f = Math.max(Math.abs(fx - 1) > Math.abs(fy - 1) ? fx : fy, wFloor / o.w, hFloor / o.h);
+    const f = Math.max(df, wFloor / o.w, hFloor / o.h);
     nw = o.w * f;
     nh = o.h * f;
   } else {

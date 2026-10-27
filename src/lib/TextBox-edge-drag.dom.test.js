@@ -108,7 +108,7 @@ describe('a corner, with the box\'s face still arriving', () => {
     it(`the ${dir} corner: no fit is held, and the box is where the drag left it when the face lands`, async () => {
       let arrived = false;
       setFontSource({ ready: () => arrived });
-      const b = await dragHandle(`.handle.corner.${dir}`, dir.includes('e') ? 40 : -40, dir.includes('s') ? 60 : -60);
+      const b = await dragHandle(`.handle.corner.${dir}`, dir.includes('e') ? 48 : -48, dir.includes('s') ? 60 : -60);
       expect(b.w).toBe(288);
       expect(b.h).toBe(360);
       expect(b.style.size).toBe(36);
@@ -122,7 +122,7 @@ describe('a corner, with the box\'s face still arriving', () => {
     });
   }
   it('Cmd changes nothing: a corner scales by one factor either way', async () => {
-    const b = await dragHandle('.handle.corner.se', 40, 60, { metaKey: true });
+    const b = await dragHandle('.handle.corner.se', 48, 60, { metaKey: true });
     expect(b.h).toBe(360);
     expect(b.style.size).toBe(36);
     expect(b.style.autoHeight).toBe(true);
