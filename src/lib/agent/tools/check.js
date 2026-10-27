@@ -12,6 +12,7 @@ import { peekPagePixels } from '../../page-pixels.js';
 import { fitPolygon, isRectOutline } from '../../outline-geom.js';
 import { applyCase, glyphsMissing } from '../../measure.js';
 import { farLobe } from '../../bubble-outline.js';
+import { readOriginals, sfxColourIssue } from './footprint.js';
 
 // The font a line's tags give its boxes, and the tag it comes from: the same
 // order placement reads them in (`withStyleOrder`: the most particular first).
@@ -85,6 +86,8 @@ export function checksFor(matches) {
       issues.get(b.id).push(...letteringIssues(b, { want: wantedFont(line), tags: withKinds(lineTags(line)), ink: balloonInk(b, page) }));
       const stress = emphasisOf(b, page, line, usual);
       if (stress) issues.get(b.id).push(stress);
+      const colour = sfxColourIssue(page, b);
+      if (colour) issues.get(b.id).push(colour);
     }
     // Letters the box's font has no glyph for: drawn from another font, or as
     // an empty box, wherever they stand.
@@ -227,14 +230,17 @@ const where = {
 
 defineTool({
   name: 'check',
-  description: 'Check matching boxes for overflow, check-list reasons (including glossary and guide rules), collisions, panel crossings and tag-size outliers, and, for a box with a bubble outline, its text against that outline: outside (ink past the outline, px per side), tight (air under 0.25 em), hourglass, shape (funnel, pyramid or far from an oval, in a balloon), offcentre (ink centre off the bubble centre, px), hyphen and orphan; role (not in the font its role tag or speaker\'s voice gives it; SFX exempt), contrast (fill the same tone as the balloon\'s inside, with no outline to carry it), turn (an SFX, title or blocky word turned past 35 degrees: English is never stood on end, even over a Japanese column), joined (the outline may hold two bubbles - joined at a neck, or drawn overlapping as a stepped shape; far: a point in the other one - view it with source "compare": where the original\'s text sits in both, the text belongs in both, so split it with the split tool; a neighbour\'s bubble taken in: do "split_outline"), emphasis (the original letters this line far bigger than the rest of its kind - original: times its tag\'s usual size in the chapter, ours: times ours - a dramatic line set flat: give it that weight, rule D) and glyph (letters the box\'s font has no glyph for, drawn from another font: change the font or the letter). quality: the mean lettering score (0-100: air, shape, centre, hyphens, orphans, size kept against the size aimed for, fill) of the boxes with outlines and the five weakest, to work on first. Return only boxes with problems, in page/box order, with 1-based pages and panel numbers. where uses the query AND selector; pages accepts current (default), all, "2-5", "1,3" or [1,3]; ids/selection default to all pages. Neighbours on the whole page count even outside the selector. count counts all problem boxes, checked counts all selected boxes; problems is capped at 200 with truncated: true. Free text is fenced.',
+  description: 'Check matching boxes for overflow, check-list reasons (including glossary and guide rules; stale: the box\'s words, size or outline changed since it was last laid out - do "typeset" lays it out again, or leave it when it reads well), collisions, panel crossings and tag-size outliers, and, for a box with a bubble outline, its text against that outline: outside (ink past the outline, px per side), tight (air under 0.25 em), hourglass, shape (funnel, pyramid or far from an oval, in a balloon), offcentre (ink centre off the bubble centre, px), hyphen and orphan; role (not in the font its role tag or speaker\'s voice gives it; SFX exempt), contrast (fill the same tone as the balloon\'s inside, with no outline to carry it), turn (an SFX, title or blocky word turned past 35 degrees: English is never stood on end, even over a Japanese column), joined (the outline may hold two bubbles - joined at a neck, or drawn overlapping as a stepped shape; far: a point in the other one - view it with source "compare": where the original\'s text sits in both, the text belongs in both, so split it with the split tool; a neighbour\'s bubble taken in: do "split_outline"), sfx_colour (an SFX or title whose fill or outline is not its original\'s: want is the original\'s colour - its fill, its shade top to bottom, its outline or "none" - got is ours; do "match_original" sets them, or set style.color, gradient and strokes to exactly want), emphasis (the original letters this line far bigger than the rest of its kind - original: times its tag\'s usual size in the chapter, ours: times ours - a dramatic line set flat: give it that weight, rule D) and glyph (letters the box\'s font has no glyph for, drawn from another font: change the font or the letter). quality: the mean lettering score (0-100: air, shape, centre, hyphens, orphans, size kept against the size aimed for, fill) of the boxes with outlines and the five weakest, to work on first. Return only boxes with problems, in page/box order, with 1-based pages and panel numbers. where uses the query AND selector; pages accepts current (default), all, "2-5", "1,3" or [1,3]; ids/selection default to all pages. Neighbours on the whole page count even outside the selector. count counts all problem boxes, checked counts all selected boxes; problems is capped at 200 with truncated: true. Free text is fenced.',
   input: {
     type: 'object', additionalProperties: false,
     properties: { where: { $ref: '#/$defs/where' } },
     $defs: { where },
   },
-  run({ where = {} }) {
+  async run({ where = {} }) {
     const { matches } = selectBoxes(where);
+    // The originals the SFX among them are compared with, read off the page
+    // images once.
+    await readOriginals(matches);
     const problems = checksFor(matches);
     const fits = fitsOf(matches);
     const pageOf = new Map(matches.map((m) => [m.box.id, (m.pageIndex ?? app.pages.indexOf(m.page)) + 1]));

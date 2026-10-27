@@ -28,6 +28,7 @@
     edgeDragFloor,
     edgeDragWidthFloor,
     heightFloorAt,
+    widthForHeight,
     toast,
     boxLocked,
     isTranslateMode,
@@ -69,7 +70,7 @@
   } from './text-paint.js';
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
-  import { boxCandidate, placeBlock, blockReach, keptBreaks } from './contain.js';
+  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords } from './contain.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
@@ -1238,7 +1239,7 @@
     const cased = applyCase(text, s);
     return (
       brokenLines(cased, s, s.size, keptBreaks(box)) ??
-      layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size))
+      layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), breaksWords(box) ? { breakWords: true } : undefined)
     );
   });
 
@@ -1459,8 +1460,7 @@
     const sx = e.clientX, sy = e.clientY, ox = box.x, oy = box.y;
 
     const pageId = dims.id;
-    // The box's balloon fit moves with it, from where it started, so its lines
-    // stay the lines it had (`moveBoxTo`); the entry carries the fit both ways.
+    // The box moves alone; its balloon fit stays on the bubble (`moveBoxTo`).
     const before = moveGeom(box);
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
@@ -1468,7 +1468,7 @@
       const y = stripBounds
         ? clamp(oy + (ev.clientY - sy) / zz, stripBounds.min, stripBounds.max)
         : clamp(oy + (ev.clientY - sy) / zz, -box.h + 20, dims.h - 20);
-      moveBoxTo(box, x, y, pg, before);
+      moveBoxTo(box, x, y, pg);
       markUnsaved();
     };
 
@@ -1546,10 +1546,11 @@
         const cos = Math.cos(rad), sin = Math.sin(rad);
         const sdx = (ev.clientX - sx) / zz, sdy = (ev.clientY - sy) / zz;
         const dx = sdx * cos - sdy * sin, dy = sdx * sin + sdy * cos;
-        // Cmd scales the box and the text together; any other drag changes the
-        // box alone (resize-math.js). Shift keeps a corner's proportions.
-        const scale = ev.metaKey;
-        const keepAspect = ev.shiftKey && dir.length > 1;
+        // A corner changes the size: the box and the text by one factor, so
+        // the lines stay the lines they were. A side changes the width or the
+        // height and never the size: the text breaks again in what it leaves
+        // (resize-math.js).
+        const scale = dir.length > 1;
         // A height set by hand is the box's: Auto height gives way to Fixed,
         // as Figma's text boxes do, and the Inspector shows it.
         if (!scale && takesHeightFloor(dir) && sizingOf(box.style) === 'auto' && dy !== 0) {
@@ -1558,23 +1559,34 @@
         }
         // The floors the store holds the box to, worked out here too so the
         // opposite edge stays put when one stops the drag (resize-math.js):
-        // never narrower than the widest word, and a Fixed box never shorter
-        // than its text at the width this move leaves. Fit to box has none -
-        // its size gives way - and a scale none, since the text scales too.
+        // never narrower than the text can break to (`edgeDragWidthFloor`,
+        // which hyphenates), and never shorter than the text. Fit to box has
+        // none - its size gives way - and a scale none, since the text scales.
         const floors = !scale && sizingOf(box.style) !== 'fit';
-        const wf = floors ? wFloor : 40;
+        // Never above the width the press found: a box already narrower than
+        // its floor does not jump wider when a side is pulled in.
+        const wf = floors ? Math.min(wFloor, o.w) : 40;
         let hf = 30;
-        if (floors && takesHeightFloor(dir) && sizingOf(box.style) === 'fixed') {
-          // A top or bottom edge leaves the width, so the lines on screen are
-          // the ones to hold (`edgeDragFloor`, which stands down while the face
-          // is arriving and they are a stand-in's). A corner moves the width
-          // too, and the lines are counted again at the width it leaves.
-          hf =
-            dir.length > 1
-              ? heightFloorAt(box, resizeBoxMath(dx, dy, dir, o, s.rotation, 30, wf, { keepAspect }).w, pg)
-              : edgeDragFloor(box, dir, shaped ? shaped.length : null, pg);
+        let wide = o.w;
+        if (floors && takesHeightFloor(dir)) {
+          // A top or bottom edge dragged past the text widens the box about
+          // its middle instead, so the lines get longer and fewer, down to
+          // one line. The lines on screen are the ones a drag that has not
+          // reached them holds (`edgeDragFloor`, which stands down while the
+          // face is arriving and they are a stand-in's) - unless an earlier
+          // move widened the box, when they are counted again at its width.
+          const want = resizeBoxMath(dx, dy, dir, o, s.rotation, 30, wf).h;
+          hf = box.w === o.w ? edgeDragFloor(box, dir, shaped ? shaped.length : null, pg) : heightFloorAt(box, o.w, pg);
+          if (want < hf) {
+            wide = widthForHeight(box, o.w, want, Math.max(o.w, pg.w || o.w), pg);
+            if (wide !== o.w) hf = heightFloorAt(box, wide, pg);
+          }
         }
-        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, hf, wf, { scale, keepAspect });
+        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, hf, wf, { scale });
+        if (wide !== o.w) {
+          geom.x -= (wide - o.w) / 2;
+          geom.w = wide;
+        }
         // Once a gesture has scaled, every move says its factor - 1 when Cmd
         // is let go - so the style goes back to where the press found it.
         if (scale) scaled = true;

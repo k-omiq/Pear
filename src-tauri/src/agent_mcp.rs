@@ -11,6 +11,15 @@
 //!                webview runs the tool and answers with `agent_result`, which
 //!                completes the call. 30 s with no answer is an error result.
 //!
+//! Several agents can work at once, each on a chapter of its own. A window
+//! holds one chapter (each webview is a whole app with one document), so an
+//! agent opens its chapter in a window of its own (`open_chapter`, which the
+//! main window answers with `agent_window_open`) and names it on every call
+//! (`chapter`); the call goes to the window holding that chapter. A call
+//! naming no chapter goes to the main window, the user's. Every window claims
+//! the chapters it has open (`chapter_claim`, `chapter_sync`), so no chapter is
+//! ever open in two windows, each autosaving over the other.
+//!
 //! Security, every part of it required (section 5):
 //!   - bound to 127.0.0.1 only, never another interface
 //!   - every request carries `Authorization: Bearer <token>`; the token is
@@ -24,7 +33,7 @@
 //! rmcp serves the protocol itself (Streamable HTTP, stateless, plain JSON
 //! responses); the checks above run in front of it on every request.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,20 +53,66 @@ use rmcp::transport::streamable_http_server::session::never::NeverSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, Webview};
 use tokio::sync::oneshot;
 
 /// How long a tool call may take in the webview before the agent is told.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// A token shorter than this is refused: the app makes 32 random bytes.
 const MIN_TOKEN_LEN: usize = 32;
+/// How long a new chapter window may take to boot and load its chapter.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long the main window waits for the chapter windows to save and close.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(20);
+/// The user's own window, from tauri.conf.json.
+pub const MAIN: &str = "main";
+/// Tools about the library, not one chapter: always the main window's.
+const LIBRARY_TOOLS: [&str; 3] = ["chapters", "open_chapter", "close_chapter"];
+
+/// Which window holds which chapter. A chapter key is `projectId/chapterId`.
+#[derive(Default)]
+struct Windows {
+  /// window label -> the chapters it has open, or is opening
+  chapters: HashMap<String, HashSet<String>>,
+  /// a window opened for an agent -> the chapter it was opened for
+  agents: HashMap<String, String>,
+  /// a chapter window still loading -> who waits for it
+  ready: HashMap<String, oneshot::Sender<Result<(), String>>>,
+  /// a record file being rewritten (project.json, shared by every chapter of
+  /// a series) -> the window rewriting it
+  locks: HashMap<String, String>,
+  next: u64,
+}
+
+impl Windows {
+  fn owner(&self, key: &str) -> Option<String> {
+    self.chapters.iter().find(|(_, keys)| keys.contains(key)).map(|(label, _)| label.clone())
+  }
+}
+
+/// The window a call goes to: the one holding the chapter it names, or the
+/// main window when it names none. Pure, so the rules have their own test.
+fn route(w: &Windows, name: &str, args: &Value) -> Result<String, String> {
+  if LIBRARY_TOOLS.contains(&name) {
+    return Ok(MAIN.into());
+  }
+  match args.get("chapter") {
+    None | Some(Value::Null) => Ok(MAIN.into()),
+    Some(Value::String(key)) => w.owner(key).ok_or_else(|| {
+      format!("chapter \"{key}\" is not open in Pear. Call open_chapter {{ chapter: \"{key}\" }} first (chapters lists the keys).")
+    }),
+    Some(_) => Err("chapter must be a chapter key string, as chapters lists it".into()),
+  }
+}
 
 #[derive(Default)]
 struct Inner {
   app: Mutex<Option<AppHandle>>,
   tools: Mutex<Vec<Value>>,
   instructions: Mutex<String>,
-  pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
+  /// call id -> (the window it went to, who waits for the answer)
+  pending: Mutex<HashMap<u64, (String, oneshot::Sender<Value>)>>,
+  windows: Mutex<Windows>,
   next_call: AtomicU64,
   /// Which start is live. Every request checks it, so a connection opened
   /// before a stop is refused after it. 0 is "off".
@@ -134,19 +189,26 @@ impl Handler {
     let Some(app) = self.inner.app.lock().unwrap().clone() else {
       return failed("the app is not ready".into());
     };
+    let target = match route(&self.inner.windows.lock().unwrap(), name, &args) {
+      Ok(label) => label,
+      Err(why) => return failed(why),
+    };
     let id = self.inner.next_call.fetch_add(1, Ordering::Relaxed) + 1;
     let (tx, rx) = oneshot::channel();
-    self.inner.pending.lock().unwrap().insert(id, tx);
-    if app.emit("agent:call", json!({ "id": id, "name": name, "args": args })).is_err() {
+    self.inner.pending.lock().unwrap().insert(id, (target.clone(), tx));
+    let payload = json!({ "id": id, "name": name, "args": args, "target": target });
+    if app.emit_to(target.as_str(), "agent:call", payload).is_err() {
       self.inner.pending.lock().unwrap().remove(&id);
       return failed("the app window is not answering".into());
     }
-    match tokio::time::timeout(CALL_TIMEOUT, rx).await {
+    // Opening a chapter boots a whole window and loads its pages.
+    let limit = if name == "open_chapter" { OPEN_TIMEOUT + Duration::from_secs(10) } else { CALL_TIMEOUT };
+    match tokio::time::timeout(limit, rx).await {
       Ok(Ok(v)) => serde_json::from_value(v).unwrap_or_else(|e| failed(format!("the app sent a bad result: {e}"))),
-      Ok(Err(_)) => failed("the call was dropped".into()),
+      Ok(Err(_)) => failed("the call was dropped: its window closed or the AI door was turned off".into()),
       Err(_) => {
         self.inner.pending.lock().unwrap().remove(&id);
-        failed("the app did not answer within 30 s; it may be busy or its window hidden".into())
+        failed(format!("the app did not answer within {} s; it may be busy or its window hidden", limit.as_secs()))
       }
     }
   }
@@ -275,6 +337,28 @@ impl AgentDoor {
   fn port(&self) -> Option<u16> {
     self.inner.running.lock().unwrap().as_ref().map(|r| r.port)
   }
+
+  /// A window is gone: its chapters are free, a load waiting on it fails, and
+  /// the calls sent to it are answered as dropped.
+  pub fn forget_window(&self, label: &str) {
+    let mut w = self.inner.windows.lock().unwrap();
+    w.chapters.remove(label);
+    w.agents.remove(label);
+    w.locks.retain(|_, holder| holder != label);
+    if let Some(tx) = w.ready.remove(label) {
+      let _ = tx.send(Err("the chapter's window closed before its chapter loaded".into()));
+    }
+    drop(w);
+    self.inner.pending.lock().unwrap().retain(|_, (target, _)| target != label);
+  }
+}
+
+fn focus(app: &AppHandle, label: &str) {
+  if let Some(win) = app.get_webview_window(label) {
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+  }
 }
 
 // ---------- commands ----------
@@ -304,8 +388,193 @@ pub fn agent_tools_set(door: State<'_, AgentDoor>, tools: Vec<Value>, instructio
 /// The webview's answer to one `agent:call`.
 #[tauri::command]
 pub fn agent_result(door: State<'_, AgentDoor>, id: u64, result: Value) {
-  if let Some(tx) = door.inner.pending.lock().unwrap().remove(&id) {
+  if let Some((_, tx)) = door.inner.pending.lock().unwrap().remove(&id) {
     let _ = tx.send(result);
+  }
+}
+
+// ---------- chapter windows ----------
+
+/// What this window is for: the main window, or one opened for an agent's
+/// chapter (`chapter`, its key), which it opens as soon as it boots.
+#[tauri::command]
+pub fn agent_window_role(door: State<'_, AgentDoor>, webview: Webview) -> Value {
+  let label = webview.label().to_string();
+  let w = door.inner.windows.lock().unwrap();
+  json!({ "label": label, "agent": w.agents.contains_key(&label), "chapter": w.agents.get(&label) })
+}
+
+/// Which window holds each open chapter: key -> label, and whether that
+/// window was opened for an agent.
+#[tauri::command]
+pub fn chapter_windows(door: State<'_, AgentDoor>) -> Value {
+  let w = door.inner.windows.lock().unwrap();
+  let mut out = serde_json::Map::new();
+  for (label, keys) in &w.chapters {
+    for key in keys {
+      out.insert(key.clone(), json!({ "window": label, "agent": w.agents.contains_key(label) }));
+    }
+  }
+  Value::Object(out)
+}
+
+/// This window is opening chapter `key`. Refused, with the window that has it
+/// brought to the front, when another window has it open.
+#[tauri::command]
+pub fn chapter_claim(app: AppHandle, door: State<'_, AgentDoor>, webview: Webview, key: String) -> Result<(), String> {
+  let label = webview.label().to_string();
+  let mut w = door.inner.windows.lock().unwrap();
+  if let Some(owner) = w.owner(&key).filter(|o| *o != label) {
+    drop(w);
+    focus(&app, &owner);
+    let whose = if owner == MAIN { "the main window" } else { "its AI window" };
+    return Err(format!("This chapter is open in {whose}; it was brought to the front."));
+  }
+  w.chapters.entry(label).or_default().insert(key);
+  Ok(())
+}
+
+/// The chapters this window has open (or is opening) now, as it knows them:
+/// what it claimed before and no longer has is let go.
+#[tauri::command]
+pub fn chapter_sync(door: State<'_, AgentDoor>, webview: Webview, keys: Vec<String>) {
+  let label = webview.label().to_string();
+  let mut w = door.inner.windows.lock().unwrap();
+  if keys.is_empty() {
+    w.chapters.remove(&label);
+  } else {
+    w.chapters.insert(label, keys.into_iter().collect());
+  }
+}
+
+/// Opens chapter `key` in a window of its own for an agent, and answers once
+/// the chapter is loaded there: the window's label. A chapter some window has
+/// open already is brought to the front instead.
+#[tauri::command]
+pub async fn agent_window_open(app: AppHandle, door: State<'_, AgentDoor>, key: String, title: String) -> Result<String, String> {
+  let (label, rx, n) = {
+    let mut w = door.inner.windows.lock().unwrap();
+    if let Some(owner) = w.owner(&key) {
+      return Ok(owner);
+    }
+    if let Some((label, _)) = w.agents.iter().find(|(l, k)| **k == key && w.ready.contains_key(*l)) {
+      // Still loading: the first open waits for it.
+      return Err(format!("chapter \"{key}\" is still opening in {label}; try again in a moment"));
+    }
+    w.next += 1;
+    let label = format!("agent-{}", w.next);
+    let (tx, rx) = oneshot::channel();
+    w.agents.insert(label.clone(), key.clone());
+    w.ready.insert(label.clone(), tx);
+    (label, rx, w.next)
+  };
+  // Stepped down and right, so no AI window sits exactly over the main one or
+  // another AI window and passes for it.
+  let step = 40.0 * (1 + (n - 1) % 8) as f64;
+  let built = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
+    .title(title)
+    .inner_size(1440.0, 900.0)
+    .position(60.0 + step, 40.0 + step)
+    .min_inner_size(1000.0, 640.0)
+    .disable_drag_drop_handler()
+    .build();
+  if let Err(e) = built {
+    door.forget_window(&label);
+    return Err(format!("could not open a window: {e}"));
+  }
+  let close = |why: String| {
+    if let Some(win) = app.get_webview_window(&label) {
+      let _ = win.destroy();
+    }
+    door.forget_window(&label);
+    Err(why)
+  };
+  match tokio::time::timeout(OPEN_TIMEOUT, rx).await {
+    Ok(Ok(Ok(()))) => Ok(label),
+    Ok(Ok(Err(why))) => close(why),
+    Ok(Err(_)) => close("the chapter's window closed before its chapter loaded".into()),
+    Err(_) => close("the chapter did not load within 90 s".into()),
+  }
+}
+
+/// A chapter window's answer to its boot: the chapter is loaded, or why not.
+#[tauri::command]
+pub fn agent_window_ready(door: State<'_, AgentDoor>, webview: Webview, ok: bool, error: Option<String>) {
+  let label = webview.label().to_string();
+  if let Some(tx) = door.inner.windows.lock().unwrap().ready.remove(&label) {
+    let _ = tx.send(if ok { Ok(()) } else { Err(error.unwrap_or_else(|| "the chapter could not be opened".into())) });
+  }
+}
+
+/// Closes the AI window holding chapter `key`; it saves on its way out, as
+/// any window does. The main window is the user's and is never closed here.
+#[tauri::command]
+pub fn agent_window_close(app: AppHandle, door: State<'_, AgentDoor>, key: String) -> Result<String, String> {
+  let w = door.inner.windows.lock().unwrap();
+  let Some(owner) = w.owner(&key) else {
+    return Err(format!("chapter \"{key}\" is not open"));
+  };
+  if !w.agents.contains_key(&owner) {
+    return Err("that chapter is open in the user's own window; it stays open".into());
+  }
+  drop(w);
+  match app.get_webview_window(&owner) {
+    Some(win) => win.close().map(|_| owner).map_err(|e| e.to_string()),
+    None => Err("its window is already gone".into()),
+  }
+}
+
+/// How long a window waits for another's record write before it takes the
+/// lock anyway: a write takes milliseconds, so one held this long is stale.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// Waits until no other window is rewriting record `path`, then holds it for
+/// this window: a series' project.json is read, merged and written whole
+/// (library.svelte.js `writeProjectRecord`), and two windows doing that at
+/// once would each drop the other's change.
+#[tauri::command]
+pub async fn record_lock(door: State<'_, AgentDoor>, webview: Webview, path: String) -> Result<(), String> {
+  let label = webview.label().to_string();
+  let until = tokio::time::Instant::now() + LOCK_WAIT;
+  loop {
+    {
+      let mut w = door.inner.windows.lock().unwrap();
+      let free = w.locks.get(&path).is_none_or(|holder| *holder == label);
+      if free || tokio::time::Instant::now() >= until {
+        w.locks.insert(path, label);
+        return Ok(());
+      }
+    }
+    tokio::time::sleep(Duration::from_millis(15)).await;
+  }
+}
+
+#[tauri::command]
+pub fn record_unlock(door: State<'_, AgentDoor>, webview: Webview, path: String) {
+  let label = webview.label().to_string();
+  let mut w = door.inner.windows.lock().unwrap();
+  if w.locks.get(&path) == Some(&label) {
+    w.locks.remove(&path);
+  }
+}
+
+/// Every AI window asked to close (each saves first), and answered when they
+/// are gone or after CLOSE_TIMEOUT: the main window's quit waits on this.
+#[tauri::command]
+pub async fn agent_windows_close(app: AppHandle, door: State<'_, AgentDoor>) -> Result<usize, String> {
+  let labels: Vec<String> = door.inner.windows.lock().unwrap().agents.keys().cloned().collect();
+  for label in &labels {
+    if let Some(win) = app.get_webview_window(label) {
+      let _ = win.close();
+    }
+  }
+  let until = tokio::time::Instant::now() + CLOSE_TIMEOUT;
+  loop {
+    let left = labels.iter().filter(|l| app.get_webview_window(l).is_some()).count();
+    if left == 0 || tokio::time::Instant::now() >= until {
+      return Ok(left);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
   }
 }
 
@@ -426,6 +695,21 @@ mod tests {
       door.stop();
       assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err() || post(port, Some(TOKEN), init).await.0 != 200);
     });
+  }
+
+  #[test]
+  fn routes_a_call_to_the_window_holding_its_chapter() {
+    let mut w = Windows::default();
+    w.chapters.entry(MAIN.into()).or_default().insert("p/a".into());
+    w.chapters.entry("agent-1".into()).or_default().insert("p/b".into());
+    assert_eq!(route(&w, "edit", &json!({ "ops": [] })).unwrap(), MAIN);
+    assert_eq!(route(&w, "edit", &json!({ "chapter": "p/b" })).unwrap(), "agent-1");
+    assert_eq!(route(&w, "edit", &json!({ "chapter": "p/a" })).unwrap(), MAIN);
+    let err = route(&w, "edit", &json!({ "chapter": "p/c" })).unwrap_err();
+    assert!(err.contains("open_chapter"), "{err}");
+    assert!(route(&w, "edit", &json!({ "chapter": 3 })).is_err());
+    // The library's own tools are the main window's, whatever they name.
+    assert_eq!(route(&w, "open_chapter", &json!({ "chapter": "p/b" })).unwrap(), MAIN);
   }
 
   fn local_non_loopback_ip() -> Option<std::net::IpAddr> {

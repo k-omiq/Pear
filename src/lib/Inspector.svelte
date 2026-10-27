@@ -14,6 +14,7 @@
     refitBalloon,
     approveOutline,
     approvePageOutlines,
+    centreTextInOutline,
     boxTagName,
     resetBoxToTagStyle,
     saveBoxStyleAsTag,
@@ -28,7 +29,8 @@
 
   import { editBurst } from './edit-burst.js';
   import FontPicker from './FontPicker.svelte';
-  import { sizingOf } from './data.js';
+  import { sizingOf, sizeSetting, setSizeSetting, steppedSize, SIZE_MIN, SIZE_MAX } from './data.js';
+  import { comboFor, formatCombo } from './shortcuts.svelte.js';
   import { modKey } from './format.js';
   import {
     PATTERN_KINDS,
@@ -280,30 +282,32 @@
     touch();
   }
 
-  // In Fit to box the size is the box's answer, and what the user sets is
-  // the most it may grow to (`fitMax`).
+  // The size field: typed and committed on change, or stepped by the − and +
+  // either side of it, the arrow keys (Shift for 10), or the bigger/smaller
+  // shortcuts from anywhere (App.svelte). In Fit to box the number is the most
+  // the fit may grow to, and the size it settled on shows under the field.
   function setSize(v) {
-    const n = clamp(+v || 6, 6, 200);
-    if (box.style.fitText) box.style.fitMax = n;
-    else box.style.size = n;
+    setSizeSetting(box.style, v);
     touch();
   }
-
-  // The sizes a letterer actually picks, as a menu. The slider went with the
-  // accordions: nobody scrubs for 26px, they choose it - and autofit writes
-  // fractional sizes this menu would otherwise have no way to show, so whatever
-  // the box is at right now is always in the list.
-  const SIZES = [6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 44, 48, 56, 64, 72];
-  const sizeNow = $derived(box ? Math.round((box.style.fitText && box.style.fitMax > 0 ? box.style.fitMax : box.style.size) * 10) / 10 : 0);
+  function commitSize(e) {
+    setSize(e.target.value);
+    e.target.value = String(sizeNow);
+  }
+  const stepSize = (d) => setSize(steppedSize(sizeNow, d));
+  function sizeKey(e) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    stepSize((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1));
+  }
+  const sizeNow = $derived(box ? Math.round(sizeSetting(box.style) * 10) / 10 : 0);
+  const sizeKeys = $derived({ up: formatCombo(comboFor('box.sizeUp')), down: formatCombo(comboFor('box.sizeDown')) });
   const sizing = $derived(box ? sizingOf(box.style) : 'auto');
   const SIZINGS = [
     ['auto', 'Auto height', 'The height follows the text. You set the width and the size.'],
     ['fixed', 'Fixed', 'You set the width, the height and the size. Text that does not fit is flagged.'],
     ['fit', 'Fit to box', 'You set the width and the height. The size is the largest that fits.'],
   ];
-  const sizeList = $derived(
-    SIZES.includes(sizeNow) ? SIZES : [...SIZES, sizeNow].sort((a, b) => a - b),
-  );
 
   function wrap180(v) {
     return (((v + 180) % 360) + 360) % 360 - 180;
@@ -1108,10 +1112,14 @@
              decision about the face, and they were three rows apart. -->
         <div class="row-size">
           <div class="field">
-            <label class="lbl" for="insp-size">{sizing === 'fit' ? `Max size · ${Math.round(s.size * 10) / 10}` : 'Size'}</label>
-            <select id="insp-size" value={String(sizeNow)} onchange={(e) => setSize(e.target.value)}>
-              {#each sizeList as n (n)}<option value={String(n)}>{n} px</option>{/each}
-            </select>
+            <label class="lbl" for="insp-size">{sizing === 'fit' ? 'Max size' : 'Size'}</label>
+            <div class="size-step">
+              <button type="button" aria-label="Smaller" title="Smaller ({sizeKeys.down})" disabled={sizeNow <= SIZE_MIN} onclick={() => stepSize(-1)}>−</button>
+              <input id="insp-size" type="number" min={SIZE_MIN} max={SIZE_MAX} step="1" value={sizeNow} title={sizing === 'fit' ? 'The most Fit to box may grow the text to, page px' : 'Type size, page px'} onchange={commitSize} onkeydown={sizeKey} />
+              <span class="unit" aria-hidden="true">px</span>
+              <button type="button" aria-label="Bigger" title="Bigger ({sizeKeys.up})" disabled={sizeNow >= SIZE_MAX} onclick={() => stepSize(1)}>+</button>
+            </div>
+            {#if sizing === 'fit'}<span class="size-now">Fits at {Math.round(s.size * 10) / 10} px</span>{/if}
           </div>
           <div class="field">
             <span class="lbl">Style</span>
@@ -2056,6 +2064,7 @@
             <button type="button" class="rbtn" title="Find the bubble under this box again, from where the box is now, and typeset the text in it" onclick={() => refitBalloon(box.id)}>
               {box.fit ? 'Refit outline' : 'Find outline'}
             </button>
+            <button type="button" class="rbtn" disabled={!box.fit || boxLocked(box)} title="Move the box so its text sits in the middle of its outline" onclick={() => centreTextInOutline(box.id)}>Centre in bubble</button>
             <button type="button" class="rbtn" title="Use this box's own rectangle as its outline - for free text, an SFX, or a bubble with no closed outline" onclick={() => outlineToBox(box.id)}>Outline = box</button>
             <button type="button" class="rbtn" disabled={!box.fit || box.outline?.approved === 'user'} title="Mark this outline right" onclick={() => approveOutline(box.id)}>Approve</button>
             <button type="button" class="rbtn" title="Approve every outline on this page that nobody approved yet" onclick={() => approvePageOutlines()}>Approve page</button>
@@ -2066,11 +2075,14 @@
 
     </div>
 
-    <div class="insp-actions">
-      <button class="btn-lock" disabled={locked} title="Lock this box: nothing changes it until it is unlocked" onclick={() => setBoxLocked(box.id, true)}>
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>
-        Lock box
-      </button>
+    <!-- The lock is offered on the first tab only. -->
+    <div class="insp-actions" class:pair={tab === 'text'}>
+      {#if tab === 'text'}
+        <button class="btn-lock" disabled={locked} title="Lock this box: nothing changes it until it is unlocked" onclick={() => setBoxLocked(box.id, true)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>
+          Lock box
+        </button>
+      {/if}
       <button class="btn-danger" disabled={locked} onclick={onDeleteBox}>
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>
         Delete box
@@ -2157,9 +2169,11 @@
   }
   .insp-actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
     gap: 6px;
     margin-top: 4px;
+  }
+  .insp-actions.pair {
+    grid-template-columns: 1fr 1fr;
   }
   .insp-actions .btn-danger {
     margin-top: 0;
@@ -2271,8 +2285,78 @@
     height: 13px;
   }
 
-  /* Size beside the weight buttons: the menu takes what it needs, the three
-     letters take the rest. */
+  /* The size stepper, drawn as one control like the style segments beside
+     it: − and + at the ends, the number and its unit between them. The field
+     loses its own box and native spinner, which the buttons replace. */
+  .size-step {
+    display: flex;
+    align-items: center;
+    /* 28px of control inside the border, like the segments beside it. */
+    height: 30px;
+    background: var(--surface);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .size-step:focus-within {
+    border-color: var(--accent);
+  }
+  .size-step button {
+    flex: 0 0 26px;
+    height: 100%;
+    border: none;
+    background: transparent;
+    color: var(--t2);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .size-step button:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--accent-soft);
+  }
+  .size-step button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .size-step button:first-child {
+    border-right: 1px solid var(--line);
+  }
+  .size-step button:last-child {
+    border-left: 1px solid var(--line);
+  }
+  .size-step input[type='number'] {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    padding: 0 2px 0 4px;
+    font-variant-numeric: tabular-nums;
+    -moz-appearance: textfield;
+  }
+  .size-step input[type='number']::-webkit-inner-spin-button,
+  .size-step input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+  }
+  /* The field and the unit split the middle, so "26 px" sits centred between
+     the buttons rather than pushed to the right one. */
+  .size-step .unit {
+    flex: 1 1 0;
+    padding-left: 3px;
+    font-size: 11px;
+    color: var(--t2);
+  }
+  .size-now {
+    font-size: 11px;
+    color: var(--t2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Size beside the weight buttons, half the row each. */
   .row-size {
     display: grid;
     grid-template-columns: 1fr 1fr;

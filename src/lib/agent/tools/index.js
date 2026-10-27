@@ -13,3 +13,5 @@ import './colors.js';
 import './font-sheet.js';
 import './footprint.js';
 import './split.js';
+import './text.js';
+import './chapters.js';

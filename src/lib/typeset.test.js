@@ -261,6 +261,20 @@ describe('balanceLines - a word is only broken when nothing else will do', () =>
     expect(lines).toEqual(['AAAAAAAAAAAAAAAAAAAA']);
   });
 
+  // A width set by hand (`breakWords`): the word is split between any two
+  // letters, every line fits, and the words come back whole when rejoined.
+  it('with breakWords, splits a word no syllable can cut so every line fits', () => {
+    const lines = balanceLines('SAY WWWWWWWWWWWWWWWWWWWWWWWWWWWW NOW PLEASE', 12, chars, { breakWords: true });
+    expect(lines.every((l) => chars(l) <= 12)).toBe(true);
+    expect(lines.some((l) => l.endsWith('-'))).toBe(true);
+    expect(lines.join('\n').replace(/-\n/g, '').replace(/\n/g, ' ')).toBe('SAY WWWWWWWWWWWWWWWWWWWWWWWWWWWW NOW PLEASE');
+  });
+
+  it('with breakWords, halves a four-letter word and leaves no piece under two letters', () => {
+    const lines = balanceLines('BEAM', 3, chars, { breakWords: true });
+    expect(lines).toEqual(['BE-', 'AM']);
+  });
+
   it('skips ASCII hyphenation on Hangul words and lets them overflow', () => {
     // Hangul is excluded from ASCII hyphenation; long words overflow rather than being split
     const lines = balanceLines('안녕하세요 반갑습니다대한민국만세', 10, chars, { hyphenate: true });

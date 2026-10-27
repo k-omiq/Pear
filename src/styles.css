@@ -495,6 +495,20 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 }
 .qrow:hover{ background:var(--panel2); }
 .qrow.active{ border-color:var(--accent); background:var(--accent-soft); }
+/* Reading order by drag (Queue.svelte): the lifted row fades, a bar in the
+   4px gap between two rows shows where it lands. In the gap rather than on the
+   row's edge, where the active row's accent border would hide it; absolutely
+   placed, so no row moves by a pixel as it goes by. */
+.qlist.reordering{ user-select:none; -webkit-user-select:none; cursor:grabbing; }
+.qlist.reordering .qrow{ cursor:grabbing; }
+.qrow.lifted{ opacity:.45; }
+.qrow.drop-before, .qrow.drop-after{ position:relative; }
+.qrow.drop-before::before, .qrow.drop-after::after{
+  content:''; position:absolute; left:2px; right:2px; height:2px; border-radius:1px;
+  background:var(--accent); pointer-events:none;
+}
+.qrow.drop-before::before{ top:-4px; }
+.qrow.drop-after::after{ bottom:-4px; }
 .qrow .badge{
   flex:0 0 auto; width:22px; height:22px; border-radius:6px; display:grid; place-items:center;
   font-size:11.5px; font-weight:700; font-variant-numeric:tabular-nums;
@@ -522,6 +536,9 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .qrow .preview{ font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
 .qrow.placed .preview{ color:var(--t2); }
 .qrow .qjp{ font-size:10.5px; color:var(--t2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The source is reference material: selectable, so it can be copied out to a
+   dictionary or a translator, in every row and not only the one being edited. */
+.qrow .qjp, .qrow .qalt-text{ user-select:text; -webkit-user-select:text; cursor:text; }
 /* A line carries a list of tags now, not one kind, so the badges wrap as a group
    rather than each claiming its own row. */
 .qrow .qtypes{ align-self:flex-start; display:flex; flex-wrap:wrap; gap:3px; max-width:100%; }
@@ -564,7 +581,6 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .qtop-btn svg{ flex:0 0 auto; width:13px; height:13px; opacity:.8; }
 .qtop-btn:hover:not(:disabled){ border-color:var(--accent); background:var(--accent-soft); }
 .qtop-btn:disabled{ opacity:.45; cursor:default; }
-.qorder{ display:flex; gap:6px; }
 
 /* "Add text", at the foot of the queue. Sticky rather than scrolled: the
    scroll container is `.fpanel-body` and this sits last in `.qlist` inside it,

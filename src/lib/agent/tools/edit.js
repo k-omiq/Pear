@@ -10,6 +10,7 @@
 
 import { defineTool, ToolError, nearest } from '../registry.js';
 import { selectBoxes } from '../select.js';
+import { withPagePixels } from '../render.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
 import { applyCase, breaksFor } from '../../measure.js';
@@ -25,7 +26,9 @@ import {
   editBoxes,
   resizeBox,
   setBoxText,
+  writeLineText,
   setBoxLocks,
+  boxLocked,
   LOCK_KEYS,
   commitOutlinePoints,
   refitBalloon,
@@ -52,7 +55,7 @@ import { guide, guideBound, termById } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
 import { sfxAvailable, sfxKinds, sfxPick, applySfxKind, clearSfx } from '../../sfx.js';
 import { WARP_PRESETS, WARP_PRESET_NOTES, warpPresetPts } from '../../warp-presets.js';
-import { footprintIn, footprintRegion, matchFor } from './footprint.js';
+import { originalOf, matchFor } from './footprint.js';
 
 const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original', 'sfx_pick'];
 const DO_NAMED = ['preset:', 'sfx_kind:', 'warp:'];
@@ -73,7 +76,7 @@ const isRel = (v) => typeof v === 'string' && /^[+\-*]\d+(\.\d+)?$/.test(v.trim(
 
 const DESCRIPTION = [
   'Change boxes. ops is a list; each op is { where, set?, do? } and they run in order. where is the selector every tool takes (see context).',
-  'set: text (the box text), style (a style patch, schema below; style.size is the size the solver aims for, not a lock),',
+  'set: text (the box\'s words: a box that draws its line\'s English changes it on the line, so every box of that line and the queue follow; the text tool changes lines by page and line, in translate mode too), style (a style patch, schema below; style.size is the size the solver aims for, not a lock),',
   'sizing { ref, min } (the size aimed for and the least it may shrink to, px; min null is the chapter floor),',
   'geometry { x, y, w, h, rotation } in page px and degrees (x and y are the top-left corner; the solver keeps what is given, the place by its centre; locks undo it),',
   'breaks ["line one", "line two", ...] the box\'s lines exactly, in order (no added hyphens), held until null clears them; needs outline fit (do "typeset"),',
@@ -84,7 +87,7 @@ const DESCRIPTION = [
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "free" (balloon fit off and the outline dropped: text drawn on the art, an SFX or sign the finder wrapped in an outline, laid out from itself where it stands), "refit_outline" (find the bubble under the box again),',
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
   '"outline_to_box" (an outline of the box\'s rectangle, grown to hold its text at the size it aims for with outline fit\'s air, or exactly the box when its width or height is held: geometry in the same op sets it first; shrunk in the result names a box that still fits only smaller), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
-  '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in its colours on a colour page or white or black with an outline of the other over the art; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
+  '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in exactly its colours: its fill (its shade as a gradient), its outline at its width, or no outline when it had none, on colour and black-and-white pages alike; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
   '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type; a type is a layout only, the box keeps its font, fill and outlines; sfx_kinds lists them; seed and caption stay; paths, letter hand edits, the power/rough/momentum dials and every other style.sfx field go back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, with the dials it asks for), "clear_sfx" (SFX off, the arc, ring or path it switched off put back);',
   'then tune an SFX in a later op with set style.sfx (power, rough, momentum dials 0..100 with 50 the type as designed, seed for another arrangement, paths, flow, slant, jitter, caption) and the effects that draw only while SFX is on (negative, extrude, shake, trail, strokeShade, strokeOrder, strokeJoin).',
   '"preset:<name or id>", "duplicate", "delete",',
@@ -354,6 +357,19 @@ function compile(op, i) {
 function writeSet(set, matches) {
   const hasBoxPart = set.text != null || set.style || set.geometry || set.tags || 'speaker' in set || set.sizing || 'breaks' in set;
   if (!hasBoxPart) return [];
+  // A box that draws its line's words takes new words on its line, so the
+  // queue and every box of that line keep the same words (the text tool's way).
+  const onLine = [];
+  if (set.text != null) {
+    for (const m of matches) {
+      // A locked box is passed over, as editBoxes passes it over; and so is a
+      // line another locked box shows, which would change under its lock.
+      if (!readsLine(m.box, m.page) || lineLocked(m.page, m.box.lineN)) continue;
+      if (boxText(m.box, m.page) === set.text) continue;
+      writeLineText(m.page, m.box.lineN, 'en', set.text);
+      onLine.push(...m.page.boxes.filter((b) => b.lineN === m.box.lineN).map((b) => b.id));
+    }
+  }
   const changed = editBoxes(
     matches.map((m) => ({ page: m.page, box: m.box })),
     // Lines held by a lock follow a style change below on their own: the fit
@@ -411,7 +427,7 @@ function writeSet(set, matches) {
           b.style.rotation = Math.round((((r % 360) + 540) % 360 - 180) * 100) / 100;
         }
       }
-      if (set.text != null) setBoxText(b, set.text, p, { fit: false });
+      if (set.text != null && !readsLine(b, p)) setBoxText(b, set.text, p, { fit: false });
       if ('breaks' in set && b.auto) {
         if (set.breaks === null) {
           delete b.auto.breaks;
@@ -430,8 +446,14 @@ function writeSet(set, matches) {
     // The AI lays the box out as a placement does (`autoFitBox`).
     { solve: true },
   );
-  return changed.map((t) => t.box.id);
+  return [...new Set([...onLine, ...changed.map((t) => t.box.id)])];
 }
+
+// Whether any box showing line `n` on page `p` is locked: its words are held.
+export const lineLocked = (p, n) => (p?.boxes ?? []).some((b) => b.lineN === n && boxLocked(b));
+
+// Whether a box draws its line's words rather than words of its own.
+export const readsLine = (b, p) => b.text == null && b.lineN != null && b.lineN >= 0 && !!lineByN(p, b.lineN);
 
 function writeNote(note, matches) {
   const byPage = new Map();
@@ -630,6 +652,11 @@ export function drawOverArt(matches, at) {
         b.style.autoContrast = false;
       }
       if (Array.isArray(a.strokes)) b.style.strokes = a.strokes.map((k) => ({ ...k }));
+      // The original's fill is the fill: its shade as a gradient or none, solid
+      // letters, no pattern over them.
+      if (a.gradient) b.style.gradient = { ...b.style.gradient, ...a.gradient, ...(a.gradient.stops ? { stops: a.gradient.stops.map((k) => ({ ...k })) } : null) };
+      if (a.noFill === false) b.style.noFill = false;
+      if (a.gradient && b.style.pattern?.on) b.style.pattern = { ...b.style.pattern, on: false };
       if (a.size > 0) {
         const size = Math.min(SIZE_RANGE[1], Math.max(SIZE_RANGE[0], a.size));
         b.style.size = size;
@@ -772,12 +799,12 @@ defineTool({
     for (const c of compiled) {
       if (c.do?.kind !== 'match_original') continue;
       c.do.found = new Map();
-      for (const m of c.matches) c.do.found.set(m.box.id, await footprintIn(m.page, footprintRegion(m.page, m.box), m.box));
+      for (const m of c.matches) c.do.found.set(m.box.id, await originalOf(m.page, m.box));
     }
     if (compiled.some((c) => c.do?.found) && !ctx.stillPinned()) throw new ToolError('the chapter changed in the app, so nothing was changed');
     const pages = [...new Set(compiled.flatMap((c) => c.matches.map((m) => m.page)))];
     if (!pages.length) return { ops: compiled.map(() => ({ matched: 0, changed: [], outcome: 'nothing matched' })), note: 'nothing matched; fix the where and call again' };
-    const results = ctx.write(pages, () => compiled.map(runOp));
+    const results = await withPagePixels(pages, () => ctx.write(pages, () => compiled.map(runOp)));
     return {
       ops: results.map((r) => {
         const ids = [...r.changed, ...(r.created ?? [])];

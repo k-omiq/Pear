@@ -45,6 +45,8 @@ import {
 import { normalizeTypesetting, newTypesetting, legacyTypesetting, openTypesetting, patternSrcsUsed } from './data.js';
 import { buildTextJson } from './text-json.js';
 import { carryTagsForward, bindTags, unbindTags, sanitizeTags, sanitizeTagSizes } from './tags.svelte.js';
+import { claimChapter, syncChapters, chapterKey, parseChapterKey, chapterWindows, windowRole, withRecordLock, announceRecord, onRecordChanged } from './agent/windows.js';
+import { merge3 } from './merge3.js';
 import { bindGuide, unbindGuide, sanitizeGuide } from './guide.svelte.js';
 import { resolveSpeakerNames } from './glossary.js';
 import {
@@ -198,6 +200,19 @@ async function subdirs(dir) {
 // that has not happened YET, and deleting the latter would destroy the write it
 // belongs to.
 const TEMP_LITTER = /^(?:project|chapter|translations)\.json\.\d+\.tmp$/;
+// Another window of the app (agent/windows.js) writes the same records, and
+// its live temps are not in this window's `liveTemps`: a temp file younger
+// than this may still be one of its writes, so it is left for a later sweep.
+const TEMP_YOUNG_MS = 5 * 60 * 1000;
+
+async function youngTemp(p) {
+  try {
+    const t = (await fsx.stat?.(p))?.mtime;
+    return !!t && Date.now() - new Date(t).getTime() < TEMP_YOUNG_MS;
+  } catch {
+    return false;
+  }
+}
 
 async function sweepTemps(dir, entries = null) {
   try {
@@ -206,7 +221,7 @@ async function sweepTemps(dir, entries = null) {
     for (const e of list) {
       if (e.isDirectory || !TEMP_LITTER.test(e.name)) continue;
       const p = await fsx.join(dir, e.name);
-      if (live.has(p)) continue;
+      if (live.has(p) || (await youngTemp(p))) continue;
       try {
         await fsx.remove(p);
       } catch {
@@ -337,13 +352,24 @@ async function readProject(root, slug, problems, dupes) {
     }
   }
   chapters.sort((a, b) => a.number - b.number);
-  return {
+  const project = {
     id: raw.id,
-    name: raw.name,
     slug,
     dir,
-    createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
+    ...projectFieldsOf(raw),
+    chapters,
+    unreadable: false,
+  };
+  recordBase.set(project, recordFields(project));
+  return project;
+}
+
+// What a project.json says, as the catalogue holds it.
+function projectFieldsOf(raw) {
+  return {
+    name: raw.name,
+    createdAt: raw.createdAt,
     coverChapterId: raw.coverChapterId ?? null,
     coverPageId: raw.coverPageId ?? null,
     // Absent reads 'pages', which is what every project written before the
@@ -353,8 +379,6 @@ async function readProject(root, slug, problems, dupes) {
     ocrLanguage: normalizeOcrLanguage(raw.ocrLanguage ?? legacyProjectLanguage()),
     ...projectTags(raw),
     guide: sanitizeGuide(raw.guide),
-    chapters,
-    unreadable: false,
   };
 }
 
@@ -671,6 +695,7 @@ export const deleteProject = guarded(async function deleteProject(projectId) {
   // not reached disk, and closing it from here would either drop them or write
   // them into a directory this call is about to remove. The user is one Escape
   // from the library, and the message says so.
+  await assertClosedElsewhere({ projectId });
   assertProjectClosed(projectId);
   await fsx.trash(p.dir);
   library.projects = library.projects.filter((x) => x.id !== projectId);
@@ -721,22 +746,106 @@ async function reassignCover(p, remaining) {
 // A whole-record rewrite, so everything the project owns is named here. The
 // layout above all: it is chosen once at creation and can never be chosen again,
 // so dropping it would silently turn a webtoon project back into a paged one.
+//
+// Every window of the app writes this record (agent/windows.js): the user's,
+// and each chapter window an AI agent works in - and a chapter in another
+// window of the same series changes the same guide and tags. So the write is a
+// merge, under a lock no other window's write can slip between: the record on
+// disk now, against the one this window last read or wrote (`recordBase`),
+// with this window's own changes laid over (merge3.js). What the other window
+// changed is kept, and taken into this window's catalogue too.
 async function writeProjectRecord(p, patch) {
-  const record = {
-    schema: SCHEMA,
-    id: p.id,
-    name: p.name,
-    createdAt: p.createdAt,
-    updatedAt: now(),
-    coverChapterId: p.coverChapterId ?? null,
-    coverPageId: p.coverPageId ?? null,
-    layout: normalizeLayout(p.layout),
-    ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
-    ...seriesFields(p),
-    ...patch,
-  };
-  await writeJson(await fsx.join(p.dir, 'project.json'), record);
-  return record;
+  // One at a time within this window too (the cross-window lock lets this
+  // window's own writes through): a chapter import or a delete writes outside
+  // the record chain, and two writes of ours interleaved would each merge
+  // against a base the other is about to move.
+  const turn = recordMutex.then(() => writeProjectRecordNow(p, patch));
+  recordMutex = turn.catch(() => {});
+  return turn;
+}
+let recordMutex = Promise.resolve();
+
+async function writeProjectRecordNow(p, patch) {
+  const path = await fsx.join(p.dir, 'project.json');
+  return withRecordLock(path, async () => {
+    const { updatedAt, ...own } = patch ?? {};
+    const mine = { ...recordFields(p), ...own };
+    const base = recordBase.get(p);
+    let fields = mine;
+    if (base) {
+      let disk = null;
+      try {
+        disk = projectFieldsOf(await readJson(path));
+      } catch {
+        /* unreadable or gone: this window's record stands */
+      }
+      if (disk) fields = merge3(base, mine, disk);
+    }
+    const record = { schema: SCHEMA, id: p.id, ...fields, updatedAt: updatedAt ?? now() };
+    // The key order every record has been written in.
+    const ordered = Object.fromEntries(RECORD_ORDER.filter((k) => k in record).map((k) => [k, record[k]]));
+    await writeJson(path, ordered);
+    recordBase.set(p, recordFields(ordered));
+    adoptRecord(p, ordered, mine);
+    announceRecord(p.dir);
+    return ordered;
+  });
+}
+
+const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'tags', 'tagSizes', 'guide'];
+
+// The record as this window would write it from its catalogue entry.
+const recordFields = (p) => ({
+  name: p.name,
+  createdAt: p.createdAt,
+  coverChapterId: p.coverChapterId ?? null,
+  coverPageId: p.coverPageId ?? null,
+  layout: normalizeLayout(p.layout),
+  ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
+  ...seriesFields(p),
+});
+
+// What this window last read from or wrote to each project's record: the base
+// both sides of a merge changed from.
+const recordBase = new WeakMap();
+
+// Another window's changes, now on disk, into this window's catalogue entry -
+// and into the live guide and tags when this is the open series.
+function adoptRecord(p, fields, mine) {
+  const sameAs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  let series = false;
+  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'tags', 'tagSizes', 'guide']) {
+    if (!(k in fields) || sameAs(fields[k], mine[k])) continue;
+    p[k] = fields[k];
+    if (k === 'tags' || k === 'tagSizes' || k === 'guide') series = true;
+    if (k === 'ocrLanguage' && app.chapterRef?.projectId === p.id) app.projectOcrLanguage = fields[k];
+  }
+  if (series && app.chapterRef?.projectId === p.id) bindProjectSeries(p);
+}
+
+// Another window wrote a project's record: read it again, in this window's
+// turn of the record chain, so a write of ours already queued merges first.
+async function refreshRecord(dir) {
+  const p = library.projects.find((x) => x.dir === dir && !x.unreadable);
+  if (!p) return;
+  recordWrite = recordWrite
+    .then(async () => {
+      const disk = projectFieldsOf(await readJson(await fsx.join(dir, 'project.json')));
+      const mine = recordFields(p);
+      const base = recordBase.get(p);
+      adoptRecord(p, base ? merge3(base, mine, disk) : disk, mine);
+      recordBase.set(p, disk);
+    })
+    .catch(() => {
+      /* a record mid-write or unreadable: the next write merges from disk */
+    });
+}
+
+// Each window follows the others' writes of the records it shares with them.
+let recordWatch = null;
+export function watchProjectRecords() {
+  recordWatch ??= onRecordChanged(refreshRecord);
+  return recordWatch;
 }
 
 // Language can be corrected after import or changed for an existing project;
@@ -767,6 +876,7 @@ export const deleteChapter = guarded(async function deleteChapter(projectId, cha
   // out from under the editor. Without this the canvas kept drawing a chapter
   // that no longer existed, its next autosave recreated chapter.json inside the
   // deleted tree, and the scan brought the ghost back.
+  await assertClosedElsewhere({ chapterId });
   assertClosed(chapterId);
   await fsx.trash(c.dir);
   const remaining = p.chapters.filter((x) => x.id !== chapterId);
@@ -1009,24 +1119,10 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
     const coverChapterId = willHaveCover ? chapter.id : p.coverChapterId;
     const coverPageId = willHaveCover ? (pages[0]?.id ?? null) : p.coverPageId;
     const updatedAt = now();
-    await writeJson(await fsx.join(p.dir, 'project.json'), {
-      schema: SCHEMA,
-      id: p.id,
-      name: p.name,
-      createdAt: p.createdAt,
-      updatedAt,
-      coverChapterId,
-      coverPageId,
-      // This is a whole-record rewrite, so anything the project owns that is not
-      // named here is deleted from disk. The layout is chosen once at creation
-      // and can never be chosen again, so losing it to a chapter import would
-      // silently turn a webtoon project back into a paged one.
-      layout: normalizeLayout(p.layout),
-      ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
-      // And the tag registry, its size memory and the series guide, which are
-      // this project's alone.
-      ...seriesFields(p),
-    });
+    // The whole-record rewrite every project.json write is, merged with any
+    // other window's (`writeProjectRecord`): the layout, the language, the tag
+    // registry and the series guide ride on it with the new cover.
+    await writeProjectRecord(p, { coverChapterId, coverPageId, updatedAt });
 
     p.chapters = [...p.chapters, chapter].sort((a, b) => a.number - b.number);
     p.coverChapterId = coverChapterId;
@@ -1315,6 +1411,7 @@ async function chapterFile(projectId, chapterId) {
   const c = chapterById(projectId, chapterId);
   if (!c) throw new Error('No such chapter');
   if (c.unreadable) throw new Error('This chapter could not be read');
+  await assertClosedElsewhere({ chapterId });
   assertClosed(chapterId);
   return { c, path: await fsx.join(c.dir, 'chapter.json') };
 }
@@ -1488,6 +1585,9 @@ async function commitPages(c, path, record, pages, terms = null) {
   // the decodes, and the chapter can have been opened in every one of those
   // windows. Refused here, the caller rolls its files back and says so; left
   // out, the editor's first autosave silently replaces everything below.
+  // Across windows first: the await must not come between the check of this
+  // window and the write.
+  await assertClosedElsewhere({ chapterId: c.id });
   assertClosed(c.id);
   // The timestamp is also the snapshot version key. Two closed-chapter edits
   // can finish within one millisecond; they must still get distinct versions,
@@ -2058,7 +2158,50 @@ let opening = null;
 // refused rather than aimed at whichever file the ref happens to name.
 let loadedRef = null;
 
+// A chapter is never open in two windows (agent/windows.js): this window
+// claims it first, and a refusal changes nothing here - the chapter on screen
+// stays. Whatever the open came to, the window then says which chapters it
+// holds, so a superseded or failed open lets its claim go.
 export async function openChapter(projectId, chapterId) {
+  const key = chapterKey(projectId, chapterId);
+  // Held from before the claim to the end of the open, so a sync made by any
+  // other open meanwhile keeps this one's claim.
+  const mine = { key };
+  openingKeys.add(mine);
+  try {
+    await claimChapter(projectId, chapterId);
+    return await openChapterNow(projectId, chapterId);
+  } finally {
+    openingKeys.delete(mine);
+    syncOpenChapters();
+  }
+}
+const openingKeys = new Set();
+
+// The chapters this window holds: the one open, and every one on its way.
+function syncOpenChapters() {
+  const keys = new Set([...openingKeys].map((o) => o.key));
+  if (app.chapterRef) keys.add(chapterKey(app.chapterRef.projectId, app.chapterRef.chapterId));
+  if (opening) keys.add(chapterKey(opening.projectId, opening.chapterId));
+  syncChapters([...keys]);
+}
+
+// The same check as `assertClosed`, across the app's windows: a chapter open in
+// another window (an AI agent's, agent/windows.js) is as open as one here, and
+// its autosave would put back whatever a delete or a rewrite did under it.
+// `chapterId`, or every chapter of `projectId`.
+async function assertClosedElsewhere({ projectId = null, chapterId = null }) {
+  const [open, me] = await Promise.all([chapterWindows(), windowRole()]);
+  for (const [key, at] of Object.entries(open)) {
+    if (at.window === me.label) continue;
+    const ref = parseChapterKey(key);
+    if (ref && (chapterId ? ref.chapterId === chapterId : ref.projectId === projectId)) {
+      throw new Error(`${chapterId ? 'This chapter is' : 'A chapter of this project is'} open in ${at.agent ? 'an AI window' : 'another window'} - close it there first`);
+    }
+  }
+}
+
+async function openChapterNow(projectId, chapterId) {
   const p = projectById(projectId);
   const c = chapterById(projectId, chapterId);
   if (!p || !c) throw new Error('No such chapter');
@@ -2672,6 +2815,8 @@ export function closeChapter() {
   // The failure streak belongs to the chapter that was open. Nothing is pending
   // any more, so the next chapter starts its own two-step from scratch.
   resetSaveFailures();
+  // Another window may open it now.
+  syncOpenChapters();
   // So does the save indicator's failed state: the pill presents it inside
   // `{project} · {chapter}`, as a fact about the open chapter. Carrying chapter
   // A's failure onto chapter B would blame the wrong document. With this, the

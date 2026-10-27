@@ -12,7 +12,7 @@
 // numbers. tools/footprint.js reads the pixels and edit's "match_original"
 // lays a box over what this finds.
 
-import { colorDistance, paletteOf, chromaOf, luminanceOf } from './palette.js';
+import { colorDistance, paletteOf, chromaOf, luminanceOf, hexOf } from './palette.js';
 
 // A pixel the cleaner moved by more than this (redmean, 0..~765) is ink it
 // took away; less is scan noise and resampling.
@@ -32,6 +32,13 @@ export const WEIGHT = { thin: 0.12, heavy: 0.24 };
 
 const quantile = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
 const hex = (s) => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16));
+// Any #rgb / #rrggbb (an alpha part dropped) as channels, or null.
+function rgbOf(s) {
+  let h = /^#([0-9a-f]{3,8})$/i.exec(String(s ?? '').trim())?.[1];
+  if (!h) return null;
+  if (h.length === 3 || h.length === 4) h = [...h.slice(0, 3)].map((c) => c + c).join('');
+  return h.length === 6 || h.length === 8 ? [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)) : null;
+}
 
 // The changed pixels of `raw` against `clean` as a 0/1 mask.
 export function changedMask(raw, clean, threshold = CHANGED) {
@@ -51,6 +58,213 @@ function masked(px, mask) {
   const data = new Uint8ClampedArray(px.data);
   for (let i = 0; i < mask.length; i++) if (!mask[i]) data[i * 4 + 3] = 0;
   return { data, width: px.width, height: px.height };
+}
+
+// How deep each ink pixel lies in the letters: its chamfer (3-4) distance to
+// the nearest pixel that is not ink, or to the region's edge, in px. An
+// outline is the shallow band round the letters; their fill lies deeper.
+export function depthMap(mask, W, H) {
+  const d = new Int32Array(mask.length);
+  for (let i = 0; i < mask.length; i++) d[i] = mask[i] ? 1 << 20 : 0;
+  const at = (x, y) => (x < 0 || y < 0 || x >= W || y >= H ? 0 : d[y * W + x]);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (d[i]) d[i] = Math.min(d[i], at(x - 1, y) + 3, at(x, y - 1) + 3, at(x - 1, y - 1) + 4, at(x + 1, y - 1) + 4);
+    }
+  }
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = W - 1; x >= 0; x--) {
+      const i = y * W + x;
+      if (d[i]) d[i] = Math.min(d[i], at(x + 1, y) + 3, at(x, y + 1) + 3, at(x + 1, y + 1) + 4, at(x - 1, y + 1) + 4);
+    }
+  }
+  const out = new Float32Array(mask.length);
+  for (let i = 0; i < mask.length; i++) out[i] = d[i] / 3;
+  return out;
+}
+
+// The colour of a set of pixels as the page has it: each channel's median,
+// so JPEG grain and the odd stray pixel do not move it.
+function medianHex(data, idx) {
+  const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  for (const i of idx) for (let c = 0; c < 3; c++) hist[c][data[i * 4 + c]]++;
+  const half = idx.length / 2;
+  return hexOf(
+    hist.map((h) => {
+      let acc = 0;
+      for (let v = 0; v < 256; v++) if ((acc += h[v]) >= half) return v;
+      return 255;
+    }),
+  );
+}
+
+// How far colour `c` is from every mix of `a` and `b`: small for the
+// soft edge where letters blend into the art round them, which is no outline.
+function offBlend(c, a, b) {
+  if (!b) return Infinity;
+  let best = Infinity;
+  for (let t = 0; t <= 1.0001; t += 0.05) best = Math.min(best, colorDistance(c, a.map((v, i) => v + (b[i] - v) * t)));
+  return best;
+}
+
+// A part of the letters smaller than this share of the ink is grain or an
+// edge, not a colour of the original.
+const MIN_PART = 0.08;
+// An outline stands this far (redmean) from the fill, and this far from any
+// blend of the fill into the art; a second fill colour (a shade) as far.
+const OUTLINE_APART = 100;
+const OFF_BLEND = 60;
+const SHADE_APART = 60;
+
+// Hollow letters - a pale inside drawn round with a dark line, over art as
+// pale as the inside - change only their line: the cleaner found the inside
+// already the colour it paints. So the changed pixels are a ring with the
+// letters' insides as holes in it, and read alone they say "thin dark letters,
+// no outline". Letters are taken as hollow when the holes hold at least as
+// much as the ring and run along most of its edge (a solid letter's few
+// counters do neither), and their colour is not the ring's: the inside is
+// then the fill and the ring the outline. Holes are what the region's edge
+// cannot reach without crossing the ring. Read small (regionPixels), a ring
+// blurs inwards and its holes shrink to a third of it or so, but they still
+// line it: on RMS ch1 the hollow sounds run 1.0-1.2 inner edge to outer, the
+// solid ones 0.05-0.55.
+const HOLLOW_AREA = 0.25;
+const HOLLOW_EDGE = 0.8;
+function hollowInk(raw, mask, depth, scale) {
+  const W = raw.width;
+  const H = raw.height;
+  const outside = new Uint8Array(mask.length);
+  const stack = [];
+  const seed = (i) => {
+    if (!mask[i] && !outside[i]) {
+      outside[i] = 1;
+      stack.push(i);
+    }
+  };
+  for (let x = 0; x < W; x++) {
+    seed(x);
+    seed((H - 1) * W + x);
+  }
+  for (let y = 0; y < H; y++) {
+    seed(y * W);
+    seed(y * W + W - 1);
+  }
+  while (stack.length) {
+    const i = stack.pop();
+    const x = i % W;
+    if (x > 0) seed(i - 1);
+    if (x < W - 1) seed(i + 1);
+    if (i >= W) seed(i - W);
+    if (i < mask.length - W) seed(i + W);
+  }
+  const holes = [];
+  const ring = [];
+  let inner = 0;
+  let outer = 0;
+  let deep = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) {
+      if (!outside[i]) holes.push(i);
+      continue;
+    }
+    ring.push(i);
+    deep += depth[i];
+    const x = i % W;
+    const nb = [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W].filter((j) => j >= 0 && j < mask.length && !mask[j]);
+    if (nb.some((j) => !outside[j])) inner++;
+    if (nb.some((j) => outside[j])) outer++;
+  }
+  if (!ring.length || holes.length < HOLLOW_AREA * ring.length || inner < HOLLOW_EDGE * outer) return null;
+  const fill = medianHex(raw.data, holes);
+  // The ring's line from its half farthest from the fill: read small, the
+  // rest is the line blurred into the inside and the art.
+  const fillRgb = hex(fill);
+  const off = ring.map((i) => colorDistance([raw.data[i * 4], raw.data[i * 4 + 1], raw.data[i * 4 + 2]], fillRgb));
+  const cut = [...off].sort((a, b) => a - b)[Math.floor(off.length / 2)];
+  const outline = medianHex(raw.data, ring.filter((_, k) => off[k] >= cut));
+  if (colorDistance(hex(fill), hex(outline)) <= OUTLINE_APART) return null;
+  // The ring has a non-ink side both ways, so its depths run 1..w/2..1 and
+  // their mean is (w / 2 + 1) / 2.
+  const outlineWidth = Math.max(1, Math.round(((4 * (deep / ring.length) - 2) / (scale || 1)) * 2) / 2);
+  const colour = [fill, outline].some((c) => chromaOf(hex(c)) >= 0.15);
+  return { fill, outline, outlineWidth, colour, accent: null };
+}
+
+// The original's colours, by where each lies in its letters: the fill is the
+// deepest colour, the outline the colour of the shallow band round it, a
+// second deep colour a shade (a gradient, `shade` from top to bottom). Each
+// is the median of its own pixels, so it is the colour on the page, not a
+// mean of the colours round it. `outlineWidth` is the band's width in page
+// px. Null with no ink.
+export function inkOf(raw, mask, depth, underRgb = null, scale = 1) {
+  const ink = readInk(raw, mask, depth, underRgb, scale);
+  if (!ink) return null;
+  const { fill, outline, shade } = ink;
+  return { ...ink, fill: paper(fill), outline: outline && paper(outline), ...(shade ? { shade: shade.map(paper) } : null) };
+}
+
+// A scan's white is paper, a little grey or warm, and its black is ink that
+// never quite reaches 0: lettered, both are pure. Greys this close to either
+// end are read as the end itself.
+const PAPER = 26;
+function paper(c) {
+  const [r, g, b] = hex(c);
+  if (Math.max(r, g, b) - Math.min(r, g, b) > 12) return c;
+  if (Math.min(r, g, b) >= 255 - PAPER) return '#ffffff';
+  if (Math.max(r, g, b) <= PAPER) return '#000000';
+  return c;
+}
+
+function readInk(raw, mask, depth, underRgb, scale) {
+  const hollow = hollowInk(raw, mask, depth, scale);
+  if (hollow) return hollow;
+  const pal = paletteOf(masked(raw, mask), { count: 3 });
+  if (!pal) return null;
+  const cols = pal.palette.map((c) => hex(c.hex));
+  const parts = cols.map((rgb) => ({ rgb, idx: [], deep: 0, y: 0 }));
+  const W = raw.width;
+  const px = [0, 0, 0];
+  let total = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    px[0] = raw.data[i * 4];
+    px[1] = raw.data[i * 4 + 1];
+    px[2] = raw.data[i * 4 + 2];
+    let best = 0;
+    for (let j = 1; j < cols.length; j++) if (colorDistance(px, cols[j]) < colorDistance(px, cols[best])) best = j;
+    const part = parts[best];
+    part.idx.push(i);
+    part.deep += depth[i];
+    part.y += Math.floor(i / W);
+    total++;
+  }
+  const major = parts
+    .filter((p) => p.idx.length >= MIN_PART * total)
+    .map((p) => ({ ...p, deep: p.deep / p.idx.length, y: p.y / p.idx.length }));
+  if (!major.length) return null;
+  const fillPart = major.reduce((a, b) => (b.deep > a.deep ? b : a));
+  // The fill's colour from its core, clear of the edge it blends at.
+  const core = fillPart.idx.filter((i) => depth[i] >= 2);
+  const fill = medianHex(raw.data, core.length >= 20 ? core : fillPart.idx);
+  const fillRgb = hex(fill);
+  const others = major.filter((p) => p !== fillPart && offBlend(p.rgb, fillRgb, underRgb) > OFF_BLEND);
+  const outlinePart =
+    others
+      .filter((p) => p.deep < fillPart.deep * 0.75 && colorDistance(p.rgb, fillRgb) > OUTLINE_APART)
+      .sort((a, b) => b.idx.length - a.idx.length)[0] ?? null;
+  const shadePart =
+    others
+      .filter((p) => p !== outlinePart && p.deep >= fillPart.deep * 0.6 && colorDistance(p.rgb, fillRgb) > SHADE_APART)
+      .sort((a, b) => b.idx.length - a.idx.length)[0] ?? null;
+  const outline = outlinePart ? medianHex(raw.data, outlinePart.idx) : null;
+  // A band of width w holds depths 1..w, so its mean depth is (w + 1) / 2.
+  const outlineWidth = outlinePart ? Math.max(1, Math.round(((2 * outlinePart.deep - 1) / (scale || 1)) * 2) / 2) : null;
+  const shade = shadePart
+    ? [fillPart, shadePart].sort((a, b) => a.y - b.y).map((p) => (p === fillPart ? fill : medianHex(raw.data, p.idx)))
+    : null;
+  const colour = !!(pal.accent || [fill, outline, ...(shade ?? [])].some((c) => c && chromaOf(hex(c)) >= 0.15));
+  return { fill, outline, outlineWidth, ...(shade ? { shade } : null), colour, accent: pal.accent ?? null };
 }
 
 // The footprint, or null when the cleaner changed (next to) nothing there - an
@@ -134,13 +348,11 @@ export function footprintOf(raw, clean, { rect = [0, 0, raw.width, raw.height], 
   const ratio = stroke / Math.max(1, breadth);
   const weight = ratio < WEIGHT.thin ? 'thin' : ratio > WEIGHT.heavy ? 'heavy' : 'medium';
 
-  // The original's own colours, and the tone of the art left round it once
-  // the cleaner took it away.
-  const ink = paletteOf(masked(raw, mask), { count: 3 });
+  // The original's own colours, read from where each sits in the letters
+  // (`inkOf`), and the tone of the art left round it once the cleaner took
+  // it away.
   const under = paletteOf(masked(clean, mask), { count: 3 });
-  const fill = ink?.palette[0]?.hex ?? null;
-  const outline = ink?.palette.find((p) => p.hex !== fill && colorDistance(hex(p.hex), hex(fill)) > 120)?.hex ?? null;
-  const colour = !!(ink?.accent || (fill && chromaOf(hex(fill)) >= 0.15));
+  const ink = inkOf(raw, mask, depthMap(mask, W, raw.height), under ? hex(under.mean) : null, scale);
 
   const k = 1 / (scale || 1);
   const r1 = (v) => Math.round(v * 10) / 10;
@@ -153,7 +365,7 @@ export function footprintOf(raw, clean, { rect = [0, 0, raw.width, raw.height], 
     elongation: Math.round(elongation * 100) / 100,
     stroke: r1(stroke * k),
     weight,
-    ink: { fill, outline, colour, accent: ink?.accent ?? null },
+    ink,
     under: under ? { tone: under.tone, mean: under.mean } : null,
     share: Math.round((area / mask.length) * 1000) / 1000,
   };
@@ -185,21 +397,69 @@ export function slantOf(fp) {
   return Math.max(-MAX_TURN, Math.min(MAX_TURN, axisOf(fp))) || 0;
 }
 
-// The look an English SFX takes over this original (instructions.js rules A
-// and B): on a colour page the original's colours, its fill and its outline;
-// on black and white, the contrast of the art under it - white on dark, black
-// on light, with an outline of the other so it reads over busy art; a thin
-// sharp original on dark art gets no outline. `outlineWidth` is the band in
-// page px (about 3 on a 1500 px page).
+// The look an English SFX takes over this original: exactly the original's
+// colours - its fill (or its shade, top to bottom, as a gradient) and its
+// outline at the original's width, or no outline when it had none - on a
+// colour page and on black and white alike (instructions.js rule C). Only
+// with no ink to read (never, for a footprint that was found) does the tone
+// of the art decide: white on dark, black on light, an outline of the other.
+// `outlineWidth` is that fallback's band in page px (about 3 on a 1500 px
+// page).
 export function lookFor(fp, { outlineWidth = 3 } = {}) {
   if (!fp) return null;
-  const w = Math.max(1, Math.round(outlineWidth * 10) / 10);
-  if (fp.ink.colour && fp.ink.fill) {
-    const back = fp.ink.outline ?? (luminanceOf(hex(fp.ink.fill)) > 0.3 ? '#000000' : '#ffffff');
-    return { color: fp.ink.fill, strokes: [{ color: back, width: w, opacity: 1 }] };
+  const ink = fp.ink;
+  if (ink?.fill) {
+    return {
+      color: ink.fill,
+      strokes: ink.outline ? [{ color: ink.outline, width: ink.outlineWidth ?? outlineWidth, opacity: 1 }] : [],
+      gradient: ink.shade
+        ? { on: true, kind: 'linear', angle: 180, scope: 'box', stops: ink.shade.map((color, i) => ({ color, pos: i / (ink.shade.length - 1), opacity: 1 })) }
+        : { on: false },
+      noFill: false,
+    };
   }
+  const w = Math.max(1, Math.round(outlineWidth * 10) / 10);
   const tone = fp.under?.tone ?? 'light';
   if (tone === 'dark') return { color: '#ffffff', strokes: fp.weight === 'thin' ? [] : [{ color: '#000000', width: w, opacity: 1 }] };
   return { color: '#000000', strokes: [{ color: '#ffffff', width: w, opacity: 1 }] };
 }
 
+// How far (redmean) a box's colour may stand from the original's and still
+// be the original's: the same colour read again, not another one.
+export const COLOUR_MATCH = 40;
+
+// Where an SFX box's colours stand from its original's: null when they are
+// the original's, else { fill?, outline? } each { want, got } (instructions
+// rule C, check "sfx_colour"). Hollow letters (noFill) show their fill as
+// their first band.
+export function colourMismatch(style, ink) {
+  if (!style || !ink?.fill) return null;
+  const near = (a, b) => {
+    const x = rgbOf(a);
+    const y = rgbOf(b);
+    return !!x && !!y && colorDistance(x, y) <= COLOUR_MATCH;
+  };
+  const out = {};
+  const bands = (style.strokes ?? []).filter((k) => (Number(k?.width) || 0) > 0 && (k.opacity ?? 1) > 0);
+  const want = ink.shade ?? [ink.fill];
+  if (style.noFill) {
+    const got = bands[0]?.color ?? null;
+    if (!near(got, ink.fill)) out.fill = { want: ink.fill, got: got ?? 'none (hollow, no band)' };
+  } else if (style.pattern?.on) {
+    out.fill = { want: want.length > 1 ? want : ink.fill, got: 'a pattern' };
+  } else if (style.gradient?.on) {
+    const stops = (style.gradient.stops ?? []).map((s) => s.color);
+    const fits = want.length > 1 ? near(stops[0], want[0]) && near(stops.at(-1), want.at(-1)) && stops.every((c) => want.some((w) => near(c, w))) : stops.every((c) => near(c, ink.fill));
+    if (!fits) out.fill = { want: want.length > 1 ? want : ink.fill, got: stops };
+  } else if (want.length > 1 || !near(style.color, ink.fill)) {
+    out.fill = { want: want.length > 1 ? want : ink.fill, got: style.color };
+  }
+  const outer = style.noFill ? bands.slice(1) : bands;
+  if (ink.outline) {
+    const bad = outer.filter((k) => !near(k.color, ink.outline));
+    if (!outer.length || bad.length) out.outline = { want: ink.outline, got: outer.length ? outer.map((k) => k.color) : 'none' };
+  } else if (outer.length) {
+    out.outline = { want: 'none', got: outer.map((k) => k.color) };
+  }
+  return out.fill || out.outline ? out : null;
+}

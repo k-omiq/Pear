@@ -225,11 +225,17 @@ export const TYPESET_DEFAULTS = {
   hyphen: 2,
   existingHyphen: 0.25,
   hyphenPair: 8, // two hyphenated lines in a row, on top of both their own costs
+  forcedHyphen: 6, // extra, for a split no syllable offers (`breakWords`)
   lastWordHyphen: 1.5, // extra, for a split in the paragraph's final word
   minHyphenHead: 2, // letters that must remain before the hyphen
   minHyphenTail: 3, // letters that must remain after it
   maxHyphenPoints: 48, // a paragraph offering more than this is not hyphenated at all
   hyphenate: true, // the whole feature, off in one place
+  // A box whose width the user set by hand: a word too wide for any line is
+  // split between any two letters rather than left hanging over the edge
+  // (`forcedPointsFor`). Off for everything the app sizes itself, which
+  // shrinks the type or widens the box for such a word instead.
+  breakWords: false,
 };
 
 // A hair of slack on the fit test. Widths come back from a canvas as floats and
@@ -381,6 +387,27 @@ function hyphenPointsFor(word, o) {
       continue;
     }
     out.push(p);
+  }
+  return out;
+}
+
+// The last resort of `breakWords`: every place between two letters a word may
+// be split, for a word that even its syllables (`hyphenPointsFor`) cannot cut
+// into pieces that fit a line - a one-syllable word, a name, an SFX. Priced
+// above a syllable (`forcedHyphen`), so they are taken only where nothing else
+// fits, and no piece shorter than `minHyphenHead` letters - the tail too, so a
+// four-letter word can still be halved. Not inside a Hangul word.
+function forcedPointsFor(word, o, have) {
+  if (hasHangul(word)) return [];
+  const taken = new Set(have.map((p) => p.rel));
+  const out = [];
+  let last = 0;
+  for (let i = 1; i < word.length; i++) {
+    if (!/\p{L}/u.test(word[i - 1]) || !/\p{L}/u.test(word[i])) continue;
+    if (letterCount(word.slice(last, i)) < o.minHyphenHead) continue;
+    if (letterCount(word.slice(i)) < o.minHyphenHead) break;
+    last = i;
+    if (!taken.has(i)) out.push({ rel: i, hy: HY_ADDED, forced: true });
   }
   return out;
 }
@@ -653,6 +680,16 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
     // that this module should call as few times as it can get away with.
     let longest = 0;
     for (let j = 0; j < n; j++) longest = Math.max(longest, wordsWidth(j, j + 1));
+    // Whether a piece of word `j` between two of its break points is still
+    // wider than any line: what calls for the last resort.
+    const pieceTooWide = (j, pts) => {
+      const len = words[j].t.length;
+      const cuts = [0, ...pts.map((p) => p.rel), len];
+      for (let i = 1; i < cuts.length; i++) {
+        if (spanWidth(words[j].s + cuts[i - 1], words[j].s + cuts[i], cuts[i] < len) > widest + FIT_EPS) return true;
+      }
+      return false;
+    };
     let widest = 0;
     for (let L = 1; L <= o.maxLines && widest <= longest + FIT_EPS; L++) {
       for (const w of widthsOf(L)) if (w > widest) widest = w;
@@ -662,13 +699,20 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
       if (wordsWidth(j, j + 1) <= widest + FIT_EPS) continue;
       const pts = hyphenPointsFor(words[j].t, o);
       total += pts.length;
-      for (const p of pts) hyphenPoints.push({ w: j, rel: p.rel, hy: p.hy });
+      const forced = o.breakWords && pieceTooWide(j, pts) ? forcedPointsFor(words[j].t, o, pts) : [];
+      const all = forced.length ? [...pts, ...forced].sort((a, b) => a.rel - b.rel) : pts;
+      for (const p of all) hyphenPoints.push({ w: j, rel: p.rel, hy: p.hy, forced: p.forced === true });
     }
     // A paragraph that wants this many splits is not a paragraph this rule was
     // written for, and enumerating it would cost more than it could possibly
-    // buy. Dropping the lot keeps the answer deterministic and merely returns
-    // the module to its previous behaviour for that block.
-    if (total > o.maxHyphenPoints) hyphenPoints.length = 0;
+    // buy. Dropping the syllables keeps the answer deterministic and merely
+    // returns the module to its previous behaviour for that block - all but the
+    // last resort, which a word too wide for any line of a box still needs.
+    if (total > o.maxHyphenPoints) {
+      const keep = hyphenPoints.filter((p) => p.forced);
+      hyphenPoints.length = 0;
+      hyphenPoints.push(...keep);
+    }
   }
 
   // `wStart` is the word a line beginning here starts in; `wEnd` the word a line
@@ -682,7 +726,7 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
   for (let j = 0; j < n; j++) {
     while (hp < hyphenPoints.length && hyphenPoints[hp].w === j) {
       const off = words[j].s + hyphenPoints[hp].rel;
-      pos.push({ start: off, end: off, hy: hyphenPoints[hp].hy, wStart: j, wEnd: j });
+      pos.push({ start: off, end: off, hy: hyphenPoints[hp].hy, forced: hyphenPoints[hp].forced, wStart: j, wEnd: j });
       hp++;
     }
     pos.push({
@@ -872,8 +916,10 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
     // And the other direction, once. `FIT_EPS` is subtracted for the same reason
     // `fits` adds it: a line that measures a rounding error over its box is not
     // hanging out of anything.
+    // With `breakWords` a word can always be split to fit, so hanging over
+    // the edge is priced far above any split.
     const over = (lw - W - FIT_EPS) / W;
-    if (over > 0) c += o.overflow * over * over;
+    if (over > 0) c += (o.breakWords ? o.overflow * 1000 : o.overflow) * over * over;
     // Only reachable in the relaxed pass; the strict one never admits such a
     // line at all. Flat rather than proportional to anything, because an orphan
     // is not a matter of degree: the line either breaks the rule or it does not.
@@ -884,7 +930,7 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
     // accident. `hyphenPair` needs no state to detect: this line begins mid-word
     // exactly when the line before it ended in a hyphen.
     if (pos[b].hy === HY_ADDED) {
-      c += o.hyphen + (pos[b].wEnd === n - 1 ? o.lastWordHyphen : 0);
+      c += o.hyphen + (pos[b].forced ? o.forcedHyphen : 0) + (pos[b].wEnd === n - 1 ? o.lastWordHyphen : 0);
     } else if (pos[b].hy === HY_EXISTING) {
       c += o.existingHyphen + (pos[b].wEnd === n - 1 ? o.lastWordHyphen : 0);
     }

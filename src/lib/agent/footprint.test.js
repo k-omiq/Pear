@@ -1,7 +1,7 @@
 // The original lettering's footprint, on pictures made of numbers: a page
 // whose "raw" has ink the "clean" does not.
 import { describe, expect, it } from 'vitest';
-import { footprintOf, slantOf, lookFor, isUpright, MAX_TURN, UPRIGHT_TURN } from './footprint.js';
+import { footprintOf, slantOf, lookFor, isUpright, colourMismatch, MAX_TURN, UPRIGHT_TURN } from './footprint.js';
 
 const W = 200;
 const H = 120;
@@ -44,10 +44,10 @@ describe('footprintOf', () => {
     expect(fp.breadth).toBeLessThan(34);
     expect(fp.weight).toBe('heavy');
     expect(slantOf(fp)).toBe(fp.angle);
-    // Black ink on light paper: black English with a white outline.
+    // Black ink on light paper, no outline: exactly that.
     expect(fp.ink.colour).toBe(false);
     expect(fp.under.tone).toBe('light');
-    expect(lookFor(fp, { outlineWidth: 3 })).toEqual({ color: '#000000', strokes: [{ color: '#ffffff', width: 3, opacity: 1 }] });
+    expect(lookFor(fp, { outlineWidth: 3 })).toEqual({ color: '#000000', strokes: [], gradient: { on: false }, noFill: false });
   });
 
   it('gives page px from a region drawn smaller than the page', () => {
@@ -69,7 +69,7 @@ describe('footprintOf', () => {
     const fp = footprintOf(raw, clean);
     expect(fp.weight).toBe('thin');
     expect(fp.under.tone).toBe('dark');
-    expect(lookFor(fp)).toEqual({ color: '#ffffff', strokes: [] });
+    expect(lookFor(fp)).toMatchObject({ color: '#ffffff', strokes: [] });
   });
 
   it('takes a colour original\'s own colours', () => {
@@ -79,8 +79,60 @@ describe('footprintOf', () => {
     const fp = footprintOf(raw, clean);
     expect(fp.ink.colour).toBe(true);
     const look = lookFor(fp);
-    expect(look.color).toMatch(/^#d|^#e/);
-    expect(look.strokes[0].color).toMatch(/^#[0-5]/);
+    expect(look.color).toBe('#dc1e1e');
+    expect(look.strokes).toEqual([{ color: '#3c0000', width: 5, opacity: 1 }]);
+  });
+
+  it('reads white letters in a black outline on grey art as exactly that', () => {
+    const clean = picture([120, 120, 120]);
+    const raw = bar(picture([120, 120, 120]), { cx: 100, cy: 60, len: 150, thick: 40, deg: 0, ink: [5, 5, 5] });
+    bar(raw, { cx: 100, cy: 60, len: 136, thick: 26, deg: 0, ink: [252, 252, 252] });
+    const fp = footprintOf(raw, clean);
+    expect(fp.ink).toMatchObject({ fill: '#ffffff', outline: '#000000', colour: false });
+    expect(fp.ink.outlineWidth).toBeGreaterThanOrEqual(6);
+    expect(fp.ink.outlineWidth).toBeLessThanOrEqual(8);
+    expect(lookFor(fp).strokes[0].color).toBe('#000000');
+  });
+
+  it('reads hollow letters over art as pale as their inside as a fill in an outline', () => {
+    // White letters drawn round in black, on a white page: only the black
+    // ring changed when the page was cleaned.
+    const clean = picture([250, 250, 250]);
+    const raw = bar(picture([250, 250, 250]), { cx: 100, cy: 60, len: 150, thick: 40, deg: 0, ink: [5, 5, 5] });
+    bar(raw, { cx: 100, cy: 60, len: 136, thick: 26, deg: 0, ink: [250, 250, 250] });
+    const fp = footprintOf(raw, clean);
+    expect(fp.ink).toMatchObject({ fill: '#ffffff', outline: '#000000', colour: false });
+    expect(fp.ink.outlineWidth).toBeGreaterThanOrEqual(6);
+    expect(fp.ink.outlineWidth).toBeLessThanOrEqual(8);
+  });
+
+  it('keeps a solid letter with a small counter solid', () => {
+    const clean = picture([250, 250, 250]);
+    const raw = bar(picture([250, 250, 250]), { cx: 100, cy: 60, len: 150, thick: 40, deg: 0, ink: [5, 5, 5] });
+    bar(raw, { cx: 100, cy: 60, len: 30, thick: 10, deg: 0, ink: [250, 250, 250] });
+    const fp = footprintOf(raw, clean);
+    expect(fp.ink).toMatchObject({ fill: '#000000', outline: null });
+  });
+
+  it('takes no blend of the letters into the art for an outline', () => {
+    const clean = picture([250, 250, 250]);
+    const raw = bar(picture([250, 250, 250]), { cx: 100, cy: 60, len: 140, thick: 36, deg: 0, ink: [128, 128, 128] });
+    bar(raw, { cx: 100, cy: 60, len: 136, thick: 32, deg: 0, ink: [0, 0, 0] });
+    const fp = footprintOf(raw, clean);
+    expect(fp.ink.fill).toBe('#000000');
+    expect(fp.ink.outline).toBeNull();
+  });
+
+  it('reads a shaded fill as a gradient from top to bottom', () => {
+    const clean = picture([240, 240, 240]);
+    const raw = bar(picture([240, 240, 240]), { cx: 100, cy: 60, len: 150, thick: 50, deg: 0, ink: [0, 0, 0] });
+    bar(raw, { cx: 100, cy: 50, len: 140, thick: 20, deg: 0, ink: [230, 30, 30] });
+    bar(raw, { cx: 100, cy: 70, len: 140, thick: 20, deg: 0, ink: [250, 220, 20] });
+    const fp = footprintOf(raw, clean);
+    expect(fp.ink.shade).toEqual(['#e61e1e', '#fadc14']);
+    expect(fp.ink.outline).toBe('#000000');
+    const look = lookFor(fp);
+    expect(look.gradient).toMatchObject({ on: true, angle: 180, stops: [{ color: '#e61e1e', pos: 0 }, { color: '#fadc14', pos: 1 }] });
   });
 
   it('a round original has no slant; an uncleaned region has no footprint', () => {
@@ -88,6 +140,31 @@ describe('footprintOf', () => {
     const raw = bar(picture([250, 250, 250]), { cx: 100, cy: 60, len: 40, thick: 40, deg: 30, ink: [0, 0, 0] });
     expect(slantOf(footprintOf(raw, clean))).toBe(0);
     expect(footprintOf(clean, clean)).toBeNull();
+  });
+});
+
+describe('colourMismatch', () => {
+  const ink = { fill: '#dc1e1e', outline: '#3c0000' };
+  it('passes the original\'s colours, read again', () => {
+    expect(colourMismatch({ color: '#da1f1d', strokes: [{ color: '#3a0101', width: 4 }] }, ink)).toBeNull();
+  });
+  it('names a fill and an outline that are not the original\'s', () => {
+    expect(colourMismatch({ color: '#ffffff', strokes: [{ color: '#000000', width: 3 }] }, ink)).toEqual({
+      fill: { want: '#dc1e1e', got: '#ffffff' },
+      outline: { want: '#3c0000', got: ['#000000'] },
+    });
+  });
+  it('wants no outline where the original had none, and one where it had', () => {
+    expect(colourMismatch({ color: '#000', strokes: [{ color: '#ffffff', width: 3 }] }, { fill: '#000000', outline: null })).toEqual({ outline: { want: 'none', got: ['#ffffff'] } });
+    expect(colourMismatch({ color: '#dc1e1e', strokes: [] }, ink)).toEqual({ outline: { want: '#3c0000', got: 'none' } });
+  });
+  it('reads hollow letters by their band, and a shade by its stops', () => {
+    expect(colourMismatch({ noFill: true, color: '#fff', strokes: [{ color: '#dc1e1e', width: 6 }, { color: '#3c0000', width: 2 }] }, ink)).toBeNull();
+    const shade = { fill: '#e61e1e', outline: null, shade: ['#e61e1e', '#fadc14'] };
+    const grad = (stops) => ({ color: '#e61e1e', strokes: [], gradient: { on: true, stops: stops.map((color) => ({ color })) } });
+    expect(colourMismatch(grad(['#e61e1e', '#fadc14']), shade)).toBeNull();
+    expect(colourMismatch(grad(['#ffffff', '#fadc14']), shade)?.fill).toBeTruthy();
+    expect(colourMismatch({ color: '#e61e1e', strokes: [] }, shade)?.fill).toBeTruthy();
   });
 });
 

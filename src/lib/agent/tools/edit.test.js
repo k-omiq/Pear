@@ -126,7 +126,9 @@ describe('edit', () => {
     });
     expect(r.ok, JSON.stringify(r)).toBe(true);
     const [a, b] = pageById(1).boxes;
-    expect(a.text).toBe('New words');
+    // A box that draws its line takes new words on the line.
+    expect(a.text).toBeNull();
+    expect(pageById(1).lines.find((l) => l.n === a.lineN).en).toBe('New words');
     expect(a.x).toBe(30);
     expect(a.style.rotation).toBe(10);
     expect(pageById(1).lines[1].tags).toEqual(['narration']);
@@ -425,6 +427,14 @@ describe('add', () => {
     const bad = await callTool('add', { page: 1, line: 1, at: [50, 50] }, callContext('mcp'));
     expect(bad.ok).toBe(false);
     expect(bad.error).toMatch(/already has a box/);
+  });
+
+  it('stands a new box upright, whatever turn the last box had', async () => {
+    app.lastStyle = { ...app.lastStyle, rotation: 18 };
+    let r = await callTool('add', { page: 1, line: 3, rect: [300, 400, 200, 80] }, callContext('mcp'));
+    expect(pageById(1).boxes.find((x) => x.id === r.result.id).style.rotation).toBe(0);
+    r = await callTool('add', { page: 2, text: 'Turned', rect: [300, 400, 200, 80], style: { rotation: -10 } }, callContext('mcp'));
+    expect(pageById(2).boxes.find((x) => x.id === r.result.id).style.rotation).toBe(-10);
   });
 
   it('keeps the rect and the size it is given, with no balloon fit', async () => {

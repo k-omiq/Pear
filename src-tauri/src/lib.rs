@@ -73,9 +73,26 @@ pub fn run() {
       agent_mcp::agent_door_status,
       agent_mcp::agent_tools_set,
       agent_mcp::agent_result,
+      agent_mcp::agent_window_role,
+      agent_mcp::chapter_claim,
+      agent_mcp::chapter_sync,
+      agent_mcp::chapter_windows,
+      agent_mcp::record_lock,
+      agent_mcp::record_unlock,
+      agent_mcp::agent_window_open,
+      agent_mcp::agent_window_ready,
+      agent_mcp::agent_window_close,
+      agent_mcp::agent_windows_close,
       app_icon::set_theme_icon
     ])
     .manage(agent_mcp::AgentDoor::default())
+    // A window gone frees the chapters it held (agent_mcp.rs).
+    .on_window_event(|window, event| {
+      if let tauri::WindowEvent::Destroyed = event {
+        use tauri::Manager;
+        window.state::<agent_mcp::AgentDoor>().forget_window(window.label());
+      }
+    })
     .setup(|app| {
       {
         use tauri::Manager;
