@@ -3,6 +3,7 @@
 // Masks stay in cropped windows; only the returned polygon uses page pixels.
 import { lumaOf, interiorThreshold } from './balloon.js';
 import { intervalsAt } from './outline-geom.js';
+import { neckChamber } from './bubble-neck.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -757,14 +758,22 @@ export function findOutline(image, block, opts = {}) {
   const minPad = Number.isFinite(opts.minPad) ? Math.max(0, opts.minPad) : 48;
   const base = Math.max(box[2] - box[0], box[3] - box[1], minPad);
   const cap = Math.max(400, 0.25 * Math.min(W, H));
+  // The detector's bubble box (`opts.bubble`, page px), when it found one: every
+  // window holds it with a margin, so a bubble bigger than the window cap is
+  // not refused for touching the window's border, and an interior far bigger
+  // than it is the fill escaping, not the bubble.
+  const bubble = bounds(opts.bubble, W, H);
+  const extents = bubble ? [...neighbors, grown(bubble, 0.08, W, H)] : neighbors;
+  const limit = bubble ? BUBBLE_LEAK * (bubble[2] - bubble[0]) * (bubble[3] - bubble[1]) : Infinity;
   let previous = '';
   for (const scale of [1.15, 1.8, 2.6]) {
     const pad = Math.min(cap, base * scale);
     // Identical clipped windows cannot produce a different answer.
-    const c = crop(image, box, neighbors, pad);
+    const c = crop(image, box, extents, pad);
     const key = `${c.x},${c.y},${c.w},${c.h}`;
     if (key === previous) continue;
     previous = key;
+    const wall = opts.fromBubble ? wallOff(c, grown(bubble, 0.02, W, H)) : null;
     let source = 'ring', mask = ringInterior(c);
     if (!mask) { source = 'flood'; mask = floodInterior(c); }
     if (!mask) { source = 'dark'; mask = darkInterior(c); }
@@ -774,11 +783,106 @@ export function findOutline(image, block, opts = {}) {
     // by the interior disc alone, so it does not depend on which block asked
     // (a refit seeds from other blocks than placement did).
     const cut = opened(c, divided.mask.slice());
-    if (!countMask(cut) || !plausible(c, cut, source !== 'dark') || (source !== 'ring' && countMask(cut) > W * H * 0.4)) continue;
-    const result = polygon(c, opened(c, divided.mask, 'interior'));
-    if (result) return { ...result, source, confidence: Math.min(result.confidence, divided.split ? 0.85 : 1), split: divided.split };
+    const size = countMask(cut);
+    if (!size || size > limit || (source !== 'ring' && size > W * H * 0.4)) continue;
+    // Walled in, an interior that still reaches the wall once opened (a leak
+    // through a gap in a caption's border is a thin band, which opening
+    // removes) was shaped by the wall, not the art.
+    if (wall && touchesWall(c, cut, wall)) continue;
+    const strokes = source !== 'dark';
+    // Joined bubbles with one text block between them: no neighbour told
+    // `splitInterior` to cut, so the outline's own neck does (bubble-neck.js),
+    // twice for a triple. The join usually fails the solidity gate whole and
+    // passes it per chamber, so the most-cut piece that passes is the bubble.
+    const pieces = [{ test: cut, interior: divided.mask }];
+    for (let k = 0; k < 2 && !divided.split; k++) {
+      const last = pieces[pieces.length - 1];
+      const neck = neckClip(c, last.test);
+      if (!neck) break;
+      pieces.push({ test: neck(last.test), interior: neck(last.interior) });
+    }
+    const at = pieces.findLastIndex((piece) => plausible(c, piece.test, strokes));
+    if (at < 0) continue;
+    const split = divided.split || at > 0;
+    const result = polygon(c, opened(c, pieces[at].interior, 'interior'));
+    if (result) return { ...result, source, confidence: Math.min(result.confidence, split ? 0.85 : 1), split };
+  }
+  // A bubble the detector found is asked once more, from its middle and
+  // walled in by its box: a block drawn tight round its letters leaves the
+  // finder little of the bubble's own colour to read (a dark caption's
+  // lettering reads light), and a caption's thin light border often has gaps
+  // into the dark art round it. Only for text in that middle: text off to one
+  // side may be one lobe of joined bubbles the box holds together, whose
+  // middle is the neck.
+  if (bubble && !opts.fromBubble && central(box, bubble)) {
+    const w = bubble[2] - bubble[0], h = bubble[3] - bubble[1];
+    const middle = [bubble[0] + w * 0.25, bubble[1] + h * 0.25, bubble[2] - w * 0.25, bubble[3] - h * 0.25];
+    const again = findOutline(image, middle, { ...opts, fromBubble: true });
+    if (!again.open && box.every((v, i) => (i < 2 ? v >= bubbleBounds(again.pts)[i] - 2 : v <= bubbleBounds(again.pts)[i] + 2))) return again;
   }
   return open('no-closed-outline');
+}
+
+// Paints the window outside `wall` (page px) the tone furthest from the
+// block's, so no fill, ring or dark component can leave the wall's box.
+function wallOff(c, wall) {
+  const hist = patchHist(c);
+  const fill = percentile(hist, boxArea(c.box), 0.5) > 127 ? 0 : 255;
+  const local = [wall[0] - c.x, wall[1] - c.y, wall[2] - c.x, wall[3] - c.y].map(Math.round);
+  const [x0, y0, x1, y1] = local;
+  c.hist.fill(0);
+  for (let y = 0, p = 0; y < c.h; y++) {
+    for (let x = 0; x < c.w; x++, p++) {
+      if (x < x0 || x >= x1 || y < y0 || y >= y1) c.gray[p] = fill;
+      c.hist[c.gray[p]]++;
+    }
+  }
+  return local;
+}
+
+function touchesWall(c, mask, [x0, y0, x1, y1]) {
+  const at = (x, y) => x >= 0 && y >= 0 && x < c.w && y < c.h && mask[y * c.w + x];
+  for (let x = x0; x < x1; x++) if (at(x, y0) || at(x, y1 - 1)) return true;
+  for (let y = y0; y < y1; y++) if (at(x0, y) || at(x1 - 1, y)) return true;
+  return false;
+}
+
+// Is the block's centre in the middle half of the bubble box, both ways?
+export const BUBBLE_CENTRAL = 0.25;
+export function central(block, bubble) {
+  const w = bubble[2] - bubble[0], h = bubble[3] - bubble[1];
+  return Math.abs((block[0] + block[2]) / 2 - (bubble[0] + bubble[2]) / 2) <= w * BUBBLE_CENTRAL &&
+    Math.abs((block[1] + block[3]) / 2 - (bubble[1] + bubble[3]) / 2) <= h * BUBBLE_CENTRAL;
+}
+
+function bubbleBounds(pts) {
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+// An interior more than this many times the detector's bubble box escaped it.
+const BUBBLE_LEAK = 1.6;
+
+function grown(b, by, W, H) {
+  const dx = (b[2] - b[0]) * by, dy = (b[3] - b[1]) * by;
+  return [Math.max(0, b[0] - dx), Math.max(0, b[1] - dy), Math.min(W, b[2] + dx), Math.min(H, b[3] + dy)];
+}
+
+// When the interior is joined bubbles: a function that keeps, of a mask in the
+// same window, the pixels on the text's side of the neck. Null with no neck,
+// or with the text across it (`neckChamber`).
+function neckClip(c, mask) {
+  const pts = simplifyClosed(trace(c, mask)).map(([x, y]) => [x + 0.5, y + 0.5]);
+  const chamber = pts.length >= 3 ? neckChamber(pts, c.box) : null;
+  if (!chamber) return null;
+  const [[ax, ay], [bx, by]] = chamber.neck;
+  const sideAt = (x, y) => Math.sign((bx - ax) * (y - ay) - (by - ay) * (x - ax));
+  const side = sideAt((c.box[0] + c.box[2]) / 2, (c.box[1] + c.box[3]) / 2);
+  return (m) => {
+    const out = m.slice();
+    for (let y = 0, p = 0; y < c.h; y++) for (let x = 0; x < c.w; x++, p++) if (out[p] && sideAt(x + 0.5, y + 0.5) !== side) out[p] = 0;
+    return out;
+  };
 }
 
 // ===== an outline cut at its neck =====

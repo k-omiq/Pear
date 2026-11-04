@@ -1308,7 +1308,9 @@ export const MAX_POLY_POINTS = 256;
 //     open? }       true: no closed outline was found; the box keeps its rectangle
 //
 // Any edit to the points, a refit, or a move of the box clears `approved`.
-export const OUTLINE_SOURCES = Object.freeze(['ring', 'flood', 'dark', 'caption', 'fill', 'manual', 'box']);
+// 'bubble' is the second detector's bubble box read as an oval, for a bubble
+// it found whose outline the finder could not close.
+export const OUTLINE_SOURCES = Object.freeze(['ring', 'flood', 'dark', 'caption', 'fill', 'bubble', 'manual', 'box']);
 const OUTLINE_APPROVERS = ['ai', 'user'];
 export function normalizeOutline(o) {
   if (!o || typeof o !== 'object') return null;

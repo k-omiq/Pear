@@ -1693,6 +1693,7 @@ function respacePage(pg, size, notes) {
   next.detect = pg.detect
     ? {
         panels: (pg.detect.panels ?? []).map((x) => (Array.isArray(x) ? [...x] : x)),
+        ...(Array.isArray(pg.detect.bubbles) ? { bubbles: pg.detect.bubbles.map((x) => (Array.isArray(x) ? [...x] : x)) } : {}),
         boxes: (pg.detect.boxes ?? []).map((d) => ({
           ...d,
           box: Array.isArray(d.box) ? [...d.box] : d.box,
