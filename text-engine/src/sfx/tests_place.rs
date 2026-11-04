@@ -115,8 +115,8 @@ fn groups_past_the_limit_fold_into_the_last() {
 // ---- kinds and pick ------------------------------------------------------
 
 #[test]
-fn the_table_has_the_twelve_types_with_unique_ids_and_ascii_json() {
-    assert_eq!(KINDS.len(), 12);
+fn the_table_has_the_nineteen_types_with_unique_ids_and_ascii_json() {
+    assert_eq!(KINDS.len(), 19);
     for (i, k) in KINDS.iter().enumerate() {
         assert_eq!(index_of(k.id), Some(i));
         assert!(!k.paths.is_empty());
@@ -124,11 +124,11 @@ fn the_table_has_the_twelve_types_with_unique_ids_and_ascii_json() {
     let json = kinds_json();
     assert!(json.is_ascii());
     // A type is a layout only: nothing of a look is handed out.
-    for look in ["look", "fill", "outlines", "sharp"] {
+    for look in ["look", "fill", "outlines", "sharp", "tag", "font"] {
         assert!(!json.contains(&format!("\"{look}\"")), "{look}");
     }
     assert!(json.starts_with("{\"kinds\":[{\"id\":\"impact\""));
-    assert_eq!(json.matches("\"id\":").count(), 12);
+    assert_eq!(json.matches("\"id\":").count(), KINDS.len());
     // ドン!! as escapes.
     assert!(json.contains("\\u30c9\\u30f3!!"));
 }
@@ -153,7 +153,11 @@ fn auto_pick_puts_each_types_own_sound_first() {
         ("ズーン", "shock"),
         ("BOOM!", "impact"),
         ("CRAAASH", "explosion"),
-        ("whoosh", "slash"),
+        ("whoosh", "whoosh"),
+        ("STOMP\nSTOMP\nSTOMP", "stomp"),
+        ("rub\nrub", "repeat"),
+        ("PLOOOP", "bounce"),
+        ("KRRCH", "crunch"),
     ] {
         assert_eq!(top(sound, 1), [want], "{sound}: {:?}", pick(sound).scores);
     }
@@ -195,7 +199,7 @@ fn heavy_sounds_get_stronger_macros_than_light_ones() {
     );
     assert!(!json.contains("strength"));
     let p = pick("");
-    assert_eq!(p.order.len(), 12);
+    assert_eq!(p.order.len(), KINDS.len());
     let json = pick_json(&pick("ドン"));
     assert!(json.starts_with("{\"order\":[\"impact\","), "{json}");
 }

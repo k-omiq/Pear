@@ -209,29 +209,62 @@ export function enableSfx(style) {
 // refuses a proxy).
 const plain = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 
+// What Remove SFX puts back (`sfx.before`): taken once, when SFX goes on.
+// The bends SFX switches off, and with `box` the whole look and the box's
+// width and height, so the box comes back as it was in every way.
+function beforeSfx(style, box) {
+  if (style.sfx?.on && style.sfx.before) return plain(style.sfx.before);
+  const out = { curve: style.curve, circle: !!style.circle?.on, path: !!style.path?.on };
+  if (box) {
+    const { sfx, ink, ...look } = plain(style);
+    out.look = look;
+    out.box = { w: box.w, h: box.h };
+  }
+  return out;
+}
+
+// A fresh recipe with SFX on: `kind` (null for none), the seed and the
+// caption kept, every layout number unset, the dials at 50, no paths and no
+// letter hand edits.
+function freshSfx(style, kind, box) {
+  style.sfx = normalizeSfx({
+    on: true,
+    kind,
+    seed: style.sfx?.seed,
+    caption: plain(style.sfx?.caption),
+    before: beforeSfx(style, box),
+  });
+  enableSfx(style);
+}
+
 // Mutates `style` to the sound type `id`, as the reference's preset click
 // does (docs/giongo/04-reference-controls.md 1.7) less the look: a fresh
 // recipe of that type with SFX on, every layout number unset (the type's),
 // the macros at 50, the paths the type's own (none stored), no letter hand
 // edits, the switches back on. Only the seed, the caption and `sfx.before`
 // stay. A type is a layout and nothing else: the box's font, fill, outlines,
-// corners and effects are the user's and are not touched. `sfx.before` (the
-// arc, the ring and the path SFX switches off, for Remove SFX) is taken
-// once, when SFX goes on.
-export function applySfxKind(style, id) {
+// corners and effects are the user's and are not touched. `box`, when SFX is
+// going on for a box that exists, is what Remove SFX puts its size back to.
+export function applySfxKind(style, id, box = null) {
   const kind = sfxKind(id);
   if (!kind) return false;
-  const before = style.sfx?.on && style.sfx.before
-    ? plain(style.sfx.before)
-    : { curve: style.curve, circle: !!style.circle?.on, path: !!style.path?.on };
-  style.sfx = normalizeSfx({
-    on: true,
-    kind: id,
-    seed: style.sfx?.seed,
-    caption: plain(style.sfx?.caption),
-    before,
-  });
-  enableSfx(style);
+  freshSfx(style, id, box);
+  return true;
+}
+
+// SFX on with no sound type: the letters one by one in a plain row (or along
+// the paths the box is given), every letter control there to use. A box that
+// is SFX already keeps its recipe.
+export function startSfx(style, box = null) {
+  if (style.sfx?.on) return false;
+  freshSfx(style, null, box);
+  return true;
+}
+
+// The type off, the box still SFX: its layout numbers back to plain.
+export function clearSfxKind(style) {
+  if (!style.sfx?.on || style.sfx.kind == null) return false;
+  freshSfx(style, null, null);
   return true;
 }
 
@@ -242,21 +275,33 @@ export function rebaseSfx(style) {
   const before = style?.sfx?.before;
   if (!before) return;
   before.path = !!style.path?.on;
+  // The look and the size were that box's, not this one's.
+  delete before.look;
+  delete before.box;
 }
 
-// Switches SFX off and puts back the bends SFX switched off. `keepBends`
-// leaves the arc, the ring and the path as they are now, for a caller that is
-// switching one of them on.
-export function clearSfx(style, keepBends = false) {
+// Switches SFX off and puts the box back as it was before SFX went on: its
+// whole look, its width and height (about its centre, so a box moved while it
+// was SFX stays where it was moved to) and the bends SFX switched off.
+// `keepBends` only switches SFX off, for a caller that is switching an arc, a
+// ring or a path on: that edit is the user's, so nothing is put back. `box`
+// is the box the style belongs to, for its size.
+export function clearSfx(style, keepBends = false, box = null) {
   const before = style.sfx.before;
-  if (before?.look) {
-    const back = normalizeStyle({ ...plain(style), ...before.look });
-    for (const k of Object.keys(before.look)) if (k in back) style[k] = back[k];
-  }
   if (before && !keepBends) {
+    if (before.look) {
+      const back = normalizeStyle({ ...plain(style), ...before.look, sfx: plain(style.sfx), ink: plain(style.ink) });
+      for (const k of Object.keys(before.look)) if (k in back) style[k] = back[k];
+    }
     style.curve = before.curve;
     style.circle.on = before.circle;
     style.path.on = before.path;
+    if (box && before.box) {
+      box.x += (box.w - before.box.w) / 2;
+      box.y += (box.h - before.box.h) / 2;
+      box.w = before.box.w;
+      box.h = before.box.h;
+    }
   }
   style.sfx.on = false;
   style.sfx.before = null;

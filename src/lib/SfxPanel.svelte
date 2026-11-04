@@ -1,32 +1,32 @@
 <script>
-  // The SFX pane: the sound type a box is lettered as, and every number of
-  // it. It is the body of the SFX window (SfxWindow.svelte), top to bottom:
+  // The SFX pane: the sound a box is lettered as, and every number of it. It
+  // is the body of the SFX window (SfxWindow.svelte), top to bottom:
   //
-  //   stage        the box's own text as the engine paints it
-  //   type         twelve cards, the box's text and look laid out as each
-  //                sound type; the auto pick's first three marked; Auto pick
-  //                and New shape
-  //   variations   eight seeds of the type
-  //   intensity    Power, Roughness, Momentum (0..100, 50 the type as
-  //                designed)
-  //   layout       every layout number, in the reference app's units (docs/
-  //                giongo/04-reference-controls.md section 0); closed
-  //   effects      the SFX paint effects; closed
-  //   caption      the small note beside the sound
-  //   Remove SFX
+  //   stage        the box's own text as the engine paints it, pinned
+  //   sound        the words the box says (the Inspector's Content, here too)
+  //   tabs         Type     a card per type, the box's text and look laid out as
+  //                         each sound type; Auto pick; the shape (the seed);
+  //                         Power, Roughness, Momentum (0..100, 50 the type as
+  //                         designed); Remove SFX
+  //                Layout   every layout number, in the reference app's units
+  //                         (docs/giongo/04-reference-controls.md section 0)
+  //                Effects  the SFX paint effects
+  //                Caption  the small note beside the sound
+  //   A box that is not SFX yet shows the stage, the sound and the cards.
   //
-  // A type card writes the engine's sound type to `style.sfx` (data.js):
+  // A type card writes the engine's sound type to `style.sfx` (sfx.js):
   // `applySfxKind` resets the layout, the dials, the paths and the letters'
   // hand edits, and never the look (font, fill, outlines). A layout number the
   // box leaves null is the type's: its slider shows the resolved number
   // (`sfxResolved`) until it is moved, and Reset gives the type's back.
   //
   // Every write is followed by the host's `touch`, handed in as a prop, so an
-  // edit is one more `style` entry in the same undo flow (edit-burst.js). The
-  // host's capture-phase pointerdown/keydown (`arm`) takes the
-  // before-snapshot, and this component is rendered inside the element it is
-  // set on, so nothing here arms it - except a colour picked in a popover,
-  // which lives outside that element and calls `arm` itself.
+  // edit is one more entry in the same undo flow (edit-burst.js), and the store
+  // sizes the box round its letters (`autoFitBox`). The host's capture-phase
+  // pointerdown/keydown (`arm`) takes the before-snapshot, and this component
+  // is rendered inside the element it is set on, so nothing here arms it -
+  // except a colour picked in a popover, which lives outside that element and
+  // calls `arm` itself.
   //
   // Under the browser engine there is no SFX layout (`sfxAvailable`), so the
   // pane is one sentence and, when the host can open Settings, a button.
@@ -40,15 +40,14 @@
   // latest look and waits out a run of changes (a colour dragged), and a card
   // keeps its last picture until its new one is in. A type card's key holds
   // neither the letters moved by hand nor the paths, so a drag on the page
-  // repaints no type card; the variations, which keep both, repaint once
-  // when it ends.
+  // repaints no type card.
   import { onDestroy, untrack } from 'svelte';
-  import { app, boxText, lineByN } from './store.svelte.js';
+  import { app, boxText, lineByN, setBoxText } from './store.svelte.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { settleNoise } from './exporter.js';
   import ColorPicker from './ColorPicker.svelte';
-  import { sfxAvailable, sfxKinds, sfxKind, sfxPick, sfxPickText, sfxResolved, applySfxKind, clearSfx } from './sfx.js';
-  import { sfxLive } from './sfx-live.svelte.js';
+  import { sfxAvailable, sfxKinds, sfxKind, sfxPick, sfxPickText, sfxResolved, applySfxKind, clearSfx, startSfx, clearSfxKind } from './sfx.js';
+  import { sfxLive, sfxAsk } from './sfx-live.svelte.js';
   import { cardSpec, cardKeys, cachedCard, keepCard, paintCard, paintStage, previewDpr } from './sfx-preview.js';
 
   /**
@@ -59,9 +58,9 @@
   let { box, pg, touch, onSettings = null, arm = () => {} } = $props();
 
   const BATCH = 3;
-  const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
+  const SEED_MAX = 9999;
   // CSS px; the stage's height in the style block says the same.
-  const STAGE_H = 110;
+  const STAGE_H = 120;
   const DIALS = [
     ['power', 'Power', 'How big the sound is: the swell from first letter to last'],
     ['rough', 'Roughness', 'How ragged it is: letters turned and sized at random'],
@@ -82,8 +81,6 @@
   const kinds = $derived(available ? sfxKinds() : []);
   const sfx = $derived(box.style.sfx);
   const on = $derived(!!sfx?.on);
-  const current = $derived(on ? sfxKind(sfx.kind) : null);
-  const label = $derived(!on ? 'Off' : (current?.name ?? 'Custom'));
   // The numbers the layout uses: the box's where it set them, else the type's
   // moved by the dials (the engine's `sfxResolve`). Asked of the layout
   // fields alone, so a letter dragged or a path end moved on the page (which
@@ -103,19 +100,25 @@
   // first, and the caption's meaning is looked up from it.
   const jp = $derived(box.lineN != null ? (lineByN(pg, box.lineN)?.jp ?? '') : '');
   const pick = $derived(available ? sfxPick(sfxPickText(text, jp)) : null);
-  const top = $derived((pick?.order ?? []).filter((id) => sfxKind(id)).slice(0, 3));
-  const rankOf = (id) => top.indexOf(id);
+  const best = $derived((pick?.order ?? []).find((id) => sfxKind(id)) ?? null);
 
   const plain = (v) => JSON.parse(JSON.stringify(v ?? null));
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
   // ---- writes ----
   function chooseKind(id) {
-    if (applySfxKind(box.style, id)) touch();
+    if (applySfxKind(box.style, id, box)) touch();
+  }
+  // SFX with no type: every letter control, the letters in a plain row.
+  function makeSfx() {
+    if (startSfx(box.style, box)) touch();
+  }
+  function noKind() {
+    if (clearSfxKind(box.style)) touch();
   }
   // The auto pick's first type, and its three dials read from the sound.
   function autoPick() {
-    if (!top.length || !applySfxKind(box.style, top[0])) return;
+    if (!best || !applySfxKind(box.style, best, box)) return;
     for (const [d] of DIALS) {
       const v = Number(pick?.[d]);
       if (Number.isFinite(v)) box.style.sfx[d] = clamp(Math.round(v), 0, 100);
@@ -124,16 +127,33 @@
   }
   function newShape() {
     let seed = sfx.seed;
-    while (seed === sfx.seed) seed = 1 + Math.floor(Math.random() * 9999);
+    while (seed === sfx.seed) seed = 1 + Math.floor(Math.random() * SEED_MAX);
     box.style.sfx.seed = seed;
     touch();
   }
-  function setSeed(n) {
-    box.style.sfx.seed = n;
+  // The next or the last shape, round from the end to the start.
+  function stepShape(d) {
+    box.style.sfx.seed = ((sfx.seed - 1 + d + SEED_MAX) % SEED_MAX) + 1;
     touch();
   }
+  // The seed only moves the letters the type turns, sizes or lifts at random.
+  const shapes = $derived(on && (R.jitter.rot > 0 || R.jitter.size > 0 || R.jitter.off > 0));
+
+  // ---- the words ----
+  function setText(v) {
+    setBoxText(box, v, pg, { fit: false });
+    touch();
+  }
+  // A sound just drawn: the next keys are its words.
+  let soundEl = $state(null);
+  $effect(() => {
+    if (sfxAsk.typeFor == null || sfxAsk.typeFor !== box.id || !soundEl) return;
+    sfxAsk.typeFor = null;
+    soundEl.focus();
+    soundEl.select();
+  });
   function remove() {
-    clearSfx(box.style);
+    clearSfx(box.style, false, box);
     touch();
   }
   function set(key, v) {
@@ -278,22 +298,22 @@
     !on
       ? []
       : [
-          { id: 'from', label: 'Start size %', value: pct(R.flow.from), min: 30, max: 250, step: 1, unit: 'percent', write: (v) => writePart('flow', 'from', v / 100), isSet: sfx.flow != null, reset: back('flow'), title: 'The first letter, % of the type size' },
-          { id: 'to', label: 'End size %', value: pct(R.flow.to), min: 30, max: 250, step: 1, unit: 'percent', write: (v) => writePart('flow', 'to', v / 100), isSet: sfx.flow != null, reset: back('flow'), title: 'The last letter, % of the type size' },
-          { id: 'gap', label: 'Letter spacing %', value: pct(R.gap), min: -50, max: 120, step: 1, unit: 'percent', write: (v) => (box.style.sfx.gap = v / 100), isSet: sfx.gap != null, reset: back('gap'), title: 'Space between letters, % of a letter' },
-          { id: 'bigTighter', label: 'Spacing by size', value: pct(R.bigTighter), min: 0, max: 100, step: 1, unit: 'amount', write: (v) => (box.style.sfx.bigTighter = v / 100), isSet: sfx.bigTighter != null, reset: back('bigTighter'), title: 'How much tighter big letters sit' },
+          { id: 'from', label: 'Start size', value: pct(R.flow.from), min: 30, max: 250, step: 1, unit: 'percent', write: (v) => writePart('flow', 'from', v / 100), isSet: sfx.flow != null, reset: back('flow'), title: 'The first letter, % of the type size' },
+          { id: 'to', label: 'End size', value: pct(R.flow.to), min: 30, max: 250, step: 1, unit: 'percent', write: (v) => writePart('flow', 'to', v / 100), isSet: sfx.flow != null, reset: back('flow'), title: 'The last letter, % of the type size' },
+          { id: 'gap', label: 'Letter spacing', value: pct(R.gap), min: -50, max: 120, step: 1, unit: 'percent', write: (v) => (box.style.sfx.gap = v / 100), isSet: sfx.gap != null, reset: back('gap'), title: 'Space between letters, % of a letter' },
+          { id: 'bigTighter', label: 'Size spacing', value: pct(R.bigTighter), min: 0, max: 100, step: 1, unit: 'amount', write: (v) => (box.style.sfx.bigTighter = v / 100), isSet: sfx.bigTighter != null, reset: back('bigTighter'), title: 'How much tighter big letters sit' },
         ],
   );
   const moveSliders = $derived(
     !on
       ? []
       : [
-          { id: 'follow', label: 'Lean %', value: pct(R.follow), min: 0, max: 100, step: 1, unit: 'percent', write: (v) => (box.style.sfx.follow = v / 100), isSet: sfx.follow != null, reset: back('follow'), title: 'How far the letters turn with the line' },
+          { id: 'follow', label: 'Lean', value: pct(R.follow), min: 0, max: 100, step: 1, unit: 'percent', write: (v) => (box.style.sfx.follow = v / 100), isSet: sfx.follow != null, reset: back('follow'), title: 'How far the letters turn with the line' },
           { id: 'slant', label: 'Slant', value: deg(R.slant), min: -40, max: 40, step: 1, unit: 'degrees', write: (v) => (box.style.sfx.slant = v), isSet: sfx.slant != null, reset: back('slant'), title: 'Every letter sheared by this, degrees' },
-          { id: 'rise', label: 'Rise °', value: deg(R.rise), min: -10, max: 20, step: 1, unit: 'degrees', write: (v) => (box.style.sfx.rise = v), isSet: sfx.rise != null, reset: back('rise'), title: 'The line tilted up towards its end, degrees' },
-          { id: 'jrot', label: 'Angle variation °', value: deg(R.jitter.rot), min: 0, max: 40, step: 1, unit: 'degrees', write: (v) => writePart('jitter', 'rot', v), isSet: sfx.jitter != null, reset: back('jitter'), title: 'Each letter turned at random, up to this' },
-          { id: 'jsize', label: 'Size variation', value: pct(R.jitter.size), min: 0, max: 60, step: 1, unit: 'amount', write: (v) => writePart('jitter', 'size', v / 100), isSet: sfx.jitter != null, reset: back('jitter'), title: 'Each letter sized at random, up to this' },
-          { id: 'joff', label: 'Up/down variation', value: pct(R.jitter.off), min: 0, max: 150, step: 1, unit: 'amount', write: (v) => writePart('jitter', 'off', v / 100), isSet: sfx.jitter != null, reset: back('jitter'), title: 'Each letter moved off the line at random, up to this' },
+          { id: 'rise', label: 'Rise', value: deg(R.rise), min: -10, max: 20, step: 1, unit: 'degrees', write: (v) => (box.style.sfx.rise = v), isSet: sfx.rise != null, reset: back('rise'), title: 'The line tilted up towards its end, degrees' },
+          { id: 'jrot', label: 'Random turn', value: deg(R.jitter.rot), min: 0, max: 40, step: 1, unit: 'degrees', write: (v) => writePart('jitter', 'rot', v), isSet: sfx.jitter != null, reset: back('jitter'), title: 'Each letter turned at random, up to this' },
+          { id: 'jsize', label: 'Random size', value: pct(R.jitter.size), min: 0, max: 60, step: 1, unit: 'amount', write: (v) => writePart('jitter', 'size', v / 100), isSet: sfx.jitter != null, reset: back('jitter'), title: 'Each letter sized at random, up to this' },
+          { id: 'joff', label: 'Random lift', value: pct(R.jitter.off), min: 0, max: 150, step: 1, unit: 'amount', write: (v) => writePart('jitter', 'off', v / 100), isSet: sfx.jitter != null, reset: back('jitter'), title: 'Each letter moved off the line at random, up to this' },
         ],
   );
   const dialSliders = $derived(
@@ -331,9 +351,31 @@
     if (meaning) setCaption('text', meaning);
   }
 
-  // ---- open sections ----
-  let openLayout = $state(false);
-  let openFx = $state(false);
+  // ---- tabs ----
+  const TABS = [
+    ['type', 'Type'],
+    ['layout', 'Layout'],
+    ['effects', 'Effects'],
+    ['caption', 'Caption'],
+  ];
+  let tab = $state('type');
+  const shownTab = $derived(on ? tab : 'type');
+  // WAI-ARIA tabs, as the Inspector's: roving tabindex, arrows move and pick.
+  let tabsEl = $state(null);
+  function onTabKey(e, id) {
+    const i = TABS.findIndex(([t]) => t === id);
+    let n = null;
+    if (e.key === 'ArrowLeft') n = (i + TABS.length - 1) % TABS.length;
+    else if (e.key === 'ArrowRight') n = (i + 1) % TABS.length;
+    else if (e.key === 'Home') n = 0;
+    else if (e.key === 'End') n = TABS.length - 1;
+    if (n == null) return;
+    e.preventDefault();
+    // A bare arrow is a nudge of the selected box to the window's handler.
+    e.stopPropagation();
+    tab = TABS[n][0];
+    tabsEl?.querySelector(`[data-tab="${tab}"]`)?.focus();
+  }
 
   // ---- the stage ----
   let stageEl = $state(null);
@@ -380,10 +422,11 @@
   let tiles = $state({});
   // Plain data, so that what the cards depend on is one value.
   const spec = $derived(cardSpec(box.style, text));
-  const slots = $derived([
-    ...kinds.map((k) => ({ id: `t:${k.id}`, kind: k.id })),
-    ...(on ? SEEDS.map((n) => ({ id: `v:${n}`, kind: null, seed: n })) : []),
-  ]);
+  // The type list is folded away until asked for, and only an open list's
+  // cards are painted.
+  let typesOpen = $state(false);
+  const kindName = $derived(on && sfx.kind ? (sfxKind(sfx.kind)?.name ?? 'None') : 'None');
+  const slots = $derived(typesOpen ? kinds.map((k) => ({ id: `t:${k.id}`, kind: k.id })) : []);
 
   // The latest of what the cards are to show, and how often it has changed:
   // the pump reads it when it runs, so a change while it runs is not a
@@ -396,8 +439,12 @@
     if (!available || sfxLive.on) return;
     const next = { spec, slots, seed: sfx?.seed ?? 1, fonts: app.fontsVersion };
     untrack(() => {
+      // The list just opened (no card was asked for): a click, not a run of
+      // changes, so nothing is waited out.
+      const opened = !want?.slots.length && next.slots.length > 0;
       want = next;
       wantSeq++;
+      if (opened) seenSeq = wantSeq;
       if (!pumpRaf) {
         // Idle: the first change is painted on the next frame.
         seenSeq = wantSeq;
@@ -417,7 +464,7 @@
       return;
     }
     const { spec: sp, slots: list, seed, fonts } = want;
-    const cards = list.map((s) => (s.kind ? { kind: s.kind, seed } : { kind: null, seed: s.seed }));
+    const cards = list.map((s) => ({ kind: s.kind, seed }));
     const keys = cardKeys(sp, cards, fonts, dpr);
     let painted = 0;
     let more = false;
@@ -454,6 +501,7 @@
     letGo();
   });
 
+  const UNIT_MARK = { percent: '%', degrees: '°', ems: 'em' };
   const SIDES = [
     ['below', 'Below'],
     ['above', 'Above'],
@@ -465,59 +513,54 @@
 <!-- A slider and its typed number, as the Inspector lays one out. Reset shows
      while the box holds its own value (the slider otherwise shows the type's). -->
 {#snippet slider(o)}
-  <div class="grp">
-    <div class="sfx-row-head">
-      <span class="lbl" title={o.title}>{o.label}</span>
-      {#if o.reset && o.isSet}
-        <button
-          type="button"
-          class="sfx-back"
-          title={o.resetName === 'as designed' ? 'Back to the type as designed' : "Back to the type's value"}
-          aria-label="{o.label}: {o.resetName ?? 'back to the type'}"
-          onclick={o.reset}>Reset</button
-        >
-      {/if}
-    </div>
-    <div class="slider-row">
-      <span class="sfx-track" class:mid={o.detent != null}>
-        <input
-          type="range"
-          min={o.min}
-          max={o.max}
-          step={o.step}
-          value={o.value}
-          aria-label={o.label}
-          onpointerdown={hold}
-          oninput={(e) => slide(o, e)}
-          onchange={flushWrites}
-          onblur={letGo}
-        />
-      </span>
-      <input class="num-s" type="number" min={o.min} max={o.max} step={o.step} value={shown(o)} title={o.title} aria-label="{o.label}, {o.unit}" onchange={(e) => typed(o, e)} />
-    </div>
+  <div class="sfx-slider" title={o.title}>
+    <span class="sfx-rl">{o.label}</span>
+    <span class="sfx-track" class:mid={o.detent != null}>
+      <input
+        type="range"
+        min={o.min}
+        max={o.max}
+        step={o.step}
+        value={o.value}
+        aria-label={o.label}
+        onpointerdown={hold}
+        oninput={(e) => slide(o, e)}
+        onchange={flushWrites}
+        onblur={letGo}
+      />
+    </span>
+    <input class="num-s" type="number" min={o.min} max={o.max} step={o.step} value={shown(o)} aria-label="{o.label}, {o.unit}" onchange={(e) => typed(o, e)} />
+    <span class="sfx-unit" aria-hidden="true">{UNIT_MARK[o.unit] ?? ''}</span>
+    <!-- Kept in the row while there is nothing to reset, so the rows stay in
+         line. -->
+    <button
+      type="button"
+      class="sfx-reset"
+      class:off={!(o.reset && o.isSet)}
+      disabled={!(o.reset && o.isSet)}
+      title={o.resetName === 'as designed' ? 'Back to the type as designed' : "Back to the type's value"}
+      aria-label="{o.label}: {o.resetName ?? 'back to the type'}"
+      onclick={o.reset}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7" /><path d="M4 4v4h4" /></svg>
+    </button>
   </div>
 {/snippet}
 
 {#snippet toggle(lbl, value, onset, title = undefined)}
-  <div class="switch-row" {title}>
+  <div class="sfx-line" {title}>
+    <span class="sfx-rl">{lbl}</span>
     <button type="button" class="switch" class:on={value} role="switch" aria-checked={value} aria-label={lbl} onclick={() => onset(!value)}><span class="knob"></span></button>
-    <span class="lbl2">{lbl}</span>
   </div>
 {/snippet}
 
 {#snippet colour(obj, key, lbl)}
-  <div class="sfx-colour">
-    <span class="lbl">{lbl}</span>
+  <div class="sfx-line">
+    <span class="sfx-rl">{lbl}</span>
     <ColorPicker value={obj[key]} label={lbl} size={22} unclipped onchange={(hex) => setColour(obj, key, hex)} />
   </div>
 {/snippet}
 
-{#snippet sectionHead(title, open, flip)}
-  <button type="button" class="insp-sub-head" aria-expanded={open} onclick={flip}>
-    {title}
-    <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
-  </button>
-{/snippet}
 
 {#if !available}
   <div class="grp">
@@ -528,280 +571,278 @@
     {/if}
   </div>
 {:else}
-  <!-- ===== Stage ===== -->
-  <div class="grp sfx-preview">
-    <div class="sfx-head">
-      <span class="lbl">SFX · {label}</span>
-    </div>
+  <!-- ===== Stage and words ===== -->
+  <div class="sfx-top">
     <div class="sfx-stage" role="img" aria-label="Preview of the box's text with its SFX" bind:clientWidth={stageW}>
       <canvas bind:this={stageEl}></canvas>
     </div>
   </div>
-
-  <!-- ===== Type ===== -->
   <div class="grp">
-    <div class="sfx-row-head">
-      <span class="lbl">Type</span>
-      <div class="sfx-acts">
-        <button type="button" class="rbtn" disabled={!top.length} title="The type that fits this sound best, with its intensity" onclick={autoPick}>Auto pick</button>
-        <button type="button" class="rbtn" disabled={!on} title="Another random shape of this type" onclick={newShape}>New shape</button>
-      </div>
-    </div>
-    <div class="sfx-grid" role="radiogroup" aria-label="Sound type">
-      {#each kinds as k (k.id)}
-        {@const rank = rankOf(k.id)}
-        <button
-          type="button"
-          role="radio"
-          aria-checked={on && sfx.kind === k.id}
-          class="sfx-card"
-          class:on={on && sfx.kind === k.id}
-          data-kind={k.id}
-          data-rank={rank >= 0 ? rank + 1 : null}
-          title={rank >= 0 ? `${k.name} · auto pick ${rank + 1}` : k.name}
-          onclick={() => chooseKind(k.id)}
-        >
-          <span class="sfx-tile" style={tileStyle(`t:${k.id}`)}></span>
-          <span class="sfx-name">{k.name}</span>
-          {#if rank >= 0}
-            <span class="sfx-rank" aria-hidden="true">{rank + 1}</span>
-          {/if}
-        </button>
-      {/each}
-    </div>
+    <label class="lbl" for="sfx-sound">Sound</label>
+    <textarea
+      id="sfx-sound"
+      class="sfx-sound"
+      rows="2"
+      bind:this={soundEl}
+      value={text}
+      placeholder="Type the sound"
+      title="A new line or a / starts another part of the sound"
+      oninput={(e) => setText(e.target.value)}
+    ></textarea>
   </div>
 
   {#if on}
-    <!-- ===== Variations ===== -->
-    <div class="grp">
-      <span class="lbl">Variations</span>
-      <div class="sfx-grid four" role="radiogroup" aria-label="Variations">
-        {#each SEEDS as n (n)}
-          <button
-            type="button"
-            role="radio"
-            aria-checked={sfx.seed === n}
-            aria-label="Variation {n}"
-            class="sfx-card"
-            class:on={sfx.seed === n}
-            title="Shape {n}"
-            onclick={() => setSeed(n)}
-          >
-            <span class="sfx-tile" style={tileStyle(`v:${n}`)}></span>
-          </button>
-        {/each}
-      </div>
-    </div>
-
-    <!-- ===== Intensity ===== -->
-    <div class="insp-rule"></div>
-    <div class="grp sfx-dials" role="group" aria-label="Intensity">
-      <span class="lbl">Intensity</span>
-      {#each dialSliders as o (o.id)}
-        {@render slider(o)}
+    <div class="seg sfx-tabs" role="tablist" aria-label="SFX options" bind:this={tabsEl}>
+      {#each TABS as [id, name] (id)}
+        <button
+          type="button"
+          role="tab"
+          id="sfx-tab-{id}"
+          data-tab={id}
+          class:on={shownTab === id}
+          aria-selected={shownTab === id}
+          aria-controls="sfx-pane-{id}"
+          tabindex={shownTab === id ? 0 : -1}
+          onclick={() => (tab = id)}
+          onkeydown={(e) => onTabKey(e, id)}>{name}</button
+        >
       {/each}
     </div>
+  {/if}
 
-    <!-- ===== Layout ===== -->
-    <div class="insp-sub" class:closed={!openLayout}>
-      {@render sectionHead('Layout', openLayout, () => (openLayout = !openLayout))}
-      {#if openLayout}
-        <div class="insp-sub-body">
-          <div class="grp">
-            <div class="sfx-row-head">
-              <span class="lbl">Direction</span>
-              {#if sfx.dir != null}
-                <button type="button" class="sfx-back" title="Back to the type's value" aria-label="Direction: back to the type" onclick={back('dir')}>Reset</button>
-              {/if}
-            </div>
-            <div class="seg">
-              <button type="button" class:on={!R.vertical} aria-pressed={!R.vertical} onclick={() => set('dir', 'h')}>Horizontal</button>
-              <button type="button" class:on={R.vertical} aria-pressed={R.vertical} onclick={() => set('dir', 'v')}>Vertical</button>
-            </div>
-          </div>
-          {@render toggle('Join ー', sfx.joinBars !== false, (v) => set('joinBars', v), 'A run of long marks drawn as one bar')}
-          {#each sizeSliders as o (o.id)}
-            {@render slider(o)}
-          {/each}
-          {@render toggle('Optical spacing', sfx.kern !== false, (v) => set('kern', v), 'Letters spaced by their shapes, not their boxes')}
-          {#each moveSliders as o (o.id)}
-            {@render slider(o)}
-          {/each}
-          <div class="sfx-acts wrap">
-            <button type="button" class="rbtn" disabled={!layoutSet} title="Every number above back to the type's" onclick={resetLayout}>Back to type</button>
-            <button type="button" class="rbtn" disabled={!hasPaths} title="The lines run where the type puts them" onclick={resetPaths}>Reset path</button>
-            <button type="button" class="rbtn" disabled={!hasGlyphs} title="Letters moved, turned or sized by hand go back" onclick={resetGlyphs}>Reset letter edits</button>
-          </div>
+  <!-- ===== Type ===== -->
+  {#if shownTab === 'type'}
+    <div class="sfx-pane" role={on ? 'tabpanel' : null} id="sfx-pane-type" aria-labelledby={on ? 'sfx-tab-type' : null}>
+      {#if !on}
+        <div class="grp">
+          <button type="button" class="rbtn sfx-make" title="Each letter set on its own, ready to move, turn and size; a type is optional" onclick={makeSfx}>Make SFX</button>
+          <p class="sfx-note">Letters one by one, no type needed. Or pick a type below.</p>
         </div>
       {/if}
-    </div>
-
-    <!-- ===== Effects ===== -->
-    <div class="insp-sub" class:closed={!openFx}>
-      {@render sectionHead('Effects', openFx, () => (openFx = !openFx))}
-      {#if openFx}
-        {@const st = box.style}
-        <div class="insp-sub-body">
-          {@render toggle('Negative', st.negative.on, (v) => setFx(st.negative, 'on', v))}
-          {#if st.negative.on}
-            {@render slider({ id: 'neg-grow', label: 'Grow', value: st.negative.grow, min: 0, max: 1, step: 0.01, unit: 'ems', title: 'How far the ground reaches past the letters, ems', write: (v) => (st.negative.grow = v) })}
-            {@render colour(st.negative, 'color', 'Negative colour')}
-          {/if}
-
-          {@render toggle('Extrude', st.extrude.on, (v) => setFx(st.extrude, 'on', v))}
-          {#if st.extrude.on}
-            {@render slider({ id: 'ex-angle', label: 'Angle', value: wrapDeg(st.extrude.angle), min: 0, max: 359, step: 1, unit: 'degrees', write: (v) => (st.extrude.angle = v) })}
-            {@render slider({ id: 'ex-depth', label: 'Depth', value: st.extrude.length, min: 0, max: 2, step: 0.01, unit: 'ems', title: 'Depth, ems', write: (v) => (st.extrude.length = v) })}
-            {@render colour(st.extrude, 'color', 'Extrude colour')}
-            {@render toggle('Edge line', !!st.extrude.edge, (v) => setFx(st.extrude, 'edge', v ? '#ffffff' : ''))}
-            {#if st.extrude.edge}
-              {@render colour(st.extrude, 'edge', 'Edge colour')}
-            {/if}
-          {/if}
-
-          {@render toggle('Shake', st.shake.on, (v) => setFx(st.shake, 'on', v))}
-          {#if st.shake.on}
-            {@render slider({ id: 'sh-count', label: 'Copies', value: st.shake.count, min: 1, max: 4, step: 1, unit: 'count', write: (v) => (st.shake.count = v) })}
-            {@render slider({ id: 'sh-amp', label: 'Spread', value: st.shake.amp, min: 0, max: 0.5, step: 0.01, unit: 'ems', title: 'Spread, ems', write: (v) => (st.shake.amp = v) })}
-            {@render slider({ id: 'sh-angle', label: 'Shake angle', value: wrapDeg(st.shake.angle), min: 0, max: 359, step: 1, unit: 'degrees', write: (v) => (st.shake.angle = v) })}
-          {/if}
-
-          {@render toggle('Trail', st.trail.on, (v) => setFx(st.trail, 'on', v))}
-          {#if st.trail.on}
-            {@render slider({ id: 'tr-count', label: 'Trail copies', value: st.trail.count, min: 1, max: 6, step: 1, unit: 'count', write: (v) => (st.trail.count = v) })}
-            {@render slider({ id: 'tr-dist', label: 'Trail length', value: st.trail.dist, min: 0, max: 2, step: 0.01, unit: 'ems', title: 'Trail length, ems', write: (v) => (st.trail.dist = v) })}
-          {/if}
-
-          <div class="insp-rule"></div>
-          <div class="grp">
-            <span class="lbl">Outline order</span>
-            <div class="seg">
-              <button type="button" class:on={st.strokeOrder !== 'each'} aria-pressed={st.strokeOrder !== 'each'} title="One outline round the whole sound" onclick={() => setStyle('strokeOrder', 'merged')}>Merged</button>
-              <button type="button" class:on={st.strokeOrder === 'each'} aria-pressed={st.strokeOrder === 'each'} title="Each letter outlined over the one before" onclick={() => setStyle('strokeOrder', 'each')}>Letter by letter</button>
-            </div>
-          </div>
-          <div class="grp">
-            <span class="lbl">Corners</span>
-            <div class="seg">
-              <button type="button" class:on={st.strokeJoin !== 'miter'} aria-pressed={st.strokeJoin !== 'miter'} onclick={() => setStyle('strokeJoin', 'round')}>Round</button>
-              <button type="button" class:on={st.strokeJoin === 'miter'} aria-pressed={st.strokeJoin === 'miter'} onclick={() => setStyle('strokeJoin', 'miter')}>Sharp</button>
-            </div>
-          </div>
-          {@render slider({ id: 'shade', label: 'Shade %', value: pct(st.strokeShade), min: 0, max: 100, step: 1, unit: 'percent', title: 'The outlines darkened on the side away from the light', write: (v) => (st.strokeShade = v / 100) })}
-        </div>
-      {/if}
-    </div>
-
-    <!-- ===== Caption ===== -->
-    <div class="grp">
-      <span class="lbl">Caption</span>
-      <div class="sfx-caption">
-        <input
-          type="text"
-          value={sfx.caption.text}
-          placeholder="What the sound means"
-          aria-label="Caption text"
-          oninput={(e) => setCaption('text', e.target.value)}
-        />
-        <button type="button" class="rbtn" disabled={!meaning} title={meaning ? `Use "${meaning}"` : 'No meaning known for this line'} onclick={fillMeaning}>Fill from meaning</button>
-      </div>
-    </div>
-    {#if sfx.caption.text}
       <div class="grp">
-        <span class="lbl">Caption side</span>
-        <div class="seg">
-          {#each SIDES as [side, name] (side)}
-            <button type="button" class:on={sfx.caption.side === side} aria-pressed={sfx.caption.side === side} onclick={() => setCaption('side', side)}>{name}</button>
-          {/each}
+        <div class="sfx-row-head">
+          <button
+            type="button"
+            class="sfx-fold"
+            aria-expanded={typesOpen}
+            aria-controls="sfx-types"
+            title={typesOpen ? 'Hide the sound types' : 'Show the sound types'}
+            onclick={() => (typesOpen = !typesOpen)}
+          >
+            <span class="lbl">Type</span>
+            <span class="sfx-fold-now">{kindName}</span>
+            <svg class="sfx-chev" class:open={typesOpen} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+          </button>
+          <button type="button" class="rbtn sfx-small" disabled={!best} title={best ? `${sfxKind(best)?.name}, with the intensity the sound asks for` : 'Nothing to read the sound from'} onclick={autoPick}>Auto pick</button>
+        </div>
+        {#if typesOpen}
+          <div class="sfx-grid" id="sfx-types" role="radiogroup" aria-label="Sound type">
+            {#if on}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={sfx.kind == null}
+                class="sfx-card sfx-none"
+                class:on={sfx.kind == null}
+                data-kind=""
+                title="No type: the letters in a plain row, every letter control still there"
+                onclick={noKind}
+              >
+                <span class="sfx-tile sfx-none-tile">Aa</span>
+                <span class="sfx-name">None</span>
+              </button>
+            {/if}
+            {#each kinds as k (k.id)}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={on && sfx.kind === k.id}
+                class="sfx-card"
+                class:on={on && sfx.kind === k.id}
+                data-kind={k.id}
+                data-best={best === k.id ? '' : null}
+                title={best === k.id ? `${k.name} · fits this sound best` : k.name}
+                onclick={() => chooseKind(k.id)}
+              >
+                <span class="sfx-tile" style={tileStyle(`t:${k.id}`)}></span>
+                <span class="sfx-name">{k.name}{#if best === k.id}<span class="sfx-best" aria-label=", fits best"></span>{/if}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      {#if on}
+        <div class="sfx-line" title={shapes ? 'The letters turned, sized and lifted at random another way' : 'This type has no random shape at this Roughness'}>
+          <span class="sfx-rl">Shape</span>
+          <div class="sfx-stepper" class:off={!shapes}>
+            <button type="button" class="rbtn sfx-icon" disabled={!shapes} aria-label="Last shape" onclick={() => stepShape(-1)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+            </button>
+            <span class="sfx-seed" aria-live="polite">{sfx.seed}</span>
+            <button type="button" class="rbtn sfx-icon" disabled={!shapes} aria-label="Next shape" onclick={() => stepShape(1)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+            <button type="button" class="rbtn sfx-small" disabled={!shapes} onclick={newShape}>Shuffle</button>
+          </div>
+        </div>
+
+        {#if sfx.kind}
+          <div class="insp-rule"></div>
+          <div class="grp sfx-dials" role="group" aria-label="Intensity">
+            {#each dialSliders as o (o.id)}
+              {@render slider(o)}
+            {/each}
+          </div>
+        {/if}
+
+        <div class="insp-rule"></div>
+        <button type="button" class="sfx-remove" title="Back to the box it was before: its size, turn, fill, outlines and width and height" onclick={remove}>Remove SFX</button>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- ===== Layout ===== -->
+  {#if shownTab === 'layout'}
+    <div class="sfx-pane" role="tabpanel" id="sfx-pane-layout" aria-labelledby="sfx-tab-layout">
+      <div class="sfx-line">
+        <span class="sfx-rl">Direction</span>
+        <div class="sfx-acts">
+          {#if sfx.dir != null}
+            <button type="button" class="sfx-back" title="Back to the type's value" aria-label="Direction: back to the type" onclick={back('dir')}>Reset</button>
+          {/if}
+          <div class="seg sfx-seg">
+            <button type="button" class:on={!R.vertical} aria-pressed={!R.vertical} onclick={() => set('dir', 'h')}>Across</button>
+            <button type="button" class:on={R.vertical} aria-pressed={R.vertical} onclick={() => set('dir', 'v')}>Down</button>
+          </div>
         </div>
       </div>
-      {@render slider({ id: 'cap-size', label: 'Caption size %', value: pct(sfx.caption.size), min: 10, max: 100, step: 5, unit: 'percent', title: 'The caption, % of the type size', write: (v) => (box.style.sfx.caption.size = v / 100) })}
-      {@render colour(box.style.sfx.caption, 'color', 'Caption colour')}
-    {/if}
+      {@render toggle('Join ー', sfx.joinBars !== false, (v) => set('joinBars', v), 'A run of long marks drawn as one bar')}
+      {@render toggle('Optical spacing', sfx.kern !== false, (v) => set('kern', v), 'Letters spaced by their shapes, not their boxes')}
+      <div class="insp-rule"></div>
+      {#each sizeSliders as o (o.id)}
+        {@render slider(o)}
+      {/each}
+      <div class="insp-rule"></div>
+      {#each moveSliders as o (o.id)}
+        {@render slider(o)}
+      {/each}
+      <div class="insp-rule"></div>
+      <div class="sfx-acts wrap">
+        <button type="button" class="rbtn sfx-small" disabled={!layoutSet} title={sfx.kind ? "Every number above back to the type's" : 'Every number above back to a plain row'} onclick={resetLayout}>{sfx.kind ? 'Back to type' : 'Reset'}</button>
+        <button type="button" class="rbtn sfx-small" disabled={!hasPaths} title="The lines run where the type puts them" onclick={resetPaths}>Reset path</button>
+        <button type="button" class="rbtn sfx-small" disabled={!hasGlyphs} title="Letters moved, turned or sized by hand go back" onclick={resetGlyphs}>Reset letters</button>
+      </div>
+    </div>
+  {/if}
 
-    <!-- ===== Remove ===== -->
-    <div class="insp-rule"></div>
-    <button type="button" class="sfx-remove" title="Back to plain text; the arc, ring or path the box had comes back" onclick={remove}>Remove SFX</button>
+  <!-- ===== Effects ===== -->
+  {#if shownTab === 'effects'}
+    {@const st = box.style}
+    <div class="sfx-pane" role="tabpanel" id="sfx-pane-effects" aria-labelledby="sfx-tab-effects">
+      {@render toggle('Negative', st.negative.on, (v) => setFx(st.negative, 'on', v), 'The letters cut out of one dark shape')}
+      {#if st.negative.on}
+        <div class="sfx-nest">
+          {@render slider({ id: 'neg-grow', label: 'Grow', value: st.negative.grow, min: 0, max: 1, step: 0.01, unit: 'ems', title: 'How far the shape reaches past the letters, ems', write: (v) => (st.negative.grow = v) })}
+          {@render colour(st.negative, 'color', 'Colour')}
+        </div>
+      {/if}
+
+      {@render toggle('Extrude', st.extrude.on, (v) => setFx(st.extrude, 'on', v), 'The letters stacked into a block')}
+      {#if st.extrude.on}
+        <div class="sfx-nest">
+          {@render slider({ id: 'ex-angle', label: 'Angle', value: wrapDeg(st.extrude.angle), min: 0, max: 359, step: 1, unit: 'degrees', write: (v) => (st.extrude.angle = v) })}
+          {@render slider({ id: 'ex-depth', label: 'Depth', value: st.extrude.length, min: 0, max: 2, step: 0.01, unit: 'ems', title: 'Depth, ems', write: (v) => (st.extrude.length = v) })}
+          {@render colour(st.extrude, 'color', 'Colour')}
+          {@render toggle('Edge line', !!st.extrude.edge, (v) => setFx(st.extrude, 'edge', v ? '#ffffff' : ''))}
+          {#if st.extrude.edge}
+            {@render colour(st.extrude, 'edge', 'Edge colour')}
+          {/if}
+        </div>
+      {/if}
+
+      {@render toggle('Shake', st.shake.on, (v) => setFx(st.shake, 'on', v), 'Copies of the letters either side, as if they tremble')}
+      {#if st.shake.on}
+        <div class="sfx-nest">
+          {@render slider({ id: 'sh-count', label: 'Copies', value: st.shake.count, min: 1, max: 4, step: 1, unit: 'count', write: (v) => (st.shake.count = v) })}
+          {@render slider({ id: 'sh-amp', label: 'Spread', value: st.shake.amp, min: 0, max: 0.5, step: 0.01, unit: 'ems', title: 'Spread, ems', write: (v) => (st.shake.amp = v) })}
+          {@render slider({ id: 'sh-angle', label: 'Angle', value: wrapDeg(st.shake.angle), min: 0, max: 359, step: 1, unit: 'degrees', write: (v) => (st.shake.angle = v) })}
+        </div>
+      {/if}
+
+      {@render toggle('Trail', st.trail.on, (v) => setFx(st.trail, 'on', v), 'Fading copies behind each letter, along its line')}
+      {#if st.trail.on}
+        <div class="sfx-nest">
+          {@render slider({ id: 'tr-count', label: 'Copies', value: st.trail.count, min: 1, max: 6, step: 1, unit: 'count', write: (v) => (st.trail.count = v) })}
+          {@render slider({ id: 'tr-dist', label: 'Length', value: st.trail.dist, min: 0, max: 2, step: 0.01, unit: 'ems', title: 'Trail length, ems', write: (v) => (st.trail.dist = v) })}
+        </div>
+      {/if}
+
+      <div class="insp-rule"></div>
+      <div class="sfx-line">
+        <span class="sfx-rl">Outlines</span>
+        <div class="seg sfx-seg">
+          <button type="button" class:on={st.strokeOrder !== 'each'} aria-pressed={st.strokeOrder !== 'each'} title="One outline round the whole sound" onclick={() => setStyle('strokeOrder', 'merged')}>Merged</button>
+          <button type="button" class:on={st.strokeOrder === 'each'} aria-pressed={st.strokeOrder === 'each'} title="Each letter outlined over the one before" onclick={() => setStyle('strokeOrder', 'each')}>Each letter</button>
+        </div>
+      </div>
+      <div class="sfx-line">
+        <span class="sfx-rl">Corners</span>
+        <div class="seg sfx-seg">
+          <button type="button" class:on={st.strokeJoin !== 'miter'} aria-pressed={st.strokeJoin !== 'miter'} onclick={() => setStyle('strokeJoin', 'round')}>Round</button>
+          <button type="button" class:on={st.strokeJoin === 'miter'} aria-pressed={st.strokeJoin === 'miter'} onclick={() => setStyle('strokeJoin', 'miter')}>Sharp</button>
+        </div>
+      </div>
+      {@render slider({ id: 'shade', label: 'Shade', value: pct(st.strokeShade), min: 0, max: 100, step: 1, unit: 'percent', title: 'The outlines darkened on the side away from the light', write: (v) => (st.strokeShade = v / 100) })}
+    </div>
+  {/if}
+
+  <!-- ===== Caption ===== -->
+  {#if shownTab === 'caption'}
+    <div class="sfx-pane" role="tabpanel" id="sfx-pane-caption" aria-labelledby="sfx-tab-caption">
+      <div class="grp">
+        <label class="lbl" for="sfx-caption">Caption</label>
+        <input id="sfx-caption" type="text" value={sfx.caption.text} placeholder="What the sound means" oninput={(e) => setCaption('text', e.target.value)} />
+        {#if meaning}
+          <button type="button" class="rbtn sfx-small sfx-meaning" title="Use the dictionary's meaning of this sound" onclick={fillMeaning}>Use “{meaning}”</button>
+        {/if}
+      </div>
+      {#if sfx.caption.text}
+        <div class="sfx-line">
+          <span class="sfx-rl">Side</span>
+          <div class="seg sfx-seg">
+            {#each SIDES as [side, name] (side)}
+              <button type="button" class:on={sfx.caption.side === side} aria-pressed={sfx.caption.side === side} onclick={() => setCaption('side', side)}>{name}</button>
+            {/each}
+          </div>
+        </div>
+        {@render slider({ id: 'cap-size', label: 'Size', value: pct(sfx.caption.size), min: 10, max: 100, step: 5, unit: 'percent', title: 'The caption, % of the type size', write: (v) => (box.style.sfx.caption.size = v / 100) })}
+        {@render colour(box.style.sfx.caption, 'color', 'Colour')}
+      {:else}
+        <p class="sfx-note">A small line beside the sound, saying what it means.</p>
+      {/if}
+    </div>
   {/if}
 {/if}
 
 <style>
-  /* The preview stays pinned to the top of the window while it is scrolled,
-     so a card can be picked while watching it. Opaque ground, so cards do not
-     show through. */
-  .sfx-preview {
+  /* The stage stays pinned to the top of the window while it scrolls, so a
+     card can be picked while watching it. Opaque ground, so nothing shows
+     through. */
+  .sfx-top {
     position: sticky;
-    top: 0;
-    z-index: 1;
-    margin: 0 -12px;
-    padding: 4px 12px 8px;
+    top: -12px;
+    z-index: 2;
+    margin: -12px -12px 0;
+    padding: 12px 12px 4px;
     background: var(--panel);
   }
-  .sfx-head,
-  .sfx-row-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    min-height: 22px;
-    min-width: 0;
-  }
-  .sfx-head .lbl,
-  .sfx-row-head .lbl {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .sfx-acts {
-    display: flex;
-    gap: 6px;
-    flex: 0 0 auto;
-  }
-  .sfx-acts.wrap {
-    flex-wrap: wrap;
-    padding-top: 2px;
-  }
-  .sfx-dials {
-    gap: 8px;
-  }
-  /* "Back to the type", once per row: quiet until it is wanted. */
-  .sfx-back {
-    flex: 0 0 auto;
-    height: 18px;
-    padding: 0 6px;
-    border: 1px solid var(--line2);
-    border-radius: 5px;
-    background: transparent;
-    color: var(--t2);
-    font-family: inherit;
-    font-size: 10.5px;
-    cursor: pointer;
-  }
-  .sfx-back:hover {
-    color: var(--text);
-    border-color: var(--t3);
-    background: var(--accent-soft);
-  }
-  .sfx-back:focus-visible,
-  .sfx-card:focus-visible,
-  .sfx-remove:focus-visible,
-  .sfx-settings:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-  .sfx-settings {
-    align-self: flex-start;
-    height: 28px;
-    padding: 0 12px;
-  }
-
-  /* The stage is always paper, in both themes: the lettering is drawn to be
-     read on a page. */
+  /* Always paper, in both themes: the lettering is drawn to be read on a page. */
   .sfx-stage {
-    height: 110px;
+    height: 120px;
     background: var(--paper);
     border: 1px solid var(--line2);
-    border-radius: 7px;
+    border-radius: 8px;
     overflow: hidden;
   }
   .sfx-stage canvas {
@@ -809,34 +850,111 @@
     width: 100%;
     height: 100%;
   }
+  .sfx-sound {
+    min-height: 0;
+    height: 48px;
+    font-size: 14px;
+    line-height: 1.3;
+    resize: vertical;
+  }
 
-  /* The cards are the pattern cards (Inspector.svelte `.pat-card`), mirrored
-     because a component's styles are its own. */
+  .sfx-tabs {
+    margin-top: 2px;
+  }
+  .sfx-tabs button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 11.5px;
+  }
+  .sfx-tabs button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .sfx-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    padding-top: 4px;
+  }
+
+  .sfx-row-head,
+  .sfx-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 28px;
+    min-width: 0;
+  }
+  /* A row's name: the control's, in body ink, beside it. */
+  .sfx-rl {
+    flex: 0 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sfx-note {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--t2);
+  }
+  .sfx-acts {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+  }
+  .sfx-acts.wrap {
+    flex-wrap: wrap;
+  }
+  .sfx-small {
+    height: 26px;
+    padding: 0 9px;
+    font-size: 11.5px;
+  }
+  .sfx-seg {
+    flex: 0 0 auto;
+  }
+  .sfx-seg button {
+    padding: 0 10px;
+    font-size: 11.5px;
+  }
+  /* The options an effect has, under its switch. */
+  .sfx-nest {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 12px;
+    border-left: 1px solid var(--line);
+  }
+
+  /* ---- the type cards ---- */
   .sfx-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
   }
-  .sfx-grid.four {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
   .sfx-card {
-    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 4px 4px 5px;
+    gap: 5px;
+    padding: 4px 4px 6px;
     border: 1px solid var(--line2);
-    border-radius: 7px;
+    border-radius: 8px;
     background: var(--surface);
     color: var(--t2);
     font-family: inherit;
     cursor: pointer;
     min-width: 0;
-    transition: border-color 0.12s;
-  }
-  .four .sfx-card {
-    padding: 3px;
+    transition:
+      border-color 0.12s,
+      color 0.12s;
   }
   .sfx-card:hover {
     border-color: var(--t3);
@@ -848,46 +966,85 @@
     color: var(--text);
   }
   .sfx-tile {
-    height: 44px;
-    border-radius: 4px;
+    height: 62px;
+    border-radius: 5px;
     background-color: var(--paper);
     background-repeat: no-repeat;
     background-position: center;
     background-size: contain;
-    border: 1px solid var(--line);
-  }
-  .four .sfx-tile {
-    height: 34px;
   }
   .sfx-name {
-    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font-size: 11.5px;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The auto pick's first three, numbered in the tile's corner. */
-  .sfx-rank {
-    position: absolute;
-    top: 2px;
-    right: 2px;
-    min-width: 14px;
-    height: 14px;
-    padding: 0 3px;
-    border-radius: 7px;
-    background: var(--accent);
-    color: var(--accent-fg);
-    font-size: 9px;
-    font-weight: 600;
-    line-height: 14px;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
+  /* The type the sound itself asks for: a dot after its name. */
+  .sfx-best {
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
   }
 
-  /* A slider's track, and the dials' middle: a hairline tick under it, where
-     the type is as designed. */
+  /* ---- the shape stepper ---- */
+  .sfx-stepper {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .sfx-icon {
+    width: 26px;
+    min-width: 26px;
+    padding: 0;
+  }
+  .sfx-icon svg {
+    width: 13px;
+    height: 13px;
+  }
+  .sfx-seed {
+    min-width: 34px;
+    text-align: center;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .sfx-stepper.off .sfx-seed {
+    color: var(--t3);
+  }
+  .sfx-stepper .sfx-small {
+    margin-left: 4px;
+  }
+
+  /* ---- a slider row: name, track, number, unit, reset ---- */
+  .sfx-dials {
+    gap: 8px;
+  }
+  .sfx-slider {
+    display: grid;
+    grid-template-columns: 86px minmax(0, 1fr) 54px 12px 20px;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+  }
+  .sfx-slider .num-s {
+    width: 100%;
+    padding: 0 4px;
+  }
+  /* Room for four digits: the spinner is the arrows' and the drag's job. */
+  .sfx-slider .num-s::-webkit-inner-spin-button {
+    display: none;
+  }
+  .sfx-unit {
+    font-size: 11px;
+    color: var(--t3);
+  }
   .sfx-track {
     position: relative;
-    flex: 1 1 auto;
     min-width: 0;
     display: flex;
     align-items: center;
@@ -896,40 +1053,127 @@
     width: 100%;
     margin: 0;
   }
+  /* The dials' middle, where the type is as designed: a tick under the track. */
   .sfx-track.mid::after {
     content: '';
     position: absolute;
     left: 50%;
-    top: calc(50% + 5px);
+    top: calc(50% + 6px);
     width: 1px;
     height: 4px;
     background: var(--t3);
     pointer-events: none;
   }
+  .sfx-reset {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--t2);
+    cursor: pointer;
+  }
+  .sfx-reset svg {
+    width: 13px;
+    height: 13px;
+  }
+  .sfx-reset:hover {
+    color: var(--text);
+    background: var(--accent-soft);
+  }
+  .sfx-reset.off {
+    visibility: hidden;
+  }
+  .sfx-back {
+    flex: 0 0 auto;
+    height: 22px;
+    padding: 0 7px;
+    border: 1px solid var(--line2);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--t2);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .sfx-back:hover {
+    color: var(--text);
+    border-color: var(--t3);
+    background: var(--accent-soft);
+  }
 
-  .sfx-colour {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+  .sfx-meaning {
+    align-self: flex-start;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
   }
-  .sfx-caption {
-    display: flex;
-    gap: 6px;
-    min-width: 0;
-  }
-  .sfx-caption input {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .sfx-caption .rbtn {
+
+  .sfx-settings {
+    align-self: flex-start;
     height: 28px;
+    padding: 0 12px;
   }
 
   /* Destructive, so rust, and outlined rather than filled. */
-  .sfx-remove {
+  /* The type list's header: the label, the type now, and a chevron. */
+  .sfx-fold {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
     height: 28px;
-    width: 100%;
+    padding: 0 6px 0 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .sfx-fold .lbl {
+    margin: 0;
+  }
+  .sfx-fold-now {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--t1);
+  }
+  .sfx-chev {
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    color: var(--t2);
+    transition: transform 0.15s;
+  }
+  .sfx-chev.open {
+    transform: rotate(180deg);
+  }
+  .sfx-none-tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    color: #222;
+  }
+  .sfx-make {
+    align-self: stretch;
+    height: 30px;
+  }
+  .sfx-remove {
+    align-self: flex-start;
+    height: 28px;
+    padding: 0 12px;
     border: 1px solid var(--line2);
     border-radius: 6px;
     background: transparent;
@@ -941,5 +1185,14 @@
   .sfx-remove:hover {
     border-color: var(--warn);
     background: color-mix(in srgb, var(--warn) 12%, transparent);
+  }
+
+  .sfx-back:focus-visible,
+  .sfx-card:focus-visible,
+  .sfx-reset:focus-visible,
+  .sfx-remove:focus-visible,
+  .sfx-settings:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 </style>

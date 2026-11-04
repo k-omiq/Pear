@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 
 // The pictures are the engine's to paint and have their own lane
 // (sfx-preview.engine.test.js paints real ones). Here the painters are
@@ -24,7 +24,7 @@ import { textEngine, setTextEngine } from './text-engine/index.js';
 import { defaultStyle, normalizeStyle } from './data.js';
 import { clearLayoutMemo, setTypesetEnabled, typesetEnabled } from './measure.js';
 import { sfxKinds, sfxPick, sfxKind, sfxResolved } from './sfx.js';
-import { sfxLive } from './sfx-live.svelte.js';
+import { sfxLive, sfxAsk } from './sfx-live.svelte.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
 import { domRustEngine } from '../test/dom-rust-engine.js';
 
@@ -88,7 +88,7 @@ function browserEngine() {
 
 // The box lives in the store so that what the panel writes is what it then
 // reads. Its line says ドーン in Japanese and BOOM in English.
-function mounted({ sfx = true, over = {}, props = {}, jp = 'ドーン' } = {}) {
+function mounted({ sfx = true, over = {}, props = {}, jp = 'ドーン', open = true } = {}) {
   setTextEngine(sfx ? rust : browserEngine());
   const style = normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 40, ...over });
   loadProjectPages([
@@ -103,11 +103,13 @@ function mounted({ sfx = true, over = {}, props = {}, jp = 'ドーン' } = {}) {
   const touch = vi.fn();
   const arm = vi.fn();
   const view = render(SfxPanel, { props: { box, pg, touch, arm, ...props } });
+  // The type list is folded away; most tests want it open.
+  if (open && sfx) flushSync(() => view.container.querySelector('.sfx-fold').click());
   return { view, box, touch, arm };
 }
-const types = (view) => [...view.getByRole('radiogroup', { name: 'Sound type' }).querySelectorAll('[role=radio]')];
+const types = (view) => [...view.getByRole('radiogroup', { name: 'Sound type' }).querySelectorAll('[role=radio]:not(.sfx-none)')];
 const card = (view, id) => types(view).find((r) => r.dataset.kind === id);
-const vars = (view) => [...view.getByRole('radiogroup', { name: 'Variations' }).querySelectorAll('[role=radio]')];
+const tab = (view, name) => fireEvent.click(view.getByRole('tab', { name }));
 const checked = (els) => els.filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.dataset.kind ?? r.getAttribute('aria-label'));
 const plain = (v) => JSON.parse(JSON.stringify(v));
 
@@ -140,34 +142,51 @@ describe('under the browser engine', () => {
 });
 
 describe('the types', () => {
-  it('lists the engine types by name, none chosen for a plain box, and only the stage and the grid', async () => {
+  it('lists the engine types by name, none chosen for a plain box, and only the stage, the words and the grid', async () => {
     const { view } = mounted();
     await tick();
     expect(types(view).map((r) => r.dataset.kind)).toEqual(sfxKinds().map((k) => k.id));
-    expect(types(view)).toHaveLength(12);
+    expect(types(view)).toHaveLength(19);
     expect(types(view).map((r) => r.querySelector('.sfx-name').textContent)).toEqual(sfxKinds().map((k) => k.name));
     expect(checked(types(view))).toEqual([]);
-    expect(view.container.textContent).toContain('SFX · Off');
+    expect(view.container.textContent).toContain('Letters one by one, no type needed.');
     expect(view.container.querySelector('canvas')).not.toBe(null);
-    // New shape has no type to reshape yet: shown, dimmed.
-    expect(view.getByRole('button', { name: 'New shape' }).disabled).toBe(true);
+    expect(view.getByRole('textbox', { name: 'Sound' }).value).toBe('BOOM');
+    expect(view.queryByRole('tablist')).toBe(null);
     expect(view.queryByRole('button', { name: 'Remove SFX' })).toBe(null);
-    expect(view.queryByRole('radiogroup', { name: 'Variations' })).toBe(null);
+    expect(view.queryByRole('button', { name: 'Shuffle' })).toBe(null);
     expect(view.container.querySelector('input[type=range]')).toBe(null);
   });
 
-  it('marks the auto pick top three, read from the Japanese', async () => {
+  it('marks the type the sound asks for, read from the Japanese', async () => {
     const { view } = mounted();
     await tick();
-    const top = sfxPick('ドーン').order.slice(0, 3);
-    for (const [i, id] of top.entries()) expect(card(view, id).dataset.rank).toBe(String(i + 1));
-    expect(types(view).filter((r) => r.dataset.rank)).toHaveLength(3);
+    const best = types(view).filter((r) => r.dataset.best != null);
+    expect(best.map((r) => r.dataset.kind)).toEqual([sfxPick('ドーン').order[0]]);
   });
 
   it('reads the English when the line has no Japanese', async () => {
     const { view } = mounted({ jp: '' });
     await tick();
-    expect(types(view).find((r) => r.dataset.rank === '1').dataset.kind).toBe(sfxPick('BOOM').order[0]);
+    expect(types(view).find((r) => r.dataset.best != null).dataset.kind).toBe(sfxPick('BOOM').order[0]);
+  });
+
+  it('writes the words typed into Sound, as the Inspector’s Content does', async () => {
+    const { view, box, touch } = mounted();
+    const sound = view.getByRole('textbox', { name: 'Sound' });
+    await fireEvent.input(sound, { target: { value: 'KRAK' } });
+    expect(box.text).toBe('KRAK');
+    expect(touch).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes the typing for a sound just drawn, its stock words selected', async () => {
+    sfxAsk.typeFor = 'b';
+    const { view } = mounted();
+    await tick();
+    const sound = view.getByRole('textbox', { name: 'Sound' });
+    expect(document.activeElement).toBe(sound);
+    expect([sound.selectionStart, sound.selectionEnd]).toEqual([0, 4]);
+    expect(sfxAsk.typeFor).toBe(null);
   });
 
   it('applies a type on a click, tells the Inspector once, and marks the card', async () => {
@@ -180,7 +199,7 @@ describe('the types', () => {
     expect(touch).toHaveBeenCalledTimes(1);
     await tick();
     expect(checked(types(view))).toEqual(['rumble']);
-    expect(view.container.textContent).toContain(`SFX · ${sfxKind('rumble').name}`);
+    expect(view.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Type', 'Layout', 'Effects', 'Caption']);
     expect(view.getByRole('button', { name: 'Remove SFX' })).not.toBe(null);
   });
 
@@ -218,16 +237,23 @@ describe('the types', () => {
 });
 
 describe('with a type on', () => {
-  it('picks a variation by its seed, and New shape picks another', async () => {
+  it('steps the shape, Shuffle picks another, and both are off for a type with no randomness', async () => {
     const { view, box, touch } = await on();
-    expect(vars(view)).toHaveLength(8);
-    await fireEvent.click(vars(view)[2]);
-    expect(box.style.sfx.seed).toBe(3);
+    expect(box.style.sfx.seed).toBe(1);
+    await fireEvent.click(view.getByRole('button', { name: 'Next shape' }));
+    expect(box.style.sfx.seed).toBe(2);
+    await fireEvent.click(view.getByRole('button', { name: 'Last shape' }));
+    await fireEvent.click(view.getByRole('button', { name: 'Last shape' }));
+    // Round from the start to the end.
+    expect(box.style.sfx.seed).toBe(9999);
+    await fireEvent.click(view.getByRole('button', { name: 'Shuffle' }));
+    expect(box.style.sfx.seed).not.toBe(9999);
+    expect(touch).toHaveBeenCalledTimes(4);
+    // Slash turns, sizes and lifts nothing at random as designed.
+    await fireEvent.click(card(view, 'slash'));
     await tick();
-    expect(checked(vars(view))).toEqual(['Variation 3']);
-    await fireEvent.click(view.getByRole('button', { name: 'New shape' }));
-    expect(box.style.sfx.seed).not.toBe(3);
-    expect(touch).toHaveBeenCalledTimes(2);
+    expect(view.getByRole('button', { name: 'Shuffle' }).disabled).toBe(true);
+    expect(view.getByRole('button', { name: 'Next shape' }).disabled).toBe(true);
   });
 
   it('has the three dials at 50, and a dial writes once a frame with a detent at the middle', async () => {
@@ -235,7 +261,7 @@ describe('with a type on', () => {
     const { view, box, touch } = await on();
     const power = view.getByRole('slider', { name: 'Power' });
     expect(['Power', 'Roughness', 'Momentum'].map((n) => +view.getByRole('slider', { name: n }).value)).toEqual([50, 50, 50]);
-    expect(view.queryByRole('button', { name: 'Power: as designed' })).toBe(null);
+    expect(view.getByRole('button', { name: 'Power: as designed' }).disabled).toBe(true);
     // Three inputs in one frame are one write, of the last.
     await fireEvent.input(power, { target: { value: '60' } });
     await fireEvent.input(power, { target: { value: '70' } });
@@ -260,34 +286,34 @@ describe('with a type on', () => {
     expect(box.style.sfx.rough).toBe(100);
   });
 
-  it('keeps Layout closed; a slider shows the type in the reference units, writes ours, and goes back', async () => {
+  it('has Layout on its own tab; a slider shows the type in the reference units, writes ours, and goes back', async () => {
     fakeFrames();
     const { view, box } = await on();
-    expect(view.queryByRole('slider', { name: 'Letter spacing %' })).toBe(null);
-    await fireEvent.click(view.getByRole('button', { name: 'Layout' }));
+    expect(view.queryByRole('slider', { name: 'Letter spacing' })).toBe(null);
+    await tab(view, 'Layout');
     const R = sfxResolved(box.style.sfx);
-    const spacing = view.getByRole('slider', { name: 'Letter spacing %' });
+    const spacing = view.getByRole('slider', { name: 'Letter spacing' });
     expect(+spacing.value).toBe(Math.round(R.gap * 100));
-    expect(+view.getByRole('slider', { name: 'Start size %' }).value).toBe(Math.round(R.flow.from * 100));
-    expect(+view.getByRole('slider', { name: 'Lean %' }).value).toBe(Math.round(R.follow * 100));
+    expect(+view.getByRole('slider', { name: 'Start size' }).value).toBe(Math.round(R.flow.from * 100));
+    expect(+view.getByRole('slider', { name: 'Lean' }).value).toBe(Math.round(R.follow * 100));
     expect(box.style.sfx.gap).toBe(null);
     await fireEvent.input(spacing, { target: { value: '40' } });
     await fireEvent.change(spacing);
     expect(box.style.sfx.gap).toBe(0.4);
-    await fireEvent.input(view.getByRole('slider', { name: 'End size %' }), { target: { value: '200' } });
+    await fireEvent.input(view.getByRole('slider', { name: 'End size' }), { target: { value: '200' } });
     await frames(1);
     expect(plain(box.style.sfx.flow)).toEqual({ ...plain(R.flow), to: 2 });
-    await fireEvent.input(view.getByRole('slider', { name: 'Up/down variation' }), { target: { value: '120' } });
+    await fireEvent.input(view.getByRole('slider', { name: 'Random lift' }), { target: { value: '120' } });
     await frames(1);
     expect(box.style.sfx.jitter.off).toBeCloseTo(1.2, 5);
     await fireEvent.input(view.getByRole('slider', { name: 'Slant' }), { target: { value: '-20' } });
-    await fireEvent.input(view.getByRole('slider', { name: 'Rise °' }), { target: { value: '15' } });
+    await fireEvent.input(view.getByRole('slider', { name: 'Rise' }), { target: { value: '15' } });
     await frames(1);
     expect([box.style.sfx.slant, box.style.sfx.rise]).toEqual([-20, 15]);
     await tick();
-    await fireEvent.click(view.getByRole('button', { name: 'Letter spacing %: back to the type' }));
+    await fireEvent.click(view.getByRole('button', { name: 'Letter spacing: back to the type' }));
     expect(box.style.sfx.gap).toBe(null);
-    await fireEvent.click(view.getByRole('button', { name: 'Vertical' }));
+    await fireEvent.click(view.getByRole('button', { name: 'Down' }));
     expect(box.style.sfx.dir).toBe('v');
     await fireEvent.click(view.getByRole('switch', { name: 'Optical spacing' }));
     expect(box.style.sfx.kern).toBe(false);
@@ -303,47 +329,49 @@ describe('with a type on', () => {
     const { view, box } = await on();
     box.style.sfx.paths = [{ a: [-2, 0], b: [2, 0], bend: 0 }];
     box.style.sfx.glyphs = { '0:0': { dx: 1, dy: 0, rot: 0, s: 1 } };
-    await fireEvent.click(view.getByRole('button', { name: 'Layout' }));
+    await tab(view, 'Layout');
     await fireEvent.click(view.getByRole('button', { name: 'Reset path' }));
     expect(plain(box.style.sfx.paths)).toEqual([]);
-    await fireEvent.click(view.getByRole('button', { name: 'Reset letter edits' }));
+    await fireEvent.click(view.getByRole('button', { name: 'Reset letters' }));
     expect(box.style.sfx.glyphs).toEqual({});
     await tick();
     expect(view.getByRole('button', { name: 'Reset path' }).disabled).toBe(true);
-    expect(view.getByRole('button', { name: 'Reset letter edits' }).disabled).toBe(true);
+    expect(view.getByRole('button', { name: 'Reset letters' }).disabled).toBe(true);
   });
 
-  it('has the effects, closed, and only while SFX is on', async () => {
+  it('has the effects on their own tab, and only while SFX is on', async () => {
     const { view, box, touch } = await on();
     expect(view.queryByRole('switch', { name: 'Extrude' })).toBe(null);
-    await fireEvent.click(view.getByRole('button', { name: 'Effects' }));
+    await tab(view, 'Effects');
     await fireEvent.click(view.getByRole('switch', { name: 'Extrude' }));
     expect(box.style.extrude.on).toBe(true);
     await fireEvent.input(view.getByRole('slider', { name: 'Depth' }), { target: { value: '0.8' } });
     await fireEvent.change(view.getByRole('slider', { name: 'Depth' }));
     expect(box.style.extrude.length).toBe(0.8);
-    await fireEvent.click(view.getByRole('button', { name: 'Letter by letter' }));
+    await fireEvent.click(view.getByRole('button', { name: 'Each letter' }));
     expect(box.style.strokeOrder).toBe('each');
     await fireEvent.click(view.getByRole('button', { name: 'Sharp' }));
     expect(box.style.strokeJoin).toBe('miter');
     for (const name of ['Negative', 'Shake', 'Trail']) expect(view.getByRole('switch', { name })).not.toBe(null);
-    expect(view.getByRole('slider', { name: 'Shade %' })).not.toBe(null);
+    expect(view.getByRole('slider', { name: 'Shade' })).not.toBe(null);
     expect(touch).toHaveBeenCalledTimes(4);
+    await tab(view, 'Type');
     await fireEvent.click(view.getByRole('button', { name: 'Remove SFX' }));
     await tick();
+    expect(view.queryByRole('tablist')).toBe(null);
     expect(view.queryByRole('switch', { name: 'Extrude' })).toBe(null);
   });
 
   it('fills the caption from the meaning of the Japanese', async () => {
     const { view, box } = await on({ jp: 'ドキドキ' });
-    const fill = view.getByRole('button', { name: 'Fill from meaning' });
-    await waitFor(() => expect(fill.disabled).toBe(false), { timeout: 5000 });
+    await tab(view, 'Caption');
+    const fill = await waitFor(() => view.getByRole('button', { name: /^Use “/ }), { timeout: 5000 });
     await fireEvent.click(fill);
     expect(box.style.sfx.caption.text.length).toBeGreaterThan(0);
     await tick();
     await fireEvent.click(view.getByRole('button', { name: 'Right' }));
     expect(box.style.sfx.caption.side).toBe('right');
-    expect(view.getByRole('slider', { name: 'Caption size %' })).not.toBe(null);
+    expect(view.getByRole('slider', { name: 'Size' })).not.toBe(null);
   });
 
   it('Remove SFX, last in the pane, puts the box back as it was and goes away', async () => {
@@ -364,7 +392,54 @@ describe('with a type on', () => {
     expect(m.touch).toHaveBeenCalledTimes(1);
     await tick();
     expect(m.view.queryByRole('button', { name: 'Remove SFX' })).toBe(null);
-    expect(m.view.container.textContent).toContain('SFX · Off');
+    expect(m.view.container.textContent).toContain('Letters one by one, no type needed.');
+  });
+
+  it('Remove SFX puts back the size, the turn, the fill, the width and the height', async () => {
+    const m = mounted({ over: { size: 40, rotation: 12, color: '#123456', pattern: { on: true, kind: 'dots' } } });
+    const was = plain(m.box.style);
+    const [x, y, w, h] = [m.box.x, m.box.y, m.box.w, m.box.h];
+    await fireEvent.click(card(m.view, 'impact'));
+    // Changed while it is a sound: all of it goes back.
+    Object.assign(m.box.style, { size: 90, rotation: -20, color: '#ff0000' });
+    m.box.style.pattern.on = false;
+    Object.assign(m.box, { x: x + 50, y: y + 10, w: w + 100, h: h + 60 });
+    await tick();
+    await fireEvent.click(m.view.getByRole('button', { name: 'Remove SFX' }));
+    const { sfx, ...back } = plain(m.box.style);
+    const { sfx: _, ...want } = was;
+    expect(back).toEqual(want);
+    // The size about where its centre is now: a box moved stays moved.
+    expect([m.box.x, m.box.y, m.box.w, m.box.h]).toEqual([x + 50 + 50, y + 10 + 30, w, h]);
+  });
+
+  it('makes a box SFX with no type: the tabs and the letters, no dials', async () => {
+    const m = mounted();
+    await fireEvent.click(m.view.getByRole('button', { name: 'Make SFX' }));
+    expect(m.box.style.sfx.on).toBe(true);
+    expect(m.box.style.sfx.kind).toBe(null);
+    expect(m.touch).toHaveBeenCalledTimes(1);
+    await tick();
+    expect(m.view.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Type', 'Layout', 'Effects', 'Caption']);
+    expect(m.view.queryByRole('slider', { name: 'Power' })).toBe(null);
+    expect(m.view.container.querySelector('.sfx-fold-now').textContent).toBe('None');
+    // A type, then None again: still SFX, the type gone.
+    await fireEvent.click(card(m.view, 'rumble'));
+    await tick();
+    await fireEvent.click(m.view.container.querySelector('.sfx-none'));
+    expect(m.box.style.sfx.on).toBe(true);
+    expect(m.box.style.sfx.kind).toBe(null);
+  });
+
+  it('keeps the types folded away until asked for, and paints no card till then', async () => {
+    const m = mounted({ open: false });
+    await tick();
+    expect(m.view.queryByRole('radiogroup', { name: 'Sound type' })).toBe(null);
+    const fold = m.view.container.querySelector('.sfx-fold');
+    expect(fold.getAttribute('aria-expanded')).toBe('false');
+    await fireEvent.click(fold);
+    expect(fold.getAttribute('aria-expanded')).toBe('true');
+    expect(types(m.view)).toHaveLength(19);
   });
 });
 
@@ -384,16 +459,16 @@ describe('painting', () => {
     await frames(1);
     expect(paintCard).toHaveBeenCalledTimes(6);
     await settle();
-    expect(paintCard).toHaveBeenCalledTimes(12);
+    expect(paintCard).toHaveBeenCalledTimes(19);
     expect(view.container.querySelector('.sfx-tile').getAttribute('style')).toContain('data:image/png');
     // A type card is the box's look laid out as the type: a new colour is
-    // twelve new cards, and a colour back is twelve cached ones.
+    // nineteen new cards, and a colour back is nineteen cached ones.
     page().boxes[0].style.color = '#cc0000';
     await settle();
-    expect(paintCard).toHaveBeenCalledTimes(24);
+    expect(paintCard).toHaveBeenCalledTimes(38);
     page().boxes[0].style.color = '#000000';
     await settle();
-    expect(paintCard).toHaveBeenCalledTimes(24);
+    expect(paintCard).toHaveBeenCalledTimes(38);
   });
 
   it('keeps each card on its picture until the new one is painted', async () => {
@@ -401,12 +476,12 @@ describe('painting', () => {
     const { view } = mounted();
     await settle();
     paintCard.mockImplementation(() => 'data:image/png;base64,BBBB');
-    page().boxes[0].style.color = '#cc0000';
+    page().boxes[0].style.font = 'Comic Neue';
     await tick();
     await frames(1);
-    const tiles = [...view.container.querySelectorAll('.sfx-tile')].map((t) => t.getAttribute('style'));
+    const tiles = [...view.container.querySelectorAll('.sfx-card:not(.sfx-none) .sfx-tile')].map((t) => t.getAttribute('style'));
     expect(tiles.filter((s) => s.includes('BBBB')).length).toBe(3);
-    expect(tiles.filter((s) => s.includes('AAAA')).length).toBe(9);
+    expect(tiles.filter((s) => s.includes('AAAA')).length).toBe(16);
     paintCard.mockImplementation(() => 'data:image/png;base64,AAAA');
   });
 
@@ -415,18 +490,19 @@ describe('painting', () => {
     mounted();
     await settle();
     paintCard.mockClear();
+    // A shadow is the box's own on every card.
     for (let i = 0; i < 10; i++) {
-      page().boxes[0].style.color = `#00000${i}`;
+      page().boxes[0].style.shadows = [{ x: 2, y: 2, blur: 0, color: `#00000${i}`, opacity: 1 }];
       await tick();
       await frames(1);
     }
     // The drag's first change may start a batch; the rest wait.
     expect(paintCard.mock.calls.length).toBeLessThanOrEqual(3);
     await settle();
-    expect(paintCard.mock.calls.at(-1)[0].color).toBe('#000009');
+    expect(paintCard.mock.calls.at(-1)[0].shadows[0].color).toBe('#000009');
   });
 
-  it('paints the variations once a type is on, and the stage on a change of style', async () => {
+  it('paints the stage on a change of style, at its own pixels', async () => {
     fakeFrames();
     const { view, box } = mounted();
     await settle();
@@ -436,7 +512,6 @@ describe('painting', () => {
     // paint said of the ink.
     await fireEvent.click(card(view, 'impact'));
     await settle();
-    expect(paintCard.mock.calls.filter(([, c]) => c.kind == null).map(([, c]) => c.seed)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(paintStage.mock.calls.length).toBeGreaterThan(stage);
     expect(paintStage.mock.calls.at(-1)[3]).toEqual({ w: 100, h: 40 });
     const after = paintStage.mock.calls.length;
@@ -445,18 +520,20 @@ describe('painting', () => {
     expect(paintStage.mock.calls.length).toBe(after + 1);
   });
 
-  it('repaints only the variations for a letter moved by hand or a path drawn', async () => {
+  it('repaints no card for a type picked, a letter moved by hand or a path drawn', async () => {
     fakeFrames();
-    const { box } = await on();
+    const { view, box } = mounted();
     await settle();
     paintCard.mockClear();
+    // A type is a layout, which no type card holds.
+    await fireEvent.click(card(view, 'impact'));
+    await settle();
+    expect(paintCard).not.toHaveBeenCalled();
     paintStage.mockClear();
     box.style.sfx.glyphs = { '0:1': { dx: 0.5, dy: 0, rot: 10, s: 1 } };
     box.style.sfx.paths = [{ a: [-2, 0], b: [2, 1], bend: 0.2 }];
     await settle();
-    // The 8 variations keep the box's paths and edits; the 12 type cards don't.
-    expect(paintCard).toHaveBeenCalledTimes(8);
-    expect(paintCard.mock.calls.every(([, card]) => !card?.kind)).toBe(true);
+    expect(paintCard).not.toHaveBeenCalled();
     expect(paintStage).toHaveBeenCalledTimes(1);
   });
 
@@ -481,7 +558,7 @@ describe('painting', () => {
     expect(paintStage).not.toHaveBeenCalled();
     expect(paintCard).not.toHaveBeenCalled();
     // The tiles were not keyed out from under the cards either.
-    expect([...view.container.querySelectorAll('.sfx-tile')].every((t) => t.getAttribute('style').includes('data:image/png'))).toBe(true);
+    expect([...view.container.querySelectorAll('.sfx-card:not(.sfx-none) .sfx-tile')].every((t) => t.getAttribute('style').includes('data:image/png'))).toBe(true);
     await fireEvent.input(power, { target: { value: '90' } });
     await fireEvent.pointerUp(window);
     expect(sfxLive.on).toBe(false);
@@ -489,9 +566,8 @@ describe('painting', () => {
     expect(box.style.sfx.power).toBe(90);
     await settle();
     expect(paintStage).toHaveBeenCalledTimes(1);
-    // The variations hold the dials; the type cards do not.
-    expect(paintCard.mock.calls.every(([, c]) => c.kind == null)).toBe(true);
-    expect(paintCard).toHaveBeenCalledTimes(8);
+    // The type cards do not hold the dials.
+    expect(paintCard).not.toHaveBeenCalled();
     // Fake frames, real work: fifty frames of the panel's own side of a drag.
     console.info(`SfxPanel: 50 held-slider frames in ${spent.toFixed(1)} ms of panel work`);
     expect(spent).toBeLessThan(400);
@@ -515,8 +591,8 @@ describe('painting', () => {
     sfxLive.on = false;
     await settle();
     expect(paintStage).toHaveBeenCalledTimes(1);
-    // The gap is in the variations: those eight, once.
-    expect(paintCard).toHaveBeenCalledTimes(8);
+    // Nor the gap.
+    expect(paintCard).not.toHaveBeenCalled();
   });
 
   it('lets the gesture go when the pane goes', async () => {

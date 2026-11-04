@@ -149,8 +149,21 @@ const WORDS: &[(&str, &str)] = &[
     ("crack", "explosion"),
     ("kaboom", "explosion"),
     ("blam", "explosion"),
-    ("whoosh", "slash"),
-    ("swoosh", "slash"),
+    ("whoosh", "whoosh"),
+    ("swoosh", "whoosh"),
+    ("fwoosh", "whoosh"),
+    ("stomp", "stomp"),
+    ("crunch", "crunch"),
+    ("krrch", "crunch"),
+    ("krrk", "crunch"),
+    ("crrk", "crunch"),
+    ("clang", "arc"),
+    ("clank", "arc"),
+    ("clatter", "arc"),
+    ("whistle", "climb"),
+    ("squeak", "climb"),
+    ("plonk", "bounce"),
+    ("bounce", "bounce"),
     ("zoom", "slash"),
     ("slash", "slash"),
     ("shing", "slash"),
@@ -161,7 +174,7 @@ const WORDS: &[(&str, &str)] = &[
     ("splash", "splash"),
     ("sploosh", "splash"),
     ("drip", "drip"),
-    ("plop", "drip"),
+    ("plop", "bounce"),
     ("plip", "drip"),
     ("sparkle", "soft"),
     ("twinkle", "soft"),
@@ -181,6 +194,19 @@ const WORDS: &[(&str, &str)] = &[
 ];
 
 fn latin_kind(text: &str) -> Option<&'static str> {
+    // One word said again on each line ("RUB / RUB"): two is a repeat,
+    // three or more a stomping stair.
+    let lines: Vec<String> = text
+        .split(['\n', '/'])
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() >= 2
+        && lines.iter().all(|l| *l == lines[0])
+        && lines[0].chars().any(|c| c.is_ascii_alphabetic())
+    {
+        return Some(if lines.len() == 2 { "repeat" } else { "stomp" });
+    }
     let word: String = text
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-')

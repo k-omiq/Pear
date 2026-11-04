@@ -1170,6 +1170,8 @@ const BULK_VALUES = () => ({
   size: 44,
   bold: true,
   italic: true,
+  boldWeight: 250,
+  italicAngle: 30,
   uppercase: true,
   align: 'left',
   valign: 'top',

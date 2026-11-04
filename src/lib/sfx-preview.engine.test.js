@@ -148,7 +148,7 @@ describe('the ink rectangle the painter hands back', () => {
 describe('a type card', () => {
   it('is painted for every sound type, inside its tile, with ink in it', async () => {
     const kinds = sfxKinds();
-    expect(kinds).toHaveLength(12);
+    expect(kinds).toHaveLength(19);
     const spec = cardSpec(style(), 'BOOM');
     for (const k of kinds) {
       const url = paintCard(spec, { kind: k.id, seed: 1 }, 1);

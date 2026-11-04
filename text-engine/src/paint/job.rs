@@ -143,6 +143,14 @@ pub struct Effects {
     /// With a silhouette: the shape grown this much more, job units (times
     /// each run's pen). A box's shadow sets it; a job on the wire has 0.
     pub grow: f64,
+    /// More weight on every glyph, in synthesised bolds: each is grown by
+    /// this many times the bold pen of its size on top of what its face
+    /// draws, and its bands go round the heavier shape. 0 for none.
+    pub embolden: f64,
+    /// More lean on every glyph, as the synthesised oblique leans: x moves by
+    /// this share of y in the glyph's own frame, about its baseline origin.
+    /// Added to the oblique's own. 0 for none.
+    pub slant: f64,
 }
 
 impl Default for Effects {
@@ -152,9 +160,16 @@ impl Default for Effects {
             each: false,
             negative: None,
             grow: 0.0,
+            embolden: 0.0,
+            slant: 0.0,
         }
     }
 }
+
+/// Most extra weight accepted, in synthesised bolds.
+pub const MAX_EMBOLDEN: f64 = 8.0;
+/// Most extra lean accepted either way: about 56 degrees.
+pub const MAX_SLANT: f64 = 1.5;
 
 /// The mitre limit of a mitred band, in half-widths: canvas's default.
 pub const MITER_LIMIT: f64 = 10.0;
@@ -258,7 +273,7 @@ pub struct Request {
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 9;
+pub const WIRE_VERSION: u32 = 10;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -470,6 +485,7 @@ impl<'a> Reader<'a> {
 /// f64 letter spacing
 /// rgba silhouette
 /// u32 join (0 round, 1 mitre), rgba negative colour, f64 negative grow
+/// f64 embolden (0 to 8 synthesised bolds), f64 slant (within 1.5)
 /// u32 band count, then per band: rgba colour, f64 opacity, f64 line
 /// fill (the job's)
 /// mesh
@@ -485,7 +501,7 @@ impl<'a> Reader<'a> {
 ///   2 linear:  f64 x0, y0, x1, y1, stops
 ///   3 radial:  f64 cx, cy, r, stops
 ///   4 pattern: u32 tile, f64 pitch, f64 ax, ay, rgba fallback
-///   5 screen: u32 kind (0..30 built-in, 255 picked), tile (0xffffffff for none),
+///   5 screen: u32 kind (0..32 built-in, 255 picked), tile (0xffffffff for none),
 ///     mode (0 tone, 1 image), seed;
 ///     f64 ax, ay, bx, by (basis columns), ox, oy (origin), angle (radians),
 ///     aspect (> 0), su, sv (offset in tiles), density (0..1), line (tile share);
@@ -560,6 +576,10 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     if !(0.0..=MAX_DRIP).contains(&negative.grow) {
         return Err(Error::BadSpec);
     }
+    let (embolden, slant) = (r.f64()?, r.f64()?);
+    if !(0.0..=MAX_EMBOLDEN).contains(&embolden) || !(-MAX_SLANT..=MAX_SLANT).contains(&slant) {
+        return Err(Error::BadSpec);
+    }
     let bands = super::budget::collect((0..r.count(20)?).map(|_| {
         Ok(Band {
             color: r.rgba()?,
@@ -629,6 +649,8 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
                 each: flags & 8 != 0,
                 negative: (flags & 16 != 0).then_some(negative),
                 grow: 0.0,
+                embolden,
+                slant,
             },
             runs,
         },

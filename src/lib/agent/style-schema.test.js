@@ -316,10 +316,11 @@ describe('normalizer numeric sanity', () => {
 describe('styleSchemaText', () => {
   // The budget grew from 5200 when the path anchors and the mask shapes
   // became writable: about 900 characters for two whole new item schemas,
-  // and to 8600 for the sound types' layout fields and the SFX effects.
-  it('describes every key, field and item in under 8600 characters', () => {
+  // and to 8600 for the sound types' layout fields and the SFX effects, and
+  // to 8800 for the bold weight, the italic angle and the two dither kinds.
+  it('describes every key, field and item in under 8800 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(8600);
+    expect(text.length).toBeLessThan(8800);
     for (const [path, entry] of allEntries) {
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }

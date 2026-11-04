@@ -21,10 +21,10 @@ const job = (fill) => ({ curved: false, align: 'left', bands: [], fill, runs: [{
 
 describe('procedural screen fills', () => {
   it('publishes the kinds in wire order and keeps the app’s first eleven ids', () => {
-    expect(WIRE_VERSION).toBe(9);
+    expect(WIRE_VERSION).toBe(10);
     expect(drawsScreens(engine)).toBe(true);
     expect(patternKinds(engine)).toEqual(names);
-    expect(patternKinds(engine)).toHaveLength(31);
+    expect(patternKinds(engine)).toHaveLength(33);
     expect(patternTile(engine, { kind: 'waves' }, 16, 0.12)).toBeNull();
     // The app's own list (data.js) is the engine's, in the same order.
     expect(patternKinds(engine)).toEqual(PATTERN_KINDS);
@@ -50,7 +50,7 @@ describe('procedural screen fills', () => {
     const f = screen('stripes', { fg: '#ff000080', fgOpacity: 0.5, bg: '#12345680', bgOpacity: 0.25, angle: 90 });
     const bytes = encodeJob({ job: job(f), font, size: 40 }).slice();
     const b = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const start = 128;
+    const start = 144;
     expect(b.getUint32(start, true)).toBe(5);
     expect(b.getUint32(start + 4, true)).toBe(2);
     expect(b.getUint32(start + 8, true)).toBe(0xffffffff);
@@ -192,8 +192,8 @@ describe('procedural screen fills', () => {
     }
     const bytes = encodeJob({ font, size: 40, job: job(screen('picked')) }).slice();
     const wire = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    expect(wire.getUint32(132, true)).toBe(255);
-    expect(wire.getUint32(136, true)).toBe(0xffffffff);
+    expect(wire.getUint32(148, true)).toBe(255);
+    expect(wire.getUint32(152, true)).toBe(0xffffffff);
   });
 
   it('paints picked screens in a job and sends a shared tile only once', () => {
@@ -205,9 +205,9 @@ describe('procedural screen fills', () => {
     const bytes = encodeJob({ font, size: 40, job: j, tiles }).slice();
     const wire = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     expect(tiles).toHaveBeenCalledTimes(2);
-    expect(wire.getUint32(132, true)).toBe(255);
-    expect(wire.getUint32(136, true)).toBe(0);
-    expect(wire.getUint32(140, true)).toBe(1);
+    expect(wire.getUint32(148, true)).toBe(255);
+    expect(wire.getUint32(152, true)).toBe(0);
+    expect(wire.getUint32(156, true)).toBe(1);
     expect(wire.getUint32(bytes.length - tile.data.length - 12, true)).toBe(1);
     const raster = paintJob(engine, { font, size: 40, job: j, tiles });
     expect(raster.data.some((v, i) => i % 4 === 3 && v > 0)).toBe(true);

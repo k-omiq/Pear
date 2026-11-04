@@ -23,7 +23,7 @@
   import { brushArmed } from '../brush-tool.svelte.js';
   import { sfxAvailable } from '../sfx.js';
   import { engineSwitch } from '../engine-switch.svelte.js';
-  import { panels, setHidden, raisePanel } from './panels.svelte.js';
+  import { panels, showPanel } from './panels.svelte.js';
 
   // A translate chapter has no reference sidebar - the canvas is already showing
   // the raw - so the rail keeps only the hand, and the caret that would offer to
@@ -127,14 +127,15 @@
   const docked = $derived(
     [
       !translate && panels.options.hidden && { id: 'options', title: brushArmed() ? 'Brush' : 'Text box options' },
-      // Under the options tab: the SFX window, while the SFX tool is on.
-      !translate && prefs.sfxTool && panels.sfx.hidden && { id: 'sfx', title: 'SFX' },
+      // The SFX window has no tab: the SFX tool above is its way back.
       panels.queue.hidden && { id: 'queue', title: translate ? 'Translation' : 'Text queue' },
     ].filter(Boolean),
   );
-  function showPanel(id) {
-    setHidden(id, false);
-    raisePanel(id);
+  // The SFX tool and its window are one button: picking the tool brings the
+  // window back, so a sound can be drawn and tuned from the same place.
+  function pickSfx() {
+    setTool('sfx');
+    if (app.tool === 'sfx') showPanel('sfx');
   }
 </script>
 
@@ -215,10 +216,10 @@
              under the browser engine, which has no SFX layout. -->
         <button
           class:on={app.tool === 'sfx'}
-          onclick={() => setTool('sfx')}
+          onclick={pickSfx}
           disabled={!sfxReady}
           aria-label="SFX tool"
-          data-tip={sfxReady ? 'SFX tool - drag to draw a sound effect' : 'SFX tool - needs the Rust text engine'}
+          data-tip={sfxReady ? 'SFX tool - drag to draw a sound, and its window' : 'SFX tool - needs the Rust text engine'}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17c4-1 6-6 9-9" /><path d="M13 8l-1 4 4-1" /><path d="M16 4l1-2" /><path d="M19 7l2-1" /><path d="M18 11h3" /></svg>
         </button>
@@ -254,11 +255,7 @@
              everything you can see, and it is what grows in. -->
         <button class="panel-stub" onclick={() => showPanel(d.id)} aria-label={'Show ' + d.title} data-tip={'Show ' + d.title}>
           <span class="stub-ink">
-            {#if d.id === 'sfx'}
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 17c4-1 6-6 9-9" /><path d="M13 8l-1 4 4-1" /><path d="M16 4l1-2" /><path d="M19 7l2-1" /><path d="M18 11h3" />
-              </svg>
-            {:else if d.id === 'queue'}
+            {#if d.id === 'queue'}
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
                 <path d="M8 6h12" /><path d="M8 12h12" /><path d="M8 18h12" />
                 <circle cx="4" cy="6" r="1.3" /><circle cx="4" cy="12" r="1.3" /><circle cx="4" cy="18" r="1.3" />

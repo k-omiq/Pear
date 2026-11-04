@@ -55,6 +55,8 @@ export const STYLE_SCHEMA = {
   size: number('font size px', 4, 400),
   bold: boolean('bold face'),
   italic: boolean('italic face'),
+  boldWeight: number('bold weight %, 100 as drawn (with bold)', 100, 400),
+  italicAngle: number('italic lean degrees, 14 as drawn (with italic)', -20, 45),
   // Plain strings to normalizeStyle; these are the values the layout reads.
   align: choice('horizontal alignment', ['left', 'center', 'right']),
   valign: choice('vertical alignment', ['top', 'middle', 'bottom']),

@@ -1289,6 +1289,43 @@ fn synthetic_bold_grows_the_ink_by_one_outset_and_italic_slants_it() {
 }
 
 #[test]
+fn extra_weight_and_lean_grow_and_slant_any_face() {
+    let mut e = Engine::new();
+    let font = load(&mut e, "DejaVuSans.ttf");
+    let plain = Face::new(font, 48.0);
+    let ink = e.line_ink(plain, "H").unwrap();
+    let o = bold_outset(48.0);
+    let (x, y) = (100.0, 100.0);
+    // Two bolds more on a face that is not bold: grown by two outsets, and
+    // a band goes round the heavier letter.
+    let mut j = job(vec![run("H", x, y)]);
+    j.effects.embolden = 2.0;
+    j.bands = vec![Band {
+        color: RED,
+        opacity: 1.0,
+        line: 6.0,
+    }];
+    let heavy = inked(&paint(&mut e, &request(j, plain)));
+    assert_box(
+        heavy,
+        (
+            x - ink.left - 2.0 * o - 3.0,
+            y - ink.ascent - 2.0 * o - 3.0,
+            x + ink.right + 2.0 * o + 3.0,
+            y + ink.descent + 2.0 * o + 3.0,
+        ),
+    );
+    // A lean of a half on an upright face: the top moves right by half the
+    // height, the foot stays on the baseline.
+    let mut j = job(vec![run("H", x, y)]);
+    j.effects.slant = 0.5;
+    let leant = inked(&paint(&mut e, &request(j, plain)));
+    let lean = f64::from(leant.2) - (x + ink.right);
+    assert!((lean - 0.5 * ink.ascent).abs() < 1.0, "{lean}");
+    assert!((f64::from(leant.0) - (x - ink.left)).abs() < 1.0);
+}
+
+#[test]
 fn the_same_job_paints_the_same_bytes() {
     let mut e = Engine::new();
     let font = load(&mut e, "Bangers-Regular.ttf");
@@ -1553,6 +1590,8 @@ fn wire(font: u32, text: &str) -> Vec<u8> {
     u(&mut b, 0); // round join
     b.extend_from_slice(&[0, 0, 0, 0]); // no negative: its colour and grow
     f(&mut b, 0.0);
+    f(&mut b, 0.0); // no extra weight
+    f(&mut b, 0.0); // no extra lean
     u(&mut b, 1); // one band
     b.extend_from_slice(&[255, 255, 255, 255]);
     f(&mut b, 0.5);
@@ -1703,9 +1742,9 @@ fn a_runs_scale_and_skew_are_read_and_their_range_is_checked() {
     assert_eq!(flagged(2), Err(Error::BadSpec));
     // The version before this one is not read.
     let mut old = good.clone();
-    old[4] = 8;
+    old[4] = 9;
     assert_eq!(decode(&old).err(), Some(Error::BadSpec));
-    assert_eq!(WIRE_VERSION, 9);
+    assert_eq!(WIRE_VERSION, 10);
 }
 
 #[test]

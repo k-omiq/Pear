@@ -86,6 +86,8 @@ impl Scene {
             BoldDraw::Outset,
             0.0,
             1.0,
+            0.0,
+            0.0,
             tol,
         );
         if result.is_err() {

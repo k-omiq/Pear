@@ -88,7 +88,7 @@ const DESCRIPTION = [
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
   '"outline_to_box" (an outline of the box\'s rectangle, grown to hold its text at the size it aims for with outline fit\'s air, or exactly the box when its width or height is held: geometry in the same op sets it first; shrunk in the result names a box that still fits only smaller), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
   '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in exactly its colours: its fill (its shade as a gradient), its outline at its width, or no outline when it had none, on colour and black-and-white pages alike; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
-  '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type; a type is a layout only, the box keeps its font, fill and outlines; sfx_kinds lists them; seed and caption stay; paths, letter hand edits, the power/rough/momentum dials and every other style.sfx field go back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, with the dials it asks for), "clear_sfx" (SFX off, the arc, ring or path it switched off put back);',
+  '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type; a type is a layout only, the box keeps its font, fill and outlines; sfx_kinds lists them; seed and caption stay; paths, letter hand edits, the power/rough/momentum dials and every other style.sfx field go back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, with the dials it asks for), "clear_sfx" (SFX off, the box put back as it was before: look, size and the arc, ring or path it switched off);',
   'then tune an SFX in a later op with set style.sfx (power, rough, momentum dials 0..100 with 50 the type as designed, seed for another arrangement, paths, flow, slant, jitter, caption) and the effects that draw only while SFX is on (negative, extrude, shake, trail, strokeShade, strokeOrder, strokeJoin).',
   '"preset:<name or id>", "duplicate", "delete",',
   `"warp:<kind>" or "warp:<kind>:<amount>" (a mesh bend of the whole box, Photoshop-style; amount -100..100, default ${WARP_DEFAULT_AMOUNT}, negative bends the other way; replaces any mesh the box had), "warp:off" (mesh off and cleared). Kinds: ` +
@@ -550,7 +550,7 @@ function writeDo(d, matches) {
           }
         } else if (d.kind === 'sfx_kind') {
           if (b.style.sfx?.on && b.style.sfx.kind === d.type) return false;
-          applySfxKind(b.style, d.type);
+          applySfxKind(b.style, d.type, b);
         } else if (d.kind === 'sfx_pick') {
           // The app's own auto pick (the SFX panel's), from the box's text.
           const pick = sfxPick(boxText(b, p));
@@ -558,11 +558,11 @@ function writeDo(d, matches) {
           if (!best) return false;
           const dials = Object.fromEntries(['power', 'rough', 'momentum'].map((k) => [k, Math.min(100, Math.max(0, Number(pick[k]) || 50))]));
           if (b.style.sfx?.on && b.style.sfx.kind === best && Object.entries(dials).every(([k, v]) => b.style.sfx[k] === v)) return false;
-          applySfxKind(b.style, best);
+          applySfxKind(b.style, best, b);
           Object.assign(b.style.sfx, dials);
         } else if (d.kind === 'clear_sfx') {
           if (!b.style.sfx?.on) return false;
-          clearSfx(b.style);
+          clearSfx(b.style, false, b);
         } else if (d.kind === 'warp') {
           // Built on the box's own rectangle: the mesh is box-local, and a
           // warped box keeps its rectangle from here on (store.svelte.js,

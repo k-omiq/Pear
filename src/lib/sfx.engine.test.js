@@ -17,7 +17,7 @@ import {
 // SFX lettering against the real Rust engine
 // ===========================================================================
 // The unit lane (sfx.test.js) pins the JS side against an engine of arithmetic;
-// this is the same seam with the real one: the twelve sound types the wasm
+// this is the same seam with the real one: the sound types the wasm
 // gives, their layout carried through `placeBlock`, and a box painted with it.
 //
 // Needs a wasm built with `sfxPlace` (npm run build:engine). One that lacks it
@@ -58,13 +58,13 @@ const use = () => {
 };
 
 describe('the engine behind the SFX seam', () => {
-  it('has the sound-type calls, and twelve types', () => {
+  it('has the sound-type calls, and nineteen types', () => {
     expect(rust.sfxPlace, 'this wasm has no sfxPlace: run npm run build:engine').toBeTypeOf('function');
     use();
     expect(sfxAvailable()).toBe(true);
     const kinds = sfxKinds();
-    expect(kinds).toHaveLength(12);
-    expect(new Set(kinds.map((k) => k.id)).size).toBe(12);
+    expect(kinds).toHaveLength(19);
+    expect(new Set(kinds.map((k) => k.id)).size).toBe(19);
     for (const k of kinds) {
       expect(['h', 'v'], k.id).toContain(k.dir);
       // A type is a layout only.
@@ -76,7 +76,7 @@ describe('the engine behind the SFX seam', () => {
     use();
     const pick = sfxPick('BOOM!!');
     expect([...pick.order].sort()).toEqual(sfxKinds().map((k) => k.id).sort());
-    expect(pick.scores).toHaveLength(12);
+    expect(pick.scores).toHaveLength(19);
     for (const m of ['power', 'rough', 'momentum']) {
       expect(pick[m], m).toBeGreaterThanOrEqual(0);
       expect(pick[m], m).toBeLessThanOrEqual(100);

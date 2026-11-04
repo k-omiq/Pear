@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 9
+export const WIRE_VERSION = 10
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -347,6 +347,14 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   u32(job.strokeJoin === 'miter' ? 1 : 0)
   rgba(negative?.color || '#000000')
   f64(negative?.grow ?? 0)
+  // More weight and lean on every glyph: `embolden` in synthesised bolds
+  // (0 to 8), `slant` as an oblique's share of y (within 1.5).
+  const embolden = job.embolden ?? 0
+  const slant = job.slant ?? 0
+  if (!(embolden >= 0 && embolden <= 8)) throw new Error(`mt-text: embolden is 0 to 8, not ${embolden}`)
+  if (!(Math.abs(slant) <= 1.5)) throw new Error(`mt-text: slant is within 1.5, not ${slant}`)
+  f64(embolden)
+  f64(slant)
   u32(job.bands.length)
   for (const band of job.bands) {
     rgba(band.color)
@@ -524,6 +532,8 @@ const PATTERN_KIND = {
   hearts: 28,
   kakeami: 29,
   glitch: 30,
+  dither: 31,
+  'dither-dots': 32,
   picked: 255,
 }
 
