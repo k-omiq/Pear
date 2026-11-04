@@ -974,13 +974,22 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
     expect(old.prefs.defaultBalloon).toBe(false);
     expect(old.prefs.textEngine).toBe('rust');
     old.setPref('defaultBalloon', true);
-    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(1);
+    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(2);
     const since = await withStorage(old.map.get('mt.prefs'));
     expect(since.prefs.defaultBalloon).toBe(true);
     expect(since.prefs.textEngine).toBe('rust');
     const chose = await withStorage('{"defaultBalloon":true,"textEngine":"browser","defaultsRev":1}');
     expect(chose.prefs.defaultBalloon).toBe(true);
     expect(chose.prefs.textEngine).toBe('browser');
+  });
+
+  // 2026-11-03: the second detector finds the bubbles placement relies on, so
+  // a blob from before turns it on once; one written since keeps what it says.
+  it('turns the second detector on once for a blob from before it was the default', async () => {
+    const old = await withStorage('{"secondDetector":false,"defaultsRev":1}');
+    expect(old.prefs.secondDetector).toBe(true);
+    const chose = await withStorage('{"secondDetector":false,"defaultsRev":2}');
+    expect(chose.prefs.secondDetector).toBe(false);
   });
 
   it('takes stored box defaults, and refuses values of the wrong type or range', async () => {

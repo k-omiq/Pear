@@ -116,7 +116,7 @@ import { takesHeightFloor } from './resize-math.js';
 // there is no canvas - which is to say under node, where every test below takes
 // the fallback path exactly as a page nobody has opened does.
 import { detectBalloon, detectBalloonAt, inscribedRect, balloonFrame, shapeContainsPoint, localUniformity, contrastInk } from './balloon.js';
-import { findOutline } from './bubble-outline.js';
+import { central, findOutline } from './bubble-outline.js';
 import { pagePixelsFor, forgetPagePixels } from './page-pixels.js';
 import { measureChapterFits } from './chapter-fit.js';
 // One-way, and it must stay that way: the brush tool's state module knows only
@@ -159,6 +159,14 @@ let pageLoadSeq = 5000; // page ids for imported projects that carry none
 // means the same box is called something different every session - the drift the
 // history cannot see.
 const idNum = (id) => (typeof id === 'string' && /^b\d+$/.test(id) ? Number(id.slice(1)) : 0);
+
+// The second detector's bubble rectangles, when the file has any: four finite
+// numbers each, anything else dropped. Absent stays absent.
+function detectBubblesField(list) {
+  if (!Array.isArray(list)) return {};
+  const bubbles = list.filter((b) => Array.isArray(b) && b.length === 4 && b.every(Number.isFinite)).map((b) => b.slice());
+  return bubbles.length ? { bubbles } : {};
+}
 
 // `line.tags` comes out of chapter.json, which is a file on the user's disk that
 // nothing stops them opening in an editor - and two shapes of it break the app
@@ -310,6 +318,7 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
               return { ...d, fit: normalizeFit(b.fit), ...outlineField(outline) };
             }),
             ...detectMaskField(p.detect.mask),
+            ...detectBubblesField(p.detect.bubbles),
           }
         : null,
       // NOT migrated: a box already on disk with `lineN: null` is loaded as it
@@ -3943,6 +3952,7 @@ export function rescalePageGeometry(p, sx, sy) {
       ? [box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy]
       : box;
   d.panels = (d.panels ?? []).map(scaleBox);
+  if (d.bubbles) d.bubbles = d.bubbles.map(scaleBox);
   for (const db of d.boxes ?? []) {
     db.box = scaleBox(db.box);
     // A glyph height, so it follows the vertical scale. Wrong only for a
@@ -4194,6 +4204,9 @@ export function applyDetection(result, target = null) {
       ...(l.lang != null ? { lang: l.lang } : result.lang != null ? { lang: result.lang } : {}),
     })),
     ...(result.lang != null ? { lang: result.lang } : {}),
+    // The bubbles the second detector found, as page rectangles: the outline
+    // finder's window and leak bound, and the oval a bubble falls back to.
+    ...(Array.isArray(result.bubbles) && result.bubbles.length ? { bubbles: result.bubbles.map(intoPage) } : {}),
     // The text mask file (MASK-1), in the detector's pixels, under masks/.
     ...(result.mask?.file ? { mask: { ...result.mask } } : {}),
   };
@@ -4440,8 +4453,45 @@ export function measureBalloon(p, block, pixels, scale = null) {
   if (!image) return null;
   if (isFreeText(p, block, scale)) return openMeasure();
   const neighbors = neighbourBlocks(p, block, image, scale);
-  const m = outlineMeasure(findOutline(image, block, { neighbors })) ?? fillMeasure(detectBalloon(image, block));
+  const bubble = bubbleAround(p, block, scale);
+  const m =
+    outlineMeasure(findOutline(image, block, { neighbors, bubble })) ??
+    fillMeasure(detectBalloon(image, block)) ??
+    bubbleMeasure(bubble, block);
   return m ? withInk(m, image) : openMeasure();
+}
+
+// The smallest bubble the second detector found around the block's centre, in
+// the pixels' space; null when it found none there (or did not run).
+function bubbleAround(p, block, scale) {
+  const sx = scale?.sx ?? 1;
+  const sy = scale?.sy ?? 1;
+  const cx = (block[0] + block[2]) / 2;
+  const cy = (block[1] + block[3]) / 2;
+  let best = null;
+  for (const b of p?.detect?.bubbles ?? []) {
+    if (!Array.isArray(b) || b.length !== 4) continue;
+    const r = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy];
+    if (cx < r[0] || cx > r[2] || cy < r[1] || cy > r[3]) continue;
+    if (!best || (r[2] - r[0]) * (r[3] - r[1]) < (best[2] - best[0]) * (best[3] - best[1])) best = r;
+  }
+  return best;
+}
+
+// A bubble the detector found and nothing could trace, as the oval inside its
+// box. Only for text near the box's middle: text off to one side is in one
+// lobe of joined bubbles the box holds together, and the oval's centre is the
+// neck between them.
+export const BUBBLE_OVAL = 0.9;
+function bubbleMeasure(bubble, block) {
+  if (!bubble || !central(block, bubble)) return null;
+  const w = bubble[2] - bubble[0];
+  const h = bubble[3] - bubble[1];
+  const cx = (bubble[0] + bubble[2]) / 2;
+  const cy = (bubble[1] + bubble[3]) / 2;
+  const fit = normalizeFit({ kind: 'ellipse', cx, cy, rx: (w / 2) * BUBBLE_OVAL, ry: (h / 2) * BUBBLE_OVAL });
+  if (!fit || !hasRoom(fit)) return null;
+  return { fit, outline: { source: 'bubble', confidence: 0.4, approved: null } };
 }
 
 // Lettering the second detector (DTC-2) called free text sits on the art, not
@@ -4672,10 +4722,16 @@ function bornBox(p, ln, imgX, imgY, measured) {
   // in THIS line sat, so it seeds the fill closer to the right balloon than a
   // click can when the two disagree. The click is the answer when there is no
   // block, which is most of the time in paste mode.
+  // Text the detector put on the art, placed where it was detected, is not
+  // looked for a bubble around the click either: there is none, and a probe
+  // there closes on a panel or a face.
+  const onArt = det?.box && insideRect(det.box, imgX, imgY) && isFreeText(p, det.box);
   const m =
     measured !== undefined
       ? measured
-      : firstFound(measureBalloon(p, det?.box ?? null), () => measureBalloonAt(p, imgX, imgY));
+      : onArt
+        ? measureBalloon(p, det.box)
+        : firstFound(measureBalloon(p, det?.box ?? null), () => measureBalloonAt(p, imgX, imgY));
   let fit = m?.fit ?? null;
   let outline = m?.outline ?? null;
   let g = fit ? fittedRect(p, fit, style.align) : null;

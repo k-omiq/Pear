@@ -135,9 +135,13 @@ fn validate_session(session: &Session) -> Result<(), String> {
 }
 
 impl RtDetr {
+    /// CPU only, like the panel model: on CoreML the session loads and every
+    /// run then fails ("Unable to compute the prediction", seen 2026-11-03),
+    /// so the detector was skipped on every Mac without a word.
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
-        let (session, _) =
-            super::accel::open(path, false).map_err(|e| format!("RT-DETR load failed: {e}"))?;
+        let session = Session::builder()
+            .and_then(|mut b| b.commit_from_file(path))
+            .map_err(|e| format!("RT-DETR load failed: {e}"))?;
         validate_session(&session)?;
         Ok(Self { session })
     }

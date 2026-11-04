@@ -109,6 +109,37 @@ Komatose is MIT licensed:
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
 
+`src/lib/vendor/typer-geometry.js` is copied from
+[TypeR](https://github.com/ScanR/TypeR) at commit `cccf0f5`
+(`app_src/oneClick/geometry.js`, up to and including `shapeKind`): outline
+flattening and clipping, the tail-free bubble body, the joined-bubble neck
+finder and the shape classifier. TypeR took that code from MD TYPER, a TypeR
+fork, with its author's permission. `src/lib/bubble-neck.js` uses it.
+
+TypeR is MIT licensed:
+
+> MIT License
+>
+> Copyright (c) 2017 Swirt
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
 ## Bundled Rust
 
 The desktop shell is [Tauri 2](https://tauri.app) (MIT / Apache-2.0). Its

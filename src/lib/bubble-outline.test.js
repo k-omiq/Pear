@@ -222,6 +222,83 @@ describe('findOutline - the bubble ladder', () => {
     expect(inside(b, 330, 220)).toBe(false);
   });
 
+  // Two joined bubbles, the wall between them gone, one text block in each but
+  // only one of them asked about with no neighbour: the outline's own neck
+  // cuts it (bubble-neck.js), where before it failed solidity and was open.
+  const joinedPair = () => {
+    const img = page(800, 600);
+    const l = [300, 300, 120, 90];
+    const r = [470, 300, 110, 85];
+    const inOval = ([cx, cy, rx, ry], x, y) => Math.hypot((x + 0.5 - cx) / rx, (y + 0.5 - cy) / ry) <= 1;
+    drawOval(img, ...l);
+    drawOval(img, ...r);
+    for (let y = 0; y < 600; y++) for (let x = 0; x < 800; x++) if (inOval(l, x, y) || inOval(r, x, y)) put(img, x, y, PAPER);
+    return img;
+  };
+
+  it('cuts joined bubbles at their neck with no neighbour to cut between', () => {
+    const img = joinedPair();
+    drawGlyphs(img, 285, 250, 30, 100);
+    const a = findOutline(img, [282, 248, 318, 352]);
+    expect(a.open).toBeUndefined();
+    expect(a.split).toBe(true);
+    expect(inside(a, 300, 300)).toBe(true);
+    expect(inside(a, 470, 300)).toBe(false);
+  });
+
+  it('keeps joined bubbles whole for one text set across the neck', () => {
+    const img = joinedPair();
+    drawGlyphs(img, 330, 270, 110, 60);
+    const a = findOutline(img, [328, 268, 442, 332]);
+    expect(a.open).toBeUndefined();
+    expect(a.split).toBe(false);
+    expect(inside(a, 300, 300) && inside(a, 470, 300)).toBe(true);
+  });
+
+  it('cuts a triple of joined bubbles down to the text chamber', () => {
+    const img = page(1000, 600);
+    const ovals = [[250, 300, 110, 85], [420, 300, 100, 80], [590, 300, 110, 85]];
+    const inOval = ([cx, cy, rx, ry], x, y) => Math.hypot((x + 0.5 - cx) / rx, (y + 0.5 - cy) / ry) <= 1;
+    for (const o of ovals) drawOval(img, ...o);
+    for (let y = 0; y < 600; y++) for (let x = 0; x < 1000; x++) if (ovals.some((o) => inOval(o, x, y))) put(img, x, y, PAPER);
+    drawGlyphs(img, 405, 250, 30, 100);
+    const a = findOutline(img, [402, 248, 438, 352]);
+    expect(a.open).toBeUndefined();
+    expect(a.split).toBe(true);
+    expect(inside(a, 420, 300)).toBe(true);
+    expect(inside(a, 250, 300)).toBe(false);
+    expect(inside(a, 590, 300)).toBe(false);
+  });
+
+  it('does not cut a plain oval', () => {
+    const img = page(600, 600);
+    drawOval(img, 300, 300, 160, 110);
+    drawGlyphs(img, 285, 250, 30, 100);
+    const a = findOutline(img, [282, 248, 318, 352]);
+    expect(a.open).toBeUndefined();
+    expect(a.split).toBe(false);
+  });
+
+  it('finds a bubble too big for the window cap from the detector bubble box', () => {
+    const img = page(1400, 1400);
+    drawOval(img, 700, 700, 560, 420);
+    drawGlyphs(img, 690, 650, 24, 100);
+    const block = [688, 648, 716, 752];
+    expect(findOutline(img, block).open).toBe(true);
+    const a = findOutline(img, block, { bubble: [137, 277, 1263, 1123] });
+    expect(a.open).toBeUndefined();
+    expect(inside(a, 300, 700)).toBe(true);
+  });
+
+  it('refuses an interior far bigger than the detector bubble box', () => {
+    const img = page(800, 800);
+    drawOval(img, 400, 400, 170, 170);
+    drawGlyphs(img, 390, 350, 24, 100);
+    const block = [388, 348, 416, 452];
+    expect(findOutline(img, block).open).toBeUndefined();
+    expect(findOutline(img, block, { bubble: [330, 330, 470, 470] }).open).toBe(true);
+  });
+
   it('answers open on bad input instead of throwing', () => {
     expect(findOutline(null, [0, 0, 10, 10]).open).toBe(true);
     expect(findOutline(page(50, 50), null).open).toBe(true);
