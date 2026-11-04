@@ -170,13 +170,13 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
    window: the scroll container inside fills this layer, and a ResizeObserver on
    it re-fits whenever the rail moves. The floating panels are outside this
    measurement on purpose - a panel dragged over the page covers it. */
-.ed-canvas{ position:absolute; inset:0 0 0 var(--canvas-left); }
+.ed-canvas{ position:absolute; inset:0 var(--canvas-right, 0px) 0 var(--canvas-left); }
 /* The bottom dock: zoom/undo and the pager side by side, centred over the
    canvas viewport rather than the window, for the same reason. The row itself
    spans the viewport and lets pointers through - only the two pills catch
    them - so it never steals a click meant for the page beneath it. */
 .ed-dockrow{
-  position:absolute; left:var(--canvas-left); right:0; bottom:16px; z-index:30;
+  position:absolute; left:var(--canvas-left); right:var(--canvas-right, 0px); bottom:16px; z-index:30;
   display:flex; align-items:center; justify-content:center; gap:10px;
   pointer-events:none;
 }
@@ -1363,12 +1363,26 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .chapter-mark{ width:14px; flex:none; display:grid; place-items:center; color:var(--t3); }
 .chapter-mark.typeset{ color:var(--text); }
 .chapter-mark.bad{ color:var(--warn); }
-.chapter-num{ width:64px; flex:none; font-size:13px; font-variant-numeric:tabular-nums; }
+.chapter-num{ width:52px; flex:none; font-size:15px; font-weight:600; letter-spacing:-.01em; font-variant-numeric:tabular-nums; }
 .chapter-title{ flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
 .chapter-name{ font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chapter-name.untitled{ color:var(--t2); }
 .chapter-sub{ font-size:11px; color:var(--t2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.chapter-status{ width:96px; flex:none; text-align:right; font-size:11.5px; color:var(--t2); }
-.chapter-progress{ width:120px; flex:none; text-align:right; font-size:11.5px; color:var(--t2); font-variant-numeric:tabular-nums; }
+.chapter-mode{ width:92px; flex:none; display:flex; justify-content:flex-end; }
+.mode-chip{
+  display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 9px;
+  border:1px solid var(--line2); border-radius:16px; font-size:11px; color:var(--t2); white-space:nowrap;
+}
+/* The meter is the count drawn: how much of the chapter is done, in the unit
+   its mode counts, with the numbers beside it. */
+.chapter-progress{ width:176px; flex:none; display:flex; align-items:center; justify-content:flex-end; gap:10px; font-size:11.5px; color:var(--t2); font-variant-numeric:tabular-nums; }
+.cp-meter{ flex:none; width:56px; height:3px; border-radius:2px; background:var(--line2); overflow:hidden; }
+.cp-meter > span{ display:block; height:100%; background:var(--text); }
+.cp-text{ white-space:nowrap; }
+.cp-stage{ color:var(--t3); }
+/* A series page is a list to read down, not a canvas: held to a measure so the
+   facts at the right of a row stay within reach of its title. */
+.project-page{ width:100%; max-width:980px; display:flex; flex-direction:column; }
 .chapter-time{ width:96px; flex:none; text-align:right; font-size:11px; color:var(--t3); }
 .chapter-row .row-menu-btn{ opacity:0; }
 .chapter-row:hover .row-menu-btn,.chapter-row:focus-within .row-menu-btn,.chapter-row .row-menu-btn.open{ opacity:1; }
@@ -1388,10 +1402,11 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .chapter-open:disabled{ cursor:default; opacity:.6; }
 .chapter-row.unreadable .chapter-num{ color:var(--t3); }
 @media (max-width:860px){
-  .chapter-progress{ display:none; }
+  .cp-meter{ display:none; }
+  .chapter-progress{ width:auto; }
 }
 @media (max-width:640px){
-  .chapter-status,.chapter-time{ display:none; }
+  .chapter-mode,.chapter-time{ display:none; }
   .project-head{ flex-direction:column; align-items:flex-start; }
 }
 
@@ -1799,7 +1814,7 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
    a column the panels stopped living in when they became draggable windows,
    which is how they ended up floating over the page as four unrelated buttons.
    The token that held that column's width is gone with it. */
-.pill-row.far-right{ right:16px; }
+.pill-row.far-right{ right:calc(16px + var(--canvas-right, 0px)); }
 /* Groups within the one row: chapter verbs, then app drawers. Same hairline as
    the zoom dock's, so both clusters divide themselves the same way. */
 .pill-row .pill-sep{ width:1px; height:18px; background:var(--line2); margin:0 2px; flex:none; }
@@ -1877,3 +1892,34 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .chrome-menu button:hover:not(:disabled){ background:var(--panel2); }
 .chrome-menu button:disabled{ color:var(--t3); cursor:default; }
 .chrome-menu-sep{ height:1px; background:var(--line); margin:4px 6px; }
+
+/* ===== The typing pane (editor/TranslatePane.svelte) =====
+   The same queue rows, given the room a translator types in for hours: bigger
+   type, a real English field, and the badge saying done or not at a glance -
+   hollow until the line has English, filled after, lit while it is the one
+   being typed. Scoped to the pane; the typeset queue keeps its compact rows. */
+.tpane .qlist{ padding:6px 4px 0; gap:2px; }
+.tpane .qrow{ padding:9px 10px; gap:11px; border-radius:8px; background:transparent; }
+.tpane .qrow:hover{ background:var(--accent-soft); }
+.tpane .qrow.active{ background:var(--surface); border-color:var(--line2); box-shadow:var(--edge-soft); }
+.tpane .qrow:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+.tpane .qrow .badge{
+  width:24px; height:24px; border-radius:50%; font-size:11.5px;
+  background:transparent; color:var(--t2); box-shadow:inset 0 0 0 1.5px var(--t3);
+}
+.tpane .qrow.done .badge{ background:var(--text); color:var(--panel); box-shadow:none; }
+.tpane .qrow.sfx .badge{ background:transparent; color:var(--t2); }
+.tpane .qrow.sfx.done .badge{ background:var(--text); color:var(--panel); }
+.tpane .qrow.active .badge{ background:#d4572a; color:#fff; box-shadow:none; }
+.tpane .qrow .preview{ font-size:13px; line-height:1.4; }
+.tpane .qrow:not(.done) .preview:empty::before{ content:'Not translated yet'; color:var(--t3); font-style:italic; }
+.tpane .qrow .qjp{ font-size:11.5px; line-height:1.45; }
+.tpane .qrow.editing .qcol{ gap:7px; }
+.tpane .qrow.editing textarea{ font-size:14px; line-height:1.45; padding:8px 10px; min-height:62px; border-radius:8px; }
+.tpane .qrow.editing textarea.qjp{ font-size:12.5px; padding:5px 8px; min-height:0; border-radius:6px; background:transparent; }
+.tpane .qtag{ display:inline-flex; align-items:center; gap:5px; padding:3px 7px; font-size:9.5px; border-radius:5px; }
+.tpane .qtag-key{ font:600 9.5px/1 system-ui, -apple-system, sans-serif; letter-spacing:0; opacity:.5; }
+.tpane .qtag.on .qtag-key{ opacity:.75; }
+.tpane .qmenu{ max-height:220px; }
+.tpane .qmenu .qpick{ margin:2px 2px 4px; padding:5px 8px; font-size:12px; }
+.tpane .qmenu-row.hot .qmenu-pick{ background:var(--accent-soft); color:var(--text); box-shadow:inset 0 0 0 1px var(--line2); }

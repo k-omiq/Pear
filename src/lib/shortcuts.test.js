@@ -495,20 +495,20 @@ describe('dispatch', () => {
     registerShortcutHandlers({ 'tool.text': text, 'tool.pan': pan, 'tool.place': place });
     expect(setCombo('tool.text', 't').ok).toBe(true);
     expect(setCombo('tool.pan', 'Shift+h').ok).toBe(true);
-    // Option+P is 'π' on a Mac: a character, however it is spelled.
-    expect(setCombo('tool.place', 'Alt+p').ok).toBe(true);
+    // Option+Q is 'œ' on a Mac: a character, however it is spelled.
+    expect(setCombo('tool.place', 'Alt+q').ok).toBe(true);
     const t = press('KeyT');
     expect(dispatchShortcut(t, { typing: true })).toBe(null);
     expect(t.preventDefault).not.toHaveBeenCalled();
     expect(dispatchShortcut(press('KeyH', { key: 'H', shift: true }), { typing: true })).toBe(null);
-    expect(dispatchShortcut(press('KeyP', { key: 'π', alt: true }), { typing: true })).toBe(null);
+    expect(dispatchShortcut(press('KeyQ', { key: 'œ', alt: true }), { typing: true })).toBe(null);
     expect(text).not.toHaveBeenCalled();
     expect(pan).not.toHaveBeenCalled();
     expect(place).not.toHaveBeenCalled();
     // Out of a field the rebound keys are the shortcuts they were bound as.
     expect(dispatchShortcut(press('KeyT'))).toBe('tool.text');
     expect(dispatchShortcut(press('KeyH', { key: 'H', shift: true }))).toBe('tool.pan');
-    expect(dispatchShortcut(press('KeyP', { key: 'π', alt: true }))).toBe('tool.place');
+    expect(dispatchShortcut(press('KeyQ', { key: 'œ', alt: true }))).toBe('tool.place');
     // A field's editing keys are typing too.
     expect(setCombo('tool.text', 'Enter').ok).toBe(true);
     expect(dispatchShortcut(press('Enter'), { typing: true })).toBe(null);
@@ -522,8 +522,8 @@ describe('dispatch', () => {
     const text = vi.fn();
     registerShortcutHandlers({ 'tool.text': text });
     setMacKeyboard(false);
-    expect(setCombo('tool.text', 'Alt+t').ok).toBe(true);
-    expect(dispatchShortcut(press('KeyT', { alt: true }), { typing: true })).toBe('tool.text');
+    expect(setCombo('tool.text', 'Alt+g').ok).toBe(true);
+    expect(dispatchShortcut(press('KeyG', { alt: true }), { typing: true })).toBe('tool.text');
     expect(text).toHaveBeenCalledTimes(1);
   });
 

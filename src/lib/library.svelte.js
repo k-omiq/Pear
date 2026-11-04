@@ -2089,6 +2089,8 @@ export async function setChapterMode(projectId, chapterId, mode) {
 
   if (app.chapterRef?.projectId === projectId && app.chapterRef?.chapterId === chapterId) {
     app.chapterMode = next;
+    app.translateTypeset = false;
+    app.viewCleaned = false;
     // The same tool reset an open in translate mode performs - the rail is about
     // to lose the two tools the user may currently be holding. Ending inline
     // editing and closing bulk state prevents stuck editingId and phantom bulk.
@@ -2407,6 +2409,9 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   // afterwards would call an untouched translate/typeset open a user edit.
   const mode = normalizeChapterMode(record.mode);
   app.chapterMode = mode;
+  // A translate chapter always opens as the page and the typing pane.
+  app.translateTypeset = false;
+  app.viewCleaned = false;
   // And its line breaker from the chapter's own record, for the same reason:
   // the load's refit measures under it (DET-3). A record from before the field
   // opens with what this machine laid it out with; the first save stamps it.
@@ -2803,6 +2808,8 @@ export function closeChapter() {
   // editor stripped for the next chapter opened - and `openChapter` writes it
   // anyway, so this is only about what the app is between two chapters.
   app.chapterMode = 'typeset';
+  app.translateTypeset = false;
+  app.viewCleaned = false;
   // And so does the layout, for the same reason - it belonged to the project the
   // closed chapter was in.
   app.projectLayout = 'pages';

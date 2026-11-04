@@ -5,10 +5,17 @@
   // without a browser.
   import { panels, movePanel, resizePanel, setHidden, raisePanel, clampAll } from './panels.svelte.js';
   import { prefersReducedMotion } from 'svelte/motion';
+  import { innerWidth } from 'svelte/reactivity/window';
 
-  let { id, title, count = null, children } = $props();
+  // `rightInset`: a column down the right the panel is kept out of - the
+  // translate chapter's typing pane. Only where it is drawn: the stored place
+  // is left alone, so a typeset chapter puts the panel back where it was.
+  let { id, title, count = null, rightInset = 0, children } = $props();
 
   const g = $derived(panels[id]);
+  const x = $derived(
+    rightInset > 0 ? Math.max(8, Math.min(g.x, (innerWidth.current ?? 1440) - rightInset - g.w - 8)) : g.x,
+  );
 
   // The panels float over every piece of editor chrome (the bulk-style panel is
   // 40) and under the modal layer (100+). The stored z is 1..n and only orders
@@ -81,7 +88,7 @@
     const pid = e.pointerId;
     const sx = e.clientX;
     const sy = e.clientY;
-    const o = { x: g.x, y: g.y, w: g.w, h: g.h };
+    const o = { x, y: g.y, w: g.w, h: g.h };
     e.currentTarget.setPointerCapture?.(pid);
     const move = (ev) => {
       // A second pointer - another touch, or a pen alongside the mouse - would
@@ -122,7 +129,7 @@
   <section
     class="fpanel"
     class:fp-exit={exitingPanel}
-    style="left:{g.x}px; top:{g.y}px; width:{g.w}px; height:{g.h}px; z-index:{LAYER + g.z}"
+    style="left:{x}px; top:{g.y}px; width:{g.w}px; height:{g.h}px; z-index:{LAYER + g.z}"
     onpointerdown={() => raisePanel(id)}
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->

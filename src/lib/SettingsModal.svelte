@@ -14,7 +14,7 @@
   import { prefs, setPref, typesetDefaults } from './prefs.svelte.js';
   import { guide, setSeriesTypeset } from './guide.svelte.js';
   import { engineSwitch, engineHasNoFont } from './engine-switch.svelte.js';
-  import { OCR_MODEL_OPTIONS } from './ocr-models.js';
+  import ReaderChoice from './ReaderChoice.svelte';
   import {
     shortcutGroups,
     comboFor,
@@ -416,12 +416,6 @@
     } catch (e) {
       toast(`Couldn't set folder: ${e}`);
     }
-  }
-
-  function setOcrModel(language, model) {
-    setPref('ocrModels', { ...prefs.ocrModels, [language]: model });
-    const label = language === 'zh' ? 'Chinese' : 'Korean';
-    toast(`${label} OCR model changed`);
   }
 
   async function chooseRoot() {
@@ -828,34 +822,13 @@
 
         <section class="settings-section">
           <h3 class="settings-title">Text readers</h3>
-          <p class="set-intro">The reader used after detection, for each source language. A changed model downloads on the next Detect; the series’ language is not changed.</p>
-          <div class="set-item">
-            <div class="set-line">
-              <span class="set-label">Japanese</span>
-              <span class="set-value">{OCR_MODEL_OPTIONS.ja[0].label}</span>
+          <p class="set-intro">The reader that turns each detected bubble into text, for each source language. A new choice downloads on the next Detect; the series’ language is not changed.</p>
+          {#each [['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean']] as [lang, langName] (lang)}
+            <div class="set-item">
+              <div class="set-line"><span class="set-label">{langName}</span></div>
+              <ReaderChoice language={lang} />
             </div>
-            <p class="set-desc">{OCR_MODEL_OPTIONS.ja[0].detail}</p>
-          </div>
-          <div class="set-item">
-            <div class="set-line">
-              <label class="set-label" for="ocr-zh">Chinese</label>
-              <select id="ocr-zh" class="set-select" aria-label="Chinese OCR model" value={prefs.ocrModels.zh} onchange={(e) => setOcrModel('zh', e.currentTarget.value)}>
-                {#each OCR_MODEL_OPTIONS.zh as model (model.id)}
-                  <option value={model.id}>{model.label} — {model.detail}</option>
-                {/each}
-              </select>
-            </div>
-          </div>
-          <div class="set-item">
-            <div class="set-line">
-              <label class="set-label" for="ocr-ko">Korean</label>
-              <select id="ocr-ko" class="set-select" aria-label="Korean OCR model" value={prefs.ocrModels.ko} onchange={(e) => setOcrModel('ko', e.currentTarget.value)}>
-                {#each OCR_MODEL_OPTIONS.ko as model (model.id)}
-                  <option value={model.id}>{model.label} — {model.detail}</option>
-                {/each}
-              </select>
-            </div>
-          </div>
+          {/each}
         </section>
 
         <section class="settings-section">

@@ -5,6 +5,13 @@
   export function showActiveRow() {
     asked.turn++;
   }
+  // Put the caret in the active line's English field (or its source field):
+  // what a bubble clicked on the page, and Enter pressed on the page, ask for.
+  const focusAsked = $state({ turn: 0, field: 'en' });
+  export function focusActiveField(field = 'en') {
+    focusAsked.field = field;
+    focusAsked.turn++;
+  }
 </script>
 
 <script>
@@ -25,6 +32,8 @@
     setLineSpeaker,
     setPageNote,
     isTranslateMode,
+    isTranslateChapter,
+    stepLine,
     addQueueLine,
     placeableDetectedLines,
     placeDetectedOnPage,
@@ -54,6 +63,7 @@
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
   import { modKey } from './format.js';
+  import { comboFor, matchesCombo, formatCombo } from './shortcuts.svelte.js';
   import ReviewList from './ReviewList.svelte';
   import FontNotice from './FontNotice.svelte';
   import EngineNotice from './EngineNotice.svelte';
@@ -116,6 +126,7 @@
   }
 
   function rowKey(e, line, editing) {
+    if (!e.target.closest('textarea, input, select') && paneKey(e, line, 'row')) return;
     if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !isFreeLine(line) && !e.target.closest('textarea, input')) {
       // Taken here, so the window's handler does not nudge the box as well.
       e.preventDefault();
@@ -146,7 +157,7 @@
     // the rest of the row is the handle.
     if (e.target.closest('textarea, input, select, [contenteditable], .qmenu, .qtagform, .qjp, .qalt-text')) return;
     const y0 = e.clientY;
-    const scroller = listEl.closest('.fpanel-body');
+    const scroller = listEl.closest('.fpanel-body, .tpane-body');
     let y = y0;
     let raf = 0;
     drag = { n: line.n, on: false, to: null, mark: null };
@@ -222,6 +233,7 @@
   }
 
   function onTextareaKey(e, line, field = 'en') {
+    if (paneKey(e, line, field)) return;
     if (!(e.metaKey || e.ctrlKey) || (e.key !== 'z' && e.key !== 'Z')) return;
     e.preventDefault();
     const u = field === 'jp' ? sourceUndo : fieldUndo;
@@ -237,10 +249,201 @@
 
   // Translate mode disables canvas box placement and status indicators.
   const translate = $derived(isTranslateMode());
+  // A translate chapter's typing pane, tools shown or not: the keyboard below
+  // belongs to it.
+  const pane = $derived(isTranslateChapter());
+
+  // ---------- the typing pane's keyboard ----------
+  // Everything a translator does, from the English field: Enter or Tab to the
+  // next line (across pages), Shift+Tab back, Shift+Enter for a line break,
+  // Alt+1-9 to toggle the tags in the order the chips number them, and the
+  // registry's Translation keys for the rest. Esc lets go of the field; on a row
+  // the arrows step and Enter goes back in. True when the press was taken.
+  const altDigit = (e) => {
+    if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return null;
+    const m = /^Digit([1-9])$/.exec(e.code ?? '');
+    return m ? +m[1] : null;
+  };
+  const is = (e, id) => {
+    const c = comboFor(id);
+    return !!c && matchesCombo(e, c);
+  };
+
+  function step(dir) {
+    if (stepLine(dir) == null) toast(dir > 0 ? 'That was the last line of the chapter' : 'This is the first line of the chapter');
+  }
+
+  function paneKey(e, line, where) {
+    if (!pane || e.isComposing || e.keyCode === 229) return false;
+    const plain = !e.altKey && !e.metaKey && !e.ctrlKey;
+    const take = () => {
+      e.preventDefault();
+      e.stopPropagation();
+      return true;
+    };
+    if (where === 'row') {
+      if (plain && !e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        take();
+        step(e.key === 'ArrowDown' ? 1 : -1);
+        return true;
+      }
+      if (plain && !e.shiftKey && e.key === 'Enter') {
+        take();
+        if (p.activeLineN !== line.n) activateLine(line.n);
+        focusActiveField('en');
+        return true;
+      }
+    } else {
+      if (plain && e.key === 'Enter' && !e.shiftKey) {
+        take();
+        // From the source field, Enter goes on to the English one.
+        if (where === 'jp') focusActiveField('en');
+        else step(1);
+        return true;
+      }
+      if (plain && e.key === 'Tab') {
+        take();
+        step(e.shiftKey ? -1 : 1);
+        return true;
+      }
+      if (e.key === 'Escape' && plain && !e.shiftKey) {
+        take();
+        e.currentTarget.blur();
+        listEl?.querySelector('.qrow.active')?.focus({ preventScroll: true });
+        return true;
+      }
+    }
+    const d = altDigit(e);
+    if (d != null) {
+      take();
+      const t = numbered[d - 1];
+      if (t) toggle(line, t.name);
+      else toast(`No tag ${d} yet - ${formatCombo(comboFor('translate.tagPicker'))} to add one`);
+      return true;
+    }
+    if (is(e, 'translate.clearTags')) {
+      take();
+      for (const name of lineTags(line).slice()) toggle(line, name);
+      return true;
+    }
+    if (is(e, 'translate.tagPicker')) {
+      take();
+      openPicker(line);
+      return true;
+    }
+    if (is(e, 'translate.speaker')) {
+      take();
+      const sel = listEl?.querySelector(`#qspk-${line.n}`);
+      if (sel) sel.focus();
+      else toast('No characters yet - add them in Settings ▸ Series guide');
+      return true;
+    }
+    if (is(e, 'translate.source')) {
+      take();
+      focusActiveField(where === 'jp' ? 'en' : 'jp');
+      return true;
+    }
+    if (is(e, 'translate.note')) {
+      take();
+      noteAsked = true;
+      queueMicrotask(() => listEl?.querySelector('.qnote')?.focus());
+      return true;
+    }
+    return false;
+  }
+
+  // The caret follows the active line in the typing pane: a bubble clicked on
+  // the page, a row clicked, Enter pressed - whichever moved it, the English
+  // field of the line it landed on is where the next keystroke goes. Only on a
+  // change (or a request), never on a re-render, so a field the user moved to
+  // on purpose (the note, a tag name) keeps the caret.
+  let lastFocusKey = null;
+  let lastFocusTurn = focusAsked.turn;
+  $effect(() => {
+    const key = pane && p.activeLineN != null ? `${p.id}:${p.activeLineN}` : null;
+    const turn = focusAsked.turn;
+    const field = focusAsked.field;
+    untrack(() => {
+      const askedNow = turn !== lastFocusTurn;
+      if (!askedNow && key === lastFocusKey) return;
+      lastFocusKey = key;
+      lastFocusTurn = turn;
+      if (!key) return;
+      if (document.querySelector('.modal-overlay.open, .settings-screen')) return;
+      requestAnimationFrame(() => {
+        const row = listEl?.querySelector('.qrow.active');
+        const el = row?.querySelector(askedNow && field === 'jp' ? 'textarea.qjp' : 'textarea.qen');
+        if (!el) return;
+        el.focus({ preventScroll: true });
+        const end = el.value.length;
+        el.setSelectionRange(end, end);
+      });
+    });
+  });
 
 
   const known = $derived(knownTags(app.pages));
   const recent = $derived(known.slice(0, 4));
+  // The typing pane shows the first nine tags, always in the same places, each
+  // with the Alt+digit that toggles it. In name order, not the registry's: that
+  // is recency order, and a digit that moves every time a tag is used is a
+  // digit nobody can learn.
+  const byName = $derived([...known].sort((a, b) => a.name.localeCompare(b.name)));
+  const numbered = $derived(byName.slice(0, 9));
+  const altLabel = $derived(formatCombo('Alt+1').replace(/1$/, ''));
+
+  // ---------- the tag finder (Alt+T) ----------
+  // The All tags menu with a field on top: type to narrow, ↑/↓ to choose, Enter
+  // to toggle the choice - or, when nothing matches, to make a tag of that name
+  // and put it on the line. Esc goes back to the English field.
+  let pickQuery = $state('');
+  let pickAt = $state(0);
+  const pickList = $derived.by(() => {
+    const q = normalizeTagName(pickQuery) ?? '';
+    return q ? byName.filter((t) => t.name.includes(q)) : byName;
+  });
+  function openPicker(line) {
+    form = null;
+    pickQuery = '';
+    pickAt = 0;
+    menuFor = line;
+    // After the menu is in the tree; `autofocus` does not reach an element a
+    // keypress inserts into a row that is already mounted.
+    requestAnimationFrame(() => listEl?.querySelector('.qpick')?.focus());
+  }
+  function closePicker(refocus = true) {
+    menuFor = null;
+    if (refocus) focusActiveField('en');
+  }
+  function pickerKey(e, line) {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = pickList.length;
+      if (n) pickAt = (pickAt + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const t = pickList[pickAt];
+      if (t) toggle(line, t.name);
+      else {
+        const name = normalizeTagName(pickQuery);
+        if (!name) return;
+        createTag(name, tagFormDefaults(tagFormFields(null)));
+        if (!hasTag(line, name)) toggle(line, name);
+        toast(`Made the tag “${name}”`);
+      }
+      pickQuery = '';
+      pickAt = 0;
+      if (!e.shiftKey) closePicker();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closePicker();
+    } else if (altDigit(e) != null || is(e, 'translate.tagPicker')) {
+      e.preventDefault();
+      closePicker();
+    }
+  }
 
 
   let menuFor = $state(null);
@@ -339,7 +542,7 @@
 
   function followActiveLine() {
     followRaf = 0;
-    const scroller = listEl?.closest('.fpanel-body');
+    const scroller = listEl?.closest('.fpanel-body, .tpane-body');
     const row = listEl?.querySelector('.qrow.active');
     if (!scroller || !row) return;
     const rowR = row.getBoundingClientRect();
@@ -430,9 +633,11 @@
       {/if}
     </div>
   {/if}
-  <EngineNotice />
+  <!-- The engine and font notices are about boxes, which a translate chapter
+       with its tools hidden does not draw. -->
+  {#if !translate}<EngineNotice />{/if}
   <ReviewList />
-  <FontNotice />
+  {#if !translate}<FontNotice />{/if}
   <!-- A note about this page (TXT-7), saved with the chapter: what the art
        shows, who is speaking, what to watch for. Written on every keystroke:
        the page can change under the field (a longstrip scroll, Next to
@@ -476,6 +681,7 @@
       class:editing
       class:active={editing}
       class:placed
+      class:done={pane && !!lineText(line).trim()}
       class:sfx={tagged.includes('sfx')}
       class:narration={tagged.includes('narration')}
       class:lifted={drag?.on && drag.n === line.n}
@@ -501,13 +707,25 @@
         <button class="badge" class:free title="Select this line's box" onclick={() => activateLine(line.n)}>{badge}</button>
         <span class="qcol">
           <span class="qtags">
-            {#each chips(line) as c (c.name)}
-              <button class="qtag" class:on={c.on} title={c.on ? `Remove ${c.name}` : `Apply ${c.name}`} onclick={() => toggle(line, c.name)}>{c.name}</button>
-            {/each}
+            {#if pane}
+              <!-- Every one of the first nine tags, in fixed places, so the
+                   digit under each is the same on every line. -->
+              {#each numbered as t, i (t.name)}
+                {@const on = tagged.includes(t.name)}
+                <button class="qtag" class:on title={`${on ? 'Remove' : 'Apply'} ${t.name} (${altLabel}${i + 1})`} aria-keyshortcuts="Alt+{i + 1}" aria-pressed={on} onclick={() => toggle(line, t.name)}><kbd class="qtag-key">{i + 1}</kbd>{t.name}</button>
+              {/each}
+              {#each tagged.filter((n) => !numbered.some((t) => t.name === n)) as name (name)}
+                <button class="qtag on" title={`Remove ${name}`} aria-pressed="true" onclick={() => toggle(line, name)}>{name}</button>
+              {/each}
+            {:else}
+              {#each chips(line) as c (c.name)}
+                <button class="qtag" class:on={c.on} title={c.on ? `Remove ${c.name}` : `Apply ${c.name}`} onclick={() => toggle(line, c.name)}>{c.name}</button>
+              {/each}
+            {/if}
             <button class="qtag-ic" title="Create tag" onclick={() => (form?.line === line && !form.edit ? (form = null) : openCreate(line))}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h8" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7.5 18.5 3 20l1.5-4.5z" /></svg>
             </button>
-            <button class="qtag-ic" title="All tags" onclick={() => (menuFor = menuFor === line ? null : line)}>
+            <button class="qtag-ic" title={pane ? `Find or add a tag (${formatCombo(comboFor('translate.tagPicker'))})` : 'All tags'} onclick={() => (menuFor === line ? closePicker(false) : openPicker(line))}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
             </button>
           </span>
@@ -515,11 +733,27 @@
           {#if menuFor === line}
 
             <span class="qmenu">
-              {#if known.length === 0}
+              {#if pane}
+                <!-- svelte-ignore a11y_autofocus -->
+                <input
+                  class="qtf-input qpick"
+                  autofocus
+                  placeholder="Find or add a tag…"
+                  aria-label="Find or add a tag"
+                  maxlength={MAX_TAG_LEN}
+                  value={pickQuery}
+                  oninput={(e) => { pickQuery = e.currentTarget.value; pickAt = 0; }}
+                  onkeydown={(e) => pickerKey(e, line)}
+                />
+                {#if pickQuery && pickList.length === 0}
+                  <span class="qmenu-empty">↵ makes the tag “{normalizeTagName(pickQuery) ?? pickQuery}”</span>
+                {/if}
+              {/if}
+              {#if known.length === 0 && !pane}
                 <span class="qmenu-empty">No tags yet - use the pen to make one.</span>
               {/if}
-              {#each known as t (t.name)}
-                <span class="qmenu-row">
+              {#each pane ? pickList : known as t, i (t.name)}
+                <span class="qmenu-row" class:hot={pane && i === pickAt}>
                   <button class="qmenu-pick" class:on={hasTag(line, t.name)} onclick={() => toggle(line, t.name)}>
                     <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12l5 5L20 6" /></svg>
                     <span class="nm">{t.name}</span>
@@ -571,7 +805,18 @@
           {#if characters.length || line.speaker}
             <span class="qspk">
               <label class="qtf-lbl" for="qspk-{line.n}">Speaker</label>
-              <select id="qspk-{line.n}" value={line.speaker ?? ''} onchange={(e) => setLineSpeaker(p, line.n, e.currentTarget.value || null)}>
+              <select
+                id="qspk-{line.n}"
+                value={line.speaker ?? ''}
+                onchange={(e) => setLineSpeaker(p, line.n, e.currentTarget.value || null)}
+                onkeydown={(e) => {
+                  if (pane && (e.key === 'Escape' || e.key === 'Enter')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    focusActiveField('en');
+                  }
+                }}
+              >
                 <option value="">-</option>
                 {#if line.speaker && !speakerName(line)}<option value={line.speaker}>Unknown character</option>{/if}
                 {#each characters as c (c.id)}<option value={c.id}>{c.target}</option>{/each}
@@ -608,8 +853,10 @@
             </span>
           {/if}
           <textarea
+            class="qen"
             rows="2"
             placeholder="English…"
+            aria-label="English for line {badge}"
             value={line.en ?? ''}
             oninput={(e) => onTextareaInput(e, line)}
             onkeydown={(e) => onTextareaKey(e, line)}

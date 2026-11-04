@@ -4,6 +4,7 @@
   import TextBox from '../TextBox.svelte';
   import { gizmoUi } from '../SfxGizmo.svelte';
   import RegionsLayer from './RegionsLayer.svelte';
+  import BubbleNumbers from './BubbleNumbers.svelte';
   import {
     app,
     page,
@@ -19,6 +20,7 @@
     setZoomLive,
     normalizeZoom,
     isTranslateMode,
+    isTranslateChapter,
     isLongstrip,
     gotoPage,
     toast,
@@ -196,7 +198,14 @@
   // is `pg.raw` outright, and a chapter with no raw shows nothing rather than
   // quietly showing the cleaned art instead.
   // Held raw-page key (FLOW-7): the page before cleaning, in place.
-  const srcOf = (pg) => (translate || app.peekRaw ? pg.raw : (pg.cleaned ?? pg.raw));
+  // A translate chapter shows the raw, and with its typesetting tools out the
+  // cleaned page only when asked for (`app.viewCleaned`, the pane's Cleaned
+  // switch) - there is no reference sidebar beside it to hold the raw.
+  const srcOf = (pg) => {
+    if (app.peekRaw) return pg.raw;
+    if (isTranslateChapter()) return app.translateTypeset && app.viewCleaned ? (pg.cleaned ?? pg.raw) : pg.raw;
+    return translate ? pg.raw : (pg.cleaned ?? pg.raw);
+  };
 
   // ---------- the pages a paged chapter keeps in the DOM ----------
   //
@@ -947,7 +956,7 @@
     if (!stripReveal.seq) return;
     untrack(() => {
       if (!strip || !scrollEl || !stripEl) return;
-      const box = page()?.boxes.find((b) => b.id === stripReveal.boxId);
+      const box = stripReveal.rect ?? page()?.boxes.find((b) => b.id === stripReveal.boxId);
       if (!box) return;
       const { st, vh, tops } = stripMetrics();
       const top = stripScrollTopForBox(box, tops[app.pageIndex] ?? 0, app.zoom, st, vh);
@@ -1247,6 +1256,20 @@
           <!-- Mount individual boxes whose derived painted strip bounds intersect the
                resident artwork window, or that are selected/editing targets. Offscreen
                owner pages with no intersecting boxes render nothing. -->
+          {#if translate && stripLayout}
+            <!-- A translate strip numbers the bubbles of the slices near the
+                 reader, each slice's marks over its own frame. -->
+            {#each app.pages as pg, i (pg.id)}
+              {#if pg.w > 0 && pg.detect && pageInStripWindow(pg, i)}
+                <div
+                  class="page-boxlayer"
+                  style="top:{stripLayout.tops[i] ?? 0}px; left:calc(50% - {(pg.w * app.zoom) / 2}px); width:{pg.w * app.zoom}px; height:{pg.h * app.zoom}px;"
+                >
+                  <BubbleNumbers {pg} />
+                </div>
+              {/if}
+            {/each}
+          {/if}
           {#if !translate && stripLayout}
             {#each app.pages as pg, i (pg.id)}
               {#if pageHasVisibleBoxes(pg, i)}
@@ -1308,6 +1331,9 @@
           </div>
           {#if app.showRegions && !translate && m.i === app.pageIndex && m.pg.w > 0}
             <RegionsLayer pg={m.pg} />
+          {/if}
+          {#if translate && m.i === app.pageIndex && m.pg.w > 0}
+            <BubbleNumbers pg={m.pg} />
           {/if}
         </div>
       {/each}
