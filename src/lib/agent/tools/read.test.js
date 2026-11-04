@@ -311,9 +311,9 @@ describe('catalogues', () => {
 
   it('lists the sound types, and ranks them for a box or a text', async () => {
     const kinds = [
-      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h' },
-      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h' },
-      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v' },
+      { id: 'impact', name: 'Impact', example: 'ドン!!', dir: 'h' },
+      { id: 'explosion', name: 'Explosion', example: 'バキッ', dir: 'h' },
+      { id: 'pop', name: 'Pop', example: 'ドーン!!', dir: 'v' },
     ];
     const asked = [];
     setTextEngine({
@@ -323,9 +323,9 @@ describe('catalogues', () => {
     });
     const result = await read('sfx_kinds');
     expect(result).toEqual({ kinds: [
-      { id: 'impact', name: 'Impact', example: 'ドン!!', tag: 'blocky', dir: 'h' },
-      { id: 'explosion', name: 'Explosion', example: 'バキッ', tag: 'blocky', dir: 'h' },
-      { id: 'pop', name: 'Pop', example: 'ドーン!!', tag: 'sfx-soft', dir: 'v' },
+      { id: 'impact', name: 'Impact', example: 'ドン!!', dir: 'h' },
+      { id: 'explosion', name: 'Explosion', example: 'バキッ', dir: 'h' },
+      { id: 'pop', name: 'Pop', example: 'ドーン!!', dir: 'v' },
     ] });
     // A box's own text is asked for, and the pick names the box, not its text.
     const byBox = await read('sfx_kinds', { id: 'b2' });

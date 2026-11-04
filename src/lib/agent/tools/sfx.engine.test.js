@@ -59,9 +59,9 @@ describe('sfx_kinds', () => {
     const r = await callTool('sfx_kinds', {});
     expect(r.ok, JSON.stringify(r)).toBe(true);
     expect(r.result.kinds.map((k) => k.id)).toEqual(sfxKinds().map((k) => k.id));
-    expect(r.result.kinds).toHaveLength(12);
+    expect(r.result.kinds).toHaveLength(19);
     for (const k of r.result.kinds) {
-      expect(Object.keys(k)).toEqual(['id', 'name', 'example', 'tag', 'dir']);
+      expect(Object.keys(k)).toEqual(['id', 'name', 'example', 'dir']);
     }
     expect(r.result.pick).toBeUndefined();
   });
@@ -70,7 +70,7 @@ describe('sfx_kinds', () => {
     const byBox = (await callTool('sfx_kinds', { id: 's' })).result.pick;
     const p = sfxPick('BOOM!!');
     expect(byBox).toEqual({ id: 's', order: p.order, power: p.power, rough: p.rough, momentum: p.momentum });
-    expect(byBox.order).toHaveLength(12);
+    expect(byBox.order).toHaveLength(19);
     const byText = (await callTool('sfx_kinds', { text: 'ドン!!' })).result.pick;
     expect(isFenced(byText.text)).toBe(true);
     expect(byText.order[0]).toBe(sfxPick('ドン!!').order[0]);

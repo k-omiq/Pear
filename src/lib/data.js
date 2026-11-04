@@ -241,6 +241,12 @@ export function defaultStyle() {
     size: 26,
     bold: false,
     italic: false,
+    // How heavy a bold is (percent: 100 the bold as its face draws it, more
+    // grows every letter by more synthesised bolds) and how far an italic
+    // leans (degrees: ITALIC_ANGLE_DEF is the italic as drawn, more or less
+    // leans it further or back). Each counts only while its switch is on.
+    boldWeight: 100,
+    italicAngle: 14,
     align: 'center',
     valign: 'middle', // top | middle | bottom
     // Whole-box alpha, applied over everything (fill, strokes, shadows).
@@ -715,6 +721,15 @@ export function normalizeWarp(src) {
 //
 // The first eleven are the ones the canvas draws (`drawPatternTile`), for the
 // browser engine; it paints any other kind as 'dots'.
+// Bold weight, percent, and italic angle, degrees (`boldWeight`,
+// `italicAngle`). 14 degrees is the lean of a synthesised italic (a quarter of
+// the height), the one an italic is taken to have as drawn.
+export const BOLD_WEIGHT_MIN = 100;
+export const BOLD_WEIGHT_MAX = 400;
+export const ITALIC_ANGLE_MIN = -20;
+export const ITALIC_ANGLE_MAX = 45;
+export const ITALIC_ANGLE_DEF = 14;
+
 export const PATTERN_KINDS = [
   'dots',
   'halftone',
@@ -747,6 +762,8 @@ export const PATTERN_KINDS = [
   'hearts',
   'kakeami',
   'glitch',
+  'dither',
+  'dither-dots',
 ];
 export const CANVAS_PATTERN_KINDS = PATTERN_KINDS.slice(0, 11);
 // The kinds whose look a seed changes.
@@ -846,14 +863,18 @@ function sfxDefault() {
   };
 }
 
-// The bends SFX switched off on the box, as they stood before SFX went on.
-// Remove SFX puts them back (`clearSfx`, sfx.js). Null while SFX is off.
-// `look` is only on boxes from the first SFX tool build, which still changed
-// the look; Remove SFX gives it back once and new boxes never write it.
+// The box as it stood before SFX went on, for Remove SFX to put back
+// (`clearSfx`, sfx.js): the bends SFX switched off, `look` (the whole style
+// but the SFX recipe and the brush ink: size, turn, fill, outlines and the
+// rest) and `box` (its width and height). Null while SFX is off. A box made
+// SFX by the SFX tool has no `look` or `box`: it was never anything else.
 function normalizeSfxBefore(b) {
   if (!b || typeof b !== 'object') return null;
   const out = { curve: num(b.curve, 0), circle: b.circle === true, path: b.path === true };
   if (b.look && typeof b.look === 'object') out.look = JSON.parse(JSON.stringify(b.look));
+  const w = num(b.box?.w, 0);
+  const h = num(b.box?.h, 0);
+  if (w > 0 && h > 0) out.box = { w, h };
   return out;
 }
 
@@ -1148,6 +1169,8 @@ export function normalizeStyle(s) {
     shape: BLOCK_SHAPES.includes(flat.shape) ? flat.shape : d.shape,
     margin: normalizeMargin(src.margin),
     autoContrast: flat.autoContrast === true,
+    boldWeight: Math.min(BOLD_WEIGHT_MAX, Math.max(BOLD_WEIGHT_MIN, num(flat.boldWeight, d.boldWeight))),
+    italicAngle: Math.min(ITALIC_ANGLE_MAX, Math.max(ITALIC_ANGLE_MIN, num(flat.italicAngle, d.italicAngle))),
     fitText: flat.fitText === true,
     fitMax: Math.min(200, Math.max(0, num(flat.fitMax, 0))),
     blur: Math.max(0, num(src.blur, 0)),

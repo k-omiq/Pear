@@ -1,7 +1,7 @@
 //! The twelve sound types: how each one lays its letters out, as data.
 //!
 //! A type is a layout and nothing else: it never changes the box's look
-//! (font, fill, outlines are the user's). Applying one resets the box's
+//! and never asks for a font (font, fill, outlines are the user's). Applying one resets the box's
 //! layout fields to unset, and [`super::params`] fills every unset number
 //! from here, so this table is the one place a type's numbers live.
 //!
@@ -33,8 +33,6 @@ pub struct Kind {
     pub name: &'static str,
     /// A sound this type suits, as the card shows it.
     pub example: &'static str,
-    /// The lettering tag whose font the type asks for (`lettering.js`).
-    pub tag: &'static str,
     pub vertical: bool,
     /// Letter size at the start and the end of a group, and the ease.
     pub flow: (f64, f64, f64),
@@ -65,7 +63,6 @@ pub const KINDS: &[Kind] = &[
         id: "impact",
         name: "Impact",
         example: "ドン!!",
-        tag: "blocky",
         vertical: false,
         flow: (0.78, 1.3, 1.0),
         follow: 0.35,
@@ -79,7 +76,6 @@ pub const KINDS: &[Kind] = &[
         id: "rumble",
         name: "Rumble",
         example: "ゴゴゴゴ",
-        tag: "blocky",
         vertical: false,
         flow: (1.35, 0.55, 0.8),
         follow: 0.6,
@@ -93,7 +89,6 @@ pub const KINDS: &[Kind] = &[
         id: "slash",
         name: "Slash",
         example: "ザシュッ",
-        tag: "sfx-sharp",
         vertical: false,
         flow: (1.25, 0.85, 1.0),
         follow: 0.7,
@@ -107,7 +102,6 @@ pub const KINDS: &[Kind] = &[
         id: "explosion",
         name: "Explosion",
         example: "バキッ",
-        tag: "blocky",
         vertical: false,
         flow: (1.05, 1.25, 1.0),
         follow: 0.3,
@@ -121,7 +115,6 @@ pub const KINDS: &[Kind] = &[
         id: "splash",
         name: "Splash",
         example: "ドボーン",
-        tag: "sfx",
         vertical: true,
         flow: (0.9, 1.2, 1.0),
         follow: 0.5,
@@ -135,7 +128,6 @@ pub const KINDS: &[Kind] = &[
         id: "soft",
         name: "Soft",
         example: "きらっ",
-        tag: "sfx-soft",
         vertical: false,
         flow: (1.0, 1.1, 1.0),
         follow: 0.4,
@@ -149,7 +141,6 @@ pub const KINDS: &[Kind] = &[
         id: "drip",
         name: "Drip",
         example: "ぽちゃん",
-        tag: "sfx-soft",
         vertical: false,
         flow: (1.0, 0.9, 1.0),
         follow: 0.6,
@@ -163,7 +154,6 @@ pub const KINDS: &[Kind] = &[
         id: "small",
         name: "Small",
         example: "ストン",
-        tag: "sfx",
         vertical: true,
         flow: (1.0, 1.0, 1.0),
         follow: 0.0,
@@ -177,7 +167,6 @@ pub const KINDS: &[Kind] = &[
         id: "glare",
         name: "Glare",
         example: "ギ/ロッ",
-        tag: "sfx-sharp",
         vertical: true,
         flow: (1.0, 0.9, 1.0),
         follow: 0.4,
@@ -192,7 +181,6 @@ pub const KINDS: &[Kind] = &[
         id: "pop",
         name: "Pop",
         example: "ドーン!!",
-        tag: "sfx-soft",
         vertical: false,
         flow: (1.0, 1.15, 1.0),
         follow: 0.3,
@@ -206,7 +194,6 @@ pub const KINDS: &[Kind] = &[
         id: "silence",
         name: "Silence",
         example: "シーン",
-        tag: "sfx",
         vertical: true,
         flow: (1.0, 1.0, 1.0),
         follow: 0.0,
@@ -220,7 +207,6 @@ pub const KINDS: &[Kind] = &[
         id: "shock",
         name: "Shock",
         example: "ズーン",
-        tag: "sfx",
         vertical: true,
         flow: (0.9, 1.3, 1.0),
         follow: 0.5,
@@ -229,6 +215,110 @@ pub const KINDS: &[Kind] = &[
         rise: 3.0,
         jitter: (0.0, 0.0, 0.0),
         paths: &[path(84.6, -0.1, 0.035, 0.0)],
+    },
+    // The rest are read off a sheet of English hand lettering (2023 Star
+    // Children ch. 3-5): only where its letters go, never how they are drawn.
+    Kind {
+        id: "whoosh",
+        name: "Whoosh",
+        example: "SWOOOSH",
+        vertical: false,
+        // A big first letter, the run thinning out down a steep diagonal.
+        flow: (1.3, 0.9, 0.6),
+        follow: 0.15,
+        gap: -0.04,
+        slant: 0.0,
+        rise: 0.0,
+        jitter: (6.0, 0.0, 0.08),
+        paths: &[path(62.0, 0.08, 0.0, 0.0)],
+    },
+    Kind {
+        id: "stomp",
+        name: "Stomp",
+        example: "STOMP\nSTOMP\nSTOMP",
+        vertical: false,
+        flow: (1.0, 1.0, 1.0),
+        follow: 0.9,
+        gap: -0.04,
+        slant: 0.0,
+        rise: 0.0,
+        jitter: (5.0, 0.04, 0.0),
+        // The same word three times, a stair falling to the left.
+        paths: &[
+            path(32.0, 0.0, 0.55, -1.45),
+            path(32.0, 0.0, 0.0, 0.0),
+            path(32.0, 0.0, -0.55, 1.45),
+        ],
+    },
+    Kind {
+        id: "repeat",
+        name: "Repeat",
+        example: "RUB\nRUB",
+        vertical: false,
+        flow: (1.1, 0.95, 1.0),
+        follow: 0.5,
+        gap: 0.02,
+        slant: 0.0,
+        rise: 0.0,
+        jitter: (8.0, 0.12, 0.12),
+        // Said twice, the second one lower and to the right.
+        paths: &[path(-6.0, 0.05, -0.45, -0.62), path(-10.0, 0.05, 0.45, 0.62)],
+    },
+    Kind {
+        id: "bounce",
+        name: "Bounce",
+        example: "PLOP",
+        vertical: false,
+        // Upright letters stepping down, each hopping up or down a little.
+        flow: (1.0, 1.08, 1.0),
+        follow: 0.0,
+        gap: 0.0,
+        slant: 0.0,
+        rise: 0.0,
+        jitter: (10.0, 0.1, 0.28),
+        paths: &[path(22.0, 0.0, 0.0, 0.0)],
+    },
+    Kind {
+        id: "arc",
+        name: "Arc",
+        example: "CLANG",
+        vertical: false,
+        // Bowed over and falling away, the letters turning with it.
+        flow: (1.15, 0.85, 1.0),
+        follow: 0.9,
+        gap: -0.04,
+        slant: 0.0,
+        rise: 0.0,
+        jitter: (0.0, 0.0, 0.0),
+        paths: &[path(24.0, -0.22, 0.0, 0.0)],
+    },
+    Kind {
+        id: "climb",
+        name: "Climb",
+        example: "WHISTLE",
+        vertical: false,
+        // A steep run upwards, every letter laid along it.
+        flow: (0.9, 1.1, 1.0),
+        follow: 1.0,
+        gap: -0.02,
+        slant: 0.0,
+        rise: 0.0,
+        jitter: (3.0, 0.0, 0.0),
+        paths: &[path(-52.0, 0.06, 0.0, 0.0)],
+    },
+    Kind {
+        id: "crunch",
+        name: "Crunch",
+        example: "KRRCH",
+        vertical: false,
+        // Jagged: a heavy first letter, then the rest knocked about.
+        flow: (1.3, 0.9, 0.7),
+        follow: 0.0,
+        gap: 0.04,
+        slant: 0.0,
+        rise: 0.0,
+        jitter: (12.0, 0.08, 0.15),
+        paths: &[path(55.0, 0.0, 0.0, 0.0)],
     },
 ];
 
@@ -267,7 +357,6 @@ fn kind_json(out: &mut String, k: &Kind) {
         ("id", k.id),
         ("name", k.name),
         ("example", k.example),
-        ("tag", k.tag),
     ] {
         key(out, name);
         text(out, v);

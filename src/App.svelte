@@ -30,7 +30,7 @@
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
   import { patternPick, cancelPatternPick } from './lib/pattern-pick.svelte.js';
   import { initHistory, undo, redo } from './lib/editor/history.svelte.js';
-  import { flushPanels } from './lib/editor/panels.svelte.js';
+  import { flushPanels, showPanel } from './lib/editor/panels.svelte.js';
   import { switchHistoryPage } from './lib/editor/history-file.svelte.js';
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
   import { isTauri } from './lib/importer.js';
@@ -381,7 +381,10 @@
     'tool.text': () => setTool('text'),
     'tool.brush': () => setTool('brush'),
     'tool.pan': () => setTool('pan'),
-    'tool.sfx': () => setTool('sfx'),
+    'tool.sfx': () => {
+      setTool('sfx');
+      if (app.tool === 'sfx') showPanel('sfx');
+    },
 
     'box.duplicate': () => {
       // Swallowed either way, so the browser's bookmark dialog never opens over

@@ -44,8 +44,7 @@ export function defaultGeometry(vw) {
     // out, so moving the band cannot leave the two overlapping.
     queue: { x, y: CHROME_BAND + DEF_OPTIONS_H + GAP, w: DEF_W, h: 360, hidden: false, z: 2 },
     // The SFX window opens beside the options panel, to its left, and starts
-    // hidden: its tab waits under the options panel's on the tool strip, and
-    // drawing a sound opens it.
+    // hidden: the SFX tool on the strip brings it, and drawing a sound opens it.
     sfx: { x: Math.max(GAP, x - DEF_W - GAP), y: CHROME_BAND, w: DEF_W, h: DEF_SFX_H, hidden: true, z: 3 },
   };
 }
@@ -194,6 +193,13 @@ export function setHidden(id, hidden) {
 // layout where both carry the same z - which a stored blob written without
 // them produces - would otherwise satisfy "I am already the top" forever, and
 // the user could never bring either one forward again.
+// A panel brought back and to the front: what its tab on the tool strip does,
+// and what the SFX tool does for the SFX window.
+export function showPanel(id) {
+  setHidden(id, false);
+  raisePanel(id);
+}
+
 export function raisePanel(id) {
   const rest = PANEL_IDS.filter((p) => p !== id).map((p) => panels[p].z);
   if (!rest.length) return;

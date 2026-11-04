@@ -45,6 +45,11 @@
     LINE_HEIGHT_MAX,
     letterSpacingRange,
     normalizeFit,
+    BOLD_WEIGHT_MIN,
+    BOLD_WEIGHT_MAX,
+    ITALIC_ANGLE_MIN,
+    ITALIC_ANGLE_MAX,
+    ITALIC_ANGLE_DEF,
   } from './data.js';
   import { layoutShape } from './balloon.js';
   import { gradientCss, patternTileCanvas, sampleStops } from './text-paint.js';
@@ -205,6 +210,10 @@
 
   // One setter for every plain numeric field: clamp, write, touch. Saves the
   // panel from spelling the same three lines out forty times.
+  // The fold under B and I (bold weight, italic angle): closed until asked.
+  let styleMore = $state(false);
+  const styleTuned = (st) => (st.bold && st.boldWeight !== BOLD_WEIGHT_MIN) || (st.italic && st.italicAngle !== ITALIC_ANGLE_DEF);
+
   function setNum(obj, key, v, lo, hi, round = false) {
     let n = +v;
     if (!Number.isFinite(n)) n = 0;
@@ -682,12 +691,14 @@
     hearts: 'Hearts',
     kakeami: 'Kakeami',
     glitch: 'Glitch',
+    dither: 'Dither',
+    'dither-dots': 'Dither dots',
     picked: 'From page',
   };
   const patLabel = (k) => PATTERN_LABELS[k] ?? k;
-  // The picker's groups, so thirty-one cards are not one long wall.
+  // The picker's groups, so thirty-three cards are not one long wall.
   const PATTERN_GROUPS = {
-    tone: ['dots', 'halftone', 'halftone-fade', 'square-dots', 'diamond-dots', 'stipple', 'sand'],
+    tone: ['dots', 'halftone', 'halftone-fade', 'dither', 'dither-dots', 'square-dots', 'diamond-dots', 'stipple', 'sand'],
     lines: ['stripes', 'hstripes', 'diagonal', 'diagonal-alt', 'crosshatch', 'vlines', 'hlines', 'line-tone', 'waves', 'zigzag', 'kakeami'],
     action: ['speed-lines', 'burst', 'rings', 'glitch'],
     shapes: ['checker', 'grid', 'bricks', 'scales', 'hex', 'triangles', 'plus', 'stars', 'hearts'],
@@ -1127,9 +1138,41 @@
               <button type="button" class:on={s.bold} aria-pressed={s.bold} title="Bold" onclick={() => { s.bold = !s.bold; touch(); }}><b>B</b></button>
               <button type="button" class:on={s.italic} aria-pressed={s.italic} title="Italic" onclick={() => { s.italic = !s.italic; touch(); }}><i>I</i></button>
               <button type="button" class:on={s.uppercase} aria-pressed={s.uppercase} title="Uppercase" onclick={() => { s.uppercase = !s.uppercase; touch(); }}>TT</button>
+              {#if engineSwitch.painting}
+                <button type="button" class="more" class:on={styleMore} class:set={styleTuned(s)} aria-expanded={styleMore} aria-controls="insp-style-more" title={styleTuned(s) ? 'Bold weight and italic angle (set)' : 'Bold weight and italic angle'} onclick={() => (styleMore = !styleMore)}>⋯</button>
+              {/if}
             </div>
           </div>
         </div>
+        <!-- The fine end of B and I, folded away: how heavy the bold, how far
+             the italic leans. Only the Rust painter draws them. A row shows
+             while its switch is on; the fold's button carries a dot while a
+             value is off its default, so nothing is set out of sight. -->
+        {#if engineSwitch.painting && styleMore}
+          <div class="style-more" id="insp-style-more">
+            {#if s.bold}
+              <div class="grp">
+                <span class="lbl">Bold weight · {Math.round(s.boldWeight)}%</span>
+                <div class="slider-row">
+                  <input type="range" min={BOLD_WEIGHT_MIN} max={BOLD_WEIGHT_MAX} step="5" value={s.boldWeight} aria-label="Bold weight" oninput={(e) => setNum(s, 'boldWeight', e.target.value, BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, true)} />
+                  <input class="num-s" type="number" min={BOLD_WEIGHT_MIN} max={BOLD_WEIGHT_MAX} step="5" value={Math.round(s.boldWeight)} title="100% is the bold as the font draws it" aria-label="Bold weight, percent" onchange={(e) => commitNum(s, 'boldWeight', e, BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, true)} />
+                </div>
+              </div>
+            {/if}
+            {#if s.italic}
+              <div class="grp">
+                <span class="lbl">Italic angle · {Math.round(s.italicAngle)}°</span>
+                <div class="slider-row">
+                  <input type="range" min={ITALIC_ANGLE_MIN} max={ITALIC_ANGLE_MAX} step="1" value={s.italicAngle} aria-label="Italic angle" oninput={(e) => setNum(s, 'italicAngle', e.target.value, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, true)} />
+                  <input class="num-s" type="number" min={ITALIC_ANGLE_MIN} max={ITALIC_ANGLE_MAX} step="1" value={Math.round(s.italicAngle)} title="{ITALIC_ANGLE_DEF}° is the italic as the font draws it" aria-label="Italic angle, degrees" onchange={(e) => commitNum(s, 'italicAngle', e, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, true)} />
+                </div>
+              </div>
+            {/if}
+            {#if !s.bold && !s.italic}
+              <p class="nofill-note">Turn on B or I to set its weight or angle.</p>
+            {/if}
+          </div>
+        {/if}
 
         <div class="insp-rule"></div>
 
@@ -2364,6 +2407,27 @@
   }
   .row-size > * {
     min-width: 0;
+  }
+
+  /* The fold for bold weight and italic angle: narrow, after the toggles. */
+  .seg .more {
+    flex: 0 0 26px;
+    position: relative;
+  }
+  .seg .more.set::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .style-more {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
 
   /* No fill: the struck-through swatch, as wide as it is tall. */

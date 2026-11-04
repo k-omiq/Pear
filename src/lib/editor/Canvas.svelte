@@ -43,10 +43,21 @@
   } from './strip.js';
   import { publishStripScroll, stripReveal } from './strip-sync.svelte.js';
   import { patternPick, finishPatternPick } from '../pattern-pick.svelte.js';
-  import { setHidden, raisePanel } from './panels.svelte.js';
+  import { showPanel, setHidden } from './panels.svelte.js';
+  import { sfxAsk } from '../sfx-live.svelte.js';
 
   // Handle for dock Fit button.
   let { onReady } = $props();
+
+  // The SFX window belongs to the SFX tool: picking the tool brings it
+  // (RailTools.svelte, the tool's shortcut), and leaving the tool for any
+  // other, by any door, puts it away.
+  let toolWas = app.tool;
+  $effect(() => {
+    const t = app.tool;
+    if (toolWas === 'sfx' && t !== 'sfx') setHidden('sfx', true);
+    toolWas = t;
+  });
 
   let scrollEl;
   let stageEl;
@@ -599,9 +610,10 @@
       }
       const id = addSfxBox({ x: hit.x, y: hit.y }, { x: hit.x + dx / app.zoom, y: hit.y + dy / app.zoom }, hit.pg);
       if (id == null) return;
-      // Straight to the controls the new sound is tuned with: its window.
-      setHidden('sfx', false);
-      raisePanel('sfx');
+      // Straight to the controls the new sound is tuned with: its window,
+      // its Sound field taking the typing, so the stock sound is replaced.
+      showPanel('sfx');
+      sfxAsk.typeFor = id;
     };
     const key = (ev) => {
       if (ev.key !== 'Escape') return;

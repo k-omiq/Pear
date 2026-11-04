@@ -190,7 +190,7 @@ defineTool({
 
 defineTool({
   name: 'sfx_kinds',
-  description: 'List the SFX sound types (Rust engine only): id, name, a Japanese example, the lettering tag it suits, its direction (h across, v down). A type is a layout only; the box keeps its font, fill and outlines. Given a box id or a text, also rank the types for it (the app\'s auto pick): pick.order best first and the power, rough and momentum dials the sound asks for. Apply one with edit do "sfx_kind:<id>" or "sfx_pick". Reading this changes nothing.',
+  description: 'List the SFX sound types (Rust engine only): id, name, an example sound, its direction (h across, v down). A type is a layout only: it never sets or suggests a font, and the box keeps its font, fill and outlines. Given a box id or a text, also rank the types for it (the app\'s auto pick): pick.order best first and the power, rough and momentum dials the sound asks for. Apply one with edit do "sfx_kind:<id>" or "sfx_pick". Reading this changes nothing.',
   input: {
     type: 'object', additionalProperties: false,
     properties: {
@@ -201,7 +201,7 @@ defineTool({
   run({ id, text } = {}) {
     if (id != null && text != null) throw new ToolError('Give id or text, not both.', 'sfx_kinds: { id: "b12" } ranks the types for that box.');
     if (!sfxAvailable()) return { kinds: [], note: 'SFX lettering needs the Rust text engine; it is unavailable on the browser engine.' };
-    const kinds = sfxKinds().map((k) => ({ id: k.id, name: k.name, example: k.example, tag: k.tag, dir: k.dir }));
+    const kinds = sfxKinds().map((k) => ({ id: k.id, name: k.name, example: k.example, dir: k.dir }));
     if (id == null && text == null) return { kinds };
     let source = text;
     if (id != null) {

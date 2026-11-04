@@ -27,6 +27,7 @@ import {
 } from './text-paint.js';
 import { warpActive, meshMap } from './warp.js';
 import { findTag } from './tags.svelte.js';
+import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, ITALIC_ANGLE_DEF } from './data.js';
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
@@ -637,6 +638,18 @@ export function screenFill(s, rect, local, page) {
 }
 
 // Describe the glyphs in the caller's user space, without creating paint objects.
+// What a style's bold weight and italic angle add to its face: `embolden` in
+// synthesised bolds, `slant` as a shear (x moves by that share of y).
+export function leanOf(s) {
+  const w = s?.bold ? Number(s.boldWeight) : BOLD_WEIGHT_MIN;
+  const a = s?.italic ? Number(s.italicAngle) : ITALIC_ANGLE_DEF;
+  const rad = (deg) => (deg * Math.PI) / 180;
+  const embolden = Number.isFinite(w) ? Math.min(BOLD_WEIGHT_MAX, Math.max(BOLD_WEIGHT_MIN, w)) / 100 - 1 : 0;
+  const deg = Number.isFinite(a) ? Math.min(ITALIC_ANGLE_MAX, Math.max(ITALIC_ANGLE_MIN, a)) : ITALIC_ANGLE_DEF;
+  const slant = deg === ITALIC_ANGLE_DEF ? 0 : Math.tan(rad(deg)) - Math.tan(rad(ITALIC_ANGLE_DEF));
+  return { embolden, slant };
+}
+
 export function glyphJob(box, L) {
   const s = L.s;
   const job = {
@@ -662,6 +675,12 @@ export function glyphJob(box, L) {
   // a hollow shadow.
   const hollow = !!s.noFill;
   if (hollow) job.noFill = true;
+  // A heavier bold and an italic leant further or back, for the Rust painter:
+  // more synthesised bolds on each letter, and more shear on it (x by a share
+  // of y) than the face draws. A box at the defaults sends neither.
+  const lean = leanOf(s);
+  if (lean.embolden > 0) job.embolden = lean.embolden;
+  if (lean.slant !== 0) job.slant = lean.slant;
   // The box's mesh, for a painter that bends the outlines itself (`meshInJob`).
   if (L.mesh) job.mesh = L.mesh;
   // And its roughening, for a painter that roughens them (`roughenInJob`):

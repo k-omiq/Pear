@@ -104,6 +104,7 @@ import {
   keptBreaks,
   manualReason,
   linesInkRect,
+  boxInkRect,
   REVIEW_REASONS,
 } from './contain.js';
 import { fitPolygon, visualCentre } from './outline-geom.js';
@@ -132,7 +133,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
-import { sfxAvailable, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
+import { sfxAvailable, sfxActive, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
 
 export { PAGE_W, PAGE_H };
 
@@ -1105,6 +1106,7 @@ export function autoFitBox(b, p = page(), { solve = false } = {}) {
   // is their reference size, and the answer below is only what fits.
   noteSizeEdit(b, p);
   const text = boxText(b, p);
+  if (sfxActive(b.style)) return hugSfxBox(b, p, text);
   const cand = boxCandidate(b, text);
   if (b.style.fitText && !handPlacedBox(cand)) return fitTextToBox(b, p, cand);
   if (!isAutoBox(cand)) {
@@ -1144,6 +1146,44 @@ function hugBox(b, p, cand) {
   reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text)) : place);
   fitted(b, was);
   return changed;
+}
+
+// An SFX box is the frame of its letters, which are placed from its centre
+// (sfx.js): it grows and shrinks about that centre to hold their ink and
+// outlines (`boxInkRect`, what the overflow check reads), whatever the edit
+// changed (the words, the type, a dial). The size is the user's; nothing here
+// fits the letters to the box.
+const SFX_AIR = 0.12; // ems of air past the ink, inside the box
+function hugSfxBox(b, p, text) {
+  const ink = boxInkRect(boxCandidate(b, text));
+  let changed = false;
+  if (ink) {
+    const cx = b.w / 2;
+    const cy = b.h / 2;
+    const [w, h] = sfxFrame([ink.x - cx, ink.y - cy, ink.x + ink.w - cx, ink.y + ink.h - cy], SFX_AIR * b.style.size, b);
+    if (w !== b.w || h !== b.h) {
+      b.x += (b.w - w) / 2;
+      b.y += (b.h - h) / 2;
+      b.w = w;
+      b.h = h;
+      changed = true;
+    }
+  }
+  reviewBox(b, p);
+  return changed;
+}
+
+// The box round ink that reaches `[x0, y0, x1, y1]` px from its centre: as
+// far out on each side as the furthest ink, plus `pad`. A side of `like` (the
+// box as it stands) keeps its odd or even length, so a box that sat on whole
+// pixels about its centre still does.
+function sfxFrame([x0, y0, x1, y1], pad, like = null) {
+  const side = (lo, hi, was) => {
+    let n = Math.max(40, Math.ceil(2 * Math.max(-lo, hi) + 2 * pad));
+    if (was != null && Math.abs(n - Math.round(was)) % 2) n += 1;
+    return n;
+  };
+  return [side(x0, x1, like?.w), side(y0, y1, like?.h)];
 }
 
 // Fit to box: the largest size, on the half-px grid, at which the text fits
@@ -6444,7 +6484,6 @@ export function addInkBox({ w, h, strokes, finish }, imgX, imgY, target = null) 
 //
 // One `place` entry, like `placeActiveAt` and `addInkBox`. Returns the box id,
 // or null when nothing was made.
-const SFX_PAD = 0.25; // ems of air round the letters, inside the box
 export function addSfxBox(a, b, target = null) {
   if (!app.pages.length || isTranslateMode() || !isSfxToolAllowed()) return null;
   const len = Math.hypot(b.x - a.x, b.y - a.y);
@@ -6486,14 +6525,13 @@ export function addSfxBox(a, b, target = null) {
   const my = (a.y + b.y) / 2;
   const em = style.size;
   const r = (v) => Math.round(v * 1000) / 1000;
-  style.sfx.paths = [{ a: [r((a.x - mx) / em), r((a.y - my) / em)], b: [r((b.x - mx) / em), r((b.y - my) / em)], bend: 0 }];
-  // Sized to the letters, about the drag's middle: SFX is placed from the
-  // box's centre, so the box is as far out on each side as the furthest ink.
+  const along = (cx, cy) => [{ a: [r((a.x - cx) / em), r((a.y - cy) / em)], b: [r((b.x - cx) / em), r((b.y - cy) / em)], bend: 0 }];
+  style.sfx.paths = along(mx, my);
+  // About the drag's middle, sized to the letters' ink below (`hugSfxBox`):
+  // SFX is placed from the box's centre. This first frame is the letters'
+  // own, for an ink the check cannot see.
   const got = sfxPlacement(text, style, em);
-  const [x0, y0, x1, y1] = got?.bounds ?? [-len / 2, -em / 2, len / 2, em / 2];
-  const pad = SFX_PAD * em;
-  const w = Math.max(40, Math.ceil(2 * Math.max(-x0, x1) + 2 * pad));
-  const h = Math.max(40, Math.ceil(2 * Math.max(-y0, y1) + 2 * pad));
+  const [w, h] = sfxFrame(got?.bounds ?? [-len / 2, -em / 2, len / 2, em / 2], SFX_AIR * em);
   const box = {
     id: 'b' + boxSeq++,
     lineN: ln.n,
@@ -6506,7 +6544,10 @@ export function addSfxBox(a, b, target = null) {
     fit: null,
   };
   // Born with its own verdict, as an inked box is: nothing fits it unasked.
-  reviewBox(box, p);
+  hugSfxBox(box, p, lineText(ln));
+  // The box sits on whole pixels; the path is the drag's from where its
+  // centre landed, so the letters run exactly where the drag did.
+  style.sfx.paths = along(box.x + box.w / 2, box.y + box.h / 2);
   p.boxes.push(box);
   if (!free) p.activeLineN = firstUnplaced(p);
   recordEdit({
@@ -6897,6 +6938,8 @@ export const BULK_PROPS = [
   'size',
   'bold',
   'italic',
+  'boldWeight',
+  'italicAngle',
   'uppercase',
   'align',
   'valign',
@@ -6957,7 +7000,7 @@ export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', '
 // BULK_PROPS would be a header that ticks nothing, and the tests pin the two
 // together. Every key appears in exactly one group.
 export const GROUPS = {
-  font: ['font', 'size', 'bold', 'italic', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
+  font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
   fill: ['color', 'noFill', 'opacity', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
   shadow: ['shadows'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],

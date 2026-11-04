@@ -13,7 +13,7 @@ use crate::Error;
 use core::f64::consts::{FRAC_1_SQRT_2, PI};
 
 /// Wire ids are positions in this list; picked tiles have a separate id.
-pub const KIND_NAMES: &str = "dots\nhalftone\nstripes\nhstripes\ndiagonal\ndiagonal-alt\ncrosshatch\nchecker\ngrid\nvlines\nhlines\nhalftone-fade\nsquare-dots\ndiamond-dots\nline-tone\nsand\nstipple\nspeed-lines\nburst\nrings\nwaves\nzigzag\nbricks\nscales\nhex\ntriangles\nplus\nstars\nhearts\nkakeami\nglitch";
+pub const KIND_NAMES: &str = "dots\nhalftone\nstripes\nhstripes\ndiagonal\ndiagonal-alt\ncrosshatch\nchecker\ngrid\nvlines\nhlines\nhalftone-fade\nsquare-dots\ndiamond-dots\nline-tone\nsand\nstipple\nspeed-lines\nburst\nrings\nwaves\nzigzag\nbricks\nscales\nhex\ntriangles\nplus\nstars\nhearts\nkakeami\nglitch\ndither\ndither-dots";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Screen {
@@ -47,7 +47,7 @@ impl Screen {
     /// distance, a fade projection or a colour conversion.
     pub fn sound(&self) -> bool {
         let points = [self.a, self.b, self.origin, self.offset, self.centre];
-        (self.kind <= 30 || self.kind == 255)
+        (self.kind <= 32 || self.kind == 255)
             && self.mode <= 1
             && points.iter().all(|p| p.x.is_finite() && p.y.is_finite())
             && [self.angle, self.aspect, self.density, self.line, self.reach]
@@ -387,6 +387,79 @@ fn streaks(u: f64, v: f64, d: f64, seed: u32, glitch: bool) -> Edge {
     )
 }
 
+/// The 8 x 8 Bayer matrix: the order an ordered dither turns its cells on
+/// in, so every level is an even spread of dots and the powers of two are the
+/// regular screens (1/64 a square lattice, 2/64 a diagonal one, ..., 32/64 a
+/// checker).
+const BAYER: [[u8; 8]; 8] = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+];
+
+/// An ordered dither: a tile is the whole matrix, eight cells a side, and a
+/// cell is inked when the density passes its threshold. The density is the
+/// tone itself here (0.5 is the checker), so a fade is a dithered ramp.
+///
+/// Square cells are the printed pixel; `round` draws each as a dot, grown
+/// past touching in the dark half so the screen still closes to solid.
+/// The distance is the union's own across the 3 x 3 cells round the point,
+/// so two inked squares side by side have no seam between them.
+fn dither(u: f64, v: f64, d: f64, round: bool) -> Edge {
+    const N: f64 = 8.0;
+    let (x, y) = (u * N, v * N);
+    let (ix, iy) = (x.floor() as i64, y.floor() as i64);
+    let inked = |cx: i64, cy: i64| {
+        let t = (f64::from(BAYER[cy.rem_euclid(8) as usize][cx.rem_euclid(8) as usize]) + 0.5) / 64.0;
+        d > t
+    };
+    let r = if d <= 0.5 {
+        0.4
+    } else {
+        0.4 + (d - 0.5) * 2.0 * 0.32
+    };
+    let shape = |cx: i64, cy: i64| {
+        let p = Pt::new(x - cx as f64 - 0.5, y - cy as f64 - 0.5);
+        if round {
+            disk(p, r)
+        } else {
+            box_edge(p, 0.5, 0.5)
+        }
+    };
+    let here = inked(ix, iy);
+    let mut near = field(1.0, 1.0, 0.0);
+    let mut any = false;
+    for j in -1..=1 {
+        for i in -1..=1 {
+            let (cx, cy) = (ix.saturating_add(i), iy.saturating_add(j));
+            let on = inked(cx, cy);
+            if round {
+                if on {
+                    near = if any { near.min(shape(cx, cy)) } else { shape(cx, cy) };
+                    any = true;
+                }
+            } else if on != here {
+                // Inside: how far into the nearest cell left empty; outside:
+                // how far to the nearest inked one. A cell's width is the cap.
+                let e = shape(cx, cy);
+                near = if any { near.min(e) } else { e };
+                any = true;
+            }
+        }
+    }
+    if !round && here {
+        near.d = -near.d;
+        near.n = near.n.scale(-1.0);
+    }
+    near.d /= N;
+    near
+}
+
 fn new_edge(s: &Screen, u: f64, v: f64, q: Pt, rays: f64, d: f64) -> Edge {
     let x = Pt::new(1.0, 0.0);
     let p = Pt::new(wrap(u - 0.5), wrap(v - 0.5));
@@ -532,6 +605,8 @@ fn new_edge(s: &Screen, u: f64, v: f64, q: Pt, rays: f64, d: f64) -> Edge {
             )
         }
         30 => streaks(u, v, d, s.seed, true),
+        31 => dither(u, v, d, false),
+        32 => dither(u, v, d, true),
         _ => old_edge(s.kind, u, v, d, s.line.clamp(0.0, 1.0)),
     }
 }
@@ -582,6 +657,7 @@ impl<'a> ScreenShader<'a> {
         // Measure their footprint against that smaller feature too; otherwise
         // a one-pixel filter can span both edges of a hairline at once.
         let frequency = match s.kind {
+            31 | 32 => 8.0,
             15 | 29 => 6.0,
             14 | 17 | 30 => 4.0,
             16 => 2.0,
@@ -867,6 +943,9 @@ mod tests {
         u(&mut j, 0);
         u(&mut j, 0);
         f(&mut j, 0.0);
+        // No extra weight or lean.
+        f(&mut j, 0.0);
+        f(&mut j, 0.0);
         u(&mut j, 0);
         j.extend(wire(&s));
         for _ in 0..4 {
@@ -1050,7 +1129,7 @@ mod tests {
     }
     #[test]
     fn new_kinds_have_detail_and_obey_density_at_every_step() {
-        for kind in 11..31 {
+        for kind in 11..33 {
             let mut s = screen(kind, 12.0);
             let designed = pixels(&s);
             let share = ink(&designed);
@@ -1078,6 +1157,32 @@ mod tests {
                 previous = share;
             }
         }
+    }
+
+    #[test]
+    fn dither_is_crisp_on_whole_pixel_cells() {
+        // A 16 px tile is 2 px cells: at one half a checker of 2 x 2 blocks,
+        // every pixel fully inked or fully clear, no seam between two inked
+        // cells side by side.
+        let mut s = screen(31, 16.0);
+        let p = pixels(&s);
+        for (i, px) in p.chunks_exact(4).enumerate() {
+            let (x, y) = (i % 96 / 2, i / 96 / 2);
+            let want = if (x + y) % 2 == 0 { 0 } else { 255 };
+            assert_eq!(px[0], want, "pixel {} {}", i % 96, i / 96);
+        }
+        // One cell in 64 short of solid: every other pixel stays black.
+        s.density = 62.6 / 64.0;
+        let p = pixels(&s);
+        let white = p.chunks_exact(4).filter(|px| px[0] == 255).count();
+        let black = p.chunks_exact(4).filter(|px| px[0] == 0).count();
+        assert_eq!(white + black, 96 * 96, "a grey pixel");
+        assert_eq!(white, 96 * 96 / 64);
+        // The dot kind at a low level: separate round dots on a lattice.
+        let mut s = screen(32, 16.0);
+        s.density = 2.0 / 64.0;
+        let share = ink(&pixels(&s));
+        assert!(share > 0.005 && share < 0.04, "{share}");
     }
 
     #[test]

@@ -26,8 +26,8 @@ import { boxFootprint, warpTexture } from './exporter.js';
 
 // A card's tile, in CSS px. The panel shows it with `background-size: contain`,
 // so a card a little wider or narrower than this only gets more or less margin.
-export const CARD_W = 96;
-export const CARD_H = 44;
+export const CARD_W = 92;
+export const CARD_H = 62;
 const CARD_PAD = 4;
 // The size the card's text is set at. Paths, gaps and effects are in ems and
 // the outlines are scaled with the size, so any size gives the same picture.

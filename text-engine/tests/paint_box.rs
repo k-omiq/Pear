@@ -535,6 +535,8 @@ fn job_bytes(font: u32) -> Vec<u8> {
     u(&mut b, 0); // round join
     u(&mut b, 0); // no negative: its colour and grow
     f(&mut b, 0.0);
+    f(&mut b, 0.0); // no extra weight
+    f(&mut b, 0.0); // no extra lean
     u(&mut b, 0); // no bands
     u(&mut b, 1); // solid fill
     b.extend_from_slice(&[0, 0, 0, 255]);

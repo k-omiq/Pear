@@ -244,6 +244,7 @@ impl Glyphs {
     /// pulls the lower half of every glyph of the run down by that many job
     /// units: from the middle of the glyph's own height, as it stands in job
     /// space, to its foot. Zero for none. `pen` is the run's (`Run::pen`).
+    /// `embolden` and `slant` are the job's ([`job::Effects`]).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_run(
         &mut self,
@@ -253,16 +254,19 @@ impl Glyphs {
         bold_draw: BoldDraw,
         drip: f64,
         pen: f64,
+        embolden: f64,
+        slant: f64,
         tol: f64,
     ) -> Result<(), Error> {
         for g in &run.glyphs {
             let entry = engine.font(g.font)?;
             let per_unit = g.size / f64::from(entry.info.units_per_em);
-            let skew = if g.synth.oblique {
-                f64::from(OBLIQUE_SKEW)
-            } else {
-                0.0
-            };
+            let skew = slant
+                + if g.synth.oblique {
+                    f64::from(OBLIQUE_SKEW)
+                } else {
+                    0.0
+                };
             let mut polys = Polys::default();
             let place = frame.after(&Affine::translate(g.x, g.y));
             outline::glyph_polys(entry, g.glyph, &place, per_unit, skew, tol, &mut polys);
@@ -270,7 +274,7 @@ impl Glyphs {
             if polys.is_empty() {
                 continue;
             }
-            let (bold, smear) = match (g.synth.bold, bold_draw) {
+            let (face_bold, smear) = match (g.synth.bold, bold_draw) {
                 (false, _) => (0.0, None),
                 (true, BoldDraw::Outset) => (bold_outset(g.size), None),
                 (true, BoldDraw::Smear) => {
@@ -281,6 +285,7 @@ impl Glyphs {
                     (0.0, Some(Pt::new(m[0] * by, m[1] * by)))
                 }
             };
+            let bold = face_bold + bold_outset(g.size) * embolden;
             budget::check()?;
             let drip = match polys.bounds() {
                 Some((_, top, _, bottom)) if positive(drip) && bottom > top => Some(warp::Drip {
@@ -732,7 +737,17 @@ pub fn paint_job_with(
         let from = glyphs.len();
         let drip = if job.curved { run.drip } else { 0.0 };
         let pen = if job.curved { run.pen } else { 1.0 };
-        glyphs.add_run(engine, &shaped, &start, bold_draw, drip, pen, tol)?;
+        glyphs.add_run(
+            engine,
+            &shaped,
+            &start,
+            bold_draw,
+            drip,
+            pen,
+            job.effects.embolden,
+            job.effects.slant,
+            tol,
+        )?;
         budget::push(&mut runs, (from..glyphs.len(), frame))?;
     }
     let all = 0..glyphs.len();
@@ -860,6 +875,8 @@ mod hardening_tests {
                     BoldDraw::Outset,
                     0.0,
                     1.0,
+                    0.0,
+                    0.0,
                     FLATTEN_TOLERANCE
                 ),
                 Err(Error::BadSpec)

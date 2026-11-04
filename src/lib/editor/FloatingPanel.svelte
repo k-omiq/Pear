@@ -41,7 +41,8 @@
   // wearing `fp-exit`, which swaps its entrance keyframe for the collapse that
   // mirrors it (see styles.css), so the panel visibly gathers into its corner.
   // What it leaves behind is not drawn here: a hidden panel is a tab under the
-  // tool strip (RailTools.svelte), one per panel, and that tab is the way back.
+  // tool strip (RailTools.svelte), one per panel, and that tab is the way back
+  // (the SFX window's way back is the SFX tool itself).
   //
   // `prefersReducedMotion` collapses the wait to nothing, matching the CSS
   // media query in styles.css that stops the animation itself, so a
