@@ -819,10 +819,10 @@
           </div>
           <div class="set-item">
             <div class="set-line">
-              <span class="set-label">Use a second text detector</span>
-              {@render toggle('secondDetector', 'Use a second text detector', prefs.secondDetector)}
+              <span class="set-label">Find bubbles</span>
+              {@render toggle('secondDetector', 'Find bubbles', prefs.secondDetector)}
             </div>
-            <p class="set-desc">RT-DETR (168 MB) finds text the main detector misses.</p>
+            <p class="set-desc">A second detector (RT-DETR, 168 MB) finds the bubbles and tells text in a bubble from text on the art. It also finds text the main detector misses.</p>
           </div>
         </section>
 

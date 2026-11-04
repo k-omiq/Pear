@@ -83,11 +83,11 @@ describe('the second reader switch (OCR-1)', () => {
 });
 
 describe('the second detector switch (DTC-2)', () => {
-  it('is off until chosen and survives a relaunch', async () => {
+  it('is on until turned off and survives a relaunch', async () => {
     const { prefs, setPref } = await import('./prefs.svelte.js');
-    expect(prefs.secondDetector).toBe(false);
-    setPref('secondDetector', true);
+    expect(prefs.secondDetector).toBe(true);
+    setPref('secondDetector', false);
     vi.resetModules();
-    expect((await import('./prefs.svelte.js')).prefs.secondDetector).toBe(true);
+    expect((await import('./prefs.svelte.js')).prefs.secondDetector).toBe(false);
   });
 });

@@ -52,6 +52,10 @@ pub struct AnalyzeResponse {
     pub img_height: u32,
     pub lines: Vec<AnalyzeLine>,
     pub panels: Vec<[i32; 4]>,
+    /// Speech bubbles the second detector found, `[x1, y1, x2, y2]`; empty
+    /// when it did not run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bubbles: Vec<[i32; 4]>,
     /// Optional page-sized binary lettering mask, encoded as grayscale PNG.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_png: Option<Vec<u8>>,
@@ -290,9 +294,15 @@ pub fn analyze(
     };
 
     let (blk_list, mask) = detector.detect_page(img, lang).map_err(|e| format!("detect failed: {e}"))?;
-    let blk_list = fuse_second_result(blk_list, second_detector.map(|detector| detector.detect_page(img)), lang);
+    let second = second_detector.map(|detector| detector.detect_page(img));
+    let bubbles = match &second {
+        Some(Ok(regions)) => super::fusion::bubbles(regions),
+        _ => Vec::new(),
+    };
+    let blk_list = fuse_second_result(blk_list, second, lang);
     let in_count = blk_list.len();
     let mut blk_list = split_by_regions(blk_list, &text_regions, im_w as i32, lang);
+    super::fusion::mark_in_bubble(&mut blk_list, &bubbles);
     if blk_list.len() != in_count {
         log::debug!(
             "split_by_regions: {} blocks in, {} blocks out",
@@ -310,7 +320,7 @@ pub fn analyze(
 
     let lines = order_and_type(&blocks, &panels, direction, lang);
     let mask_png = requested_mask_png(&page, &mask, &blocks, want_mask)?;
-    Ok(AnalyzeResponse { img_width: im_w, img_height: im_h, lines, panels, mask_png })
+    Ok(AnalyzeResponse { img_width: im_w, img_height: im_h, lines, panels, bubbles, mask_png })
 }
 
 /// Put detected blocks in reading order, label them, and number them.
@@ -618,6 +628,7 @@ mod tests {
                 jp2: None,
             }],
             panels: vec![[0, 0, 100, 100]],
+            bubbles: vec![],
             mask_png: None,
         };
         let v = serde_json::to_value(&r).unwrap();

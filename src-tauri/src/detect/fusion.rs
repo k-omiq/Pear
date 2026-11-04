@@ -1,7 +1,7 @@
 //! Cross-check CTD and RT-DETR while keeping RT-DETR's lettering classes.
 // Ported from Komatose src/lib/server/detectFusion.ts, commit d9be51e (two sources).
 
-use super::rtdetr::Region;
+use super::rtdetr::{Class, Region};
 use super::textblock::{round_half_even, Language};
 use super::textdetector::TextBlockOut;
 
@@ -15,6 +15,8 @@ const LOOSE_RATIO: f64 = 0.3;
 const VOTE_INSIDE: f64 = 0.6;
 const VOTE_RATIO: f64 = 0.15;
 const CONTAINER_HOLDS: usize = 2;
+const BUBBLE_KEEP: f32 = 0.4;
+const IN_BUBBLE: f64 = 0.8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
@@ -211,9 +213,33 @@ pub fn fuse(ctd: Vec<TextBlockOut>, rtdetr: Vec<Region>, lang: &str) -> Vec<Text
         .collect()
 }
 
+/// RT-DETR's bubble boxes worth keeping, as page rectangles. Placement reads
+/// them; they are never text blocks.
+pub fn bubbles(regions: &[Region]) -> Vec<[i32; 4]> {
+    regions
+        .iter()
+        .filter(|r| r.class == Class::Bubble && r.score >= BUBBLE_KEEP)
+        .map(|r| r.bbox.map(|v| round_half_even(f64::from(v)) as i32))
+        .filter(|b| b[2] > b[0] && b[3] > b[1])
+        .collect()
+}
+
+/// Says which side of a bubble's wall each block is on, from the bubble boxes.
+/// A block mostly inside a bubble is "bubble" whatever RT-DETR's text class
+/// said (its free text calls are the less certain); one outside every bubble
+/// keeps RT-DETR's word, or none. With no bubbles nothing changes: no box is
+/// no evidence that a block is on the art.
+pub fn mark_in_bubble(blocks: &mut [TextBlockOut], bubbles: &[[i32; 4]]) {
+    for block in blocks {
+        let b = block.xyxy.map(f64::from);
+        if bubbles.iter().any(|&o| inside(b, o.map(f64::from)) >= IN_BUBBLE) {
+            block.kind = Some("bubble".into());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::rtdetr::Class;
     use super::*;
 
     fn ctd(b: [i32; 4], score: f32) -> TextBlockOut {
@@ -356,5 +382,27 @@ mod tests {
             "ja",
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn keeps_confident_bubble_boxes_only() {
+        let got = bubbles(&[
+            rt([10.4, 20.0, 200.0, 150.6], 0.9, Class::Bubble),
+            rt([0.0, 0.0, 50.0, 50.0], 0.2, Class::Bubble),
+            rt([30.0, 40.0, 60.0, 90.0], 0.9, Class::TextBubble),
+        ]);
+        assert_eq!(got, vec![[10, 20, 200, 151]]);
+    }
+
+    #[test]
+    fn a_block_inside_a_bubble_is_bubble_text_and_one_outside_keeps_its_kind() {
+        let mut free_in = ctd([20, 20, 60, 60], 0.9);
+        free_in.kind = Some("free".into());
+        let mut free_out = ctd([300, 300, 340, 340], 0.9);
+        free_out.kind = Some("free".into());
+        let mut blocks = vec![free_in, free_out, ctd([400, 0, 440, 40], 0.9), ctd([90, 90, 150, 150], 0.9)];
+        mark_in_bubble(&mut blocks, &[[0, 0, 100, 100]]);
+        let kinds: Vec<_> = blocks.iter().map(|b| b.kind.as_deref()).collect();
+        assert_eq!(kinds, vec![Some("bubble"), Some("free"), None, None]);
     }
 }
