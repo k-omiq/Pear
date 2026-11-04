@@ -36,7 +36,9 @@ let legacyTypeset = 'plain';
 // once, in `load`; the stamp says they are made.
 //   1  2026-10-20: "Fit text to balloon" is a beta and starts off; the Rust
 //      engine measures text.
-const DEFAULTS_REV = 1;
+//   2  2026-11-03: the second detector is on. It tells text in a bubble from
+//      text on the art and finds the bubbles, which placement now relies on.
+const DEFAULTS_REV = 2;
 // The engine a build starts on: the Rust engine, unless the build says
 // otherwise (`VITE_MT_TEXT_ENGINE=browser`; the test lanes do, and measure
 // with the engine only where a test asks for it).
@@ -112,7 +114,7 @@ export const prefs = $state({
   secondReader: false,
   // A second detector (DTC-2, RT-DETR) votes with the first and says which
   // text sits in a bubble. A 168 MB download, so off until asked for.
-  secondDetector: false,
+  secondDetector: true,
   // Who measures text: 'rust', the Rust text engine on the user's own font
   // files (engine-switch.svelte.js), or 'browser', as the app did before it.
   // A machine preference like the rest: it says how this computer measures,
@@ -307,6 +309,7 @@ function load() {
     prefs.defaultBalloon = false;
     prefs.textEngine = 'rust';
   }
+  if (saved && !(saved.defaultsRev >= 2)) prefs.secondDetector = true;
   // Read before anything this session can persist, so the blob it reads is the
   // one the last build left. Until the first write stamps it, every launch
   // derives the same answer from the same unchanged blob.

@@ -1292,4 +1292,29 @@ mod tests {
             "Korean recognizer returned empty text for every detected region"
         );
     }
+
+    /// Opt-in diagnostic: detection with the second detector on, no OCR, for
+    /// each page in `MT_TEST_DETECT_PAGES` (`:`-separated), written as the
+    /// webview's JSON to `MT_TEST_DETECT_OUT/<file name>.json`.
+    #[test]
+    fn supplied_pages_dump_detection_with_bubbles() {
+        let (Ok(pages), Ok(out)) = (std::env::var("MT_TEST_DETECT_PAGES"), std::env::var("MT_TEST_DETECT_OUT")) else {
+            eprintln!("skipping detection dump: MT_TEST_DETECT_PAGES / MT_TEST_DETECT_OUT not set");
+            return;
+        };
+        let engine = DetectEngine::new(default_models_dir());
+        tauri::async_runtime::block_on(engine.ensure(&[&TEXT_DETECTOR, &PANEL_MODEL, &SECOND_DETECTOR]))
+            .expect("model download failed");
+        let model = OcrModel::from_code(OcrLanguage::Japanese, None);
+        for page in pages.split(':').filter(|p| !p.is_empty()) {
+            let bytes = std::fs::read(page).unwrap_or_else(|e| panic!("failed to read {page}: {e}"));
+            let result = engine
+                .analyze_blocking(&bytes, false, OcrLanguage::Japanese, model, false, true, false)
+                .unwrap_or_else(|e| panic!("analysis failed for {page}: {e}"));
+            let name = std::path::Path::new(page).file_name().unwrap().to_string_lossy().to_string();
+            let path = std::path::Path::new(&out).join(format!("{name}.json"));
+            std::fs::write(&path, serde_json::to_vec(&result).unwrap()).unwrap();
+            eprintln!("{page}: {} lines, {} bubbles", result.lines.len(), result.bubbles.len());
+        }
+    }
 }
