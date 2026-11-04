@@ -315,6 +315,19 @@ const DEFS = [
   // The check list (FLOW-1): the next box or line that still needs a look.
   { id: 'review.next', label: 'Next to check', group: 'Text queue', combo: 'Mod+j', whenTyping: true },
 
+  // A translate chapter's typing pane. The pane's own keys (Enter and Tab to
+  // step, Alt+1-9 to toggle a tag) are listed in the pane; these are the ones
+  // worth rebinding. Alt rather than Mod: the caret is in the English field the
+  // whole time, and Mod+letter there is the field's own (select all, undo). On a
+  // Mac Option+letter would type a character, so the pane takes the press
+  // before the field does. Not Option+N/E/U/I: those are dead keys.
+  { id: 'translate.typesetTools', label: 'Show typesetting tools (translate chapter)', group: 'Translation', combo: 'Mod+Shift+t', whenTyping: true },
+  { id: 'translate.tagPicker', label: 'Find or add a tag', group: 'Translation', combo: 'Alt+t' },
+  { id: 'translate.clearTags', label: 'Clear the line’s tags', group: 'Translation', combo: 'Alt+0' },
+  { id: 'translate.speaker', label: 'Choose the speaker', group: 'Translation', combo: 'Alt+s' },
+  { id: 'translate.source', label: 'Edit the source text', group: 'Translation', combo: 'Alt+r' },
+  { id: 'translate.note', label: 'Page note', group: 'Translation', combo: 'Alt+p' },
+
   // History.
   { id: 'edit.undo', label: 'Undo', group: 'History', combo: 'Mod+z' },
   { id: 'edit.redo', label: 'Redo', group: 'History', combo: 'Mod+Shift+z' },

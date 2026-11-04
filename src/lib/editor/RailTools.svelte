@@ -18,6 +18,7 @@
     SIDEBAR_MIN,
     sidebarMaxWidth,
     isTranslateMode,
+    isTranslateChapter,
   } from '../store.svelte.js';
   import { prefs } from '../prefs.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
@@ -31,7 +32,9 @@
   // everywhere the geometry is concerned: there is nothing to the left of the
   // rail in either case, so it sits at 0 and the resize is inert.
   const translate = $derived(isTranslateMode());
-  const noSide = $derived(translate || app.sidebarHidden);
+  // A translate chapter never has it, typesetting tools shown or not: the
+  // page swaps between raw and cleaned in place instead (TranslatePane).
+  const noSide = $derived(isTranslateChapter() || app.sidebarHidden);
 
   // The SFX tool draws with the Rust engine. The engine is module state, so
   // what stands for "it changed" is read here (as the SFX panel does).
@@ -128,7 +131,8 @@
     [
       !translate && panels.options.hidden && { id: 'options', title: brushArmed() ? 'Brush' : 'Text box options' },
       // The SFX window has no tab: the SFX tool above is its way back.
-      panels.queue.hidden && { id: 'queue', title: translate ? 'Translation' : 'Text queue' },
+      // A translate chapter's queue is the typing pane, which never docks.
+      !isTranslateChapter() && panels.queue.hidden && { id: 'queue', title: 'Text queue' },
     ].filter(Boolean),
   );
   // The SFX tool and its window are one button: picking the tool brings the
@@ -179,6 +183,7 @@
          button: the hand. The caret is not merely redundant there - pressing it
          would advertise a sidebar showing the same raw the canvas already is. -->
     {#if !translate}
+      {#if !isTranslateChapter()}
       <button
         class="caret"
         onclick={toggleSidebar}
@@ -190,6 +195,7 @@
         </svg>
       </button>
       <span class="sep"></span>
+      {/if}
       <button
         class:on={app.tool === 'place'}
         onclick={() => setTool('place')}

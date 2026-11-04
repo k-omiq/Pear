@@ -5,6 +5,7 @@
 
 <script>
   import EditorRoot from './lib/editor/EditorRoot.svelte';
+  import { focusActiveField } from './lib/Queue.svelte';
   import FontModal from './lib/FontModal.svelte';
   import BrushModal from './lib/BrushModal.svelte';
   import SettingsModal from './lib/SettingsModal.svelte';
@@ -20,7 +21,7 @@
   import ChapterSourcesSheet from './lib/home/ChapterSourcesSheet.svelte';
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, chapterSaveCycle } from './lib/store.svelte.js';
+  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, setTranslateTypeset, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
   import { editBurst } from './lib/edit-burst.js';
   import { sizeSetting, setSizeSetting, steppedSize } from './lib/data.js';
@@ -475,6 +476,14 @@
     'inspector.tabEffects': () => setInspectorTab('effects'),
     'inspector.tabLayout': () => setInspectorTab('layout'),
 
+    // A translate chapter's typesetting tools, shown and hidden. Declined in a
+    // typeset chapter, which has them all the time.
+    'translate.typesetTools': () => {
+      if (!isTranslateChapter()) return false;
+      setTranslateTypeset(!app.translateTypeset);
+      toast(app.translateTypeset ? 'Typesetting tools shown' : 'Typesetting tools hidden');
+    },
+
     // The palette (FLOW-4). It closes itself on its own key: while it is up,
     // the modal guard in `onKeydown` keeps this dispatch from running at all.
     'palette.open': () => {
@@ -621,6 +630,22 @@
     // in the registry now: a bare letter is typing before it is a shortcut, so
     // it could only ever fire with focus nowhere at all, and it collided with
     // the letter itself the moment focus moved into a field.
+    // A translate chapter, with focus on the page rather than a control: up and
+    // down step through the lines, Enter goes into the active one's English.
+    if (isTranslateChapter() && !app.selectedId && !mod && !e.altKey && !e.shiftKey) {
+      const t = e.target;
+      const onPage = !(t instanceof Element) || t === document.body || !!t.closest?.('.editor-scroll, .page-frame');
+      if (onPage && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        stepLine(e.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (onPage && e.key === 'Enter') {
+        e.preventDefault();
+        focusActiveField('en');
+        return;
+      }
+    }
     // The arrows nudge the selected box and turn the page when nothing is
     // selected - one key, and which it means is what the user is looking at.
     const step = !mod ? NUDGE[e.key] : null;

@@ -126,7 +126,7 @@ import { scaleStroke } from './brush.js';
 import { translateStrokes } from './brush-board.svelte.js';
 import { translateClipShapes } from './text-paint.js';
 import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
-import { revealInStrip } from './editor/strip-sync.svelte.js';
+import { revealInStrip, revealRectInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
 import { guide, termById } from './guide.svelte.js';
 import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
@@ -516,12 +516,14 @@ export function pageProgress(p) {
 export function chapterProgress(pages) {
   let placed = 0;
   let total = 0;
+  let translated = 0;
   for (const p of pages ?? []) {
     const one = pageProgress(p);
     placed += one.placed;
     total += one.total;
+    translated += translatedCount(p?.lines);
   }
-  return { placed, total };
+  return { placed, total, translated };
 }
 
 // Move an imported row to a one-based position among the imported rows. Settle
@@ -647,6 +649,14 @@ export const app = $state({
   // back to the default: two chapters in different modes must each open the way
   // their own file says, whichever was opened first.
   chapterMode: 'typeset',
+  // A translate chapter with its typesetting tools shown (see
+  // `setTranslateTypeset`). A view of the session, not of the file: every open
+  // and every close puts it back to hidden, so a translate chapter always opens
+  // as the page and the typing pane.
+  translateTypeset: false,
+  // With those tools out, whether the page shows its cleaned version rather
+  // than the raw. Off whenever the tools go away or a chapter opens.
+  viewCleaned: false,
   // The open chapter's PROJECT's layout, mirrored from its project.json - see
   // LAYOUTS. Like the mode above it is a property of what is open rather than a
   // preference of the app, so `openChapter` writes it and `closeChapter` puts
@@ -4061,7 +4071,35 @@ export const normalizeChapterMode = (m) => (CHAPTER_MODES.includes(m) ? m : 'typ
 // A function rather than a `$derived`: it is read from plain modules as well as
 // from components, and read inside a component's `$derived` it tracks `app`
 // exactly as a direct property read would.
-export const isTranslateMode = () => app.chapterMode === 'translate';
+//
+// Two questions, not one. `isTranslateChapter` is what the chapter IS - it picks
+// the split workspace (page beside the typing pane), the auto-detect on open and
+// the translated count. `isTranslateMode` is whether the typesetting tools are
+// held back right now: a translate chapter keeps them hidden until the user
+// reveals them (`setTranslateTypeset`), and every box-adding door in the app
+// asks this one, so revealing them is the whole of "typeset in translate mode".
+export const isTranslateChapter = () => app.chapterMode === 'translate';
+export const isTranslateMode = () => app.chapterMode === 'translate' && !app.translateTypeset;
+
+// Show or hide the typesetting tools in a translate chapter. Hiding them does
+// what switching a chapter to translate does: the tools the rail is about to
+// lose are let go, so nothing is left armed, selected or mid-placement.
+export function setTranslateTypeset(on) {
+  if (!isTranslateChapter()) return false;
+  on = !!on;
+  if (app.translateTypeset === on) return true;
+  if (!on) {
+    settleEdits();
+    deselect();
+    closeBulk();
+    setTool('pan');
+    cancelChapterPlace();
+    app.peekRaw = false;
+    app.viewCleaned = false;
+  }
+  app.translateTypeset = on;
+  return true;
+}
 
 // ---------- the project's page layout ----------
 // A project is either a stack of pages the reader turns - every project this app
@@ -4079,6 +4117,12 @@ export const LAYOUTS = ['pages', 'longstrip'];
 export const normalizeLayout = (l) => (LAYOUTS.includes(l) ? l : 'pages');
 // Same shape and same reasoning as `isTranslateMode` above.
 export const isLongstrip = () => app.projectLayout === 'longstrip';
+
+// Which way the series reads, from its source language: Japanese right to
+// left, Chinese and Korean (manhua, manhwa) left to right. The detector numbers
+// the bubbles by the same rule (src-tauri/src/detect/engine.rs), so this is how
+// the interface says what that numbering is and where a bubble's number sits.
+export const readingDirection = () => (app.projectOcrLanguage === 'ja' ? 'rtl' : 'ltr');
 
 // ---------- the project's OCR language ----------
 //
@@ -7560,11 +7604,50 @@ export function toggleTagOnLine(n, name, p = page()) {
   return { tags: tags.slice(), added: !had, restyled: had ? 0 : restyleLineBoxes(p, ln) };
 }
 
+// ---------- stepping through the lines ----------
+// The next (or previous) line in reading order, across the page edge: past the
+// last line of a page is the first line of the next one, so a translator can
+// press Enter through a whole chapter without reaching for the pager. Returns
+// the line's number, or null at either end of the chapter.
+export function stepLine(dir = 1) {
+  if (!app.pages.length) return null;
+  const p = page();
+  const lines = p.lines ?? [];
+  const at = lines.findIndex((l) => l.n === p.activeLineN);
+  const next = at < 0 ? (dir > 0 ? 0 : lines.length - 1) : at + dir;
+  if (next >= 0 && next < lines.length) {
+    activateLine(lines[next].n);
+    return lines[next].n;
+  }
+  // Off the edge of this page: the nearest page in that direction with a line.
+  for (let i = app.pageIndex + dir; i >= 0 && i < app.pages.length; i += dir) {
+    const q = app.pages[i];
+    if (!q.lines?.length) continue;
+    gotoPage(i);
+    const ln = dir > 0 ? q.lines[0] : q.lines[q.lines.length - 1];
+    activateLine(ln.n);
+    return ln.n;
+  }
+  return null;
+}
+
 // ---------- queue row click ----------
 export function activateLine(n) {
   const p = page();
   p.activeLineN = n;
-  if (isTranslateMode()) return;
+  if (isTranslateMode()) {
+    // A strip has no page to turn to, so the bubble is scrolled to instead -
+    // and only from here, a line being chosen, never from the reader's own
+    // scrolling moving the page index.
+    if (isLongstrip()) {
+      const d = p.detect?.boxes?.find((b) => b.n === n);
+      if (Array.isArray(d?.box) && d.box.length === 4) {
+        const [x1, y1, x2, y2] = d.box;
+        revealRectInStrip({ x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) });
+      }
+    }
+    return;
+  }
   const b = p.boxes.find((x) => x.lineN === n);
   if (b) selectBox(b.id);
   else deselect();

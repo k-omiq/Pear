@@ -5,6 +5,14 @@
   import { app } from '../store.svelte.js';
   import { sidecarReady, detectCurrentPage, detectAllPages } from '../sidecar.js';
   import { exportImages } from '../exporter.js';
+  import { prefs, setPref } from '../prefs.svelte.js';
+  import ReaderChoice from '../ReaderChoice.svelte';
+
+  // The models Detect uses, chosen where Detect is run: the reader for this
+  // series' language, and the two optional second passes. The same choices as
+  // Settings ▸ Detection, which also has the other languages.
+  const LANG = { ja: 'Japanese', zh: 'Chinese', ko: 'Korean' };
+  const lang = $derived(app.projectOcrLanguage);
 
   let { anchor = null, onClose } = $props();
 
@@ -89,5 +97,88 @@
   <button role="menuitem" disabled={!canDetect} onclick={() => run(detectCurrentPage)}>This page</button>
   <button role="menuitem" disabled={!canDetect} onclick={() => run(detectAllPages)}>Whole chapter</button>
   <div class="chrome-menu-sep"></div>
+  <div class="dm-group" role="group" aria-label="Models">
+    <span class="dm-head">{LANG[lang] ?? 'Source'} reader</span>
+    <ReaderChoice language={lang} compact />
+    <button
+      role="menuitemcheckbox"
+      aria-checked={prefs.secondDetector}
+      class="dm-check"
+      onclick={() => setPref('secondDetector', !prefs.secondDetector)}
+    >
+      <span class="dm-box" class:on={prefs.secondDetector} aria-hidden="true"></span>
+      <span class="dm-text"><span>Find bubbles</span><span class="dm-sub">RT-DETR · 168 MB · tells bubbles from art</span></span>
+    </button>
+    {#if lang === 'ja'}
+      <button
+        role="menuitemcheckbox"
+        aria-checked={prefs.secondReader}
+        class="dm-check"
+        onclick={() => setPref('secondReader', !prefs.secondReader)}
+      >
+        <span class="dm-box" class:on={prefs.secondReader} aria-hidden="true"></span>
+        <span class="dm-text"><span>Second reader</span><span class="dm-sub">PP-OCRv6 · 77 MB · flags lines read differently</span></span>
+      </button>
+    {/if}
+  </div>
+  <div class="chrome-menu-sep"></div>
   <button role="menuitem" disabled={!canSaveJson || app.exporting} onclick={saveDetectionJson}>Save detection JSON…</button>
 </div>
+
+<style>
+  .dm-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 268px;
+  }
+  .dm-head {
+    padding: 6px 10px 3px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--t2);
+  }
+  .chrome-menu .dm-check {
+    height: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 7px 9px;
+    white-space: normal;
+  }
+  .dm-box {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin-top: 1px;
+    border-radius: 5px;
+    box-shadow: inset 0 0 0 1.5px var(--t3);
+  }
+  .dm-box.on {
+    background: var(--accent);
+    box-shadow: none;
+  }
+  /* The tick is the accent's own foreground, so it inverts with the theme. */
+  .dm-box.on::after {
+    content: '';
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: var(--accent-fg);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.6 2.5L12 5.5' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 100% no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.6 2.5L12 5.5' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 100% no-repeat;
+  }
+  .dm-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .dm-sub {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--t2);
+  }
+</style>

@@ -16,11 +16,15 @@
     return { kind: 'typeset', label: 'Typeset' };
   }
 
-  // "35 of 40 placed". Nothing for a translate chapter (it has its own count,
-  // in the editor) or a chapter with no lines yet.
-  function progressNote(c) {
-    if (c.unreadable || c.mode === 'translate' || !c.progress?.total) return '';
-    return `${c.progress.placed} of ${c.progress.total} placed`;
+  // How far through the chapter is, in the unit its mode counts: lines placed
+  // for a typeset chapter, lines translated for a translate one. Null while
+  // there is nothing to count - the stage word says why instead.
+  function progressOf(c) {
+    if (c.unreadable || !c.progress?.total) return null;
+    const translate = c.mode === 'translate';
+    const done = translate ? c.progress.translated : c.progress.placed;
+    if (done == null) return null;
+    return { done, total: c.progress.total, word: translate ? 'translated' : 'placed', share: done / c.progress.total };
   }
 
   // The sub-line under a chapter's title: independent facts, never one
@@ -28,7 +32,6 @@
   // chapter, while nothing has touched it since (`lastToCheck`).
   function facts(c) {
     const list = [plural(c.pageCount, 'page')];
-    if (c.mode === 'translate') list.push('opens to translate');
     const left = c.mode === 'translate' ? 0 : lastToCheck(c);
     if (left) list.push(`${left} to check`);
     if (exportingId === c.id) list.push('exporting…');
@@ -144,6 +147,7 @@
 </script>
 
 {#if project}
+<div class="project-page">
   <button class="back-link" onclick={goLibrary}>
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
     Projects
@@ -158,10 +162,10 @@
         <span>{project.layout === 'longstrip' ? 'Longstrip' : 'Pages'}</span>
         <label class="project-language">
           <span class="sr-only">Source language</span>
-          <select value={project.ocrLanguage} onchange={onLanguageChange} disabled={changingLanguage} title="What Detect reads on this series' pages">
-            <option value="ja">Japanese source</option>
-            <option value="zh">Chinese source</option>
-            <option value="ko">Korean source</option>
+          <select value={project.ocrLanguage} onchange={onLanguageChange} disabled={changingLanguage} title="What Detect reads on this series' pages, and which way it numbers the bubbles">
+            <option value="ja">Japanese source · reads right to left</option>
+            <option value="zh">Chinese source · reads left to right</option>
+            <option value="ko">Korean source · reads left to right</option>
           </select>
         </label>
       </div>
@@ -186,7 +190,7 @@
           disabled={c.unreadable}
           aria-keyshortcuts="Shift+F10"
         >
-          <span class="chapter-mark {c.unreadable ? 'bad' : status(c).kind}" aria-hidden="true">
+          <span class="chapter-mark {c.unreadable ? 'bad' : status(c).kind}" aria-hidden="true" title={c.unreadable ? '' : status(c).label}>
             <svg viewBox="0 0 12 12" width="12" height="12">
               {#if c.unreadable}<path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
               {:else if status(c).kind === 'typeset'}<circle cx="6" cy="6" r="4" fill="currentColor" />
@@ -194,7 +198,7 @@
               {:else}<path d="M3 6h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />{/if}
             </svg>
           </span>
-          <span class="chapter-num">{c.unreadable ? '-' : `Ch. ${c.number}`}</span>
+          <span class="chapter-num">{c.unreadable ? '-' : c.number}</span>
           <span class="chapter-title">
             {#if c.duplicate}
               <span class="chapter-name warn">Same chapter as another folder</span>
@@ -203,12 +207,29 @@
               <span class="chapter-name warn">Unreadable chapter</span>
               <span class="chapter-sub">{c.slug} - check this folder</span>
             {:else}
-              <span class="chapter-name">{c.title || `Chapter ${c.number}`}</span>
+              <!-- The number is already in its own column, so a chapter with no
+                   title of its own does not say "Chapter 12" beside "12". -->
+              <span class="chapter-name" class:untitled={!c.title}>{c.title || `Chapter ${c.number}`}</span>
               <span class="chapter-sub">{facts(c).join(' · ')}</span>
             {/if}
           </span>
-          <span class="chapter-status">{c.unreadable ? '' : status(c).label}</span>
-          <span class="chapter-progress">{progressNote(c)}</span>
+          <span class="chapter-mode">
+            {#if !c.unreadable && c.mode === 'translate'}
+              <span class="mode-chip" title="Opens as the page and the typing pane">
+                <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4h6M5.5 2.5V4M4 4c.4 2.6 2 4.4 4 5.5M7 4c-.5 2.4-2.2 4.6-4.5 6" /><path d="M8.5 13.5l2.8-7 2.8 7M9.6 11h3.4" /></svg>
+                Translate
+              </span>
+            {/if}
+          </span>
+          <span class="chapter-progress">
+            {#if progressOf(c)}
+              {@const pr = progressOf(c)}
+              <span class="cp-meter" aria-hidden="true"><span style="width:{(pr.share * 100).toFixed(1)}%"></span></span>
+              <span class="cp-text">{pr.done} / {pr.total} {pr.word}</span>
+            {:else if !c.unreadable}
+              <span class="cp-stage">{status(c).label}</span>
+            {/if}
+          </span>
           <span class="chapter-time">{c.unreadable ? '' : relativeTime(c.updatedAt)}</span>
         </button>
         {#if c.unreadable}
@@ -228,6 +249,7 @@
       <li class="home-empty">No chapters yet. New chapter copies your raws into this series.</li>
     {/each}
   </ul>
+</div>
 {:else}
   <div class="home-empty">That project is no longer in the library.</div>
 {/if}

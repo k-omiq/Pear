@@ -48,9 +48,18 @@ export function publishStripScroll(fraction) {
 // The box is looked up on the current page when the canvas answers, so the
 // caller turns to its page and selects it first - as it does in a paged
 // chapter - and asks for the scroll last.
-export const stripReveal = $state({ boxId: null, seq: 0 });
+export const stripReveal = $state({ boxId: null, rect: null, seq: 0 });
 
 export function revealInStrip(boxId) {
   stripReveal.boxId = boxId;
+  stripReveal.rect = null;
+  stripReveal.seq++;
+}
+
+// The same for a rectangle on the current page rather than a box: a translate
+// chapter's active bubble, which has a detected block and no box.
+export function revealRectInStrip(rect) {
+  stripReveal.boxId = null;
+  stripReveal.rect = rect;
   stripReveal.seq++;
 }

@@ -24,7 +24,8 @@
   import Queue from '../Queue.svelte';
   import BulkStylePanel from '../BulkStylePanel.svelte';
   import BoxMenu from './BoxMenu.svelte';
-  import { app, page, pageProgress, isTranslateMode, isLongstrip, translatedCount } from '../store.svelte.js';
+  import TranslatePane from './TranslatePane.svelte';
+  import { app, page, pageProgress, isTranslateMode, isTranslateChapter, isLongstrip } from '../store.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
   import { loadPanels, clampAll } from './panels.svelte.js';
   import { setResidentWindow } from '../page-images.js';
@@ -39,21 +40,25 @@
   // A translate chapter is the raw page, the queue and the way around them.
   // Mount typeset controls in typeset mode.
   const translate = $derived(isTranslateMode());
+  // A translate chapter is split in two, tools shown or not: the page, and the
+  // typing pane down the right (TranslatePane). The canvas is inset by the
+  // pane's width exactly as it is by the sidebar's, so fit measures the half
+  // the page actually has.
+  const split = $derived(isTranslateChapter());
+  let paneWidth = $state(420);
+  const canvasRight = $derived(split ? paneWidth : 0);
   const strip = $derived(isLongstrip());
 
   // The reference sidebar is redundant when the canvas itself is showing the
   // raw, so it goes with the rest - and the canvas takes back the width it was
   // inset by, rather than leaving a column of nothing down the left.
-  const canvasLeft = $derived((translate || app.sidebarHidden ? 0 : app.leftWidth) + RAIL_W);
+  const canvasLeft = $derived((split || app.sidebarHidden ? 0 : app.leftWidth) + RAIL_W);
 
   // One pass over the boxes, then a lookup per line - see `pageProgress`, which
   // is also what the project pill's whole-chapter figure is built from.
   const progress = $derived(pageProgress(page()));
   const placed = $derived(progress.placed);
   const total = $derived(progress.total);
-  // Translating counts a different thing finished. Derived from the lines
-  // themselves - see `translatedCount` for why nothing stores it.
-  const done = $derived(translatedCount(page().lines));
 
   // The stored layout is read once, when the shell mounts and the window's size
   // is finally known. Every later resize only clamps - a window the user shrank
@@ -148,7 +153,7 @@
 
 <svelte:window onresize={onResize} />
 
-<div class="ed-root" style="--canvas-left:{canvasLeft}px">
+<div class="ed-root" style="--canvas-left:{canvasLeft}px; --canvas-right:{canvasRight}px">
   <div class="ed-canvas">
     <Canvas onReady={(api) => (canvas = api)} />
     <!-- Inside the canvas layer, not the root: this panel centres itself and
@@ -161,7 +166,7 @@
     {#if !translate}<BulkStylePanel />{/if}
   </div>
 
-  {#if !translate && !app.sidebarHidden}<RefSidebar />{/if}
+  {#if !split && !app.sidebarHidden}<RefSidebar />{/if}
   <RailTools />
 
   <ChromePills {onFontLib} {onSettings} />
@@ -186,22 +191,22 @@
   {#if !translate}
     <!-- The title follows the body: the panel says what it is showing, and while
          the brush is armed it is not showing a text box's options. -->
-    <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'}>
+    <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'} rightInset={canvasRight}>
       <Inspector />
     </FloatingPanel>
     {#if prefs.sfxTool}
-      <FloatingPanel id="sfx" title="SFX">
+      <FloatingPanel id="sfx" title="SFX" rightInset={canvasRight}>
         <SfxWindow {onSettings} />
       </FloatingPanel>
     {/if}
   {/if}
-  <FloatingPanel
-    id="queue"
-    title={translate ? 'Translation' : 'Text queue'}
-    count={translate ? `${done} / ${total} translated` : `${placed} / ${total} placed`}
-  >
-    <Queue />
-  </FloatingPanel>
+  {#if split}
+    <TranslatePane bind:width={paneWidth} />
+  {:else}
+    <FloatingPanel id="queue" title="Text queue" count={`${placed} / ${total} placed`}>
+      <Queue />
+    </FloatingPanel>
+  {/if}
 
   <!-- A box's right-click menu (FLOW-9), drawn here over the panels rather
        than inside the box, where the page frame would clip it. -->
