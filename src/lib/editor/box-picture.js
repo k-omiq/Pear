@@ -271,11 +271,13 @@ export const PICTURE_OFF = 'e|off';
  * The ink block is not stringified here - it is the heaviest part of a style
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
-export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '' }) {
+export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '' }) {
   const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
     `${lines ? lines.join('\n') : ''}|${indents ? indents.join(',') : ''}|${scale}|${fonts}` +
-    (tiles ? `|${tiles}` : '')
+    (tiles ? `|${tiles}` : '') +
+    // The chapter's Global Light, for a box with a shadow that follows it.
+    (light ? `|L${light}` : '')
   );
 }

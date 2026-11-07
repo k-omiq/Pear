@@ -107,7 +107,9 @@ impl<'a> Shader<'a> {
     /// pixels. `None` means the fill paints nothing at all.
     pub fn new(fill: &Fill, frame: &Affine, tiles: &'a [Tile]) -> Option<Self> {
         match fill {
-            Fill::Screen(s) => super::screen::ScreenShader::new(s, frame, tiles).map(Shader::Screen),
+            Fill::Screen(s) => {
+                super::screen::ScreenShader::new(s, frame, tiles).map(Shader::Screen)
+            }
             Fill::Solid(c) => Some(Shader::Solid(premul(unit(*c)))),
             Fill::Linear { from, to, stops } => {
                 let inv = frame.invert()?;

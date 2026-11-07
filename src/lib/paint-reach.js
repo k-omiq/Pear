@@ -5,7 +5,7 @@
 // out; these are the answers that do not need a layout, for the places that
 // must not pay for one.
 
-import { inkActive, inkBounds, strokeReach, shadowExtent, boxShadows, motionBlurTaps } from './text-paint.js';
+import { inkActive, inkBounds, strokeReach, shadowExtent, shadowSpread, boxShadows, motionBlurTaps } from './text-paint.js';
 
 const NONE = Object.freeze({ l: 0, t: 0, r: 0, b: 0 });
 
@@ -81,7 +81,7 @@ export function styleReach(style, w, h) {
     if (!(Number(sh?.opacity ?? 1) > 0)) continue;
     const dx = Number(sh?.x) || 0;
     const dy = Number(sh?.y) || 0;
-    const spread = 2 * Math.max(0, Number(sh?.blur) || 0) + Math.max(0, Number(sh?.grow) || 0);
+    const spread = shadowSpread(sh);
     u.x0 = Math.min(u.x0, sil.x0 + dx - spread);
     u.y0 = Math.min(u.y0, sil.y0 + dy - spread);
     u.x1 = Math.max(u.x1, sil.x1 + dx + spread);

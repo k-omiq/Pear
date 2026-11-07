@@ -27,11 +27,14 @@
 //! `text-engine/js/paint.mjs` writes.
 
 use super::blur::{self, Moved, Surface};
-use super::sweep;
+use super::fx::blend::{self, Backdrop, Blend};
+use super::fx::contour::{self, Curve, Lut};
+use super::fx::{distance, noise, size_reach, size_sigma, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
 use super::job::{decode, Fill, Request, Rgba};
 use super::raster::{Part, Rasterizer};
 use super::shade::Shader;
+use super::sweep;
 use super::{
     budget, finish, magnified, paint_job_with, plan, Exact, Planned, Raster, FLATTEN_TOLERANCE,
 };
@@ -41,7 +44,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 2;
+pub const BOX_WIRE_VERSION: u32 = 3;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -49,7 +52,7 @@ pub const BOX_WIRE_VERSION: u32 = 2;
 /// as long, as a person draws, and the canvas paints every one, so a count
 /// here would be a box the engine will not paint. What bounds them is what
 /// bounds any record, the bytes they arrive in and the painter's budget, and
-/// one layer serves every shadow (`paint_box_with`), so the 17th costs its 44
+/// one layer serves every shadow (`paint_box_with`), so the 17th costs its
 /// bytes and its time and no more memory than the first.
 pub const MAX_TAPS: usize = 512;
 /// Largest blur, and largest distance a shadow or a tap may state, in job
@@ -57,7 +60,7 @@ pub const MAX_TAPS: usize = 512;
 pub const MAX_BLUR: f64 = 4096.0;
 pub const MAX_THROW: f64 = 65536.0;
 
-/// One shadow of the box (`style.shadows`).
+/// One shadow of the box (`style.shadows`): Photoshop's Drop Shadow.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
     pub color: Rgba,
@@ -65,11 +68,65 @@ pub struct Shadow {
     /// How far it is thrown, job units.
     pub x: f64,
     pub y: f64,
-    /// A canvas shadow's `blur`: twice the gaussian's sigma, job units.
-    pub blur: f64,
+    /// Photoshop's Size, job units: how far the soft edge reaches
+    /// ([`size_sigma`]). 0 is a hard edge.
+    pub size: f64,
     /// The silhouette grown this much more, job units (times each run's
-    /// pen): an SFX extrude's edge. 0 for a canvas shadow.
+    /// pen): an SFX extrude's edge. 0 for a drop shadow.
     pub grow: f64,
+    /// Photoshop's Spread, 0 to 1: the share of the size the matte is grown
+    /// by before the rest of it is blurred.
+    pub spread: f64,
+    /// Photoshop's Noise, 0 to 1.
+    pub noise: f64,
+    pub blend: Blend,
+    /// Layer Knocks Out Drop Shadow: no shadow shows through the letters.
+    pub knockout: bool,
+    /// The contour the matte is passed through; `None` is Linear.
+    pub contour: Option<Lut>,
+    /// The noise's and Dissolve's grain.
+    pub seed: u32,
+}
+
+impl Default for Shadow {
+    fn default() -> Self {
+        Self {
+            color: Rgba([0, 0, 0, 255]),
+            opacity: 1.0,
+            x: 0.0,
+            y: 0.0,
+            size: 0.0,
+            grow: 0.0,
+            spread: 0.0,
+            noise: 0.0,
+            blend: Blend::Normal,
+            knockout: false,
+            contour: None,
+            seed: 0,
+        }
+    }
+}
+
+impl Shadow {
+    /// The mode it is laid in, with the modes that are Normal for its colour
+    /// made Normal: black multiplied is black laid over.
+    fn mode(&self) -> Blend {
+        match self.blend {
+            Blend::Multiply if self.color.0[..3] == [0, 0, 0] => Blend::Normal,
+            m => m,
+        }
+    }
+
+    /// Whether it needs more than a moved, blurred silhouette: its matte is
+    /// grown, curved or grained, it blends, or it is knocked out of letters
+    /// that do not cover it (`see_through`).
+    fn styled(&self, see_through: bool) -> bool {
+        positive(self.spread)
+            || self.contour.is_some()
+            || positive(self.noise)
+            || self.mode() != Blend::Normal
+            || (self.knockout && see_through)
+    }
 }
 
 /// One copy in the motion blur's sum (`motionBlurTaps`).
@@ -92,11 +149,18 @@ pub enum ClipMode {
 /// its top-left corner.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipShape {
-    Ellipse { centre: Pt, rx: f64, ry: f64 },
+    Ellipse {
+        centre: Pt,
+        rx: f64,
+        ry: f64,
+    },
     /// Closed, filled by the non-zero rule.
     Polygon(Vec<Pt>),
     /// A line `size` wide with round caps and joins; one point is a dot.
-    Stroke { size: f64, pts: Vec<Pt> },
+    Stroke {
+        size: f64,
+        pts: Vec<Pt>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,8 +182,35 @@ pub struct BoxRequest {
     pub blur: f64,
     pub taps: Vec<Tap>,
     pub clip: Option<Clip>,
+    /// The letters' own blend mode (Blending Options). It blends with the
+    /// page only where a `backdrop` is given; with none it is Normal.
+    pub blend: Blend,
+    /// Photoshop's Fill Opacity, 0 to 1: the fill fades, the outlines and
+    /// the shadows do not.
+    pub fill_opacity: f64,
+    /// The page under the surface, straight RGBA8 of the surface's size,
+    /// read as opaque: what a blend mode blends with.
+    pub backdrop: Option<Vec<u8>>,
     /// The glyph job, and the transform everything above is carried by.
     pub request: Request,
+}
+
+impl BoxRequest {
+    /// A box job of these parts with every Blending Option at its default.
+    pub fn new(width: u32, height: u32, request: Request) -> Self {
+        Self {
+            width,
+            height,
+            shadows: Vec::new(),
+            blur: 0.0,
+            taps: Vec::new(),
+            clip: None,
+            blend: Blend::Normal,
+            fill_opacity: 1.0,
+            backdrop: None,
+            request,
+        }
+    }
 }
 
 struct Reader<'a> {
@@ -191,6 +282,71 @@ impl<'a> Reader<'a> {
         budget::collect((0..n).map(|_| self.pt()))
     }
 
+    fn shadow(&mut self) -> Result<Shadow, Error> {
+        let b = self.take(4)?;
+        let color = Rgba([b[0], b[1], b[2], b[3]]);
+        let opacity = self.upto(1.0)?;
+        let x = self.within(MAX_THROW)?;
+        let y = self.within(MAX_THROW)?;
+        let size = self.upto(MAX_BLUR)?;
+        let grow = self.upto(MAX_BLUR)?;
+        let spread = self.upto(1.0)?;
+        let noise = self.upto(1.0)?;
+        let blend = Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+        let flags = self.u32()?;
+        if flags & !3 != 0 {
+            return Err(Error::BadSpec);
+        }
+        let seed = self.u32()?;
+        let curve = self.curve()?;
+        let contour = curve
+            .map(|c| Lut::new(&c, flags & 2 != 0, true))
+            .filter(|l| !l.is_identity());
+        Ok(Shadow {
+            color,
+            opacity,
+            x,
+            y,
+            size,
+            grow,
+            spread,
+            noise,
+            blend,
+            knockout: flags & 1 != 0,
+            contour,
+            seed,
+        })
+    }
+
+    /// A contour, or `None` for Linear.
+    fn curve(&mut self) -> Result<Option<Curve>, Error> {
+        match self.u32()? {
+            0 => Ok(None),
+            n if (n as usize) < contour::PRESET_NAMES.len() => Ok(Some(Curve::Preset(n))),
+            255 => {
+                let n = self.count(contour::MAX_POINTS, 20)?;
+                let mut pts = Vec::with_capacity(n);
+                let mut last = -1.0;
+                for _ in 0..n {
+                    let x = self.upto(255.0)?;
+                    let y = self.upto(255.0)?;
+                    let corner = match self.u32()? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(Error::BadSpec),
+                    };
+                    if x < last {
+                        return Err(Error::BadSpec);
+                    }
+                    last = x;
+                    pts.push(contour::Point { x, y, corner });
+                }
+                Ok(Some(Curve::Points(pts)))
+            }
+            _ => Err(Error::BadSpec),
+        }
+    }
+
     fn shape(&mut self) -> Result<ClipShape, Error> {
         Ok(match self.u32()? {
             1 => ClipShape::Ellipse {
@@ -214,7 +370,13 @@ impl<'a> Reader<'a> {
 /// u32 magic, u32 version
 /// u32 width, u32 height        the surface, device pixels; its corner is (0, 0)
 /// u32 shadow count, then per shadow, first in the style first:
-///     rgba colour, f64 opacity, f64 x, y, f64 blur
+///     rgba colour, f64 opacity, f64 x, y, f64 size, f64 grow,
+///     f64 spread, f64 noise    0 to 1 each
+///     u32 blend                a mode number (`Blend::from_u32`)
+///     u32 flags                1 knockout, 2 contour anti-aliased
+///     u32 seed
+///     u32 contour              0 to 11 a preset (Linear is 0), 255 points:
+///       u32 n, then n points (f64 x, y from 0 to 255, u32 corner)
 /// f64 blur                     the whole-box blur; 0 for none
 /// u32 tap count, then per tap: f64 dx, dy, f64 weight
 /// u32 clip mode                0 none, 1 include, 2 exclude; when not 0:
@@ -223,13 +385,18 @@ impl<'a> Reader<'a> {
 ///       1 ellipse: f64 cx, cy, rx, ry
 ///       2 polygon: u32 n, then n points (f64 x, y)
 ///       3 stroke:  f64 size, u32 n, then n points; one point is a dot
+/// u32 blend                    the letters' mode
+/// f64 fill opacity             0 to 1
+/// u32 backdrop                 0 none, 1: width * height * 4 bytes follow
 /// u32 job byte length, then a glyph job in its own wire form
 /// ```
 ///
 /// Refused: a surface with no size or past the painter's guards, more than
-/// 512 taps, a count the bytes cannot hold, an opacity or a weight outside 0 to
-/// 1, a blur outside 0 to 4096, a throw, a tap or a point further than 65536
-/// from zero, and anything a glyph job is refused for.
+/// 512 taps, a count the bytes cannot hold, an opacity, a weight, a spread, a
+/// noise or a fill opacity outside 0 to 1, a size or a blur outside 0 to
+/// 4096, a throw, a tap or a point further than 65536 from zero, a mode or a
+/// contour that does not exist, a contour point outside 0 to 255 or out of
+/// order, and anything a glyph job is refused for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != BOX_MAGIC || r.u32()? != BOX_WIRE_VERSION {
@@ -244,18 +411,8 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     {
         return Err(Error::BadSpec);
     }
-    let n = r.count(usize::MAX, 44)?;
-    let shadows = budget::collect((0..n).map(|_| {
-        let b = r.take(4)?;
-        Ok(Shadow {
-            color: Rgba([b[0], b[1], b[2], b[3]]),
-            opacity: r.upto(1.0)?,
-            x: r.within(MAX_THROW)?,
-            y: r.within(MAX_THROW)?,
-            blur: r.upto(MAX_BLUR)?,
-            grow: r.upto(MAX_BLUR)?,
-        })
-    }))?;
+    let n = r.count(usize::MAX, 76)?;
+    let shadows = budget::collect((0..n).map(|_| r.shadow()))?;
     let blur = r.upto(MAX_BLUR)?;
     let n = r.count(MAX_TAPS, 24)?;
     let taps = budget::collect((0..n).map(|_| {
@@ -282,6 +439,19 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         }
         _ => return Err(Error::BadSpec),
     };
+    let blend = Blend::from_u32(r.u32()?).ok_or(Error::BadSpec)?;
+    let fill_opacity = r.upto(1.0)?;
+    let backdrop = match r.u32()? {
+        0 => None,
+        1 => {
+            let n = width as usize * height as usize * 4;
+            let bytes = r.take(n)?;
+            let mut out = budget::filled(n, 0u8)?;
+            out.copy_from_slice(bytes);
+            Some(out.into_vec())
+        }
+        _ => return Err(Error::BadSpec),
+    };
     let len = r.u32()? as usize;
     let request = decode(r.take(len)?)?;
     if r.at != bytes.len() {
@@ -291,6 +461,9 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         width,
         height,
         shadows,
+        blend,
+        fill_opacity,
+        backdrop,
         blur,
         taps,
         clip,
@@ -492,7 +665,190 @@ fn landed(ink: IBox, (dx, dy): (f64, f64)) -> IBox {
 /// What a shadow's layer is painted from: shadows alike in these are one
 /// layer, moved.
 fn layer_key(sh: &Shadow) -> (Rgba, f64, f64) {
-    (sh.color, sh.grow, sh.blur)
+    (sh.color, sh.grow, sh.size)
+}
+
+/// A matte's levels written into `layer` as one flat colour.
+fn set_flat(layer: &mut Surface, rgb: [u8; 3], alpha: &[u8]) {
+    for (p, &a) in layer.data.chunks_exact_mut(4).zip(alpha) {
+        let k = u32::from(a);
+        for c in 0..3 {
+            p[c] = ((u32::from(rgb[c]) * k + 127) / 255) as u8;
+        }
+        p[3] = a;
+    }
+}
+
+fn alpha_of(layer: &Surface) -> Result<budget::Buffer<u8>, Error> {
+    let mut out = budget::filled(layer.width * layer.height, 0u8)?;
+    for (a, p) in out.iter_mut().zip(layer.data.chunks_exact(4)) {
+        *a = p[3];
+    }
+    Ok(out)
+}
+
+/// What one Drop Shadow lays under the letters when it is more than a moved,
+/// blurred silhouette (`Shadow::styled`), in Photoshop's order: the
+/// silhouette's matte grown by the spread, blurred by the rest of the size,
+/// passed through the contour, grained by the noise, moved, cut where the
+/// letters stand when they knock it out, and laid in its mode at its
+/// opacity. Hands back where it can have laid ink.
+#[allow(clippy::too_many_arguments)]
+fn lay_styled(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+    sh: &Shadow,
+    s: &mut Surface,
+    scale: f64,
+    moved: (f64, f64),
+    knock: bool,
+    acc: &mut budget::Buffer<f32>,
+) -> Result<Option<IBox>, Error> {
+    let (width, height) = (s.width, s.height);
+    let job_silhouette = request.request.job.silhouette;
+    let job_grow = request.request.job.effects.grow;
+    request.request.job.silhouette = Some(sh.color);
+    request.request.job.effects.grow = sh.grow;
+    let painted = paint_job_with(engine, &request.request, rasterizer);
+    request.request.job.silhouette = job_silhouette;
+    request.request.job.effects.grow = job_grow;
+    let Some(r) = painted? else {
+        return Ok(None);
+    };
+    let mut layer = Surface::new(width, height)?;
+    layer.draw(&r.data, r.width as usize, r.x, r.y);
+    let [red, green, blue, _] = sh.color.0;
+    let rgb = [red, green, blue];
+    let mut matte = alpha_of(&layer)?;
+    // The letters as they stand, unmoved: what a knockout cuts away.
+    let letters = if knock { Some(alpha_of(&layer)?) } else { None };
+    let (grow, rest) = spread_split(sh.size, sh.spread);
+    if positive(grow * scale) {
+        distance::grow(&mut matte, width, height, grow * scale)?;
+        set_flat(&mut layer, rgb, &matte);
+    }
+    blur::gaussian_flat(&mut layer, size_sigma(rest) * scale, rgb)?;
+    let reach = (size_reach(sh.size) * scale)
+        .ceil()
+        .min(f64::from(i32::MAX)) as i32
+        + 1;
+    let drawn = IBox {
+        x0: r.x.saturating_sub(reach),
+        y0: r.y.saturating_sub(reach),
+        x1: r.x.saturating_add(r.width as i32).saturating_add(reach),
+        y1: r.y.saturating_add(r.height as i32).saturating_add(reach),
+    };
+    drop(r);
+    let Some(mut ink) = layer.ink_in(drawn) else {
+        return Ok(None);
+    };
+    if sh.contour.is_some() || positive(sh.noise) {
+        let mut matte = alpha_of(&layer)?;
+        if let Some(lut) = &sh.contour {
+            for a in matte.iter_mut() {
+                *a = lut.apply(*a);
+            }
+        }
+        if positive(sh.noise) {
+            let g = noise::SCATTER;
+            ink = IBox {
+                x0: ink.x0 - g,
+                y0: ink.y0 - g,
+                x1: ink.x1 + g,
+                y1: ink.y1 + g,
+            }
+            .intersect(&IBox {
+                x0: 0,
+                y0: 0,
+                x1: width as i32,
+                y1: height as i32,
+            });
+            noise::scatter(
+                &mut matte,
+                width,
+                height,
+                (ink.x0, ink.y0, ink.x1, ink.y1),
+                sh.noise as f32,
+                sh.seed,
+            )?;
+        }
+        set_flat(&mut layer, rgb, &matte);
+        let Some(found) = layer.ink_in(ink) else {
+            return Ok(None);
+        };
+        ink = found;
+    }
+    let mut thrown = Surface::new(width, height)?;
+    blur::over_moved_in(&mut thrown, &layer, ink, moved, 1.0, acc);
+    drop(layer);
+    let landed_at = landed(ink, moved);
+    if let Some(letters) = &letters {
+        for (p, &a) in thrown.data.chunks_exact_mut(4).zip(letters.iter()) {
+            if a == 0 {
+                continue;
+            }
+            let keep = 255 - u32::from(a);
+            for v in p.iter_mut() {
+                *v = ((u32::from(*v) * keep + 127) / 255) as u8;
+            }
+        }
+    }
+    let page = request
+        .backdrop
+        .as_deref()
+        .map(|pixels| Backdrop { pixels });
+    blend::lay(
+        s,
+        &thrown,
+        landed_at,
+        sh.opacity as f32,
+        sh.mode(),
+        page.as_ref(),
+        sh.seed,
+    );
+    Ok(Some(landed_at))
+}
+
+/// The letters, their outlines and their fill, with the fill at the box's
+/// Fill Opacity. A faded fill is laid under its outlines cut to their outer
+/// halves, as Photoshop's Stroke lies outside a faded layer: the half of an
+/// outline the fill covered must not show through it.
+fn paint_glyphs(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Vec<Raster>, Error> {
+    let job = &request.request.job;
+    let fade = request.fill_opacity;
+    if fade >= 1.0 || job.no_fill || job.silhouette.is_some() {
+        return Ok(paint_job_with(engine, &request.request, rasterizer)?
+            .into_iter()
+            .collect());
+    }
+    let mut out = Vec::new();
+    // The fill alone, faded.
+    let bands = core::mem::take(&mut request.request.job.bands);
+    let negative = request.request.job.effects.negative.take();
+    let fill = paint_job_with(engine, &request.request, rasterizer);
+    request.request.job.bands = bands;
+    request.request.job.effects.negative = negative;
+    if let Some(mut r) = fill? {
+        for p in r.data.chunks_exact_mut(4) {
+            p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
+        }
+        out.push(r);
+    }
+    // The outlines, outside the letters.
+    if !request.request.job.bands.is_empty() || request.request.job.effects.negative.is_some() {
+        request.request.job.no_fill = true;
+        let rims = paint_job_with(engine, &request.request, rasterizer);
+        request.request.job.no_fill = false;
+        if let Some(r) = rims? {
+            out.push(r);
+        }
+    }
+    Ok(out)
 }
 
 fn paint(
@@ -526,12 +882,25 @@ fn paint(
         (m[0] * x + m[2] * y, m[1] * x + m[3] * y)
     };
     let shadows = request.shadows.iter().filter(|s| positive(s.opacity));
-    let taps = request.taps.iter().filter(|t| positive(t.weight));
+    let taps: Vec<Tap> = request
+        .taps
+        .iter()
+        .copied()
+        .filter(|t| positive(t.weight))
+        .collect();
     let blur_sigma = request.blur * scale;
+    // The letters blend with the page only where there is a page to blend
+    // with, or where the mode is Dissolve, which needs none.
+    let blends = request.blend == Blend::Dissolve
+        || (request.blend != Blend::Normal && request.backdrop.is_some());
+    // What a knockout cuts shows: the letters do not cover their shadow.
+    let see_through = request.fill_opacity < 1.0 || request.request.job.no_fill || blends;
     if shadows.clone().next().is_none()
         && !positive(blur_sigma)
-        && taps.clone().next().is_none()
+        && taps.is_empty()
         && request.clip.is_none()
+        && request.fill_opacity >= 1.0
+        && !blends
     {
         // Nothing but glyphs: the glyph job, and its own raster.
         return match paint_job_with(engine, &request.request, rasterizer)? {
@@ -570,6 +939,24 @@ fn paint(
     let job_grow = request.request.job.effects.grow;
     let mut i = 0;
     while let Some(sh) = order.get(i).copied() {
+        if sh.styled(see_through) {
+            let knock = sh.knockout && see_through;
+            if let Some(b) = lay_styled(
+                engine,
+                request,
+                rasterizer,
+                &sh,
+                &mut s,
+                scale,
+                carried(sh.x, sh.y),
+                knock,
+                &mut acc,
+            )? {
+                lay(b);
+            }
+            i += 1;
+            continue;
+        }
         let key = layer_key(&sh);
         if painted_as != Some(key) {
             painted_as = Some(key);
@@ -591,7 +978,7 @@ fn paint(
                 layer.draw(&r.data, r.width as usize, r.x, r.y);
                 // A silhouette is one colour, so only its alpha needs the blur.
                 let [red, green, blue, _] = sh.color.0;
-                let sigma = sh.blur / 2.0 * scale;
+                let sigma = size_sigma(sh.size) * scale;
                 blur::gaussian_flat(layer, sigma, [red, green, blue])?;
                 // The ink is the raster's, and as far round it as the blur
                 // spread it.
@@ -640,27 +1027,61 @@ fn paint(
             }
             // A faded copy, as a shake's are: along the rows' runs.
             Some(runs) => {
-                sweep::over_runs(&mut s, layer, ink, runs, carried(sh.x, sh.y), sh.opacity, &mut acc);
+                sweep::over_runs(
+                    &mut s,
+                    layer,
+                    ink,
+                    runs,
+                    carried(sh.x, sh.y),
+                    sh.opacity,
+                    &mut acc,
+                );
             }
-            None => blur::over_moved_in(&mut s, layer, ink, carried(sh.x, sh.y), sh.opacity, &mut acc),
+            None => blur::over_moved_in(
+                &mut s,
+                layer,
+                ink,
+                carried(sh.x, sh.y),
+                sh.opacity,
+                &mut acc,
+            ),
         }
         i = end;
     }
     drop(layer);
 
-    if let Some(r) = paint_job_with(engine, &request.request, rasterizer)? {
-        s.draw(&r.data, r.width as usize, r.x, r.y);
-        lay(IBox {
+    let glyphs = paint_glyphs(engine, request, rasterizer)?;
+    let mut own = if blends {
+        Some(Surface::new(width, height)?)
+    } else {
+        None
+    };
+    for r in &glyphs {
+        let bx = IBox {
             x0: r.x,
             y0: r.y,
             x1: r.x.saturating_add(r.width as i32),
             y1: r.y.saturating_add(r.height as i32),
-        });
+        };
+        match &mut own {
+            Some(own) => own.draw(&r.data, r.width as usize, r.x, r.y),
+            None => s.draw(&r.data, r.width as usize, r.x, r.y),
+        }
+        lay(bx);
     }
+    drop(glyphs);
+    if let (Some(own), Some(bx)) = (&own, laid) {
+        let page = request
+            .backdrop
+            .as_deref()
+            .map(|pixels| Backdrop { pixels });
+        blend::lay(&mut s, own, bx, 1.0, request.blend, page.as_ref(), 0);
+    }
+    drop(own);
     blur::gaussian(&mut s, blur_sigma)?;
-    if taps.clone().next().is_some() {
+    if !taps.is_empty() {
         let mut moves = budget::Buffer::new();
-        for t in taps {
+        for t in &taps {
             let (dx, dy) = carried(t.dx, t.dy);
             budget::push(
                 &mut moves,

@@ -565,12 +565,12 @@ describe('textLayerFor', () => {
     // Canvas y grows downward; Photoshop light angle is counter-clockwise from +x
     // with shadow cast away from the light.
     const testCases = [
-      { x: 4, y: 5, blur: 6, color: '#112233', opacity: 0.75 },
-      { x: -6, y: 8, blur: 2, color: '#000000', opacity: 0.5 },
-      { x: -5, y: -7, blur: 3, color: '#ffffff', opacity: 1 },
-      { x: 9, y: -3, blur: 0, color: '#aa00cc', opacity: 0.9 },
-      { x: 0, y: 10, blur: 4, color: '#000000', opacity: 0.6 },
-      { x: -8, y: 0, blur: 5, color: '#000000', opacity: 0.4 },
+      { x: 4, y: 5, size: 6, color: '#112233', opacity: 0.75 },
+      { x: -6, y: 8, size: 2, color: '#000000', opacity: 0.5 },
+      { x: -5, y: -7, size: 3, color: '#ffffff', opacity: 1 },
+      { x: 9, y: -3, size: 0, color: '#aa00cc', opacity: 0.9 },
+      { x: 0, y: 10, size: 4, color: '#000000', opacity: 0.6 },
+      { x: -8, y: 0, size: 5, color: '#000000', opacity: 0.4 },
     ];
 
     for (const s of testCases) {
@@ -579,7 +579,7 @@ describe('textLayerFor', () => {
       const ds = layer.effects.dropShadow[0];
       expect(ds.enabled).toBe(true);
       expect(ds.useGlobalLight).toBe(false);
-      expect(ds.size).toEqual({ units: 'Pixels', value: s.blur });
+      expect(ds.size).toEqual({ units: 'Pixels', value: s.size });
       expect(ds.opacity).toBe(s.opacity);
 
       // Inverse conversion: light angle θ in degrees, distance in pixels.
@@ -596,7 +596,7 @@ describe('textLayerFor', () => {
     const styledWithEffects = {
       ...baseStyle,
       strokes: [{ color: '#ffffff', width: 4, opacity: 1 }],
-      shadows: [{ x: 3, y: 4, blur: 5, color: '#000000', opacity: 0.8 }],
+      shadows: [{ x: 3, y: 4, size: 5, color: '#000000', opacity: 0.8 }],
     };
 
     // Curved
@@ -1062,7 +1062,7 @@ describe('writePagePsd', () => {
         size: 20,
         font: 'Comic Neue',
         strokes: [{ color: '#ff0000', width: 3, opacity: 1 }],
-        shadows: [{ x: 4, y: 5, blur: 6, color: '#000000', opacity: 0.75 }],
+        shadows: [{ x: 4, y: 5, size: 6, color: '#000000', opacity: 0.75 }],
       },
     };
     const renderedBox = {

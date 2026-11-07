@@ -392,9 +392,72 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 2
+export const BOX_WIRE_VERSION = 3
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
+
+// Photoshop's blend modes by the number the engine reads (`Blend::from_u32`
+// in text-engine/src/paint/fx/blend.rs), in its menu's order.
+export const BLEND_MODE_IDS = Object.freeze(
+  Object.fromEntries(
+    [
+      'normal', 'dissolve',
+      'darken', 'multiply', 'color-burn', 'linear-burn', 'darker-color',
+      'lighten', 'screen', 'color-dodge', 'linear-dodge', 'lighter-color',
+      'overlay', 'soft-light', 'hard-light', 'vivid-light', 'linear-light', 'pin-light', 'hard-mix',
+      'difference', 'exclusion', 'subtract', 'divide',
+      'hue', 'saturation', 'color', 'luminosity',
+    ].map((name, i) => [name, i]),
+  ),
+)
+
+// The contour presets by the number the engine reads (`PRESET_NAMES` in
+// fx/contour.rs); a curve of points is 255.
+export const CONTOUR_IDS = Object.freeze(
+  Object.fromEntries(
+    [
+      'linear', 'cone', 'cone-inverted', 'cove-deep', 'cove-shallow', 'gaussian',
+      'half-round', 'ring', 'ring-double', 'rolling-slope-descending', 'rounded-steps', 'sawtooth-1',
+    ].map((name, i) => [name, i]),
+  ),
+)
+const CONTOUR_POINTS = 255
+
+function blendId(name) {
+  const id = BLEND_MODE_IDS[name ?? 'normal']
+  if (id === undefined) throw new Error(`mt-text: unknown blend mode ${JSON.stringify(name)}`)
+  return id
+}
+
+// One drop shadow (`decode_box`'s shadow record).
+function shadowRecord(sh) {
+  rgba(sh.color)
+  f64(sh.opacity)
+  f64(sh.x)
+  f64(sh.y)
+  f64(sh.size ?? 0)
+  f64(sh.grow ?? 0)
+  f64(sh.spread ?? 0)
+  f64(sh.noise ?? 0)
+  u32(blendId(sh.blend))
+  u32((sh.knockout ? 1 : 0) | (sh.contour?.aa ? 2 : 0))
+  u32((sh.seed ?? 0) >>> 0)
+  const preset = sh.contour?.preset ?? 'linear'
+  if (preset === 'custom') {
+    const pts = sh.contour.pts ?? []
+    u32(CONTOUR_POINTS)
+    u32(pts.length)
+    for (const q of pts) {
+      f64(q[0])
+      f64(q[1])
+      u32(q[2] ? 1 : 0)
+    }
+    return
+  }
+  const id = CONTOUR_IDS[preset]
+  if (id === undefined) throw new Error(`mt-text: unknown contour ${JSON.stringify(preset)}`)
+  u32(id)
+}
 
 // One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
 // does not know, or with nothing to draw, is not written (`drawClipShapes`
@@ -435,32 +498,33 @@ function clipShape(sh) {
  * @param {object} request everything `encodeJob` takes for the glyph job, and
  * @param {number} request.width the surface, device pixels; its corner is (0, 0)
  * @param {number} request.height
- * @param {{color: string, opacity: number, x: number, y: number, blur: number, grow?: number}[]} [request.shadows]
- *   `style.shadows`, first on top; `grow` widens the silhouette (an extrude's edge).
- *   A run of shadows alike but for `x`, `y` and `opacity` paints the silhouette once.
+ * @param {{color: string, opacity: number, x: number, y: number, size: number, grow?: number,
+ *   spread?: number, noise?: number, blend?: string, knockout?: boolean, seed?: number,
+ *   contour?: {preset: string, aa?: boolean, pts?: number[][]}}[]} [request.shadows]
+ *   `style.shadows` resolved (`boxShadows`), first on top: Photoshop's Drop Shadow, its
+ *   Size, Spread, Noise and Contour, its mode and its knockout; `grow` widens the
+ *   silhouette (an extrude's edge). A run of plain shadows alike but for `x`, `y` and
+ *   `opacity` paints the silhouette once.
  * @param {number} [request.blur] the whole-box blur, a gaussian's sigma
  * @param {{dx: number, dy: number, w: number}[]} [request.taps] `motionBlurTaps`
  * @param {{mode: 'include' | 'exclude', x: number, y: number, shapes: object[]} | null} [request.clip]
  *   the visibility mask: `style.clip.shapes`, which are box-local, and the
  *   box's corner in job space
+ * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
+ * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1
+ * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
+ *   the surface, straight RGBA8 of `width * height`: what a blend mode blends with
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, shadows = [], blur = 0, taps = [], clip = null } = request
+  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
   u32(width)
   u32(height)
   u32(shadows.length)
-  for (const sh of shadows) {
-    rgba(sh.color)
-    f64(sh.opacity)
-    f64(sh.x)
-    f64(sh.y)
-    f64(sh.blur)
-    f64(sh.grow ?? 0)
-  }
+  for (const sh of shadows) shadowRecord(sh)
   f64(blur)
   u32(taps.length)
   for (const t of taps) {
@@ -481,6 +545,15 @@ export function encodeBox(request) {
     for (const sh of clip.shapes ?? []) if (clipShape(sh)) n++
     view.setUint32(countAt, n, true)
   }
+  u32(blendId(blend))
+  f64(fillOpacity)
+  if (backdrop) {
+    if (backdrop.length !== width * height * 4) throw new Error('mt-text: a backdrop must be the surface, RGBA')
+    u32(1)
+    need(backdrop.length)
+    u8.set(backdrop, at)
+    at += backdrop.length
+  } else u32(0)
   const lenAt = at
   u32(0)
   writeJob(request)

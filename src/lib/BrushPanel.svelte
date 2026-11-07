@@ -75,7 +75,7 @@
   function flipShadow() {
     fin.shadows = fin.shadows.length
       ? []
-      : [normalizeShadow({ x: 3, y: 3, blur: 4, color: '#000000', opacity: 0.5 })];
+      : [normalizeShadow({ x: 3, y: 3, size: 5.67, color: '#000000', opacity: 0.5 })];
   }
 
   function onTabKey(e, id) {
@@ -529,7 +529,7 @@
         {@render colour('Shadow colour', fin.shadows[0], 'color')}
         {@render slider('Offset X', fin.shadows[0], 'x', -50, 50, null, 'page px')}
         {@render slider('Offset Y', fin.shadows[0], 'y', -50, 50, null, 'page px')}
-        {@render slider('Blur', fin.shadows[0], 'blur', 0, 50, null, 'page px')}
+        {@render slider('Size', fin.shadows[0], 'size', 0, 50, null, 'page px')}
         {@render pctSlider('Opacity', fin.shadows[0], 'opacity', 0)}
       </div>
     {/if}

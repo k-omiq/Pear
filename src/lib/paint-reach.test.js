@@ -93,7 +93,7 @@ describe('what a style paints past the box, without a layout (strip seams)', () 
   });
 
   it('reaches only the way a shadow is thrown', () => {
-    const s = style({ shadows: [{ x: 0, y: 30, blur: 2, color: '#000000', opacity: 1 }] });
+    const s = style({ shadows: [{ x: 0, y: 30, size: 3, color: '#000000', opacity: 1 }] });
     expect(styleReach(s, W, H)).toEqual({ l: 4, t: 0, r: 4, b: 34 });
     expect(styleReach({ ...s, shadows: [{ ...s.shadows[0], opacity: 0 }] }, W, H)).toEqual({ l: 0, t: 0, r: 0, b: 0 });
   });

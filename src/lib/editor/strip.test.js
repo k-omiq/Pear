@@ -90,15 +90,15 @@ describe('boxPaintedStripSpan and effect reach', () => {
 
   it('reaches each way by what paints that way, not one pad all round', () => {
     const box = (style) => ({ y: 0, w: 200, h: 80, style });
-    // A shadow thrown 30px down reaches down, and only its blur's spread up.
-    expect(boxPaintReach(box({ shadows: [{ x: 0, y: 30, blur: 2 }] }))).toEqual(sides(8, 4, 8, 38));
+    // A shadow thrown 30px down reaches down, and only its size's spread up.
+    expect(boxPaintReach(box({ shadows: [{ x: 0, y: 30, size: 3 }] }))).toEqual(sides(8, 4, 8, 38));
     // A vertical smear reaches up and down and not across.
     const smear = boxPaintReach(box({ motionBlur: { on: true, x: 0, y: 4, amount: 2 } }));
     expect(smear.l).toBe(4);
     expect(smear.t).toBe(smear.b);
     expect(smear.b).toBeGreaterThan(4);
     // Mirrored with the flip, which mirrors the finished picture.
-    expect(boxPaintReach(box({ shadows: [{ x: 0, y: 30, blur: 2 }], flipV: true }))).toEqual(sides(8, 38, 8, 4));
+    expect(boxPaintReach(box({ shadows: [{ x: 0, y: 30, size: 3 }], flipV: true }))).toEqual(sides(8, 38, 8, 4));
   });
 
   it("counts hand-drawn ink past the far edges, with its outline and shadow", () => {

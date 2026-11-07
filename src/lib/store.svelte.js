@@ -15,6 +15,8 @@ import {
   normalizeFinish,
   normalizeReview,
   normalizeTypesetting,
+  normalizeLight,
+  LIGHT_DEF,
   normalizeAuto,
   LAYOUT_VERSION,
   LAYOUT_VERSION_RUST,
@@ -124,7 +126,7 @@ import { measureChapterFits } from './chapter-fit.js';
 import { setBrushMode } from './brush-tool.svelte.js';
 import { scaleStroke } from './brush.js';
 import { translateStrokes } from './brush-board.svelte.js';
-import { translateClipShapes } from './text-paint.js';
+import { translateClipShapes, setGlobalLight } from './text-paint.js';
 import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip, revealRectInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
@@ -2736,7 +2738,10 @@ export function useChapterTypesetting(raw) {
   documentTurn++;
   stamping = null;
   disk = null;
-  app.typesetting = normalizeTypesetting(raw);
+  const typesetting = normalizeTypesetting(raw);
+  // The painter's light first, so what the new value repaints is thrown from it.
+  setGlobalLight(typesetting.light ?? LIGHT_DEF);
+  app.typesetting = typesetting;
   setTypesetEnabled(app.typesetting.mode === 'smart');
   // Another chapter, or none: what was noted of the last one goes with it.
   resetFirstFit();
@@ -2744,6 +2749,20 @@ export function useChapterTypesetting(raw) {
 
 // The open chapter's breaker switched wholesale, saved with it, and every box
 // re-measured under the new breaker the way a font arriving re-measures them.
+// The chapter's Global Light (Photoshop's, one per document): every shadow
+// with `useGlobalLight` is thrown away from its angle. Saved with the
+// chapter. Not an undo step, as Photoshop's is not: it is the document's
+// setting, and the shadows that follow it hold no angle of their own.
+export function setChapterLight(light) {
+  if (!app.chapterRef) return;
+  const was = app.typesetting.light ?? LIGHT_DEF;
+  const next = normalizeLight({ ...was, ...light });
+  if (next.angle === was.angle && next.altitude === was.altitude) return;
+  setGlobalLight(next);
+  app.typesetting = normalizeTypesetting({ ...app.typesetting, light: next });
+  markUnsaved();
+}
+
 // The app has no control for it any more - the line breaking is each box's,
 // and a chapter opens 'smart' (`openTypesetting` in data.js) - so its callers
 // are the tests and the audit script that drive the breaker directly.
@@ -3845,12 +3864,12 @@ export function rescaleStyle(st, sx, sy) {
   if (Array.isArray(st.strokes)) out.strokes = st.strokes.map((k) => ({ ...k, width: len(k.width) }));
   if (Array.isArray(st.shadows)) {
     // A shadow's offset is a position with an axis, so it takes the axis factor
-    // exactly; its blur is a length and takes the mean, like every other length.
+    // exactly; its size is a length and takes the mean, like every other length.
     out.shadows = st.shadows.map((sh) => ({
       ...sh,
       x: Number.isFinite(sh.x) ? sh.x * sx : sh.x,
       y: Number.isFinite(sh.y) ? sh.y * sy : sh.y,
-      blur: len(sh.blur),
+      size: len(sh.size),
     }));
   }
   if (st.roughen && typeof st.roughen === 'object') {
@@ -7082,6 +7101,8 @@ export const BULK_PROPS = [
   'clip',
   // `path`, `ink` and `warp` are deliberately absent: anchors, hand-drawn
   // strokes and mesh control points are all box-local geometry in THIS box's
+  'fillOpacity',
+  'blendMode',
   // px, and a bulk edit would smear them across boxes of different sizes - a
   // warp mesh especially, whose points stop meaning anything the moment the box
   // they were dragged on is not the box they land on.
@@ -7114,7 +7135,7 @@ export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', '
 // together. Every key appears in exactly one group.
 export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
-  fill: ['color', 'noFill', 'opacity', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
+  fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
   shadow: ['shadows'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],

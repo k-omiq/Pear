@@ -190,7 +190,11 @@ pub(crate) fn over_swept(
     let mut taps = budget::Buffer::new();
     let far = (w.max(h) + 2) as i64;
     for &(dx, dy) in moves {
-        let t = Taps::new(&Moved { dx, dy, weight: 1.0 });
+        let t = Taps::new(&Moved {
+            dx,
+            dy,
+            weight: 1.0,
+        });
         if t.ix.abs() <= far && t.iy.abs() <= far {
             budget::push(&mut taps, t)?;
         }
@@ -198,7 +202,11 @@ pub(crate) fn over_swept(
     let Some(top) = taps.iter().map(|t| runs.y0 - t.iy).min() else {
         return Ok(());
     };
-    let bottom = taps.iter().map(|t| runs.y0 + runs.rows as i64 - t.iy).max().unwrap_or(top);
+    let bottom = taps
+        .iter()
+        .map(|t| runs.y0 + runs.rows as i64 - t.iy)
+        .max()
+        .unwrap_or(top);
     let (top, bottom) = (top.max(0) as usize, bottom.clamp(0, h as i64) as usize);
     // How many copies cover a pixel whole, and how many reach it, kept as
     // changes at the runs' ends.
@@ -257,9 +265,15 @@ pub(crate) fn over_swept(
                     let from = band.partition_point(|&x| x < a);
                     for &x in band[from..].iter().take_while(|&&x| x < b) {
                         let mut s = [0.0f32; 4];
-                        let pairs = [(y as i64 + t.iy, [t.k[0], t.k[1]]), (y as i64 + t.iy + 1, [t.k[2], t.k[3]])];
+                        let pairs = [
+                            (y as i64 + t.iy, [t.k[0], t.k[1]]),
+                            (y as i64 + t.iy + 1, [t.k[2], t.k[3]]),
+                        ];
                         for (sy, k) in pairs {
-                            if sy < i64::from(ink.y0) || sy >= i64::from(ink.y1) || (k[0] == 0.0 && k[1] == 0.0) {
+                            if sy < i64::from(ink.y0)
+                                || sy >= i64::from(ink.y1)
+                                || (k[0] == 0.0 && k[1] == 0.0)
+                            {
                                 continue;
                             }
                             for (sx, k) in [(x as i64 + t.ix, k[0]), (x as i64 + t.ix + 1, k[1])] {
@@ -362,7 +376,11 @@ mod tests {
                 let r = ((fx - 70.0).powi(2) + (fy - 34.0).powi(2)).sqrt();
                 let ring = 4.5 - (r - 13.0).abs();
                 let bar = 5.0 - (fx * 0.8 - fy * 0.6 - 40.0).abs();
-                let bar = if (10.0..60.0).contains(&fy) { bar } else { -1.0 };
+                let bar = if (10.0..60.0).contains(&fy) {
+                    bar
+                } else {
+                    -1.0
+                };
                 let cover = disc.max(ring).max(bar).clamp(0.0, 1.0);
                 let a = (cover * 255.0).round() as u32;
                 if a == 0 {
@@ -387,7 +405,12 @@ mod tests {
             for x in 0..w {
                 if (x / 7 + y / 5) % 3 == 0 {
                     let a = (60 + (x * 3 + y) % 190) as u8;
-                    s.data[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[a / 3, a / 2, a, a]);
+                    s.data[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[
+                        a / 3,
+                        a / 2,
+                        a,
+                        a,
+                    ]);
                 }
             }
         }
@@ -398,14 +421,25 @@ mod tests {
     fn steps(ux: f64, uy: f64, len: f64, n: usize) -> Vec<(f64, f64)> {
         (1..=n)
             .rev()
-            .map(|k| (ux * len * k as f64 / n as f64, uy * len * k as f64 / n as f64))
+            .map(|k| {
+                (
+                    ux * len * k as f64 / n as f64,
+                    uy * len * k as f64 / n as f64,
+                )
+            })
             .collect()
     }
 
     fn worst(a: &Surface, b: &Surface) -> ([u8; 4], usize) {
         let mut worst = [0u8; 4];
         let mut differ = 0;
-        for (p, q) in a.data.as_chunks::<4>().0.iter().zip(b.data.as_chunks::<4>().0) {
+        for (p, q) in a
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.data.as_chunks::<4>().0)
+        {
             if p != q {
                 differ += 1;
             }
@@ -427,7 +461,12 @@ mod tests {
         let cases: &[(f64, f64, f64, usize)] = &[
             (1.0, 0.0, 30.0, 20),
             (0.0, 1.0, 24.0, 16),
-            (core::f64::consts::FRAC_1_SQRT_2, core::f64::consts::FRAC_1_SQRT_2, 36.0, 24),
+            (
+                core::f64::consts::FRAC_1_SQRT_2,
+                core::f64::consts::FRAC_1_SQRT_2,
+                36.0,
+                24,
+            ),
             (-0.6, 0.8, 50.0, 48),
             (0.97, -0.24, 17.3, 11),
             (-1.0, -0.0, 9.0, 9),
@@ -447,8 +486,14 @@ mod tests {
             let (worst, differ) = worst(&one, &swept);
             // Alpha is the same; a colour is within a level, and rarely off.
             assert_eq!(worst[3], 0, "({ux}, {uy}) x {n}: alpha");
-            assert!(worst[..3].iter().all(|&d| d <= 1), "({ux}, {uy}) x {n}: {worst:?}");
-            assert!(differ * 200 < w * h, "({ux}, {uy}) x {n}: {differ} pixels differ");
+            assert!(
+                worst[..3].iter().all(|&d| d <= 1),
+                "({ux}, {uy}) x {n}: {worst:?}"
+            );
+            assert!(
+                differ * 200 < w * h,
+                "({ux}, {uy}) x {n}: {differ} pixels differ"
+            );
         }
     }
 
@@ -456,7 +501,10 @@ mod tests {
     fn a_layer_of_more_than_one_colour_has_no_solid() {
         let _scope = budget::Scope::new();
         let mut s = layer(100, 70, [10, 20, 30]);
-        assert_eq!(Runs::new(&s, s.ink().unwrap()).unwrap().solid, Some([10, 20, 30, 255]));
+        assert_eq!(
+            Runs::new(&s, s.ink().unwrap()).unwrap().solid,
+            Some([10, 20, 30, 255])
+        );
         let i = (30 * 100 + 30) * 4;
         s.data[i..i + 4].copy_from_slice(&[11, 20, 30, 255]);
         assert_eq!(Runs::new(&s, s.ink().unwrap()).unwrap().solid, None);
@@ -480,7 +528,12 @@ mod tests {
         let runs = Runs::new(&src, ink).unwrap();
         assert_eq!(runs.solid, None);
         let mut acc = vec![0.0f32; w * 4];
-        for (m, opacity) in [((6.3, -2.2), 0.45), ((-7.0, 0.0), 0.3), ((0.5, 0.5), 1.0), ((140.0, 3.0), 0.9)] {
+        for (m, opacity) in [
+            ((6.3, -2.2), 0.45),
+            ((-7.0, 0.0), 0.3),
+            ((0.5, 0.5), 1.0),
+            ((140.0, 3.0), 0.9),
+        ] {
             let mut one = ground(w, h);
             over_moved_in(&mut one, &src, ink, m, opacity, &mut acc);
             let mut along = ground(w, h);
@@ -504,7 +557,11 @@ mod tests {
         let ink = src.ink().unwrap();
         let _scope = budget::Scope::new();
         let runs = Runs::new(&src, ink).unwrap();
-        for moves in [vec![(3.0, -2.0)], vec![(0.0, 0.0), (5.0, 5.0), (10.0, 10.0)], vec![(2.5, 0.25)]] {
+        for moves in [
+            vec![(3.0, -2.0)],
+            vec![(0.0, 0.0), (5.0, 5.0), (10.0, 10.0)],
+            vec![(2.5, 0.25)],
+        ] {
             let mut one = Surface::new(w, h).unwrap();
             for &m in &moves {
                 over_moved(&mut one, &src, m, 1.0).unwrap();

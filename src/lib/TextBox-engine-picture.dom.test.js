@@ -53,7 +53,7 @@ const KINDS = {
   straight: box('straight'),
   finish: box('finish', {
     strokes: [{ color: '#ffffff', width: 3, opacity: 1 }, { color: '#000000', width: 2, opacity: 0.5 }],
-    shadows: [{ x: 3, y: 4, blur: 5, color: '#112233', opacity: 0.6 }],
+    shadows: [{ x: 3, y: 4, size: 9, color: '#112233', opacity: 0.6 }], // Size 9 reaches a whole 10 px, as blur 5 did.
     gradient: { on: true, kind: 'linear', angle: 90, scope: 'line', stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 1 }] },
     blur: 2,
     motionBlur: { on: true, x: 2, y: 0, amount: 4 },

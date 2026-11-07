@@ -230,7 +230,11 @@ impl Roughen {
             return Ok(None);
         }
         Ok(Some(RoughMap {
-            noise: if crumple { Some(Noise::new(self.seed)?) } else { None },
+            noise: if crumple {
+                Some(Noise::new(self.seed)?)
+            } else {
+                None
+            },
             amount: self.amount,
             detail: self.detail,
             origin: self.origin,
@@ -286,8 +290,16 @@ impl RoughMap {
     /// than half of that cell; how far a piece then leaves its chord is
     /// found by looking.
     pub(crate) fn cut(&self, tol: f64) -> Cut {
-        let crumple = if self.noise.is_some() { self.detail } else { 0.0 };
-        let grit = if self.grit.is_some() { GRIT_DETAIL } else { 0.0 };
+        let crumple = if self.noise.is_some() {
+            self.detail
+        } else {
+            0.0
+        };
+        let grit = if self.grit.is_some() {
+            GRIT_DETAIL
+        } else {
+            0.0
+        };
         let finest = crumple.max(grit) * f64::from(1u32 << (OCTAVES - 1));
         Cut::of(0.5 / finest, f64::INFINITY, tol)
     }
@@ -316,7 +328,11 @@ mod tests {
             if noise.as_ref().map(|n| n.0.to_bits()) != Some(seed.to_bits()) {
                 noise = Some((seed, Noise::new(seed).unwrap()));
             }
-            let got = noise.as_ref().unwrap().1.turbulence(channel, x * freq, y * freq);
+            let got = noise
+                .as_ref()
+                .unwrap()
+                .1
+                .turbulence(channel, x * freq, y * freq);
             assert_eq!(got.to_bits(), want.to_bits(), "{line}: got {got}");
             seen += 1;
         }
@@ -364,7 +380,14 @@ mod tests {
             grit: 0.0,
         };
         assert!(r.map().unwrap().is_none());
-        assert!(Roughen { amount: 4.0, detail: 0.0, ..r }.map().unwrap().is_none());
+        assert!(Roughen {
+            amount: 4.0,
+            detail: 0.0,
+            ..r
+        }
+        .map()
+        .unwrap()
+        .is_none());
         assert!(Roughen { amount: 1e9, ..r }.map().is_err());
         assert!(Roughen { detail: -1.0, ..r }.map().is_err());
         assert!(Roughen { grit: -1.0, ..r }.map().is_err());
@@ -386,7 +409,14 @@ mod tests {
         };
         let plain = base.map().unwrap().unwrap();
         let torn = Roughen { grit: 2.0, ..base }.map().unwrap().unwrap();
-        let alone = Roughen { amount: 0.0, grit: 2.0, ..base }.map().unwrap().unwrap();
+        let alone = Roughen {
+            amount: 0.0,
+            grit: 2.0,
+            ..base
+        }
+        .map()
+        .unwrap()
+        .unwrap();
         let (mut far, mut turns_plain, mut turns_torn) = (0.0f64, 0, 0);
         // The last two moves down, of each map, to count its turns.
         let mut seen: [(f64, f64); 2] = [(0.0, 0.0); 2];
@@ -397,7 +427,10 @@ mod tests {
             // by what the grit alone moves it.
             let grit = c.minus(p);
             assert!((b.x - a.x - grit.x).abs() < 1e-9 && (b.y - a.y - grit.y).abs() < 1e-9);
-            assert!(grit.x.abs() <= 1.0 && grit.y.abs() <= 1.0, "{p:?} grit {grit:?}");
+            assert!(
+                grit.x.abs() <= 1.0 && grit.y.abs() <= 1.0,
+                "{p:?} grit {grit:?}"
+            );
             far = far.max(grit.x.abs()).max(grit.y.abs());
             let now = (a.y - p.y, b.y - p.y);
             if i > 1 {
@@ -411,7 +444,10 @@ mod tests {
             seen = [seen[1], now];
         }
         assert!(far > 0.2, "the grit moved nothing: {far}");
-        assert!(turns_torn > turns_plain * 3, "{turns_torn} turns against {turns_plain}");
+        assert!(
+            turns_torn > turns_plain * 3,
+            "{turns_torn} turns against {turns_plain}"
+        );
         assert!(torn.cut(0.1).max_len < plain.cut(0.1).max_len);
     }
 

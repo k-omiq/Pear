@@ -2,10 +2,13 @@
 //! where a shadow lands, what a blur keeps, what a mask shows.
 #![cfg(feature = "paint")]
 
+use mt_text::paint::fx::blend::Blend;
+use mt_text::paint::fx::contour::{Curve, Lut};
+use mt_text::paint::fx::size_sigma;
 use mt_text::paint::{
-    decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects, Fill,
-    Job, Mesh, Pt, Raster, Request, Rgba, Run, Shadow, Tap, BOX_MAGIC, BOX_WIRE_VERSION, MAGIC,
-    WIRE_VERSION,
+    decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape,
+    Effects, Fill, Job, Mesh, Pt, Raster, Request, Rgba, Run, Shadow, Tap, BOX_MAGIC,
+    BOX_WIRE_VERSION, MAGIC, WIRE_VERSION,
 };
 use mt_text::{Engine, Error, Face, FontId};
 
@@ -67,6 +70,9 @@ fn plain(font: FontId) -> BoxRequest {
         blur: 0.0,
         taps: Vec::new(),
         clip: None,
+        blend: Blend::Normal,
+        fill_opacity: 1.0,
+        backdrop: None,
         request: request(font),
     }
 }
@@ -77,8 +83,7 @@ fn shadow(color: Rgba, x: f64, y: f64) -> Shadow {
         opacity: 1.0,
         x,
         y,
-        blur: 0.0,
-        grow: 0.0,
+        ..Shadow::default()
     }
 }
 
@@ -181,7 +186,12 @@ fn a_shadow_is_thrown_under_the_letters_in_its_colour() {
     // The letters are where they were and are still black. (An edge pixel
     // is black over red now, so the box of black is within a pixel.)
     let (now, was) = (boxed(&r, is_black), glyphs);
-    for (a, b) in [(now.0, was.0), (now.1, was.1), (now.2, was.2), (now.3, was.3)] {
+    for (a, b) in [
+        (now.0, was.0),
+        (now.1, was.1),
+        (now.2, was.2),
+        (now.3, was.3),
+    ] {
         assert!((a - b).abs() <= 1, "{now:?} against {was:?}");
     }
     // The red is the same shape, 12 right and 7 down.
@@ -229,7 +239,11 @@ fn a_shadow_turns_and_mirrors_with_the_box() {
     b.request.transform = turn;
     let r = paint(&mut e, &mut b);
     let (black, red) = (boxed(&r, is_black), boxed(&r, is_red));
-    assert_eq!((red.0, red.2), (black.0, black.2), "thrown down, not across");
+    assert_eq!(
+        (red.0, red.2),
+        (black.0, black.2),
+        "thrown down, not across"
+    );
     assert_eq!(red.3, black.3 + 30);
     // Mirrored left to right: job right is device left.
     b.request.transform = Affine([-1.0, 0.0, 0.0, 1.0, 200.0, 0.0]);
@@ -252,13 +266,14 @@ fn a_shadow_blur_is_half_a_box_blur_and_grows_with_the_scale() {
     let mut b = plain(font);
     b.request.job.fill = None;
     b.shadows = vec![Shadow {
-        blur: 8.0,
+        size: 12.0,
         ..shadow(BLACK, 0.0, 0.0)
     }];
     let soft = paint(&mut e, &mut b);
-    // The same picture from the whole-box blur at half the number.
+    // The same picture from the whole-box blur at the sigma a size of 12
+    // stands for.
     b.shadows = vec![shadow(BLACK, 0.0, 0.0)];
-    b.blur = 4.0;
+    b.blur = size_sigma(12.0);
     assert_eq!(paint(&mut e, &mut b), soft);
     // And it reaches about three sigma past the letters.
     b.blur = 0.0;
@@ -402,13 +417,24 @@ fn each_shape_covers_what_it_should() {
         ClipMode::Include,
         vec![ClipShape::Stroke {
             size: 20.0,
-            pts: vec![Pt::new(40.0, 40.0), Pt::new(120.0, 40.0), Pt::new(120.0, 120.0)],
+            pts: vec![
+                Pt::new(40.0, 40.0),
+                Pt::new(120.0, 40.0),
+                Pt::new(120.0, 120.0),
+            ],
         }],
     );
     let r = paint(&mut e, &mut b);
     assert_eq!(inked(&r), (30, 30, 130, 130));
     // Solid along both legs and across the joint: one line, not patches.
-    for (x, y) in [(40, 40), (80, 40), (120, 40), (120, 80), (120, 120), (126, 34)] {
+    for (x, y) in [
+        (40, 40),
+        (80, 40),
+        (120, 40),
+        (120, 80),
+        (120, 120),
+        (126, 34),
+    ] {
         assert_eq!(px(&r, x, y)[3], 255, "{x},{y}");
     }
     // The outer corner is round: its very tip is clear.
@@ -439,7 +465,10 @@ fn each_shape_covers_what_it_should() {
     // Two shapes that overlap are one shape there.
     b.clip = clip(
         ClipMode::Include,
-        vec![rect(20.0, 20.0, 100.0, 100.0), rect(60.0, 60.0, 140.0, 140.0)],
+        vec![
+            rect(20.0, 20.0, 100.0, 100.0),
+            rect(60.0, 60.0, 140.0, 140.0),
+        ],
     );
     let r = paint(&mut e, &mut b);
     assert_eq!(px(&r, 80, 80)[3], 255);
@@ -496,7 +525,10 @@ fn the_passes_come_in_their_order() {
     b.clip = clip(ClipMode::Include, vec![rect(0.0, 0.0, mid, 200.0)]);
     let r = paint(&mut e, &mut b);
     assert!(inked(&r).2 <= mid.ceil() as i32);
-    assert!(inked(&r).0 < s.0 - 4, "the blur still spreads where it is shown");
+    assert!(
+        inked(&r).0 < s.0 - 4,
+        "the blur still spreads where it is shown"
+    );
     // The blur is over the shadow too: a hard shadow comes out soft.
     b.clip = None;
     b.shadows = vec![shadow(RED, 0.0, 30.0)];
@@ -565,9 +597,13 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 4]) {
     u(&mut b, 1);
     b.extend_from_slice(&[255, 0, 0, 255]);
     let opacity_at = b.len();
-    for v in [0.5, 6.0, -4.0, 3.0, 0.0] {
+    for v in [0.5, 6.0, -4.0, 3.0, 0.0, 0.25, 0.5] {
         f(&mut b, v);
     }
+    u(&mut b, 3); // multiply
+    u(&mut b, 1); // knocks out
+    u(&mut b, 7); // seed
+    u(&mut b, 1); // the Cone
     let blur_at = b.len();
     f(&mut b, 1.5);
     u(&mut b, 1);
@@ -594,6 +630,9 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 4]) {
     u(&mut b, 1);
     f(&mut b, 7.0);
     f(&mut b, 8.0);
+    u(&mut b, 12); // the letters in Overlay
+    f(&mut b, 0.5); // half their fill
+    u(&mut b, 0); // no page under them
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -612,11 +651,21 @@ fn the_wire_form_decodes_to_the_box_it_states() {
             opacity: 0.5,
             x: 6.0,
             y: -4.0,
-            blur: 3.0,
+            size: 3.0,
             grow: 0.0,
+            spread: 0.25,
+            noise: 0.5,
+            blend: Blend::Multiply,
+            knockout: true,
+            contour: Some(Lut::new(&Curve::Preset(1), false, true)),
+            seed: 7,
         }]
     );
     assert_eq!(r.blur, 1.5);
+    assert_eq!(
+        (r.blend, r.fill_opacity, r.backdrop.is_none()),
+        (Blend::Overlay, 0.5, true)
+    );
     assert_eq!(
         r.taps,
         vec![Tap {
@@ -636,7 +685,11 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                     rx: 3.0,
                     ry: 4.0
                 },
-                ClipShape::Polygon(vec![Pt::new(0.0, 0.0), Pt::new(9.0, 0.0), Pt::new(0.0, 9.0)]),
+                ClipShape::Polygon(vec![
+                    Pt::new(0.0, 0.0),
+                    Pt::new(9.0, 0.0),
+                    Pt::new(0.0, 9.0)
+                ]),
                 ClipShape::Stroke {
                     size: 5.0,
                     pts: vec![Pt::new(7.0, 8.0)]
@@ -646,7 +699,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 2));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 3));
 }
 
 #[test]
@@ -670,15 +723,27 @@ fn a_damaged_box_is_refused_not_guessed_at() {
         decode_box(&b).map(|_| ()).err()
     };
     for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
-        assert_eq!(with_f(opacity_at, bad), Some(Error::BadSpec), "opacity {bad}");
+        assert_eq!(
+            with_f(opacity_at, bad),
+            Some(Error::BadSpec),
+            "opacity {bad}"
+        );
         assert_eq!(with_f(weight_at, bad), Some(Error::BadSpec), "weight {bad}");
     }
     for bad in [-1.0, 4097.0, f64::NAN] {
         assert_eq!(with_f(blur_at, bad), Some(Error::BadSpec), "blur {bad}");
         // The shadow's own blur is three numbers past its opacity.
-        assert_eq!(with_f(opacity_at + 24, bad), Some(Error::BadSpec), "shadow blur {bad}");
+        assert_eq!(
+            with_f(opacity_at + 24, bad),
+            Some(Error::BadSpec),
+            "shadow blur {bad}"
+        );
         // And its grow, one past that.
-        assert_eq!(with_f(opacity_at + 32, bad), Some(Error::BadSpec), "shadow grow {bad}");
+        assert_eq!(
+            with_f(opacity_at + 32, bad),
+            Some(Error::BadSpec),
+            "shadow grow {bad}"
+        );
     }
     // A throw past the guard.
     assert_eq!(with_f(opacity_at + 8, 1e9), Some(Error::BadSpec));
@@ -711,6 +776,13 @@ fn a_box_read_from_the_wire_paints() {
     assert_eq!(paint_box(&mut e, &mut b).err(), Some(Error::UnknownFont));
 }
 
+/// The Blending Options at their defaults: Normal, the whole fill, no page.
+fn no_blending(b: &mut Vec<u8>) {
+    u(b, 0);
+    f(b, 1.0);
+    u(b, 0);
+}
+
 /// A box job on the wire with `n` shadows, each thrown a little further, and
 /// nothing else laid on it.
 fn shadowed(font: u32, n: u32) -> Vec<u8> {
@@ -722,13 +794,18 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     u(&mut b, n);
     for i in 0..n {
         b.extend_from_slice(&[255, 0, 0, 255]);
-        for v in [0.5, 2.0 + f64::from(i % 4), 2.0, 1.0, 0.0] {
+        for v in [0.5, 2.0 + f64::from(i % 4), 2.0, 1.0, 0.0, 0.0, 0.0] {
             f(&mut b, v);
+        }
+        // Normal, no flags, seed 0, Linear.
+        for v in [0, 0, 0, 0] {
+            u(&mut b, v);
         }
     }
     f(&mut b, 0.0);
     u(&mut b, 0);
     u(&mut b, 0);
+    no_blending(&mut b);
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -788,6 +865,7 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
         f(&mut b, -900.0 - f64::from(i % 7));
         f(&mut b, -900.0);
     }
+    no_blending(&mut b);
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -805,6 +883,160 @@ fn a_box_has_every_mask_shape_its_style_has() {
         let mut b = decode_box(&masked(font, shapes, points)).unwrap();
         assert_eq!(b.clip.as_ref().unwrap().shapes.len(), shapes as usize + 1);
         let r = paint(&mut e, &mut b);
-        assert!(r.data.chunks_exact(4).any(|p| p[3] > 0), "{shapes} shapes, {points} points");
+        assert!(
+            r.data.chunks_exact(4).any(|p| p[3] > 0),
+            "{shapes} shapes, {points} points"
+        );
     }
+}
+
+// ---- Photoshop's Drop Shadow options and Blending Options ----
+
+/// The H's left stem, a pixel in from its left edge, half way down: inside
+/// the letter wherever the job is painted.
+fn stem(glyphs: (i32, i32, i32, i32)) -> (i32, i32) {
+    (glyphs.0 + 3, (glyphs.1 + glyphs.3) / 2)
+}
+
+#[test]
+fn spread_hardens_the_edge_the_size_softens() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glyphs = inked(&paint(&mut e, &mut b));
+    let soft = |spread: f64, e: &mut Engine, b: &mut BoxRequest| {
+        b.shadows = vec![Shadow {
+            size: 10.0,
+            spread,
+            ..shadow(RED, 0.0, 60.0)
+        }];
+        paint(e, b)
+    };
+    let none = soft(0.0, &mut e, &mut b);
+    let full = soft(1.0, &mut e, &mut b);
+    // At full spread the matte is grown by the whole size and not blurred:
+    // a shadow pixel 5 past the stem's edge is solid, where the blurred one
+    // is faint.
+    let (x, y) = (glyphs.0 - 5, (glyphs.1 + glyphs.3) / 2 + 60);
+    assert_eq!(px(&full, x, y)[3], 255, "{:?}", px(&full, x, y));
+    assert!(px(&none, x, y)[3] < 128, "{:?}", px(&none, x, y));
+    // Both reach about as far: the size is the reach either way.
+    let reach = |r: &Raster| glyphs.0 - boxed(r, |p| p[3] > 0 && p[0] > 128).0;
+    assert!(
+        (reach(&none) - reach(&full)).abs() <= 2,
+        "{} {}",
+        reach(&none),
+        reach(&full)
+    );
+}
+
+#[test]
+fn a_contour_reshapes_the_falloff_and_noise_grains_it_the_same_every_time() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.shadows = vec![Shadow {
+        size: 16.0,
+        ..shadow(RED, 0.0, 60.0)
+    }];
+    let linear = paint(&mut e, &mut b);
+    b.shadows[0].contour = Some(Lut::new(&Curve::Preset(2), true, true));
+    let cone = paint(&mut e, &mut b);
+    assert_ne!(linear, cone);
+    b.shadows[0].contour = None;
+    b.shadows[0].noise = 0.8;
+    b.shadows[0].seed = 5;
+    let grain = paint(&mut e, &mut b);
+    assert_ne!(grain, linear);
+    assert_eq!(paint(&mut e, &mut b), grain);
+    b.shadows[0].seed = 6;
+    assert_ne!(paint(&mut e, &mut b), grain);
+}
+
+#[test]
+fn fill_opacity_fades_the_fill_and_not_its_outline_or_shadow() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.request.job.bands = vec![mt_text::paint::Band {
+        color: BLUE,
+        opacity: 1.0,
+        line: 6.0,
+    }];
+    let full = paint(&mut e, &mut b);
+    let glyphs = inked(&full);
+    b.fill_opacity = 0.25;
+    let faded = paint(&mut e, &mut b);
+    let (x, y) = stem(glyphs);
+    let p = px(&faded, x + 3, y);
+    assert!((60..=68).contains(&p[3]) && p[0] < 20, "the fill: {p:?}");
+    // The outline is whole outside the letter, and none of its inner half
+    // shows through the faded fill.
+    assert_eq!(px(&faded, glyphs.0 + 1, y), px(&full, glyphs.0 + 1, y));
+    assert!(px(&faded, x + 3, y)[2] < 20);
+    // A shadow under it is cut out where the letters knock it out.
+    b.shadows = vec![Shadow {
+        knockout: true,
+        ..shadow(RED, 2.0, 0.0)
+    }];
+    let knocked = paint(&mut e, &mut b);
+    assert!(
+        px(&knocked, x + 3, y)[0] < 20,
+        "{:?}",
+        px(&knocked, x + 3, y)
+    );
+    b.shadows[0].knockout = false;
+    let through = paint(&mut e, &mut b);
+    assert!(
+        px(&through, x + 3, y)[0] > 128,
+        "{:?}",
+        px(&through, x + 3, y)
+    );
+}
+
+#[test]
+fn a_mode_blends_with_the_page_it_is_given() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let plain_r = paint(&mut e, &mut b);
+    let (x, y) = stem(inked(&plain_r));
+    b.request.job.fill = Some(Fill::Solid(Rgba([128, 128, 128, 255])));
+    b.blend = Blend::Multiply;
+    // With no page, a mode has nothing to blend with: Normal.
+    let alone = paint(&mut e, &mut b);
+    assert_eq!(px(&alone, x, y), [128, 128, 128, 255]);
+    // Over a page of mid red the grey multiplies it.
+    let mut page = vec![0u8; 200 * 160 * 4];
+    for p in page.chunks_exact_mut(4) {
+        p.copy_from_slice(&[200, 100, 50, 255]);
+    }
+    b.backdrop = Some(page);
+    let mixed = paint(&mut e, &mut b);
+    let p = px(&mixed, x, y);
+    for (k, want) in [100u8, 50, 25].into_iter().enumerate() {
+        assert!(p[k].abs_diff(want) <= 1, "{p:?}");
+    }
+    // A shadow in Screen lightens the page where it falls.
+    b.blend = Blend::Normal;
+    b.shadows = vec![Shadow {
+        blend: Blend::Screen,
+        color: Rgba([0, 0, 255, 255]),
+        ..shadow(BLUE, 0.0, 50.0)
+    }];
+    let lit = paint(&mut e, &mut b);
+    let p = px(&lit, x, y + 50);
+    assert_eq!(&p[..], &[200, 100, 255, 255]);
+}
+
+#[test]
+fn black_multiply_and_an_unseen_knockout_take_the_quick_path() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.shadows = vec![shadow(BLACK, 4.0, 4.0)];
+    let quick = paint(&mut e, &mut b);
+    b.shadows[0].blend = Blend::Multiply;
+    b.shadows[0].knockout = true;
+    assert_eq!(paint(&mut e, &mut b), quick);
 }

@@ -270,7 +270,9 @@ describe('a style written before strokes and shadows were lists', () => {
 
   it('keeps an era-2 shadow, exactly where it was cast', () => {
     const s = normalizeStyle(JSON.parse(ERA2_STYLE));
-    expect(s.shadows).toEqual([{ x: 3, y: 4, blur: 6, color: '#112233', opacity: 0.5 }]);
+    // Its blur becomes the Size that blurs as much, and it stays Normal,
+    // with no knockout and its own angle: exactly as it looked.
+    expect(s.shadows).toEqual([{ x: 3, y: 4, size: 9, color: '#112233', opacity: 0.5, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
   });
 
   it('reads a switched-off shadow as no shadow rather than as a black one', () => {
@@ -319,14 +321,16 @@ describe('a style written before strokes and shadows were lists', () => {
     expect(s.gradient.stops).toHaveLength(2);
     expect(s.pattern.on).toBe(false);
     expect(PATTERN_KINDS).toContain(s.pattern.kind);
-    expect('fillOpacity' in s).toBe(false);
+    expect(s.fillOpacity).toBe(1);
+    expect(s.blendMode).toBe('normal');
     expect(s.blur).toBe(0);
   });
 
   it('folds legacy fillOpacity into whole-box opacity', () => {
     const s = normalizeStyle({ fillOpacity: 0.5, opacity: 0.8 });
     expect(s.opacity).toBeCloseTo(0.4);
-    expect('fillOpacity' in s).toBe(false);
+    // The old field is gone into opacity; today's Fill Opacity starts full.
+    expect(s.fillOpacity).toBe(1);
     const full = normalizeStyle({ fillOpacity: 1 });
     expect(full.opacity).toBe(1);
   });
@@ -732,7 +736,7 @@ describe('replaying an era-2 entry against today’s document', () => {
     expect(s.gradient.on).toBe(false);
     expect(s.pattern.on).toBe(false);
     expect(s.shadows).toHaveLength(1);
-    expect('fillOpacity' in s).toBe(false);
+    expect(s.fillOpacity).toBe(1);
     // And forward again, with nothing corrupted on the way.
     expect(redo()).toBe(true);
     expect(pageById(1).boxes.some((b) => b.id === 'b2')).toBe(false);

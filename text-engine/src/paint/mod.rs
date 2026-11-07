@@ -24,6 +24,7 @@ mod blur;
 mod boxjob;
 pub(crate) mod budget;
 mod compose;
+pub mod fx;
 mod geom;
 mod job;
 mod outline;
@@ -46,27 +47,27 @@ mod warp;
 #[path = "raster_compare.rs"]
 pub mod compare;
 
-use geom::positive;
 pub use boxjob::{
-    decode_box, paint_box, paint_box_copy_by_copy, paint_box_with, BoxRequest, Clip, ClipMode, ClipShape, Shadow, Tap,
-    BOX_MAGIC, BOX_WIRE_VERSION,
+    decode_box, paint_box, paint_box_copy_by_copy, paint_box_with, BoxRequest, Clip, ClipMode,
+    ClipShape, Shadow, Tap, BOX_MAGIC, BOX_WIRE_VERSION,
 };
+use geom::positive;
 pub use geom::{Affine, IBox, Polys, Pt};
 pub use job::{
-    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, Stop, Tile,
-    MAGIC, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
+    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, Stop,
+    Tile, MAGIC, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
 };
-pub use outline::FLATTEN_TOLERANCE;
 pub(crate) use outline::glyph_polys;
+pub use outline::FLATTEN_TOLERANCE;
 pub use pattern::{tile as pattern_tile, Kind as PatternKind, MAX_TILE_SIDE};
 pub use raster::{Coverage, Exact, Part, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
-pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
 pub use scene::Scene;
+pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
 pub use shape::{align_offset, curved_origin, shape_run, Placed, ShapedRun};
 pub use stroke::{Join, Side};
-pub use warp::{Mesh, MAX_MESH_SIDE};
 use warp::Cut;
+pub use warp::{Mesh, MAX_MESH_SIDE};
 
 use compose::{compose, Layer};
 use shade::Shader;
@@ -408,8 +409,18 @@ impl Glyphs {
                 (Side::Right, Side::Left)
             };
             let part = Part {
-                right: g.placed(&Self::moved(g, extra, right, join, tol), bends, transform, tol)?,
-                left: Some(g.placed(&Self::moved(g, extra, left, join, tol), bends, transform, tol)?),
+                right: g.placed(
+                    &Self::moved(g, extra, right, join, tol),
+                    bends,
+                    transform,
+                    tol,
+                )?,
+                left: Some(g.placed(
+                    &Self::moved(g, extra, left, join, tol),
+                    bends,
+                    transform,
+                    tol,
+                )?),
                 ring,
             };
             budget::check()?;
@@ -526,9 +537,9 @@ impl<'a> Layers<'a> {
         color: Rgba,
         alpha: f64,
     ) -> Result<(), Error> {
-        let parts = self
-            .glyphs
-            .parts(sel, reach, ring, join, self.bends, self.transform, self.tol)?;
+        let parts =
+            self.glyphs
+                .parts(sel, reach, ring, join, self.bends, self.transform, self.tol)?;
         let shader = Shader::new(&Fill::Solid(color), self.transform, self.tiles);
         if let Some(p) = shader.and_then(|s| plan(parts, s, alpha)) {
             budget::push(planned, p)?;
@@ -543,7 +554,11 @@ impl<'a> Layers<'a> {
     /// band's pen, laid whole, and the blob over it hides its inner half. A
     /// band that is not opaque is then one even tone over the blob's area
     /// too, where a ring would leave it clear.
-    fn letters(&self, planned: &mut budget::Buffer<Planned<'a>>, idx: &[usize]) -> Result<(), Error> {
+    fn letters(
+        &self,
+        planned: &mut budget::Buffer<Planned<'a>>,
+        idx: &[usize],
+    ) -> Result<(), Error> {
         let fx = &self.job.effects;
         for band in &self.job.bands {
             if !positive(band.line) {
@@ -566,7 +581,15 @@ impl<'a> Layers<'a> {
                 pen: n.grow,
                 weight: self.weight,
             };
-            self.solid(planned, self.glyphs_of(idx), reach, false, fx.join, n.color, 1.0)?;
+            self.solid(
+                planned,
+                self.glyphs_of(idx),
+                reach,
+                false,
+                fx.join,
+                n.color,
+                1.0,
+            )?;
         }
         if self.job.no_fill {
             return Ok(());
@@ -617,9 +640,9 @@ impl<'a> Layers<'a> {
             let bent = mesh.filter(|_| !matches!(fill, Fill::Solid(_)));
             let (bends, transform, tol) = (self.bends, self.transform, self.tol);
             let Some(m) = bent else {
-                let parts = self
-                    .glyphs
-                    .parts(range, flat, false, Join::Round, bends, transform, tol)?;
+                let parts =
+                    self.glyphs
+                        .parts(range, flat, false, Join::Round, bends, transform, tol)?;
                 let shader = Shader::new(fill, &transform.after(&frame), self.tiles);
                 if let Some(p) = shader.and_then(|s| plan(parts, s, 1.0)) {
                     budget::push(planned, p)?;
@@ -627,9 +650,9 @@ impl<'a> Layers<'a> {
                 continue;
             };
             for g in range {
-                let parts = self
-                    .glyphs
-                    .parts(g..g + 1, flat, false, Join::Round, bends, transform, tol)?;
+                let parts =
+                    self.glyphs
+                        .parts(g..g + 1, flat, false, Join::Round, bends, transform, tol)?;
                 let carried = self.glyphs.items[g].tangent(m).after(&frame);
                 let shader = Shader::new(fill, &transform.after(&carried), self.tiles);
                 if let Some(p) = shader.and_then(|s| plan(parts, s, 1.0)) {
@@ -775,8 +798,11 @@ pub fn paint_job_with(
         tol,
         weight,
     };
-    let ghosts: budget::Buffer<usize> = (0..job.runs.len()).filter(|&i| job.runs[i].ghost).collect();
-    let letters: budget::Buffer<usize> = (0..job.runs.len()).filter(|&i| !job.runs[i].ghost).collect();
+    let ghosts: budget::Buffer<usize> =
+        (0..job.runs.len()).filter(|&i| job.runs[i].ghost).collect();
+    let letters: budget::Buffer<usize> = (0..job.runs.len())
+        .filter(|&i| !job.runs[i].ghost)
+        .collect();
 
     let mut planned: budget::Buffer<Planned<'_>> = budget::Buffer::new();
     // Afterimages under everything, their fills alone.
@@ -816,7 +842,15 @@ pub fn paint_job_with(
     if job.no_fill && !planned.is_empty() {
         const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
         let sel = layers.glyphs_of(&letters);
-        let parts = glyphs.parts(sel, Reach::flat(weight), false, Join::Round, bends, transform, tol)?;
+        let parts = glyphs.parts(
+            sel,
+            Reach::flat(weight),
+            false,
+            Join::Round,
+            bends,
+            transform,
+            tol,
+        )?;
         let shader = Shader::new(&OPAQUE, transform, tiles);
         if let Some(mut p) = shader.and_then(|s| plan(parts, s, 1.0)) {
             p.erase = true;

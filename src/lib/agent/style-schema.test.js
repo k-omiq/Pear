@@ -46,7 +46,7 @@ function entries(fields, path = '') {
 const allEntries = entries(STYLE_SCHEMA);
 const numericEntries = allEntries.filter(([, e]) => e.type === 'number' || e.type === 'integer');
 const stroke = { color: '#fff', width: 3, opacity: 1 };
-const shadow = { x: -2, y: 4, blur: 3, color: '#1234', opacity: 0.5 };
+const shadow = { x: -2, y: 4, size: 3, color: '#1234', opacity: 0.5 };
 const stop = { color: '#fff', pos: 0, opacity: 1 };
 const anchor = { x: 10, y: 20, ix: -5, iy: 0, ox: 5, oy: 0 };
 const sfxPath = { a: [0, 0], b: [1, 0], bend: 0 };
@@ -182,7 +182,8 @@ describe('validateStylePatch', () => {
     for (const [path, entry] of allEntries.filter(([, e]) => e.type === 'enum')) {
       for (const value of entry.values) expect(validateStylePatch(patchAt(path, value)), path).toEqual([]);
       const [error] = validateStylePatch(patchAt(path, 'wrong'));
-      expect(error.path).toBe(path);
+      // An item field's error names the item the patch reached.
+      expect(error.path).toBe(path.replaceAll('[]', '[0]'));
       for (const value of entry.values) expect(error.error).toContain(value);
     }
   });
@@ -223,7 +224,7 @@ describe('validateStylePatch', () => {
     expect(validateStylePatch({ strokes: { 0: { width: '+2' } }, shadows: { 2: { x: -10 } }, gradient: { stops: { 0: { pos: 0.2 } } } })).toEqual([]);
     expect(validateStylePatch({ strokes: [{ ...stroke, width: -1 }] })[0].path).toBe('strokes[0].width');
     expect(validateStylePatch({ strokes: [{ width: 2 }] })).toEqual([]);
-    expect(validateStylePatch({ shadows: { 0: { blurr: 2 } } })[0]).toMatchObject({ path: 'shadows[0].blurr', hint: expect.stringContaining('blur') });
+    expect(validateStylePatch({ shadows: { 0: { sizee: 2 } } })[0]).toMatchObject({ path: 'shadows[0].sizee', hint: expect.stringContaining('size') });
   });
 
   it('enforces normalized array lengths and reachable indexes', () => {
@@ -317,10 +318,12 @@ describe('styleSchemaText', () => {
   // The budget grew from 5200 when the path anchors and the mask shapes
   // became writable: about 900 characters for two whole new item schemas,
   // and to 8600 for the sound types' layout fields and the SFX effects, and
-  // to 8800 for the bold weight, the italic angle and the two dither kinds.
-  it('describes every key, field and item in under 8800 characters', () => {
+  // to 8800 for the bold weight, the italic angle and the two dither kinds,
+  // and to 10200 for the layer style: the shadow's Photoshop fields, Fill
+  // Opacity, and the blend mode list, which is named twice.
+  it('describes every key, field and item in under 10200 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(8800);
+    expect(text.length).toBeLessThan(10200);
     for (const [path, entry] of allEntries) {
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }

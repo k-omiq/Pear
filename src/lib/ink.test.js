@@ -1228,8 +1228,8 @@ describe('the finish\'s reach', () => {
   it('adds the outermost band and the furthest shadow to the ink\'s overhang', () => {
     const ink = { on: true, strokes: [normalizeInkStroke({ size: 20, pts: [[2, 50, 1], [100, 50, 1]] })] };
     expect(inkReach({ ink, strokes: [], shadows: [] })).toBe(8);
-    expect(shadowExtent([{ x: 3, y: 4, blur: 2 }, { x: -1, y: 0, blur: 0 }])).toBe(9);
-    expect(inkReach({ ink, strokes: [{ width: 3 }, { width: 2 }], shadows: [{ x: 3, y: 4, blur: 2 }] })).toBe(8 + 5 + 9);
+    expect(shadowExtent([{ x: 3, y: 4, size: 3 }, { x: -1, y: 0, size: 0 }])).toBe(9);
+    expect(inkReach({ ink, strokes: [{ width: 3 }, { width: 2 }], shadows: [{ x: 3, y: 4, size: 3 }] })).toBe(8 + 5 + 9);
     expect(inkReach({ ink: { on: false, strokes: [] }, strokes: [{ width: 3 }], shadows: [] })).toBe(0);
   });
 });

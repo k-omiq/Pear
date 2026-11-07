@@ -1023,21 +1023,80 @@ export function inkExtent(ink) {
 }
 
 // How far a list of shadows throws ink past the shape that casts them, page
-// px: the furthest offset (a diagonal, not the sum of its legs) plus the tail
-// of its blur. The shadow is blurred at sigma = blur / 2 and a gaussian is done
-// at about three sigma, so twice the named blur clears it with room to spare.
+// px: the furthest offset (a diagonal, not the sum of its legs) plus how far
+// its soft edge reaches (`shadowSpread`): its Size, which is three of its
+// sigmas and a pixel.
 export function shadowExtent(shadows) {
   let out = 0;
   for (const sh of shadows ?? []) {
-    out = Math.max(
-      out,
-      Math.hypot(Number(sh?.x) || 0, Number(sh?.y) || 0) +
-        2 * Math.max(0, Number(sh?.blur) || 0) +
-        Math.max(0, Number(sh?.grow) || 0),
-    );
+    out = Math.max(out, Math.hypot(Number(sh?.x) || 0, Number(sh?.y) || 0) + shadowSpread(sh));
   }
   return out;
 }
+
+// ---- Photoshop's Drop Shadow ----
+//
+// The engine paints a shadow's Size, Spread, Contour, Noise, mode and
+// knockout (text-engine/src/paint/fx/, boxjob.rs). What is here is what the
+// app needs to place one and to size the canvas it lands in, and the
+// browser engine's approximation: a blur of the same sigma, nothing else.
+
+// The chapter's Global Light (`normalizeLight` in data.js). The store sets it
+// when a chapter opens and when it changes; a shadow with `useGlobalLight`
+// is thrown away from it.
+let light = { angle: 120, altitude: 30 };
+export function setGlobalLight(l) {
+  light = { angle: Number(l?.angle) || 0, altitude: Number(l?.altitude) || 0 };
+}
+export function globalLight() {
+  return light;
+}
+
+// The gaussian's sigma for a Size: `size_sigma` in fx/mod.rs, for the canvas
+// painters that stand in for the engine. 0 is a hard edge. To a hundredth of
+// a pixel, so a migrated blur (whose Size is kept to two places) reads back
+// as the blur it was, and a CSS filter has no float noise in it.
+export function shadowSigma(size) {
+  const s = Number(size) || 0;
+  return s > 0 ? Math.round((0.3 * s + 0.3) * 100) / 100 : 0;
+}
+
+// How far a shadow's ink reaches past its silhouette before it is thrown,
+// page px: its size (`size_reach` in fx/mod.rs), an extrude edge's grow, and
+// the grain noise can carry ink by (`SCATTER`, four device px, which is at
+// most four page px at any scale the app paints at).
+export function shadowSpread(sh) {
+  const size = Math.max(0, Number(sh?.size) || 0);
+  return (size > 0 ? size + 1 : 0) + Math.max(0, Number(sh?.grow) || 0) + ((Number(sh?.noise) || 0) > 0 ? 4 : 0);
+}
+
+// The angle a shadow's light comes from, degrees as Photoshop states it, and
+// how far it is thrown. Its offset is away from the light: a light at 120
+// throws it down and to the right.
+export function shadowAngle(sh) {
+  if (sh?.useGlobalLight) return light.angle;
+  const x = Number(sh?.x) || 0;
+  const y = Number(sh?.y) || 0;
+  if (!x && !y) return light.angle;
+  return Math.round(((Math.atan2(y, -x) * 180) / Math.PI) * 100) / 100;
+}
+export function shadowDistance(sh) {
+  return Math.hypot(Number(sh?.x) || 0, Number(sh?.y) || 0);
+}
+// The offset for an angle and a distance.
+export function shadowOffset(angle, distance) {
+  const a = (angle * Math.PI) / 180;
+  const r2 = (v) => Math.round(v * 100) / 100 || 0;
+  return { x: r2(-Math.cos(a) * distance), y: r2(Math.sin(a) * distance) };
+}
+// A style's shadow as it is painted: one on the Global Light thrown from it.
+export function resolveShadow(sh) {
+  if (!sh?.useGlobalLight) return sh;
+  return { ...sh, ...shadowOffset(light.angle, shadowDistance(sh)) };
+}
+
+// A list of shadows resolved; the list itself when none follows the light.
+const resolveShadows = (list) => (list.some((sh) => sh?.useGlobalLight) ? list.map(resolveShadow) : list);
 
 // ---- the SFX effects, as the shadows the painter casts them with ----
 //
@@ -1075,7 +1134,7 @@ export function effectShadows(style) {
   if (shade > 0) {
     const outer = style.strokes?.length ? style.strokes[style.strokes.length - 1].color : style.color;
     const d = shade * 0.08 * size;
-    top.push({ color: outer, opacity: 1, x: d * Math.SQRT1_2, y: d * Math.SQRT1_2, blur: 0, grow: 0 });
+    top.push({ color: outer, opacity: 1, x: d * Math.SQRT1_2, y: d * Math.SQRT1_2, size: 0, grow: 0 });
   }
   const sh = style.shake;
   if (sh?.on && sh.amp > 0) {
@@ -1084,7 +1143,7 @@ export function effectShadows(style) {
     for (let k = 1; k <= sh.count; k++) {
       const d = (sh.amp * size * k) / sh.count;
       const opacity = 0.45 * (1 - (k - 1) / (sh.count + 1));
-      for (const s of [1, -1]) top.push({ color, opacity, x: s * ux * d, y: s * uy * d, blur: 0, grow: 0 });
+      for (const s of [1, -1]) top.push({ color, opacity, x: s * ux * d, y: s * uy * d, size: 0, grow: 0 });
     }
   }
   const ex = style.extrude;
@@ -1095,10 +1154,10 @@ export function effectShadows(style) {
     const n = Math.max(1, Math.min(48, Math.ceil(len / 1.5)));
     const steps = [];
     for (let k = 1; k <= n; k++) steps.push([(ux * len * k) / n, (uy * len * k) / n]);
-    for (const [x, y] of steps) under.push({ color: ex.color, opacity: 1, x, y, blur: 0, grow: 0 });
+    for (const [x, y] of steps) under.push({ color: ex.color, opacity: 1, x, y, size: 0, grow: 0 });
     if (ex.edge) {
       const grow = Math.max(1, 0.03 * size);
-      for (const [x, y] of steps) under.push({ color: ex.edge, opacity: 1, x, y, blur: 0, grow });
+      for (const [x, y] of steps) under.push({ color: ex.edge, opacity: 1, x, y, size: 0, grow });
     }
   }
   return { top, under };
@@ -1106,7 +1165,7 @@ export function effectShadows(style) {
 
 // Every shadow a box casts, first on top: the effects' and its own.
 export function boxShadows(style) {
-  const own = Array.isArray(style?.shadows) ? style.shadows : [];
+  const own = Array.isArray(style?.shadows) ? resolveShadows(style.shadows) : [];
   const { top, under } = effectShadows(style);
   return top.length || under.length ? [...top, ...own, ...under] : own;
 }
@@ -1154,7 +1213,7 @@ export function inkBounds(ink) {
 // anything with `strokes` and `shadows` in the style's shape.
 function finishOf(f) {
   const bands = strokeBands(f?.strokes);
-  const shadows = Array.isArray(f?.shadows) ? f.shadows : [];
+  const shadows = Array.isArray(f?.shadows) ? resolveShadows(f.shadows) : [];
   return bands.length || shadows.length ? { bands, shadows } : null;
 }
 
@@ -1284,10 +1343,9 @@ function paintFinish(ctx, layer, ink, t, fx, alloc) {
     const sh = fx.shadows[i];
     const c = grown(outer * scale, sh.color);
     ctx.globalAlpha = Math.min(1, Math.max(0, Number(sh.opacity) || 0));
-    // A canvas filter's radius is in device px, and a canvas shadow's blur is
-    // twice its gaussian sigma while a filter's is the sigma itself - so half.
-    const blur = Math.max(0, Number(sh.blur) || 0);
-    ctx.filter = blur > 0 ? `blur(${(blur / 2) * scale}px)` : 'none';
+    // A canvas filter's radius is in device px and is the gaussian's sigma.
+    const sigma = shadowSigma(sh.size);
+    ctx.filter = sigma > 0 ? `blur(${sigma * scale}px)` : 'none';
     // The offset through the transform's linear part: 3 px right on the page
     // is 6 device px at 2x, and turns with a rotated box.
     const ox = Number(sh.x) || 0;

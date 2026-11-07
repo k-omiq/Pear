@@ -262,7 +262,10 @@ pub const KINDS: &[Kind] = &[
         rise: 0.0,
         jitter: (8.0, 0.12, 0.12),
         // Said twice, the second one lower and to the right.
-        paths: &[path(-6.0, 0.05, -0.45, -0.62), path(-10.0, 0.05, 0.45, 0.62)],
+        paths: &[
+            path(-6.0, 0.05, -0.45, -0.62),
+            path(-10.0, 0.05, 0.45, 0.62),
+        ],
     },
     Kind {
         id: "bounce",
@@ -353,11 +356,7 @@ fn key(out: &mut String, name: &str) {
 
 fn kind_json(out: &mut String, k: &Kind) {
     out.push('{');
-    for (name, v) in [
-        ("id", k.id),
-        ("name", k.name),
-        ("example", k.example),
-    ] {
+    for (name, v) in [("id", k.id), ("name", k.name), ("example", k.example)] {
         key(out, name);
         text(out, v);
         out.push(',');
