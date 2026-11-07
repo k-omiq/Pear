@@ -77,6 +77,8 @@ const {
   moveGeom,
   moveBoxTo,
   duplicateBox,
+  copyBox,
+  pasteBox,
   centreTextInOutline,
   setBoxLocked,
   mergeMaskedInto,
@@ -1933,14 +1935,29 @@ describe('placement chooses the size (FIT-1)', () => {
       expect({ x: b.x, y: b.y, fit: { ...b.fit } }).toEqual({ x: before.x, y: before.y, fit: before.fit });
     });
 
-    // A copy sits at an offset, and breaks where the original does.
-    it('gives a duplicate the original’s lines at its offset', () => {
+    // A copy sits at an offset with no balloon of its own, and breaks where
+    // the original does.
+    it('gives a duplicate the original’s lines and not its balloon', () => {
       const b = placeAt(26);
+      expect(b.fit).toBeTruthy();
       const id = duplicateBox(b.id);
       const copy = page().boxes.find((x) => x.id === id);
       expect(copy.y).not.toBe(b.y);
-      expect(L(copy.fit).cy - L(b.fit).cy).toBeCloseTo(copy.y - b.y, 6);
-      expect(editorLines(copy)).toEqual(editorLines(b));
+      expect(copy.fit).toBeNull();
+      expect(copy.outline).toBeUndefined();
+      expect(b.fit).toBeTruthy();
+      expect(exportLines(copy)).toEqual(exportLines(b));
+    });
+
+    it('pastes a copy with the original’s lines and not its balloon', () => {
+      const b = placeAt(26);
+      selectBox(b.id);
+      expect(copyBox(b.id)).toBe(true);
+      const id = pasteBox();
+      const copy = page().boxes.find((x) => x.id === id);
+      expect(copy.fit).toBeNull();
+      expect(copy.outline).toBeUndefined();
+      expect(exportLines(copy)).toEqual(exportLines(b));
     });
   });
 

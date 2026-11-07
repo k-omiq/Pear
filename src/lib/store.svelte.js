@@ -3898,21 +3898,6 @@ export const scaleFit = (f, sx, sy) => {
   return null;
 };
 
-// The same fit carried by (dx, dy), for a pasted copy (`duplicateBox`).
-// A new object every time, so a fit shared with the gesture's starting copy -
-// or with anything else - is never moved under it.
-export const translateFit = (f, dx, dy) => {
-  if (!f) return f;
-  if (f.kind === 'ellipse') return { kind: 'ellipse', cx: f.cx + dx, cy: f.cy + dy, rx: f.rx, ry: f.ry };
-  if (f.kind === 'rect') return { kind: 'rect', x: f.x + dx, y: f.y + dy, w: f.w, h: f.h };
-  if (f.kind === 'rows') {
-    const spans = f.spans.map((sp) => sp && [sp[0] + dx, sp[1] + dx]);
-    return { kind: 'rows', y0: f.y0 + dy, step: f.step, spans };
-  }
-  if (f.kind === 'poly') return { kind: 'poly', pts: f.pts.map(([x, y]) => [x + dx, y + dy]) };
-  return null;
-};
-
 // The solver's record in the new space: its sizes are lengths, like the
 // style's own. The stamp is the caller's to renew - it is a fingerprint of the
 // whole box.
@@ -6363,10 +6348,17 @@ export function duplicateBox(id = app.selectedId, p = page(), { select = true } 
 // box, and the line it reads its words from. Plain data, so a clipboard holding
 // it is untouched by later edits to the source - or by the source's page being
 // turned away from, or the source being deleted.
+//
+// Not its balloon: the fit and the outline record are the bubble on the page
+// the source stands in, and the copy stands somewhere else - on another bubble,
+// another page, or open paper. What it keeps is the look: the lines the source
+// draws (`lines`), which the copy draws too until it is edited, sized or fitted
+// to a balloon of its own.
 function boxSnapshot(src, p) {
   const from = lineByN(p, src.lineN);
   const tags = lineTags(from);
   const text = boxText(src, p);
+  const place = src.auto ? placeBlock(boxCandidate(src, text)) : null;
   return {
     box: {
       x: src.x,
@@ -6374,8 +6366,7 @@ function boxSnapshot(src, p) {
       w: src.w,
       h: src.h,
       style: cloneStyle(src.style),
-      fit: normalizeFit($state.snapshot(src.fit)),
-      outline: normalizeOutline($state.snapshot(src.outline)),
+      lines: place && !place.isCurve && place.lines?.length ? [...place.lines] : null,
       // The solver's record: whether it manages the box, the size it was solved
       // from and the locks the user set. A copy that lost it would lay itself
       // out differently the first time either box is edited.
@@ -6419,20 +6410,19 @@ function placeSnapshot(p, snap, x, y, select = true) {
     // Cloned again, not handed over: one clipboard pasted twice is two boxes
     // that must restyle apart.
     style: cloneStyle(src.style),
+    // No balloon (`boxSnapshot`): Refit or the Regions view gives the copy
+    // the one it lands on.
     fit: null,
   };
-  // The fit is the box's width profile, carried to the offset the copy sits
-  // at: its rows hang from where the box
-  // draws its block (`balloonWidthsFor`), so a fit left where the original's
-  // balloon is would break the copy's lines on other rows. With it carried,
-  // the copy breaks exactly where the original does.
-  b.fit = translateFit(normalizeFit(structuredClone(src.fit)), b.x - src.x, b.y - src.y);
-  // Its outline record too, unapproved: the copy's outline sits where the copy
-  // does, and nobody has looked at it there.
-  const outline = normalizeOutline(src.outline);
-  if (outline) b.outline = { ...outline, approved: null };
   if (src.auto) {
     b.auto = normalizeAuto(structuredClone(src.auto));
+    // The source's lines, held as a corner scale holds them (`scaled`, which
+    // any box draws): with no balloon rows to break on, the copy would
+    // otherwise break again at its own width and stop looking like the box
+    // it was copied from. Lines chosen for the source's balloon go with it.
+    const kept = src.lines ? breaksFor(applyCase(ln.en, b.style), b.style, b.style.size, src.lines) : null;
+    if (kept) b.auto.breaks = { ...kept, scaled: true };
+    else delete b.auto.breaks;
     if (src.solved) b.auto.stamp = solveStamp(b, ln.en);
   }
   // The copy's own verdict, before the record takes its snapshot. Not the
