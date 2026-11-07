@@ -220,8 +220,14 @@ describe('the registry itself', () => {
   it('binds no two actions to the same default', () => {
     const ids = SHORTCUTS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
-    const combos = SHORTCUTS.map((s) => s.combo);
-    expect(new Set(combos).size).toBe(combos.length);
+    // Two keys may share a combo only when they are never heard in the same
+    // place: the typing pane's Enter in a field and Enter on a row.
+    const share = (a, b) => !a.ctx || !b.ctx || a.ctx === b.ctx;
+    const clashes = [];
+    for (const [i, a] of SHORTCUTS.entries()) {
+      for (const b of SHORTCUTS.slice(i + 1)) if (a.combo === b.combo && share(a, b)) clashes.push(`${a.id} / ${b.id}`);
+    }
+    expect(clashes).toEqual([]);
   });
 
   it('carries the tool modes in rail order according to brushTool preference', () => {
@@ -307,6 +313,45 @@ describe('overrides', () => {
     expect(setCombo('no.such.shortcut', 'Mod+9')).toEqual({ ok: false, reason: 'unknown' });
     expect(setCombo('tool.pan', 'Shift')).toEqual({ ok: false, reason: 'invalid' });
     expect(comboFor('tool.pan')).toBe('Mod+3');
+  });
+
+  it('rebinds the typing pane keys, Enter, Tab and the arrows included', () => {
+    // Heard in one place only, so the keys that are refused elsewhere are fine.
+    expect(setCombo('translate.next', 'Mod+Enter').ok).toBe(true);
+    expect(setCombo('translate.leave', 'Alt+q').ok).toBe(true);
+    expect(setCombo('translate.leave', 'Escape').ok).toBe(true);
+    expect(setCombo('translate.lineDown', 'j').ok).toBe(true);
+    expect(setCombo('translate.tag1', 'Ctrl+1').ok).toBe(true);
+    expect(comboFor('translate.tag1')).toBe('Ctrl+1');
+  });
+
+  it('lets field and row keys share a combo, but not with a key heard everywhere', () => {
+    // Enter is the next line in a field and "go back in" on a row by default.
+    expect(conflictFor('Enter', 'translate.edit')).toBe(null);
+    expect(setCombo('translate.edit', 'Tab').ok).toBe(true);
+    // A row key cannot take another row key's combo.
+    const r = setCombo('translate.lineUp', 'ArrowDown');
+    expect([r.ok, r.reason, r.conflict?.id]).toEqual([false, 'conflict', 'translate.lineDown']);
+    // Nor one an everywhere key holds, and the other way round.
+    expect(setCombo('translate.edit', 'Mod+k').reason).toBe('conflict');
+    expect(setCombo('palette.open', 'Alt+t').conflict?.id).toBe('translate.tagPicker');
+  });
+
+  it('refuses a field key that would type in the field', () => {
+    for (const combo of ['t', 'Shift+t', 'Space', 'Backspace']) {
+      expect(setCombo('translate.next', combo).reason).toBe('types');
+      expect(setCombo('translate.tag2', combo).reason).toBe('types');
+    }
+    // A row key is never pressed in a field, so a bare letter is fine there.
+    expect(setCombo('translate.pageNext', 'n').ok).toBe(true);
+  });
+
+  it('never hands a pane key to the window dispatch', () => {
+    const fn = vi.fn();
+    registerShortcutHandlers({ 'translate.lineDown': fn });
+    expect(lookupShortcut(press('ArrowDown', { key: 'ArrowDown' }))).toBe(null);
+    expect(dispatchShortcut(press('ArrowDown', { key: 'ArrowDown' }))).toBe(null);
+    expect(fn).not.toHaveBeenCalled();
   });
 
   it('refuses to rebind the contextual fixed keys', () => {
@@ -510,8 +555,8 @@ describe('dispatch', () => {
     expect(dispatchShortcut(press('KeyH', { key: 'H', shift: true }))).toBe('tool.pan');
     expect(dispatchShortcut(press('KeyQ', { key: 'œ', alt: true }))).toBe('tool.place');
     // A field's editing keys are typing too.
-    expect(setCombo('tool.text', 'Enter').ok).toBe(true);
-    expect(dispatchShortcut(press('Enter'), { typing: true })).toBe(null);
+    expect(setCombo('tool.text', 'Space').ok).toBe(true);
+    expect(dispatchShortcut(press('Space', { key: ' ' }), { typing: true })).toBe(null);
     // And a rebind that keeps a command modifier keeps working mid-sentence.
     expect(setCombo('tool.text', 'Ctrl+t').ok).toBe(true);
     expect(dispatchShortcut(press('KeyT', { other: true }), { typing: true })).toBe('tool.text');

@@ -63,7 +63,7 @@
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
   import { modKey } from './format.js';
-  import { comboFor, matchesCombo, formatCombo } from './shortcuts.svelte.js';
+  import { comboFor, defaultCombo, formatCombo, isMacKeyboard, pressed } from './shortcuts.svelte.js';
   import ReviewList from './ReviewList.svelte';
   import FontNotice from './FontNotice.svelte';
   import EngineNotice from './EngineNotice.svelte';
@@ -254,19 +254,17 @@
   const pane = $derived(isTranslateChapter());
 
   // ---------- the typing pane's keyboard ----------
-  // Everything a translator does, from the English field: Enter or Tab to the
-  // next line (across pages), Shift+Tab back, Shift+Enter for a line break,
-  // Alt+1-9 to toggle the tags in the order the chips number them, and the
-  // registry's Translation keys for the rest. Esc lets go of the field; on a row
-  // the arrows step and Enter goes back in. True when the press was taken.
-  const altDigit = (e) => {
-    if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return null;
-    const m = /^Digit([1-9])$/.exec(e.code ?? '');
-    return m ? +m[1] : null;
-  };
-  const is = (e, id) => {
-    const c = comboFor(id);
-    return !!c && matchesCombo(e, c);
+  // Everything a translator does, from the English field: the next line
+  // (across pages), the previous one, the tags in the order the chips number
+  // them, the tag finder, the speaker, the source text, the note. Every key is
+  // the registry's (group Translation), so all of them rebind; the defaults are
+  // Enter or Tab on, Shift+Tab back, Alt+1-9 for the tags, Esc to let go of the
+  // field. On a row, the row keys step and go back in. Shift+Enter stays the
+  // field's own line break. True when the press was taken.
+  const TAG_IDS = Array.from({ length: 9 }, (_, i) => `translate.tag${i + 1}`);
+  const tagKey = (e) => {
+    const i = TAG_IDS.findIndex((id) => pressed(e, id));
+    return i < 0 ? null : i + 1;
   };
 
   function step(dir) {
@@ -275,45 +273,44 @@
 
   function paneKey(e, line, where) {
     if (!pane || e.isComposing || e.keyCode === 229) return false;
-    const plain = !e.altKey && !e.metaKey && !e.ctrlKey;
     const take = () => {
       e.preventDefault();
       e.stopPropagation();
       return true;
     };
     if (where === 'row') {
-      if (plain && !e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      if (pressed(e, 'translate.lineDown') || pressed(e, 'translate.lineUp')) {
         take();
-        step(e.key === 'ArrowDown' ? 1 : -1);
+        step(pressed(e, 'translate.lineDown') ? 1 : -1);
         return true;
       }
-      if (plain && !e.shiftKey && e.key === 'Enter') {
+      if (pressed(e, 'translate.edit')) {
         take();
         if (p.activeLineN !== line.n) activateLine(line.n);
         focusActiveField('en');
         return true;
       }
     } else {
-      if (plain && e.key === 'Enter' && !e.shiftKey) {
+      if (pressed(e, 'translate.next') || pressed(e, 'translate.nextAlt')) {
         take();
-        // From the source field, Enter goes on to the English one.
+        // From the source field, the next-line key goes on to the English.
         if (where === 'jp') focusActiveField('en');
         else step(1);
         return true;
       }
-      if (plain && e.key === 'Tab') {
+      if (pressed(e, 'translate.prev')) {
         take();
-        step(e.shiftKey ? -1 : 1);
+        step(-1);
         return true;
       }
-      if (e.key === 'Escape' && plain && !e.shiftKey) {
+      if (pressed(e, 'translate.leave')) {
         take();
         e.currentTarget.blur();
         listEl?.querySelector('.qrow.active')?.focus({ preventScroll: true });
         return true;
       }
     }
-    const d = altDigit(e);
+    const d = tagKey(e);
     if (d != null) {
       take();
       const t = numbered[d - 1];
@@ -321,29 +318,29 @@
       else toast(`No tag ${d} yet - ${formatCombo(comboFor('translate.tagPicker'))} to add one`);
       return true;
     }
-    if (is(e, 'translate.clearTags')) {
+    if (pressed(e, 'translate.clearTags')) {
       take();
       for (const name of lineTags(line).slice()) toggle(line, name);
       return true;
     }
-    if (is(e, 'translate.tagPicker')) {
+    if (pressed(e, 'translate.tagPicker')) {
       take();
       openPicker(line);
       return true;
     }
-    if (is(e, 'translate.speaker')) {
+    if (pressed(e, 'translate.speaker')) {
       take();
       const sel = listEl?.querySelector(`#qspk-${line.n}`);
       if (sel) sel.focus();
       else toast('No characters yet - add them in Settings ▸ Series guide');
       return true;
     }
-    if (is(e, 'translate.source')) {
+    if (pressed(e, 'translate.source')) {
       take();
       focusActiveField(where === 'jp' ? 'en' : 'jp');
       return true;
     }
-    if (is(e, 'translate.note')) {
+    if (pressed(e, 'translate.note')) {
       take();
       noteAsked = true;
       queueMicrotask(() => listEl?.querySelector('.qnote')?.focus());
@@ -385,12 +382,19 @@
   const known = $derived(knownTags(app.pages));
   const recent = $derived(known.slice(0, 4));
   // The typing pane shows the first nine tags, always in the same places, each
-  // with the Alt+digit that toggles it. In name order, not the registry's: that
+  // with the key that toggles it (Alt+digit unless rebound). In name order, not the registry's: that
   // is recency order, and a digit that moves every time a tag is used is a
   // digit nobody can learn.
   const byName = $derived([...known].sort((a, b) => a.name.localeCompare(b.name)));
   const numbered = $derived(byName.slice(0, 9));
-  const altLabel = $derived(formatCombo('Alt+1').replace(/1$/, ''));
+  // The chip shows its digit while the key is the default Alt+digit, and the
+  // whole key once it has been rebound.
+  const tagKeys = $derived(
+    TAG_IDS.map((id, i) => {
+      const c = comboFor(id);
+      return { aria: c ? c.replace('Mod', isMacKeyboard() ? 'Meta' : 'Control') : undefined, full: c ? formatCombo(c) : '', chip: c === defaultCombo(id) ? String(i + 1) : c ? formatCombo(c) : '' };
+    }),
+  );
 
   // ---------- the tag finder (Alt+T) ----------
   // The All tags menu with a field on top: type to narrow, ↑/↓ to choose, Enter
@@ -439,7 +443,7 @@
       e.preventDefault();
       e.stopPropagation();
       closePicker();
-    } else if (altDigit(e) != null || is(e, 'translate.tagPicker')) {
+    } else if (tagKey(e) != null || pressed(e, 'translate.tagPicker')) {
       e.preventDefault();
       closePicker();
     }
@@ -712,7 +716,7 @@
                    digit under each is the same on every line. -->
               {#each numbered as t, i (t.name)}
                 {@const on = tagged.includes(t.name)}
-                <button class="qtag" class:on title={`${on ? 'Remove' : 'Apply'} ${t.name} (${altLabel}${i + 1})`} aria-keyshortcuts="Alt+{i + 1}" aria-pressed={on} onclick={() => toggle(line, t.name)}><kbd class="qtag-key">{i + 1}</kbd>{t.name}</button>
+                <button class="qtag" class:on title={`${on ? 'Remove' : 'Apply'} ${t.name}${tagKeys[i].full ? ` (${tagKeys[i].full})` : ''}`} aria-keyshortcuts={tagKeys[i].aria} aria-pressed={on} onclick={() => toggle(line, t.name)}>{#if tagKeys[i].chip}<kbd class="qtag-key">{tagKeys[i].chip}</kbd>{/if}{t.name}</button>
               {/each}
               {#each tagged.filter((n) => !numbered.some((t) => t.name === n)) as name (name)}
                 <button class="qtag on" title={`Remove ${name}`} aria-pressed="true" onclick={() => toggle(line, name)}>{name}</button>

@@ -16,7 +16,7 @@ import {
   stepLine,
 } from './store.svelte.js';
 import { initHistory, resetHistory } from './editor/history.svelte.js';
-import { setMacKeyboard } from './shortcuts.svelte.js';
+import { setMacKeyboard, setCombo, resetAllCombos } from './shortcuts.svelte.js';
 
 let raf;
 beforeEach(() => {
@@ -49,6 +49,7 @@ afterEach(() => {
   loadProjectPages([]);
   app.chapterMode = 'typeset';
   app.translateTypeset = false;
+  resetAllCombos();
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -148,4 +149,22 @@ it('shows and hides the typesetting tools without leaving the translate chapter'
   expect(app.tool).toBe('pan');
   app.chapterMode = 'typeset';
   expect(setTranslateTypeset(true)).toBe(false);
+});
+
+it('follows the keys as the user rebound them', async () => {
+  expect(setCombo('translate.next', 'Mod+Enter').ok).toBe(true);
+  expect(setCombo('translate.tag1', 'Ctrl+1').ok).toBe(true);
+  const view = render(Queue);
+  await flush();
+  // Plain Enter is now the field's own again.
+  expect(key(english(view), { key: 'Enter' }).defaultPrevented).toBe(false);
+  key(english(view), { key: 'Enter', metaKey: true });
+  await flush();
+  expect(page().activeLineN).toBe(2);
+  // The rebound tag key toggles; the old Alt+1 types its character.
+  const chips = () => [...view.container.querySelectorAll('.qrow.active .qtag')].map((b) => b.textContent);
+  expect(chips()[0]).toBe('⌃1sfx');
+  expect(key(english(view), { key: '¡', code: 'Digit1', altKey: true }).defaultPrevented).toBe(false);
+  key(english(view), { key: '1', code: 'Digit1', ctrlKey: true });
+  expect(page().lines[1].tags).toEqual([]);
 });
