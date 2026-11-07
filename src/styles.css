@@ -1383,8 +1383,9 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .cp-text{ white-space:nowrap; }
 .cp-stage{ color:var(--t3); }
 /* A series page is a list to read down, not a canvas: held to a measure so the
-   facts at the right of a row stay within reach of its title. */
-.project-page{ width:100%; max-width:980px; display:flex; flex-direction:column; }
+   facts at the right of a row stay within reach of its title. Centred, so a
+   wide window has even space either side rather than all of it on the right. */
+.project-page{ width:100%; max-width:980px; margin:0 auto; display:flex; flex-direction:column; }
 .chapter-time{ width:96px; flex:none; text-align:right; font-size:11px; color:var(--t3); }
 .chapter-row .row-menu-btn{ opacity:0; }
 .chapter-row:hover .row-menu-btn,.chapter-row:focus-within .row-menu-btn,.chapter-row .row-menu-btn.open{ opacity:1; }
