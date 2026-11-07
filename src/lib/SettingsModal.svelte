@@ -1,6 +1,6 @@
 <script>
 
-  import { onDestroy, tick, untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { app, saveExportPrefs, toast, toastError } from './store.svelte.js';
   import { checkSidecar, modelsCacheInfo, clearModelsCache } from './sidecar.js';
   import ThemePicker from './ThemePicker.svelte';
@@ -15,17 +15,7 @@
   import { guide, setSeriesTypeset } from './guide.svelte.js';
   import { engineSwitch, engineHasNoFont } from './engine-switch.svelte.js';
   import ReaderChoice from './ReaderChoice.svelte';
-  import {
-    shortcutGroups,
-    comboFor,
-    defaultCombo,
-    isCustomCombo,
-    setCombo,
-    resetCombo,
-    resetAllCombos,
-    formatCombo,
-  } from './shortcuts.svelte.js';
-  import { createRebindCapture } from './rebind-capture.js';
+  import ShortcutSettings from './ShortcutSettings.svelte';
   import { door, setDoorOn, setDoorPort, rotateToken, DEFAULT_PORT } from './agent/door.svelte.js';
   import { connectLines, doorUrl } from './agent/connect.js';
   import { getVersion } from '@tauri-apps/api/app';
@@ -114,8 +104,6 @@
   }
 
   function selectTab(id) {
-    // A row waiting for keys stops waiting when its pane goes away.
-    if (capturing) { capture.end(); capturing = null; captureErr = ''; }
     settingsView.tab = id;
   }
 
@@ -166,67 +154,6 @@
       e.preventDefault();
       first.focus();
     }
-  }
-
-  // The registry shortcut groups follow preferences like the brush tool toggle,
-  // while each row combo comes from comboFor reading preferences.
-  const groups = $derived(shortcutGroups());
-  let capturing = $state(null); // shortcut id currently listening for a keypress
-  let captureErr = $state('');
-  let confirmResetKeys = $state(false);
-
-  const capture = createRebindCapture(typeof window === 'undefined' ? null : window, {
-    onKey: (combo, done) => {
-      const r = setCombo(capturing, combo);
-      if (r.ok) {
-        done();
-        capturing = null;
-        captureErr = '';
-        return;
-      }
-      captureErr =
-        r.reason === 'conflict'
-          ? `${formatCombo(combo)} is already “${r.conflict.label}”`
-          : r.reason === 'types'
-            ? `${formatCombo(combo)} would type in the text field - hold ${formatCombo('Alt+1').replace(/1$/, '')} or ${formatCombo('Mod+1').replace(/1$/, '')} with it`
-            : 'That key cannot be used - try another';
-    },
-    onCancel: () => {
-      // Both cancel paths land here - bare Escape and the modal closing -
-      // so the row stops presenting itself as still listening.
-      capturing = null;
-      captureErr = '';
-    },
-  });
-
-  function beginCapture(id) {
-    captureErr = '';
-    capturing = capture.begin(id);
-  }
-
-  // While a row is listening, its keys are captured on the way down and
-  // stopped there, so binding Cmd+1 does not also switch tool and Escape does
-  // not close the settings modal out from under the row. The listener is armed
-  // only while the modal is open AND a row is listening: closing the modal
-  // mid-capture cancels the capture instead of leaving a window-wide key
-  // snatcher behind.
-  $effect(() => {
-    capture.setOpen(open);
-    capturing = capture.current;
-  });
-  onDestroy(() => capture.setOpen(false));
-
-  function onResetKeys() {
-    if (!confirmResetKeys) {
-      confirmResetKeys = true;
-      return;
-    }
-    confirmResetKeys = false;
-    capture.end();
-    capturing = null;
-    captureErr = '';
-    resetAllCombos();
-    toast('Shortcuts back to their defaults');
   }
 
   let cache = $state(null); // { entries:[{path,exists,bytes}], total_bytes } | null
@@ -452,9 +379,6 @@
     if (open) {
       confirmClear = false;
       confirmResetPanels = false;
-      confirmResetKeys = false;
-      capturing = null;
-      captureErr = '';
       checkSidecar();
       loadCache();
     }
@@ -955,61 +879,7 @@
       {/if}
 
       {#if tab === 'shortcuts'}
-        <!-- Every key the editor answers to by name. The three contextual ones -
-             Escape, Tab and the arrows - are listed at the bottom as what they
-             are: fixed, because their meaning depends on what is selected. -->
-        <p class="set-lead set-lead-top">Click a shortcut, then press the keys you want. <b>Esc</b> cancels.</p>
-
-        {#each groups as g (g.name)}
-          <section class="settings-section">
-            <h3 class="settings-title">{g.name}</h3>
-            {#each g.items as s (s.id)}
-              <div class="set-item">
-                <div class="set-line sc-line" class:capturing={capturing === s.id}>
-                  <span class="set-label">{s.label}</span>
-                  <button
-                    class="sc-combo"
-                    class:custom={isCustomCombo(s.id)}
-                    class:listening={capturing === s.id}
-                    title={capturing === s.id
-                      ? 'Press the keys - Esc cancels'
-                      : `Click to rebind · default ${formatCombo(defaultCombo(s.id))}`}
-                    onclick={() => beginCapture(s.id)}
-                  >
-                    {capturing === s.id ? 'Press keys…' : formatCombo(comboFor(s.id))}
-                  </button>
-                  <button
-                    class="btn tiny sc-reset"
-                    disabled={!isCustomCombo(s.id)}
-                    title="Back to {formatCombo(defaultCombo(s.id))}"
-                    onclick={() => { resetCombo(s.id); if (capturing === s.id) { capture.end(); capturing = null; } }}
-                  >
-                    Default
-                  </button>
-                </div>
-                {#if capturing === s.id && captureErr}
-                  <p class="set-desc set-error">{captureErr}</p>
-                {/if}
-              </div>
-            {/each}
-          </section>
-        {/each}
-
-        <section class="settings-section">
-          <h3 class="settings-title">Fixed keys</h3>
-          <p class="set-intro">
-            What these do depends on what you have selected:
-            <b>Esc</b> closes whatever is open and then deselects,
-            <b>Tab</b> steps through the boxes on the page, and the
-            <b>arrows</b> nudge the selected box - or turn the page when nothing
-            is selected. Hold <b>Shift</b> with an arrow for a bigger nudge.
-            In a translate chapter these keys are in the Translation group above,
-            and you can change them there.
-          </p>
-          <div class="set-actions">
-            {@render confirmButton(confirmResetKeys, 'Reset all shortcuts', 'Reset every shortcut', onResetKeys, () => (confirmResetKeys = false))}
-          </div>
-        </section>
+        <ShortcutSettings />
       {/if}
 
       {#if tab === 'about'}
@@ -1210,48 +1080,6 @@
   }
   .set-error {
     color: var(--warn);
-  }
-
-  /* One shortcut: what it does on the left, the keys on the right. The keys are
-     the button - there is no second "change" control to hunt for, and the row
-     says what it is going to do when you press it. */
-  .sc-line {
-    gap: 10px;
-  }
-  .sc-combo {
-    flex: none;
-    min-width: 96px;
-    height: 28px;
-    padding: 0 10px;
-    border-radius: 6px;
-    border: 1px solid var(--line2);
-    background: var(--surface);
-    color: var(--text);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .sc-combo:hover {
-    background: var(--accent-soft);
-  }
-  .sc-combo:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-  /* A rebound key is worth spotting at a glance when you are wondering why a
-     press does something unexpected. */
-  .sc-combo.custom {
-    font-weight: 600;
-  }
-  .sc-combo.listening {
-    border-color: var(--warn);
-    color: var(--warn);
-    font-family: inherit;
-  }
-  .sc-reset:disabled {
-    /* Present but silent on a default binding - the row keeps its shape, so
-       nothing shifts sideways when a shortcut is changed. */
-    opacity: 0.28;
   }
 
   /* AI agents. The lines are what the user pastes, token and all, so they wrap

@@ -293,7 +293,8 @@ function load() {
   ) {
     const clean = {};
     for (const [id, combo] of Object.entries(saved.shortcuts)) {
-      if (typeof id === 'string' && typeof combo === 'string' && combo.trim()) clean[id] = combo;
+      // '' is a key the user took away; whitespace is nothing at all.
+      if (typeof id === 'string' && typeof combo === 'string' && (combo === '' || combo.trim())) clean[id] = combo;
     }
     prefs.shortcuts = clean;
   }
