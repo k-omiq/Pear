@@ -25,7 +25,7 @@
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
   import { editBurst } from './lib/edit-burst.js';
   import { sizeSetting, setSizeSetting, steppedSize } from './lib/data.js';
-  import { dispatchShortcut, registerShortcutHandlers } from './lib/shortcuts.svelte.js';
+  import { dispatchShortcut, pressed, registerShortcutHandlers } from './lib/shortcuts.svelte.js';
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
@@ -630,19 +630,30 @@
     // in the registry now: a bare letter is typing before it is a shortcut, so
     // it could only ever fire with focus nowhere at all, and it collided with
     // the letter itself the moment focus moved into a field.
-    // A translate chapter, with focus on the page rather than a control: up and
-    // down step through the lines, Enter goes into the active one's English.
-    if (isTranslateChapter() && !app.selectedId && !mod && !e.altKey && !e.shiftKey) {
+    // A translate chapter, with focus on the page rather than a control: the
+    // row keys of the registry's Translation group (↑ ↓ step through the
+    // lines, Enter goes into the active one's English, ← → turn the page by
+    // default). Rebindable, so the plain arrows below do not also turn the
+    // page here.
+    if (isTranslateChapter() && !app.selectedId) {
       const t = e.target;
       const onPage = !(t instanceof Element) || t === document.body || !!t.closest?.('.editor-scroll, .page-frame');
-      if (onPage && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-        e.preventDefault();
-        stepLine(e.key === 'ArrowDown' ? 1 : -1);
-        return;
+      if (onPage) {
+        if (pressed(e, 'translate.lineDown') || pressed(e, 'translate.lineUp')) {
+          e.preventDefault();
+          stepLine(pressed(e, 'translate.lineDown') ? 1 : -1);
+          return;
+        }
+        if (pressed(e, 'translate.edit')) {
+          e.preventDefault();
+          focusActiveField('en');
+          return;
+        }
       }
-      if (onPage && e.key === 'Enter') {
+      if (!isLongstrip() && (pressed(e, 'translate.pageNext') || pressed(e, 'translate.pagePrev'))) {
         e.preventDefault();
-        focusActiveField('en');
+        if (pressed(e, 'translate.pageNext')) nextPage();
+        else prevPage();
         return;
       }
     }
@@ -658,7 +669,7 @@
     // Longstrip navigation is handled by scroll container; paged chapters
     // consume the arrow for the turn, so the default (scrolling the page
     // under a caret-less keypress) is prevented with it.
-    if (!isLongstrip()) {
+    if (!isLongstrip() && !isTranslateChapter()) {
       if (e.key === 'ArrowRight' && !e.shiftKey) {
         e.preventDefault();
         nextPage();

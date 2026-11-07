@@ -26,7 +26,7 @@
     toast,
   } from '../store.svelte.js';
   import { sidecarReady, detectAllPages, detectCurrentPage } from '../sidecar.js';
-  import { comboFor, formatCombo } from '../shortcuts.svelte.js';
+  import { comboFor, defaultCombo, formatCombo } from '../shortcuts.svelte.js';
 
   let { width = $bindable(420) } = $props();
 
@@ -128,14 +128,22 @@
   // ---------- the keys ----------
   let keysOpen = $state(false);
   const k = (id) => formatCombo(comboFor(id));
+  // ⌥1–9 while the tag keys are the default run; once any is rebound, the
+  // first and last as they are now.
+  function tagRange() {
+    const ids = Array.from({ length: 9 }, (_, i) => `translate.tag${i + 1}`);
+    if (ids.every((id) => comboFor(id) === defaultCombo(id))) return `${k('translate.tag1')}–9`;
+    return `${k(ids[0])} … ${k(ids[8])}`;
+  }
   const keyRows = $derived([
-    ['Next line, on to the next page', ['↵', 'Tab']],
-    ['Previous line', [formatCombo('Shift+Tab')]],
+    ['Next line, on to the next page', [k('translate.next'), k('translate.nextAlt')]],
+    ['Previous line', [k('translate.prev')]],
     ['Line break in the English', [formatCombo('Shift+Enter')]],
-    ['Leave the field', ['Esc']],
-    ['Step lines, outside a field', ['↑', '↓']],
-    ['Turn the page, outside a field', ['←', '→']],
-    ['Toggle tag 1 to 9', [`${formatCombo('Alt+1').replace(/1$/, '')}1–9`]],
+    ['Leave the field', [k('translate.leave')]],
+    ['Step lines, outside a field', [k('translate.lineDown'), k('translate.lineUp')]],
+    ['Back into the line, outside a field', [k('translate.edit')]],
+    ['Turn the page, outside a field', [k('translate.pagePrev'), k('translate.pageNext')]],
+    ['Toggle tag 1 to 9', [tagRange()]],
     ['Find or add a tag', [k('translate.tagPicker')]],
     ['Clear the line’s tags', [k('translate.clearTags')]],
     ['Speaker', [k('translate.speaker')]],

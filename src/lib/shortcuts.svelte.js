@@ -27,6 +27,9 @@
 // box or turns the page depending on whether anything is selected. They are not
 // actions with a combo, they are one key with several meanings, and a rebind
 // screen that offered them would be lying about what it could change.
+// The one exception is a key heard in one place only - the typing pane's
+// Enter, Tab and Escape (`ctx` below): there the key has one meaning, so it
+// rebinds like any other.
 import { prefs, setPref } from './prefs.svelte.js';
 
 // ---------- platform ----------
@@ -315,18 +318,43 @@ const DEFS = [
   // The check list (FLOW-1): the next box or line that still needs a look.
   { id: 'review.next', label: 'Next to check', group: 'Text queue', combo: 'Mod+j', whenTyping: true },
 
-  // A translate chapter's typing pane. The pane's own keys (Enter and Tab to
-  // step, Alt+1-9 to toggle a tag) are listed in the pane; these are the ones
-  // worth rebinding. Alt rather than Mod: the caret is in the English field the
-  // whole time, and Mod+letter there is the field's own (select all, undo). On a
-  // Mac Option+letter would type a character, so the pane takes the press
-  // before the field does. Not Option+N/E/U/I: those are dead keys.
+  // A translate chapter's keys. Every one rebinds, the pane's own as well:
+  // a translator spends the whole chapter on these, and the hand that types
+  // the English decides where they sit.
+  //
+  // `ctx` names where a key is heard, and only keys heard in the same place
+  // can clash: 'field' is the caret in a line's English or source field,
+  // 'row' is focus on a row or on the page itself. A key with no ctx is heard
+  // everywhere and clashes with all of them. `inField` marks a key the pane
+  // takes before the field types it - those may not be a bare letter, or that
+  // letter could no longer be typed.
+  //
+  // Alt rather than Mod for the field keys: Mod+letter there is the field's
+  // own (select all, undo). On a Mac Option+letter would type a character, so
+  // the pane takes the press before the field does. Not Option+N/E/U/I: those
+  // are dead keys.
   { id: 'translate.typesetTools', label: 'Show typesetting tools (translate chapter)', group: 'Translation', combo: 'Mod+Shift+t', whenTyping: true },
-  { id: 'translate.tagPicker', label: 'Find or add a tag', group: 'Translation', combo: 'Alt+t' },
-  { id: 'translate.clearTags', label: 'Clear the line’s tags', group: 'Translation', combo: 'Alt+0' },
-  { id: 'translate.speaker', label: 'Choose the speaker', group: 'Translation', combo: 'Alt+s' },
-  { id: 'translate.source', label: 'Edit the source text', group: 'Translation', combo: 'Alt+r' },
-  { id: 'translate.note', label: 'Page note', group: 'Translation', combo: 'Alt+p' },
+  { id: 'translate.next', label: 'Next line (in a field)', group: 'Translation', combo: 'Enter', ctx: 'field', inField: true },
+  { id: 'translate.nextAlt', label: 'Next line, second key (in a field)', group: 'Translation', combo: 'Tab', ctx: 'field', inField: true },
+  { id: 'translate.prev', label: 'Previous line (in a field)', group: 'Translation', combo: 'Shift+Tab', ctx: 'field', inField: true },
+  { id: 'translate.leave', label: 'Leave the field', group: 'Translation', combo: 'Escape', ctx: 'field', inField: true },
+  { id: 'translate.lineDown', label: 'Next line (outside a field)', group: 'Translation', combo: 'ArrowDown', ctx: 'row' },
+  { id: 'translate.lineUp', label: 'Previous line (outside a field)', group: 'Translation', combo: 'ArrowUp', ctx: 'row' },
+  { id: 'translate.edit', label: 'Type in the line (outside a field)', group: 'Translation', combo: 'Enter', ctx: 'row' },
+  { id: 'translate.pageNext', label: 'Next page (outside a field)', group: 'Translation', combo: 'ArrowRight', ctx: 'row' },
+  { id: 'translate.pagePrev', label: 'Previous page (outside a field)', group: 'Translation', combo: 'ArrowLeft', ctx: 'row' },
+  ...Array.from({ length: 9 }, (_, i) => ({
+    id: `translate.tag${i + 1}`,
+    label: `Tag ${i + 1} on or off`,
+    group: 'Translation',
+    combo: `Alt+${i + 1}`,
+    inField: true,
+  })),
+  { id: 'translate.tagPicker', label: 'Find or add a tag', group: 'Translation', combo: 'Alt+t', inField: true },
+  { id: 'translate.clearTags', label: 'Clear the line’s tags', group: 'Translation', combo: 'Alt+0', inField: true },
+  { id: 'translate.speaker', label: 'Choose the speaker', group: 'Translation', combo: 'Alt+s', inField: true },
+  { id: 'translate.source', label: 'Edit the source text', group: 'Translation', combo: 'Alt+r', inField: true },
+  { id: 'translate.note', label: 'Page note', group: 'Translation', combo: 'Alt+p', inField: true },
 
   // History.
   { id: 'edit.undo', label: 'Undo', group: 'History', combo: 'Mod+z' },
@@ -390,16 +418,40 @@ export function comboFor(id) {
 
 export const isCustomCombo = (id) => comboFor(id) !== defaultCombo(id);
 
+// Two keys clash only when both can be heard at once: either is heard
+// everywhere, or both in the same place (see `ctx` above).
+const sharePlace = (a, b) => !a?.ctx || !b?.ctx || a.ctx === b.ctx;
+
 // The shortcut a combo is already taken by, ignoring one id (the one being
-// rebound). Null when the combo is free.
+// rebound, whose place decides what it can clash with). Null when it is free.
 export function conflictFor(combo, exceptId = null) {
   const c = normalizeCombo(combo);
   if (!c) return null;
+  const self = BY_ID.get(exceptId);
   for (const s of activeShortcuts()) {
     if (s.id === exceptId) continue;
+    if (self && !sharePlace(self, s)) continue;
     if (comboFor(s.id) === c) return s;
   }
   return null;
+}
+
+// Did this press mean this action? For the keys a component listens for
+// itself (the typing pane's), rather than the window's dispatch.
+export function pressed(e, id) {
+  const c = comboFor(id);
+  return !!c && matchesCombo(e, c);
+}
+
+// A combo a text field would take as typing or editing: a character, Space,
+// or an editing key, with no modifier but Shift. Enter and Tab are not on the
+// list - the pane's own defaults are those two.
+const FIELD_EDIT_KEYS = new Set(['Space', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown']);
+function fieldTypes(c) {
+  const bits = c.split('+');
+  const key = bits.pop();
+  if (bits.some((b) => b !== 'Shift')) return false;
+  return key.length === 1 || FIELD_EDIT_KEYS.has(key);
 }
 
 function writeOverrides(next) {
@@ -409,7 +461,8 @@ function writeOverrides(next) {
 // Keys whose meaning depends on what is selected or focused. The registry
 // dispatch runs before the contextual handlers in App.svelte's keydown
 // ladder, so a rebind onto one of these would steal it everywhere; they are
-// refused as rebind targets rather than quietly broken.
+// refused as rebind targets rather than quietly broken. A key heard in one
+// place only (`ctx`) is never dispatched from the window, so it may take one.
 const CONTEXTUAL_KEYS = new Set(['Escape', 'Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
 
 // Returns { ok } or { ok: false, reason, conflict } - the settings screen shows
@@ -418,7 +471,9 @@ export function setCombo(id, combo) {
   if (!BY_ID.has(id)) return { ok: false, reason: 'unknown' };
   const c = normalizeCombo(combo);
   if (!c) return { ok: false, reason: 'invalid' };
-  if (CONTEXTUAL_KEYS.has(c.split('+').pop())) return { ok: false, reason: 'contextual' };
+  const def = BY_ID.get(id);
+  if (!def.ctx && CONTEXTUAL_KEYS.has(c.split('+').pop())) return { ok: false, reason: 'contextual' };
+  if (def.inField && fieldTypes(c)) return { ok: false, reason: 'types' };
   const clash = conflictFor(c, id);
   if (clash) return { ok: false, reason: 'conflict', conflict: clash };
   const next = { ...($state.snapshot(prefs.shortcuts) ?? {}) };
@@ -503,10 +558,12 @@ export function comboTypes(combo) {
 }
 
 // The shortcut a keypress means, or null.
+// Keys heard in one place only (`ctx`) are their component's, never the
+// window's.
 export function lookupShortcut(e) {
   const c = eventCombo(e);
   if (!c) return null;
-  return activeShortcuts().find((s) => comboFor(s.id) === c) ?? null;
+  return activeShortcuts().find((s) => !s.ctx && comboFor(s.id) === c) ?? null;
 }
 
 // The one entry point the keydown handler uses. `typing` is the caller's answer

@@ -187,7 +187,9 @@
       captureErr =
         r.reason === 'conflict'
           ? `${formatCombo(combo)} is already “${r.conflict.label}”`
-          : 'That key cannot be used - try another';
+          : r.reason === 'types'
+            ? `${formatCombo(combo)} would type in the text field - hold ${formatCombo('Alt+1').replace(/1$/, '')} or ${formatCombo('Mod+1').replace(/1$/, '')} with it`
+            : 'That key cannot be used - try another';
     },
     onCancel: () => {
       // Both cancel paths land here - bare Escape and the modal closing -
@@ -1001,6 +1003,8 @@
             <b>Tab</b> steps through the boxes on the page, and the
             <b>arrows</b> nudge the selected box - or turn the page when nothing
             is selected. Hold <b>Shift</b> with an arrow for a bigger nudge.
+            In a translate chapter these keys are in the Translation group above,
+            and you can change them there.
           </p>
           <div class="set-actions">
             {@render confirmButton(confirmResetKeys, 'Reset all shortcuts', 'Reset every shortcut', onResetKeys, () => (confirmResetKeys = false))}
