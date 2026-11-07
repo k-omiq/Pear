@@ -5029,11 +5029,12 @@ export function edgeDragFloor(b, dir, lineCount, p = page()) {
 
 // The box at width `w` as a resize leaves it: the lines it keeps go when its
 // width changes (`resizeBox`), unless a lock holds them, and the width is the
-// user's, so a word too wide for it is split (`breaksWords`).
+// user's, so a word too wide for it is split (`breaksWords`) - every box a
+// resize reaches is given the record that says so (`resizeBox`).
 const rebrokenAt = (b, w, text) => {
   const c = boxCandidate({ ...b, w }, text);
   if (w === b.w) return c;
-  return { ...c, ...(b.auto?.locks?.breaks ? null : { breaks: null }), breakWords: c.breakWords || !!b.auto?.on };
+  return { ...c, ...(b.auto?.locks?.breaks ? null : { breaks: null }), breakWords: true };
 };
 
 // How short a drag may leave a box at width `w`: the height its text needs
@@ -5078,24 +5079,6 @@ export function edgeDragWidthFloor(b, p = page()) {
   let lo = EDGE_DRAG_MIN_W, hi = whole;
   if (fits(lo)) return lo;
   if (!fits(hi)) return whole;
-  while (hi - lo > 1) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (fits(mid)) hi = mid;
-    else lo = mid;
-  }
-  return hi;
-}
-
-// How wide a box has to be for its text to stand in height `h`: the narrowest
-// width from `w` up to `max` at which the lines it breaks into need no more
-// than `h`. What a top or bottom edge dragged past the text widens the box to,
-// so the lines get longer and fewer and the type keeps its size. `max` when
-// even that is not wide enough.
-export function widthForHeight(b, w, h, max, p = page()) {
-  const fits = (x) => heightFloorAt(b, x, p) <= h;
-  if (fits(w)) return w;
-  let lo = Math.ceil(w), hi = Math.max(lo, Math.floor(max));
-  if (!fits(hi)) return hi;
   while (hi - lo > 1) {
     const mid = Math.floor((lo + hi) / 2);
     if (fits(mid)) hi = mid;
@@ -6732,7 +6715,7 @@ export function setBoxInk(pageId, boxId, strokes) {
 // is set at, and the box's sizing mode (`sizingOf`) says what follows -
 //
 //   Auto height   a width change gives the height the text needs; a height
-//                 the caller sets stays (the handles and the Inspector switch
+//                 the caller sets stays (the Inspector switches
 //                 such a box to Fixed first, `setBoxSizing`).
 //   Fixed         never narrower than the widest word, never shorter than the
 //                 text at the new width.
@@ -6757,12 +6740,39 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   const mode = sizingOf(b.style);
   let nw = Number.isFinite(geom.w) ? geom.w : b.w;
   let nh = Number.isFinite(geom.h) ? geom.h : b.h;
-  // The floors, from any caller: a side never splits a word, and a Fixed box
-  // is never left shorter than its text. Fit to box has neither - its size
-  // gives way instead - and a scale has neither, since the text scales too.
+  // A scale that also moved a side (a corner dragged sideways): the type
+  // scales, and then the width is set as a side sets it, so the lines break
+  // again in it rather than being kept.
+  const reshaped = scale != null && Number.isFinite(geom.w) && Math.abs(nw - ow * scale) > 0.5;
+  // A scale keeps the lines: the ones the box draws now, which every step of
+  // the drag has kept since the press. Broken again at the new size and width
+  // they could fall otherwise - the inset does not scale, and a measure need
+  // not scale exactly with the size.
+  const text = scale && !reshaped && b.auto ? boxText(b, p) : null;
+  const keepLines = text != null ? placeBlock(boxCandidate(b, text)) : null;
+  if (scale) {
+    // Against the style the gesture started from, so the steps of a drag do
+    // not compound: each sets the factor from the start. Ink is scaled below.
+    const from = base?.style ?? b.style;
+    const k = scale;
+    const st = rescaleStyle({ ...from, ink: null }, k, k);
+    delete st.ink;
+    st.size = Math.min(200, Math.max(6, Math.round(from.size * k * 2) / 2));
+    if (from.fitMax > 0) st.fitMax = Math.min(200, Math.max(6, Math.round(from.fitMax * k * 2) / 2));
+    Object.assign(b.style, st);
+  }
+  // The floors, from any caller, at the size the text is now set at: a side
+  // never leaves a line hanging out of the box, and a Fixed box is never left
+  // shorter than its text. Fit to box has neither - its size gives way
+  // instead - and a plain scale neither, since the text scales too. A width
+  // set below the widest word hyphenates the box (`hyphenateForWidth`).
   const sized = Number.isFinite(geom.w) || Number.isFinite(geom.h);
-  if (sized && !scale && mode !== 'fit' && !hand) {
-    if (nw < b.w) nw = Math.max(nw, Math.min(b.w, edgeDragWidthFloor(b, p)));
+  if (sized && (!scale || reshaped) && mode !== 'fit' && !hand) {
+    const wasW = scale ? ow * scale : b.w;
+    if (nw < wasW) {
+      hyphenateForWidth(b, nw, p);
+      nw = Math.max(nw, Math.min(wasW, edgeDragWidthFloor(b, p)));
+    }
     if (mode === 'fixed') nh = Math.max(nh, heightFloorAt(b, nw, p));
   }
   const nx = Number.isFinite(geom.x) ? geom.x : b.x;
@@ -6788,23 +6798,6 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // A new place and nothing else - the Inspector's X or Y - is a move, and
   // keeps a standing solve as a drag does (`moveBoxTo`).
   const moveOnly = nw === b.w && nh === b.h && !scale && (nx !== b.x || ny !== b.y);
-  // A scale keeps the lines: the ones the box draws now, which every step of
-  // the drag has kept since the press. Broken again at the new size and width
-  // they could fall otherwise - the inset does not scale, and a measure need
-  // not scale exactly with the size.
-  const text = scale && b.auto ? boxText(b, p) : null;
-  const keepLines = text != null ? placeBlock(boxCandidate(b, text)) : null;
-  if (scale) {
-    // Against the style the gesture started from, so the steps of a drag do
-    // not compound: each sets the factor from the start. Ink is scaled above.
-    const from = base?.style ?? b.style;
-    const k = scale;
-    const st = rescaleStyle({ ...from, ink: null }, k, k);
-    delete st.ink;
-    st.size = Math.min(200, Math.max(6, Math.round(from.size * k * 2) / 2));
-    if (from.fitMax > 0) st.fitMax = Math.min(200, Math.max(6, Math.round(from.fitMax * k * 2) / 2));
-    Object.assign(b.style, st);
-  }
   b.w = nw;
   b.h = nh;
   if (moveOnly) moveBoxTo(b, nx, ny, p);
@@ -6826,10 +6819,15 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   }
   // A width or a height set by hand is the box's from here on: the solver -
   // Refit, the AI's edits - keeps it too (`auto.locks.width`, `.height`). A
-  // scale is a size the user set (`noteSizeEdit`), and the box follows it.
-  if (b.auto?.on && !scale) {
+  // scale is a size the user set (`noteSizeEdit`), and the box follows it -
+  // but a corner that also moved its side set the width as well.
+  // A box from before the solver has no record to hold that in, and without
+  // one a word too wide for the width it was given hung out of the box rather
+  // than being split (`breaksWords`): it is given one here.
+  if (widened && (!scale || reshaped) && !b.auto && !hand && b.style.size > 0) b.auto = normalizeAuto({ refSize: b.style.size });
+  if (b.auto?.on && (!scale || reshaped)) {
     if (widened) b.auto.locks.width = true;
-    if (nh !== oh) b.auto.locks.height = true;
+    if (!scale && nh !== oh) b.auto.locks.height = true;
   }
   if (moveOnly || hand || !canMeasure()) {
     reviewBox(b, p);
@@ -6844,9 +6842,26 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   }
   const cand = boxCandidate(b, boxText(b, p));
   if (mode === 'fit') fitTextToBox(b, p, cand);
-  else if (mode === 'auto' && widened && nh === oh) hugBox(b, p, cand);
+  else if (mode === 'auto' && (reshaped || (widened && nh === oh))) hugBox(b, p, cand);
   else reviewBox(b, p);
   return b;
+}
+
+// A width set below the widest word, on a box that does not hyphenate - "Hyphenate
+// long words" off, or the plain wrap, whose breaker never hyphenates
+// (`PLAIN_BREAKS`): the box is given hyphenation, so the side goes on past the
+// word as the user asked, rather than stopping at it. Only where that lets the
+// box go narrower than the widest word; the change is in the style, so the
+// gesture's undo takes it back with the width. True when it changed the box.
+function hyphenateForWidth(b, w, p) {
+  const s = b.style;
+  if (s.hyphenate !== false && (s.shape ?? 'auto') !== 'off') return false;
+  const plain = edgeDragWidthFloor(b, p);
+  if (w >= plain) return false;
+  const on = { hyphenate: true, shape: (s.shape ?? 'auto') === 'off' ? 'auto' : s.shape };
+  if (edgeDragWidthFloor({ ...b, style: { ...s, ...on } }, p) >= plain) return false;
+  Object.assign(b.style, on);
+  return true;
 }
 
 

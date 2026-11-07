@@ -173,7 +173,7 @@ describe('what a box is, with the engine drawing', () => {
     selectBox('straight');
     await tick();
     expect(m.root.classList.contains('selected')).toBe(true);
-    expect(m.root.querySelectorAll('.handle')).toHaveLength(9);
+    expect(m.root.querySelectorAll('.handle')).toHaveLength(8);
     expect(m.root.querySelector('.rotate-stem')).not.toBe(null);
     // Selecting painted nothing.
     expect(m.paints()).toBe(1);
@@ -1381,7 +1381,7 @@ describe('a paint that throws', () => {
     // Its other effects still run: it can be selected and typed into.
     selectBox(fell.dataset.id);
     await tick();
-    expect(fell.querySelectorAll('.handle')).toHaveLength(9);
+    expect(fell.querySelectorAll('.handle')).toHaveLength(8);
     beginEdit(fell.dataset.id);
     await tick();
     expect(fell.querySelector('.txt.editable')).not.toBe(null);

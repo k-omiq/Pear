@@ -674,8 +674,7 @@ exports[`with the switch off, a box is the DOM it always was > straight: selecte
   div.handle.corner.ne
   div.handle.corner.sw
   div.handle.corner.se
-  div.handle.side.n
-  div.handle.side.s
+  div.handle.side.size.s
   div.handle.side.w
   div.handle.side.e
   div.handle.rot"
