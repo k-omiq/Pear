@@ -92,6 +92,7 @@ import {
 import {
   strokeReach,
   boxShadows,
+  shadowSpread,
   motionBlurTaps,
   inkActive,
   inkBounds,
@@ -358,7 +359,7 @@ const unite = (r, x0, y0, x1, y1) =>
 //                every side: the bands are round-joined outlines of the glyphs,
 //                and the same bands are grown around the ink (`paintFinish`).
 //   the shadows  each one that silhouette - glyphs and ink - moved by its own
-//                offset and spread by its blur, per direction, so a shadow
+//                offset and spread by its size, per direction, so a shadow
 //                thrown down and right grows the rectangle down and right and
 //                nowhere else. A shadow with no opacity paints nothing and
 //                counts for nothing.
@@ -384,9 +385,8 @@ const unite = (r, x0, y0, x1, y1) =>
 // browsers' three-box approximation of the gaussian stops short of three sigma
 // anyway. So the whole-text blur (sigma = `blur`, the filter's own radius) is
 // counted three sigma out, which is the reach the exporter pads its canvas by.
-// A shadow keeps twice its named blur, the contract's number and the reach
-// `shadowExtent` pads for: its sigma is half the blur, so that is four sigma, a
-// sigma past the rule. The smear has no tail to cut: every tap is a copy of the
+// A shadow keeps its Size and a pixel, the reach `shadowExtent` pads for: its
+// sigma is `0.3 * size + 0.3`, so that is past three sigma (`shadowSpread`). The smear has no tail to cut: every tap is a copy of the
 // picture at the tap's weight, and even the faintest - the outermost tap at the
 // most iterations, 0.07/33 of the ink - lights over half an 8-bit step, so it
 // counts to the last tap.
@@ -420,7 +420,7 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
     if (!(Number(sh?.opacity ?? 1) > 0)) continue;
     const dx = Number(sh?.x) || 0;
     const dy = Number(sh?.y) || 0;
-    const spread = 2 * Math.max(0, Number(sh?.blur) || 0) + Math.max(0, Number(sh?.grow) || 0);
+    const spread = shadowSpread(sh);
     u = unite(u, sil.x0 + dx - spread, sil.y0 + dy - spread, sil.x1 + dx + spread, sil.y1 + dy + spread);
   }
   const blur = Math.max(0, Number(s.blur) || 0);

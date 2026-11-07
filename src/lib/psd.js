@@ -23,7 +23,7 @@ import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline } from './data.js';
-import { strokeBands, clipActive, inkActive } from './text-paint.js';
+import { strokeBands, clipActive, inkActive, resolveShadow, globalLight } from './text-paint.js';
 import { warpActive } from './warp.js';
 import { withPageImages } from './page-images.js';
 import { snapshotExportPages } from './export-pages.svelte.js';
@@ -93,6 +93,12 @@ function imageDataToCanvas(imageData) {
   cnv.height = imageData.height;
   cnv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height), 0, 0);
   return cnv;
+}
+
+// A blend mode as ag-psd names it: ours with spaces for the hyphens
+// ('color-burn' is 'color burn'). Normal for anything else.
+function psdBlend(mode) {
+  return typeof mode === 'string' && mode ? mode.replace(/-/g, ' ') : 'normal';
 }
 
 function hexToRgb(hex) {
@@ -722,17 +728,33 @@ export function textLayerFor(p, box, rendered) {
       opacity: band.opacity,
     }));
   }
+  // A shadow's Size, Spread, mode, contour and knockout are Photoshop's own
+  // (`normalizeShadow`), so they go in as they are. One on the Global Light
+  // says so, and the document carries the chapter's light (`writePsdPage`).
+  // Spread is written as its percent: Photoshop's dialog shows it so, and the
+  // unit Photoshop tags it with in its own files is not settled (LAYER_STYLES
+  // _PLAN.md G1-G8). A named contour preset is not written yet: Photoshop
+  // reads a contour's points, not its name, and the presets' points are the
+  // engine's (fx/contour.rs); a custom curve is.
   if ((s.shadows ?? []).length) {
-    effects.dropShadow = s.shadows.map((sh) => {
+    effects.dropShadow = s.shadows.map(resolveShadow).map((sh) => {
       const dist = Math.hypot(sh.x || 0, sh.y || 0);
+      const contour = sh.contour?.preset === 'custom' && sh.contour.pts?.length >= 2
+        ? { name: 'Custom', curve: sh.contour.pts.map(([x, y]) => ({ x, y })) }
+        : undefined;
       return {
         enabled: true,
-        size: { units: 'Pixels', value: sh.blur || 0 },
+        size: { units: 'Pixels', value: sh.size || 0 },
         distance: { units: 'Pixels', value: dist },
         angle: (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI,
         color: hexToRgb(sh.color),
         opacity: sh.opacity ?? 1,
-        useGlobalLight: false,
+        blendMode: psdBlend(sh.blend),
+        choke: { units: 'Pixels', value: Math.round((sh.spread || 0) * 100) },
+        antialiased: sh.contour?.aa === true,
+        ...(contour ? { contour } : null),
+        layerConceals: sh.knockout === true,
+        useGlobalLight: sh.useGlobalLight === true,
       };
     });
   }
@@ -774,7 +796,8 @@ export function textLayerFor(p, box, rendered) {
     ...bounds,
     imageData: rendered ? rendered.imageData : undefined,
     opacity: s.opacity ?? 1,
-    blendMode: 'normal',
+    fillOpacity: s.fillOpacity ?? 1,
+    blendMode: psdBlend(s.blendMode),
     ...(hasEffects ? { effects } : null),
     // The cached pixels keep the outline and shadow baked in for non-Photoshop
     // readers and fallback viewing when the font is not installed. curve is 0
@@ -912,6 +935,10 @@ export function pagePsdDocument({ w, h, textLayers = [], baseLayers = [], projec
     children,
     imageData: flatWhiteComposite(w, h),
     imageResources: {
+      // The chapter's Global Light: Photoshop keeps one per document, and a
+      // drop shadow with Use Global Light reads its angle from here.
+      globalAngle: globalLight().angle,
+      globalAltitude: globalLight().altitude,
       // 72 PPI, i.e. no scaling claim at all: the document is the page's own
       // pixel grid, and a pixel is a pixel. It was 144 when the document was
       // supersampled 2x, to keep the printed size constant across that.

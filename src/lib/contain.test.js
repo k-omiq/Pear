@@ -209,16 +209,16 @@ describe('boxInkRect', () => {
   });
 
   // Test 2: a shadow grows the rectangle in the direction it is thrown, by its
-  // offset plus twice its blur, and nowhere else.
+  // offset plus its size and one more pixel, and nowhere else.
   it('counts each shadow per direction, and not one with no opacity', () => {
     const base = cand({ text: 'HELLO', style: style() });
     const plain = boxInkRect(base);
-    const thrown = boxInkRect({ ...base, style: style({ shadows: [{ color: '#000', x: 4, y: 6, blur: 2, opacity: 1 }] }) });
+    const thrown = boxInkRect({ ...base, style: style({ shadows: [{ color: '#000', x: 4, y: 6, size: 3, opacity: 1 }] }) });
     expect(thrown.x).toBeCloseTo(plain.x, 6);
     expect(thrown.y).toBeCloseTo(plain.y, 6);
     expect(thrown.x + thrown.w).toBeCloseTo(plain.x + plain.w + 4 + 4, 6);
     expect(thrown.y + thrown.h).toBeCloseTo(plain.y + plain.h + 6 + 4, 6);
-    const up = boxInkRect({ ...base, style: style({ shadows: [{ color: '#000', x: -5, y: -3, blur: 0, opacity: 1 }] }) });
+    const up = boxInkRect({ ...base, style: style({ shadows: [{ color: '#000', x: -5, y: -3, size: 0, opacity: 1 }] }) });
     expect(up.x).toBeCloseTo(plain.x - 5, 6);
     expect(up.y).toBeCloseTo(plain.y - 3, 6);
     expect(up.x + up.w).toBeCloseTo(plain.x + plain.w, 6);
@@ -585,7 +585,7 @@ describe('boxInkRect, every effect the export paints', () => {
         style: style({
           ink,
           strokes: [{ color: '#fff', width: 3, opacity: 1 }],
-          shadows: [{ color: '#000', x: 5, y: 6, blur: 1, opacity: 1 }],
+          shadows: [{ color: '#000', x: 5, y: 6, size: 1, opacity: 1 }],
         }),
       }),
     );

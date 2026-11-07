@@ -100,7 +100,12 @@ fn bands(out: &mut budget::Buffer<Polys>, dir: f64, duty: f64) -> Result<(), Err
     for k in -2..=2 {
         let y = f64::from(k) * period;
         let mut polys = Polys::default();
-        for p in [(-1.0, y - half), (1.0, y - half), (1.0, y + half), (-1.0, y + half)] {
+        for p in [
+            (-1.0, y - half),
+            (1.0, y - half),
+            (1.0, y + half),
+            (-1.0, y + half),
+        ] {
             polys.push(turned.apply(Pt::new(p.0, p.1)));
         }
         polys.close();
@@ -354,7 +359,15 @@ mod tests {
     fn colours_with_alpha_are_laid_one_over_the_other() {
         let _budget = budget::Scope::new();
         let clear = Rgba([0, 0, 0, 0]);
-        let t = tile(Kind::Stripes, Rgba([255, 0, 0, 255]), clear, 8, 0.12, &Exact).unwrap();
+        let t = tile(
+            Kind::Stripes,
+            Rgba([255, 0, 0, 255]),
+            clear,
+            8,
+            0.12,
+            &Exact,
+        )
+        .unwrap();
         assert_eq!(at(&t, 8, 1, 1), [255, 0, 0, 255]);
         assert_eq!(at(&t, 8, 6, 1), [0, 0, 0, 0]);
         let half = tile(Kind::Stripes, Rgba([255, 0, 0, 128]), BG, 8, 0.12, &Exact).unwrap();

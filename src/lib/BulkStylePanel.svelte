@@ -18,7 +18,7 @@ import {
   import { tagsInUse, boxesWithTag } from './tags.svelte.js';
   import { modKey } from './format.js';
   import FontPicker from './FontPicker.svelte';
-  import { sizingOf } from './data.js';
+  import { sizingOf, newShadow, SHADOW_SIZE_MAX } from './data.js';
   import { PATTERN_KINDS, CANVAS_PATTERN_KINDS, GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { glyphPainter } from './text-engine/index.js';
@@ -238,7 +238,7 @@ import {
   // Shadow helpers
   function addShadow() {
     if (!Array.isArray(s.shadows)) s.shadows = [];
-    s.shadows.push({ x: 2, y: 2, blur: 2, color: '#000000', opacity: 0.6 });
+    s.shadows.push(newShadow(app.typesetting.light));
     tickBulkProp('shadows');
   }
   function removeShadow(i) {
@@ -556,6 +556,14 @@ import {
                 <span class="val">{Math.round(s.opacity * 100)}%</span>
               </div>
             </div>
+            <div class="brow" class:off={!app.bulk.mask.fillOpacity}>
+              {@render tick('fillOpacity')}
+              <span class="lbl">Fill opacity</span>
+              <div class="slider-row">
+                <input type="range" aria-label="Fill opacity" title="Fades the letters' fill only; strokes and shadows stay (Rust engine)" min="0" max="1" step="0.01" value={s.fillOpacity} oninput={(e) => set('fillOpacity', +e.target.value)} />
+                <span class="val">{Math.round(s.fillOpacity * 100)}%</span>
+              </div>
+            </div>
             <div class="brow" class:off={!app.bulk.mask.blur}>
               {@render tick('blur')}
               <span class="lbl">Blur</span>
@@ -769,8 +777,8 @@ import {
                             <input type="number" aria-label="Shadow {i + 1} Y" value={sh.y} onchange={(e) => { sh.y = +e.target.value || 0; tickBulkProp('shadows'); }} />
                           </div>
                           <div class="field">
-                            <span class="sub-lbl">Blur</span>
-                            <input type="number" aria-label="Shadow {i + 1} blur" min="0" max="50" value={sh.blur} onchange={(e) => { sh.blur = Math.max(0, +e.target.value || 0); tickBulkProp('shadows'); }} />
+                            <span class="sub-lbl">Size</span>
+                            <input type="number" aria-label="Shadow {i + 1} size" title="How far the soft edge reaches, page px" min="0" max={SHADOW_SIZE_MAX} value={sh.size} onchange={(e) => { sh.size = clamp(+e.target.value || 0, 0, SHADOW_SIZE_MAX); tickBulkProp('shadows'); }} />
                           </div>
                         </div>
                         <div class="slider-row">

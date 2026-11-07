@@ -415,7 +415,8 @@ fn dither(u: f64, v: f64, d: f64, round: bool) -> Edge {
     let (x, y) = (u * N, v * N);
     let (ix, iy) = (x.floor() as i64, y.floor() as i64);
     let inked = |cx: i64, cy: i64| {
-        let t = (f64::from(BAYER[cy.rem_euclid(8) as usize][cx.rem_euclid(8) as usize]) + 0.5) / 64.0;
+        let t =
+            (f64::from(BAYER[cy.rem_euclid(8) as usize][cx.rem_euclid(8) as usize]) + 0.5) / 64.0;
         d > t
     };
     let r = if d <= 0.5 {
@@ -440,7 +441,11 @@ fn dither(u: f64, v: f64, d: f64, round: bool) -> Edge {
             let on = inked(cx, cy);
             if round {
                 if on {
-                    near = if any { near.min(shape(cx, cy)) } else { shape(cx, cy) };
+                    near = if any {
+                        near.min(shape(cx, cy))
+                    } else {
+                        shape(cx, cy)
+                    };
                     any = true;
                 }
             } else if on != here {

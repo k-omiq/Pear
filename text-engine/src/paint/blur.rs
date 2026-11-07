@@ -191,7 +191,9 @@ const BOXES: f64 = 3.0;
 /// blur grows evenly as its number does.
 fn extended_box(sigma: f64) -> (usize, f32) {
     let v = sigma * sigma / BOXES;
-    let r = (((12.0 * v + 1.0).sqrt() - 1.0) / 2.0).floor().clamp(0.0, 65536.0);
+    let r = (((12.0 * v + 1.0).sqrt() - 1.0) / 2.0)
+        .floor()
+        .clamp(0.0, 65536.0);
     let edge = (2.0 * r + 1.0) * (r * (r + 1.0) - 3.0 * v) / (6.0 * (v - (r + 1.0) * (r + 1.0)));
     (r as usize, edge.clamp(0.0, 1.0) as f32)
 }
@@ -244,7 +246,9 @@ fn passes(sigma: f64) -> Result<budget::Buffer<Pass>, Error> {
             let x = i as f64 / sigma;
             (-0.5 * x * x).exp()
         };
-        let sum: f64 = (0..=radius).map(|i| weight(i) * if i == 0 { 1.0 } else { 2.0 }).sum();
+        let sum: f64 = (0..=radius)
+            .map(|i| weight(i) * if i == 0 { 1.0 } else { 2.0 })
+            .sum();
         let one = 1u64 << WEIGHT_BITS;
         let mut rest = 0;
         for (i, w) in half.iter_mut().enumerate().skip(1) {
@@ -321,7 +325,8 @@ fn along<const N: usize>(pass: &Pass, padded: &[u16], pad: usize, out: &mut [u16
                 for c in 0..N {
                     let mut v = u64::from(p[(i + r) * N + c]) * half[0];
                     for k in 1..=r {
-                        let pair = u64::from(p[(i + r - k) * N + c]) + u64::from(p[(i + r + k) * N + c]);
+                        let pair =
+                            u64::from(p[(i + r - k) * N + c]) + u64::from(p[(i + r + k) * N + c]);
                         v += pair * half[k];
                     }
                     o[c] = ((v + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS) as u16;
@@ -336,7 +341,15 @@ fn along<const N: usize>(pass: &Pass, padded: &[u16], pad: usize, out: &mut [u16
 /// `pad` clear rows above and below; `sum` is one row of running sums.
 /// Going down the rows and not down each column keeps the pass in step
 /// with the memory.
-fn down(pass: &Pass, src: &[u16], dst: &mut [u16], (stride, used): (usize, usize), pad: usize, h: usize, sum: &mut [u64]) {
+fn down(
+    pass: &Pass,
+    src: &[u16],
+    dst: &mut [u16],
+    (stride, used): (usize, usize),
+    pad: usize,
+    h: usize,
+    sum: &mut [u64],
+) {
     let row = |y: usize| &src[y * stride..y * stride + used];
     let sum = &mut sum[..used];
     match pass {
@@ -373,7 +386,10 @@ fn down(pass: &Pass, src: &[u16], dst: &mut [u16], (stride, used): (usize, usize
                     *s = u64::from(*v) * half[0];
                 }
                 for k in 1..=r {
-                    let pairs = sum.iter_mut().zip(row(top + y + r - k)).zip(row(top + y + r + k));
+                    let pairs = sum
+                        .iter_mut()
+                        .zip(row(top + y + r - k))
+                        .zip(row(top + y + r + k));
                     for ((s, above), below) in pairs {
                         *s += (u64::from(*above) + u64::from(*below)) * half[k];
                     }
@@ -388,7 +404,12 @@ fn down(pass: &Pass, src: &[u16], dst: &mut [u16], (stride, used): (usize, usize
 }
 
 /// Blurs `N` channels of every pixel of `bx`, from channel `first` on.
-fn blur_channels<const N: usize>(s: &mut Surface, bx: IBox, passes: &[Pass], first: usize) -> Result<(), Error> {
+fn blur_channels<const N: usize>(
+    s: &mut Surface,
+    bx: IBox,
+    passes: &[Pass],
+    first: usize,
+) -> Result<(), Error> {
     let (w, h) = (bx.width(), bx.height());
     let pad = passes.iter().map(Pass::pad).max().unwrap_or(0);
     let corner = |y: usize| ((bx.y0 as usize + y) * s.width + bx.x0 as usize) * 4;
@@ -432,7 +453,10 @@ fn blur_channels<const N: usize>(s: &mut Surface, bx: IBox, passes: &[Pass], fir
         for y in 0..h {
             let to = corner(y) + x0 * 4;
             let values = a[(pad + y) * stride..(pad + y) * stride + used].chunks_exact(N);
-            for (p, v) in s.data[to..to + used / N * 4].chunks_exact_mut(4).zip(values) {
+            for (p, v) in s.data[to..to + used / N * 4]
+                .chunks_exact_mut(4)
+                .zip(values)
+            {
                 for c in 0..N {
                     p[first + c] = ((u32::from(v[c]) + (1 << (FRAC - 1))) >> FRAC).min(255) as u8;
                 }
@@ -543,9 +567,19 @@ impl Taps {
 /// Adds to `acc`, which is one row of premultiplied pixels as `f32`, the row
 /// `y` of `src` seen through one move: only the columns `x0..x1`, and only
 /// from inside `ink`, outside which `src` is clear.
-pub(super) fn add_row(acc: &mut [f32], src: &Surface, ink: IBox, y: i64, (x0, x1): (usize, usize), t: &Taps) {
+pub(super) fn add_row(
+    acc: &mut [f32],
+    src: &Surface,
+    ink: IBox,
+    y: i64,
+    (x0, x1): (usize, usize),
+    t: &Taps,
+) {
     let w = src.width as i64;
-    for (row, k) in [(y + t.iy, [t.k[0], t.k[1]]), (y + t.iy + 1, [t.k[2], t.k[3]])] {
+    for (row, k) in [
+        (y + t.iy, [t.k[0], t.k[1]]),
+        (y + t.iy + 1, [t.k[2], t.k[3]]),
+    ] {
         if row < i64::from(ink.y0) || row >= i64::from(ink.y1) || (k[0] == 0.0 && k[1] == 0.0) {
             continue;
         }
@@ -599,7 +633,10 @@ pub(crate) fn sum_moved(src: &mut Surface, moves: &[Moved]) -> Result<(), Error>
         for t in taps.iter() {
             add_row(&mut acc, src, ink, i64::from(y), (x0, x1), t);
         }
-        for (d, v) in out[row * n..(row + 1) * n].iter_mut().zip(&acc[x0 * 4..x1 * 4]) {
+        for (d, v) in out[row * n..(row + 1) * n]
+            .iter_mut()
+            .zip(&acc[x0 * 4..x1 * 4])
+        {
             *d = to_u8(*v);
         }
         if row % 64 == 0 {
@@ -702,7 +739,9 @@ pub(crate) fn mask(s: &mut Surface, mask: &[u8], bx: IBox, keep_outside: bool) {
                 continue;
             }
             let m = if inside && (x as i32) >= bx.x0 && (x as i32) < bx.x1 {
-                let i = ((y as i32 - bx.y0) as usize * bx.width() + (x as i32 - bx.x0) as usize) * 4 + 3;
+                let i = ((y as i32 - bx.y0) as usize * bx.width() + (x as i32 - bx.x0) as usize)
+                    * 4
+                    + 3;
                 u32::from(mask.get(i).copied().unwrap_or(0))
             } else {
                 0
@@ -739,7 +778,8 @@ mod tests {
             let mut s = Surface::new(200, 200).unwrap();
             for y in 90..110 {
                 for x in 80..120 {
-                    s.data[(y * 200 + x) * 4..(y * 200 + x) * 4 + 4].copy_from_slice(&[0, 0, 255, 255]);
+                    s.data[(y * 200 + x) * 4..(y * 200 + x) * 4 + 4]
+                        .copy_from_slice(&[0, 0, 255, 255]);
                 }
             }
             let before = alpha_sum(&s);
@@ -750,7 +790,10 @@ mod tests {
             // It reaches about three sigma and no further than its reach.
             let ink = s.ink().unwrap();
             let spread = 80 - ink.x0;
-            assert!(f64::from(spread) >= sigma * 1.5, "sigma {sigma} spread {spread}");
+            assert!(
+                f64::from(spread) >= sigma * 1.5,
+                "sigma {sigma} spread {spread}"
+            );
             assert!(spread <= blur_reach(sigma), "sigma {sigma} spread {spread}");
             // Colour stays under its alpha.
             assert!(s.data.chunks_exact(4).all(|p| p[2] <= p[3] && p[0] == 0));
@@ -765,7 +808,8 @@ mod tests {
         for s in [&mut a, &mut b] {
             for y in 24..40 {
                 for x in 24..40 {
-                    s.data[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4].copy_from_slice(&[255, 0, 0, 255]);
+                    s.data[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4]
+                        .copy_from_slice(&[255, 0, 0, 255]);
                 }
             }
         }
@@ -797,7 +841,10 @@ mod tests {
                     let a = s.data[(y * 101 + x) * 4 + 3];
                     let b = s.data[(y * 101 + 100 - x) * 4 + 3];
                     let c = s.data[(x * 101 + y) * 4 + 3];
-                    assert!(a.abs_diff(b) <= 1 && a.abs_diff(c) <= 1, "sigma {sigma} at {x},{y}");
+                    assert!(
+                        a.abs_diff(b) <= 1 && a.abs_diff(c) <= 1,
+                        "sigma {sigma} at {x},{y}"
+                    );
                 }
             }
         }
@@ -814,8 +861,18 @@ mod tests {
             for y in 0..9 {
                 for x in 12..31 {
                     let v = (40 + x * 5 + y * 3) as u8;
-                    a.data[(y * 40 + x) * 4..(y * 40 + x) * 4 + 4].copy_from_slice(&[v / 2, v / 3, v, v]);
-                    b.data[(x * 40 + y) * 4..(x * 40 + y) * 4 + 4].copy_from_slice(&[v / 2, v / 3, v, v]);
+                    a.data[(y * 40 + x) * 4..(y * 40 + x) * 4 + 4].copy_from_slice(&[
+                        v / 2,
+                        v / 3,
+                        v,
+                        v,
+                    ]);
+                    b.data[(x * 40 + y) * 4..(x * 40 + y) * 4 + 4].copy_from_slice(&[
+                        v / 2,
+                        v / 3,
+                        v,
+                        v,
+                    ]);
                 }
             }
             gaussian(&mut a, sigma).unwrap();
@@ -824,7 +881,10 @@ mod tests {
                 for x in 0..40 {
                     for c in 0..4 {
                         let (p, q) = (a.data[(y * 40 + x) * 4 + c], b.data[(x * 40 + y) * 4 + c]);
-                        assert!(p.abs_diff(q) <= 1, "sigma {sigma} at {x},{y} channel {c}: {p} and {q}");
+                        assert!(
+                            p.abs_diff(q) <= 1,
+                            "sigma {sigma} at {x},{y} channel {c}: {p} and {q}"
+                        );
                     }
                 }
             }
@@ -838,7 +898,8 @@ mod tests {
         for sigma in [1.2, 4.0] {
             let _scope = budget::Scope::new();
             let rgb = [200u8, 40, 120];
-            let (mut full, mut flat) = (Surface::new(48, 32).unwrap(), Surface::new(48, 32).unwrap());
+            let (mut full, mut flat) =
+                (Surface::new(48, 32).unwrap(), Surface::new(48, 32).unwrap());
             for y in 8..20 {
                 for x in 10..40 {
                     let a = if (x + y) % 3 == 0 { 255u32 } else { 90 };
@@ -864,11 +925,33 @@ mod tests {
     fn a_move_by_whole_pixels_is_a_copy_and_half_a_pixel_is_shared() {
         let _scope = budget::Scope::new();
         let mut s = dot(16, 16, 5, 5);
-        sum_moved(&mut s, &[Moved { dx: 3.0, dy: -2.0, weight: 1.0 }]).unwrap();
-        assert_eq!(s.ink().map(|b| (b.x0, b.y0, b.x1, b.y1)), Some((8, 3, 9, 4)));
-        assert_eq!(&s.data[(3 * 16 + 8) * 4..(3 * 16 + 8) * 4 + 4], &[255, 0, 0, 255]);
+        sum_moved(
+            &mut s,
+            &[Moved {
+                dx: 3.0,
+                dy: -2.0,
+                weight: 1.0,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            s.ink().map(|b| (b.x0, b.y0, b.x1, b.y1)),
+            Some((8, 3, 9, 4))
+        );
+        assert_eq!(
+            &s.data[(3 * 16 + 8) * 4..(3 * 16 + 8) * 4 + 4],
+            &[255, 0, 0, 255]
+        );
         let mut s = dot(16, 16, 5, 5);
-        sum_moved(&mut s, &[Moved { dx: 0.5, dy: 0.0, weight: 1.0 }]).unwrap();
+        sum_moved(
+            &mut s,
+            &[Moved {
+                dx: 0.5,
+                dy: 0.0,
+                weight: 1.0,
+            }],
+        )
+        .unwrap();
         assert_eq!(s.data[(5 * 16 + 5) * 4 + 3], 128);
         assert_eq!(s.data[(5 * 16 + 6) * 4 + 3], 128);
     }
@@ -877,14 +960,25 @@ mod tests {
     fn copies_add_and_stop_at_full() {
         let _scope = budget::Scope::new();
         let mut s = dot(16, 16, 5, 5);
-        let half = |dx| Moved { dx, dy: 0.0, weight: 0.5 };
+        let half = |dx| Moved {
+            dx,
+            dy: 0.0,
+            weight: 0.5,
+        };
         sum_moved(&mut s, &[half(0.0), half(2.0)]).unwrap();
         assert_eq!(s.data[(5 * 16 + 5) * 4 + 3], 128);
         assert_eq!(s.data[(5 * 16 + 7) * 4 + 3], 128);
         let mut s = dot(16, 16, 5, 5);
-        let whole = Moved { dx: 0.0, dy: 0.0, weight: 1.0 };
+        let whole = Moved {
+            dx: 0.0,
+            dy: 0.0,
+            weight: 1.0,
+        };
         sum_moved(&mut s, &[whole, whole]).unwrap();
-        assert_eq!(&s.data[(5 * 16 + 5) * 4..(5 * 16 + 5) * 4 + 4], &[255, 0, 0, 255]);
+        assert_eq!(
+            &s.data[(5 * 16 + 5) * 4..(5 * 16 + 5) * 4 + 4],
+            &[255, 0, 0, 255]
+        );
     }
 
     #[test]
@@ -895,10 +989,16 @@ mod tests {
         let layer = dot(8, 8, 2, 2);
         over_moved(&mut dst, &layer, (1.0, 0.0), 0.5).unwrap();
         // Half red over green.
-        assert_eq!(&dst.data[(2 * 8 + 3) * 4..(2 * 8 + 3) * 4 + 4], &[128, 128, 0, 255]);
+        assert_eq!(
+            &dst.data[(2 * 8 + 3) * 4..(2 * 8 + 3) * 4 + 4],
+            &[128, 128, 0, 255]
+        );
         let mut clear = Surface::new(8, 8).unwrap();
         over_moved(&mut clear, &layer, (-1.0, 2.0), 1.0).unwrap();
-        assert_eq!(&clear.data[(4 * 8 + 1) * 4..(4 * 8 + 1) * 4 + 4], &[255, 0, 0, 255]);
+        assert_eq!(
+            &clear.data[(4 * 8 + 1) * 4..(4 * 8 + 1) * 4 + 4],
+            &[255, 0, 0, 255]
+        );
         assert_eq!(alpha_sum(&clear), 255);
     }
 

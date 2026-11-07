@@ -21,6 +21,7 @@ import {
   inkBounds,
   inkReach,
   shadowExtent,
+  shadowSigma,
   boxShadows,
   strokeReach,
   drawInk,
@@ -817,9 +818,11 @@ function paintShadows(ctx, box, L, SS, F = L) {
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = sh.opacity;
-    // A canvas shadow's `blur` is twice its gaussian sigma, and a filter's is
-    // the sigma itself - so half, or every shadow doubles in softness.
-    if (sh.blur > 0) ctx.filter = `blur(${(sh.blur / 2) * SS}px)`;
+    // A filter's blur is the gaussian's sigma: the one Size stands for. The
+    // canvas has none of Spread, Contour, Noise, a mode or a knockout; the
+    // engine paints those (`paintBoxJob`).
+    const sigma = shadowSigma(sh.size);
+    if (sigma > 0) ctx.filter = `blur(${sigma * SS}px)`;
     ctx.drawImage(sil, sh.x * SS, sh.y * SS);
     ctx.restore();
   }
@@ -964,7 +967,9 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
     job: glyphJob(box, L),
     // The footprint in the layout's coordinates: every pixel the box can ink.
     rect: { x: L.ox - foot.ox, y: L.oy - foot.oy, w: foot.cw, h: foot.ch },
-    shadows: boxShadows(s),
+    shadows: boxShadows(s).map((sh, i) => ({ ...sh, seed: shadowSeed(box.id, i) })),
+    blend: s.blendMode,
+    fillOpacity: s.fillOpacity,
     blur: s.blur > 0 ? s.blur : 0,
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
     // The mask's shapes are the box's own, so the box's corner goes with them.
@@ -972,6 +977,14 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
   });
   const caption = L.caption ? glyphPainter().paint(ctx, captionJob(box, L)) : null;
   return inkUnion([body, caption], ctx.canvas);
+}
+
+// The grain of a box's shadow `i` (its Noise, a Dissolve): the same box paints
+// the same grain in the editor, at every zoom, and in the file.
+function shadowSeed(id, i) {
+  let h = (Number(id) || 0) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+  return (h + Math.imul(i + 1, 0x9e3779b9)) >>> 0;
 }
 
 // The rectangle the painted rasters cover, in the canvas's pixels and cut to

@@ -713,16 +713,16 @@ describe('strokes and shadows', () => {
         size: 20,
         strokes: [],
         shadows: [
-          { x: 2, y: 3, blur: 4, color: '#000000', opacity: 0.6 },
-          { x: -5, y: 0, blur: 0, color: '#ff0000', opacity: 1 },
+          { x: 2, y: 3, size: 7, color: '#000000', opacity: 0.6 },
+          { x: -5, y: 0, size: 0, color: '#ff0000', opacity: 1 },
         ],
       }),
     );
     // Supersampled 2x, so every device-pixel number is doubled - and a canvas
-    // filter's radius is half the blur the style names.
+    // filter's radius is the sigma Size 7 stands for, 0.3 * 7 + 0.3.
     expect(shadowed).toEqual([
       { x: -10, y: 0, filter: 'none', alpha: 1 },
-      { x: 4, y: 6, filter: 'blur(4px)', alpha: 0.6 },
+      { x: 4, y: 6, filter: 'blur(4.8px)', alpha: 0.6 },
     ]);
   });
 
@@ -1430,7 +1430,7 @@ describe('a box with every effect on at once', () => {
       style: normalizeStyle({
         size: 20,
         strokes: [{ color: '#ffffff', width: 3, opacity: 1 }],
-        shadows: [{ x: 2, y: 3, blur: 4, color: '#000000', opacity: 0.6 }],
+        shadows: [{ x: 2, y: 3, size: 7, color: '#000000', opacity: 0.6 }],
         gradient: {
           on: true,
           scope: 'box',
@@ -1445,8 +1445,8 @@ describe('a box with every effect on at once', () => {
     };
     await renderPageCanvas({ id: 7, w: 800, h: 1200, lines: [], boxes: [box] });
 
-    // The footprint: the strokes reach 3px out, the shadow hypot(2,3) + twice
-    // its blur past that, roughening 4 + 2, and 4 besides - so 19 on every edge.
+    // The footprint: the strokes reach 3px out, the shadow hypot(2,3) + its
+    // size + 1 past that, roughening 4 + 2, and 4 besides - so 19 on every edge.
     const pad = 19;
     expect(displaced).toEqual([[(360 + pad * 2) * 2, (200 + pad * 2) * 2]]);
 
@@ -1456,7 +1456,7 @@ describe('a box with every effect on at once', () => {
       ['#000000', 6],
       ['#ffffff', 6],
     ]);
-    expect(shadowed).toEqual([{ x: 4, y: 6, filter: 'blur(4px)', alpha: 0.6 }]);
+    expect(shadowed).toEqual([{ x: 4, y: 6, filter: 'blur(4.8px)', alpha: 0.6 }]);
 
     // Two fills: the shadow's flat silhouette, then the gradient over the glyphs.
     expect(painted).toEqual(['ONE', 'ONE']);

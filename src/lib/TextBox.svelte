@@ -64,6 +64,8 @@
     textFiltersActive,
     OCTAVES,
     TILE_SS,
+    resolveShadow,
+    shadowSigma,
   } from './text-paint.js';
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
@@ -468,13 +470,21 @@
     app.fontsVersion;
     return boxNoiseOrigin(box, pg);
   });
+  // A shadow on the chapter's Global Light moves when the light does: the
+  // light's angle is in the key of a box that has one.
+  const lightKey = $derived(s.shadows?.some((sh) => sh.useGlobalLight) ? `${app.typesetting.light?.angle ?? 'd'}` : '');
+  // The shadows as they are painted, thrown from the light where they follow it.
+  const cast = $derived.by(() => {
+    void lightKey;
+    return (s.shadows ?? []).map(resolveShadow);
+  });
   // The strokes and shadows are in the key because they are in the picture:
   // they wrap the ink (see `drawInk`), so a change to either repaints it. The
   // blur, the smear and the roughening are run over it (see `paintInk`).
   const inkKey = $derived(
     inkActive(s.ink)
       ? JSON.stringify([s.ink, s.strokes, s.shadows, s.blur, s.motionBlur, s.roughen, inkNoise]) +
-          `|${box.w}|${box.h}|${z}`
+          `|${box.w}|${box.h}|${z}|${lightKey}`
       : '',
   );
   let inkDrawn = '';
@@ -683,6 +693,7 @@
             scale: pictureRes,
             fonts: app.fontsVersion,
             tiles: patternTileKey,
+            light: lightKey,
           })
         : PICTURE_OFF
       : '',
@@ -695,7 +706,7 @@
       ? engineKey
       : warped
         ? JSON.stringify({ ...s, ink: 0 }) +
-          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}`
+          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}`
         : '',
   );
   const warpKey = $derived(failed ? '' : wantedKey);
@@ -1044,12 +1055,12 @@
     const bands = strokeBands(s.strokes);
     const cut = !!s.noFill;
     // shadows[0] paints on top of shadows[1], so the list is walked backwards.
-    for (let i = (s.shadows?.length ?? 0) - 1; i >= 0; i--) {
-      const sh = s.shadows[i];
+    for (let i = cast.length - 1; i >= 0; i--) {
+      const sh = cast[i];
       // The shadow's shape is the glyphs plus every stroke, which is exactly
       // what this layer draws: the outermost stroke and the fill, both in the
-      // shadow's colour. A CSS blur radius is the gaussian sigma while the
-      // canvas takes twice it, hence the halving - see paintShadows.
+      // shadow's colour. A CSS `blur()` radius is the gaussian's sigma, the
+      // one the shadow's Size stands for (`shadowSigma`).
       //
       // With no fill it is the outermost stroke's outer half alone, and a box
       // with no stroke either casts nothing.
@@ -1059,7 +1070,8 @@
       css += `opacity:${sh.opacity};transform:translate(${sh.x * z}px, ${sh.y * z}px);`;
       const f = [];
       if (cut) f.push(`url(#${hollowId}-s${i})`);
-      if (sh.blur > 0) f.push(`blur(${(sh.blur / 2) * z}px)`);
+      const sigma = shadowSigma(sh.size);
+      if (sigma > 0) f.push(`blur(${sigma * z}px)`);
       if (f.length) css += `filter:${f.join(' ')};`;
       out.push({ css, arc: css, line: '', bg: '' });
     }
@@ -1175,12 +1187,11 @@
       css += `-webkit-text-stroke:${bands[0].line * z}px ${bands[0].color};paint-order:stroke fill;`;
     // `text-shadow`'s blur radius is TWICE the gaussian's sigma (CSS states it
     // that way, as does a canvas `shadowBlur`), while `filter: blur()` is the
-    // sigma itself - so the style's `blur` goes in whole here and halved on the
-    // display layer above, and both come out at the same softness. The two
-    // spellings look like a mismatch and are not one.
-    if (s.shadows.length)
-      css += `text-shadow:${s.shadows
-        .map((sh) => `${sh.x * z}px ${sh.y * z}px ${sh.blur * z}px ${rgba(sh.color, sh.opacity)}`)
+    // sigma itself - so it is doubled here and not on the display layer above,
+    // and both come out at the same softness.
+    if (cast.length)
+      css += `text-shadow:${cast
+        .map((sh) => `${sh.x * z}px ${sh.y * z}px ${2 * shadowSigma(sh.size) * z}px ${rgba(sh.color, sh.opacity)}`)
         .join(',')};`;
     return css + filterCss;
   });

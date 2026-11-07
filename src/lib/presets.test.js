@@ -190,7 +190,7 @@ describe('presets management and persistence', () => {
     expect(item.name).toBe('Legacy Shout');
     expect(item.style.font).toBe('Bangers');
     expect(item.style.strokes).toEqual([{ color: '#ff0000', width: 5, opacity: 1 }]);
-    expect(item.style.shadows).toEqual([{ x: 1, y: 2, blur: 3, color: '#000000', opacity: 0.7 }]);
+    expect(item.style.shadows).toEqual([{ x: 1, y: 2, size: 4, color: '#000000', opacity: 0.7, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
     expect('outline' in item.style).toBe(false);
     expect('outlineWidth' in item.style).toBe(false);
     expect('shadow' in item.style).toBe(false);
@@ -266,7 +266,7 @@ describe('style copy and paste', () => {
     expect(b2.style.pattern.on).toBe(true);
     expect(b2.style.pattern.kind).toBe('checker');
     expect(b2.style.strokes).toEqual([{ color: '#00ff00', width: 4, opacity: 0.8 }]);
-    expect(b2.style.shadows).toEqual([{ x: 3, y: 3, blur: 5, color: '#000000', opacity: 0.5 }]);
+    expect(b2.style.shadows).toEqual([{ x: 3, y: 3, size: 7.33, color: '#000000', opacity: 0.5, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
 
     // Modifying target box styles afterwards should not affect the clipboard (no aliasing)
     b2.style.strokes[0].color = '#000000';

@@ -119,9 +119,27 @@ export const LAYOUT_VERSION = 1;
 export const LAYOUT_VERSION_RUST = 2;
 
 export function normalizeTypesetting(raw) {
+  const light = normalizeLight(raw?.light);
   return {
     mode: raw?.mode === 'smart' ? 'smart' : 'plain',
     version: Number.isInteger(raw?.version) && raw.version > 0 ? raw.version : LAYOUT_VERSION,
+    // Only a light that is not Photoshop's default is kept, so a chapter
+    // that never turned it is written as it always was.
+    ...(light.angle !== LIGHT_DEF.angle || light.altitude !== LIGHT_DEF.altitude ? { light } : null),
+  };
+}
+
+// The chapter's Global Light, as Photoshop keeps one per document: the angle
+// the light comes from (degrees, counter-clockwise from the right; 120 is
+// from the upper left) and its altitude (0 to 90). A shadow with
+// `useGlobalLight` is thrown away from it. A chapter with no `light` has
+// this one.
+export const LIGHT_DEF = Object.freeze({ angle: 120, altitude: 30 });
+export function normalizeLight(l) {
+  const a = num(l?.angle, LIGHT_DEF.angle);
+  return {
+    angle: Math.round((((a % 360) + 540) % 360 - 180) * 100) / 100,
+    altitude: Math.min(90, Math.max(0, num(l?.altitude, LIGHT_DEF.altitude))),
   };
 }
 
@@ -251,6 +269,13 @@ export function defaultStyle() {
     valign: 'middle', // top | middle | bottom
     // Whole-box alpha, applied over everything (fill, strokes, shadows).
     opacity: 1,
+    // Photoshop's Blending Options. `fillOpacity` fades the fill alone: the
+    // strokes and the shadows stay (the Rust engine paints it; the browser
+    // engine does not). `blendMode` is how the letters blend with the page,
+    // a LAYER_BLEND_MODES name; it shows in the PSD, and in the app once the
+    // engine is handed the page (LAYER_STYLES_PLAN.md phase 6).
+    fillOpacity: 1,
+    blendMode: 'normal',
     // ---- fill ----
     // Solid fill colour. Still the single source for the glyph colour when
     // neither gradient nor pattern is on; when one of them is on it is the
@@ -540,7 +565,63 @@ export function steppedSize(v, d) {
 // legacy keys are then dropped so nothing downstream can read a stale copy.
 const STROKE_DEF = { color: '#ffffff', width: 3, opacity: 1 };
 const BLOCK_SHAPES = ['auto', 'oval', 'rect', 'off'];
-const SHADOW_DEF = { x: 2, y: 2, blur: 2, color: '#000000', opacity: 0.6 };
+const SHADOW_DEF = { x: 2, y: 2, size: 2.33, color: '#000000', opacity: 0.6 };
+
+// Photoshop's blend modes, in its menu's order. The index is the number the
+// engine reads (`Blend::from_u32` in text-engine/src/paint/fx/blend.rs).
+export const LAYER_BLEND_MODES = [
+  'normal', 'dissolve',
+  'darken', 'multiply', 'color-burn', 'linear-burn', 'darker-color',
+  'lighten', 'screen', 'color-dodge', 'linear-dodge', 'lighter-color',
+  'overlay', 'soft-light', 'hard-light', 'vivid-light', 'linear-light', 'pin-light', 'hard-mix',
+  'difference', 'exclusion', 'subtract', 'divide',
+  'hue', 'saturation', 'color', 'luminosity',
+];
+const blendMode = (v, d) => (LAYER_BLEND_MODES.includes(v) ? v : d);
+
+// Photoshop's contour presets, in its picker's order (`PRESET_NAMES` in
+// text-engine/src/paint/fx/contour.rs), and 'custom' for a curve of points.
+export const CONTOUR_PRESETS = [
+  'linear', 'cone', 'cone-inverted', 'cove-deep', 'cove-shallow', 'gaussian',
+  'half-round', 'ring', 'ring-double', 'rolling-slope-descending', 'rounded-steps', 'sawtooth-1',
+];
+// Their names as Photoshop's picker shows them.
+export const CONTOUR_LABELS = {
+  linear: 'Linear',
+  cone: 'Cone',
+  'cone-inverted': 'Cone - Inverted',
+  'cove-deep': 'Cove - Deep',
+  'cove-shallow': 'Cove - Shallow',
+  gaussian: 'Gaussian',
+  'half-round': 'Half Round',
+  ring: 'Ring',
+  'ring-double': 'Ring - Double',
+  'rolling-slope-descending': 'Rolling Slope - Descending',
+  'rounded-steps': 'Rounded Steps',
+  'sawtooth-1': 'Sawtooth 1',
+  custom: 'Custom',
+};
+// A contour: a preset, or `custom` with points `[x, y, corner]` from 0 to 255
+// in order of x; `aa` is Photoshop's Anti-aliased box.
+export function normalizeContour(c) {
+  const preset = c?.preset === 'custom' || CONTOUR_PRESETS.includes(c?.preset) ? c.preset : 'linear';
+  const out = { preset, aa: c?.aa === true };
+  if (preset === 'custom') {
+    const pts = (Array.isArray(c.pts) ? c.pts : [])
+      .filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
+      .map((q) => [Math.min(255, Math.max(0, +q[0])), Math.min(255, Math.max(0, +q[1])), q[2] === true])
+      .sort((a, b) => a[0] - b[0])
+      .slice(0, 64);
+    if (pts.length < 2) return { preset: 'linear', aa: out.aa };
+    out.pts = pts;
+  }
+  return out;
+}
+
+// What a canvas shadow's `blur` (twice a gaussian's sigma) is as Photoshop's
+// Size, whose sigma is `0.3 * size + 0.3` (`size_sigma` in fx/mod.rs): how a
+// shadow saved before Size existed keeps its softness.
+const sizeFromBlur = (blur) => (blur > 0 ? Math.max(0, Math.round(((blur / 2 - 0.3) / 0.3) * 100) / 100) : 0);
 const num = (v, d) => (Number.isFinite(+v) ? +v : d);
 // Exactly the lengths CSS reads as hex: 3/4-digit shorthand and 6/8-digit full
 // forms. A 5- or 7-digit string is a typo mid-edit, not a colour - accepting it
@@ -563,14 +644,52 @@ export function normalizeFinish(finish) {
   };
 }
 
+// A Drop Shadow, as Photoshop's dialog has it:
+//   x, y        where it is thrown, page px (Angle and Distance in the panel)
+//   size        how far its soft edge reaches, page px, 0 to 250
+//   spread      0..1: the share of the size the matte is grown by, not blurred
+//   noise       0..1
+//   blend       a LAYER_BLEND_MODES name
+//   contour     how the edge falls off (`normalizeContour`)
+//   knockout    Layer Knocks Out Drop Shadow
+//   useGlobalLight  its angle is the chapter's light (`globalLight` in
+//               text-paint.js) and only its distance is its own
+// A shadow saved before these existed had `blur` (a canvas blur) and is read
+// as the same softness, Normal, not knocked out, its own angle: as it looked.
 export function normalizeShadow(x) {
+  const size = Number.isFinite(+x?.size) ? +x.size : Number.isFinite(+x?.blur) ? sizeFromBlur(Math.max(0, +x.blur)) : SHADOW_DEF.size;
   return {
     x: num(x?.x, SHADOW_DEF.x),
     y: num(x?.y, SHADOW_DEF.y),
-    blur: Math.max(0, num(x?.blur, SHADOW_DEF.blur)),
+    size: Math.min(SHADOW_SIZE_MAX, Math.max(0, size)),
     color: hex(x?.color, SHADOW_DEF.color),
     opacity: Math.min(1, Math.max(0, num(x?.opacity, SHADOW_DEF.opacity))),
+    spread: Math.min(1, Math.max(0, num(x?.spread, 0))),
+    noise: Math.min(1, Math.max(0, num(x?.noise, 0))),
+    blend: blendMode(x?.blend, 'normal'),
+    contour: normalizeContour(x?.contour),
+    knockout: x?.knockout === true,
+    useGlobalLight: x?.useGlobalLight === true,
   };
+}
+// Photoshop's Size and Distance limits.
+export const SHADOW_SIZE_MAX = 250;
+export const SHADOW_DISTANCE_MAX = 30000;
+// A shadow as Photoshop adds one: Multiply, 75%, the chapter's light, 5 away,
+// size 5, knocked out by the letters.
+export function newShadow(light = { angle: 120 }) {
+  const a = (light.angle * Math.PI) / 180;
+  const r2 = (v) => Math.round(v * 100) / 100;
+  return normalizeShadow({
+    x: r2(-Math.cos(a) * 5),
+    y: r2(Math.sin(a) * 5),
+    size: 5,
+    color: '#000000',
+    opacity: 0.75,
+    blend: 'multiply',
+    knockout: true,
+    useGlobalLight: true,
+  });
 }
 // One hand-drawn brush stroke, sanitised. Returns null for a stroke that
 // cannot be drawn at all - no points, or a size of zero - because a stroke
@@ -1117,11 +1236,14 @@ export function normalizeStyle(s) {
     }
   }
 
-  // `fillOpacity` (the fill layer's own alpha) is gone from the schema. A style
-  // saved while it existed folds it into the whole-box opacity - not the same
-  // picture (strokes used to stay opaque), but the intent it carried, that this
-  // box was translucent, survives the migration.
-  const fo = Math.min(1, Math.max(0, num(src.fillOpacity, 1)));
+  // An early `fillOpacity` (the fill layer's own alpha) left the schema, and a
+  // style saved while it existed folds it into the whole-box opacity - not the
+  // same picture (strokes used to stay opaque), but the intent it carried,
+  // that this box was translucent, survives the migration. Photoshop's Fill
+  // Opacity brought the name back with that meaning; a style saved since then
+  // also has `blendMode`, which is how the two are told apart.
+  const legacyFill = !('blendMode' in src);
+  const fo = legacyFill ? Math.min(1, Math.max(0, num(src.fillOpacity, 1))) : 1;
 
   // The circle, gated like the smear: angle normalized into [0, 360).
   const circ = { ...d.circle, ...(src.circle || {}) };
@@ -1174,6 +1296,8 @@ export function normalizeStyle(s) {
     fitText: flat.fitText === true,
     fitMax: Math.min(200, Math.max(0, num(flat.fitMax, 0))),
     blur: Math.max(0, num(src.blur, 0)),
+    fillOpacity: legacyFill ? 1 : Math.min(1, Math.max(0, num(flat.fillOpacity, 1))),
+    blendMode: blendMode(flat.blendMode, 'normal'),
     motionBlur: mb,
     path: pth,
     clip: cl,

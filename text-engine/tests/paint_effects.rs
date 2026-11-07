@@ -3,6 +3,7 @@
 //! Properties of the pixels, as in `paint_job.rs`.
 #![cfg(feature = "paint")]
 
+use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::{
     paint_box, paint_job, Affine, Align, Band, BoxRequest, Effects, Fill, Job, Join, Negative,
     Raster, Request, Rgba, Run, Shadow, MITER_LIMIT,
@@ -245,6 +246,9 @@ fn boxed(font: FontId, shadows: Vec<Shadow>) -> BoxRequest {
         blur: 0.0,
         taps: Vec::new(),
         clip: None,
+        blend: Blend::Normal,
+        fill_opacity: 1.0,
+        backdrop: None,
         request: request(job(vec![letter(100.0)], 0.0), font),
     }
 }
@@ -255,8 +259,8 @@ fn shadow(x: f64, grow: f64) -> Shadow {
         opacity: 1.0,
         x,
         y: 0.0,
-        blur: 0.0,
         grow,
+        ..Shadow::default()
     }
 }
 

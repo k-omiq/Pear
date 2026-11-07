@@ -2,6 +2,7 @@
 //! shadows laid a copy at a time, the way the box job laid them before.
 #![cfg(feature = "paint")]
 
+use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::{
     paint_box_copy_by_copy, paint_box_with, Affine, Align, BoxRequest, Effects, Exact, Fill, Job,
     Raster, Request, Rgba, Run, Shadow,
@@ -11,7 +12,9 @@ use std::time::Instant;
 
 fn load(engine: &mut Engine, file: &str) -> FontId {
     let path = format!("{}/../src/test/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
-    engine.add_font_bytes(std::fs::read(path).unwrap(), 0).unwrap()
+    engine
+        .add_font_bytes(std::fs::read(path).unwrap(), 0)
+        .unwrap()
 }
 
 const BLACK: Rgba = Rgba([0, 0, 0, 255]);
@@ -21,7 +24,14 @@ const RED: Rgba = Rgba([230, 30, 40, 255]);
 
 /// `text` at `size` from `(x, y)` in a box `width` by `height` job units,
 /// painted through `transform`.
-fn sheet(font: FontId, text: &str, size: f64, (x, y): (f64, f64), transform: Affine, (width, height): (u32, u32)) -> BoxRequest {
+fn sheet(
+    font: FontId,
+    text: &str,
+    size: f64,
+    (x, y): (f64, f64),
+    transform: Affine,
+    (width, height): (u32, u32),
+) -> BoxRequest {
     BoxRequest {
         width,
         height,
@@ -29,6 +39,9 @@ fn sheet(font: FontId, text: &str, size: f64, (x, y): (f64, f64), transform: Aff
         blur: 0.0,
         taps: Vec::new(),
         clip: None,
+        blend: Blend::Normal,
+        fill_opacity: 1.0,
+        backdrop: None,
         request: Request {
             job: Job {
                 curved: false,
@@ -74,8 +87,8 @@ fn extrude(angle: f64, len: f64, n: usize, color: Rgba, edge: Option<(Rgba, f64)
         opacity: 1.0,
         x: ux * len * k as f64 / n as f64,
         y: uy * len * k as f64 / n as f64,
-        blur: 0.0,
         grow,
+        ..Shadow::default()
     };
     let mut out: Vec<Shadow> = (1..=n).map(|k| step(k, color, 0.0)).collect();
     if let Some((edge, grow)) = edge {
@@ -97,8 +110,8 @@ fn shake(angle: f64, amp: f64, count: usize, color: Rgba) -> Vec<Shadow> {
                 opacity,
                 x: s * ux * d,
                 y: s * uy * d,
-                blur: 0.0,
                 grow: 0.0,
+                ..Shadow::default()
             });
         }
     }
@@ -136,8 +149,12 @@ fn compare(a: &Raster, b: &Raster) -> ([u8; 4], usize) {
 }
 
 fn both(e: &mut Engine, b: &mut BoxRequest) -> (Raster, Raster) {
-    let swept = paint_box_with(e, b, &Exact).unwrap().expect("something was drawn");
-    let copies = paint_box_copy_by_copy(e, b, &Exact).unwrap().expect("something was drawn");
+    let swept = paint_box_with(e, b, &Exact)
+        .unwrap()
+        .expect("something was drawn");
+    let copies = paint_box_copy_by_copy(e, b, &Exact)
+        .unwrap()
+        .expect("something was drawn");
     (swept, copies)
 }
 
@@ -177,7 +194,10 @@ fn an_extrude_in_one_pass_is_its_steps_laid_one_by_one() {
             assert_eq!(worst[3], 0, "{what}: alpha {worst:?}");
             assert!(worst.iter().all(|&d| d <= 1), "{what}: {worst:?}");
             let area = swept.width as usize * swept.height as usize;
-            assert!(differ * 100 < area, "{what}: {differ} of {area} pixels differ");
+            assert!(
+                differ * 100 < area,
+                "{what}: {differ} of {area} pixels differ"
+            );
         }
     }
 }
@@ -192,14 +212,28 @@ fn shadows_that_are_not_an_extrude_are_laid_as_before() {
         shake(0.0, 7.0, 2, INK),
         shake(30.0, 12.0, 4, RED),
         // One opaque shadow alone, and steps broken up by a faded one.
-        vec![Shadow { color: RED, opacity: 1.0, x: 5.0, y: 5.0, blur: 0.0, grow: 0.0 }],
+        vec![Shadow {
+            color: RED,
+            opacity: 1.0,
+            x: 5.0,
+            y: 5.0,
+            grow: 0.0,
+            ..Shadow::default()
+        }],
     ];
     let mut broken = extrude(135.0, 20.0, 8, INK, None);
     broken[3].opacity = 0.5;
     lists.push(broken);
     // A blurred shadow among them.
     let mut blurred = extrude(60.0, 12.0, 6, INK, None);
-    blurred.push(Shadow { color: RED, opacity: 0.8, x: 4.0, y: 4.0, blur: 6.0, grow: 0.0 });
+    blurred.push(Shadow {
+        color: RED,
+        opacity: 0.8,
+        x: 4.0,
+        y: 4.0,
+        size: 9.0,
+        ..Shadow::default()
+    });
     lists.push(blurred);
     for (i, shadows) in lists.into_iter().enumerate() {
         let mut b = sheet(font, "HI!", 60.0, (40.0, 110.0), transform, (400, 300));
@@ -210,7 +244,10 @@ fn shadows_that_are_not_an_extrude_are_laid_as_before() {
             assert_eq!(swept, copies, "list {i}");
         } else {
             let (worst, _) = compare(&swept, &copies);
-            assert!(worst[3] == 0 && worst.iter().all(|&d| d <= 1), "list {i}: {worst:?}");
+            assert!(
+                worst[3] == 0 && worst.iter().all(|&d| d <= 1),
+                "list {i}: {worst:?}"
+            );
         }
     }
 }
@@ -243,7 +280,10 @@ fn bench_extrude_steps() {
         ("none", Vec::new()),
         ("extrude 24", extrude(135.0, 36.0, 24, INK, None)),
         ("extrude 48", extrude(135.0, 72.0, 48, INK, None)),
-        ("extrude + edge 48", extrude(135.0, 36.0, 24, INK, Some((EDGE, 3.6)))),
+        (
+            "extrude + edge 48",
+            extrude(135.0, 36.0, 24, INK, Some((EDGE, 3.6))),
+        ),
         ("shake 4", shake(0.0, 7.2, 2, INK)),
     ];
     for (name, shadows) in cases {

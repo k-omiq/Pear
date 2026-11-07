@@ -258,7 +258,12 @@ mod tests {
         let mut cut = layer(&rect(1.0, 0.0, 2.5, 1.0), surface, [1.0; 4], 1.0);
         cut.erase = true;
         let mut layers = vec![
-            layer(&rect(0.0, 0.0, 3.0, 1.0), surface, [1.0, 0.0, 0.0, 1.0], 1.0),
+            layer(
+                &rect(0.0, 0.0, 3.0, 1.0),
+                surface,
+                [1.0, 0.0, 0.0, 1.0],
+                1.0,
+            ),
             cut,
         ];
         let px = compose(&mut layers, surface).unwrap();

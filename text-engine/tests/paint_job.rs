@@ -4,8 +4,8 @@
 #![cfg(feature = "paint")]
 
 use mt_text::paint::{
-    decode, paint_job, Affine, Align, Band, BoldDraw, Effects, Fill, Job, Mesh, Pt, Raster, Request, Rgba,
-    Roughen, Run, Stop, Tile, MAGIC, MAX_MESH_SIDE, MAX_SIDE, WIRE_VERSION,
+    decode, paint_job, Affine, Align, Band, BoldDraw, Effects, Fill, Job, Mesh, Pt, Raster,
+    Request, Rgba, Roughen, Run, Stop, Tile, MAGIC, MAX_MESH_SIDE, MAX_SIDE, WIRE_VERSION,
 };
 use mt_text::{bold_outset, BoldAdvance, Engine, Error, Face, FontId, Synth, WEBKIT_BOLD_ADVANCE};
 
@@ -556,7 +556,9 @@ fn no_fill_cuts_the_glyphs_out_of_the_bands() {
 
     // And with no band there is nothing to cut from: nothing is drawn.
     j.bands.clear();
-    assert!(paint_job(&mut e, &request(j.clone(), face)).unwrap().is_none());
+    assert!(paint_job(&mut e, &request(j.clone(), face))
+        .unwrap()
+        .is_none());
     j.silhouette = None;
     assert!(paint_job(&mut e, &request(j, face)).unwrap().is_none());
 }
@@ -2329,7 +2331,10 @@ fn wire_with_mesh(block: &[u8]) -> Vec<u8> {
     // run's pattern fill (36), its flags (4) and eight numbers (64), the run
     // count (4), the roughening's `0` (4), and before that the mesh's `0`.
     let mesh_at = good.len() - 20 - 3 - 4 - 36 - 4 - 64 - 4 - 4 - 4;
-    assert_eq!(good[mesh_at..mesh_at + 12], [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+    assert_eq!(
+        good[mesh_at..mesh_at + 12],
+        [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+    );
     let mut b = good[..mesh_at].to_vec();
     b.extend_from_slice(block);
     b.extend_from_slice(&good[mesh_at + 4..]);

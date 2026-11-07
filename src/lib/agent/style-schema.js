@@ -1,6 +1,7 @@
 import {
   GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
+  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -108,13 +109,24 @@ export const STYLE_SCHEMA = {
     width: number('band px; 0=remove', 0),
     opacity: alpha('band alpha'),
   })),
-  shadows: array('shadows, top first', object('shadow', {
+  shadows: array('drop shadows, top first (Photoshop Drop Shadow)', object('shadow', {
     x: number('x offset px'),
     y: number('y offset px'),
-    blur: number('blur in page px', 0),
+    size: number('soft edge reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),
     color: color('shadow colour'),
     opacity: alpha('shadow alpha'),
+    spread: alpha('share of size that is a hard edge'),
+    noise: alpha('grain'),
+    blend: choice('blend mode', LAYER_BLEND_MODES),
+    contour: object('edge falloff', {
+      preset: choice('contour', CONTOUR_PRESETS),
+      aa: boolean('anti-aliased contour'),
+    }),
+    knockout: boolean('letters knock the shadow out'),
+    useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
   })),
+  fillOpacity: alpha('fill alpha only; strokes and shadows stay'),
+  blendMode: choice('how the box mixes with the page (Photoshop layer blend)', LAYER_BLEND_MODES),
   blur: number('whole-text blur px', 0),
   motionBlur: object('directional smear', {
     on: boolean('enable smear'),

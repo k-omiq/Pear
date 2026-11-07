@@ -25,6 +25,7 @@
     setBoxSizing,
     boxLocked,
     setBoxLocked,
+    setChapterLight,
   } from './store.svelte.js';
 
   import { editBurst } from './edit-burst.js';
@@ -50,9 +51,14 @@
     ITALIC_ANGLE_MIN,
     ITALIC_ANGLE_MAX,
     ITALIC_ANGLE_DEF,
+    CONTOUR_PRESETS,
+    CONTOUR_LABELS,
+    SHADOW_SIZE_MAX,
+    SHADOW_DISTANCE_MAX,
+    newShadow,
   } from './data.js';
   import { layoutShape } from './balloon.js';
-  import { gradientCss, patternTileCanvas, sampleStops } from './text-paint.js';
+  import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
   import { maskTool, setMaskTool } from './mask-tool.svelte.js';
   import { regridWarp } from './warp-gizmo.js';
@@ -707,6 +713,9 @@
   // The Rust engine shades a pattern per pixel and paints every kind and
   // control; the browser engine repeats one of the eleven canvas tiles.
   const rustPatterns = $derived(engineSwitch.painting && glyphPainter().screen === true);
+  // The engine paints whole boxes: Fill Opacity, and a shadow's Spread,
+  // Contour, Noise and knockout (the browser engine paints none of them).
+  const rustBoxes = $derived(engineSwitch.painting && glyphPainter().box === true);
   const shownKinds = $derived.by(() => {
     if (!rustPatterns) return CANVAS_PATTERN_KINDS;
     return patGroup === 'all' ? PATTERN_KINDS : PATTERN_GROUPS[patGroup];
@@ -765,8 +774,43 @@
   }
 
   // ---- shadows ----
+  // Photoshop's Drop Shadow: a new one is Photoshop's, on the chapter's light.
   function addShadow() {
-    box.style.shadows.push({ x: 3, y: 3, blur: 4, color: '#000000', opacity: 0.5 });
+    box.style.shadows.push(newShadow(app.typesetting.light));
+    touch();
+  }
+  // Angle and Distance are how the panel states a shadow's offset. The angle of
+  // one on the Global Light is the chapter's: turning it turns every shadow
+  // that follows the light, as in Photoshop.
+  function setShadowAngle(sh, e) {
+    const el = e.target;
+    let a = +el.value;
+    if (!Number.isFinite(a)) a = shadowAngle(sh);
+    a = clamp(a, -180, 180);
+    if (sh.useGlobalLight) setChapterLight({ angle: a });
+    else {
+      Object.assign(sh, shadowOffset(a, shadowDistance(sh)));
+      touch();
+    }
+    el.value = String(shadowAngle(sh));
+  }
+  function setShadowDistance(sh, e) {
+    const el = e.target;
+    let d = +el.value;
+    if (!Number.isFinite(d)) d = 0;
+    d = clamp(d, 0, SHADOW_DISTANCE_MAX);
+    Object.assign(sh, shadowOffset(shadowAngle(sh), d));
+    el.value = String(Math.round(shadowDistance(sh) * 100) / 100);
+    touch();
+  }
+  // Off the light, a shadow keeps the angle it had from it.
+  function setShadowGlobal(sh, on) {
+    Object.assign(sh, shadowOffset(shadowAngle(sh), shadowDistance(sh)));
+    sh.useGlobalLight = on;
+    touch();
+  }
+  function setShadowContour(sh, preset) {
+    sh.contour = { preset, aa: sh.contour?.aa === true };
     touch();
   }
   function removeShadow(i) {
@@ -1206,6 +1250,21 @@
           </div>
         </div>
 
+        {#if fillMode !== 'none'}
+          <!-- Photoshop's Fill Opacity: the fill fades, the strokes and the
+               shadows stay. The Rust engine paints it. -->
+          <div class="grp">
+            <span class="lbl" title="Fades the fill only: strokes and shadows stay">Fill opacity</span>
+            {#if rustBoxes}
+              <div class="slider-row">
+                <input type="range" min="0" max="100" step="1" value={pct(s.fillOpacity)} aria-label="Fill opacity" oninput={(e) => setAlpha(s, 'fillOpacity', e.target.value)} />
+                <input class="num-s" type="number" min="0" max="100" step="1" value={pct(s.fillOpacity)} title="Fill opacity, %" aria-label="Fill opacity, percent" onchange={(e) => commitAlpha(s, 'fillOpacity', e)} />
+              </div>
+            {:else}
+              <p class="nofill-note">Needs the Rust text engine (Settings).</p>
+            {/if}
+          </div>
+        {/if}
         {#if fillMode === 'none'}
           <p class="nofill-note">{s.strokes.length ? 'The letters are see-through. Only the strokes show.' : 'No fill and no stroke: this box shows nothing. Add a stroke.'}</p>
         {:else if fillMode === 'solid'}
@@ -1544,19 +1603,57 @@
             {/if}
             <div class="insp-list k-shadow">
               {#if s.shadows.length}
-                <div class="insp-cap"><span></span><span>X</span><span>Y</span><span>Blur</span><span>Op %</span><span></span></div>
+                <div class="insp-cap"><span></span><span>Angle</span><span>Dist</span><span>Size</span><span>Op %</span><span></span></div>
               {/if}
               {#each s.shadows as sh, i (sh)}
+                <!-- The Global Light is read here so a turn of it shows. -->
+                {@const angle = (app.typesetting.light?.angle, shadowAngle(sh))}
                 <div class="insp-row">
                   {@render swatchCell(sh, 'color', `Shadow ${i + 1} colour`)}
-                  <input type="number" min="-200" max="200" step="1" value={sh.x} aria-label="Shadow {i + 1} offset X" title="Offset X, page px" onchange={(e) => commitNum(sh, 'x', e, -200, 200)} />
-                  <input type="number" min="-200" max="200" step="1" value={sh.y} aria-label="Shadow {i + 1} offset Y" title="Offset Y, page px" onchange={(e) => commitNum(sh, 'y', e, -200, 200)} />
-                  <input type="number" min="0" max="50" step="1" value={sh.blur} aria-label="Shadow {i + 1} blur" title="Blur, page px" oninput={(e) => setNum(sh, 'blur', e.target.value, 0, 50)} />
+                  <input type="number" min="-180" max="180" step="1" value={angle} aria-label="Shadow {i + 1} angle" title={sh.useGlobalLight ? 'Angle of the chapter\'s light, degrees: turns every shadow on it' : 'Angle the light comes from, degrees'} onchange={(e) => setShadowAngle(sh, e)} />
+                  <input type="number" min="0" max={SHADOW_DISTANCE_MAX} step="1" value={Math.round(shadowDistance(sh) * 100) / 100} aria-label="Shadow {i + 1} distance" title="Distance, page px" onchange={(e) => setShadowDistance(sh, e)} />
+                  <input type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={sh.size} aria-label="Shadow {i + 1} size" title="Size: how far the soft edge reaches, page px" onchange={(e) => commitNum(sh, 'size', e, 0, SHADOW_SIZE_MAX)} />
                   <input type="number" min="0" max="100" step="1" value={pct(sh.opacity)} aria-label="Shadow {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(sh, 'opacity', e.target.value)} />
                   {@render rmBtn(`shadow ${i + 1}`, () => removeShadow(i))}
                 </div>
+                <div class="sh-more">
+                  <label class="sh-num" title="Spread: how much of the size is a hard edge, %">
+                    <span>Spread</span>
+                    <input type="number" min="0" max="100" step="1" value={pct(sh.spread)} aria-label="Shadow {i + 1} spread, percent" onchange={(e) => commitAlpha(sh, 'spread', e)} />
+                  </label>
+                  <label class="sh-num" title="Noise: grain in the shadow, %">
+                    <span>Noise</span>
+                    <input type="number" min="0" max="100" step="1" value={pct(sh.noise)} aria-label="Shadow {i + 1} noise, percent" onchange={(e) => commitAlpha(sh, 'noise', e)} />
+                  </label>
+                  <label class="sh-contour" title="Contour: how the soft edge falls off">
+                    <span>Contour</span>
+                    <select value={sh.contour?.preset ?? 'linear'} aria-label="Shadow {i + 1} contour" onchange={(e) => setShadowContour(sh, e.target.value)}>
+                      {#each CONTOUR_PRESETS as id (id)}
+                        <option value={id}>{CONTOUR_LABELS[id]}</option>
+                      {/each}
+                      {#if sh.contour?.preset === 'custom'}
+                        <option value="custom">{CONTOUR_LABELS.custom}</option>
+                      {/if}
+                    </select>
+                  </label>
+                  <label class="sh-check" title="Anti-aliased: the contour read at every level, not a hundred steps">
+                    <input type="checkbox" checked={sh.contour?.aa === true} aria-label="Shadow {i + 1} contour anti-aliased" onchange={(e) => { sh.contour = { ...sh.contour, aa: e.target.checked }; touch(); }} />
+                    <span>Anti-aliased</span>
+                  </label>
+                  <label class="sh-check" title="Use Global Light: the angle is the chapter's, shared by every shadow that uses it">
+                    <input type="checkbox" checked={sh.useGlobalLight} aria-label="Shadow {i + 1} uses the global light" onchange={(e) => setShadowGlobal(sh, e.target.checked)} />
+                    <span>Global light</span>
+                  </label>
+                  <label class="sh-check" title="Layer Knocks Out Drop Shadow: the shadow does not show through see-through letters">
+                    <input type="checkbox" checked={sh.knockout} aria-label="Shadow {i + 1} knocked out by the letters" onchange={(e) => { sh.knockout = e.target.checked; touch(); }} />
+                    <span>Knock out</span>
+                  </label>
+                </div>
               {/each}
             </div>
+            {#if s.shadows.length && !rustBoxes}
+              <p class="nofill-note">Spread, Noise, Contour and Knock out need the Rust text engine (Settings).</p>
+            {/if}
             {@render addBtn('Add shadow', addShadow)}
           </div>
         {/if}
@@ -2433,6 +2530,36 @@
   /* No fill: the struck-through swatch, as wide as it is tall. */
   .seg .nofill {
     flex: 0 0 34px;
+  }
+  /* A drop shadow's Photoshop options, under its row. */
+  .sh-more {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 10px;
+    margin: -2px 0 6px 30px;
+    font-size: 12px;
+    color: var(--t2);
+  }
+  .sh-more label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .sh-num span,
+  .sh-contour span {
+    flex: 0 0 auto;
+  }
+  .sh-num input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .sh-contour {
+    grid-column: 1 / -1;
+  }
+  .sh-contour select {
+    flex: 1 1 auto;
+    min-width: 0;
   }
   .nofill-note {
     margin: 0;

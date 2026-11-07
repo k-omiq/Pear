@@ -564,9 +564,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     let silhouette = r.rgba()?;
     let join = match r.u32()? {
         0 => Join::Round,
-        1 => Join::Miter {
-            limit: MITER_LIMIT,
-        },
+        1 => Join::Miter { limit: MITER_LIMIT },
         _ => return Err(Error::BadSpec),
     };
     let negative = Negative {

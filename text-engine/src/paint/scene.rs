@@ -164,17 +164,15 @@ impl Scene {
                     }
                     Op::Stroke(..) => None,
                     Op::Fill(n, color) => {
-                        let parts =
-                            self.glyphs
-                                .parts(
-                                    0..n,
-                                    Reach::flat(0.0),
-                                    false,
-                                    Join::Round,
-                                    super::Bends::default(),
-                                    &self.transform,
-                                    tol,
-                                )?;
+                        let parts = self.glyphs.parts(
+                            0..n,
+                            Reach::flat(0.0),
+                            false,
+                            Join::Round,
+                            super::Bends::default(),
+                            &self.transform,
+                            tol,
+                        )?;
                         shader(color).and_then(|s| plan(parts, s, 1.0))
                     }
                 };
