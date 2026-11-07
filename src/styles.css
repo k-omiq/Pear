@@ -374,8 +374,10 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .handle.ne{ right:-6px; top:-6px; cursor:nesw-resize; }
 .handle.sw{ left:-6px; bottom:-6px; cursor:nesw-resize; }
 .handle.se{ right:-6px; bottom:-6px; cursor:nwse-resize; }
-.handle.n{ left:50%; top:-5px; transform:translateX(-50%); cursor:ns-resize; }
-.handle.s{ left:50%; bottom:-5px; transform:translateX(-50%); cursor:ns-resize; }
+/* The bottom edge is the size handle (box and text together), so it is drawn
+   apart from the two round width handles: a short pill along the edge. */
+.handle.side.size{ width:17px; height:7px; border-radius:4px; }
+.handle.s{ left:50%; bottom:-4px; transform:translateX(-50%); cursor:ns-resize; }
 .handle.w{ left:-5px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
 .handle.e{ right:-5px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
 .rotate-stem{ position:absolute; left:50%; top:-26px; width:1.5px; height:20px; background:var(--tintline); transform:translateX(-50%); z-index:7; }

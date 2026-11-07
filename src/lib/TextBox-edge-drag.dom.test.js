@@ -4,17 +4,13 @@ import { tick } from 'svelte';
 import TextBox from './TextBox.svelte';
 import { app, loadProjectPages, page, selectBox, setFontSource, setZoom, fitHeld, noteFontsChanged } from './store.svelte.js';
 import { initHistory, resetHistory } from './editor/history.svelte.js';
-import { setTypesetEnabled, typesetEnabled, clearLayoutMemo, textInset } from './measure.js';
-import { neededHeight } from './typeset.js';
+import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
 
 // ===========================================================================
-// A drag of a box's bottom edge, through the component
+// A drag of a box's handles, through the component
 // ===========================================================================
-// The floor of the drag is the store's (`edgeDragFloor`, edge-drag-floor
-// .test.js); this is the handle asking it. With a face arriving, the lines on
-// screen are a stand-in's and the drag must not be floored at their count.
 
 const BOX = () => ({
   id: 'b', lineN: null, text: 'WAIT FOR ME\nOVER THERE\nBY THE DOOR', x: 100, y: 200, w: 240, h: 300,
@@ -42,51 +38,7 @@ afterEach(() => {
   resetHistory();
 });
 
-async function dragBottomEdgeUp(by) {
-  loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [BOX()] }]);
-  const pg = page();
-  const b = pg.boxes[0];
-  const view = render(TextBox, { box: b, pageFrameEl: document.createElement('div'), pg });
-  selectBox('b');
-  await tick();
-  const handle = view.container.querySelector('.handle.side.s');
-  const lines = view.container.querySelectorAll('.tlayer.base .tline').length;
-  const ev = (type, y) => new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 300, clientY: y });
-  handle.dispatchEvent(ev('pointerdown', 500));
-  document.dispatchEvent(ev('pointermove', 500 - by));
-  await tick();
-  document.dispatchEvent(ev('pointerup', 500 - by));
-  await tick();
-  return { b, lines };
-}
-
-describe('the bottom edge, dragged far up', () => {
-  it('stops at what the text needs: auto height keeps its promise', async () => {
-    const { b, lines } = await dragBottomEdgeUp(1000);
-    expect(lines).toBe(3);
-    expect(b.h).toBe(neededHeight(3, b.style, textInset(b.style)));
-    expect(fitHeld(b)).toBe(false);
-  });
-
-  it('with the box\'s face still arriving it stops at the plain minimum, not at the stand-in\'s line count, and the fit is held', async () => {
-    setFontSource({ ready: () => false });
-    const { b } = await dragBottomEdgeUp(1000);
-    expect(b.h).toBe(30);
-    expect(fitHeld(b)).toBe(true);
-  });
-
-  it('with the face in, the engine on changes nothing', async () => {
-    setFontSource({ ready: () => true });
-    const { b } = await dragBottomEdgeUp(1000);
-    expect(b.h).toBe(neededHeight(3, b.style, textInset(b.style)));
-    expect(fitHeld(b)).toBe(false);
-  });
-});
-
-// A corner sets the size: the box and the type by one factor, so the lines
-// stay the lines they were. It leaves Auto height as it was, and no fit is
-// owed for it: a fit that lands later, on a box the user sized by a corner,
-// moves it under them. A side never changes the size.
+// A handle dragged once, from the box as BOX() places it.
 async function dragHandle(sel, dx, dy, mods = {}) {
   loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [BOX()] }]);
   const pg = page();
@@ -103,12 +55,41 @@ async function dragHandle(sel, dx, dy, mods = {}) {
   return b;
 }
 
+// The box has no height handle: the bottom edge scales the box and the
+// type together, and a corner adds its sideways travel to the width.
+describe('the handles', () => {
+  it('there is no top edge, and the bottom edge is the size handle', async () => {
+    loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [BOX()] }]);
+    const pg = page();
+    const view = render(TextBox, { box: pg.boxes[0], pageFrameEl: document.createElement('div'), pg });
+    selectBox('b');
+    await tick();
+    expect(view.container.querySelector('.handle.n')).toBeNull();
+    expect(view.container.querySelector('.handle.side.size.s')).not.toBeNull();
+  });
+  it('the bottom edge dragged far up stops at the smallest size, about the top', async () => {
+    setFontSource({ ready: () => true });
+    const b = await dragHandle('.handle.side.s', 0, -1000);
+    expect(b.style.size).toBe(6);
+    expect(b.y).toBe(200);
+    expect(b.style.autoHeight).toBe(true);
+  });
+  it('a corner moved sideways too sets the width past the scaled one, and the text breaks again in it', async () => {
+    setFontSource({ ready: () => true });
+    const b = await dragHandle('.handle.corner.se', 48, 60);
+    expect(b.style.size).toBe(36);
+    expect(b.w).toBe(336);
+    expect(b.x).toBe(100);
+    expect(b.style.autoHeight).toBe(true);
+  });
+});
+
 describe('a corner, with the box\'s face still arriving', () => {
   for (const dir of ['se', 'sw', 'ne', 'nw']) {
     it(`the ${dir} corner: no fit is held, and the box is where the drag left it when the face lands`, async () => {
       let arrived = false;
       setFontSource({ ready: () => arrived });
-      const b = await dragHandle(`.handle.corner.${dir}`, dir.includes('e') ? 48 : -48, dir.includes('s') ? 60 : -60);
+      const b = await dragHandle(`.handle.corner.${dir}`, 0, dir.includes('s') ? 60 : -60);
       expect(b.w).toBe(288);
       expect(b.h).toBe(360);
       expect(b.style.size).toBe(36);
@@ -122,7 +103,7 @@ describe('a corner, with the box\'s face still arriving', () => {
     });
   }
   it('Cmd changes nothing: a corner scales by one factor either way', async () => {
-    const b = await dragHandle('.handle.corner.se', 48, 60, { metaKey: true });
+    const b = await dragHandle('.handle.corner.se', 0, 60, { metaKey: true });
     expect(b.h).toBe(360);
     expect(b.style.size).toBe(36);
     expect(b.style.autoHeight).toBe(true);
@@ -132,10 +113,13 @@ describe('a corner, with the box\'s face still arriving', () => {
     expect(b.w).toBe(280);
     expect(b.style.size).toBe(30);
   });
-  it('the bottom edge still holds one: its floor did stand down', async () => {
+  it('the bottom edge is the corner\'s up and down: the same scale, no fit held', async () => {
     setFontSource({ ready: () => false });
-    const b = await dragHandle('.handle.side.s', 0, -1000);
-    expect(b.h).toBe(30);
-    expect(fitHeld(b)).toBe(true);
+    const b = await dragHandle('.handle.side.s', 0, 60);
+    expect(b.w).toBe(288);
+    expect(b.h).toBe(360);
+    expect(b.style.size).toBe(36);
+    expect(b.style.autoHeight).toBe(true);
+    expect(fitHeld(b)).toBe(false);
   });
 });

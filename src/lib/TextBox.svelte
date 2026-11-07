@@ -25,10 +25,7 @@
     isLongstrip,
     reviewBox,
     reviewOf,
-    edgeDragFloor,
     edgeDragWidthFloor,
-    heightFloorAt,
-    widthForHeight,
     toast,
     boxLocked,
     isTranslateMode,
@@ -38,7 +35,7 @@
   import { stripDragYBounds } from './editor/strip.js';
 
   import { untrack, flushSync } from 'svelte';
-  import { resizeBoxMath, takesHeightFloor } from './resize-math.js';
+  import { resizeBoxMath } from './resize-math.js';
   import { sizingOf } from './data.js';
   import { record } from './editor/history.svelte.js';
   import {
@@ -1523,7 +1520,7 @@
     // a drag that changed the style - a scale, or Auto height giving way to
     // Fixed - is recorded against.
     const styleStart = isRot ? null : cloneStyle(box.style);
-    let scaled = false;
+    let hyphenSaid = false;
 
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
@@ -1546,51 +1543,21 @@
         const cos = Math.cos(rad), sin = Math.sin(rad);
         const sdx = (ev.clientX - sx) / zz, sdy = (ev.clientY - sy) / zz;
         const dx = sdx * cos - sdy * sin, dy = sdx * sin + sdy * cos;
-        // A corner changes the size: the box and the text by one factor, so
-        // the lines stay the lines they were. A side changes the width or the
-        // height and never the size: the text breaks again in what it leaves
-        // (resize-math.js).
-        const scale = dir.length > 1;
-        // A height set by hand is the box's: Auto height gives way to Fixed,
-        // as Figma's text boxes do, and the Inspector shows it.
-        if (!scale && takesHeightFloor(dir) && sizingOf(box.style) === 'auto' && dy !== 0) {
-          box.style.autoHeight = false;
-          toast('Height set by hand: this box is now Fixed');
-        }
-        // The floors the store holds the box to, worked out here too so the
-        // opposite edge stays put when one stops the drag (resize-math.js):
+        // The box has no height handle: its height is its text's. The bottom
+        // edge changes the size - the box and the text by one factor, so the
+        // lines stay the lines they were - and a corner is the bottom edge
+        // and a side at once: its up and down the size, its sideways the
+        // width. A left or right edge changes the width and never the size:
+        // the text breaks again in what it leaves (resize-math.js).
+        const scale = dir === 's' || dir.length > 1;
+        // The width floor the store holds the box to, worked out here too so
+        // the opposite edge stays put when it stops the drag (resize-math.js):
         // never narrower than the text can break to (`edgeDragWidthFloor`,
-        // which hyphenates), and never shorter than the text. Fit to box has
-        // none - its size gives way - and a scale none, since the text scales.
-        const floors = !scale && sizingOf(box.style) !== 'fit';
-        // Never above the width the press found: a box already narrower than
-        // its floor does not jump wider when a side is pulled in.
-        const wf = floors ? Math.min(wFloor, o.w) : 40;
-        let hf = 30;
-        let wide = o.w;
-        if (floors && takesHeightFloor(dir)) {
-          // A top or bottom edge dragged past the text widens the box about
-          // its middle instead, so the lines get longer and fewer, down to
-          // one line. The lines on screen are the ones a drag that has not
-          // reached them holds (`edgeDragFloor`, which stands down while the
-          // face is arriving and they are a stand-in's) - unless an earlier
-          // move widened the box, when they are counted again at its width.
-          const want = resizeBoxMath(dx, dy, dir, o, s.rotation, 30, wf).h;
-          hf = box.w === o.w ? edgeDragFloor(box, dir, shaped ? shaped.length : null, pg) : heightFloorAt(box, o.w, pg);
-          if (want < hf) {
-            wide = widthForHeight(box, o.w, want, Math.max(o.w, pg.w || o.w), pg);
-            if (wide !== o.w) hf = heightFloorAt(box, wide, pg);
-          }
-        }
-        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, hf, wf, { scale });
-        if (wide !== o.w) {
-          geom.x -= (wide - o.w) / 2;
-          geom.w = wide;
-        }
-        // Once a gesture has scaled, every move says its factor - 1 when Cmd
-        // is let go - so the style goes back to where the press found it.
-        if (scale) scaled = true;
-        else if (scaled) geom.scale = 1;
+        // which hyphenates). Fit to box has none - its size gives way. Never
+        // above the width the press found: a box already narrower than its
+        // floor does not jump wider when a side is pulled in.
+        const wf = sizingOf(box.style) !== 'fit' ? Math.min(wFloor, o.w) : 40;
+        const geom = resizeBoxMath(dx, dy, dir, o, s.rotation, 30, wf, { scale });
         // From the first move, not from the press: a handle pressed and let
         // go changes nothing and must repaint nothing.
         if (enginePaints && handlesOn) resizing = true;
@@ -1601,6 +1568,12 @@
           geom,
           { w: o.w, h: o.h, style: styleStart, ...(inkBefore ? { ink: inkBefore } : null) }
         );
+        // A width pulled below the widest word turns hyphenation on for the
+        // box (`resizeBox`): said once, as the box changes.
+        if (!hyphenSaid && styleStart.hyphenate === false && box.style.hyphenate !== false) {
+          hyphenSaid = true;
+          toast('Hyphenation turned on for this box');
+        }
       }
     };
 
@@ -2908,7 +2881,9 @@
   });
 
   const corners = [['corner', 'nw'], ['corner', 'ne'], ['corner', 'sw'], ['corner', 'se']];
-  const sides = [['side', 'n'], ['side', 's'], ['side', 'w'], ['side', 'e']];
+  // No top edge: the height is the text's. The bottom edge is the size
+  // handle, drawn apart from the two width handles.
+  const sides = [['side size', 's'], ['side', 'w'], ['side', 'e']];
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->

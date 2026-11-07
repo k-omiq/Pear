@@ -151,10 +151,11 @@ describe('a drag that takes no floor', () => {
     expect(resizeBoxMath(0, -300, 's', o, 0, 350).h).toBe(350);
     expect(resizeBoxMath(0, 300, 'n', o, 0, 350).h).toBe(350);
     expect(resizeBoxMath(0, -300, 'se', o, 0, 350).h).toBe(350);
-    // A scale takes none: the box and the type by one factor, the axis
-    // dragged further leading.
-    expect(resizeBoxMath(-150, -300, 'se', o, 0, 350, 40, { scale: true })).toMatchObject({ w: 50, h: 100, scale: 0.25 });
-    expect(resizeBoxMath(150, 300, 'nw', o, 0, 350, 40, { scale: true })).toMatchObject({ w: 50, h: 100, scale: 0.25 });
+    // A scale takes none: the box and the type by one factor, from the
+    // height's travel.
+    expect(resizeBoxMath(0, -300, 'se', o, 0, 350, 40, { scale: true })).toMatchObject({ w: 50, h: 100, scale: 0.25 });
+    expect(resizeBoxMath(0, 300, 'nw', o, 0, 350, 40, { scale: true })).toMatchObject({ w: 50, h: 100, scale: 0.25 });
+    expect(resizeBoxMath(0, -300, 's', o, 0, 350, 40, { scale: true })).toMatchObject({ w: 50, h: 100, scale: 0.25 });
     expect(resizeBoxMath(-50, 0, 'e', o, 0, 350).h).toBe(400);
   });
 

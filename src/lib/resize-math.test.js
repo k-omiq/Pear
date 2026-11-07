@@ -78,15 +78,29 @@ describe('resizeBoxMath', () => {
       expect(resizeBoxMath(100, 50, 'se', o, 0, 30, 40, { keepAspect: true })).toMatchObject({ w: 300, h: 150 });
     });
 
-    it('Cmd scales the box and the size by one factor', () => {
+    it('a scale sets the box and the size by one factor, from the height\'s travel', () => {
       const o = box({ w: 100, h: 100, size: 20 });
-      const res = resizeBoxMath(100, 100, 'se', o, 0, 50, 40, { scale: true });
-      expect(res).toMatchObject({ w: 200, h: 200, scale: 2 });
-      const g = resizeBoxMath(100, 50, 'se', box({ w: 200, h: 100, size: 20 }), 0, 30, 40, { scale: true });
+      expect(resizeBoxMath(0, 100, 's', o, 0, 50, 40, { scale: true })).toMatchObject({ w: 200, h: 200, scale: 2 });
+      expect(resizeBoxMath(0, 100, 'se', o, 0, 50, 40, { scale: true })).toMatchObject({ w: 200, h: 200, scale: 2 });
+      const g = resizeBoxMath(0, 50, 'se', box({ w: 200, h: 100, size: 20 }), 0, 30, 40, { scale: true });
       expect(g).toMatchObject({ w: 300, h: 150 });
       expect(20 * g.scale).toBe(30);
       // A side scales by its own axis.
       expect(resizeBoxMath(50, 0, 'e', o, 0, 30, 40, { scale: true })).toMatchObject({ w: 150, h: 150, scale: 1.5 });
+    });
+
+    it('a corner\'s sideways travel moves its side on from the scaled width', () => {
+      const o = box({ x: 100, y: 100, w: 100, h: 100, size: 20 });
+      // Down 50 is x1.5; right 30 is 30 more than the scaled 150.
+      expect(resizeBoxMath(30, 50, 'se', o, 0, 30, 40, { scale: true })).toMatchObject({ x: 100, y: 100, w: 180, h: 150, scale: 1.5 });
+      // The left corners move their own side: the right edge stays.
+      const sw = resizeBoxMath(-30, 50, 'sw', o, 0, 30, 40, { scale: true });
+      expect(sw).toMatchObject({ w: 180, h: 150 });
+      expect(sw.x + sw.w).toBe(200);
+      // Narrower down to the floor, scaled with the type: 60 at x1.5 is 90.
+      expect(resizeBoxMath(-100, 50, 'se', o, 0, 30, 60, { scale: true }).w).toBe(90);
+      // The top corners grow as they go up.
+      expect(resizeBoxMath(0, -50, 'ne', o, 0, 30, 40, { scale: true })).toMatchObject({ w: 150, h: 150, y: 50 });
     });
 
     it('scales the font size on the half-px grid the solver sizes on, not in whole px', () => {
@@ -102,13 +116,12 @@ describe('resizeBoxMath', () => {
     });
 
     it('moves the size smoothly as a corner drag wobbles, never by whole jumps', () => {
-      // A wide box dragged out along a shaky diagonal: the factor followed
-      // whichever axis had moved further, so a few px of y flipped it and the
-      // size leapt back and forth by tens of px.
+      // A box dragged down along a shaky line: the size follows the height's
+      // travel alone, so a hand wobbling sideways never moves it.
       const o = box({ w: 400, h: 60, size: 60 });
       let last = 60;
       for (let i = 1; i <= 80; i++) {
-        const size = 60 * resizeBoxMath(i * 2, i * 0.3 + (i % 2 ? 4 : -4), 'se', o, 0, 30, 40, { scale: true }).scale;
+        const size = 60 * resizeBoxMath(i % 2 ? 6 : -6, i * 0.3, 'se', o, 0, 30, 40, { scale: true }).scale;
         expect(Math.abs(size - last)).toBeLessThanOrEqual(1);
         last = size;
       }

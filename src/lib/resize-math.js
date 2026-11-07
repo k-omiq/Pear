@@ -13,11 +13,14 @@ export const takesHeightFloor = (dir) => dir.includes('n') || dir.includes('s');
 // text breaks again in what it leaves at the size it is set at.
 // `keepAspect` keeps a corner's proportions without scaling.
 //
-// `scale` (the corners, in TextBox.svelte) is the gesture that changes the
-// type: the box and the text by one factor, so the lines stay the lines they
-// were and the box stays exactly round them. A corner takes the pointer's
-// travel along the box's diagonal, a side its own axis.
-// The answer then carries `scale`, the factor.
+// `scale` (the bottom edge and the corners, in TextBox.svelte) is the gesture
+// that changes the type: the box and the text by one factor, so the lines
+// stay the lines they were and the box stays exactly round them. The factor
+// is the height's travel - a corner's up and down is the bottom edge's - and
+// a corner's sideways travel then moves its side on from the scaled width, so
+// the text breaks again in it. A left or right edge given `scale` takes its
+// own axis. The answer then carries `scale`, the factor; a corner moved
+// sideways answers a width other than the scaled one.
 //
 // `o` is the box at pointer-down ({ x, y, w, h, size }), `dx`/`dy` the pointer
 // travel already turned into the box's own frame, `rotation` its angle in
@@ -46,7 +49,7 @@ export function resizeBoxMath(dx, dy, dir, o, rotation = 0, heightFloor = 30, wi
     // On the half-px grid every size the solver picks is on (auto-layout.js
     // `SIZE_STEP`), rounded down so the type is never scaled past the box, and
     // the box then scaled by the size's own factor, so the two stay in step.
-    const f = corner ? df : hasE || hasW ? fx : fy;
+    const f = hasN || hasS ? fy : fx;
     const least = Math.max(o.size > 0 ? 6 / o.size : 0, 40 / o.w, 30 / o.h);
     if (o.size > 0) {
       const size = clamp(Math.floor(o.size * Math.max(f, least) * 2) / 2, 6, 200);
@@ -54,6 +57,13 @@ export function resizeBoxMath(dx, dy, dir, o, rotation = 0, heightFloor = 30, wi
     } else k = Math.max(f, least);
     nw = o.w * k;
     nh = o.h * k;
+    // The corner's side, on from the scaled width: wider freely, narrower
+    // down to the floor scaled with the type (`widthFloor` is at the size the
+    // press found) - or not at all where the scaled box is already narrower.
+    if (corner) {
+      const side = nw + (hasE ? dx : -dx);
+      nw = side >= nw ? side : Math.max(side, Math.min(nw, wFloor * k));
+    }
   } else if (corner && keepAspect && o.w > 0 && o.h > 0) {
     const f = Math.max(df, wFloor / o.w, hFloor / o.h);
     nw = o.w * f;
