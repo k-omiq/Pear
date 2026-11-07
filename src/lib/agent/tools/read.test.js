@@ -297,7 +297,8 @@ describe('catalogues', () => {
   it('summarizes saved presets and handles empty catalogues', async () => {
     expect(await read('presets')).toEqual({ presets: [{ id: 'pr1', name: 'Narrator', summary: { font: 'Anime Ace', size: 30, color: '#112233', bold: true, italic: false, strokes: 1 } }] });
     presets.list = [];
-    expect(await read('presets')).toEqual({ presets: [] });
+    // Empty is normal, and says where looks come from instead.
+    expect(await read('presets')).toEqual({ presets: [], note: expect.stringContaining('sfx_kinds') });
     unbindTags();
     loadProjectPages([]);
     expect(await read('tags')).toEqual({ tags: [] });

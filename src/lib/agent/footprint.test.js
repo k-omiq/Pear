@@ -1,7 +1,7 @@
 // The original lettering's footprint, on pictures made of numbers: a page
 // whose "raw" has ink the "clean" does not.
 import { describe, expect, it } from 'vitest';
-import { footprintOf, slantOf, lookFor, isUpright, colourMismatch, MAX_TURN, UPRIGHT_TURN } from './footprint.js';
+import { footprintOf, slantOf, lookFor, isUpright, colourMismatch, inkLeftIn, isUncleaned, MAX_TURN, UPRIGHT_TURN } from './footprint.js';
 
 const W = 200;
 const H = 120;
@@ -183,5 +183,37 @@ describe('English is never stood on end', () => {
     }
     expect(isUpright(fp(90, 1.1))).toBe(false);
     expect(slantOf(fp(90, 1.1))).toBe(0);
+  });
+});
+
+describe('lettering the cleaner left', () => {
+  const at = (px) => ({ ...px, rect: [0, 0, W, H], scale: 1 });
+  const block = [40, 30, 120, 60];
+  const letters = (px, ink) => bar(bar(px, { cx: 80, cy: 60, len: 80, thick: 8, deg: 0, ink }), { cx: 120, cy: 60, len: 50, thick: 8, deg: 90, ink });
+
+  it('names black letters still on the cleaned page', () => {
+    const raw = letters(picture([255, 255, 255]), [0, 0, 0]);
+    const left = inkLeftIn(at(raw), at(letters(picture([255, 255, 255]), [0, 0, 0])), block);
+    expect(left.share).toBe(1);
+    expect(isUncleaned(left)).toBe(true);
+  });
+
+  it('passes a balloon whose letters went white', () => {
+    const raw = letters(picture([255, 255, 255]), [0, 0, 0]);
+    const left = inkLeftIn(at(raw), at(picture([255, 255, 255])), block);
+    expect(left.share).toBe(0);
+    expect(isUncleaned(left)).toBe(false);
+  });
+
+  it('passes white letters painted over on dark art, whose dark ink is the art', () => {
+    const raw = letters(picture([20, 20, 20]), [255, 255, 255]);
+    const left = inkLeftIn(at(raw), at(picture([20, 20, 20])), block);
+    expect(left.share).toBe(1);
+    expect(left.changed).toBeGreaterThan(0.02);
+    expect(isUncleaned(left)).toBe(false);
+  });
+
+  it('has nothing to say of a block with no dark ink', () => {
+    expect(inkLeftIn(at(picture([255, 255, 255])), at(picture([255, 255, 255])), block)).toBeNull();
   });
 });

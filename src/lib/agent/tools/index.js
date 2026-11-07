@@ -15,3 +15,5 @@ import './footprint.js';
 import './split.js';
 import './text.js';
 import './chapters.js';
+import './job.js';
+import './copy-look.js';

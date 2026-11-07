@@ -1246,12 +1246,20 @@ export function setBoxSizing(b, mode, p = page()) {
 // Lines held by a lock (`locks.breaks`) outlive a change of face, size or
 // spacing - whoever made it, the Inspector, a tag, a preset or the agent: the
 // same words keep the lines they were given, keyed to the style the box now
-// stands in (`rekeyBreaks`). New words drop them, as they always did.
+// stands in (`rekeyBreaks`). New words drop them, and the lock with them:
+// kept, lines chosen for other words are never drawn (their key no longer
+// matches) and yet still hold the box's size and width (auto-layout.js
+// `locksOf`), and setting them again matches what is stored and changes
+// nothing.
 function keepHeldLines(b, text) {
   const a = b.auto;
   if (!a?.locks?.breaks || !a.breaks) return;
   const held = rekeyBreaks(a.breaks, applyCase(text, b.style), b.style, b.style.size);
   if (held && held !== a.breaks) a.breaks = held;
+  else if (!held) {
+    delete a.breaks;
+    a.locks.breaks = false;
+  }
 }
 
 // The smallest a ladder may shrink a box's font to. The larger of two floors:

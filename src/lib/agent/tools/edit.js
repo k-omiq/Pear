@@ -19,6 +19,7 @@ import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
 import { fitPolygon, intervalsAt } from '../../outline-geom.js';
 import { checksFor, fitsOf } from './check.js';
+import { placeBlock, boxCandidate } from '../../contain.js';
 import {
   app,
   allFonts,
@@ -82,7 +83,7 @@ const DESCRIPTION = [
   'breaks ["line one", "line two", ...] the box\'s lines exactly, in order (no added hyphens), held until null clears them; needs outline fit (do "typeset"),',
   'tags (the line\'s tags, replaced whole; the box takes the tags\' style), speaker (the id of the character who says the line, from lettering get or guide, or null; the box takes their font),',
   'locks { size, width, height, pos, breaks } booleans, outline [[x, y], ...] a drawn bubble outline (3+ points, unapproved, the text typeset again inside it), note (a note on the outline for the user).',
-  'do: "typeset" (outline fit: style.margin 0.5 em unless set, balloon fit on, then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
+  'do: "typeset" (outline fit: style.margin 0.5 em unless set, balloon fit on, Auto height on (a box at a Fixed size is never laid out by the solver), then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "free" (balloon fit off and the outline dropped: text drawn on the art, an SFX or sign the finder wrapped in an outline, laid out from itself where it stands), "refit_outline" (find the bubble under the box again),',
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
@@ -96,7 +97,8 @@ const DESCRIPTION = [
   'Other curves: style.curve (a simple arc of the lines), style.circle (text round a ring), style.path (text along bezier anchors you give); path beats circle beats curve, and a warp bends whatever they drew.',
   'Numbers may be relative: "+2", "-2", "*1.1". All ops are checked first; any bad value changes nothing. dryRun: true checks and counts only.',
   'Each page changed is one undo step for the user. The result gives, per op, matched, changed ids, outcome, the checks for the changed boxes, and fit: each box against its outline in numbers.',
-  'outcome: "changed"; "changed some" (the app refused the rest: see notLockable, notApproved, notSplit or noBalloon); "refused" (nothing changed, and those say why); "nothing needed" (every box already was as asked, nothing to write); "nothing matched" (no box: fix the where).',
+  'outcome: "changed"; "changed some" (the app refused the rest: see notLockable, notApproved, notSplit, noBalloon or breaksNotShown); "refused" (nothing changed, and those say why); "nothing needed" (every box already was as asked, and draws it); "nothing matched" (no box: fix the where).',
+  'breaksNotShown: boxes that draw other lines than the breaks asked (asked, shown). breaksDropped: boxes whose new words let go the lines set for the old ones. compact: true returns per op only problems (issues that need work), weak (the fit of boxes under quality 80) and quality (the mean).',
   '',
   styleSchemaText(),
 ].join('\n');
@@ -150,6 +152,7 @@ const input = {
       },
     },
     dryRun: { type: 'boolean' },
+    compact: { type: 'boolean', description: 'return only what needs work: issues past outline approval and page notes, the fit of boxes under quality 80, and the mean quality' },
   },
 };
 
@@ -442,6 +445,9 @@ function writeSet(set, matches) {
           }
         }
       }
+      // Last: a height set above turned the box Fixed (`resizeBox`), and the
+      // lock on it is what holds that height now.
+      solverOwns(b);
     },
     // The AI lays the box out as a placement does (`autoFitBox`).
     { solve: true },
@@ -477,6 +483,31 @@ function writeNote(note, matches) {
 
 const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text]);
 
+// A box laid out by outline fit (a margin set) is the solver's: Auto height on
+// and fit to box off. A series can have boxes born Fixed (Settings'
+// typesetting defaults), and a Fixed box is never solved (contain.js
+// `isAutoBox`): it keeps the height it had, breaks its words in its own
+// rectangle - one or two to a line in a narrow one - and every edit leaves its
+// solve stale. The width, height and place the agent set stay held, by the
+// solver's own locks (`auto.locks`). Inside an edit's mutate, so undo puts the
+// sizing back with everything else.
+export function solverOwns(b) {
+  if (b.style.margin == null) return;
+  if (b.style.autoHeight === false) b.style.autoHeight = true;
+  if (b.style.fitText) b.style.fitText = false;
+}
+const fixedByMode = (b) => b.style.margin != null && (b.style.autoHeight === false || !!b.style.fitText);
+
+// Boxes laid out by outline fit but left Fixed, handed to the solver and laid
+// out again, as one more edit. For a path that lays boxes out through the
+// store's own command (a refit, a line's new words), which keeps a box Fixed.
+// `solve` false only hands them over, for a caller that lays them out itself.
+export function handToSolver(matches, { solve = true } = {}) {
+  const fixed = matches.filter((m) => m.page.boxes.includes(m.box) && fixedByMode(m.box));
+  if (!fixed.length) return [];
+  return editBoxes(fixed.map((m) => ({ page: m.page, box: m.box })), solverOwns, { solve }).map((t) => t.box.id);
+}
+
 // Outline fit on, then laid out again in the outline: the agent's typesetting
 // (`do: "typeset"`, and what `place` and `add` do with a new box). `auto`
 // also lets every lock and kept line go. Returns the ids that changed.
@@ -486,6 +517,7 @@ export function typesetMatches(matches, { auto = false } = {}) {
     matches.map((m) => ({ page: m.page, box: m.box })),
     (b) => {
       if (b.style.margin == null) b.style.margin = OUTLINE_FIT.margin;
+      solverOwns(b);
       // Set in its outline means the outline is used.
       if (b.fit && b.style.balloon === false) b.style.balloon = true;
       if (!auto) return;
@@ -581,6 +613,7 @@ function writeDo(d, matches) {
           const ruled = applyTextRules(text, guide.rules);
           if (ruled !== text) setBoxText(b, ruled, p, { fit: false });
         }
+        solverOwns(b);
       },
       // The AI lays the box out as a placement does (`autoFitBox`).
       { solve: true },
@@ -600,7 +633,11 @@ function writeDo(d, matches) {
       continue;
     }
     const before = fingerprint(b);
-    if (d.kind === 'refit') retypesetBox(id, p);
+    if (d.kind === 'refit') {
+      // Typeset again in its outline means by the solver, as "typeset" does.
+      handToSolver([{ page: p, box: b }], { solve: false });
+      retypesetBox(id, p);
+    }
     else if (d.kind === 'refit_outline') {
       if (!refitBalloon(id, p)) noBalloon.push(id);
     }
@@ -646,6 +683,7 @@ export function drawOverArt(matches, at) {
     (b, p) => {
       const a = at(b, p) ?? {};
       b.style.margin = 0;
+      solverOwns(b);
       if (Number.isFinite(a.rotation)) b.style.rotation = a.rotation;
       if (a.color) {
         b.style.color = a.color;
@@ -743,10 +781,63 @@ function runOp(c) {
       .map((m) => ({ id: m.box.id, before: sizedBefore.get(m.box.id), size: m.box.style.size }));
     if (costly.length) out.breaksCost = { boxes: costly, why: 'these lines fit only smaller: past a tenth of the size, the smaller voice is worse than the orphan or shape they fix (rule 6). Try other lines - more and shorter in a narrow balloon - or give the choice back (breaks null).' };
   }
+  if (c.set?.breaks) {
+    // What the box draws, not what it stores: lines kept but not drawn would
+    // read "nothing needed" on a box that still looks wrong.
+    const off = c.matches
+      .filter((m) => m.page.boxes.includes(m.box) && !boxLocked(m.box))
+      .map((m) => ({ id: m.box.id, asked: c.set.breaks, shown: shownLines(m.box, m.page) }))
+      .filter((r) => !sameLines(r.asked, r.shown));
+    if (off.length) out.breaksNotShown = { boxes: off, why: 'the box draws other lines than these: do "typeset" lays it out by outline fit again; if it still does, the outline cannot hold these lines (try others)' };
+  }
   const deleted = new Set(out.deleted ?? []);
   out.changed = [...ids].filter((id) => !deleted.has(id));
   out.outcome = outcomeOf(out);
   return out;
+}
+
+// The lines a box draws now, as every renderer breaks them.
+export function shownLines(b, p) {
+  const place = placeBlock(boxCandidate(b, boxText(b, p)), { cache: false });
+  return place && !place.isCurve ? [...place.lines] : [];
+}
+const lineKey = (t) => String(t).trim().replace(/-$/, '').toLowerCase();
+const sameLines = (a, z) => a.length === z.length && a.every((t, i) => lineKey(t) === lineKey(z[i]));
+
+// Boxes holding lines chosen by hand (`locks.breaks`) on `pages`: taken before
+// a write, so the result can name the ones whose new words let them go
+// (store.svelte.js `keepHeldLines`).
+export function heldBreaks(pages) {
+  const ids = new Set();
+  for (const p of pages) for (const b of p.boxes) if (b.auto?.locks?.breaks && b.auto.breaks) ids.add(b.id);
+  return ids;
+}
+export function breaksDropped(pages, before, except = new Set()) {
+  const now = heldBreaks(pages);
+  const ids = [...before].filter((id) => !now.has(id) && !except.has(id) && pages.some((p) => p.boxes.some((b) => b.id === id)));
+  return ids.length
+    ? { breaksDropped: { ids, why: 'their words changed, so the lines set for the old words were let go and the solver chose new ones; set.breaks again if these need it' } }
+    : null;
+}
+
+// The checks and fit of the boxes a write changed. `compact` keeps only what
+// needs work: the issues past the outline-approval and page-layout notes, and
+// the fit of boxes lettered under LOW_QUALITY, with the mean quality.
+const QUIET_KINDS = new Set(['outline', 'panel', 'size', 'english', 'unplaced', 'ocr']);
+export const LOW_QUALITY = 80;
+export function reportOf(ids, { compact = false } = {}) {
+  const fit = fitsFor(ids);
+  const checks = checksOf(ids);
+  if (!compact) return { checks, ...(fit.length ? { fit } : null) };
+  const problems = checks.map((c) => ({ ...c, issues: c.issues.filter((i) => !QUIET_KINDS.has(i.kind)) })).filter((c) => c.issues.length);
+  const weak = fit
+    .filter((f) => f.quality < LOW_QUALITY)
+    .map((f) => ({ id: f.id, quality: f.quality, size: f.size, ...(f.aimedFor ? { aimedFor: f.aimedFor } : null), lines: f.lines, shape: f.shape, margin: f.margin }));
+  return {
+    ...(problems.length ? { problems } : null),
+    ...(weak.length ? { weak } : null),
+    ...(fit.length ? { quality: Math.round(fit.reduce((n, f) => n + f.quality, 0) / fit.length) } : null),
+  };
 }
 
 // The share of its size a box may give up for lines chosen by hand before the
@@ -756,7 +847,7 @@ const BREAKS_COST = 0.1;
 // What an op came to, in words that cannot be mistaken: an empty `changed`
 // alone is three different answers (the boxes already were so, the app
 // refused, or there were no boxes).
-const REFUSALS = ['notLockable', 'notApproved', 'notSplit', 'noBalloon'];
+const REFUSALS = ['notLockable', 'notApproved', 'notSplit', 'noBalloon', 'breaksNotShown'];
 function outcomeOf(out) {
   if (!out.matched) return 'nothing matched';
   const did = out.changed.length || out.created?.length || out.deleted?.length;
@@ -787,7 +878,7 @@ defineTool({
   description: DESCRIPTION,
   input,
   write: true,
-  async run({ ops, dryRun = false }, ctx) {
+  async run({ ops, dryRun = false, compact = false }, ctx) {
     if (!Array.isArray(ops) || !ops.length) throw new ToolError('ops must be a non-empty list', 'Use ops: [{ where: { selection: true }, set: { style: { size: "+2" } } }].');
     if (ops.length > MAX_OPS) throw new ToolError(`at most ${MAX_OPS} ops in one call`, 'Split the work, or use wider selectors.');
     if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes to edit');
@@ -804,13 +895,13 @@ defineTool({
     if (compiled.some((c) => c.do?.found) && !ctx.stillPinned()) throw new ToolError('the chapter changed in the app, so nothing was changed');
     const pages = [...new Set(compiled.flatMap((c) => c.matches.map((m) => m.page)))];
     if (!pages.length) return { ops: compiled.map(() => ({ matched: 0, changed: [], outcome: 'nothing matched' })), note: 'nothing matched; fix the where and call again' };
+    const held = heldBreaks(pages);
     const results = await withPagePixels(pages, () => ctx.write(pages, () => compiled.map(runOp)));
+    // Boxes an op set lines on (or gave the choice back for) are its own doing.
+    const ownBreaks = new Set(compiled.filter((c) => c.set && 'breaks' in c.set).flatMap((c) => c.matches.map((m) => m.box.id)));
     return {
-      ops: results.map((r) => {
-        const ids = [...r.changed, ...(r.created ?? [])];
-        const fit = fitsFor(ids);
-        return { ...r, checks: checksOf(ids), ...(fit.length ? { fit } : null) };
-      }),
+      ops: results.map((r) => ({ ...r, ...reportOf([...r.changed, ...(r.created ?? [])], { compact }) })),
+      ...breaksDropped(pages, held, ownBreaks),
       // The setup comes first (instructions.js): a reminder, never a refusal,
       // since a user may ask for one quick change before any setup.
       ...(guideBound() && !letteringSetUp(guide.lettering)
