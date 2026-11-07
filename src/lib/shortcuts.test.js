@@ -21,6 +21,8 @@ import {
   registerShortcutHandlers,
   clearShortcutHandlers,
   shortcutGroups,
+  shortcutMatches,
+  clearCombo,
   captureAction,
 } from './shortcuts.svelte.js';
 import { prefs, setPref } from './prefs.svelte.js';
@@ -208,12 +210,12 @@ describe('combo spelling', () => {
 
 // ---------------------------------------------------------------------------
 describe('the registry itself', () => {
-  it('gives every shortcut an id, a label, a group and a canonical default', () => {
+  it('gives every shortcut an id, a label, a group and a canonical default or none', () => {
     for (const s of SHORTCUTS) {
       expect(typeof s.id).toBe('string');
       expect(s.label.length).toBeGreaterThan(0);
       expect(s.group.length).toBeGreaterThan(0);
-      expect(s.combo).toBe(normalizeCombo(s.combo));
+      if (s.combo !== null) expect(s.combo).toBe(normalizeCombo(s.combo));
     }
   });
 
@@ -225,7 +227,7 @@ describe('the registry itself', () => {
     const share = (a, b) => !a.ctx || !b.ctx || a.ctx === b.ctx;
     const clashes = [];
     for (const [i, a] of SHORTCUTS.entries()) {
-      for (const b of SHORTCUTS.slice(i + 1)) if (a.combo === b.combo && share(a, b)) clashes.push(`${a.id} / ${b.id}`);
+      for (const b of SHORTCUTS.slice(i + 1)) if (a.combo && a.combo === b.combo && share(a, b)) clashes.push(`${a.id} / ${b.id}`);
     }
     expect(clashes).toEqual([]);
   });
@@ -240,7 +242,8 @@ describe('the registry itself', () => {
     expect(lookupShortcut(press('Digit4', { mod: true }))).toBe(null);
     const groupsOff = shortcutGroups();
     expect(groupsOff.flatMap((g) => g.items).some((s) => s.id === 'tool.brush')).toBe(false);
-    expect(groupsOff.flatMap((g) => g.items).length).toBe(SHORTCUTS.length - 1);
+    const rows = (on) => SHORTCUTS.filter((s) => !s.altOf && (on || s.id !== 'tool.brush')).length;
+    expect(groupsOff.flatMap((g) => g.items).length).toBe(rows(false));
 
     // With brushTool on: Mod+3 is tool.brush, Mod+4 is tool.pan, and tool.brush is in groups.
     setPref('brushTool', true);
@@ -252,7 +255,7 @@ describe('the registry itself', () => {
     expect(lookupShortcut(press('Digit4', { mod: true }))?.id).toBe('tool.pan');
     const groupsOn = shortcutGroups();
     expect(groupsOn.flatMap((g) => g.items).some((s) => s.id === 'tool.brush')).toBe(true);
-    expect(groupsOn.flatMap((g) => g.items).length).toBe(SHORTCUTS.length);
+    expect(groupsOn.flatMap((g) => g.items).length).toBe(rows(true));
   });
 
   it('has the SFX tool on Mod+5 while Settings has it on, and nothing when off', () => {
@@ -354,6 +357,48 @@ describe('overrides', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
+  it('starts most actions with no key, and binds one when asked', () => {
+    expect(defaultCombo('bubble.centre')).toBe(null);
+    expect(comboFor('bubble.centre')).toBe(null);
+    expect(isCustomCombo('bubble.centre')).toBe(false);
+    expect(setCombo('bubble.centre', 'Mod+Alt+c').ok).toBe(true);
+    expect(lookupShortcut(press('KeyC', { mod: true, alt: true }))?.id).toBe('bubble.centre');
+    // Back to no key is an absence, not an empty entry.
+    expect(resetCombo('bubble.centre')).toBe(true);
+    expect(prefs.shortcuts['bubble.centre']).toBeUndefined();
+    expect(comboFor('bubble.centre')).toBe(null);
+  });
+
+  it('takes a key away, default or not, and frees it for another action', () => {
+    expect(clearCombo('box.duplicate')).toBe(true);
+    expect(comboFor('box.duplicate')).toBe(null);
+    expect(isCustomCombo('box.duplicate')).toBe(true);
+    expect(lookupShortcut(press('KeyD', { mod: true }))).toBe(null);
+    expect(setCombo('bubble.centre', 'Mod+d').ok).toBe(true);
+    // Nothing to take away is not a write.
+    expect(clearCombo('text.bold')).toBe(false);
+    setCombo('text.bold', 'Mod+b');
+    expect(clearCombo('text.bold')).toBe(true);
+    expect(prefs.shortcuts['text.bold']).toBeUndefined();
+    resetCombo('box.duplicate');
+    expect(conflictFor('Mod+d', 'box.duplicate')?.id).toBe('bubble.centre');
+    resetAllCombos();
+    expect(comboFor('box.duplicate')).toBe('Mod+d');
+  });
+
+  it('puts a second key on its action’s row, and searches labels, keywords and keys', () => {
+    const rows = shortcutGroups().flatMap((g) => g.items);
+    expect(rows.some((s) => s.id === 'edit.redoAlt')).toBe(false);
+    const redo = rows.find((s) => s.id === 'edit.redo');
+    expect(redo.alts).toEqual(['edit.redoAlt']);
+    expect(shortcutMatches(redo, 'redo')).toBe(true);
+    expect(shortcutMatches(redo, 'history')).toBe(true);
+    expect(shortcutMatches(redo, formatCombo('Mod+y'))).toBe(true);
+    expect(shortcutMatches(redo, 'bubble')).toBe(false);
+    const centre = rows.find((s) => s.id === 'bubble.centre');
+    expect(shortcutMatches(centre, 'center outline')).toBe(true);
+  });
+
   it('refuses to rebind the contextual fixed keys', () => {
     // Escape, Tab and the arrows mean whatever the current focus says they
     // mean; the registry dispatch runs first, so a rebind onto one would
@@ -408,6 +453,7 @@ describe('overrides', () => {
         'ghost.action': 'Mod+q', // an id this build does not know
         'tool.pan': 'Mod+Shift+h', // sane, stays
         'box.delete': 'Mod+Hyper', // a combo no keypress can produce
+        'box.duplicate': '', // a key the user took away, stays
       },
     });
     vi.resetModules();
@@ -417,7 +463,7 @@ describe('overrides', () => {
     await import('./prefs.svelte.js');
     await new Promise((resolve) => queueMicrotask(resolve));
     const fresh = await import('./prefs.svelte.js');
-    expect(fresh.prefs.shortcuts).toEqual({ 'tool.pan': 'Mod+Shift+h' });
+    expect(fresh.prefs.shortcuts).toEqual({ 'tool.pan': 'Mod+Shift+h', 'box.duplicate': '' });
   });
 
   it('keeps a preference that is not an object out of the map', () => {

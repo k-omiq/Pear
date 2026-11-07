@@ -26,6 +26,7 @@
   import { editBurst } from './lib/edit-burst.js';
   import { sizeSetting, setSizeSetting, steppedSize } from './lib/data.js';
   import { dispatchShortcut, pressed, registerShortcutHandlers } from './lib/shortcuts.svelte.js';
+  import { editorActionHandlers } from './lib/editor-actions.js';
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
@@ -489,9 +490,16 @@
     'palette.open': () => {
       paletteOpen = true;
     },
+    'fonts.open': () => {
+      if (isTranslateMode()) return false;
+      fontModalOpen = true;
+    },
   });
+  // The rest of the named actions: editor-actions.js.
+  const releaseActions = registerShortcutHandlers(editorActionHandlers());
   onDestroy(() => {
     releaseShortcuts();
+    releaseActions();
     sizeBurst.dispose();
     releaseUnloadFlush?.();
     releaseUnloadFlush = null;
@@ -734,9 +742,5 @@
 <SettingsModal bind:open={settingsView.open} />
 <ExportDialog />
 <DrawReadModal />
-<CommandPalette
-  bind:open={paletteOpen}
-  openFonts={() => (fontModalOpen = true)}
-  {openSettings}
-/>
+<CommandPalette bind:open={paletteOpen} />
 <Toast />

@@ -254,130 +254,178 @@ export function formatCombo(combo) {
 }
 
 // ---------- the registry ----------
-// `whenTyping` is the answer to "does this still fire while the caret is in a
-// text field?". It is true only for combos that cannot be part of typing and
-// whose action a letterer plainly still wants mid-sentence: switching tool,
-// flipping the Inspector to another tab, straightening a box. Undo is not one
-// of them - a text field runs its own undo stack - and neither is Delete, which
-// would eat the box the user is writing into.
+// Every action the editor can run by name, keyed or not. Most have no default
+// key (`combo: null`): the Shortcuts screen lists them all, and the user binds
+// the ones they want. Ids are stored in the user's overrides, so an id never
+// changes once shipped; the label is free to.
+//
+// Fields:
+//   group       the Shortcuts tab it is listed under.
+//   keywords    words someone might search for that the label does not hold.
+//   whenTyping  still fires while the caret is in a text field. A bound combo
+//               that would type there (`comboTypes`) is given back to the
+//               field anyway. Undo is not one - a field runs its own undo -
+//               and neither is Delete, which would eat the box being typed in.
+//   altOf       a second key for another action: drawn on that action's row.
+//   ctx         where a key is heard, for keys a component listens for itself
+//               (the typing pane): 'field' is the caret in a line's field,
+//               'row' is focus on a row or the page. Only keys heard in the
+//               same place can clash; a key with no ctx clashes with all.
+//   inField     the pane takes the key before the field types it, so it may
+//               not be a bare letter.
+const T = { whenTyping: true };
 const DEFS = [
-  // Tools. Cmd/Ctrl+digit rather than the bare v/t/h these used to be: see the
-  // comment on dispatchShortcut for why the bare letters could not work. The
-  // digits count down the tool rail in the order it draws them (place, text,
-  // brush when enabled, hand) so the key and the button a user is looking at
-  // agree.
-  { id: 'tool.place', label: 'Paste mode (place queued line)', group: 'Modes', combo: 'Mod+1', whenTyping: true },
-  { id: 'tool.text', label: 'Text mode (new box)', group: 'Modes', combo: 'Mod+2', whenTyping: true },
-  { id: 'tool.brush', label: 'Brush mode (hand-letter)', group: 'Modes', combo: 'Mod+3', whenTyping: true },
-  { id: 'tool.pan', label: 'Hand mode (pan)', group: 'Modes', combo: 'Mod+4', whenTyping: true },
-  // The SFX tool sits under Text on the rail, but its key is after the hand:
-  // the four above kept the digits they had when it came.
-  { id: 'tool.sfx', label: 'SFX mode (draw a sound)', group: 'Modes', combo: 'Mod+5', whenTyping: true },
+  // Tools. The digits count down the tool rail in the order it draws them.
+  // The SFX tool sits under Text on the rail but keeps Mod+5, the key it came with.
+  { id: 'tool.place', label: 'Place tool', group: 'Tools', combo: 'Mod+1', keywords: 'paste queued line', ...T },
+  { id: 'tool.text', label: 'Text tool', group: 'Tools', combo: 'Mod+2', keywords: 'new box add', ...T },
+  { id: 'tool.brush', label: 'Brush tool', group: 'Tools', combo: 'Mod+3', keywords: 'hand letter draw', ...T },
+  { id: 'tool.pan', label: 'Hand tool', group: 'Tools', combo: 'Mod+4', keywords: 'pan move scroll', ...T },
+  { id: 'tool.sfx', label: 'SFX tool', group: 'Tools', combo: 'Mod+5', keywords: 'sound effect draw', ...T },
 
-  // Selected box. Duplicate and the style clipboard are pure Mod combos -
-  // no layout produces one by typing - so they stay live in a text field.
-  { id: 'box.duplicate', label: 'Duplicate box', group: 'Text box', combo: 'Mod+d', whenTyping: true },
-  // Copy and paste a whole box, onto this page or any other. Not live while
-  // typing: in a text field Mod+C and Mod+V are the field's own copy and paste.
-  { id: 'box.copy', label: 'Copy box', group: 'Text box', combo: 'Mod+c' },
-  { id: 'box.paste', label: 'Paste box', group: 'Text box', combo: 'Mod+v' },
-  { id: 'box.delete', label: 'Delete box', group: 'Text box', combo: 'Delete' },
-  { id: 'box.deleteAlt', label: 'Delete box (alternate)', group: 'Text box', combo: 'Backspace' },
-  { id: 'box.resetRotation', label: 'Reset rotation to 0°', group: 'Text box', combo: 'Mod+0', whenTyping: true },
-  // Type size, a step at a time: the keys Photoshop and Illustrator use for it.
-  // In Fit to box they step the most the fit may grow to, as the field does.
-  { id: 'box.sizeUp', label: 'Bigger text', group: 'Text box', combo: 'Mod+Shift+.', whenTyping: true },
-  { id: 'box.sizeDown', label: 'Smaller text', group: 'Text box', combo: 'Mod+Shift+,', whenTyping: true },
-  { id: 'box.fitBalloon', label: 'Fit to balloon (on/off)', group: 'Text box', combo: 'Mod+Shift+f', whenTyping: true },
-  // The Refit button's own key (UX-3): measure the balloon again and typeset
-  // the box in it. Beside the switch above rather than on it - one turns balloon
-  // layout on and off, this re-lays the box out - and Alt rather than Shift+R,
-  // which a hand used to a browser presses to reload.
-  { id: 'box.retypeset', label: 'Re-fit to balloon (typeset again)', group: 'Text box', combo: 'Mod+Alt+f', whenTyping: true },
-  // Lock layout (FIT-5): hold the box's size, width, place and line breaks as
-  // they stand, so edits and Refit keep them - and again to let every lock go.
-  // A key because a box with no lock yet shows no lock chip to click. L for
-  // lock, with Alt beside Refit's Mod+Alt+F; Mod+L alone is the address bar to
-  // a hand used to a browser.
-  { id: 'box.layoutLock', label: 'Lock box (on/off)', group: 'Text box', combo: 'Mod+Alt+l', whenTyping: true },
-  // Bubble outlines (Bubble C): approve the selected box's outline, and the
-  // Regions view that draws them all.
-  { id: 'box.approveOutline', label: 'Approve outline', group: 'Text box', combo: 'Mod+Alt+a', whenTyping: true },
-  { id: 'view.regions', label: 'Regions view (outlines, detected text, line numbers)', group: 'Text box', combo: 'Mod+Alt+r', whenTyping: true },
-  { id: 'style.copy', label: 'Copy style', group: 'Text box', combo: 'Mod+Shift+c', whenTyping: true },
-  { id: 'style.paste', label: 'Paste style', group: 'Text box', combo: 'Mod+Shift+v', whenTyping: true },
+  // Edit. Copy and paste box are not live while typing: in a field, Mod+C and
+  // Mod+V are the field's own.
+  { id: 'edit.undo', label: 'Undo', group: 'Edit', combo: 'Mod+z', keywords: 'back history' },
+  { id: 'edit.redo', label: 'Redo', group: 'Edit', combo: 'Mod+Shift+z', keywords: 'history' },
+  { id: 'edit.redoAlt', label: 'Redo', group: 'Edit', combo: 'Mod+y', altOf: 'edit.redo' },
+  { id: 'box.copy', label: 'Copy box', group: 'Edit', combo: 'Mod+c' },
+  { id: 'box.paste', label: 'Paste box', group: 'Edit', combo: 'Mod+v' },
+  { id: 'box.duplicate', label: 'Duplicate box', group: 'Edit', combo: 'Mod+d', keywords: 'clone copy', ...T },
+  { id: 'box.delete', label: 'Delete box', group: 'Edit', combo: 'Delete', keywords: 'remove' },
+  { id: 'box.deleteAlt', label: 'Delete box', group: 'Edit', combo: 'Backspace', altOf: 'box.delete' },
 
-  // The queue's batch placement. Mod+Shift+p rather than a bare key for the
-  // reason every other shortcut here is a Mod combo: a letterer's caret is in
-  // the Inspector's text field or a queue row nearly all the time, and a
-  // printable key there is typing before it is anything else. The chapter-wide
-  // half has no key on purpose - it writes boxes onto pages the user is not
-  // looking at, which is not something a mis-typed combo should be able to do.
-  { id: 'queue.placeDetected', label: 'Place detected bubbles on this page', group: 'Text queue', combo: 'Mod+Shift+p', whenTyping: true },
+  // Text: the selected box's type. Bigger and smaller are Photoshop's keys;
+  // in Fit to box they step the most the fit may grow to.
+  { id: 'box.sizeUp', label: 'Bigger text', group: 'Text', combo: 'Mod+Shift+.', keywords: 'size font larger increase', ...T },
+  { id: 'box.sizeDown', label: 'Smaller text', group: 'Text', combo: 'Mod+Shift+,', keywords: 'size font reduce decrease', ...T },
+  { id: 'text.bold', label: 'Bold', group: 'Text', combo: null, keywords: 'weight', ...T },
+  { id: 'text.italic', label: 'Italic', group: 'Text', combo: null, keywords: 'slant oblique', ...T },
+  { id: 'text.uppercase', label: 'All caps', group: 'Text', combo: null, keywords: 'uppercase capitals', ...T },
+  { id: 'text.alignLeft', label: 'Align left', group: 'Text', combo: null, keywords: 'justify', ...T },
+  { id: 'text.alignCenter', label: 'Align centre', group: 'Text', combo: null, keywords: 'justify center middle', ...T },
+  { id: 'text.alignRight', label: 'Align right', group: 'Text', combo: null, keywords: 'justify', ...T },
+  { id: 'text.alignTop', label: 'Align top', group: 'Text', combo: null, keywords: 'vertical', ...T },
+  { id: 'text.alignMiddle', label: 'Align middle', group: 'Text', combo: null, keywords: 'vertical centre center', ...T },
+  { id: 'text.alignBottom', label: 'Align bottom', group: 'Text', combo: null, keywords: 'vertical', ...T },
 
-  // The check list (FLOW-1): the next box or line that still needs a look.
-  { id: 'review.next', label: 'Next to check', group: 'Text queue', combo: 'Mod+j', whenTyping: true },
+  // Box: the selected box as a whole.
+  { id: 'box.layoutLock', label: 'Lock or unlock box', group: 'Box', combo: 'Mod+Alt+l', keywords: 'freeze padlock', ...T },
+  { id: 'box.resetRotation', label: 'Straighten', group: 'Box', combo: 'Mod+0', keywords: 'rotation reset angle 0', ...T },
+  { id: 'box.rotateLeft', label: 'Rotate 90° left', group: 'Box', combo: null, keywords: 'turn angle anticlockwise', ...T },
+  { id: 'box.rotateRight', label: 'Rotate 90° right', group: 'Box', combo: null, keywords: 'turn angle clockwise', ...T },
+  { id: 'box.flipH', label: 'Flip horizontal', group: 'Box', combo: null, keywords: 'mirror', ...T },
+  { id: 'box.flipV', label: 'Flip vertical', group: 'Box', combo: null, keywords: 'mirror upside down', ...T },
+  { id: 'style.copy', label: 'Copy style', group: 'Box', combo: 'Mod+Shift+c', keywords: 'format look', ...T },
+  { id: 'style.paste', label: 'Paste style', group: 'Box', combo: 'Mod+Shift+v', keywords: 'format look apply', ...T },
+  { id: 'tag.reset', label: 'Reset to tag style', group: 'Box', combo: null, keywords: 'tag default revert', ...T },
+  { id: 'tag.save', label: 'Save as tag style', group: 'Box', combo: null, keywords: 'tag default remember', ...T },
+  { id: 'tag.applyChapter', label: 'Apply tag style to chapter', group: 'Box', combo: null, keywords: 'tag restyle all boxes', ...T },
+  { id: 'pattern.pick', label: 'Pick pattern from page', group: 'Box', combo: null, keywords: 'tone screentone texture fill sample', ...T },
+  { id: 'fx.warp', label: 'Warp on or off', group: 'Box', combo: null, keywords: 'effect bend arc', ...T },
+  { id: 'fx.motionBlur', label: 'Motion blur on or off', group: 'Box', combo: null, keywords: 'effect speed', ...T },
+  { id: 'fx.roughen', label: 'Rough edges on or off', group: 'Box', combo: null, keywords: 'effect roughen grit', ...T },
+  { id: 'box.showInQueue', label: 'Show in text queue', group: 'Box', combo: null, keywords: 'line find', ...T },
+  { id: 'bulk.open', label: 'Bulk style', group: 'Box', combo: null, keywords: 'many boxes batch', ...T },
 
-  // A translate chapter's keys. Every one rebinds, the pane's own as well:
-  // a translator spends the whole chapter on these, and the hand that types
-  // the English decides where they sit.
-  //
-  // `ctx` names where a key is heard, and only keys heard in the same place
-  // can clash: 'field' is the caret in a line's English or source field,
-  // 'row' is focus on a row or on the page itself. A key with no ctx is heard
-  // everywhere and clashes with all of them. `inField` marks a key the pane
-  // takes before the field types it - those may not be a bare letter, or that
-  // letter could no longer be typed.
-  //
-  // Alt rather than Mod for the field keys: Mod+letter there is the field's
-  // own (select all, undo). On a Mac Option+letter would type a character, so
-  // the pane takes the press before the field does. Not Option+N/E/U/I: those
-  // are dead keys.
-  { id: 'translate.typesetTools', label: 'Show typesetting tools (translate chapter)', group: 'Translation', combo: 'Mod+Shift+t', whenTyping: true },
-  { id: 'translate.next', label: 'Next line (in a field)', group: 'Translation', combo: 'Enter', ctx: 'field', inField: true },
-  { id: 'translate.nextAlt', label: 'Next line, second key (in a field)', group: 'Translation', combo: 'Tab', ctx: 'field', inField: true },
-  { id: 'translate.prev', label: 'Previous line (in a field)', group: 'Translation', combo: 'Shift+Tab', ctx: 'field', inField: true },
-  { id: 'translate.leave', label: 'Leave the field', group: 'Translation', combo: 'Escape', ctx: 'field', inField: true },
-  { id: 'translate.lineDown', label: 'Next line (outside a field)', group: 'Translation', combo: 'ArrowDown', ctx: 'row' },
-  { id: 'translate.lineUp', label: 'Previous line (outside a field)', group: 'Translation', combo: 'ArrowUp', ctx: 'row' },
-  { id: 'translate.edit', label: 'Type in the line (outside a field)', group: 'Translation', combo: 'Enter', ctx: 'row' },
-  { id: 'translate.pageNext', label: 'Next page (outside a field)', group: 'Translation', combo: 'ArrowRight', ctx: 'row' },
-  { id: 'translate.pagePrev', label: 'Previous page (outside a field)', group: 'Translation', combo: 'ArrowLeft', ctx: 'row' },
+  // Bubble: the outline a box is fitted to. Refit is beside the fit switch -
+  // one turns bubble layout on and off, the other finds the bubble again.
+  { id: 'box.fitBalloon', label: 'Fit to bubble on or off', group: 'Bubble', combo: 'Mod+Shift+f', keywords: 'balloon auto', ...T },
+  { id: 'box.retypeset', label: 'Redetect bubble and refit', group: 'Bubble', combo: 'Mod+Alt+f', keywords: 'balloon outline find again typeset', ...T },
+  { id: 'bubble.centre', label: 'Centre in bubble', group: 'Bubble', combo: null, keywords: 'center middle outline move', ...T },
+  { id: 'bubble.outlineToBox', label: 'Use box as outline', group: 'Bubble', combo: null, keywords: 'outline rectangle free text', ...T },
+  { id: 'box.approveOutline', label: 'Approve outline', group: 'Bubble', combo: 'Mod+Alt+a', keywords: 'ok check', ...T },
+  { id: 'bubble.approvePage', label: 'Approve all outlines on page', group: 'Bubble', combo: null, keywords: 'ok check every', ...T },
+  { id: 'view.regions', label: 'Show or hide regions', group: 'Bubble', combo: 'Mod+Alt+r', keywords: 'outlines detected text line numbers', ...T },
+
+  // Pages and view. Plain arrows turn the page too (see Fixed keys).
+  { id: 'page.next', label: 'Next page', group: 'View', combo: null, keywords: 'turn forward', ...T },
+  { id: 'page.prev', label: 'Previous page', group: 'View', combo: null, keywords: 'turn back', ...T },
+  { id: 'page.nextWork', label: 'Next page with work', group: 'View', combo: null, keywords: 'todo unfinished unplaced', ...T },
+  { id: 'review.next', label: 'Next to check', group: 'View', combo: 'Mod+j', keywords: 'review overflow problems flagged', ...T },
+  { id: 'view.zoomIn', label: 'Zoom in', group: 'View', combo: null, keywords: 'bigger magnify', ...T },
+  { id: 'view.zoomOut', label: 'Zoom out', group: 'View', combo: null, keywords: 'smaller', ...T },
+  { id: 'view.zoomActual', label: 'Zoom to 100%', group: 'View', combo: null, keywords: 'actual size reset', ...T },
+  { id: 'view.fit', label: 'Fit page to window', group: 'View', combo: null, keywords: 'zoom whole', ...T },
+  { id: 'view.raw', label: 'Show or hide raw page', group: 'View', combo: null, keywords: 'compare original reference sidebar japanese', ...T },
+
+  // Panels, and the Inspector's tabs.
+  { id: 'panel.options', label: 'Show or hide box options', group: 'Panels', combo: null, keywords: 'inspector window', ...T },
+  { id: 'panel.queue', label: 'Show or hide text queue', group: 'Panels', combo: null, keywords: 'lines window', ...T },
+  { id: 'panel.sfx', label: 'Show or hide SFX window', group: 'Panels', combo: null, keywords: 'sound effect', ...T },
+  { id: 'inspector.tabNext', label: 'Next options tab', group: 'Panels', combo: 'Mod+]', keywords: 'inspector', ...T },
+  { id: 'inspector.tabPrev', label: 'Previous options tab', group: 'Panels', combo: 'Mod+[', keywords: 'inspector', ...T },
+  { id: 'inspector.tabText', label: 'Text tab', group: 'Panels', combo: 'Mod+Alt+1', keywords: 'inspector options', ...T },
+  { id: 'inspector.tabFill', label: 'Fill tab', group: 'Panels', combo: 'Mod+Alt+2', keywords: 'inspector options colour color', ...T },
+  { id: 'inspector.tabEffects', label: 'Effects tab', group: 'Panels', combo: 'Mod+Alt+3', keywords: 'inspector options stroke shadow', ...T },
+  { id: 'inspector.tabLayout', label: 'Layout tab', group: 'Panels', combo: 'Mod+Alt+4', keywords: 'inspector options', ...T },
+
+  // Detect and place. Placing on the whole chapter has no default key: it
+  // writes boxes onto pages the user is not looking at.
+  { id: 'detect.page', label: 'Detect text on this page', group: 'Detect', combo: null, keywords: 'ocr scan read find', ...T },
+  { id: 'detect.chapter', label: 'Detect text in chapter', group: 'Detect', combo: null, keywords: 'ocr scan read find all pages', ...T },
+  { id: 'queue.placeDetected', label: 'Place bubbles on this page', group: 'Detect', combo: 'Mod+Shift+p', keywords: 'detected queue', ...T },
+  { id: 'queue.placeChapter', label: 'Place bubbles in chapter', group: 'Detect', combo: null, keywords: 'detected queue all pages', ...T },
+  { id: 'jobs.retry', label: 'Retry failed pages', group: 'Detect', combo: null, keywords: 'again errors jobs', ...T },
+  { id: 'ocr.draw', label: 'Draw a character to read it', group: 'Detect', combo: null, keywords: 'kanji handwriting look up unknown', ...T },
+
+  // A translate chapter. Alt rather than Mod for the field keys: Mod+letter
+  // there is the field's own (select all, undo). On a Mac Option+letter would
+  // type a character, so the pane takes the press first. Not Option+N/E/U/I:
+  // those are dead keys.
+  { id: 'translate.typesetTools', label: 'Show or hide typesetting tools', group: 'Translate', combo: 'Mod+Shift+t', ...T },
+  { id: 'translate.cleaned', label: 'Show cleaned or raw page', group: 'Translate', combo: null, keywords: 'original', ...T },
+  { id: 'translate.next', label: 'Next line', group: 'Translate', combo: 'Enter', ctx: 'field', inField: true },
+  { id: 'translate.nextAlt', label: 'Next line', group: 'Translate', combo: 'Tab', ctx: 'field', inField: true, altOf: 'translate.next' },
+  { id: 'translate.prev', label: 'Previous line', group: 'Translate', combo: 'Shift+Tab', ctx: 'field', inField: true },
+  { id: 'translate.leave', label: 'Leave the field', group: 'Translate', combo: 'Escape', ctx: 'field', inField: true },
+  { id: 'translate.lineDown', label: 'Next line', group: 'Translate', combo: 'ArrowDown', ctx: 'row' },
+  { id: 'translate.lineUp', label: 'Previous line', group: 'Translate', combo: 'ArrowUp', ctx: 'row' },
+  { id: 'translate.edit', label: 'Type in the line', group: 'Translate', combo: 'Enter', ctx: 'row' },
+  { id: 'translate.pageNext', label: 'Next page', group: 'Translate', combo: 'ArrowRight', ctx: 'row' },
+  { id: 'translate.pagePrev', label: 'Previous page', group: 'Translate', combo: 'ArrowLeft', ctx: 'row' },
   ...Array.from({ length: 9 }, (_, i) => ({
     id: `translate.tag${i + 1}`,
     label: `Tag ${i + 1} on or off`,
-    group: 'Translation',
+    group: 'Translate',
     combo: `Alt+${i + 1}`,
     inField: true,
   })),
-  { id: 'translate.tagPicker', label: 'Find or add a tag', group: 'Translation', combo: 'Alt+t', inField: true },
-  { id: 'translate.clearTags', label: 'Clear the line’s tags', group: 'Translation', combo: 'Alt+0', inField: true },
-  { id: 'translate.speaker', label: 'Choose the speaker', group: 'Translation', combo: 'Alt+s', inField: true },
-  { id: 'translate.source', label: 'Edit the source text', group: 'Translation', combo: 'Alt+r', inField: true },
-  { id: 'translate.note', label: 'Page note', group: 'Translation', combo: 'Alt+p', inField: true },
+  { id: 'translate.tagPicker', label: 'Find or add a tag', group: 'Translate', combo: 'Alt+t', inField: true },
+  { id: 'translate.clearTags', label: 'Clear the line’s tags', group: 'Translate', combo: 'Alt+0', inField: true },
+  { id: 'translate.speaker', label: 'Choose the speaker', group: 'Translate', combo: 'Alt+s', inField: true },
+  { id: 'translate.source', label: 'Edit the source text', group: 'Translate', combo: 'Alt+r', inField: true },
+  { id: 'translate.note', label: 'Page note', group: 'Translate', combo: 'Alt+p', inField: true },
 
-  // History.
-  { id: 'edit.undo', label: 'Undo', group: 'History', combo: 'Mod+z' },
-  { id: 'edit.redo', label: 'Redo', group: 'History', combo: 'Mod+Shift+z' },
-  { id: 'edit.redoAlt', label: 'Redo (alternate)', group: 'History', combo: 'Mod+y' },
-
-  // Inspector tabs.
-  { id: 'inspector.tabNext', label: 'Next tab', group: 'Text box options', combo: 'Mod+]', whenTyping: true },
-  { id: 'inspector.tabPrev', label: 'Previous tab', group: 'Text box options', combo: 'Mod+[', whenTyping: true },
-  { id: 'inspector.tabText', label: 'Go to Text tab', group: 'Text box options', combo: 'Mod+Alt+1', whenTyping: true },
-  { id: 'inspector.tabFill', label: 'Go to Fill tab', group: 'Text box options', combo: 'Mod+Alt+2', whenTyping: true },
-  { id: 'inspector.tabEffects', label: 'Go to Effects tab', group: 'Text box options', combo: 'Mod+Alt+3', whenTyping: true },
-  { id: 'inspector.tabLayout', label: 'Go to Layout tab', group: 'Text box options', combo: 'Mod+Alt+4', whenTyping: true },
-
-  // The command palette (FLOW-4): every action above, and the ones with no key,
-  // found by typing. Live while typing, since the caret is nearly always in a
-  // field and the palette is how a key nobody remembers gets found.
-  { id: 'palette.open', label: 'Command palette', group: 'General', combo: 'Mod+k', whenTyping: true },
+  // App. The palette is live while typing: the caret is nearly always in a
+  // field, and the palette is how a key nobody remembers gets found.
+  { id: 'palette.open', label: 'Command palette', group: 'App', combo: 'Mod+k', keywords: 'search run find action', ...T },
+  { id: 'chapter.export', label: 'Export', group: 'App', combo: null, keywords: 'save png psd zip pages images', ...T },
+  { id: 'chapter.saveJson', label: 'Save text as JSON', group: 'App', combo: null, keywords: 'export translation', ...T },
+  { id: 'fonts.open', label: 'Font library', group: 'App', combo: null, keywords: 'fonts typeface add load', ...T },
+  { id: 'app.back', label: 'Back to the project', group: 'App', combo: null, keywords: 'home library close chapter leave', ...T },
+  ...[
+    ['general', 'General', 'theme appearance library folder panels'],
+    ['typesetting', 'Typesetting', 'auto height line breaking hyphen defaults engine rust'],
+    ['detection', 'Detection', 'ocr reader detector models cache gpu engine'],
+    ['ai', 'AI agents', 'agent mcp claude codex token door port'],
+    ['shortcuts', 'Shortcuts', 'keys keyboard rebind hotkeys'],
+    ['about', 'About', 'version updates memory'],
+    ['series', 'Series', 'project source language layout'],
+    ['styles', 'Text styles', 'fonts tags kinds voices characters lettering'],
+    ['guide', 'Guide', 'glossary terms characters notes'],
+  ].map(([tab, name, keywords]) => ({
+    id: `settings.${tab}`,
+    label: `Settings: ${name}`,
+    group: 'App',
+    combo: null,
+    keywords: `preferences options ${keywords}`,
+    ...T,
+  })),
 ];
 
 // Defaults are canonicalised once, here, so nothing downstream has to wonder
 // whether 'Mod+Shift+C' and 'Mod+Shift+c' are the same shortcut.
-export const SHORTCUTS = DEFS.map((d) => ({ ...d, combo: normalizeCombo(d.combo) }));
+export const SHORTCUTS = DEFS.map((d) => ({ ...d, combo: d.combo == null ? null : normalizeCombo(d.combo) }));
 const BY_ID = new Map(SHORTCUTS.map((s) => [s.id, s]));
 
 export const shortcutById = (id) => BY_ID.get(id) ?? null;
@@ -387,28 +435,58 @@ export function defaultCombo(id) {
 }
 
 // A tool switched off in Settings has no key and no row.
-const toolOff = (id) => (id === 'tool.brush' && !prefs.brushTool) || (id === 'tool.sfx' && !prefs.sfxTool);
+const toolOff = (id) =>
+  (id === 'tool.brush' && !prefs.brushTool) || ((id === 'tool.sfx' || id === 'panel.sfx') && !prefs.sfxTool);
 const activeShortcuts = () => SHORTCUTS.filter((s) => !toolOff(s.id));
 
-// The groups, in registry order, for the settings screen.
+// The groups, in registry order, for the settings screen. A second key
+// (`altOf`) is not a row of its own: it rides on its action's row, in `alts`.
 export function shortcutGroups() {
   const out = [];
-  for (const s of activeShortcuts()) {
+  const active = activeShortcuts();
+  for (const s of active) {
+    if (s.altOf) continue;
     let g = out.find((x) => x.name === s.group);
     if (!g) out.push((g = { name: s.group, items: [] }));
-    g.items.push(s);
+    g.items.push({ ...s, alts: active.filter((a) => a.altOf === s.id).map((a) => a.id) });
   }
   return out;
 }
+
+// Where a key is heard, for the two that share a label across places (Next
+// line in a field, Next line on the page).
+const PLACE_NOTES = { field: 'in a text field', row: 'on the page' };
+export const placeNote = (s) => PLACE_NOTES[s?.ctx] ?? '';
+
+// Every word of `query` appears somewhere in `hay`. The palette and the
+// Shortcuts screen search the same way.
+export function matchesWords(hay, query) {
+  const words = String(query ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const h = String(hay ?? '').toLowerCase();
+  return words.every((w) => h.includes(w));
+}
+
+// A row of the Shortcuts screen against a search: its label, group, keywords,
+// where it is heard, and the keys it is bound to as the screen shows them.
+export function shortcutMatches(item, query) {
+  const keys = [item.id, ...(item.alts ?? [])].map((id) => formatCombo(comboFor(id))).join(' ');
+  return matchesWords(`${item.label} ${item.group} ${item.keywords ?? ''} ${placeNote(item)} ${keys}`, query);
+}
+
+// The key an action is bound to, as a person reads it; '' when none.
+export const keyLabel = (id) => formatCombo(comboFor(id));
 
 // ---------- user overrides ----------
 // Stored in the same preferences blob as everything else that belongs to the
 // person rather than the document - see prefs.svelte.js. Only ids this build
 // knows are honoured, so a preference written by a newer build (or by hand)
 // cannot bind a key to nothing.
+// An empty string is a key the user took away: the action has none.
 export function comboFor(id) {
   if (toolOff(id)) return null;
   const over = prefs.shortcuts?.[id];
+  if (over === '') return null;
   if (typeof over === 'string') {
     const c = normalizeCombo(over);
     if (c) return c;
@@ -496,6 +574,17 @@ export function resetCombo(id) {
   return true;
 }
 
+// Take an action's key away. An action with no default key just loses its
+// override; one with a default stores the absence, so the default stays off.
+export function clearCombo(id) {
+  if (!BY_ID.has(id) || comboFor(id) == null) return false;
+  const next = { ...($state.snapshot(prefs.shortcuts) ?? {}) };
+  if (defaultCombo(id) == null) delete next[id];
+  else next[id] = '';
+  writeOverrides(next);
+  return true;
+}
+
 export function resetAllCombos() {
   writeOverrides({});
 }
@@ -510,7 +599,7 @@ function pruneLoadedOverrides() {
   const cur = $state.snapshot(prefs.shortcuts) ?? {};
   const next = {};
   for (const [id, combo] of Object.entries(cur)) {
-    if (BY_ID.has(id) && typeof combo === 'string' && normalizeCombo(combo)) next[id] = combo;
+    if (BY_ID.has(id) && typeof combo === 'string' && (combo === '' || normalizeCombo(combo))) next[id] = combo;
   }
   if (Object.keys(next).length !== Object.keys(cur).length) setPref('shortcuts', next);
 }

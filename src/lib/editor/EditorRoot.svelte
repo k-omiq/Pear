@@ -27,6 +27,7 @@
   import TranslatePane from './TranslatePane.svelte';
   import { app, page, pageProgress, isTranslateMode, isTranslateChapter, isLongstrip } from '../store.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
+  import { registerShortcutHandlers } from '../shortcuts.svelte.js';
   import { loadPanels, clampAll } from './panels.svelte.js';
   import { setResidentWindow } from '../page-images.js';
   import { residentRadiusFor } from './strip.js';
@@ -36,6 +37,15 @@
   // The canvas's own handle, so the dock's Fit button can ask the thing that can
   // actually measure itself.
   let canvas = $state(null);
+  // Fit to window by name, for its key and the palette: the canvas measures.
+  onMount(() =>
+    registerShortcutHandlers({
+      'view.fit': () => {
+        if (!canvas) return false;
+        canvas.fit();
+      },
+    }),
+  );
 
   // A translate chapter is the raw page, the queue and the way around them.
   // Mount typeset controls in typeset mode.

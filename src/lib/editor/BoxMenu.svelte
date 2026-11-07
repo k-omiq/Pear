@@ -25,8 +25,6 @@
   import { hasCopiedStyle } from '../presets.svelte.js';
   import { runShortcut, hasShortcutHandler, comboFor, formatCombo } from '../shortcuts.svelte.js';
   import { anchoredOverlay } from '../anchored-overlay.svelte.js';
-  import { setHidden, raisePanel } from './panels.svelte.js';
-  import { showActiveRow } from '../Queue.svelte';
 
   // Clear of the window's edges by this much when the menu has to be pushed
   // back on screen.
@@ -97,24 +95,16 @@
       keyed('box.retypeset', 'Refit', !locked),
       keyed('box.layoutLock', 'Lock', true, { checked: locked }),
       keyed('box.approveOutline', 'Approve outline', !!b.fit && b.outline?.approved !== 'user'),
+      keyed('bubble.centre', 'Centre in bubble', !!b.fit && !locked),
       { sep: true },
       keyed('box.duplicate', 'Duplicate'),
       keyed('style.copy', 'Copy style'),
       keyed('style.paste', 'Paste style', hasCopiedStyle() && !locked),
       { sep: true },
-      { id: 'queue.show', label: 'Show in queue', key: '', ok: !!line, run: () => showInQueue(line.n) },
+      keyed('box.showInQueue', 'Show in queue', !!line),
       { sep: true },
       keyed('box.delete', 'Delete', !locked),
     ];
-  }
-
-  // The box's line becomes the queue's active row, and the queue is brought
-  // up and asked to scroll to it even when that row was active already.
-  function showInQueue(n) {
-    page().activeLineN = n;
-    setHidden('queue', false);
-    raisePanel('queue');
-    showActiveRow();
   }
 
   // Closed first, then run: the action may toast, delete the box or open

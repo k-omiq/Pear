@@ -1,19 +1,19 @@
 <script>
   // The command palette (FLOW-4): type a few words, press Enter, and the action
   // runs - every shortcut in the registry plus the ones with no key. What it
-  // lists and how an entry runs lives in palette-actions.js; this is the field,
+  // lists and how an entry runs lives in editor-actions.js; this is the field,
   // the list and the keys that walk it.
   //
   // It renders a `.modal-overlay.open` root while showing, like every other
   // modal, because App.svelte's keydown handler stands down while one is up:
   // Mod+D typed into this field must not duplicate the box underneath.
   import { tick } from 'svelte';
-  import { paletteResults, entryKey } from './palette-actions.js';
+  import { paletteResults, entryKey } from './editor-actions.js';
   import { comboFor, matchesCombo } from './shortcuts.svelte.js';
   import { captureFocus } from './focus.js';
   import { toast } from './store.svelte.js';
 
-  let { open = $bindable(false), openFonts, openSettings } = $props();
+  let { open = $bindable(false) } = $props();
 
   let query = $state('');
   let active = $state(0);
@@ -62,7 +62,7 @@
   function run(entry) {
     if (!entry) return;
     close();
-    const ok = entry.run({ openFonts, openSettings });
+    const ok = entry.run();
     if (ok === false) toast('Nothing to do here');
   }
 
