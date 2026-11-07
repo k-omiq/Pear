@@ -17,6 +17,7 @@ import { callContext, noteCall, stopRun, followWritesOnScreen } from './run.svel
 import { INSTRUCTIONS } from './instructions.js';
 import { app } from '../store.svelte.js';
 import { chapterKey } from './windows.js';
+import { asJob } from './jobs.js';
 import './tools/index.js';
 
 // What every chapter tool takes besides its own arguments: the chapter it is
@@ -108,7 +109,10 @@ export async function answerCall(payload) {
   noteCall();
   let r;
   try {
-    r = await callTool(name, args, callContext('mcp'));
+    // A call past the door's wait is answered as a job and runs on (jobs.js).
+    // Not open_chapter: the door waits longer for a window to boot.
+    const reply = Promise.resolve(callTool(name, args, callContext('mcp')));
+    r = name === 'open_chapter' ? await reply : await asJob(reply, name, { done: noteCall });
   } catch (err) {
     r = { ok: false, error: `the app failed: ${err?.message ?? err}` };
   } finally {

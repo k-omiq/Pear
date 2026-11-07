@@ -11,8 +11,9 @@
 
 import { defineTool, ToolError } from '../registry.js';
 import { regionPixels, boxBounds } from '../render.js';
-import { footprintOf, slantOf, lookFor, isUpright, colourMismatch } from '../footprint.js';
-import { app, boxText, lineByN } from '../../store.svelte.js';
+import { footprintOf, slantOf, lookFor, isUpright, colourMismatch, inkLeftIn, isUncleaned } from '../footprint.js';
+import { untrusted } from '../fence.js';
+import { app, boxText, lineByN, lineText } from '../../store.svelte.js';
 import { applyCase, sizeToCover } from '../../measure.js';
 import { lineTags, withKinds } from '../../tags.svelte.js';
 import { ART_SIZED_ROLES } from '../../lettering.js';
@@ -157,6 +158,40 @@ export function sfxColourIssue(p, b) {
   const ink = keptOriginalOf(p, b, placedRegion(p, b))?.fp?.ink;
   const off = ink ? colourMismatch(b.style, ink) : null;
   return off ? { kind: 'sfx_colour', detail: off } : null;
+}
+
+// The detected lines (with English) whose original letters the cleaner left
+// on page `p`:
+// [{ line, jp, rect, left }], left being the share of the raw scan's ink in
+// the block still on the cleaned page. The whole page read once at each
+// source, kept until its images or its detection change. A page with no
+// cleaned image, or images that cannot be read here, has none.
+const LEFT_SIDE = 1600;
+const leftKept = new WeakMap(); // page -> { key, list }
+export async function uncleanedOn(p) {
+  if (!(p.file || p.raw) || !(p.cleanedFile || p.cleaned)) return [];
+  // Lines with English only: a line nobody will letter is no mess left.
+  const blocks = (p.detect?.boxes ?? []).filter((d) => Array.isArray(d.box) && d.box.length === 4 && lineByN(p, d.n)?.jp?.trim() && lineText(lineByN(p, d.n)).trim());
+  if (!blocks.length) return [];
+  const key = JSON.stringify([p.file ?? p.raw ?? null, p.cleanedFile ?? p.cleaned ?? null, blocks.map((d) => [d.n, d.box])]);
+  const had = leftKept.get(p);
+  if (had?.key === key) return had.list;
+  let list = [];
+  try {
+    const whole = [0, 0, p.w > 0 ? p.w : 1e6, p.h > 0 ? p.h : 1e6];
+    const clean = await regionPixels(p, whole, { source: 'clean', maxSide: LEFT_SIDE });
+    const raw = await regionPixels(p, whole, { source: 'raw', maxSide: LEFT_SIDE });
+    for (const d of blocks) {
+      const [x0, y0, x1, y1] = d.box;
+      const rect = [x0, y0, x1 - x0, y1 - y0].map(Math.round);
+      const left = inkLeftIn(raw, clean, rect);
+      if (isUncleaned(left)) list.push({ line: d.n, jp: untrusted(lineByN(p, d.n).jp, 40), rect, left: left.share });
+    }
+  } catch {
+    list = [];
+  }
+  leftKept.set(p, { key, list });
+  return list;
 }
 
 // What an English SFX over `fp` takes: its turn, a size for `text` that runs

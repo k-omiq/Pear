@@ -11,7 +11,7 @@ import { parsePages } from '../select.js';
 import { untrusted } from '../fence.js';
 import { app, lineByN, lineText, boxText, editBoxes, setBoxText, writeLineText, isTranslateMode, boxLocked } from '../../store.svelte.js';
 import { lineTags } from '../../tags.svelte.js';
-import { checksOf, fitsFor, readsLine, lineLocked } from './edit.js';
+import { readsLine, lineLocked, matchesOf, handToSolver, heldBreaks, breaksDropped, reportOf } from './edit.js';
 
 const MAX_LINES = 300;
 const MAX_OPS = 100;
@@ -111,7 +111,7 @@ defineTool({
   description:
     'Change the words. ops: [{ page, line, en?, jp? }] - a line\'s English (en: what every box showing that line draws, and what the queue shows) or its source (jp: to fix an OCR misread) - or [{ id, text }] - one box\'s words (a box that draws its line\'s words changes them on its line). ' +
     `Up to ${MAX_OPS} ops, all checked before anything is written. Works in translate mode too. Each box showing a changed line is laid out again for its new words; each page changed is one undo step for the user. ` +
-    'Returns per op the words before and after (fenced), the boxes laid out again, and their checks and fit. Keep the meaning; follow the series guide\'s glossary; and tell the user every change you made, before and after.',
+    'Returns per op the words before and after (fenced), the boxes laid out again, and their checks and fit (compact: true keeps only what needs work, as edit does). Lines set by hand (edit set.breaks) for the old words are let go: breaksDropped names those boxes. Keep the meaning; follow the series guide\'s glossary; and tell the user every change you made, before and after.',
   input: {
     type: 'object',
     additionalProperties: false,
@@ -134,18 +134,20 @@ defineTool({
           },
         },
       },
+      compact: { type: 'boolean', description: 'return only what needs work, as edit does' },
     },
   },
   write: true,
-  run({ ops }, ctx) {
+  run({ ops, compact = false }, ctx) {
     if (!Array.isArray(ops) || !ops.length) throw new ToolError('ops must be a non-empty list', 'Use ops: [{ page: 2, line: 3, en: "Hello." }].');
     if (ops.length > MAX_OPS) throw new ToolError(`at most ${MAX_OPS} ops in one call`);
     if (!app.pages.length) throw new ToolError('no chapter is open');
     const writes = ops.map((op, i) => compile(op, i));
     const flat = writes.flat();
     const pages = [...new Set(flat.map((w) => w.p))];
-    const results = ctx.write(pages, () =>
-      writes.map((list) =>
+    const held = heldBreaks(pages);
+    const results = ctx.write(pages, () => {
+      const out = writes.map((list) =>
         [list].flat().map((w) => {
           const before = wordsOf(w);
           let boxes = [];
@@ -167,15 +169,19 @@ defineTool({
             ...(boxes.length ? { boxes } : null),
           };
         }),
-      ),
-    );
+      );
+      // New words are laid out by the solver, as edit lays out an outline
+      // fit box: a Fixed one is handed over first (edit.js `handToSolver`).
+      handToSolver(matchesOf(out.flat().flatMap((r) => r.boxes ?? [])));
+      return out;
+    });
     return {
       ops: results.map((list) => {
         const ids = [...new Set(list.flatMap((r) => r.boxes ?? []))];
-        const fit = fitsFor(ids);
-        const checks = checksOf(ids);
-        return { changes: list, ...(checks.length ? { checks } : null), ...(fit.length ? { fit } : null) };
+        const { checks, ...rest } = reportOf(ids, { compact });
+        return { changes: list, ...(checks?.length ? { checks } : null), ...rest };
       }),
+      ...breaksDropped(pages, held),
     };
   },
 });

@@ -463,3 +463,50 @@ export function colourMismatch(style, ink) {
   }
   return out.fill || out.outline ? out : null;
 }
+
+// ===== lettering the cleaner left =====
+// A detected line's original letters still on the cleaned page: the cleaner
+// changed next to nothing in its block, and the block has dark ink - so the
+// letters are still there. A cleaned balloon has its letters gone white; a
+// cleaned SFX over art has its letters painted over, which changes many
+// pixels even where the art round them is dark (white letters on black hair
+// keep the hair's dark ink, and that is not lettering left).
+export const LEFT_DARK = 110; // luma (0-255) under this is ink
+export const UNCLEANED_SHARE = 0.5; // this much of the ink left is lettering left
+export const UNCLEANED_CHANGED = 0.02; // with under this share of the block changed
+const LEFT_MIN_INK = 0.01; // of the block, for there to be lettering at all
+
+// `raw` and `clean`: the same region, as regionPixels reads it, at the same
+// scale. `rect` [x, y, w, h] in page px inside it. { ink, share, changed }
+// (share: of the dark ink, unchanged; changed: of the block) or null when
+// the rect holds no dark ink worth the name.
+export function inkLeftIn(raw, clean, rect, threshold = CHANGED) {
+  const [rx, ry] = raw.rect;
+  const s = raw.scale;
+  const x0 = Math.max(0, Math.floor((rect[0] - rx) * s));
+  const y0 = Math.max(0, Math.floor((rect[1] - ry) * s));
+  const x1 = Math.min(raw.width, Math.ceil((rect[0] + rect[2] - rx) * s));
+  const y1 = Math.min(raw.height, Math.ceil((rect[1] + rect[3] - ry) * s));
+  if (x1 <= x0 || y1 <= y0) return null;
+  const a = raw.data;
+  const b = clean.data;
+  let ink = 0;
+  let kept = 0;
+  let changed = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const k = (y * raw.width + x) * 4;
+      const same = colorDistance([a[k], a[k + 1], a[k + 2]], [b[k], b[k + 1], b[k + 2]]) <= threshold;
+      if (!same) changed++;
+      if (0.299 * a[k] + 0.587 * a[k + 1] + 0.114 * a[k + 2] >= LEFT_DARK) continue;
+      ink++;
+      if (same) kept++;
+    }
+  }
+  const area = (x1 - x0) * (y1 - y0);
+  if (ink < Math.max(MIN_PIXELS, LEFT_MIN_INK * area)) return null;
+  return { ink, share: Math.round((kept / ink) * 100) / 100, changed: Math.round((changed / area) * 1000) / 1000 };
+}
+
+// Whether `inkLeftIn`'s answer is lettering the cleaner left.
+export const isUncleaned = (left) => !!left && left.share >= UNCLEANED_SHARE && left.changed < UNCLEANED_CHANGED;

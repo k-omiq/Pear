@@ -205,8 +205,16 @@ describe('selectBoxes', () => {
     }
   });
 
-  it('flagged true includes every box check, but never returns unplaced lines', () => {
-    expect(ids({ pages: 'all', flagged: true })).toEqual(['b1', 'b2', 'b3', 'b4', 'b5']);
+  it('kind sfx takes every sound tag, not only sfx', () => {
+    app.pages[0].lines[2].tags = ['sfx-soft'];
+    app.pages[1].lines[2].tags = ['sfx-sharp'];
+    expect(ids({ pages: 'all', kind: 'sfx' })).toEqual(['b2', 'b4', 'b6', 'b7', 'b8']);
+    expect(ids({ pages: 'all', kind: 'text' })).not.toContain('b4');
+  });
+
+  it('flagged true includes every box check but stale, and never returns unplaced lines', () => {
+    // stale is the solve's bookkeeping, not a fault: asked for by name only.
+    expect(ids({ pages: 'all', flagged: true })).toEqual(['b1', 'b2', 'b3', 'b4']);
     expect(ids({ pages: 'all', flagged: 'empty' })).toEqual(['b4']);
     expect(ids({ pages: 'all', flagged: 'stale' })).toEqual(['b5']);
   });

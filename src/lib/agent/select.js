@@ -1,7 +1,8 @@
 import {
   app, page, boxText, lineByN, reviewOf, outlineState, pageCheckItems, CHECK_REASONS,
 } from '../store.svelte.js';
-import { lineTags, knownTags, normalizeTagName } from '../tags.svelte.js';
+import { lineTags, knownTags, normalizeTagName, withKinds } from '../tags.svelte.js';
+import { SFX_ROLES } from '../lettering.js';
 import { ToolError, nearest } from './registry.js';
 import { untrusted } from './fence.js';
 
@@ -130,12 +131,13 @@ export function selectBoxes(where = {}) {
         if (w.flagged === 'overflow') {
           if (!reviewOf(b, p)) return false;
         } else if (!itemsFor(p).some((it) => it.boxId === b.id &&
-            (w.flagged === true || (w.flagged === 'guide' ? ['glossary', 'rules'].includes(it.reason) : it.reason === w.flagged)))) return false;
+            (w.flagged === true ? it.reason !== 'stale' : w.flagged === 'guide' ? ['glossary', 'rules'].includes(it.reason) : it.reason === w.flagged))) return false;
       }
       if (has(w, 'outline') && outlineState(b) !== (w.outline === 'unapproved' ? 'waiting' : w.outline)) return false;
       if (has(w, 'kind')) {
         const ink = !!(b.style?.ink?.on && b.style.ink.strokes?.length);
-        const sfx = !!b.style?.sfx?.on || lineTagNames.includes('sfx');
+        // Any sound tag (sfx, sfx-sharp, sfx-soft) or a user's tag under one.
+        const sfx = !!b.style?.sfx?.on || withKinds(lineTagNames).some((t) => SFX_ROLES.includes(t));
         if (!(w.kind === 'ink' ? ink : w.kind === 'sfx' ? sfx : !ink && !sfx)) return false;
       }
       return !exclude?.(m);
@@ -166,6 +168,7 @@ export function boxRow(m, checks = pageCheckItems(m.page, m.pageIndex)) {
     rotation: b.style?.rotation ?? 0,
     font: b.style?.font ?? null,
     size: b.style?.size ?? null,
-    flags: [...new Set(checks.filter((it) => it.boxId === b.id).map((it) => it.reason))],
+    // A solve's record out of date is bookkeeping, not a fault (check.js).
+    flags: [...new Set(checks.filter((it) => it.boxId === b.id && it.reason !== 'stale').map((it) => it.reason))],
   };
 }

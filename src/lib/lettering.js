@@ -48,8 +48,9 @@ export const roleByTag = (tag) => LETTERING_ROLES.find((r) => r.tag === tag) ?? 
 
 // The roles drawn to the size of the art they sit on - a sound effect over its
 // original, a title on its logo - rather than to a reading size the boxes of
-// one kind should share. Their size is never an outlier.
-export const ART_SIZED_ROLES = ['sfx', 'sfx-sharp', 'sfx-soft', 'blocky', 'title'];
+// one kind should share. Their size is never an outlier. The sounds first.
+export const SFX_ROLES = ['sfx', 'sfx-sharp', 'sfx-soft'];
+export const ART_SIZED_ROLES = [...SFX_ROLES, 'blocky', 'title'];
 
 // How far an AI letterer may go past what the series set. `null` - the state
 // of every series before it was asked - is "not set up yet", and is what tells

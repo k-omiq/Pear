@@ -5,7 +5,18 @@
 // sections 2, 3 and 5), and the rule about page text.
 import { FENCE_RULE } from './fence.js';
 
+// The loop that worked best in a real run, said first: `context` opens with
+// it too, so an agent that skims still learns it.
+export const QUICK_LOOP = [
+  'The loop, per page: `lines` (read the words) -> `text` (fix any) -> ONE `edit` with every op the page needs (do "typeset", and set.breaks on each box whose lines you choose), with compact: true -> ONE `view` of the page\'s boxes as a proof sheet (target { where: { pages: "N" } }).',
+  'Trust `fit` numbers (quality, shape, widths against room, margin) and the proof sheet over anything else; aim for quality 90+.',
+  'A call that runs long answers { running: true, job }: call `job` { id } for its result, never repeat the call.',
+  '`check` lists only faults to fix, plus `uncleaned`: original letters the cleaner left on the page - never letter over them, tell the user.',
+].join(' ');
+
 export const INSTRUCTIONS = [
+  QUICK_LOOP,
+  '',
   'You are typesetting a manga chapter in Pear, through its own tools. The document is the app\'s; you change it only through these tools.',
   '',
   'Which chapter:',
@@ -15,7 +26,7 @@ export const INSTRUCTIONS = [
   'Keep a run cheap (measured: one agent alone lettered a 27-page chapter for a quarter of what one with six helpers cost on 33 pages):',
   '- One agent letters a whole chapter. Do not split a chapter between helper agents: each one loads these tools, the guide and the pages again, and they wait on each other\'s writes. Run chapters side by side, not pages of one chapter.',
   '- Pictures cost the most. Let `fit` and `check` decide; `view` a page once when its checks pass, and a single box (where) only when the numbers cannot say. About one to two views a page is enough; a view per box per pass is not.',
-  '- Do a page in few calls: one `edit` with every op the page needs, then one `check`.',
+  '- Do a page in few calls: one `edit` with every op the page needs (compact: true keeps its answer to what needs work), then one `check`.',
   '',
   'Work this way:',
   '- Start with `context` to learn the chapter, the page on screen and the selection. "This page" and "this box" mean what it reports.',
@@ -69,7 +80,8 @@ export const INSTRUCTIONS = [
   '- Judge by numbers first: fit.quality (0 to 100) and check\'s quality.weakest name the boxes to work on. Under 80 has a visible fault; aim for 90 and above everywhere.',
   '',
   'The loop, one page at a time:',
-  '- New boxes from `place` or `add` are already set by outline fit. For existing boxes, `edit` do "typeset" turns outline fit on and lays them out again in their outlines.',
+  '- New boxes from `place` or `add` are already set by outline fit. For existing boxes, `edit` do "typeset" turns outline fit on and lays them out again in their outlines. Outline fit hands a box to the solver (Auto height on): a box left at a Fixed size is never laid out by it, and `check` names it "fixed".',
+  '- To letter like another chapter ("match chapter 14"), `copy_look` { from: "14" } reads its look per tag; apply: true lays it on this chapter\'s boxes of the same tags. An empty `presets` list is normal.',
   '- Run `check` on the page. For each problem, in this order:',
   '  outside or a wrong outline: `view` the box with marks.outlines and rulers. Bubble found wrong: do "refit_outline" (noBalloon in the result: none found). Two bubbles found as one (check "joined"): they show as one outline joined at a neck, or drawn overlapping (a stepped shape: one column set higher than the other, each with its own rounded end). Look at the original with `view` source "compare": Japanese text in each part means each part is a bubble with its own words. If each bubble has its own box, do "split_outline" on each; if one box holds the text of both, share it out with `split` (parts in reading order, each the words of one bubble; the outline is cut between the bubbles, or give at, a point in each other bubble). Text OCR ran together from two separate bubbles (two sentences, or Japanese with a gap in it, read as one line): `split` with at. Still wrong: draw it (set.outline, points read off the ruled view), then do "typeset"; or do "outline_to_box" (an outline round the text at the size it aims for, with air; set geometry in the same op first to size it yourself).',
   '  outline: once you have looked at an outline and it is right, do "approve_outline"; until then `check` keeps listing it.',
