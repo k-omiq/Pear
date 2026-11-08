@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLEND_MODE_IDS, CONTOUR_IDS, BOX_WIRE_VERSION, encodeBox } from '../../text-engine/js/paint.mjs';
+import { BLEND_MODE_IDS, CONTOUR_IDS, BOX_WIRE_VERSION, BEVEL_STYLE_IDS, BEVEL_TECHNIQUE_IDS, encodeBox } from '../../text-engine/js/paint.mjs';
 import {
   LAYER_BLEND_MODES,
   CONTOUR_PRESETS,
@@ -16,7 +16,7 @@ import {
   normalizeSatin,
   normalizeStyle,
 } from './data.js';
-import { shadowSigma, shadowOffset, resolveShadow, setGlobalLight, boxEffects } from './text-paint.js';
+import { shadowSigma, shadowOffset, resolveShadow, setGlobalLight, boxEffects, bevelReach } from './text-paint.js';
 import { rescaleStyle } from './store.svelte.js';
 
 // ===========================================================================
@@ -123,7 +123,7 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(7);
+    expect(BOX_WIRE_VERSION).toBe(8);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header, the blending options
@@ -180,5 +180,72 @@ describe('a satin', () => {
     expect(b.getUint32(head + 48, true)).toBe(CONTOUR_IDS.gaussian);
     const plain = dv(encodeBox({ ...job, width: 4, height: 4, effects: [{ ...fx, invert: false, contour: { preset: 'linear' } }] }).slice());
     expect(plain.getUint32(head + 44, true)).toBe(0);
+  });
+});
+
+describe('a bevel', () => {
+  const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
+  const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4;
+  const encoded = (fx) => dv(encodeBox({ ...job, width: 4, height: 4, effects: [fx] }).slice());
+
+  // Wire v8: kind 9, then style, technique, depth, size, soften, angle,
+  // altitude, the highlight and the shadow, flags, the gloss contour, then
+  // the Contour and the Texture when they are on (`decode_box`).
+  it('goes on the wire as kind 9, with Photoshop\'s defaults for what it leaves out', () => {
+    const b = encoded({ kind: 'bevel' });
+    expect(b.getUint32(head, true)).toBe(9);
+    expect([b.getUint32(head + 4, true), b.getUint32(head + 8, true)]).toEqual([BEVEL_STYLE_IDS.inner, BEVEL_TECHNIQUE_IDS.smooth]);
+    expect([12, 20, 28, 36, 44].map((o) => b.getFloat64(head + o, true))).toEqual([1, 5, 0, 120, 30]);
+    expect([0, 1, 2, 3].map((k) => b.getUint8(head + 52 + k))).toEqual([255, 255, 255, 255]);
+    expect(b.getFloat64(head + 56, true)).toBe(0.75);
+    expect(b.getUint32(head + 64, true)).toBe(BLEND_MODE_IDS.screen);
+    expect([0, 1, 2, 3].map((k) => b.getUint8(head + 68 + k))).toEqual([0, 0, 0, 255]);
+    expect(b.getUint32(head + 80, true)).toBe(BLEND_MODE_IDS.multiply);
+    // Up, and nothing else on.
+    expect(b.getUint32(head + 84, true)).toBe(1);
+    expect(b.getUint32(head + 88, true)).toBe(CONTOUR_IDS.linear);
+    // Then the backdrop flag.
+    expect(b.getUint32(head + 92, true)).toBe(0);
+  });
+
+  it('writes every field it is given, the Contour with its Range and the Texture with its fill', () => {
+    const b = encoded({
+      kind: 'bevel', style: 'pillow', technique: 'chisel-soft', depth: 1.5, direction: 'down', size: 6, soften: 2, angle: 45, altitude: 60,
+      gloss: { preset: 'gaussian', aa: true },
+      highlight: { blend: 'normal', color: '#ffff00', opacity: 0.5 }, shadow: { blend: 'overlay', color: '#0000ff', opacity: 0.25 },
+      contour: { preset: 'cone', aa: true, range: 0.7 },
+      texture: { depth: -2, invert: true, fill: { kind: 'solid', color: '#0000ff' } },
+    });
+    expect([b.getUint32(head + 4, true), b.getUint32(head + 8, true)]).toEqual([3, 2]);
+    expect([12, 20, 28, 36, 44].map((o) => b.getFloat64(head + o, true))).toEqual([1.5, 6, 2, 45, 60]);
+    expect(b.getUint32(head + 64, true)).toBe(BLEND_MODE_IDS.normal);
+    expect(b.getFloat64(head + 72, true)).toBe(0.25);
+    expect(b.getUint32(head + 80, true)).toBe(BLEND_MODE_IDS.overlay);
+    // Down; gloss and contour anti-aliased, contour on, texture on and inverted.
+    expect(b.getUint32(head + 84, true)).toBe(2 | 4 | 8 | 16 | 32);
+    expect(b.getUint32(head + 88, true)).toBe(CONTOUR_IDS.gaussian);
+    expect(b.getUint32(head + 92, true)).toBe(CONTOUR_IDS.cone);
+    expect(b.getFloat64(head + 96, true)).toBe(0.7);
+    expect(b.getFloat64(head + 104, true)).toBe(-2);
+    // A paint record that is a fill: a solid one.
+    expect([b.getUint32(head + 112, true), b.getUint32(head + 116, true)]).toEqual([2, 1]);
+    // A texture with no fill yet (a pattern the exporter has not made one of) is off.
+    expect(encoded({ kind: 'bevel', texture: { depth: 1, invert: true, pattern: {} } }).getUint32(head + 84, true)).toBe(1);
+  });
+
+  it('refuses a style or a technique the engine has no number for', () => {
+    expect(() => encoded({ kind: 'bevel', style: 'chrome' })).toThrow(/bevel style/);
+    expect(() => encoded({ kind: 'bevel', technique: 'rough' })).toThrow(/bevel technique/);
+  });
+
+  // `bevel::outward` in text-engine/src/paint/fx/bevel.rs, in job units.
+  it('reaches past the letters as the engine paints it', () => {
+    expect(bevelReach({ kind: 'bevel', style: 'inner', size: 40 })).toBe(0);
+    expect(bevelReach({ kind: 'bevel', style: 'stroke', size: 40 })).toBe(0);
+    expect(bevelReach({ kind: 'bevel', style: 'outer', size: 10, soften: 3 })).toBe(17);
+    expect(bevelReach({ kind: 'bevel', style: 'outer', size: 0 })).toBe(5);
+    expect(bevelReach({ kind: 'bevel', style: 'emboss', size: 9, soften: 0.5 })).toBe(9);
+    expect(bevelReach({ kind: 'bevel', style: 'pillow', technique: 'chisel-soft', size: 20 })).toBe(10 + 6 + 4);
   });
 });

@@ -1,14 +1,16 @@
 //! The layer effects past the drop shadow: Outer Glow, Inner Glow, Inner
-//! Shadow, Color Overlay, Gradient Overlay, Pattern Overlay, Satin and
-//! Stroke, and how each is laid.
+//! Shadow, Color Overlay, Gradient Overlay, Pattern Overlay, Satin, Stroke
+//! and Bevel & Emboss, and how each is laid.
 //!
 //! The order is Photoshop's, as PhotoCraft composites it
 //! (`crates/compose/src/effects/composite.rs`): behind the letters the drop
 //! shadows, then the outer glows; on the letters their fill at Fill Opacity,
 //! then the pattern, gradient and colour overlays, the satin, the inner glows, the inner
-//! shadows and the inside of the strokes, laid inside the letters at full
-//! strength and then cut to the letters' own alpha; the outside of the
-//! strokes slid under the letters; then the outlines (`strokes`, the bands).
+//! shadows, the inside of the strokes and an Inner Bevel, laid inside the
+//! letters at full strength and then cut to the letters' own alpha; the
+//! outside of the strokes slid under the letters, and an Outer Bevel after
+//! them; then the outlines (`strokes`, the bands); then, over the finished
+//! letters, an Emboss, a Pillow Emboss or a Stroke Emboss.
 //!
 //! An interior effect is painted relative to the letters' shape: it is laid
 //! over the fill as if every covered pixel were whole, and the pixel's
@@ -23,12 +25,15 @@ use super::super::geom::{Affine, IBox, Pt};
 use super::super::job::{Fill, Rgba, Tile};
 use super::super::shade::Shader;
 use super::super::Raster;
+use super::bevel::{self, Reach, Shading};
+pub use super::bevel::{BevelStyle, BevelTechnique};
 use super::blend::{self, Backdrop, Blend};
-use super::contour::Lut;
+use super::contour::{Lut, Table};
 use super::gradient::{self, Frame, Gradient};
 pub use super::map::Technique;
 use super::map::{self, Map, Soft};
 use super::noise;
+use crate::paint::budget;
 use crate::Error;
 
 /// Outer Glow or Inner Glow.
@@ -101,6 +106,49 @@ pub struct Satin {
     pub contour: Option<Lut>,
 }
 
+/// Bevel & Emboss's Texture: a pattern's luminance raises the height.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BevelTexture {
+    /// Texture Depth, -10 to 10 (1 is 100 %); negative carves.
+    pub depth: f64,
+    pub invert: bool,
+    /// The pattern, as a glyph job's fill: its Scale, Link and Phase are
+    /// the fill's.
+    pub fill: Fill,
+}
+
+/// Bevel & Emboss: the letters raised and lit (`bevel.rs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bevel {
+    pub style: BevelStyle,
+    pub technique: BevelTechnique,
+    /// Depth, 0 to 10 (1 is 100 %).
+    pub depth: f64,
+    /// Direction Up; false is Down, which swaps the lit and the dark sides.
+    pub up: bool,
+    /// Size and Soften, job units.
+    pub size: f64,
+    pub soften: f64,
+    /// Degrees, Global Light already resolved. The light turns with a
+    /// turned or mirrored box, as a shadow's throw does.
+    pub angle: f64,
+    pub altitude: f64,
+    pub highlight: Overlay,
+    pub shadow: Overlay,
+    /// Gloss Contour; `None` is Linear.
+    pub gloss: Option<Table>,
+    /// Anti-aliased boxes: carried, not painted (PhotoCraft paints none).
+    pub gloss_aa: bool,
+    /// The Contour element on the height; `None` is off or Linear.
+    pub contour: Option<Table>,
+    /// The Contour's Range, 0 to 1: carried, never applied. PhotoCraft
+    /// found that Photoshop's bevel does not stretch the contour by it as a
+    /// glow does, and what it does instead is unmeasured.
+    pub range: f64,
+    pub contour_aa: bool,
+    pub texture: Option<BevelTexture>,
+}
+
 /// What an effect paints with: Photoshop's Fill Type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Paint {
@@ -163,6 +211,7 @@ pub enum Effect {
     PatternOverlay(PaintOverlay),
     Satin(Satin),
     Stroke(Stroke),
+    Bevel(Bevel),
 }
 
 impl Effect {
@@ -179,6 +228,7 @@ impl Effect {
             Effect::GradientOverlay(o) | Effect::PatternOverlay(o) => o.opacity,
             Effect::Satin(s) => s.opacity,
             Effect::Stroke(s) => s.opacity * f64::from(u8::from(s.size > 0.0)),
+            Effect::Bevel(b) => b.highlight.opacity.max(b.shadow.opacity),
         }
     }
 
@@ -537,9 +587,9 @@ pub(crate) fn lay_outer_glows(
     Ok(laid)
 }
 
-/// How far past the letters the outer glows and the strokes reach, device
-/// pixels: a Size moves the edge `size + 1` at most (Precise), with a pixel
-/// spare.
+/// How far past the letters the outer glows, the strokes and the outer and
+/// emboss bevels reach, device pixels: a Size moves the edge `size + 1` at
+/// most (Precise), with a pixel spare; a bevel as [`bevel::outward`] says.
 pub(crate) fn outer_reach(effects: &[Effect], scale: f64) -> i32 {
     let size = effects
         .iter()
@@ -547,10 +597,21 @@ pub(crate) fn outer_reach(effects: &[Effect], scale: f64) -> i32 {
         .filter_map(|e| match e {
             Effect::OuterGlow(g) => Some(g.size * scale),
             Effect::Stroke(s) => Some(s.widths().1 * scale),
+            Effect::Bevel(b) => Some(f64::from(bevel_outward(b, scale))),
             _ => None,
         })
         .fold(0.0, f64::max);
     (size.min(4096.0).ceil() as i32) + 3
+}
+
+/// How far a bevel reaches past the letters, device pixels.
+fn bevel_outward(b: &Bevel, scale: f64) -> f32 {
+    bevel::outward(
+        b.style,
+        b.technique,
+        (b.size * scale).min(4096.0) as f32,
+        (b.soften * scale).min(4096.0) as f32,
+    )
 }
 
 /// The frame of `shape` (pixels from device `dev`) in job units: every
@@ -763,6 +824,172 @@ pub(crate) fn lay_outside(
     Ok(())
 }
 
+/// The bevels laid outside `interior()`: an Outer Bevel's maps go under the
+/// letters, after the strokes' outside parts; an Emboss's, a Pillow
+/// Emboss's and a Stroke Emboss's over the finished letters (PhotoCraft
+/// `composite.rs`: `paint_bevel` with `BevelPaint::Outer` onto the backdrop
+/// before the layer, `Both` onto the composited layer). Over a region whose
+/// corner is device `dev`.
+pub(crate) struct Bevels {
+    pub dev: (i32, i32),
+    /// Effect index, laid over the letters (`true`) or under them, and the
+    /// highlight and shadow maps; of a kind the last listed first.
+    items: Vec<(usize, bool, Map, Map)>,
+}
+
+/// The unit vector towards a bevel's light, y down, turned with the box:
+/// `(cos a, -sin a)` carried as a shadow's throw is and brought back to
+/// `cos(altitude)` long; the altitude is the box's own.
+fn bevel_light(b: &Bevel, carried: impl Fn(f64, f64) -> (f64, f64)) -> [f32; 3] {
+    let (sa, ca) = b.angle.to_radians().sin_cos();
+    let (se, ce) = b.altitude.to_radians().sin_cos();
+    let (x, y) = carried(ca, -sa);
+    let len = x.hypot(y);
+    let (x, y) = if len > 1e-12 && len.is_finite() {
+        (x / len, y / len)
+    } else {
+        (ca, -sa)
+    };
+    [(x * ce) as f32, (y * ce) as f32, se as f32]
+}
+
+/// The Photoshop strokes' band over `shape`, `scale` device pixels to a job
+/// unit: what a Stroke Emboss raises. Each stroke's inside part (its band
+/// times the letters' coverage) and outside part (all of a pixel the
+/// letters leave, out to the stroke's width, as the strokes are painted),
+/// united over the strokes as `1 - prod(1 - band)`. `None` with no stroke.
+/// Ours, not PhotoCraft's: PhotoCraft draws a Stroke Emboss as an Inner
+/// Bevel of the letters, and there is no Photoshop measurement of it.
+fn stroke_band(shape: &Map, strokes: &[(usize, &Stroke)], scale: f64) -> Option<Map> {
+    if strokes.is_empty() {
+        return None;
+    }
+    let (w, h) = (shape.w, shape.h);
+    let din = strokes
+        .iter()
+        .any(|(_, s)| s.widths().0 > 0.0)
+        .then(|| map::chamfer_inside(shape));
+    let mut chamfer: Option<Vec<f32>> = None;
+    let mut exact: Option<Vec<f32>> = None;
+    let mut rest = vec![1.0f32; w * h];
+    for (_, st) in strokes {
+        let (in_w, out_w) = st.widths();
+        let (in_w, out_w) = ((in_w * scale) as f32, (out_w * scale) as f32);
+        let dout = if out_w <= 0.0 {
+            None
+        } else if out_w < map::STROKE_CHAMFER_MAX {
+            Some(&*chamfer.get_or_insert_with(|| map::chamfer_outside(shape)))
+        } else {
+            Some(&*exact.get_or_insert_with(|| map::dist_outside(shape)))
+        };
+        for (i, r) in rest.iter_mut().enumerate() {
+            let a = shape.v[i];
+            let band = if a > map::INSIDE_EPS {
+                let inner = match &din {
+                    Some(d) if in_w > 0.0 => (in_w + 0.5 - d[i]).clamp(0.0, 1.0) * a.min(1.0),
+                    _ => 0.0,
+                };
+                let outer = if dout.is_some() {
+                    1.0 - a.min(1.0)
+                } else {
+                    0.0
+                };
+                (inner + outer).min(1.0)
+            } else {
+                dout.map_or(0.0, |d| (out_w + 0.5 - d[i]).clamp(0.0, 1.0))
+            };
+            *r *= 1.0 - band;
+        }
+    }
+    Some(Map {
+        w,
+        h,
+        v: rest.into_iter().map(|r| 1.0 - r).collect(),
+    })
+}
+
+/// A bevel's highlight and shadow maps over `shape`, whose corner is device
+/// `dev`, and where they paint. `None` when the budget cannot hold them.
+fn bevel_maps(
+    shape: &Map,
+    b: &Bevel,
+    scale: f64,
+    carried: impl Fn(f64, f64) -> (f64, f64),
+    place: &Place<'_>,
+    dev: (i32, i32),
+) -> Result<(Map, Map, Reach), Error> {
+    // The height, two distances, four shading maps and a mix, as floats.
+    budget::ensure(shape.v.len().saturating_mul(4 * 8))?;
+    let shader = b
+        .texture
+        .as_ref()
+        .and_then(|t| Some((t, Shader::new(&t.fill, &place.transform, place.tiles)?)));
+    let lum = |x: usize, y: usize| -> f32 {
+        let Some((_, s)) = &shader else {
+            return 0.0;
+        };
+        let p = s.at(dev.0 + x as i32, dev.1 + y as i32);
+        // Premultiplied: the luminance already times the alpha.
+        0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
+    };
+    let s = Shading {
+        style: b.style,
+        technique: b.technique,
+        depth: b.depth as f32,
+        up: b.up,
+        size: (b.size * scale).min(4096.0) as f32,
+        soften: (b.soften * scale).min(4096.0) as f32,
+        light: bevel_light(b, carried),
+        gloss: b.gloss.as_ref(),
+        contour: b.contour.as_ref(),
+        texture: shader.as_ref().map(|(t, _)| bevel::Texture {
+            depth: t.depth as f32,
+            invert: t.invert,
+            lum: &lum,
+        }),
+    };
+    Ok(bevel::maps(shape, &s))
+}
+
+/// Lays the bevels of `stage` (over the letters, `true`, or under them) on
+/// `dst`, whose corner is device `(0, 0)`: each highlight, then its shadow,
+/// in their own colour, opacity and mode. Hands back where they can have
+/// laid ink.
+pub(crate) fn lay_bevels(
+    dst: &mut Surface,
+    b: &Bevels,
+    effects: &[Effect],
+    over: bool,
+    page: Option<&Backdrop<'_>>,
+) -> Result<Option<IBox>, Error> {
+    let mut laid: Option<IBox> = None;
+    for (k, top, hi, sh) in &b.items {
+        let Some(Effect::Bevel(bv)) = effects.get(*k) else {
+            continue;
+        };
+        if *top != over {
+            continue;
+        }
+        for (m, o) in [(hi, &bv.highlight), (sh, &bv.shadow)] {
+            let c = flat(o.color);
+            if let Some(bx) = lay_with(
+                dst,
+                m,
+                b.dev,
+                (0, 0),
+                &|_, _, _| c,
+                o.opacity,
+                o.blend,
+                page,
+                0,
+            )? {
+                laid = Some(laid.map_or(bx, |l| l.union(&bx)));
+            }
+        }
+    }
+    Ok(laid)
+}
+
 /// A satin's throw in device pixels: `(-cos a, sin a) * distance` carried by
 /// `carried`, at least a pixel long (Photoshop draws Distance 0 as 1 px, an
 /// edge band of 2 / size, measured by PhotoCraft in Photoshop 27.11), and
@@ -784,8 +1011,9 @@ pub(crate) fn satin_throw(s: &Satin, carried: impl Fn(f64, f64) -> (f64, f64)) -
 }
 
 /// The fill raster `r` with the interior effects laid on it at Fill Opacity
-/// `fill_opacity`, and the outside parts of its strokes. `carried` turns a
-/// job-unit throw into device pixels; `scale` is device pixels to a job unit.
+/// `fill_opacity`, the outside parts of its strokes, and the bevels laid
+/// outside it. `carried` turns a job-unit throw into device pixels; `scale`
+/// is device pixels to a job unit.
 pub(crate) fn interior(
     r: &Raster,
     effects: &[Effect],
@@ -793,7 +1021,7 @@ pub(crate) fn interior(
     scale: f64,
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
-) -> Result<(Raster, Option<Outside>), Error> {
+) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
     // Room round the letters for a soft edge to come in from outside them,
     // and for the strokes outside them.
     let mut pad = 2.0f64;
@@ -810,6 +1038,12 @@ pub(crate) fn interior(
             Effect::Satin(s) => {
                 let (dx, dy) = satin_throw(s, &carried);
                 s.size * scale + dx.abs().max(dy.abs()) + 2.0
+            }
+            // The height's tent (or a chisel's ramp, a pixel past it) and
+            // Soften's, inside the letters or out past them.
+            Effect::Bevel(b) => {
+                let inner = (b.size * scale).max(1.0) + b.soften * scale + 4.0;
+                inner.max(f64::from(bevel_outward(b, scale)))
             }
             _ => 0.0,
         });
@@ -1032,6 +1266,47 @@ pub(crate) fn interior(
             }
         }
     }
+    // The bevels: an inner one the last of the interior effects, over the
+    // strokes' inside parts (B9); the others kept for the box to lay. A
+    // Stroke Emboss raises the strokes' band, and with no stroke there is
+    // none (Photoshop shows nothing either).
+    let mut bevels = Vec::new();
+    let mut band: Option<Option<Map>> = None;
+    for (k, e) in effects.iter().enumerate().rev().filter(|(_, e)| e.shows()) {
+        let Effect::Bevel(b) = e else {
+            continue;
+        };
+        if b.style == BevelStyle::StrokeEmboss {
+            let Some(band) = band.get_or_insert_with(|| stroke_band(&shape, &strokes, scale))
+            else {
+                continue;
+            };
+            let (hi, sh, _) = bevel_maps(band, b, scale, &carried, place, dev)?;
+            bevels.push((k, true, hi, sh));
+            continue;
+        }
+        let (hi, sh, reach) = bevel_maps(&shape, b, scale, &carried, place, dev)?;
+        if reach != Reach::Inner {
+            bevels.push((k, reach == Reach::Both, hi, sh));
+            continue;
+        }
+        for (m, o) in [(&hi, &b.highlight), (&sh, &b.shadow)] {
+            let m = map::relative_to(m, &shape);
+            let c = flat(o.color);
+            lay_with(
+                &mut lay,
+                &m,
+                (0, 0),
+                dev,
+                &|_, _, _| c,
+                o.opacity,
+                o.blend,
+                None,
+                0,
+            )?;
+        }
+    }
+    drop(band);
     // The shape's own alpha, and back to straight colour.
     let mut data = vec![0u8; w * h * 4];
     let mut alpha = vec![0f32; w * h];
@@ -1105,6 +1380,7 @@ pub(crate) fn interior(
         frame,
         items,
     });
+    let bevels = (!bevels.is_empty()).then_some(Bevels { dev, items: bevels });
     Ok((
         Raster {
             x: dev.0,
@@ -1114,13 +1390,13 @@ pub(crate) fn interior(
             data,
         },
         outside,
+        bevels,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paint::budget;
 
     const RED: Rgba = Rgba([255, 0, 0, 255]);
     const BLUE: Rgba = Rgba([0, 0, 255, 255]);
@@ -1144,7 +1420,8 @@ mod tests {
     }
 
     fn inside(r: &Raster, effects: &[Effect]) -> (Raster, Option<Outside>) {
-        interior(r, effects, 1.0, 1.0, |x, y| (x, y), &place()).unwrap()
+        let (r, o, _) = interior(r, effects, 1.0, 1.0, |x, y| (x, y), &place()).unwrap();
+        (r, o)
     }
 
     fn stroke(size: f64, position: Position, paint: Paint) -> Effect {
@@ -1233,7 +1510,7 @@ mod tests {
         let (out, _) = inside(&square(8), std::slice::from_ref(&o));
         assert_eq!(at(&out, 13, 13), [0, 0, 255, 255]);
         // At Fill Opacity 0 the overlay still shows; nothing outside the fill.
-        let (out, _) = interior(&square(8), &[o], 0.0, 1.0, |x, y| (x, y), &place()).unwrap();
+        let (out, _, _) = interior(&square(8), &[o], 0.0, 1.0, |x, y| (x, y), &place()).unwrap();
         assert_eq!(at(&out, 13, 13), [0, 0, 255, 255]);
         assert_eq!(at(&out, 9, 9)[3], 0);
     }

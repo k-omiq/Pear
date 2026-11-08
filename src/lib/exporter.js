@@ -985,12 +985,17 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
 
 // The effects with each pattern a stroke or a Pattern Overlay paints made the
 // fill the painter takes: the fill's own procedural screen over the fill's
-// rect, in the job's units, so it lines up with a patterned fill.
+// rect, in the job's units, so it lines up with a patterned fill. A bevel's
+// Texture `pattern` becomes its texture's `fill` the same way.
 function effectPaints(box, L, effects) {
   const page = { x: L.ox - (Number(box.x) || 0), y: L.oy - (Number(box.y) || 0) };
   // A curved box's fill spans the box (`glyphJob`).
   const rect = L.isCurve ? { x: L.ox, y: L.oy, w: box.w, h: box.h } : fillRect(box, L);
   return effects.map((fx) => {
+    if (fx.kind === 'bevel' && fx.texture?.pattern) {
+      const { pattern, ...texture } = fx.texture;
+      return { ...fx, texture: { ...texture, fill: screenFill({ ...L.s, pattern }, rect, null, page) } };
+    }
     if (fx.paint?.kind !== 'pattern') return fx;
     const fill = screenFill({ ...L.s, pattern: fx.paint.pattern }, rect, null, page);
     return fx.kind === 'patternOverlay' ? { kind: fx.kind, opacity: fx.opacity, blend: fx.blend, fill } : { ...fx, paint: { kind: 'fill', fill } };

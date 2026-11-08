@@ -21,6 +21,7 @@ use super::{distance, noise, spread_split, tent};
 /// A pixel with less coverage than this is outside the shape.
 pub(crate) const INSIDE_EPS: f32 = 0.5 / 255.0;
 
+#[derive(Clone)]
 pub(crate) struct Map {
     pub w: usize,
     pub h: usize,
@@ -33,6 +34,15 @@ impl Map {
             w,
             h,
             v: vec![fill; w * h],
+        }
+    }
+
+    /// The value at `(x, y)`, 0 off the map (PhotoCraft `Map::get`).
+    pub(crate) fn get(&self, x: i64, y: i64) -> f32 {
+        if x < 0 || y < 0 || x >= self.w as i64 || y >= self.h as i64 {
+            0.0
+        } else {
+            self.v[y as usize * self.w + x as usize]
         }
     }
 
@@ -232,7 +242,7 @@ fn dt1(f: &[f32], out: &mut [f32], v: &mut [usize], z: &mut [f32], near: &mut [u
 
 /// The exact Euclidean distance from every pixel to the nearest one where
 /// `inside` holds, and that pixel's index.
-fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec<usize>) {
+pub(crate) fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec<usize>) {
     const INF: f32 = 1e20;
     let n = w.max(h);
     let mut f = vec![0f32; n];

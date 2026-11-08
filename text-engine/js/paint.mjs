@@ -394,7 +394,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 7
+export const BOX_WIRE_VERSION = 8
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 
@@ -466,7 +466,11 @@ function contourRecord(contour) {
   u32(id)
 }
 
-const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7, satin: 8 }
+const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7, satin: 8, bevel: 9 }
+// Bevel & Emboss's Style and Technique by the number the engine reads
+// (`BevelStyle::from_u32`, `BevelTechnique::from_u32` in fx/bevel.rs).
+export const BEVEL_STYLE_IDS = Object.freeze({ inner: 0, outer: 1, emboss: 2, pillow: 3, stroke: 4 })
+export const BEVEL_TECHNIQUE_IDS = Object.freeze({ smooth: 0, 'chisel-hard': 1, 'chisel-soft': 2 })
 const GRADIENT_STYLE = { linear: 0, radial: 1, angle: 2, reflected: 3, diamond: 4, shapeburst: 5 }
 const NOISE_MODEL = { rgb: 0, hsb: 1, lab: 2 }
 const STROKE_POSITION = { outside: 0, inside: 1, center: 2 }
@@ -531,12 +535,51 @@ function paintRecord(p, tileIndex) {
   rgba(p.color)
 }
 
+// A bevel's highlight or shadow: colour, opacity, mode.
+function shadeRecord(sh, blend, color) {
+  rgba(sh?.color ?? color)
+  f64(sh?.opacity ?? 0.75)
+  u32(blendId(sh?.blend ?? blend))
+}
+
+// Bevel & Emboss (`Reader::bevel`): the defaults are Photoshop's dialog's.
+// A `contour` turns the Contour element on (its `range` is carried, never
+// painted); a `texture` with a `fill` turns the Texture element on.
+function bevelRecord(fx, tileIndex) {
+  const style = BEVEL_STYLE_IDS[fx.style ?? 'inner']
+  if (style === undefined) throw new Error(`mt-text: unknown bevel style ${JSON.stringify(fx.style)}`)
+  const technique = BEVEL_TECHNIQUE_IDS[fx.technique ?? 'smooth']
+  if (technique === undefined) throw new Error(`mt-text: unknown bevel technique ${JSON.stringify(fx.technique)}`)
+  u32(style)
+  u32(technique)
+  f64(fx.depth ?? 1)
+  f64(fx.size ?? 5)
+  f64(fx.soften ?? 0)
+  f64(fx.angle ?? 120)
+  f64(fx.altitude ?? 30)
+  shadeRecord(fx.highlight, 'screen', '#ffffff')
+  shadeRecord(fx.shadow, 'multiply', '#000000')
+  const c = fx.contour ?? null
+  const t = fx.texture?.fill ? fx.texture : null
+  u32((fx.direction === 'down' ? 0 : 1) | (fx.gloss?.aa ? 2 : 0) | (c ? 4 : 0) | (c?.aa ? 8 : 0) | (t ? 16 : 0) | (t?.invert ? 32 : 0))
+  contourRecord(fx.gloss)
+  if (c) {
+    contourRecord(c)
+    f64(c.range ?? 0.5)
+  }
+  if (t) {
+    f64(t.depth ?? 1)
+    paintRecord({ kind: 'fill', fill: t.fill }, tileIndex)
+  }
+}
+
 // One layer effect past the drop shadows (`decode_box`'s effect record).
 // `tileIndex` numbers a pattern's tile in the glyph job's table.
 function effectRecord(fx, tileIndex) {
   const kind = EFFECT_KIND[fx.kind]
   if (!kind) throw new Error(`mt-text: unknown effect ${JSON.stringify(fx.kind)}`)
   u32(kind)
+  if (kind === 9) return bevelRecord(fx, tileIndex)
   if (kind === 5) {
     const position = STROKE_POSITION[fx.position ?? 'outside']
     if (position === undefined) throw new Error(`mt-text: unknown stroke position ${JSON.stringify(fx.position)}`)
@@ -640,21 +683,36 @@ function clipShape(sh) {
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
  * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1
  * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay' | 'stroke' |
- *   'gradientOverlay' | 'patternOverlay' | 'satin', color?: string,
+ *   'gradientOverlay' | 'patternOverlay' | 'satin' | 'bevel', color?: string,
  *   opacity: number, blend?: string, technique?: 'softer' | 'precise', source?: 'edge' | 'center',
  *   size?: number, spread?: number, choke?: number, range?: number, noise?: number,
  *   x?: number, y?: number, seed?: number, contour?: {preset: string, pts?: number[][], aa?: boolean},
  *   angle?: number, distance?: number, invert?: boolean,
  *   gradient?: object, position?: 'outside' | 'inside' | 'center',
  *   paint?: {kind: 'color', color: string} | {kind: 'gradient', gradient: object} | {kind: 'fill', fill: object},
- *   fill?: object}[]} [request.effects]
+ *   fill?: object, style?: 'inner' | 'outer' | 'emboss' | 'pillow' | 'stroke',
+ *   technique?: 'smooth' | 'chisel-hard' | 'chisel-soft', depth?: number, direction?: 'up' | 'down',
+ *   soften?: number, altitude?: number, gloss?: {preset: string, pts?: number[][], aa?: boolean},
+ *   highlight?: {blend: string, color: string, opacity: number},
+ *   shadow?: {blend: string, color: string, opacity: number},
+ *   texture?: {depth: number, invert?: boolean, fill: object}}[]} [request.effects]
  *   the layer effects past the drop shadows, resolved: of a kind, first on top. A glow's
  *   `gradient` runs along it in place of its colour; a gradient is `{style, angle, scale,
  *   reverse, offset: [x, y], stops: [{pos, color, opacity?}], type?, noise?}` (style
  *   'shapeburst' runs from the painted shape's edge in; type 'noise' paints `noise`). A stroke paints a colour,
  *   a gradient or a fill (a pattern, as a glyph job's fill), and a pattern overlay its
  *   `fill`, in job units. A satin throws two copies `distance` apart along its own
- *   `angle` (degrees; no global light) and lays the gap, `invert`ed or not
+ *   `angle` (degrees; no global light) and lays the gap, `invert`ed or not. A bevel
+ *   (`kind: 'bevel'`) is Photoshop's Bevel & Emboss: `style` (Stroke Emboss is
+ *   'stroke': it raises the strokes' band), `technique`, `depth` (1 is 100 %),
+ *   `direction`, `size` and `soften` in job units, `angle` and `altitude` with Use
+ *   Global Light already resolved (the light turns with a turned box), the Gloss
+ *   Contour `gloss`, the `highlight` and the `shadow`; a `contour` (a contour and
+ *   its `range`, which is carried and not painted) turns the Contour element on, a
+ *   `texture` (Texture Depth, Invert and the pattern as a glyph job's `fill`) the
+ *   Texture element. Unset fields take Photoshop's defaults: inner, smooth, 100 %,
+ *   up, size 5, soften 0, 120 and 30 degrees, Linear, Screen white and Multiply
+ *   black at 75 %
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
  *   the surface, straight RGBA8 of `width * height`: what a blend mode blends with
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
