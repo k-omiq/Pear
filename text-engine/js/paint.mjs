@@ -467,7 +467,9 @@ function shadowRecord(sh) {
   f64(sh.spread ?? 0)
   f64(sh.noise ?? 0)
   u32(blendId(sh.blend))
-  u32((sh.knockout ? 1 : 0) | (sh.contour?.aa ? 2 : 0))
+  // 4 (v11): an SFX copy laid at its exact throw; without it the engine
+  // rounds the throw to whole pixels, as Photoshop lays a Drop Shadow.
+  u32((sh.knockout ? 1 : 0) | (sh.contour?.aa ? 2 : 0) | (sh.exact ? 4 : 0))
   u32((sh.seed ?? 0) >>> 0)
   contourRecord(sh.contour)
 }
@@ -697,11 +699,11 @@ function clipShape(sh) {
  * @param {number} request.width the surface, device pixels; its corner is (0, 0)
  * @param {number} request.height
  * @param {{color: string, opacity: number, x: number, y: number, size: number, grow?: number,
- *   spread?: number, noise?: number, blend?: string, knockout?: boolean, seed?: number,
- *   contour?: {preset: string, aa?: boolean, pts?: number[][]}}[]} [request.shadows]
+ *   spread?: number, noise?: number, blend?: string, knockout?: boolean, exact?: boolean,
+ *   seed?: number, contour?: {preset: string, aa?: boolean, pts?: number[][]}}[]} [request.shadows]
  *   `style.shadows` resolved (`boxShadows`), first on top: Photoshop's Drop Shadow, its
- *   Size, Spread, Noise and Contour, its mode and its knockout; `grow` widens the
- *   silhouette (an extrude's edge). A run of plain shadows alike but for `x`, `y` and
+ *   Size, Spread, Noise and Contour, its mode and its knockout, thrown to whole pixels;
+ *   `exact` lays an SFX copy at its throw; `grow` widens the silhouette (an extrude's edge). A run of plain shadows alike but for `x`, `y` and
  *   `opacity` paints the silhouette once.
  * @param {number} [request.blur] the whole-box blur, a gaussian's sigma
  * @param {{dx: number, dy: number, w: number}[]} [request.taps] `motionBlurTaps`

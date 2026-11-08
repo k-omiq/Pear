@@ -216,6 +216,62 @@ fn a_shadow_is_thrown_under_the_letters_in_its_colour() {
 }
 
 #[test]
+fn a_drop_shadow_lands_on_whole_pixels_and_an_sfx_copy_where_it_is_thrown() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.shadows = vec![shadow(RED, 0.0, 50.0)];
+    let whole = paint(&mut e, &mut b);
+    // A Photoshop Drop Shadow thrown 0.4 px further lands where the whole
+    // pixel does (PhotoCraft's `offset`), at zoom 1 and at zoom 2.
+    b.shadows = vec![shadow(RED, 0.4, 49.6)];
+    assert_eq!(paint(&mut e, &mut b), whole);
+    b.request.transform = Affine([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
+    b.shadows = vec![shadow(RED, 0.0, 25.0)];
+    let (bw, bh) = (b.width, b.height);
+    (b.width, b.height) = (400, 320);
+    let zoomed = paint(&mut e, &mut b);
+    b.shadows = vec![shadow(RED, 0.3, 24.7)];
+    assert_eq!(paint(&mut e, &mut b), zoomed);
+    (b.width, b.height) = (bw, bh);
+    b.request.transform = Affine::IDENTITY;
+    // An SFX copy (an extrude's step) is laid at its exact throw: a part
+    // of a pixel shows as a resampled edge.
+    b.shadows = vec![Shadow {
+        exact: true,
+        ..shadow(RED, 0.4, 49.6)
+    }];
+    assert_ne!(paint(&mut e, &mut b), whole);
+}
+
+#[test]
+fn an_inner_shadow_is_thrown_whole_pixels() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let inner = |x: f64, y: f64| {
+        Effect::InnerShadow(InnerShadow {
+            color: RED,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            x,
+            y,
+            size: 0.0,
+            choke: 0.0,
+            noise: 0.0,
+            contour: None,
+            seed: 1,
+        })
+    };
+    b.effects = vec![inner(3.0, -2.0)];
+    let whole = paint(&mut e, &mut b);
+    b.effects = vec![inner(2.6, -2.4)];
+    assert_eq!(paint(&mut e, &mut b), whole);
+    b.effects = vec![inner(3.6, -2.0)];
+    assert_ne!(paint(&mut e, &mut b), whole);
+}
+
+#[test]
 fn a_shadow_has_its_opacity_and_the_first_is_on_top() {
     let mut e = Engine::new();
     let font = load(&mut e);
@@ -873,6 +929,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
             noise: 0.5,
             blend: Blend::Multiply,
             knockout: true,
+            exact: false,
             contour: Some(Lut::new(&Curve::Preset(1))),
             seed: 7,
         }]
@@ -1096,6 +1153,13 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     }
     // A throw past the guard.
     assert_eq!(with_f(opacity_at + 8, 1e9), Some(Error::BadSpec));
+    // Shadow flags past 1 knockout, 2 anti-aliased and 4 exact (v11); 4 is
+    // an SFX copy laid at its exact throw.
+    assert_eq!(with_u(opacity_at + 60, 8), Some(Error::BadSpec));
+    let mut exact = good.clone();
+    exact[opacity_at + 60..opacity_at + 64].copy_from_slice(&5u32.to_le_bytes());
+    let sh = decode_box(&exact).unwrap().shadows[0];
+    assert!(sh.exact && sh.knockout);
     // A mode, a magic, a version and a surface that are not ones.
     assert_eq!(with_u(mode_at, 3), Some(Error::BadSpec));
     assert_eq!(with_u(0, MAGIC), Some(Error::BadSpec));

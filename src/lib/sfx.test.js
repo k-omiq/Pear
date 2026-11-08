@@ -256,6 +256,10 @@ describe('the effects of a style', () => {
     });
     const { top, under } = effectShadows(s);
     expect(boxShadows(s)).toEqual([...top, own, ...under]);
+    // Every copy is laid at its exact throw; the box's own shadow is not
+    // marked, so the engine lays it on whole pixels as Photoshop does.
+    expect([...top, ...under].every((sh) => sh.exact === true)).toBe(true);
+    expect(own.exact).toBeUndefined();
     // The shade, then the shake's copies each side.
     expect(top).toHaveLength(1 + 2 * 2);
     expect(top[1].x).toBeCloseTo(1.5);
