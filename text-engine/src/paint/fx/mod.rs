@@ -4,34 +4,30 @@
 //!
 //! ```text
 //! blend.rs     the 27 blend modes, and laying a layer over another in one
-//! contour.rs   the curve a matte is passed through, and Range
+//! contour.rs   the curve a matte is passed through, its presets, and Range
 //! noise.rs     seeded grain, so a box paints the same every time
-//! distance.rs  the exact distance transform; a matte grown by a distance
+//! distance.rs  distance transforms; a matte grown by a distance
+//! tent.rs      the soft edge of an effect: two box passes of its Size
 //! ```
 //!
 //! and here, how an effect's Size, Spread and Choke become a grow and a
 //! blur.
+//!
+//! Much of the effect maths is PhotoCraft's (github.com/storytold/photocraft),
+//! which fitted it on renders from Photoshop itself; each ported piece names
+//! its source. Copyright (c) 2026 ArtCraft Team and the PhotoCraft
+//! contributors, MIT licence (see `THIRD_PARTY.md`).
 
 pub mod blend;
 pub mod contour;
 pub mod distance;
 pub mod noise;
-
-/// The gaussian's sigma, in the same units, for an effect of Photoshop
-/// `size`. Size is how far the soft edge reaches, not a sigma: the kernel
-/// that reaches `size` has a sigma of about `0.3 * size + 0.3` (three sigmas
-/// either side). 0 is a hard edge.
-pub fn size_sigma(size: f64) -> f64 {
-    if size > 0.0 {
-        0.3 * size + 0.3
-    } else {
-        0.0
-    }
-}
+pub mod tent;
 
 /// How far a soft edge of `size` reaches past its matte, in the same units:
 /// the farthest a pixel of the effect can be from the letters, before it is
-/// moved.
+/// moved. The tent of `size` reaches at most `size`; the spread's grow is
+/// whole pixels inside that, and one more is the edge's own half.
 pub fn size_reach(size: f64) -> f64 {
     if size > 0.0 {
         size + 1.0
@@ -41,12 +37,15 @@ pub fn size_reach(size: f64) -> f64 {
 }
 
 /// Spread (outside) or Choke (inside), `share` of `size` from 0 to 1: the
-/// matte is grown by the first number and the rest of the size is blurred
-/// (Photoshop's split).
+/// matte is grown by the first number, whole pixels, and blurred by the
+/// second. A 2 % spread of a 5 px shadow does not grow it at all.
+///
+/// From PhotoCraft's `spread_split` (`crates/compose/src/effects/paint.rs`),
+/// fitted on Photoshop renders.
 pub fn spread_split(size: f64, share: f64) -> (f64, f64) {
     let size = size.max(0.0);
-    let grow = size * share.clamp(0.0, 1.0);
-    (grow, size - grow)
+    let share = share.clamp(0.0, 1.0);
+    ((size * share).round(), size * (1.0 - share))
 }
 
 #[cfg(test)]
@@ -55,12 +54,10 @@ mod tests {
 
     #[test]
     fn size_zero_is_a_hard_edge() {
-        assert_eq!(size_sigma(0.0), 0.0);
         assert_eq!(size_reach(0.0), 0.0);
-        assert!((size_sigma(10.0) - 3.3).abs() < 1e-12);
-        // Three sigmas fit inside the reach.
+        // The tent fits inside the reach.
         for s in [1.0, 5.0, 40.0, 250.0] {
-            assert!(3.0 * size_sigma(s) <= size_reach(s));
+            assert!(f64::from(tent::reach(s)) <= size_reach(s));
         }
     }
 
@@ -69,5 +66,7 @@ mod tests {
         assert_eq!(spread_split(10.0, 0.0), (0.0, 10.0));
         assert_eq!(spread_split(10.0, 1.0), (10.0, 0.0));
         assert_eq!(spread_split(10.0, 0.3), (3.0, 7.0));
+        // The grow is whole pixels; the blur keeps the rest of the share.
+        assert_eq!(spread_split(5.0, 0.02).0, 0.0);
     }
 }

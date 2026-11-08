@@ -11,6 +11,7 @@
 //! neighbours. Each pass computes in `f32` and rounds once on the way out.
 
 use super::budget;
+use super::fx::tent;
 use super::geom::IBox;
 use crate::Error;
 
@@ -470,18 +471,6 @@ fn blur_channels<const N: usize>(
 /// Blurs the surface by a gaussian of `sigma` pixels. Only the rows and
 /// columns the ink can reach are touched.
 pub(crate) fn gaussian(s: &mut Surface, sigma: f64) -> Result<(), Error> {
-    blurred(s, sigma, None)
-}
-
-/// [`gaussian`] for a surface that holds one colour at varying alpha, which
-/// a shadow's silhouette is: `rgb` is that colour, straight. Only the alpha
-/// is blurred and the colour is laid back under it, a quarter of the work
-/// for the same picture.
-pub(crate) fn gaussian_flat(s: &mut Surface, sigma: f64, rgb: [u8; 3]) -> Result<(), Error> {
-    blurred(s, sigma, Some(rgb))
-}
-
-fn blurred(s: &mut Surface, sigma: f64, flat: Option<[u8; 3]>) -> Result<(), Error> {
     if !(sigma > 0.0) {
         return Ok(());
     }
@@ -494,30 +483,70 @@ fn blurred(s: &mut Surface, sigma: f64, flat: Option<[u8; 3]>) -> Result<(), Err
         return Ok(());
     }
     let passes = passes(sigma)?;
-    match flat {
-        Some(_) => blur_channels::<1>(s, bx, &passes, 3)?,
-        None => blur_channels::<4>(s, bx, &passes, 0)?,
-    }
+    blur_channels::<4>(s, bx, &passes, 0)?;
     for y in bx.y0 as usize..bx.y1 as usize {
         let from = (y * s.width + bx.x0 as usize) * 4;
         for p in s.data[from..from + w * 4].chunks_exact_mut(4) {
+            // Rounding each channel on its own can leave a colour a level
+            // above its alpha, which is no colour: premultiplied channels
+            // never pass it.
             let a = p[3];
-            match flat {
-                // The one colour, under the alpha it has now.
-                Some(rgb) => {
-                    for c in 0..3 {
-                        p[c] = div255(u32::from(rgb[c]) * u32::from(a)) as u8;
-                    }
-                }
-                // Rounding each channel on its own can leave a colour a
-                // level above its alpha, which is no colour: premultiplied
-                // channels never pass it.
-                None => {
-                    p[0] = p[0].min(a);
-                    p[1] = p[1].min(a);
-                    p[2] = p[2].min(a);
-                }
+            p[0] = p[0].min(a);
+            p[1] = p[1].min(a);
+            p[2] = p[2].min(a);
+        }
+    }
+    Ok(())
+}
+
+/// A layer effect's soft edge (`fx::tent`): the alpha of a surface that holds
+/// one colour, `rgb` straight, through two box passes of `width` pixels each
+/// way, and the colour laid back under it.
+pub(crate) fn tent_flat(s: &mut Surface, width: f64, rgb: [u8; 3]) -> Result<(), Error> {
+    let reach = tent::reach(width);
+    if reach == 0 {
+        return Ok(());
+    }
+    let Some(ink) = s.ink() else {
+        return Ok(());
+    };
+    let bx = s.grown(ink, reach);
+    let (w, h) = (bx.width(), bx.height());
+    if w == 0 || h == 0 {
+        return Ok(());
+    }
+    let mut a = budget::filled(w * h, 0f64)?;
+    for y in 0..h {
+        let from = ((y + bx.y0 as usize) * s.width + bx.x0 as usize) * 4;
+        for (x, p) in s.data[from..from + w * 4].chunks_exact(4).enumerate() {
+            a[y * w + x] = f64::from(p[3]) / 255.0;
+        }
+    }
+    let mut mid = Vec::new();
+    let mut src = vec![0f64; w.max(h)];
+    let mut dst = vec![0f64; w.max(h)];
+    for y in 0..h {
+        src[..w].copy_from_slice(&a[y * w..(y + 1) * w]);
+        tent::line(&src[..w], &mut dst[..w], width, &mut mid);
+        a[y * w..(y + 1) * w].copy_from_slice(&dst[..w]);
+    }
+    for x in 0..w {
+        for y in 0..h {
+            src[y] = a[y * w + x];
+        }
+        tent::line(&src[..h], &mut dst[..h], width, &mut mid);
+        for y in 0..h {
+            a[y * w + x] = dst[y];
+        }
+    }
+    for y in 0..h {
+        let from = ((y + bx.y0 as usize) * s.width + bx.x0 as usize) * 4;
+        for (x, p) in s.data[from..from + w * 4].chunks_exact_mut(4).enumerate() {
+            let al = (a[y * w + x] * 255.0 + 0.5).clamp(0.0, 255.0) as u32;
+            for c in 0..3 {
+                p[c] = div255(u32::from(rgb[c]) * al) as u8;
             }
+            p[3] = al as u8;
         }
     }
     Ok(())
@@ -891,34 +920,31 @@ mod tests {
         }
     }
 
-    /// A surface in one colour: blurring its alpha and laying the colour
-    /// back is the blur of all four channels.
+    /// A layer effect's tent keeps the ink there was, and lays the one
+    /// colour under every alpha it leaves.
     #[test]
-    fn one_colour_blurred_by_its_alpha_is_the_same_picture() {
-        for sigma in [1.2, 4.0] {
-            let _scope = budget::Scope::new();
-            let rgb = [200u8, 40, 120];
-            let (mut full, mut flat) =
-                (Surface::new(48, 32).unwrap(), Surface::new(48, 32).unwrap());
-            for y in 8..20 {
-                for x in 10..40 {
-                    let a = if (x + y) % 3 == 0 { 255u32 } else { 90 };
-                    let px = [
-                        div255(u32::from(rgb[0]) * a) as u8,
-                        div255(u32::from(rgb[1]) * a) as u8,
-                        div255(u32::from(rgb[2]) * a) as u8,
-                        a as u8,
-                    ];
-                    full.data[(y * 48 + x) * 4..(y * 48 + x) * 4 + 4].copy_from_slice(&px);
-                    flat.data[(y * 48 + x) * 4..(y * 48 + x) * 4 + 4].copy_from_slice(&px);
-                }
-            }
-            gaussian(&mut full, sigma).unwrap();
-            gaussian_flat(&mut flat, sigma, rgb).unwrap();
-            for (i, (p, q)) in full.data.iter().zip(flat.data.iter()).enumerate() {
-                assert!(p.abs_diff(*q) <= 1, "sigma {sigma} byte {i}: {p} and {q}");
+    fn a_tent_keeps_the_ink_and_the_colour() {
+        let _scope = budget::Scope::new();
+        let rgb = [200u8, 40, 120];
+        let mut s = Surface::new(48, 32).unwrap();
+        for y in 12..20 {
+            for x in 16..30 {
+                let px = [rgb[0], rgb[1], rgb[2], 255];
+                s.data[(y * 48 + x) * 4..(y * 48 + x) * 4 + 4].copy_from_slice(&px);
             }
         }
+        let before: u32 = s.data.chunks_exact(4).map(|p| u32::from(p[3])).sum();
+        tent_flat(&mut s, 6.0, rgb).unwrap();
+        let after: u32 = s.data.chunks_exact(4).map(|p| u32::from(p[3])).sum();
+        assert!(before.abs_diff(after) <= before / 100, "{before} {after}");
+        for p in s.data.chunks_exact(4) {
+            for c in 0..3 {
+                assert_eq!(p[c], div255(u32::from(rgb[c]) * u32::from(p[3])) as u8);
+            }
+        }
+        // It reaches twice the box's radius past the ink, no further.
+        assert!(s.data[(16 * 48 + 16 - 6) * 4 + 3] > 0);
+        assert_eq!(s.data[(16 * 48 + 16 - 7) * 4 + 3], 0);
     }
 
     #[test]

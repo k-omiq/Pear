@@ -1052,22 +1052,23 @@ export function globalLight() {
   return light;
 }
 
-// The gaussian's sigma for a Size: `size_sigma` in fx/mod.rs, for the canvas
-// painters that stand in for the engine. 0 is a hard edge. To a hundredth of
-// a pixel, so a migrated blur (whose Size is kept to two places) reads back
-// as the blur it was, and a CSS filter has no float noise in it.
+// The gaussian's sigma that stands in for a Size, for the canvas painters
+// that stand in for the engine. The engine's soft edge is a tent, two boxes
+// of the Size (fx/tent.rs), which PhotoCraft fitted on Photoshop's renders;
+// the gaussian nearest a tent of width `w` has a sigma of about `0.4 * w`.
+// 0 is a hard edge. To a hundredth of a pixel, so a CSS filter has no float
+// noise in it.
 export function shadowSigma(size) {
   const s = Number(size) || 0;
-  return s > 0 ? Math.round((0.3 * s + 0.3) * 100) / 100 : 0;
+  return s > 0 ? Math.round(0.4 * s * 100) / 100 : 0;
 }
 
 // How far a shadow's ink reaches past its silhouette before it is thrown,
-// page px: its size (`size_reach` in fx/mod.rs), an extrude edge's grow, and
-// the grain noise can carry ink by (`SCATTER`, four device px, which is at
-// most four page px at any scale the app paints at).
+// page px: its size (`size_reach` in fx/mod.rs) and an extrude edge's grow.
+// Noise only thins what is there.
 export function shadowSpread(sh) {
   const size = Math.max(0, Number(sh?.size) || 0);
-  return (size > 0 ? size + 1 : 0) + Math.max(0, Number(sh?.grow) || 0) + ((Number(sh?.noise) || 0) > 0 ? 4 : 0);
+  return (size > 0 ? size + 1 : 0) + Math.max(0, Number(sh?.grow) || 0);
 }
 
 // The angle a shadow's light comes from, degrees as Photoshop states it, and

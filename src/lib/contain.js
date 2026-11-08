@@ -386,7 +386,8 @@ const unite = (r, x0, y0, x1, y1) =>
 // anyway. So the whole-text blur (sigma = `blur`, the filter's own radius) is
 // counted three sigma out, which is the reach the exporter pads its canvas by.
 // A shadow keeps its Size and a pixel, the reach `shadowExtent` pads for: its
-// sigma is `0.3 * size + 0.3`, so that is past three sigma (`shadowSpread`). The smear has no tail to cut: every tap is a copy of the
+// soft edge is a tent of two boxes of the Size, which reaches no further
+// (`shadowSpread`). The smear has no tail to cut: every tap is a copy of the
 // picture at the tap's weight, and even the faintest - the outermost tap at the
 // most iterations, 0.07/33 of the ink - lights over half an 8-bit step, so it
 // counts to the last tap.

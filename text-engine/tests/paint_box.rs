@@ -4,7 +4,7 @@
 
 use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::contour::{Curve, Lut};
-use mt_text::paint::fx::size_sigma;
+
 use mt_text::paint::{
     decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape,
     Effects, Fill, Job, Mesh, Pt, Raster, Request, Rgba, Run, Shadow, Tap, BOX_MAGIC,
@@ -260,7 +260,7 @@ fn a_shadow_turns_and_mirrors_with_the_box() {
 }
 
 #[test]
-fn a_shadow_blur_is_half_a_box_blur_and_grows_with_the_scale() {
+fn a_shadow_size_is_a_tent_that_reaches_the_size() {
     let mut e = Engine::new();
     let font = load(&mut e);
     let mut b = plain(font);
@@ -270,16 +270,16 @@ fn a_shadow_blur_is_half_a_box_blur_and_grows_with_the_scale() {
         ..shadow(BLACK, 0.0, 0.0)
     }];
     let soft = paint(&mut e, &mut b);
-    // The same picture from the whole-box blur at the sigma a size of 12
-    // stands for.
     b.shadows = vec![shadow(BLACK, 0.0, 0.0)];
-    b.blur = size_sigma(12.0);
-    assert_eq!(paint(&mut e, &mut b), soft);
-    // And it reaches about three sigma past the letters.
-    b.blur = 0.0;
-    let hard = inked(&paint(&mut e, &mut b));
-    let reach = hard.0 - inked(&soft).0;
-    assert!((8..=16).contains(&reach), "reached {reach}");
+    let hard = paint(&mut e, &mut b);
+    // Photoshop's Size is how far the soft edge reaches: two boxes of 12,
+    // whose last faint pixels can round away.
+    let reach = inked(&hard).0 - inked(&soft).0;
+    assert!((8..=12).contains(&reach), "reached {reach}");
+    // Softer than the hard one at the letters' edge, and not a gaussian:
+    // the whole-box blur at the sigma Photoshop's dialog would suggest is
+    // another picture.
+    assert_ne!(soft, hard);
 }
 
 #[test]
@@ -657,7 +657,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
             noise: 0.5,
             blend: Blend::Multiply,
             knockout: true,
-            contour: Some(Lut::new(&Curve::Preset(1), false, true)),
+            contour: Some(Lut::new(&Curve::Preset(1))),
             seed: 7,
         }]
     );
@@ -940,7 +940,7 @@ fn a_contour_reshapes_the_falloff_and_noise_grains_it_the_same_every_time() {
         ..shadow(RED, 0.0, 60.0)
     }];
     let linear = paint(&mut e, &mut b);
-    b.shadows[0].contour = Some(Lut::new(&Curve::Preset(2), true, true));
+    b.shadows[0].contour = Some(Lut::new(&Curve::Preset(2)));
     let cone = paint(&mut e, &mut b);
     assert_ne!(linear, cone);
     b.shadows[0].contour = None;

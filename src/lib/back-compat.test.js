@@ -272,7 +272,7 @@ describe('a style written before strokes and shadows were lists', () => {
     const s = normalizeStyle(JSON.parse(ERA2_STYLE));
     // Its blur becomes the Size that blurs as much, and it stays Normal,
     // with no knockout and its own angle: exactly as it looked.
-    expect(s.shadows).toEqual([{ x: 3, y: 4, size: 9, color: '#112233', opacity: 0.5, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
+    expect(s.shadows).toEqual([{ x: 3, y: 4, size: 7.5, color: '#112233', opacity: 0.5, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
   });
 
   it('reads a switched-off shadow as no shadow rather than as a black one', () => {

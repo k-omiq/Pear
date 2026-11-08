@@ -29,7 +29,7 @@
 use super::blur::{self, Moved, Surface};
 use super::fx::blend::{self, Backdrop, Blend};
 use super::fx::contour::{self, Curve, Lut};
-use super::fx::{distance, noise, size_reach, size_sigma, spread_split};
+use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
 use super::job::{decode, Fill, Request, Rgba};
 use super::raster::{Part, Rasterizer};
@@ -299,9 +299,7 @@ impl<'a> Reader<'a> {
         }
         let seed = self.u32()?;
         let curve = self.curve()?;
-        let contour = curve
-            .map(|c| Lut::new(&c, flags & 2 != 0, true))
-            .filter(|l| !l.is_identity());
+        let contour = curve.map(|c| Lut::new(&c)).filter(|l| !l.is_identity());
         Ok(Shadow {
             color,
             opacity,
@@ -322,7 +320,7 @@ impl<'a> Reader<'a> {
     fn curve(&mut self) -> Result<Option<Curve>, Error> {
         match self.u32()? {
             0 => Ok(None),
-            n if (n as usize) < contour::PRESET_NAMES.len() => Ok(Some(Curve::Preset(n))),
+            n if (n as usize) < contour::PRESETS.len() => Ok(Some(Curve::Preset(n))),
             255 => {
                 let n = self.count(contour::MAX_POINTS, 20)?;
                 let mut pts = Vec::with_capacity(n);
@@ -725,10 +723,10 @@ fn lay_styled(
     let letters = if knock { Some(alpha_of(&layer)?) } else { None };
     let (grow, rest) = spread_split(sh.size, sh.spread);
     if positive(grow * scale) {
-        distance::grow(&mut matte, width, height, grow * scale)?;
+        distance::dilate(&mut matte, width, height, grow * scale)?;
         set_flat(&mut layer, rgb, &matte);
     }
-    blur::gaussian_flat(&mut layer, size_sigma(rest) * scale, rgb)?;
+    blur::tent_flat(&mut layer, rest * scale, rgb)?;
     let reach = (size_reach(sh.size) * scale)
         .ceil()
         .min(f64::from(i32::MAX)) as i32
@@ -751,27 +749,14 @@ fn lay_styled(
             }
         }
         if positive(sh.noise) {
-            let g = noise::SCATTER;
-            ink = IBox {
-                x0: ink.x0 - g,
-                y0: ink.y0 - g,
-                x1: ink.x1 + g,
-                y1: ink.y1 + g,
-            }
-            .intersect(&IBox {
-                x0: 0,
-                y0: 0,
-                x1: width as i32,
-                y1: height as i32,
-            });
-            noise::scatter(
+            noise::grain(
                 &mut matte,
                 width,
                 height,
                 (ink.x0, ink.y0, ink.x1, ink.y1),
                 sh.noise as f32,
                 sh.seed,
-            )?;
+            );
         }
         set_flat(&mut layer, rgb, &matte);
         let Some(found) = layer.ink_in(ink) else {
@@ -978,11 +963,11 @@ fn paint(
                 layer.draw(&r.data, r.width as usize, r.x, r.y);
                 // A silhouette is one colour, so only its alpha needs the blur.
                 let [red, green, blue, _] = sh.color.0;
-                let sigma = size_sigma(sh.size) * scale;
-                blur::gaussian_flat(layer, sigma, [red, green, blue])?;
+                let width = sh.size * scale;
+                blur::tent_flat(layer, width, [red, green, blue])?;
                 // The ink is the raster's, and as far round it as the blur
                 // spread it.
-                let reach = blur::blur_reach(sigma);
+                let reach = super::fx::tent::reach(width);
                 let drawn = IBox {
                     x0: r.x.saturating_sub(reach),
                     y0: r.y.saturating_sub(reach),
