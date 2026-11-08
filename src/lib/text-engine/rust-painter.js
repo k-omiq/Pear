@@ -7,7 +7,7 @@
 // The engine turns a job into pixels (text-engine/js/paint.mjs); this file's
 // whole work is to hand it what only the page has - the canvas's transform and
 // the pattern tiles - and to put the pixels it gives back onto the canvas.
-import { drawsPatternTiles, drawsScreens, paintBox as paintBoxJob, paintJob, paintsBoxes, patternTile } from '../../../text-engine/js/paint.mjs';
+import { drawsPatternTiles, drawsScreens, paintBox as paintBoxJob, paintJob, paintsBoxes, paintsInk, patternTile } from '../../../text-engine/js/paint.mjs';
 import { canvasPatternKind, patternTileCanvas, patternTilePx, TILE_SS } from '../text-paint.js';
 import { pickedTile } from '../pattern-tiles.svelte.js';
 
@@ -139,6 +139,9 @@ export function createRustGlyphPainter(rust, options = {}) {
       channels: spec.channels ?? null,
       blendIf: spec.blendIf ?? null,
       effects: spec.effects ?? [],
+      // The box's brush ink (`inkSpec`, exporter.js), painted with the
+      // letters: round dabs only (`ink`).
+      ink: spec.ink ?? null,
       // The page under the surface: given, or asked for now the surface is
       // known (`backdrop.js`), with the matrix that carries the job onto it.
       // Null paints without the page.
@@ -198,7 +201,10 @@ export function createRustGlyphPainter(rust, options = {}) {
   // it does when the wasm it was handed has that call.
   // `screen` says a pattern is painted per pixel from its kind and controls
   // (`screenInJob`), which this wasm does when it has the call.
+  // `ink` says a box's brush ink of round dabs is painted in its box job
+  // (`boxInJob`), as letters are: a wasm of box wire v12 and on.
   const box = paintsBoxes(rust.low);
   const screen = drawsScreens(rust.low);
-  return { id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen };
+  const ink = box && paintsInk(rust.low);
+  return { id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen, ink };
 }

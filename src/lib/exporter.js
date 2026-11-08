@@ -946,11 +946,30 @@ function boxPlan(box, p, flat = false) {
 // back glyphs for the canvas to lay those over (`paintShadows`,
 // `applyTextFilters`, `drawClipShapes`). One engine has to measure and paint
 // and its painter has to say it does this (`box`, the Rust painter's), and
-// nothing of the box may be drawn by the canvas: hand-drawn ink is, so an
-// inked box keeps the canvas passes whole. Never true under the browser
-// engine.
+// nothing of the box may be drawn by the canvas. Hand-drawn ink goes into
+// the job too where the painter paints it (`ink`, a wasm of box wire v12):
+// every stroke round (an imported tip, or a cycle of them, is the canvas's
+// for now) and the box neither meshed nor roughened (both still bend the
+// canvas's ink with its letters). Any other inked box keeps the canvas
+// passes whole. Never true under the browser engine.
 export function boxInJob(box) {
-  return engineDraws() && glyphPainter().box === true && !inkActive(box.style.ink);
+  if (!engineDraws() || glyphPainter().box !== true) return false;
+  const s = box.style;
+  if (!inkActive(s.ink)) return true;
+  return glyphPainter().ink === true && inkIsRound(s.ink) && !warpActive(s, box.w, box.h) && s.roughen?.on !== true;
+}
+
+// Every stroke of the ink stamped with the round dab: no imported tip, no
+// tip cycle.
+function inkIsRound(ink) {
+  return ink.strokes.every((k) => (!k?.brush || k.brush === 'round') && !(Array.isArray(k?.tips) && k.tips.length > 1));
+}
+
+// The box's brush ink as the painter takes it (`encodeBox`'s `ink`): the
+// strokes, stated from the box's top-left, which is at (L.ox, L.oy) in the
+// job. Null for a box with none.
+export function inkSpec(s, L) {
+  return inkActive(s.ink) ? { ox: L.ox, oy: L.oy, strokes: s.ink.strokes } : null;
 }
 
 // The box, finished, onto `ctx`, whose user space is the layout's own (the
@@ -996,6 +1015,9 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
     // The mask's shapes are the box's own, so the box's corner goes with them.
     clip: clipActive(s.clip) ? { mode: s.clip.mode === 'include' ? 'include' : 'exclude', x: L.ox, y: L.oy, shapes: s.clip.shapes } : null,
+    // The brush ink, painted with the letters (`boxInJob` lets it in only
+    // where the painter does that).
+    ink: inkSpec(s, L),
   });
   const caption = L.caption ? glyphPainter().paint(ctx, captionJob(box, L)) : null;
   return inkUnion([body, caption], ctx.canvas);
