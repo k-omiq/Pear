@@ -15,7 +15,8 @@ import { identityMesh } from './warp.js';
 // Where the Rust engine measures and paints, a box's mesh is stated in the
 // glyph job and the painter bends the outlines (`meshInJob`, exporter.js); the
 // texture then comes back bent (`warped`) and `warpTexture` leaves it alone.
-// Anywhere else - the browser painter, a box with brush ink or a mask, a drag
+// Anywhere else - the browser painter, a box with brush ink (the engine paints
+// ink but does not bend it yet, phase 8c) or a mask, a drag
 // of the mesh gizmo (`flat`) - the mesh is the raster warp of the finished
 // texture it always was. Pinned here: which way a box goes, that the footprint
 // worked out without a paint is the one a paint returns, and that the two
