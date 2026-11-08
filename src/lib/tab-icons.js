@@ -101,10 +101,16 @@ export const iconEffectGlow = wrap(
   '<circle cx="10" cy="10" r="3.5"/><circle cx="10" cy="10" r="7" stroke-dasharray="1.5 2"/>',
 );
 
+// A square inside a square, the corners joined: a bevelled tile.
+export const iconEffectBevel = wrap(
+  '<rect x="3.5" y="3.5" width="13" height="13" rx="1"/><rect x="7" y="7" width="6" height="6"/><path d="M3.5 3.5 7 7M16.5 3.5 13 7M3.5 16.5 7 13M16.5 16.5 13 13"/>',
+);
+
 export const effectsSubTabIcons = {
   stroke: iconEffectStroke,
   shadow: iconEffectShadow,
   glow: iconEffectGlow,
+  bevel: iconEffectBevel,
   warp: iconEffectWarp,
   transform: iconEffectTransform,
   liquify: iconEffectLiquify,

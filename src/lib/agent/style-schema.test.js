@@ -335,10 +335,11 @@ describe('styleSchemaText', () => {
   // printed once, under their names), and to 14400 for the Photoshop
   // strokes, the gradient and pattern overlays and the gradient glows (a
   // gradient and a pattern are printed whole once), and to 15000 for the
-  // noise gradient's fields and Shape Burst, and to 15500 for the Satin.
-  it('describes every key, field and item in under 15500 characters', () => {
+  // noise gradient's fields and Shape Burst, and to 15500 for the Satin, and
+  // to 17000 for the Bevel & Emboss (Structure, Shading, Contour, Texture).
+  it('describes every key, field and item in under 17000 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(15500);
+    expect(text.length).toBeLessThan(17000);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.
@@ -439,5 +440,28 @@ describe('writable geometry: path anchors and mask shapes', () => {
     const r = applyStylePatch(one.style, { clip: { shapes: { 0: { kind: 'ellipse', cx: 5 } } } });
     expect(r.errors).toEqual([{ path: 'clip.shapes.0', error: expect.stringContaining('give the whole list') }]);
     expect(r.style.clip.shapes).toEqual([SHAPES.poly]);
+  });
+});
+
+describe('the bevel in the schema', () => {
+  it('takes a whole Bevel & Emboss patch, and refuses what Photoshop has no name for', () => {
+    const patch = { bevel: { on: true, style: 'emboss', technique: 'chisel-hard', depth: 2, direction: 'down', size: 12, soften: 3, useGlobalLight: false, angle: 45, altitude: 60, highlight: { blend: 'screen', opacity: 0.5 }, contour: { on: true, curve: { preset: 'cone' }, range: 0.3 }, texture: { on: true, scale: 2, depth: -1, link: false } } };
+    expect(validateStylePatch(patch)).toEqual([]);
+    const r = applyStylePatch(defaultStyle(), patch);
+    expect(r.errors).toEqual([]);
+    expect(r.style.bevel).toMatchObject({ on: true, style: 'emboss', technique: 'chisel-hard', depth: 2, direction: 'down', size: 12, soften: 3, angle: 45, altitude: 60, highlight: { blend: 'screen', color: '#ffffff', opacity: 0.5 }, contour: { on: true, curve: { preset: 'cone' }, range: 0.3 }, texture: { on: true, scale: 2, depth: -1, link: false } });
+    expect(validateStylePatch({ bevel: { style: 'ridge' } }).length).toBeGreaterThan(0);
+    expect(validateStylePatch({ bevel: { technique: 'chisel' } }).length).toBeGreaterThan(0);
+    expect(validateStylePatch({ bevel: { depth: 11 } }).length).toBeGreaterThan(0);
+    expect(validateStylePatch({ bevel: { highlight: { blend: 'glow' } } }).length).toBeGreaterThan(0);
+  });
+
+  it('prints the blend and contour lists by name, and the shadow half like the highlight', () => {
+    const text = styleSchemaText();
+    expect(text).toContain('bevel.style: enum inner|outer|emboss|pillow|stroke - ');
+    expect(text).toContain('bevel.highlight.blend: enum BLEND - ');
+    expect(text).toContain('bevel.gloss.preset: enum CONTOUR - ');
+    expect(text).toContain('bevel.shadow: object like bevel.highlight - ');
+    expect(text).toContain('bevel.texture.pattern: object like pattern - ');
   });
 });

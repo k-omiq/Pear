@@ -14,9 +14,10 @@ import {
   newShadow,
   newTypesetting,
   normalizeSatin,
+  normalizeBevel,
   normalizeStyle,
 } from './data.js';
-import { shadowSigma, shadowOffset, resolveShadow, setGlobalLight, boxEffects, bevelReach } from './text-paint.js';
+import { shadowSigma, shadowOffset, resolveShadow, setGlobalLight, boxEffects, bevelReach, reachShadows } from './text-paint.js';
 import { rescaleStyle } from './store.svelte.js';
 
 // ===========================================================================
@@ -247,5 +248,88 @@ describe('a bevel', () => {
     expect(bevelReach({ kind: 'bevel', style: 'outer', size: 0 })).toBe(5);
     expect(bevelReach({ kind: 'bevel', style: 'emboss', size: 9, soften: 0.5 })).toBe(9);
     expect(bevelReach({ kind: 'bevel', style: 'pillow', technique: 'chisel-soft', size: 20 })).toBe(10 + 6 + 4);
+  });
+});
+
+describe('a bevel in the style', () => {
+  const lit = { blend: 'screen', color: '#ffffff', opacity: 0.75 };
+  const dark = { blend: 'multiply', color: '#000000', opacity: 0.75 };
+
+  it('starts as Photoshop adds one, switched off, and keeps every field in range', () => {
+    const d = normalizeBevel(undefined);
+    expect(d).toMatchObject({
+      on: false, style: 'inner', technique: 'smooth', depth: 1, direction: 'up', size: 5, soften: 0,
+      useGlobalLight: true, angle: 120, altitude: 30, gloss: { preset: 'linear', aa: false }, highlight: lit, shadow: dark,
+      contour: { on: false, curve: { preset: 'linear', aa: false }, range: 0.5 },
+    });
+    expect(d.texture).toMatchObject({ on: false, scale: 1, depth: 1, invert: false, link: true });
+    expect(d.texture.pattern.on).toBe(true);
+    // A style saved before the bevel existed has the default one.
+    expect(normalizeStyle({}).bevel).toEqual(d);
+    const s = normalizeBevel({
+      on: true, style: 'bevel', technique: 'chisel', depth: 40, direction: 'left', size: 900, soften: 20,
+      useGlobalLight: 'yes', angle: 200, altitude: 120,
+      gloss: { preset: 'cone' }, highlight: { blend: 'glow', color: 'red', opacity: 3 }, shadow: { opacity: -1 },
+      contour: { on: true, curve: { preset: 'gaussian', aa: true }, range: 4 },
+      texture: { on: true, pattern: { kind: 'stripes' }, scale: 50, depth: -30, invert: true, link: false },
+    });
+    expect(s).toMatchObject({
+      on: true, style: 'inner', technique: 'smooth', depth: 10, direction: 'up', size: 250, soften: 16,
+      useGlobalLight: true, angle: -160, altitude: 90, gloss: { preset: 'cone', aa: false },
+      highlight: { ...lit, opacity: 1 }, shadow: { ...dark, opacity: 0 },
+      contour: { on: true, curve: { preset: 'gaussian', aa: true }, range: 1 },
+      texture: { on: true, scale: 10, depth: -10, invert: true, link: false },
+    });
+    expect(s.texture.pattern).toMatchObject({ kind: 'stripes', on: true });
+    expect(normalizeBevel({ depth: -1, size: -4, soften: -1, altitude: -5, texture: { scale: 0 } })).toMatchObject({ depth: 0, size: 0, soften: 0, altitude: 0, texture: { scale: 0.01 } });
+    expect(normalizeBevel({ style: 'stroke', technique: 'chisel-soft', direction: 'down' })).toMatchObject({ style: 'stroke', technique: 'chisel-soft', direction: 'down' });
+  });
+
+  it('is sent resolved: the chapter light when it follows it, its own angle when not', () => {
+    setGlobalLight({ angle: 90, altitude: 15 });
+    try {
+      const bevel = normalizeBevel({ on: true });
+      expect(boxEffects({ bevel })).toEqual([{
+        kind: 'bevel', style: 'inner', technique: 'smooth', depth: 1, direction: 'up', size: 5, soften: 0,
+        angle: 90, altitude: 15, gloss: { preset: 'linear', aa: false }, highlight: lit, shadow: dark,
+      }]);
+      const own = boxEffects({ bevel: { ...bevel, useGlobalLight: false, angle: 45, altitude: 60 } })[0];
+      expect([own.angle, own.altitude]).toEqual([45, 60]);
+      expect(boxEffects({ bevel: { ...bevel, on: false } })).toEqual([]);
+      expect(boxEffects({ bevel: { ...bevel, highlight: { ...lit, opacity: 0 }, shadow: { ...dark, opacity: 0 } } })).toEqual([]);
+    } finally {
+      setGlobalLight({ angle: 120, altitude: 30 });
+    }
+  });
+
+  it('sends the Contour and the Texture only when their elements are on', () => {
+    const bevel = normalizeBevel({
+      on: true,
+      contour: { on: false, curve: { preset: 'cone', aa: true }, range: 0.25 },
+      texture: { on: false, pattern: { kind: 'stripes', scale: 2 }, scale: 0.5, depth: -2, invert: true, link: false },
+    });
+    const off = boxEffects({ bevel })[0];
+    expect(off.contour).toBeUndefined();
+    expect(off.texture).toBeUndefined();
+    const on = boxEffects({ bevel: { ...bevel, contour: { ...bevel.contour, on: true }, texture: { ...bevel.texture, on: true } } })[0];
+    expect(on.contour).toEqual({ preset: 'cone', aa: true, range: 0.25 });
+    // The Texture's Scale is laid over the pattern's own; unlinked, it is
+    // fixed to the page. The exporter makes the pattern a fill.
+    expect(on.texture).toMatchObject({ depth: -2, invert: true, pattern: { kind: 'stripes', scale: 1, anchor: 'page' } });
+    // Depth 0 shapes nothing.
+    expect(boxEffects({ bevel: { ...bevel, texture: { ...bevel.texture, on: true, depth: 0 } } })[0].texture).toBeUndefined();
+    // Last in the list: the top of Photoshop's stack.
+    const many = boxEffects({ bevel, satin: normalizeSatin({ on: true }), strokeEffects: [{ size: 2, position: 'outside', opacity: 1, blend: 'normal', fill: 'color', color: '#000000' }] });
+    expect(many.map((fx) => fx.kind)).toEqual(['satin', 'stroke', 'bevel']);
+  });
+
+  it('reaches past the letters as far as its style does', () => {
+    expect(reachShadows({ bevel: normalizeBevel({ on: true, style: 'outer', size: 10 }) }).at(-1)).toMatchObject({ grow: 14 });
+    expect(reachShadows({ bevel: normalizeBevel({ on: true, size: 10 }) })).toEqual([]);
+  });
+
+  it('rescales its Size and Soften with the page, not its depth, angle or texture scale', () => {
+    const bevel = normalizeBevel({ on: true, size: 10, soften: 2, depth: 3, angle: 45, altitude: 20, texture: { on: true, scale: 2 } });
+    expect(rescaleStyle({ bevel }, 2, 2).bevel).toMatchObject({ size: 20, soften: 4, depth: 3, angle: 45, altitude: 20, texture: { scale: 2 } });
   });
 });
