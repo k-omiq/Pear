@@ -1174,8 +1174,8 @@ export function boxShadows(style) {
 // The box's layer effects past its drop shadows, as the engine's box job takes
 // them (`encodeBox`'s `effects`): Outer Glow, Inner Glow, each Inner Shadow
 // (thrown from the chapter's light when it follows it), each Color and
-// Gradient Overlay, the Pattern Overlay, the Satin and each Stroke. Only the
-// Rust engine paints them.
+// Gradient Overlay, the Pattern Overlay, the Satin, each Stroke and the Bevel
+// & Emboss (`bevelOf`). Only the Rust engine paints them.
 export function boxEffects(style) {
   const out = [];
   const og = style?.outerGlow;
@@ -1208,7 +1208,43 @@ export function boxEffects(style) {
   for (const k of strokeEffectsOf(style)) {
     out.push({ kind: 'stroke', size: k.size, position: k.position, opacity: k.opacity, blend: k.blend, paint: strokePaint(k) });
   }
+  const bv = bevelOf(style);
+  if (bv) out.push(bv);
   return out;
+}
+
+// The box's Bevel & Emboss as the engine takes it (`encodeBox`'s `kind:
+// 'bevel'`), or null when it lays nothing. Last in the list, as it is the top
+// of Photoshop's stack (B9); the engine lays each style at its own place in
+// the box job whatever the order. On the Global Light its angle and altitude
+// are the chapter's. The Contour element goes only when it is on (its Range
+// is carried, not painted); the Texture's pattern is made the fill the
+// engine takes by the exporter (`effectPaints`), its Scale over the
+// pattern's own and Link with Layer as the pattern's anchor.
+function bevelOf(style) {
+  const b = style?.bevel;
+  if (!b?.on || !(b.highlight?.opacity > 0 || b.shadow?.opacity > 0)) return null;
+  const fx = {
+    kind: 'bevel',
+    style: b.style,
+    technique: b.technique,
+    depth: b.depth,
+    direction: b.direction,
+    size: b.size,
+    soften: b.soften,
+    angle: b.useGlobalLight ? light.angle : b.angle,
+    altitude: b.useGlobalLight ? light.altitude : b.altitude,
+    gloss: b.gloss,
+    highlight: b.highlight,
+    shadow: b.shadow,
+  };
+  if (b.contour?.on) fx.contour = { ...b.contour.curve, range: b.contour.range };
+  const t = b.texture;
+  if (t?.on && t.pattern && t.depth !== 0) {
+    const pattern = { ...t.pattern, scale: (Number(t.pattern.scale) || 1) * (Number(t.scale) || 1), anchor: t.link === false ? 'page' : 'box' };
+    fx.texture = { depth: t.depth, invert: t.invert === true, pattern };
+  }
+  return fx;
 }
 
 // A glow's gradient, when it paints one.

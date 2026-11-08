@@ -66,6 +66,9 @@
     STROKE_POSITIONS,
     GRADIENT_MIN_STOPS,
     LAYER_BLEND_MODES,
+    LIGHT_DEF,
+    BEVEL_DEPTH_MAX,
+    BEVEL_SOFTEN_MAX,
   } from './data.js';
   import { layoutShape } from './balloon.js';
   import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset } from './text-paint.js';
@@ -154,6 +157,7 @@
     ['stroke', 'Stroke'],
     ['shadow', 'Shadow'],
     ['glow', 'Glow'],
+    ['bevel', 'Bevel & Emboss'],
     ['warp', 'Warp'],
     // Not the same thing as the one above it, and the two labels are the only
     // place that says so to the user: `warp` bends the BASELINE (arc, circle,
@@ -824,6 +828,47 @@
     sh.contour = { preset, aa: sh.contour?.aa === true };
     touch();
   }
+
+  // ---- bevel ----
+  // Style and Technique as Photoshop's dialog names them.
+  const BEVEL_STYLE_OPTIONS = [['outer', 'Outer Bevel'], ['inner', 'Inner Bevel'], ['emboss', 'Emboss'], ['pillow', 'Pillow Emboss'], ['stroke', 'Stroke Emboss']];
+  const BEVEL_TECHNIQUE_OPTIONS = [['smooth', 'Smooth'], ['chisel-hard', 'Chisel Hard'], ['chisel-soft', 'Chisel Soft']];
+  // The light a bevel is shaded from: the chapter's on the Global Light, its
+  // own when not. Turning or raising one on the light turns or raises the
+  // chapter's, as in Photoshop, and every shadow and bevel on it follows.
+  const bevelLight = (bv) => (bv.useGlobalLight ? (app.typesetting.light ?? LIGHT_DEF) : bv);
+  function setBevelLight(bv, key, e, lo, hi) {
+    const el = e.target;
+    let v = +el.value;
+    if (!Number.isFinite(v)) v = bevelLight(bv)[key];
+    v = clamp(v, lo, hi);
+    if (bv.useGlobalLight) setChapterLight({ [key]: v });
+    else {
+      bv[key] = v;
+      touch();
+    }
+    el.value = String(bevelLight(bv)[key]);
+  }
+  // Off the light, a bevel keeps the angle and altitude it had from it.
+  function setBevelGlobal(bv, on) {
+    if (!on && bv.useGlobalLight) {
+      const l = bevelLight(bv);
+      bv.angle = l.angle;
+      bv.altitude = l.altitude;
+    }
+    bv.useGlobalLight = on;
+    touch();
+  }
+  // A percent field over a fraction: Depth and the Texture's Scale and Depth.
+  function commitPct(obj, key, e, lo, hi) {
+    const el = e.target;
+    let v = +el.value;
+    if (!Number.isFinite(v)) v = obj[key] * 100;
+    v = clamp(v, lo, hi);
+    obj[key] = v / 100;
+    el.value = String(Math.round(v));
+    touch();
+  }
   function removeShadow(i) {
     box.style.shadows.splice(i, 1);
     touch();
@@ -1292,6 +1337,205 @@
         <span>Invert</span>
       </label>
     </div>
+  </div>
+{/snippet}
+
+<!-- Photoshop's Bevel & Emboss, in its dialog's order: Structure (Style,
+     Technique, Depth, Direction, Size, Soften), Shading (Angle and Altitude,
+     on the Global Light or the box's own, Gloss Contour, Highlight and Shadow),
+     then the Contour and Texture elements, each with its own switch. The Rust
+     engine paints it. -->
+{#snippet bevelControls(bv)}
+  {@const lit = (app.typesetting.light, bevelLight(bv))}
+  <div class="switch-row">
+    <button
+      type="button"
+      class="switch"
+      class:on={bv.on}
+      role="switch"
+      aria-checked={bv.on}
+      aria-label="Bevel & Emboss"
+      onclick={() => { bv.on = !bv.on; touch(); }}
+    ><span class="knob"></span></button>
+    <span class="lbl2">Bevel & Emboss</span>
+  </div>
+  <div class="insp-sub-body" class:disabled={!bv.on} style="padding:0;border:none;gap:11px">
+    {@render secHead('Structure')}
+    <div class="sh-more" style="margin:0">
+      <label class="sh-contour" title="Style: where the bevel is laid">
+        <span>Style</span>
+        <select value={bv.style} disabled={!bv.on} aria-label="Bevel style" onchange={(e) => { bv.style = e.target.value; touch(); }}>
+          {#each BEVEL_STYLE_OPTIONS as [id, label] (id)}
+            <option value={id}>{label}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="sh-contour" title="Technique: a soft slope, or a cut edge">
+        <span>Technique</span>
+        <select value={bv.technique} disabled={!bv.on} aria-label="Bevel technique" onchange={(e) => { bv.technique = e.target.value; touch(); }}>
+          {#each BEVEL_TECHNIQUE_OPTIONS as [id, label] (id)}
+            <option value={id}>{label}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+    {#if bv.style === 'stroke' && !box.style.strokeEffects?.length}
+      <p class="nofill-note">Stroke Emboss bevels the Photoshop strokes (Stroke tab); this box has none.</p>
+    {/if}
+    <div class="grp">
+      <span class="lbl">Depth</span>
+      <div class="slider-row">
+        <input type="range" min="0" max={BEVEL_DEPTH_MAX * 100} step="1" value={pct(bv.depth)} disabled={!bv.on} aria-label="Bevel depth" oninput={(e) => setNum(bv, 'depth', e.target.value / 100, 0, BEVEL_DEPTH_MAX)} />
+        <input class="num-s" type="number" min="0" max={BEVEL_DEPTH_MAX * 100} step="1" value={pct(bv.depth)} disabled={!bv.on} title="Depth, %: how steep the slope is shaded" aria-label="Bevel depth, percent" onchange={(e) => commitPct(bv, 'depth', e, 0, BEVEL_DEPTH_MAX * 100)} />
+      </div>
+    </div>
+    <div class="grp" role="radiogroup" aria-label="Bevel direction">
+      <span class="lbl">Direction</span>
+      <div class="sh-more" style="margin:0">
+        {#each [['up', 'Up'], ['down', 'Down']] as [id, label] (id)}
+          <label class="sh-check" title="Direction: {label}, which side the light falls on">
+            <input type="radio" name="bevel-direction" value={id} checked={bv.direction === id} disabled={!bv.on} aria-label="Bevel direction {label}" onchange={() => { bv.direction = id; touch(); }} />
+            <span>{label}</span>
+          </label>
+        {/each}
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Size</span>
+      <div class="slider-row">
+        <input type="range" min="0" max={SHADOW_SIZE_MAX} step="1" value={bv.size} disabled={!bv.on} aria-label="Bevel size" oninput={(e) => setNum(bv, 'size', e.target.value, 0, SHADOW_SIZE_MAX)} />
+        <input class="num-s" type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={bv.size} disabled={!bv.on} title="How wide the slope is, page px (0 draws as 1, as Photoshop does)" aria-label="Bevel size, page px" onchange={(e) => commitNum(bv, 'size', e, 0, SHADOW_SIZE_MAX)} />
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Soften</span>
+      <div class="slider-row">
+        <input type="range" min="0" max={BEVEL_SOFTEN_MAX} step="1" value={bv.soften} disabled={!bv.on} aria-label="Bevel soften" oninput={(e) => setNum(bv, 'soften', e.target.value, 0, BEVEL_SOFTEN_MAX)} />
+        <input class="num-s" type="number" min="0" max={BEVEL_SOFTEN_MAX} step="1" value={bv.soften} disabled={!bv.on} title="Blurs the shading, page px" aria-label="Bevel soften, page px" onchange={(e) => commitNum(bv, 'soften', e, 0, BEVEL_SOFTEN_MAX)} />
+      </div>
+    </div>
+
+    {@render secHead('Shading')}
+    <div class="sh-more" style="margin:0">
+      <label class="sh-num" title={bv.useGlobalLight ? "Angle of the chapter's light, degrees: turns every shadow and bevel on it" : 'Angle the light comes from, degrees'}>
+        <span>Angle</span>
+        <input type="number" min="-180" max="180" step="1" value={lit.angle} disabled={!bv.on} aria-label="Bevel angle" onchange={(e) => setBevelLight(bv, 'angle', e, -180, 180)} />
+      </label>
+      <label class="sh-num" title={bv.useGlobalLight ? "Altitude of the chapter's light, degrees" : 'How high the light is, degrees: 90 is straight above'}>
+        <span>Altitude</span>
+        <input type="number" min="0" max="90" step="1" value={lit.altitude} disabled={!bv.on} aria-label="Bevel altitude" onchange={(e) => setBevelLight(bv, 'altitude', e, 0, 90)} />
+      </label>
+      <label class="sh-check" title="Use Global Light: the angle and altitude are the chapter's, shared by every shadow and bevel that uses it">
+        <input type="checkbox" checked={bv.useGlobalLight} disabled={!bv.on} aria-label="Bevel uses the global light" onchange={(e) => setBevelGlobal(bv, e.target.checked)} />
+        <span>Global light</span>
+      </label>
+    </div>
+    <p class="nofill-note">The light turns with a turned or mirrored box, as the shadows do.</p>
+    <div class="sh-more" style="margin:0">
+      <label class="sh-contour" title="Gloss Contour: reshapes the shading">
+        <span>Gloss</span>
+        <select value={bv.gloss?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel gloss contour" onchange={(e) => { bv.gloss = { preset: e.target.value, aa: bv.gloss?.aa === true }; touch(); }}>
+          {#each CONTOUR_PRESETS as id (id)}
+            <option value={id}>{CONTOUR_LABELS[id]}</option>
+          {/each}
+          {#if bv.gloss?.preset === 'custom'}
+            <option value="custom">{CONTOUR_LABELS.custom}</option>
+          {/if}
+        </select>
+      </label>
+      <label class="sh-check" title="Anti-aliased gloss: carried to Photoshop; the engine does not paint it">
+        <input type="checkbox" checked={bv.gloss?.aa === true} disabled={!bv.on} aria-label="Bevel gloss anti-aliased" onchange={(e) => { bv.gloss = { ...bv.gloss, aa: e.target.checked }; touch(); }} />
+        <span>Anti-aliased</span>
+      </label>
+    </div>
+    {#each [['highlight', 'Highlight'], ['shadow', 'Shadow']] as [key, label] (key)}
+      {@const sh = bv[key]}
+      <div class="insp-row k-goverlay">
+        {@render swatchCell(sh, 'color', `Bevel ${label.toLowerCase()} colour`)}
+        <select value={sh.blend} disabled={!bv.on} aria-label="Bevel {label.toLowerCase()} mode" title="{label} mode" onchange={(e) => { sh.blend = e.target.value; touch(); }}>
+          {#each LAYER_BLEND_MODES as m (m)}
+            <option value={m}>{blendLabel(m)}</option>
+          {/each}
+        </select>
+        <input type="number" min="0" max="100" step="1" value={pct(sh.opacity)} disabled={!bv.on} aria-label="Bevel {label.toLowerCase()} opacity" title="{label} opacity, %" onchange={(e) => commitAlpha(sh, 'opacity', e)} />
+      </div>
+    {/each}
+
+    <div class="insp-rule"></div>
+    <div class="switch-row">
+      <button
+        type="button"
+        class="switch"
+        class:on={bv.contour.on}
+        role="switch"
+        aria-checked={bv.contour.on}
+        aria-label="Bevel contour"
+        disabled={!bv.on}
+        onclick={() => { bv.contour.on = !bv.contour.on; touch(); }}
+      ><span class="knob"></span></button>
+      <span class="lbl2">Contour</span>
+    </div>
+    {#if bv.contour.on}
+      <div class="sh-more" style="margin:0">
+        <label class="sh-contour" title="Contour: reshapes the bevel's slope">
+          <span>Contour</span>
+          <select value={bv.contour.curve?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel contour curve" onchange={(e) => { bv.contour.curve = { preset: e.target.value, aa: bv.contour.curve?.aa === true }; touch(); }}>
+            {#each CONTOUR_PRESETS as id (id)}
+              <option value={id}>{CONTOUR_LABELS[id]}</option>
+            {/each}
+            {#if bv.contour.curve?.preset === 'custom'}
+              <option value="custom">{CONTOUR_LABELS.custom}</option>
+            {/if}
+          </select>
+        </label>
+        <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
+          <input type="checkbox" checked={bv.contour.curve?.aa === true} disabled={!bv.on} aria-label="Bevel contour anti-aliased" onchange={(e) => { bv.contour.curve = { ...bv.contour.curve, aa: e.target.checked }; touch(); }} />
+          <span>Anti-aliased</span>
+        </label>
+        <label class="sh-num" title="Range, %: kept and written to Photoshop; the engine does not paint it yet">
+          <span>Range (not painted yet)</span>
+          <input type="number" min="0" max="100" step="1" value={pct(bv.contour.range)} disabled={!bv.on} aria-label="Bevel contour range, percent" onchange={(e) => commitAlpha(bv.contour, 'range', e)} />
+        </label>
+      </div>
+    {/if}
+
+    <div class="switch-row">
+      <button
+        type="button"
+        class="switch"
+        class:on={bv.texture.on}
+        role="switch"
+        aria-checked={bv.texture.on}
+        aria-label="Bevel texture"
+        disabled={!bv.on}
+        onclick={() => { bv.texture.on = !bv.texture.on; touch(); }}
+      ><span class="knob"></span></button>
+      <span class="lbl2">Texture</span>
+    </div>
+    {#if bv.texture.on}
+      <div class="fx-block">
+        {@render fxPatternControls(bv.texture.pattern, 'Bevel texture')}
+        <div class="sh-more" style="margin:0">
+          <label class="sh-num" title="Scale, %: over the pattern's own">
+            <span>Scale</span>
+            <input type="number" min="1" max="1000" step="1" value={pct(bv.texture.scale)} disabled={!bv.on} aria-label="Bevel texture scale, percent" onchange={(e) => commitPct(bv.texture, 'scale', e, 1, 1000)} />
+          </label>
+          <label class="sh-num" title="Depth, %: how much the pattern raises the slope; below 0 it carves">
+            <span>Depth</span>
+            <input type="number" min={-BEVEL_DEPTH_MAX * 100} max={BEVEL_DEPTH_MAX * 100} step="1" value={pct(bv.texture.depth)} disabled={!bv.on} aria-label="Bevel texture depth, percent" onchange={(e) => commitPct(bv.texture, 'depth', e, -BEVEL_DEPTH_MAX * 100, BEVEL_DEPTH_MAX * 100)} />
+          </label>
+          <label class="sh-check" title="Invert: the pattern's light parts carve instead of raise">
+            <input type="checkbox" checked={bv.texture.invert} disabled={!bv.on} aria-label="Bevel texture invert" onchange={(e) => { bv.texture.invert = e.target.checked; touch(); }} />
+            <span>Invert</span>
+          </label>
+          <label class="sh-check" title="Link with Layer: the pattern moves with the box; off, it is fixed to the page">
+            <input type="checkbox" checked={bv.texture.link} disabled={!bv.on} aria-label="Bevel texture linked with the box" onchange={(e) => { bv.texture.link = e.target.checked; touch(); }} />
+            <span>Link with layer</span>
+          </label>
+        </div>
+        <p class="nofill-note">A textured bevel goes into a PSD as pixels: Photoshop's pattern table cannot be written.</p>
+      </div>
+    {/if}
   </div>
 {/snippet}
 
@@ -2245,6 +2489,16 @@
           {@render glowControls(s.innerGlow, 'Inner glow', true)}
           <div class="insp-rule"></div>
           {@render satinControls(s.satin)}
+        {/if}
+
+        {#if effectsTab === 'bevel'}
+          {#if !rustBoxes}
+            <p class="nofill-note">Bevel & Emboss needs the Rust text engine (Settings).</p>
+          {/if}
+          {@render bevelControls(s.bevel)}
+          {#if s.bevel.on && s.noFill}
+            <p class="nofill-note">A box with no fill gets no bevel yet.</p>
+          {/if}
         {/if}
 
         {#if effectsTab === 'warp'}

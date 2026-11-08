@@ -2,7 +2,8 @@ import {
   GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
   LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, SATIN_DISTANCE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
-  STROKE_POSITIONS, STROKE_FILLS,
+  STROKE_POSITIONS, STROKE_FILLS, BEVEL_STYLES, BEVEL_TECHNIQUES, BEVEL_DIRECTIONS, BEVEL_DEPTH_MAX,
+  BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -72,6 +73,12 @@ const fxGradient = (desc) => shared('gradient', object(desc, {
   }),
 }));
 // An Outer or Inner Glow's fields; `spread` is Choke on an inner one.
+// A bevel's Highlight or Shadow: its mode, colour and opacity.
+const bevelShade = () => ({
+  blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+  color: color('colour'),
+  opacity: alpha('alpha'),
+});
 const glowFields = (spreadKey, spreadDesc) => ({
   on: boolean('enable glow'),
   blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
@@ -216,6 +223,34 @@ export const STYLE_SCHEMA = {
     size: number('soft edge px', 0, SHADOW_SIZE_MAX),
     contour: contourField(),
     invert: boolean('lay the inverse'),
+  }),
+  bevel: object('Photoshop Bevel & Emboss (Rust)', {
+    on: boolean('enable bevel'),
+    style: choice('stroke=bevel of the Stroke effects', BEVEL_STYLES),
+    technique: choice('edge shape', BEVEL_TECHNIQUES),
+    depth: number('1=100%', 0, BEVEL_DEPTH_MAX),
+    direction: choice('light side', BEVEL_DIRECTIONS),
+    size: number('px', 0, SHADOW_SIZE_MAX),
+    soften: number('px', 0, BEVEL_SOFTEN_MAX),
+    useGlobalLight: boolean('angle+altitude are the chapter light'),
+    angle: number('deg', -180, 180),
+    altitude: number('deg', 0, 90),
+    gloss: contourField(),
+    highlight: shared('bevelShade', object('lit half', bevelShade())),
+    shadow: shared('bevelShade', object('dark half', bevelShade())),
+    contour: object('height contour', {
+      on: boolean('enable'),
+      curve: contourField(),
+      range: alpha('carried, not painted'),
+    }),
+    texture: object('pattern in the height', {
+      on: boolean('enable'),
+      pattern: shared('pattern', object('as the fill pattern', patternFields())),
+      scale: number('1=100%', BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX),
+      depth: number('1=100%, <0 carves', -BEVEL_DEPTH_MAX, BEVEL_DEPTH_MAX),
+      invert: boolean('invert'),
+      link: boolean('moves with the box'),
+    }),
   }),
   strokeEffects: array('Photoshop Stroke effects, top first, apart from strokes (Rust)', object('stroke effect', {
     size: number('px', 0, SHADOW_SIZE_MAX),

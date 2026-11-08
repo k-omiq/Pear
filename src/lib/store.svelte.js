@@ -3885,6 +3885,9 @@ export function rescaleStyle(st, sx, sy) {
   }
   // A satin's Distance and Size are both lengths; its angle is not.
   if (st.satin && typeof st.satin === 'object') out.satin = { ...st.satin, distance: len(st.satin.distance), size: len(st.satin.size) };
+  // A bevel's Size and Soften are lengths; its depth, angle, altitude and
+  // its texture's Scale (a share of the pattern's own tile) are not.
+  if (st.bevel && typeof st.bevel === 'object') out.bevel = { ...st.bevel, size: len(st.bevel.size), soften: len(st.bevel.soften) };
   if (Array.isArray(st.strokeEffects)) out.strokeEffects = st.strokeEffects.map((k) => ({ ...k, size: len(k.size) }));
   if (st.roughen && typeof st.roughen === 'object') {
     // `amount` is a displacement in page px; `detail` is the noise's frequency,
@@ -7111,6 +7114,7 @@ export const BULK_PROPS = [
   'gradientOverlays',
   'patternOverlay',
   'satin',
+  'bevel',
   'strokeEffects',
   'blur',
   'motionBlur',
@@ -7148,7 +7152,7 @@ export const BULK_PROPS = [
 // comment on BULK_PROPS). Named once here because two places have to agree on
 // it: the style-leaf arithmetic that pins BULK_PROPS against `defaultStyle`
 // treats these as single leaves rather than groups of them.
-export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'strokeEffects', 'motionBlur', 'clip', 'circle'];
+export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'strokeEffects', 'motionBlur', 'clip', 'circle'];
 
 // How the panel rows group the mask's vocabulary for its tick-all headers.
 // Declared beside BULK_PROPS rather than inside the panel so there is one list
@@ -7158,7 +7162,7 @@ export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', '
 export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
   fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
-  shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'strokeEffects'],
+  shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'strokeEffects'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
   transform: ['rotation', 'flipH', 'flipV', 'autoHeight', 'fitText', 'fitMax'],

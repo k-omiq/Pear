@@ -101,6 +101,10 @@ function psdBlend(mode) {
   return typeof mode === 'string' && mode ? mode.replace(/-/g, ' ') : 'normal';
 }
 
+// A bevel's Style and Technique as ag-psd names them (BESl, bvlT).
+const PSD_BEVEL_STYLE = { inner: 'inner bevel', outer: 'outer bevel', emboss: 'emboss', pillow: 'pillow emboss', stroke: 'stroke emboss' };
+const PSD_BEVEL_TECHNIQUE = { smooth: 'smooth', 'chisel-hard': 'chisel hard', 'chisel-soft': 'chisel soft' };
+
 function hexToRgb(hex) {
   let h = String(hex || '#000000').replace('#', '');
   if (h.length === 3) h = h.split('').map((c) => c + c).join('');
@@ -476,6 +480,9 @@ export function isRasterOnly(style) {
     // document's pattern table too.
     s.patternOverlay?.on ||
     (s.strokeEffects ?? []).some((k) => k.fill === 'pattern') ||
+    // So does a bevel's Texture, and ag-psd cannot write its pattern, scale,
+    // depth or invert at all: the box ships its pixels, the texture with them.
+    (s.bevel?.on && s.bevel.texture?.on) ||
     // Shape Burst is a gradient style ag-psd cannot name (its GradientStyle
     // has the five), so a box using one ships its pixels.
     usesShapeBurst(s) ||
@@ -813,6 +820,42 @@ export function textLayerFor(p, box, rendered) {
       invert: sa.invert === true,
       antialiased: sa.contour?.aa === true,
       ...customContour(sa.contour),
+    };
+  }
+  // Bevel & Emboss (ebbl): Style, Technique, Depth (ag-psd `strength`, 1 =
+  // Photoshop's 100 %), Direction, Size and Soften in pixels, the light (the
+  // chapter's on the Global Light: the document carries it), Highlight and
+  // Shadow, the Gloss Contour (a custom one; a preset as for the other
+  // effects), and the Contour element as Photoshop's useShape and Range. ag-psd
+  // has one `contour` slot, written as the Gloss Contour (TrnS), so the
+  // Contour element's own curve is not written. A textured bevel never gets
+  // here: ag-psd cannot write the Texture's pattern, so `isRasterOnly` sends
+  // that box down the raster branch, as a Pattern Overlay does.
+  const bv = s.bevel;
+  if (bv?.on) {
+    const lit = bv.useGlobalLight ? globalLight() : bv;
+    effects.bevel = {
+      enabled: true,
+      style: PSD_BEVEL_STYLE[bv.style] ?? 'inner bevel',
+      technique: PSD_BEVEL_TECHNIQUE[bv.technique] ?? 'smooth',
+      strength: bv.depth ?? 1,
+      direction: bv.direction === 'down' ? 'down' : 'up',
+      size: { units: 'Pixels', value: bv.size || 0 },
+      soften: { units: 'Pixels', value: bv.soften || 0 },
+      angle: lit.angle ?? 120,
+      altitude: lit.altitude ?? 30,
+      useGlobalLight: bv.useGlobalLight === true,
+      highlightBlendMode: psdBlend(bv.highlight?.blend ?? 'screen'),
+      highlightColor: hexToRgb(bv.highlight?.color ?? '#ffffff'),
+      highlightOpacity: bv.highlight?.opacity ?? 0.75,
+      shadowBlendMode: psdBlend(bv.shadow?.blend ?? 'multiply'),
+      shadowColor: hexToRgb(bv.shadow?.color ?? '#000000'),
+      shadowOpacity: bv.shadow?.opacity ?? 0.75,
+      antialiasGloss: bv.gloss?.aa === true,
+      ...customContour(bv.gloss),
+      useShape: bv.contour?.on === true,
+      ...(bv.contour?.on ? { range: bv.contour.range ?? 0.5, antialiased: bv.contour.curve?.aa === true } : null),
+      useTexture: false,
     };
   }
   if ((s.colorOverlays ?? []).length) {

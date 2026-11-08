@@ -397,6 +397,9 @@ export function defaultStyle() {
     // Photoshop's Satin (one, `normalizeSatin`). The Rust engine paints it;
     // the browser engine does not.
     satin: satinDefault(),
+    // Photoshop's Bevel & Emboss (one, `normalizeBevel`). The Rust engine
+    // paints it; the browser engine does not.
+    bevel: bevelDefault(),
     strokeEffects: [],
     // How the outlines are laid: 'merged' (one shape under the fill) or
     // 'each' (letter by letter, a later letter's rim over an earlier
@@ -915,6 +918,98 @@ export function normalizeSatin(x) {
     size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, d.size))),
     contour: x?.contour ? normalizeContour(x.contour) : { ...d.contour },
     invert: typeof x?.invert === 'boolean' ? x.invert : d.invert,
+  };
+}
+
+// Photoshop's Bevel & Emboss, as its dialog has it.
+// Structure:
+//   style       BEVEL_STYLES: Inner Bevel, Outer Bevel, Emboss, Pillow
+//               Emboss, Stroke Emboss (a bevel of the Photoshop strokes' band)
+//   technique   BEVEL_TECHNIQUES: Smooth, Chisel Hard, Chisel Soft
+//   depth       0..10 (1 is Photoshop's 100 %)
+//   direction   'up' | 'down'
+//   size        page px, 0..250 (0 is drawn as 1 device px)
+//   soften      page px, 0..16
+// Shading:
+//   useGlobalLight  angle and altitude are the chapter's (`light`)
+//   angle       degrees, -180..180, its own when off the Global Light
+//   altitude    degrees, 0..90
+//   gloss       the Gloss Contour (`normalizeContour`)
+//   highlight, shadow   { blend, color, opacity }: each half of the shading
+// Elements, each with its own switch:
+//   contour     { on, curve (`normalizeContour`), range 0..1 }: reshapes the
+//               height. Range is carried; the engine does not paint it yet.
+//   texture     { on, pattern (as the Pattern Overlay's), scale 0.01..10
+//               (Photoshop's 1-1000 %), depth -10..10 (negative carves),
+//               invert, link (the pattern moves with the box, else it is
+//               fixed to the page) }
+// A style saved before it existed has the defaults: Photoshop's (PhotoCraft
+// `effect_defaults`), switched off.
+export const BEVEL_STYLES = ['inner', 'outer', 'emboss', 'pillow', 'stroke'];
+export const BEVEL_TECHNIQUES = ['smooth', 'chisel-hard', 'chisel-soft'];
+export const BEVEL_DIRECTIONS = ['up', 'down'];
+export const BEVEL_DEPTH_MAX = 10;
+export const BEVEL_SOFTEN_MAX = 16;
+export const BEVEL_TEXTURE_SCALE_MIN = 0.01;
+export const BEVEL_TEXTURE_SCALE_MAX = 10;
+function bevelDefault() {
+  return {
+    on: false,
+    style: 'inner',
+    technique: 'smooth',
+    depth: 1,
+    direction: 'up',
+    size: 5,
+    soften: 0,
+    useGlobalLight: true,
+    angle: 120,
+    altitude: 30,
+    gloss: { preset: 'linear', aa: false },
+    highlight: { blend: 'screen', color: '#ffffff', opacity: 0.75 },
+    shadow: { blend: 'multiply', color: '#000000', opacity: 0.75 },
+    contour: { on: false, curve: { preset: 'linear', aa: false }, range: 0.5 },
+    texture: { on: false, pattern: { ...defaultPattern(), on: true }, scale: 1, depth: 1, invert: false, link: true },
+  };
+}
+export function normalizeBevel(x) {
+  const d = bevelDefault();
+  const clamp = (v, lo, hi, def) => Math.min(hi, Math.max(lo, num(v, def)));
+  const a = num(x?.angle, d.angle);
+  const shade = (v, def) => ({
+    blend: blendMode(v?.blend, def.blend),
+    color: hex(v?.color, def.color),
+    opacity: clamp(v?.opacity, 0, 1, def.opacity),
+  });
+  const c = x?.contour && typeof x.contour === 'object' ? x.contour : {};
+  const t = x?.texture && typeof x.texture === 'object' ? x.texture : {};
+  return {
+    on: x?.on === true,
+    style: BEVEL_STYLES.includes(x?.style) ? x.style : d.style,
+    technique: BEVEL_TECHNIQUES.includes(x?.technique) ? x.technique : d.technique,
+    depth: clamp(x?.depth, 0, BEVEL_DEPTH_MAX, d.depth),
+    direction: BEVEL_DIRECTIONS.includes(x?.direction) ? x.direction : d.direction,
+    size: clamp(x?.size, 0, SHADOW_SIZE_MAX, d.size),
+    soften: clamp(x?.soften, 0, BEVEL_SOFTEN_MAX, d.soften),
+    useGlobalLight: typeof x?.useGlobalLight === 'boolean' ? x.useGlobalLight : d.useGlobalLight,
+    // -180..180, as Photoshop's dial reads; past it, turned back into it.
+    angle: Math.round((Math.abs(a) <= 180 ? a : (((a % 360) + 540) % 360) - 180) * 100) / 100,
+    altitude: clamp(x?.altitude, 0, 90, d.altitude),
+    gloss: x?.gloss ? normalizeContour(x.gloss) : { ...d.gloss },
+    highlight: shade(x?.highlight, d.highlight),
+    shadow: shade(x?.shadow, d.shadow),
+    contour: {
+      on: c.on === true,
+      curve: c.curve ? normalizeContour(c.curve) : { ...d.contour.curve },
+      range: clamp(c.range, 0, 1, d.contour.range),
+    },
+    texture: {
+      on: t.on === true,
+      pattern: { ...normalizePattern(t.pattern, d.texture.pattern), on: true },
+      scale: clamp(t.scale, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX, d.texture.scale),
+      depth: clamp(t.depth, -BEVEL_DEPTH_MAX, BEVEL_DEPTH_MAX, d.texture.depth),
+      invert: t.invert === true,
+      link: typeof t.link === 'boolean' ? t.link : d.texture.link,
+    },
   };
 }
 
@@ -1571,6 +1666,7 @@ export function normalizeStyle(s) {
     gradientOverlays: Array.isArray(src.gradientOverlays) ? src.gradientOverlays.map(normalizeGradientOverlay) : [],
     patternOverlay: normalizePatternOverlay(src.patternOverlay),
     satin: normalizeSatin(src.satin),
+    bevel: normalizeBevel(src.bevel),
     strokeEffects: Array.isArray(src.strokeEffects) ? src.strokeEffects.map(normalizeStrokeEffect) : [],
     roughen: { ...d.roughen, ...(src.roughen || {}) },
   };

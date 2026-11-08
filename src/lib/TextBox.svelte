@@ -470,9 +470,17 @@
     app.fontsVersion;
     return boxNoiseOrigin(box, pg);
   });
-  // A shadow on the chapter's Global Light moves when the light does: the
-  // light's angle is in the key of a box that has one.
-  const lightKey = $derived(s.shadows?.some((sh) => sh.useGlobalLight) ? `${app.typesetting.light?.angle ?? 'd'}` : '');
+  // A shadow, an inner shadow or a bevel on the chapter's Global Light moves
+  // when the light does: the light's angle (and, for a bevel, its altitude)
+  // is in the key of a box that has one.
+  const onLight = (list) => list?.some((sh) => sh.useGlobalLight);
+  const lightKey = $derived(
+    s.bevel?.on && s.bevel.useGlobalLight
+      ? `${app.typesetting.light?.angle ?? 'd'}|${app.typesetting.light?.altitude ?? 'd'}`
+      : onLight(s.shadows) || onLight(s.innerShadows)
+        ? `${app.typesetting.light?.angle ?? 'd'}`
+        : '',
+  );
   // The shadows as they are painted, thrown from the light where they follow it.
   const cast = $derived.by(() => {
     void lightKey;

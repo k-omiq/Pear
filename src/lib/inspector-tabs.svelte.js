@@ -40,7 +40,7 @@ export function cycleInspectorTab(step = 1) {
 // `liquify` sits beside `transform` because it edits the same mesh with a
 // round tool instead of handles.
 // SFX is not a sub-tab: it has its own window (SfxWindow.svelte).
-export const EFFECTS_SUBTABS = ['stroke', 'shadow', 'glow', 'warp', 'transform', 'liquify', 'blur', 'edges', 'mask'];
+export const EFFECTS_SUBTABS = ['stroke', 'shadow', 'glow', 'bevel', 'warp', 'transform', 'liquify', 'blur', 'edges', 'mask'];
 
 export const effectsSubTab = $state({ id: 'stroke' });
 

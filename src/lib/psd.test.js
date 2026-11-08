@@ -12,10 +12,11 @@ import {
   reconstructForeign,
   psdSelfTest,
 } from './psd.js';
-import { PAGE_W, PAGE_H, emptyFaces, defaultStyle, normalizeStyle } from './data.js';
+import { PAGE_W, PAGE_H, emptyFaces, defaultStyle, normalizeStyle, normalizeBevel } from './data.js';
 import { BOX_PAD, textInset } from './measure.js';
 import { app } from './store.svelte.js';
 import { _setPostScriptNameFor, _clearPostScriptNames } from './fonts.js';
+import { setGlobalLight } from './text-paint.js';
 
 afterEach(() => {
   app.fonts.user = [];
@@ -626,6 +627,49 @@ describe('textLayerFor', () => {
     // Switched off, it is not written; it never sends a box down the raster branch.
     expect(textLayerFor(page, box({ ...baseStyle, satin: { ...satin, on: false } }), rendered).effects).toBeUndefined();
     expect(isRasterOnly({ ...baseStyle, satin })).toBe(false);
+  });
+
+  it('writes the Bevel & Emboss as Photoshop states it, and reads it back from ag-psd', () => {
+    const bevel = normalizeBevel({
+      on: true, style: 'pillow', technique: 'chisel-soft', depth: 2.5, direction: 'down', size: 12, soften: 3,
+      useGlobalLight: false, angle: 45, altitude: 60,
+      gloss: { preset: 'custom', aa: true, pts: [[0, 0, false], [128, 200, true], [255, 255, false]] },
+      highlight: { blend: 'color-dodge', color: '#ffeedd', opacity: 0.5 },
+      shadow: { blend: 'linear-burn', color: '#102030', opacity: 0.25 },
+      contour: { on: true, curve: { preset: 'cone', aa: true }, range: 0.3 },
+    });
+    const fx = textLayerFor(page, box({ ...baseStyle, bevel }), rendered).effects;
+    expect(fx.bevel).toMatchObject({
+      enabled: true, style: 'pillow emboss', technique: 'chisel soft', strength: 2.5, direction: 'down',
+      size: { units: 'Pixels', value: 12 }, soften: { units: 'Pixels', value: 3 }, angle: 45, altitude: 60, useGlobalLight: false,
+      highlightBlendMode: 'color dodge', highlightColor: { r: 255, g: 238, b: 221 }, highlightOpacity: 0.5,
+      shadowBlendMode: 'linear burn', shadowColor: { r: 16, g: 32, b: 48 }, shadowOpacity: 0.25,
+      antialiasGloss: true, useShape: true, range: 0.3, antialiased: true, useTexture: false,
+    });
+    expect(fx.bevel.contour.curve).toHaveLength(3);
+    // ag-psd writes it as Photoshop's ebbl and reads the same fields back.
+    const bytes = writePsd({ width: 4, height: 4, children: [{ name: 'bevel', left: 0, top: 0, right: 4, bottom: 4, effects: { bevel: fx.bevel } }] });
+    const back = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true }).children[0].effects.bevel;
+    expect(back).toMatchObject({
+      style: 'pillow emboss', technique: 'chisel soft', strength: 2.5, direction: 'down', size: { value: 12 }, soften: { value: 3 },
+      angle: 45, altitude: 60, useGlobalLight: false, highlightBlendMode: 'color dodge', highlightOpacity: 0.5,
+      shadowBlendMode: 'linear burn', shadowOpacity: 0.25, useShape: true, range: 0.3, useTexture: false, antialiasGloss: true,
+    });
+    expect(back.contour.curve).toHaveLength(3);
+    // On the Global Light it writes the chapter's light and says so.
+    setGlobalLight({ angle: 90, altitude: 20 });
+    try {
+      const lit = textLayerFor(page, box({ ...baseStyle, bevel: { ...bevel, useGlobalLight: true } }), rendered).effects.bevel;
+      expect(lit).toMatchObject({ angle: 90, altitude: 20, useGlobalLight: true });
+    } finally {
+      setGlobalLight({ angle: 120, altitude: 30 });
+    }
+    // Off, nothing is written; a plain bevel stays live type, a textured one
+    // ships its pixels (ag-psd cannot write the pattern).
+    expect(textLayerFor(page, box({ ...baseStyle, bevel: { ...bevel, on: false } }), rendered).effects?.bevel).toBeUndefined();
+    expect(isRasterOnly({ ...baseStyle, bevel })).toBe(false);
+    expect(isRasterOnly({ ...baseStyle, bevel: { ...bevel, texture: { ...bevel.texture, on: true } } })).toBe(true);
+    expect(isRasterOnly({ ...baseStyle, bevel: { ...bevel, on: false, texture: { ...bevel.texture, on: true } } })).toBe(false);
   });
 
   it('writes the Photoshop strokes after the outlines and the gradient overlays over the fill gradient', () => {
