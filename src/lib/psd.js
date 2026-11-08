@@ -22,7 +22,7 @@ import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/i
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
-import { normalizeFit, normalizeAuto, normalizeOutline } from './data.js';
+import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL } from './data.js';
 import { strokeBands, clipActive, inkActive, resolveShadow, globalLight } from './text-paint.js';
 import { warpActive } from './warp.js';
 import { withPageImages } from './page-images.js';
@@ -99,6 +99,29 @@ function imageDataToCanvas(imageData) {
 // ('color-burn' is 'color burn'). Normal for anything else.
 function psdBlend(mode) {
   return typeof mode === 'string' && mode ? mode.replace(/-/g, ' ') : 'normal';
+}
+
+// Channels and Blend If as a layer record states them (phase 6b): the
+// channels left out (ag-psd `channelBlendingRestrictions`, `brst`, indices
+// 0 R, 1 G, 2 B) and the blending ranges (`blendingRanges`: Gray's This
+// Layer and Underlying, then one pair per colour channel, each black low,
+// black high, white low, white high, PSD's order and ours). Only what is
+// off its default is written. The layer's pixels have neither baked in (no
+// page art under a PSD layer), so Photoshop does them from these.
+function psdBlendIf(b) {
+  const out = {};
+  const ch = b?.channels;
+  const off = ['r', 'g', 'b'].flatMap((k, i) => (ch?.[k] === false ? [i] : []));
+  if (off.length) out.channelBlendingRestrictions = off;
+  if (blendIfActive(b?.blendIf)) {
+    const q = (c, side) => [...(b.blendIf[c]?.[side] ?? BLEND_RANGE_FULL)];
+    out.blendingRanges = {
+      compositeGrayBlendSource: q('gray', 'this'),
+      compositeGraphBlendDestinationRange: q('gray', 'under'),
+      ranges: ['red', 'green', 'blue'].map((c) => ({ sourceRange: q(c, 'this'), destRange: q(c, 'under') })),
+    };
+  }
+  return out;
 }
 
 // A bevel's Style and Technique as ag-psd names them (BESl, bvlT).
@@ -956,6 +979,7 @@ export function textLayerFor(p, box, rendered) {
     // Deep needs a patch (PORT_NOTES_BACKDROP_PSD.md G10).
     ...(s.blending?.interior ? { blendInteriorElements: true } : null),
     ...(s.blending?.knockout && s.blending.knockout !== 'none' ? { knockout: true } : null),
+    ...psdBlendIf(s.blending),
     ...(hasEffects ? { effects } : null),
     // The cached pixels keep the outline and shadow baked in for non-Photoshop
     // readers and fallback viewing when the font is not installed. curve is 0

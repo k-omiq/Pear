@@ -74,7 +74,54 @@ describe('the Fill tab blending options', () => {
     const group = view.getByLabelText('Blend interior effects as group');
     expect(group.disabled).toBe(false);
     await fireEvent.click(group);
-    expect(box().style.blending).toEqual({ interior: true, knockout: 'none' });
+    expect(box().style.blending).toMatchObject({ interior: true, knockout: 'none' });
+  });
+
+  it('turns a channel off, and the box then blends with the page art', async () => {
+    const { view, box } = mounted();
+    await tick();
+    const red = view.getByLabelText('Channel R');
+    expect(red.checked).toBe(true);
+    expect(view.container.textContent).not.toContain('Blends with the page art.');
+    await fireEvent.click(red);
+    expect(box().style.blending.channels).toEqual({ r: false, g: true, b: true });
+    flushSync();
+    expect(view.container.textContent).toContain('Blends with the page art.');
+  });
+
+  it('sets Blend If per channel: a black point on Underlying, then split into a fade', async () => {
+    const { view, box } = mounted();
+    await tick();
+    const channel = view.getByRole('combobox', { name: 'Blend If channel' });
+    expect([...channel.options].map((o) => o.textContent)).toEqual(['Gray', 'Red', 'Green', 'Blue']);
+    await fireEvent.input(view.getByLabelText('Underlying Layer black'), { target: { value: '128' } });
+    expect(box().style.blending.blendIf.gray.under).toEqual([128, 128, 255, 255]);
+    expect(box().style.blending.blendIf.gray.this).toEqual([0, 0, 255, 255]);
+    flushSync();
+    // Split: four handles, each stopped by its neighbours.
+    await fireEvent.click(view.getByLabelText('Underlying Layer split'));
+    flushSync();
+    await fireEvent.input(view.getByLabelText('Underlying Layer black low'), { target: { value: '64' } });
+    flushSync();
+    await fireEvent.input(view.getByLabelText('Underlying Layer black high'), { target: { value: '192' } });
+    expect(box().style.blending.blendIf.gray.under).toEqual([64, 192, 255, 255]);
+    flushSync();
+    await fireEvent.input(view.getByLabelText('Underlying Layer white low'), { target: { value: '100' } });
+    expect(box().style.blending.blendIf.gray.under).toEqual([64, 192, 192, 255]);
+    // The white point of This Layer, on the blue channel.
+    await fireEvent.change(channel, { target: { value: 'blue' } });
+    flushSync();
+    await fireEvent.input(view.getByLabelText('This Layer white'), { target: { value: '200' } });
+    expect(box().style.blending.blendIf.blue.this).toEqual([0, 0, 200, 200]);
+    expect(box().style.blending.blendIf.gray.under).toEqual([64, 192, 192, 255]);
+  });
+
+  it('shows a saved split as split', async () => {
+    const { view } = mounted({ blending: { blendIf: { gray: { this: [0, 0, 180, 220] } } } });
+    await tick();
+    expect(view.getByLabelText('This Layer split').checked).toBe(true);
+    expect(view.getByLabelText('This Layer white high').value).toBe('220');
+    expect(view.getByLabelText('Underlying Layer split').checked).toBe(false);
   });
 
   it('says it needs the Rust engine without it', async () => {

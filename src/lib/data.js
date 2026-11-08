@@ -305,8 +305,12 @@ export function defaultStyle() {
     // Blend Interior Effects as Group: Fill Opacity fades the overlays, the
     // satin and the inner glows with the fill. `knockout` is stored and
     // written to the PSD; it paints nothing while the page art is all a box
-    // blends with (phase 6c).
-    blending: { interior: false, knockout: 'none' },
+    // blends with (phase 6c). `channels` are Channels R, G, B: one off keeps
+    // the page's. `blendIf` is Blend If, per Gray, Red, Green, Blue, This
+    // Layer (the box's own colour) and Underlying Layer (the page art's),
+    // each [black low, black high, white low, white high] on 0 to 255; the
+    // full range hides nothing. Both are painted over the page art (phase 6b).
+    blending: defaultBlending(),
     // ---- fill ----
     // Solid fill colour. Still the single source for the glyph colour when
     // neither gradient nor pattern is on; when one of them is on it is the
@@ -616,11 +620,56 @@ const blendMode = (v, d) => (LAYER_BLEND_MODES.includes(v) ? v : d);
 // Photoshop's Knockout: None, Shallow, Deep.
 export const KNOCKOUT_MODES = ['none', 'shallow', 'deep'];
 
+// Blend If's channels, in Photoshop's Blend If menu order, and a slider at
+// its ends (black low, black high, white low, white high: nothing hidden).
+export const BLEND_IF_CHANNELS = ['gray', 'red', 'green', 'blue'];
+export const BLEND_RANGE_FULL = [0, 0, 255, 255];
+
+/** Advanced Blending at Photoshop's defaults (`defaultStyle`'s `blending`). */
+export function defaultBlending() {
+  return {
+    interior: false,
+    knockout: 'none',
+    channels: { r: true, g: true, b: true },
+    blendIf: Object.fromEntries(BLEND_IF_CHANNELS.map((c) => [c, { this: [...BLEND_RANGE_FULL], under: [...BLEND_RANGE_FULL] }])),
+  };
+}
+
+/**
+ * One Blend If slider, as Photoshop keeps it: four whole levels 0 to 255,
+ * black low <= black high <= white low <= white high. A handle dragged past
+ * the one after it pushes that one along (the dialog's rule: the black point
+ * cannot pass the white). Anything unreadable is the full range.
+ */
+export function normalizeBlendRange(x) {
+  if (!Array.isArray(x) || x.length !== 4) return [...BLEND_RANGE_FULL];
+  const v = x.map((n, i) => {
+    const k = Number(n);
+    return Number.isFinite(k) ? Math.min(255, Math.max(0, Math.round(k))) : BLEND_RANGE_FULL[i];
+  });
+  for (let i = 1; i < 4; i++) v[i] = Math.max(v[i], v[i - 1]);
+  return v;
+}
+
+/** Whether a Blend If (`blending.blendIf`) hides anything. */
+export function blendIfActive(blendIf) {
+  return BLEND_IF_CHANNELS.some((c) => ['this', 'under'].some((side) => {
+    const q = blendIf?.[c]?.[side];
+    return Array.isArray(q) && q.some((v, i) => v !== BLEND_RANGE_FULL[i]);
+  }));
+}
+
 /** A style's Advanced Blending options, every field present (`defaultStyle`'s `blending`). */
 export function normalizeBlending(x) {
+  const ch = x?.channels;
   return {
     interior: x?.interior === true,
     knockout: KNOCKOUT_MODES.includes(x?.knockout) ? x.knockout : 'none',
+    channels: { r: ch?.r !== false, g: ch?.g !== false, b: ch?.b !== false },
+    blendIf: Object.fromEntries(BLEND_IF_CHANNELS.map((c) => [c, {
+      this: normalizeBlendRange(x?.blendIf?.[c]?.this),
+      under: normalizeBlendRange(x?.blendIf?.[c]?.under),
+    }])),
   };
 }
 

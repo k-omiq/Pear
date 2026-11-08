@@ -394,9 +394,34 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 9
+export const BOX_WIRE_VERSION = 10
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
+// Advanced Blending's Channels, in the wire's bit order, and Blend If's
+// sliders in the wire's order (`decode_box`).
+const BLEND_CHANNELS = ['r', 'g', 'b']
+const BLEND_IF_CHANNELS = ['gray', 'red', 'green', 'blue']
+const FULL_RANGE = [0, 0, 255, 255]
+
+// The 32 bytes of a Blend If (`style.blending.blendIf`), or null when no
+// slider is off its end. A range is [black low, black high, white low, white
+// high], whole levels, as `normalizeBlending` keeps it.
+function blendIfRanges(blendIf) {
+  if (!blendIf) return null
+  const out = new Uint8Array(32)
+  let any = false
+  BLEND_IF_CHANNELS.forEach((ch, i) => {
+    ;['this', 'under'].forEach((side, j) => {
+      const q = blendIf[ch]?.[side] ?? FULL_RANGE
+      for (let k = 0; k < 4; k++) {
+        const v = Math.min(255, Math.max(0, Math.round(Number(q[k] ?? FULL_RANGE[k]) || 0)))
+        out[(i * 2 + j) * 4 + k] = v
+        if (v !== FULL_RANGE[k]) any = true
+      }
+    })
+  })
+  return any ? out : null
+}
 
 // Photoshop's blend modes by the number the engine reads (`Blend::from_u32`
 // in text-engine/src/paint/fx/blend.rs), in its menu's order.
@@ -686,6 +711,13 @@ function clipShape(sh) {
  *   Vivid Light, Linear Light, Hard Mix, Difference), part of the blend, as in Photoshop
  * @param {boolean} [request.blendInterior] Blend Interior Effects as Group: Fill Opacity
  *   fades the overlays, the satin and the inner glows with the fill
+ * @param {{r?: boolean, g?: boolean, b?: boolean} | null} [request.channels] Advanced
+ *   Blending's Channels (`style.blending.channels`): a channel that is false shows the
+ *   backdrop's. Painted over a backdrop only
+ * @param {{gray?: {this?: number[], under?: number[]}, red?: object, green?: object,
+ *   blue?: object} | null} [request.blendIf] Blend If (`style.blending.blendIf`): per
+ *   channel, This Layer and Underlying Layer, each [black low, black high, white low,
+ *   white high] on 0 to 255, in that order. Painted over a backdrop only
  * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay' | 'stroke' |
  *   'gradientOverlay' | 'patternOverlay' | 'satin' | 'bevel', color?: string,
  *   opacity: number, blend?: string, technique?: 'softer' | 'precise', source?: 'edge' | 'center',
@@ -723,7 +755,7 @@ function clipShape(sh) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, effects = [], backdrop = null } = request
+  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, channels = null, blendIf = null, effects = [], backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -755,6 +787,17 @@ export function encodeBox(request) {
   f64(fillOpacity)
   // The blending flags (v9): 1 Blend Interior Effects as Group.
   u32(blendInterior ? 1 : 0)
+  // The channels left out (v10): bit 0 R, 1 G, 2 B.
+  u32(BLEND_CHANNELS.reduce((m, k, i) => (channels?.[k] === false ? m | (1 << i) : m), 0))
+  // Blend If (v10): 0 none, or 1 and Gray, R, G, B, each This Layer then
+  // Underlying, each black low, black high, white low, white high.
+  const ranges = blendIfRanges(blendIf)
+  u32(ranges ? 1 : 0)
+  if (ranges) {
+    need(ranges.length)
+    u8.set(ranges, at)
+    at += ranges.length
+  }
   // The effects' pattern tiles go in the glyph job's table, ahead of its own.
   const collector = tileCollector(request.tiles)
   u32(effects.length)

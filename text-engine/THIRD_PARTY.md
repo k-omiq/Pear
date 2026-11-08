@@ -56,6 +56,15 @@ names its source file in a comment.
   `shadow_see_through`, `knock_out_exterior`, `interior_group`,
   `layer_pixels`, `paint_interior`; the group test after
   `crates/compose/src/advanced_tests.rs`).
+- `fx/blending.rs` `Range`, `BlendIf::weight`, `level`, `gray`,
+  `restrict`: Blend If (This Layer and Underlying Layer, split points,
+  Gray and R, G, B) and Channels (`crates/doc/src/blend_if.rs`
+  `BlendRange`; `crates/compose/src/composite.rs` `blend_if_weight`,
+  `blend_if_level`, `blend_if_gray`, `apply_blend_if`, `composite_layer`;
+  `crates/compose/src/content.rs` `channel_weights`, `restore_channels`),
+  and their tests (`crates/doc/src/blend_if.rs` tests,
+  `crates/compose/src/tests.rs` `channel_restrictions_keep_the_backdrop`
+  and the `blend_if_*` tests).
 
 MIT License
 
