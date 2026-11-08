@@ -11,8 +11,8 @@ import { defaultStyle, normalizeStyle } from './data.js';
 // ===========================================================================
 // A box painted whole by the engine
 // ===========================================================================
-// With the Rust painter a box that has no brush ink is one job: its glyphs,
-// and the shadows, the blur, the smear, the mask, the roughening and the mesh
+// With the Rust painter a box is one job: its glyphs, its brush ink (round
+// dabs; a box inked with imported tips stays on the canvas), and the shadows, the blur, the smear, the mask, the roughening and the mesh
 // that the canvas used to lay over them a pass at a time (`boxInJob`,
 // `roughenInJob`, `meshInJob` in exporter.js; text-engine/src/paint/boxjob.rs).
 //
@@ -96,10 +96,18 @@ const grey = (img) => {
 };
 
 describe('the gate', () => {
-  it('is the painter that paints whole boxes, and a box with no brush ink', () => {
+  it('is the painter that paints whole boxes, and a box whose ink is round dabs', () => {
     expect(whole.box).toBe(true);
     expect(boxInJob(boxOf())).toBe(true);
+    expect(boxInJob(boxOf({ ink: INK }))).toBe(true);
+    // Imported tips are not the engine's yet (phase 8b), nor is ink under a
+    // mesh or roughening (8c): the canvas draws those.
+    expect(boxInJob(boxOf({ ink: { ...INK, strokes: [{ ...INK.strokes[0], brush: 'tip', tips: ['a'] }] } }))).toBe(false);
+    expect(boxInJob(boxOf({ ink: INK, roughen: { on: true, amount: 6, detail: 0.07, seed: 7 } }))).toBe(false);
+    // An engine built before the ink was (no `ink` on its painter).
+    setGlyphPainter({ ...whole, ink: false });
     expect(boxInJob(boxOf({ ink: INK }))).toBe(false);
+    expect(boxInJob(boxOf())).toBe(true);
     setGlyphPainter(canvasPasses);
     expect(boxInJob(boxOf())).toBe(false);
     setGlyphPainter(before.painter);
@@ -199,6 +207,8 @@ describe('each pass is the picture the canvas made', () => {
 describe('a roughened box', () => {
   const ROUGH = { roughen: { on: true, amount: 6, detail: 0.07, seed: 7 } };
 
+  // An inked box that is roughened is the canvas's whole (boxInJob), until the
+  // engine roughens ink (phase 8c).
   it('is roughened in its outlines, except where the canvas draws ink on it', () => {
     expect(roughenInJob(boxOf(ROUGH))).toBe(true);
     expect(roughenInJob(boxOf())).toBe(false);
