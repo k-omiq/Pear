@@ -373,6 +373,14 @@ function warpForCurve(curve) {
 // Used twice, deliberately: by `isRasterOnly` to decide the layer even gets a
 // live `text` object, and by the effects builder to decide it emits the
 // overlay. One rule, so the two can never disagree about the same style.
+// A Gradient Overlay or a gradient Stroke in Shape Burst.
+function usesShapeBurst(s) {
+  return (
+    (s.gradientOverlays ?? []).some((o) => o.gradient?.style === 'shapeburst') ||
+    (s.strokeEffects ?? []).some((k) => k.fill === 'gradient' && k.gradient?.style === 'shapeburst')
+  );
+}
+
 function gradientOverlayable(g) {
   return !!g && g.scope !== 'line' && (g.kind ?? 'linear') === 'linear';
 }
@@ -468,6 +476,9 @@ export function isRasterOnly(style) {
     // document's pattern table too.
     s.patternOverlay?.on ||
     (s.strokeEffects ?? []).some((k) => k.fill === 'pattern') ||
+    // Shape Burst is a gradient style ag-psd cannot name (its GradientStyle
+    // has the five), so a box using one ships its pixels.
+    usesShapeBurst(s) ||
     (s.gradient?.on && !gradientOverlayable(s.gradient)) ||
     // No fill: a type layer always has a fill colour, and its own see-through
     // setting (the layer's fill opacity) is not one this writer states.
@@ -791,12 +802,26 @@ export function textLayerFor(p, box, rendered) {
   }
   // An effect gradient is Photoshop's own (`normalizeFxGradient`): its style,
   // angle, scale, reverse and offset go in as they are, aligned with the layer.
-  const fxGradient = (g) => ({
+  // A noise gradient goes in as Photoshop's (ag-psd `EffectNoiseGradient`):
+  // the same settings, though Photoshop's generator makes its own colours
+  // from them. Its Limits list has a fourth (alpha) channel, kept full.
+  const limit = (v) => Math.round(v * 100) / 100;
+  const fxGradient = (g) => g.type === 'noise' ? {
+    name: 'Custom',
+    type: 'noise',
+    roughness: g.noise.roughness,
+    colorModel: g.noise.model,
+    randomSeed: g.noise.seed | 0,
+    restrictColors: g.noise.restrict,
+    addTransparency: g.noise.transparency,
+    min: [...g.noise.min.map(limit), 0],
+    max: [...g.noise.max.map(limit), 1],
+  } : {
     name: 'Custom',
     type: 'solid',
     colorStops: g.stops.map((st) => ({ color: hexToRgb(st.color), location: st.pos, midpoint: 50 })),
     opacityStops: g.stops.map((st) => ({ opacity: st.opacity ?? 1, location: st.pos, midpoint: 50 })),
-  });
+  };
   const fxPlacement = (g) => ({ angle: g.angle, scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } });
   const gradientOverlays = (s.gradientOverlays ?? []).map((o) => ({
     enabled: true,

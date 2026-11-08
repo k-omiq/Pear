@@ -61,6 +61,7 @@
     newGradientOverlay,
     newStrokeEffect,
     FX_GRADIENT_STYLES,
+    NOISE_MODELS,
     STROKE_POSITIONS,
     GRADIENT_MIN_STOPS,
     LAYER_BLEND_MODES,
@@ -888,7 +889,28 @@
   }
   // The ramp as CSS, for the strip over an effect gradient's stops.
   const fxRamp = (g) => `linear-gradient(90deg, ${g.stops.map((st) => `color-mix(in srgb, ${st.color} ${pct(st.opacity)}%, transparent) ${pct(st.pos)}%`).join(', ')})`;
-  const FX_STYLE_LABELS = { linear: 'Linear', radial: 'Radial', angle: 'Angle', reflected: 'Reflected', diamond: 'Diamond' };
+  const FX_STYLE_LABELS = { linear: 'Linear', radial: 'Radial', angle: 'Angle', reflected: 'Reflected', diamond: 'Diamond', shapeburst: 'Shape Burst' };
+  // A noise gradient's colour models and their channels, as Photoshop's
+  // Gradient Editor names them.
+  const NOISE_MODEL_LABELS = { rgb: 'RGB', hsb: 'HSB', lab: 'LAB' };
+  const NOISE_CHANNELS = { rgb: ['R', 'G', 'B'], hsb: ['H', 'S', 'B'], lab: ['L', 'a', 'b'] };
+  // One channel's Limits, in %: a low past the high pushes the high up, and
+  // the other way.
+  function setNoiseLimit(n, side, i, e) {
+    const v = clamp(Math.round(+e.target.value || 0), 0, 100) / 100;
+    n[side][i] = v;
+    if (side === 'min' && n.max[i] < v) n.max[i] = v;
+    if (side === 'max' && n.min[i] > v) n.min[i] = v;
+    e.target.value = String(pct(v));
+    touch();
+  }
+  // Randomize: a new seed, so a new ramp from the same settings.
+  function randomizeNoise(n) {
+    let seed = n.seed;
+    while (seed === n.seed) seed = Math.floor(Math.random() * 2 ** 32) >>> 0;
+    n.seed = seed;
+    touch();
+  }
   const POSITION_LABELS = { outside: 'Outside', inside: 'Inside', center: 'Center' };
   // A blend mode's name as Photoshop's menu shows it.
   const blendLabel = (m) => m.split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
@@ -1193,23 +1215,69 @@
      Style, Angle, Scale, Reverse, and its stops. `placed` false hides what a
      glow's gradient does not read (it runs along the glow). -->
 {#snippet fxGradientControls(g, title, placed = true)}
-  <div class="fx-ramp" style="background:{fxRamp(g)}" aria-hidden="true"></div>
-  <div class="insp-list k-fxstop">
-    {#each g.stops as st, i (st)}
-      <div class="insp-row">
-        {@render swatchCell(st, 'color', `${title} stop ${i + 1} colour`)}
-        <input type="number" min="0" max="100" step="1" value={pct(st.pos)} aria-label="{title} stop {i + 1} position" title="Position along the gradient, %" oninput={(e) => setAlpha(st, 'pos', e.target.value)} onchange={() => sortFxStops(g)} />
-        <input type="number" min="0" max="100" step="1" value={pct(st.opacity)} aria-label="{title} stop {i + 1} opacity" title="Opacity of this stop, %" oninput={(e) => setAlpha(st, 'opacity', e.target.value)} />
-        {@render rmBtn(`${title.toLowerCase()} stop ${i + 1}`, () => removeFxStop(g, i), g.stops.length > GRADIENT_MIN_STOPS)}
-      </div>
-    {/each}
+  <div class="sh-more" style="margin:0">
+    <label class="sh-contour" title="Gradient Type: Solid paints the stops; Noise paints a random ramp made from a seed">
+      <span>Gradient Type</span>
+      <select value={g.type} aria-label="{title} type" onchange={(e) => { g.type = e.target.value; touch(); }}>
+        <option value="solid">Solid</option>
+        <option value="noise">Noise</option>
+      </select>
+    </label>
   </div>
-  {#if g.stops.length < GRADIENT_MAX_STOPS}
-    {@render addBtn('Add stop', () => addFxStop(g))}
+  {#if g.type === 'noise'}
+    {@const n = g.noise}
+    <div class="sh-more" style="margin:0">
+      <label class="sh-num" title="Roughness, %: how many colour steps, and how sharp">
+        <span>Roughness</span>
+        <input type="number" min="0" max="100" step="1" value={pct(n.roughness)} aria-label="{title} roughness, percent" onchange={(e) => { const v = clamp(Math.round(+e.target.value || 0), 0, 100); n.roughness = v / 100; e.target.value = String(v); touch(); }} />
+      </label>
+      <label class="sh-num" title="Color Model: the channels the colours walk in">
+        <span>Model</span>
+        <select value={n.model} aria-label="{title} colour model" onchange={(e) => { n.model = e.target.value; touch(); }}>
+          {#each NOISE_MODELS as m (m)}
+            <option value={m}>{NOISE_MODEL_LABELS[m]}</option>
+          {/each}
+        </select>
+      </label>
+      {#each NOISE_CHANNELS[n.model] as ch, i (i)}
+        <label class="sh-num" title="{ch} limit, low end, %">
+          <span>{ch} min</span>
+          <input type="number" min="0" max="100" step="1" value={pct(n.min[i])} aria-label="{title} {ch} limit low, percent" onchange={(e) => setNoiseLimit(n, 'min', i, e)} />
+        </label>
+        <label class="sh-num" title="{ch} limit, high end, %">
+          <span>max</span>
+          <input type="number" min="0" max="100" step="1" value={pct(n.max[i])} aria-label="{title} {ch} limit high, percent" onchange={(e) => setNoiseLimit(n, 'max', i, e)} />
+        </label>
+      {/each}
+      <label class="sh-check" title="Restrict Colors: no oversaturated colours">
+        <input type="checkbox" checked={n.restrict} aria-label="{title} restrict colours" onchange={(e) => { n.restrict = e.target.checked; touch(); }} />
+        <span>Restrict Colors</span>
+      </label>
+      <label class="sh-check" title="Add Transparency: a random opacity too">
+        <input type="checkbox" checked={n.transparency} aria-label="{title} add transparency" onchange={(e) => { n.transparency = e.target.checked; touch(); }} />
+        <span>Add Transparency</span>
+      </label>
+    </div>
+    <button type="button" class="add-btn" title="A new random seed: a new ramp from the same settings" aria-label="{title} randomize" onclick={() => randomizeNoise(n)}>Randomize</button>
+  {:else}
+    <div class="fx-ramp" style="background:{fxRamp(g)}" aria-hidden="true"></div>
+    <div class="insp-list k-fxstop">
+      {#each g.stops as st, i (st)}
+        <div class="insp-row">
+          {@render swatchCell(st, 'color', `${title} stop ${i + 1} colour`)}
+          <input type="number" min="0" max="100" step="1" value={pct(st.pos)} aria-label="{title} stop {i + 1} position" title="Position along the gradient, %" oninput={(e) => setAlpha(st, 'pos', e.target.value)} onchange={() => sortFxStops(g)} />
+          <input type="number" min="0" max="100" step="1" value={pct(st.opacity)} aria-label="{title} stop {i + 1} opacity" title="Opacity of this stop, %" oninput={(e) => setAlpha(st, 'opacity', e.target.value)} />
+          {@render rmBtn(`${title.toLowerCase()} stop ${i + 1}`, () => removeFxStop(g, i), g.stops.length > GRADIENT_MIN_STOPS)}
+        </div>
+      {/each}
+    </div>
+    {#if g.stops.length < GRADIENT_MAX_STOPS}
+      {@render addBtn('Add stop', () => addFxStop(g))}
+    {/if}
   {/if}
   {#if placed}
     <div class="sh-more" style="margin:0">
-      <label class="sh-contour" title="Style: the gradient's shape">
+      <label class="sh-contour" title="Style: the gradient's shape. Shape Burst runs from the edge in">
         <span>Style</span>
         <select value={g.style} aria-label="{title} style" onchange={(e) => { g.style = e.target.value; touch(); }}>
           {#each FX_GRADIENT_STYLES as st (st)}
@@ -2985,7 +3053,8 @@
   .sh-contour span {
     flex: 0 0 auto;
   }
-  .sh-num input {
+  .sh-num input,
+  .sh-num select {
     flex: 1 1 auto;
     min-width: 0;
   }

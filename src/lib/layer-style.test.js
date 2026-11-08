@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLEND_MODE_IDS, CONTOUR_IDS, encodeBox } from '../../text-engine/js/paint.mjs';
+import { BLEND_MODE_IDS, CONTOUR_IDS, BOX_WIRE_VERSION, encodeBox } from '../../text-engine/js/paint.mjs';
 import {
   LAYER_BLEND_MODES,
   CONTOUR_PRESETS,
@@ -7,6 +7,10 @@ import {
   normalizeLight,
   normalizeShadow,
   normalizeTypesetting,
+  normalizeFxGradient,
+  normalizeNoiseGradient,
+  FX_GRADIENT_STYLES,
+  NOISE_MODELS,
   newShadow,
   newTypesetting,
 } from './data.js';
@@ -83,5 +87,51 @@ describe('the chapter’s light', () => {
     expect(newTypesetting()).not.toHaveProperty('light');
     expect(normalizeTypesetting({ mode: 'smart', light: { ...LIGHT_DEF } })).not.toHaveProperty('light');
     expect(normalizeTypesetting({ mode: 'smart', light: { angle: 45, altitude: 30 } }).light).toEqual({ angle: 45, altitude: 30 });
+  });
+});
+
+// ===========================================================================
+// Noise gradients and Shape Burst (phase 3b)
+// ===========================================================================
+
+describe('an effect gradient of Gradient Type Noise', () => {
+  it('starts as Photoshop\'s dialog: solid, with the noise settings at 50 %, RGB, full limits, Restrict on', () => {
+    const g = normalizeFxGradient({});
+    expect(g.type).toBe('solid');
+    expect(g.noise).toEqual({ seed: 1, roughness: 0.5, model: 'rgb', min: [0, 0, 0], max: [1, 1, 1], restrict: true, transparency: false });
+    expect(FX_GRADIENT_STYLES).toContain('shapeburst');
+    expect(NOISE_MODELS).toEqual(['rgb', 'hsb', 'lab']);
+  });
+
+  it('keeps every noise field in range, a low limit never past its high', () => {
+    const n = normalizeNoiseGradient({ seed: -1, roughness: 3, model: 'cmyk', min: [0.5, -1, 2], max: [0.2, 0.5], restrict: false, transparency: 'yes' });
+    expect(n).toEqual({ seed: 4294967295, roughness: 1, model: 'rgb', min: [0.5, 0, 1], max: [0.5, 0.5, 1], restrict: false, transparency: false });
+    expect(normalizeFxGradient({ type: 'noise', noise: { seed: 9.7 } })).toMatchObject({ type: 'noise', noise: { seed: 9 } });
+    expect(normalizeFxGradient({ type: 'other' }).type).toBe('solid');
+  });
+
+  // Wire v6: the gradient record ends in its type, and a noise record after
+  // it (`decode_box` in text-engine/src/paint/boxjob.rs).
+  it('goes on the wire after the stops, and a solid one as a single 0', () => {
+    const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const g = normalizeFxGradient({ style: 'shapeburst' });
+    const fx = (gradient) => [{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient }];
+    const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
+    const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
+    const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
+    expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
+    expect(BOX_WIRE_VERSION).toBe(6);
+    // The noise record: seed, roughness, model, six limits, flags.
+    expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
+    // The gradient record starts after the box header, the blending options
+    // and the effect's kind, opacity and blend: its style is Shape Burst.
+    const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4;
+    expect(dv(solid).getUint32(head + 4 + 8 + 4 + 4, true)).toBe(5);
+    const typeAt = head + 4 + 8 + 4 + 4 + 4 + 8 + 8 + 4 + 8 + 8 + 4 + 2 * 12 + 4;
+    expect(dv(solid).getUint32(typeAt, true)).toBe(0);
+    expect(dv(noisy).getUint32(typeAt, true)).toBe(1);
+    expect(dv(noisy).getUint32(typeAt + 4, true)).toBe(42);
+    expect(dv(noisy).getUint32(typeAt + 16, true)).toBe(2);
+    expect(dv(noisy).getUint32(typeAt + 20 + 48, true)).toBe(3);
   });
 });

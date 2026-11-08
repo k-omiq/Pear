@@ -9,6 +9,7 @@
 //! distance.rs  distance transforms; a matte grown by a distance
 //! tent.rs      the soft edge of an effect: two box passes of its Size
 //! map.rs       the glows' and the inner shadow's maps
+//! noise_gradient.rs  Photoshop's noise gradients (ours, not PhotoCraft's)
 //! ```
 //!
 //! and here, how an effect's Size, Spread and Choke become a grow and a
@@ -26,6 +27,7 @@ pub mod effects;
 pub mod gradient;
 pub(crate) mod map;
 pub mod noise;
+pub mod noise_gradient;
 pub mod tent;
 
 /// How far a soft edge of `size` reaches past its matte, in the same units:

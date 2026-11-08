@@ -304,6 +304,36 @@ describe('the Rust engine behind the glyph-painter seam', () => {
     expect(glow.x0).toBeLessThan(plain.x0 - 4);
   });
 
+  it('paints a noise gradient the colours the native build bakes, and a Shape Burst', () => {
+    const painter = createRustGlyphPainter(rust);
+    const box = (effects) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects });
+      return ink(canvas);
+    };
+    // A short ramp moved a whole frame off: every letter pixel reads its
+    // first colour (offset +1) or its last (offset -1). The colours are the
+    // ones `the_ends_match_what_the_wasm_engine_paints` pins natively
+    // (text-engine/src/paint/fx/noise_gradient.rs), so the two builds agree.
+    const noise = (model, restrict, end) => ({
+      style: 'linear', angle: 0, scale: 0.1, reverse: false, offset: [end ? -1 : 1, 0],
+      stops: [{ color: '#000000', pos: 0, opacity: 1 }, { color: '#ffffff', pos: 1, opacity: 1 }],
+      type: 'noise', noise: { seed: 7, roughness: 0.5, model, min: [0, 0, 0], max: [1, 1, 1], restrict, transparency: false },
+    });
+    const at = (model, restrict, end) => box([{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient: noise(model, restrict, end) }]).solid;
+    expect(at('rgb', false, false)).toEqual([6, 198, 142]);
+    expect(at('rgb', false, true)).toEqual([89, 84, 44]);
+    expect(at('lab', true, false)).toEqual([79, 0, 0]);
+    expect(at('lab', true, true)).toEqual([8, 104, 212]);
+    // Shape Burst: black at the letters' edge, so the burst darkens a white
+    // overlay's edge and leaves the letters' extent alone.
+    const plain = box([]);
+    const burst = box([{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient: { ...noise('rgb', false, false), type: 'solid', style: 'shapeburst' } }]);
+    expect([burst.x0, burst.y0, burst.x1, burst.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
+  });
+
   it('paints a box with as many shadows as its style has', () => {
     // The app counts no shadows, and the canvas passes paint every one: the
     // box job once refused a 17th, and the box was not painted at all.

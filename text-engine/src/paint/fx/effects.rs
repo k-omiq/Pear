@@ -280,6 +280,15 @@ enum Brush<'a> {
         to_job: Affine,
         px: f32,
     },
+    /// Shape Burst: the gradient by each pixel's depth in the shape it
+    /// paints, 0 at the edge to 1 deepest, over a grid `w` wide whose corner
+    /// is device `dev`.
+    Burst {
+        g: &'a Gradient,
+        depth: Vec<f32>,
+        dev: (i32, i32),
+        w: usize,
+    },
     Shade(Shader<'a>),
 }
 
@@ -295,6 +304,15 @@ impl Brush<'_> {
             } => {
                 let p = to_job.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
                 g.sample(g.t(*frame, *px, p.x as f32, p.y as f32))
+            }
+            Brush::Burst { g, depth, dev, w } => {
+                let (ix, iy) = (x - dev.0, y - dev.1);
+                let d = if ix >= 0 && iy >= 0 && (ix as usize) < *w {
+                    depth.get(iy as usize * w + ix as usize).copied()
+                } else {
+                    None
+                };
+                g.sample(g.burst(d.unwrap_or(0.0)))
             }
             Brush::Shade(s) => {
                 let p = s.at(x, y);
@@ -331,6 +349,43 @@ fn brush<'a>(paint: &'a Paint, frame: Frame, place: &Place<'a>) -> Option<Brush<
         },
         Paint::Fill(f) => Brush::Shade(Shader::new(f, &place.transform, place.tiles)?),
     })
+}
+
+/// The brush for `paint`: a Shape Burst gradient run by `depth()` (each
+/// pixel's depth, 0 to 1, over a grid `w` wide whose corner is device
+/// `dev`), any other paint as [`brush`] has it over `frame`.
+fn brush_in<'a>(
+    paint: &'a Paint,
+    frame: Option<Frame>,
+    place: &Place<'a>,
+    dev: (i32, i32),
+    w: usize,
+    depth: impl FnOnce() -> Vec<f32>,
+) -> Option<Brush<'a>> {
+    match paint {
+        Paint::Gradient(g) if g.style == gradient::Style::ShapeBurst => Some(Brush::Burst {
+            g,
+            depth: depth(),
+            dev,
+            w,
+        }),
+        _ => brush(paint, frame?, place),
+    }
+}
+
+/// Each pixel's depth in a shape from `dist`, its distance in from the
+/// shape's edge (negative outside), as a share of the deepest one: Shape
+/// Burst's run. The deepest counts as `cap` at most.
+fn depth_share(dist: &[f32], cap: f32) -> Vec<f32> {
+    let deepest = dist
+        .iter()
+        .copied()
+        .fold(0.0f32, f32::max)
+        .min(cap)
+        .max(1e-3);
+    dist.iter()
+        .map(|&d| (d.max(0.0) / deepest).min(1.0))
+        .collect()
 }
 
 /// Lays a paint through map `m`, whose corner is `at` on `dst`, at `opacity`
@@ -562,8 +617,8 @@ pub(crate) struct Outside {
     pub h: usize,
     /// The letters' frame, job units, for the gradients.
     frame: Option<Frame>,
-    /// Effect index and share.
-    items: Vec<(usize, Vec<f32>)>,
+    /// Effect index, share, and a Shape Burst stroke's depth.
+    items: Vec<(usize, Vec<f32>, Option<Vec<f32>>)>,
 }
 
 impl Outside {
@@ -619,12 +674,14 @@ pub(crate) fn lay_outside(
     let mut acc = vec![[0.0f32; 4]; w * h];
     let mut cover = vec![0.0f32; w * h];
     let px = place.px();
-    for (k, share) in &o.items {
+    for (k, share, depth) in &o.items {
         let Some(Effect::Stroke(st)) = effects.get(*k) else {
             continue;
         };
         let frame = o.frame.map(|f| stroke_frame(f, st, px));
-        let Some(br) = frame.and_then(|f| brush(&st.paint, f, place)) else {
+        let Some(br) = brush_in(&st.paint, frame, place, o.dev, w, || {
+            depth.clone().unwrap_or_default()
+        }) else {
             continue;
         };
         // The share already carries Dissolve's choice: the paint is Normal.
@@ -750,7 +807,8 @@ pub(crate) fn interior(
     // Of each kind the first listed is on top, so it is laid last.
     let shown = || effects.iter().rev().filter(|e| e.shows());
     let overlay = |lay: &mut Surface, o: &PaintOverlay| -> Result<(), Error> {
-        if let Some(br) = frame.and_then(|f| brush(&o.paint, f, place)) {
+        let depth = || depth_share(&map::dist_inside(&shape), f32::INFINITY);
+        if let Some(br) = brush_in(&o.paint, frame, place, dev, w, depth) {
             lay_with(
                 lay,
                 &full,
@@ -843,6 +901,19 @@ pub(crate) fn interior(
             _ => None,
         })
         .collect();
+    let deepest = || {
+        map::chamfer_inside(&shape)
+            .iter()
+            .copied()
+            .fold(0.0f32, f32::max)
+    };
+    // A Shape Burst stroke runs from its outer edge (0) to its inner one
+    // (1): `inner` is its depth in from the letters' edge to that one.
+    let burst_in = |st: &Stroke| {
+        let (i, o) = st.widths();
+        let o = (o * scale) as f32;
+        (o, o + ((i * scale) as f32).min(deepest()))
+    };
     if strokes.iter().any(|(_, s)| s.widths().0 > 0.0) {
         let din = map::chamfer_inside(&shape);
         for (_, st) in strokes.iter().rev() {
@@ -850,6 +921,12 @@ pub(crate) fn interior(
             if in_w <= 0.0 {
                 continue;
             }
+            let depth = || {
+                let (out, total) = burst_in(st);
+                din.iter()
+                    .map(|&d| ((out + d.max(0.0)) / total.max(1e-3)).clamp(0.0, 1.0))
+                    .collect()
+            };
             let m = Map {
                 w,
                 h,
@@ -867,7 +944,7 @@ pub(crate) fn interior(
                     .collect(),
             };
             let sf = frame.map(|f| stroke_frame(f, st, place.px()));
-            if let Some(br) = sf.and_then(|f| brush(&st.paint, f, place)) {
+            if let Some(br) = brush_in(&st.paint, sf, place, dev, w, depth) {
                 lay_with(
                     &mut lay,
                     &m,
@@ -937,7 +1014,15 @@ pub(crate) fn interior(
                 *sh = k * (1.0 - cover[i]);
                 cover[i] += *sh;
             }
-            items.push((*k, share));
+            let burst =
+                matches!(&st.paint, Paint::Gradient(g) if g.style == gradient::Style::ShapeBurst);
+            let depth = burst.then(|| {
+                let (out, total) = burst_in(st);
+                d.iter()
+                    .map(|&d| ((out - d.max(-0.5)) / total.max(1e-3)).clamp(0.0, 1.0))
+                    .collect()
+            });
+            items.push((*k, share, depth));
         }
     }
     let outside = (!items.is_empty()).then_some(Outside {
@@ -1099,6 +1184,7 @@ mod tests {
             scale: 1.0,
             reverse: false,
             offset: (0.0, 0.0),
+            noise: None,
         };
         let o = Effect::GradientOverlay(PaintOverlay {
             opacity: 1.0,
@@ -1110,6 +1196,106 @@ mod tests {
         assert!(l[0] < 20 && r[0] > 235, "{l:?} {r:?}");
         assert_eq!(l[0], l[1]);
         assert_eq!(l[3], 255);
+    }
+
+    fn burst(reverse: bool) -> Gradient {
+        Gradient {
+            stops: vec![(0.0, [0.0; 3]), (1.0, [1.0; 3])],
+            opacity: Vec::new(),
+            style: gradient::Style::ShapeBurst,
+            angle: 30.0,
+            scale: 1.0,
+            reverse,
+            offset: (0.3, 0.0),
+            noise: None,
+        }
+    }
+
+    #[test]
+    fn a_shape_burst_overlay_runs_from_the_edge_to_the_deepest_point() {
+        let _scope = budget::Scope::new();
+        for reverse in [false, true] {
+            let o = Effect::GradientOverlay(PaintOverlay {
+                opacity: 1.0,
+                blend: Blend::Normal,
+                paint: Paint::Gradient(burst(reverse)),
+            });
+            let (out, _) = inside(&square(20), &[o]);
+            // Each edge the same (the angle and offset do not move it), and
+            // the middle, ten pixels in, the deepest.
+            let edges = [(10, 20), (29, 20), (20, 10), (20, 29)].map(|(x, y)| at(&out, x, y)[0]);
+            let middle = at(&out, 19, 19)[0];
+            assert!(edges.iter().all(|&e| e == edges[0]), "{edges:?}");
+            if reverse {
+                assert!(edges[0] > 235 && middle < 5, "{edges:?} {middle}");
+            } else {
+                assert!(edges[0] < 20 && middle > 250, "{edges:?} {middle}");
+            }
+            // Half way in, about half way along.
+            let half = at(&out, 15, 19)[0];
+            assert!((100..160).contains(&half), "{half}");
+        }
+    }
+
+    #[test]
+    fn a_shape_burst_stroke_runs_across_its_band() {
+        let _scope = budget::Scope::new();
+        let g = || Paint::Gradient(burst(false));
+        // Inside, 4 wide: dark at the letters' edge, light 4 in.
+        let (out, _) = inside(&square(20), &[stroke(4.0, Position::Inside, g())]);
+        let (e, d) = (at(&out, 10, 20)[0], at(&out, 13, 20)[0]);
+        assert!(e < 50 && d > 180, "{e} {d}");
+        // Outside, 4 wide: dark at its outer edge, light against the letters.
+        let fx = [stroke(4.0, Position::Outside, g())];
+        let (_, o) = inside(&square(20), &fx);
+        let mut s = Surface::new(40, 40).unwrap();
+        lay_outside(&mut s, &o.unwrap(), &fx, &place()).unwrap();
+        let px = |x: usize, y: usize| s.data[(y * 40 + x) * 4];
+        assert!(
+            px(6, 20) < 50 && px(9, 20) > 180,
+            "{} {}",
+            px(6, 20),
+            px(9, 20)
+        );
+    }
+
+    #[test]
+    fn a_noise_gradient_overlay_paints_its_ramp() {
+        use super::super::noise_gradient::{Model, Noise, Ramp};
+        let _scope = budget::Scope::new();
+        let ramp = Ramp::new(Noise {
+            seed: 4,
+            roughness: 1.0,
+            model: Model::Rgb,
+            min: [0.0; 3],
+            max: [1.0; 3],
+            restrict: false,
+            transparency: false,
+        });
+        let g = Gradient {
+            style: gradient::Style::Linear,
+            angle: 0.0,
+            offset: (0.0, 0.0),
+            noise: Some(ramp.clone()),
+            ..burst(false)
+        };
+        let o = Effect::GradientOverlay(PaintOverlay {
+            opacity: 1.0,
+            blend: Blend::Normal,
+            paint: Paint::Gradient(g.clone()),
+        });
+        let (out, _) = inside(&square(40), &[o]);
+        for x in [12, 25, 37] {
+            let t = g.t([10.0, 10.0, 50.0, 50.0], 1.0, x as f32 + 0.5, 30.5);
+            let want = ramp.sample(t).map(|v| (v * 255.0).round() as i32);
+            let got = at(&out, x, 30);
+            for c in 0..3 {
+                assert!(
+                    (i32::from(got[c]) - want[c]).abs() <= 1,
+                    "{x} {got:?} {want:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1141,6 +1327,7 @@ mod tests {
                 scale: 1.0,
                 reverse: false,
                 offset: (0.0, 0.0),
+                noise: None,
             }),
             opacity: 1.0,
             blend: Blend::Normal,

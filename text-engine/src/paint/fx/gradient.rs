@@ -1,6 +1,8 @@
 //! Photoshop's effect gradients: the five styles (Linear, Radial, Angle,
 //! Reflected, Diamond) laid over a frame, with Angle, Scale, Reverse and an
-//! offset, and colour and opacity stops sampled apart.
+//! offset, and colour and opacity stops sampled apart; Shape Burst, run by
+//! the distance from the shape's edge ([`Gradient::burst`]); and a noise
+//! gradient's colours in place of the stops ([`super::noise_gradient`]).
 //!
 //! Ported from PhotoCraft, `crates/compose/src/effects/paint.rs`
 //! (`gradient_units`, `gradient_t`, `PreparedGradient`, `sample_stops`,
@@ -12,6 +14,8 @@
 //! `fill_layout` is left out (it is a device-pixel grid; at most half a
 //! device pixel along the gradient).
 
+use super::noise_gradient::Ramp;
+
 /// The gradient's shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Style {
@@ -21,6 +25,9 @@ pub enum Style {
     Angle,
     Reflected,
     Diamond,
+    /// From the painted shape's edge (0) in to its deepest point (1). The
+    /// effect that lays it measures the depth; without a shape it is Linear.
+    ShapeBurst,
 }
 
 impl Style {
@@ -31,6 +38,7 @@ impl Style {
             2 => Style::Angle,
             3 => Style::Reflected,
             4 => Style::Diamond,
+            5 => Style::ShapeBurst,
             _ => return None,
         })
     }
@@ -51,6 +59,8 @@ pub struct Gradient {
     pub reverse: bool,
     /// The centre moved by a share of the frame.
     pub offset: (f32, f32),
+    /// Gradient Type Noise: these colours in place of the stops.
+    pub noise: Option<Ramp>,
 }
 
 /// A frame: `[x0, y0, x1, y1]`, any units.
@@ -98,7 +108,7 @@ impl Gradient {
         let (chord, len) = (chord * scale, len * scale);
         let corner = 0.5 * px * (c - s);
         let t = match self.style {
-            Style::Linear => (along - corner) / chord + 0.5,
+            Style::Linear | Style::ShapeBurst => (along - corner) / chord + 0.5,
             Style::Reflected => ((along - corner) / (chord / 2.0)).abs(),
             Style::Radial => (dx * dx + dy * dy).sqrt() / (len / 2.0),
             Style::Diamond => (along.abs() + across.abs()) / (len / 2.0),
@@ -107,6 +117,22 @@ impl Gradient {
                 ((angle.to_radians() - (-dy).atan2(dx)) / core::f32::consts::TAU).rem_euclid(1.0)
             }
         };
+        self.finish(t)
+    }
+
+    /// Shape Burst at `depth`: 0 on the painted shape's edge, 1 at its
+    /// deepest point. Scale shortens the run (at 50 % it is done halfway
+    /// in); Angle and the offset do not move it.
+    pub fn burst(&self, depth: f32) -> f32 {
+        let scale = if self.scale.is_finite() {
+            self.scale.max(1e-3)
+        } else {
+            1.0
+        };
+        self.finish(depth / scale)
+    }
+
+    fn finish(&self, t: f32) -> f32 {
         let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
         if self.reverse {
             1.0 - t
@@ -117,6 +143,9 @@ impl Gradient {
 
     /// The colour and opacity at `t`: straight RGB and alpha, 0 to 1.
     pub fn sample(&self, t: f32) -> [f32; 4] {
+        if let Some(r) = &self.noise {
+            return r.sample(t);
+        }
         let c = sample_stops(&self.stops, t);
         let a = if self.opacity.is_empty() {
             1.0
@@ -188,6 +217,7 @@ pub fn glow_gain(range: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::noise_gradient::{Model, Noise};
     use super::*;
 
     fn bw() -> Gradient {
@@ -199,6 +229,7 @@ mod tests {
             scale: 1.0,
             reverse: false,
             offset: (0.0, 0.0),
+            noise: None,
         }
     }
 
@@ -251,5 +282,47 @@ mod tests {
         let p = g.sample(0.25);
         assert!((p[0] - 0.25).abs() < 1e-6 && (p[3] - 0.75).abs() < 1e-6);
         assert_eq!(glow_gain(0.5), 4.0);
+    }
+
+    #[test]
+    fn shape_burst_runs_from_the_edge_in_and_reverses() {
+        let g = Gradient {
+            style: Style::ShapeBurst,
+            ..bw()
+        };
+        assert_eq!(
+            (g.burst(0.0), g.burst(0.25), g.burst(1.0)),
+            (0.0, 0.25, 1.0)
+        );
+        let r = Gradient {
+            reverse: true,
+            ..g.clone()
+        };
+        assert_eq!((r.burst(0.0), r.burst(1.0)), (1.0, 0.0));
+        let half = Gradient { scale: 0.5, ..g };
+        assert_eq!((half.burst(0.25), half.burst(0.75)), (0.5, 1.0));
+        assert_eq!(Style::from_u32(5), Some(Style::ShapeBurst));
+        assert_eq!(Style::from_u32(6), None);
+    }
+
+    #[test]
+    fn a_noise_gradient_samples_its_ramp_not_its_stops() {
+        let n = Noise {
+            seed: 1,
+            roughness: 0.5,
+            model: Model::Rgb,
+            min: [0.0; 3],
+            max: [1.0; 3],
+            restrict: false,
+            transparency: false,
+        };
+        let ramp = Ramp::new(n);
+        let g = Gradient {
+            noise: Some(ramp.clone()),
+            ..bw()
+        };
+        for t in [0.0, 0.3, 1.0] {
+            assert_eq!(g.sample(t), ramp.sample(t));
+        }
     }
 }

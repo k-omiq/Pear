@@ -34,6 +34,7 @@ use super::fx::effects::{
     Technique,
 };
 use super::fx::gradient::{Gradient, Style};
+use super::fx::noise_gradient::{Model, Noise, Ramp};
 use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
 use super::job::{decode, read_fill, Fill, Request, Rgba};
@@ -49,7 +50,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 5;
+pub const BOX_WIRE_VERSION: u32 = 6;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -415,6 +416,11 @@ impl<'a> Reader<'a> {
         {
             return Err(Error::BadSpec);
         }
+        let noise = match self.u32()? {
+            0 => None,
+            1 => Some(Ramp::new(self.noise()?)),
+            _ => return Err(Error::BadSpec),
+        };
         Ok(Gradient {
             stops,
             opacity,
@@ -423,6 +429,37 @@ impl<'a> Reader<'a> {
             scale,
             reverse,
             offset,
+            noise,
+        })
+    }
+
+    /// A noise gradient: seed, Roughness, colour model, each channel's
+    /// Limits, then its flags.
+    fn noise(&mut self) -> Result<Noise, Error> {
+        let seed = self.u32()?;
+        let roughness = self.upto(1.0)? as f32;
+        let model = Model::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+        let mut min = [0.0f32; 3];
+        let mut max = [1.0f32; 3];
+        for i in 0..3 {
+            min[i] = self.upto(1.0)? as f32;
+            max[i] = self.upto(1.0)? as f32;
+            if min[i] > max[i] {
+                return Err(Error::BadSpec);
+            }
+        }
+        let flags = self.u32()?;
+        if flags > 3 {
+            return Err(Error::BadSpec);
+        }
+        Ok(Noise {
+            seed,
+            roughness,
+            model,
+            min,
+            max,
+            restrict: flags & 1 != 0,
+            transparency: flags & 2 != 0,
         })
     }
 
@@ -605,10 +642,15 @@ impl<'a> Reader<'a> {
 /// paint record: u32 kind, then 0 rgba colour, 1 a gradient record, or 2 a
 ///   fill record as the glyph job writes one (its tile numbers are the job's)
 /// gradient record: u32 style (0 Linear, 1 Radial, 2 Angle, 3 Reflected,
-///   4 Diamond), f64 angle (degrees), f64 scale (1 is 100 %, to 10),
-///   u32 reverse, f64 x, y (the centre moved, a share of the frame, within 10),
-///   u32 n then n (f64 position, rgba colour), u32 m then m (f64 position,
-///   f64 opacity); at most 256 of each, positions 0 to 1 and in order
+///   4 Diamond, 5 Shape Burst), f64 angle (degrees), f64 scale (1 is 100 %,
+///   to 10), u32 reverse, f64 x, y (the centre moved, a share of the frame,
+///   within 10), u32 n then n (f64 position, rgba colour), u32 m then m (f64
+///   position, f64 opacity); at most 256 of each, positions 0 to 1 and in
+///   order; then u32 type, 0 solid (the stops), 1 noise (v6), whose record
+///   follows in place of the stops' colours:
+/// noise record: u32 seed, f64 roughness (0 to 1), u32 model (0 RGB, 1 HSB,
+///   2 LAB), then per channel f64 min, f64 max (0 to 1, min <= max), u32
+///   flags (1 restrict colours, 2 add transparency)
 /// ```
 ///
 /// Refused: a surface with no size or past the painter's guards, more than

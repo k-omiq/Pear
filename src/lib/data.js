@@ -788,15 +788,48 @@ export function newOverlay() {
 //             (Photoshop's drag in the dialog)
 //   stops     GRADIENT_MIN_STOPS..GRADIENT_MAX_STOPS, each a colour, a
 //             position and its own opacity, sorted by position
+//   type      FX_GRADIENT_TYPES: 'solid' paints the stops, 'noise' the
+//             Rust engine's random ramp from `noise` (the stops are kept for
+//             a switch back)
+//   noise     Photoshop's noise gradient (`normalizeNoiseGradient`)
 // Photoshop's Align with Layer is always on: the gradient spans the letters'
-// frame (a stroke's, the frame grown by the stroke).
-export const FX_GRADIENT_STYLES = ['linear', 'radial', 'angle', 'reflected', 'diamond'];
+// frame (a stroke's, the frame grown by the stroke). 'shapeburst' runs from
+// the painted shape's edge (the letters', or a stroke's outer edge) in to its
+// deepest point; Angle and the offset do not move it. A glow's gradient runs
+// along the glow whatever its style.
+export const FX_GRADIENT_STYLES = ['linear', 'radial', 'angle', 'reflected', 'diamond', 'shapeburst'];
+export const FX_GRADIENT_TYPES = ['solid', 'noise'];
+// A noise gradient, as Photoshop's Gradient Editor has one:
+//   seed          the random seed (Randomize picks a new one), 0..2^32-1
+//   roughness     0..1: how many steps and how sharp
+//   model         NOISE_MODELS: the channels walk in RGB, HSB or LAB
+//   min, max      each channel's Limits, 0..1 of its range, min <= max
+//   restrict      Restrict Colors: no oversaturated colours
+//   transparency  Add Transparency: a random alpha too
+// The defaults are Photoshop's dialog: 50 %, RGB, full limits, Restrict on.
+export const NOISE_MODELS = ['rgb', 'hsb', 'lab'];
+export function normalizeNoiseGradient(x) {
+  const src = x && typeof x === 'object' ? x : {};
+  const lim = (a, i, d) => Math.min(1, Math.max(0, num(Array.isArray(a) ? a[i] : undefined, d)));
+  const min = [0, 1, 2].map((i) => lim(src.min, i, 0));
+  const max = [0, 1, 2].map((i) => Math.max(min[i], lim(src.max, i, 1)));
+  const seed = Math.floor(num(src.seed, 1));
+  return {
+    seed: Number.isFinite(seed) ? seed >>> 0 : 1,
+    roughness: Math.min(1, Math.max(0, num(src.roughness, 0.5))),
+    model: NOISE_MODELS.includes(src.model) ? src.model : 'rgb',
+    min,
+    max,
+    restrict: src.restrict !== false,
+    transparency: src.transparency === true,
+  };
+}
 const FX_BW = [
   { color: '#000000', pos: 0, opacity: 1 },
   { color: '#ffffff', pos: 1, opacity: 1 },
 ];
 function fxGradientDefault(stops = FX_BW) {
-  return { style: 'linear', angle: 90, scale: 1, reverse: false, offset: [0, 0], stops: stops.map((st) => ({ ...st })) };
+  return { style: 'linear', angle: 90, scale: 1, reverse: false, offset: [0, 0], stops: stops.map((st) => ({ ...st })), type: 'solid', noise: normalizeNoiseGradient({}) };
 }
 // A glow's gradient as Photoshop starts one: its colour, fading out.
 function glowGradient(color) {
@@ -819,6 +852,8 @@ export function normalizeFxGradient(x, d = fxGradientDefault()) {
       .map(normalizeStop)
       .sort((a, b) => a.pos - b.pos)
       .slice(0, GRADIENT_MAX_STOPS),
+    type: src.type === 'noise' ? 'noise' : 'solid',
+    noise: normalizeNoiseGradient(src.noise ?? d.noise),
   };
 }
 // A Gradient Overlay: an effect gradient over the letters' fill.
