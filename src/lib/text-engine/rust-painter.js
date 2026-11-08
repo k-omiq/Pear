@@ -135,6 +135,7 @@ export function createRustGlyphPainter(rust, options = {}) {
       clip: spec.clip,
       blend: spec.blend,
       fillOpacity: spec.fillOpacity,
+      effects: spec.effects ?? [],
       backdrop: spec.backdrop ?? null,
     });
     if (!raster) return null;

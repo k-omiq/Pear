@@ -1038,6 +1038,7 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .insp-list{ display:flex; flex-direction:column; gap:6px; min-width:0; }
 .insp-list.k-stroke{ --cols:24px minmax(0,1fr) 52px 52px 20px; }
 .insp-list.k-shadow{ --cols:24px repeat(4,minmax(0,1fr)) 20px; }
+.insp-list.k-overlay{ --cols:24px minmax(0,1fr) 52px 20px; }
 .insp-row{ display:grid; grid-template-columns:var(--cols); align-items:center; gap:6px; min-width:0; }
 /* The stepper is what the compact rows cannot afford: four number fields in a
    shadow row leaves each of them ~50px, and the spin box takes a third of that

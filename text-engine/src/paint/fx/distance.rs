@@ -9,7 +9,7 @@
 use super::super::budget;
 use crate::Error;
 
-const FAR: f32 = 1e20;
+pub(crate) const FAR: f32 = 1e20;
 
 /// The lower envelope of parabolas rooted at `f`, written to `d`: for each
 /// `q`, the least of `(q - p)^2 + f[p]`. `v` and `z` are scratch of length
@@ -140,7 +140,7 @@ pub fn dilate(alpha: &mut [u8], width: usize, height: usize, by: f64) -> Result<
 /// The 5 x 5 chamfer distance from the seeds of `d` (a start value; [`FAR`]
 /// is no seed): two raster passes, each pixel taking the least of its own
 /// and a visited neighbour's plus the step to it.
-fn chamfer(d: &mut [f32], width: usize, height: usize) {
+pub(crate) fn chamfer(d: &mut [f32], width: usize, height: usize) {
     const S2: f32 = core::f32::consts::SQRT_2;
     const S5: f32 = 2.236_068;
     const FWD: [(i64, i64, f32); 8] = [

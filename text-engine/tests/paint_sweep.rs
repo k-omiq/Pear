@@ -41,6 +41,7 @@ fn sheet(
         clip: None,
         blend: Blend::Normal,
         fill_opacity: 1.0,
+        effects: Vec::new(),
         backdrop: None,
         request: Request {
             job: Job {

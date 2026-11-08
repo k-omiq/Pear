@@ -392,7 +392,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 3
+export const BOX_WIRE_VERSION = 4
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 
@@ -442,9 +442,14 @@ function shadowRecord(sh) {
   u32(blendId(sh.blend))
   u32((sh.knockout ? 1 : 0) | (sh.contour?.aa ? 2 : 0))
   u32((sh.seed ?? 0) >>> 0)
-  const preset = sh.contour?.preset ?? 'linear'
+  contourRecord(sh.contour)
+}
+
+// A contour: a preset's number, or 255 and its points.
+function contourRecord(contour) {
+  const preset = contour?.preset ?? 'linear'
   if (preset === 'custom') {
-    const pts = sh.contour.pts ?? []
+    const pts = contour.pts ?? []
     u32(CONTOUR_POINTS)
     u32(pts.length)
     for (const q of pts) {
@@ -457,6 +462,37 @@ function shadowRecord(sh) {
   const id = CONTOUR_IDS[preset]
   if (id === undefined) throw new Error(`mt-text: unknown contour ${JSON.stringify(preset)}`)
   u32(id)
+}
+
+const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4 }
+
+// One layer effect past the drop shadows (`decode_box`'s effect record).
+function effectRecord(fx) {
+  const kind = EFFECT_KIND[fx.kind]
+  if (!kind) throw new Error(`mt-text: unknown effect ${JSON.stringify(fx.kind)}`)
+  u32(kind)
+  rgba(fx.color)
+  f64(fx.opacity)
+  u32(blendId(fx.blend))
+  if (kind === 4) return
+  if (kind === 3) {
+    f64(fx.x)
+    f64(fx.y)
+    f64(fx.size ?? 0)
+    f64(fx.choke ?? 0)
+    f64(fx.noise ?? 0)
+    u32((fx.seed ?? 0) >>> 0)
+    contourRecord(fx.contour)
+    return
+  }
+  u32(fx.technique === 'precise' ? 1 : 0)
+  f64(fx.size ?? 0)
+  f64((kind === 2 ? fx.choke : fx.spread) ?? 0)
+  f64(fx.range ?? 0.5)
+  f64(fx.noise ?? 0)
+  u32((fx.seed ?? 0) >>> 0)
+  contourRecord(fx.contour)
+  if (kind === 2) u32(fx.source === 'center' ? 1 : 0)
 }
 
 // One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
@@ -512,12 +548,17 @@ function clipShape(sh) {
  *   box's corner in job space
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
  * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1
+ * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay', color: string,
+ *   opacity: number, blend?: string, technique?: 'softer' | 'precise', source?: 'edge' | 'center',
+ *   size?: number, spread?: number, choke?: number, range?: number, noise?: number,
+ *   x?: number, y?: number, seed?: number, contour?: {preset: string, pts?: number[][]}}[]} [request.effects]
+ *   the layer effects past the drop shadows, resolved: of a kind, first on top
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
  *   the surface, straight RGBA8 of `width * height`: what a blend mode blends with
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, backdrop = null } = request
+  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, effects = [], backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -547,6 +588,8 @@ export function encodeBox(request) {
   }
   u32(blendId(blend))
   f64(fillOpacity)
+  u32(effects.length)
+  for (const fx of effects) effectRecord(fx)
   if (backdrop) {
     if (backdrop.length !== width * height * 4) throw new Error('mt-text: a backdrop must be the surface, RGBA')
     u32(1)

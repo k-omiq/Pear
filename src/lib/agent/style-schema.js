@@ -10,6 +10,9 @@ const boolean = (desc) => ({ type: 'boolean', desc });
 const string = (desc) => ({ type: 'string', desc });
 const color = (desc) => ({ type: 'color', desc });
 const choice = (desc, values) => ({ type: 'enum', desc, values });
+// A choice whose values are a list several fields share, printed once by
+// `styleSchemaText` under its name.
+const listed = (name, desc, values) => ({ ...choice(desc, values), list: name });
 // `required` names the fields an item must carry when it arrives in a whole
 // list (a new item has nothing to fall back on); an index patch over an item
 // that exists may still give any part of it.
@@ -37,6 +40,23 @@ const point = (desc) => array(desc, number('px'), { minItems: 2, maxItems: 2 });
 // the renderers read `path.pts` and `clip.shapes` in. Coordinates are not
 // clamped (a path or a mask may reach past the box) and have no bounds here.
 // The caps on list lengths are only there to stop a runaway list.
+const contourField = () => object('edge falloff', {
+  preset: listed('CONTOUR', 'contour', CONTOUR_PRESETS),
+  aa: boolean('anti-aliased contour'),
+});
+// An Outer or Inner Glow's fields; `spread` is Choke on an inner one.
+const glowFields = (spreadKey, spreadDesc) => ({
+  on: boolean('enable glow'),
+  blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+  opacity: alpha('glow alpha'),
+  noise: alpha('grain'),
+  color: color('glow colour'),
+  technique: choice('soft blur or exact distance', ['softer', 'precise']),
+  [spreadKey]: alpha(spreadDesc),
+  size: number('reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),
+  contour: contourField(),
+  range: number('share of the falloff the contour spans', 0.01, 1),
+});
 const PATH_MAX_ANCHORS = 64;
 const MASK_MAX_SHAPES = 64;
 const MASK_MAX_POINTS = 256;
@@ -117,16 +137,35 @@ export const STYLE_SCHEMA = {
     opacity: alpha('shadow alpha'),
     spread: alpha('share of size that is a hard edge'),
     noise: alpha('grain'),
-    blend: choice('blend mode', LAYER_BLEND_MODES),
-    contour: object('edge falloff', {
-      preset: choice('contour', CONTOUR_PRESETS),
-      aa: boolean('anti-aliased contour'),
-    }),
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+    contour: contourField(),
     knockout: boolean('letters knock the shadow out'),
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
   })),
+  outerGlow: object('glow round the letters (Photoshop Outer Glow; Rust)', glowFields('spread', 'share of size that is solid')),
+  innerGlow: object('glow inside the letters (Photoshop Inner Glow; Rust)', {
+    ...glowFields('spread', 'choke: share of size that is solid'),
+    source: choice('glow from the edge or the centre', ['edge', 'center']),
+  }),
+  innerShadows: array('shadows inside the letters, top first (Photoshop Inner Shadow; Rust)', object('inner shadow', {
+    x: number('x offset px'),
+    y: number('y offset px'),
+    size: number('soft edge reach px', 0, SHADOW_SIZE_MAX),
+    color: color('shadow colour'),
+    opacity: alpha('shadow alpha'),
+    choke: alpha('share of size that is a hard edge'),
+    noise: alpha('grain'),
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+    contour: contourField(),
+    useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
+  })),
+  colorOverlays: array('flat colours over the fill, top first (Photoshop Color Overlay; Rust)', object('colour overlay', {
+    color: color('overlay colour'),
+    opacity: alpha('overlay alpha'),
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+  })),
   fillOpacity: alpha('fill alpha only; strokes and shadows stay'),
-  blendMode: choice('how the box mixes with the page (Photoshop layer blend)', LAYER_BLEND_MODES),
+  blendMode: listed('BLEND', 'how the box mixes with the page (Photoshop layer blend)', LAYER_BLEND_MODES),
   blur: number('whole-text blur px', 0),
   motionBlur: object('directional smear', {
     on: boolean('enable smear'),
@@ -396,10 +435,14 @@ export function validateStylePatch(patch) {
  */
 export function styleSchemaText() {
   const lines = [];
+  const lists = new Map();
   const scalar = (e) => !e.fields && !e.items && !e.variants;
   function walk(entry, path, required = false) {
     let type = entry.type;
-    if (entry.type === 'enum') type += ` ${entry.values.join('|')}`;
+    if (entry.list) {
+      type += ` ${entry.list}`;
+      lists.set(entry.list, entry.values);
+    } else if (entry.type === 'enum') type += ` ${entry.values.join('|')}`;
     if (entry.type === 'union') type += ` by ${entry.key}: ${Object.keys(entry.variants).join('|')}`;
     if (entry.min !== undefined || entry.max !== undefined) type += ` ${entry.min ?? '-inf'}..${entry.max ?? 'inf'}`;
     if (entry.type === 'array' && (entry.minItems !== undefined || entry.maxItems !== undefined)) {
@@ -426,5 +469,6 @@ export function styleSchemaText() {
     }
   }
   for (const [key, entry] of Object.entries(STYLE_SCHEMA)) walk(entry, key);
-  return lines.join('\n');
+  const legend = [...lists].map(([name, values]) => `${name} = ${values.join('|')}`);
+  return [...legend, ...lines].join('\n');
 }

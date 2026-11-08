@@ -373,6 +373,14 @@ export function defaultStyle() {
     // others). Empty array = no shadow. Each shadow uses the glyph outline plus
     // all strokes as its shape.
     shadows: [],
+    // Photoshop's Outer Glow, Inner Glow, Inner Shadow and Color Overlay
+    // (`normalizeGlow`, `normalizeInnerShadow`, `normalizeOverlay`). The Rust
+    // engine paints them; the browser engine does not. Of the lists, the first
+    // is on top.
+    outerGlow: glowDefault(false),
+    innerGlow: glowDefault(true),
+    innerShadows: [],
+    colorOverlays: [],
     // How the outlines are laid: 'merged' (one shape under the fill) or
     // 'each' (letter by letter, a later letter's rim over an earlier
     // letter's fill), with 'round' or 'miter' corners. `strokeShade` (0..1)
@@ -691,6 +699,64 @@ export function newShadow(light = { angle: 120 }) {
     knockout: true,
     useGlobalLight: true,
   });
+}
+// Outer Glow and Inner Glow, as Photoshop's dialog has them:
+//   on          the effect's box in the list
+//   blend, opacity, noise, color     Structure (a solid colour; gradient glows
+//               come with the gradient work, LAYER_STYLES_PLAN.md phase 3)
+//   technique   'softer' | 'precise'
+//   spread      Spread (outer) or Choke (inner), 0..1
+//   size        page px, 0 to 250
+//   source      inner only: 'edge' | 'center'
+//   contour, range   Quality: the falloff's shape, and the share of it the
+//               contour is spread over (0.01..1)
+// The defaults are Photoshop's (PhotoCraft's `fresh_effect`): Screen, 75 %,
+// the pale yellow, Softer, size 5, range 50 %.
+function glowDefault(inner) {
+  const g = { on: false, blend: 'screen', opacity: 0.75, noise: 0, color: '#ffffbe', technique: 'softer', spread: 0, size: 5, contour: { preset: 'linear', aa: false }, range: 0.5 };
+  if (inner) g.source = 'edge';
+  return g;
+}
+export function normalizeGlow(x, inner = false) {
+  const d = glowDefault(inner);
+  const g = {
+    on: x?.on === true,
+    blend: blendMode(x?.blend, d.blend),
+    opacity: Math.min(1, Math.max(0, num(x?.opacity, d.opacity))),
+    noise: Math.min(1, Math.max(0, num(x?.noise, 0))),
+    color: hex(x?.color, d.color),
+    technique: x?.technique === 'precise' ? 'precise' : 'softer',
+    spread: Math.min(1, Math.max(0, num(x?.spread, 0))),
+    size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, d.size))),
+    contour: normalizeContour(x?.contour),
+    range: Math.min(1, Math.max(0.01, num(x?.range, d.range))),
+  };
+  if (inner) g.source = x?.source === 'center' ? 'center' : 'edge';
+  return g;
+}
+// An Inner Shadow: a Drop Shadow's fields (`normalizeShadow`) thrown into
+// the letters, with Choke where a drop shadow has Spread and no knockout.
+export function normalizeInnerShadow(x) {
+  const { spread, knockout, ...sh } = normalizeShadow(x);
+  return { ...sh, choke: Math.min(1, Math.max(0, num(x?.choke, 0))) };
+}
+// One as Photoshop adds it: Multiply, black, 75 %, the chapter's light, 5
+// away, size 5.
+export function newInnerShadow(light = { angle: 120 }) {
+  const { knockout, ...sh } = newShadow(light);
+  return normalizeInnerShadow(sh);
+}
+// A Color Overlay: a flat colour over the letters' fill, in its own mode.
+export function normalizeOverlay(x) {
+  return {
+    color: hex(x?.color, '#ff0000'),
+    opacity: Math.min(1, Math.max(0, num(x?.opacity, 1))),
+    blend: blendMode(x?.blend, 'normal'),
+  };
+}
+// Photoshop's new one: Normal, red, 100 %.
+export function newOverlay() {
+  return normalizeOverlay({});
 }
 // One hand-drawn brush stroke, sanitised. Returns null for a stroke that
 // cannot be drawn at all - no points, or a size of zero - because a stroke
@@ -1312,6 +1378,10 @@ export function normalizeStyle(s) {
     noFill: src.noFill === true,
     strokes,
     shadows,
+    outerGlow: normalizeGlow(src.outerGlow),
+    innerGlow: normalizeGlow(src.innerGlow, true),
+    innerShadows: Array.isArray(src.innerShadows) ? src.innerShadows.map(normalizeInnerShadow) : [],
+    colorOverlays: Array.isArray(src.colorOverlays) ? src.colorOverlays.map(normalizeOverlay) : [],
     roughen: { ...d.roughen, ...(src.roughen || {}) },
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));

@@ -29,6 +29,7 @@
 use super::blur::{self, Moved, Surface};
 use super::fx::blend::{self, Backdrop, Blend};
 use super::fx::contour::{self, Curve, Lut};
+use super::fx::effects::{self, Effect, Glow, InnerShadow, Overlay, Technique};
 use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
 use super::job::{decode, Fill, Request, Rgba};
@@ -44,7 +45,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 3;
+pub const BOX_WIRE_VERSION: u32 = 4;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -188,6 +189,9 @@ pub struct BoxRequest {
     /// Photoshop's Fill Opacity, 0 to 1: the fill fades, the outlines and
     /// the shadows do not.
     pub fill_opacity: f64,
+    /// The layer effects past the drop shadows: glows, inner shadows, colour
+    /// overlays. Of a kind, first on top.
+    pub effects: Vec<Effect>,
     /// The page under the surface, straight RGBA8 of the surface's size,
     /// read as opaque: what a blend mode blends with.
     pub backdrop: Option<Vec<u8>>,
@@ -207,6 +211,7 @@ impl BoxRequest {
             clip: None,
             blend: Blend::Normal,
             fill_opacity: 1.0,
+            effects: Vec::new(),
             backdrop: None,
             request,
         }
@@ -298,8 +303,7 @@ impl<'a> Reader<'a> {
             return Err(Error::BadSpec);
         }
         let seed = self.u32()?;
-        let curve = self.curve()?;
-        let contour = curve.map(|c| Lut::new(&c)).filter(|l| !l.is_identity());
+        let contour = self.contour()?;
         Ok(Shadow {
             color,
             opacity,
@@ -313,6 +317,94 @@ impl<'a> Reader<'a> {
             knockout: flags & 1 != 0,
             contour,
             seed,
+        })
+    }
+
+    fn rgba(&mut self) -> Result<Rgba, Error> {
+        let b = self.take(4)?;
+        Ok(Rgba([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn contour(&mut self) -> Result<Option<Lut>, Error> {
+        Ok(self
+            .curve()?
+            .map(|c| Lut::new(&c))
+            .filter(|l| !l.is_identity()))
+    }
+
+    fn glow(&mut self, inner: bool) -> Result<Glow, Error> {
+        let color = self.rgba()?;
+        let opacity = self.upto(1.0)?;
+        let blend = Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+        let technique = match self.u32()? {
+            0 => Technique::Softer,
+            1 => Technique::Precise,
+            _ => return Err(Error::BadSpec),
+        };
+        let size = self.upto(MAX_BLUR)?;
+        let spread = self.upto(1.0)?;
+        let range = self.upto(1.0)?;
+        let noise = self.upto(1.0)?;
+        let seed = self.u32()?;
+        let contour = self.contour()?;
+        let center = if inner {
+            match self.u32()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::BadSpec),
+            }
+        } else {
+            false
+        };
+        Ok(Glow {
+            color,
+            opacity,
+            blend,
+            technique,
+            size,
+            spread,
+            range,
+            noise,
+            contour,
+            center,
+            seed,
+        })
+    }
+
+    fn effect(&mut self) -> Result<Effect, Error> {
+        Ok(match self.u32()? {
+            1 => Effect::OuterGlow(self.glow(false)?),
+            2 => Effect::InnerGlow(self.glow(true)?),
+            3 => {
+                let color = self.rgba()?;
+                let opacity = self.upto(1.0)?;
+                let blend = Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+                let x = self.within(MAX_THROW)?;
+                let y = self.within(MAX_THROW)?;
+                let size = self.upto(MAX_BLUR)?;
+                let choke = self.upto(1.0)?;
+                let noise = self.upto(1.0)?;
+                let seed = self.u32()?;
+                let contour = self.contour()?;
+                Effect::InnerShadow(InnerShadow {
+                    color,
+                    opacity,
+                    blend,
+                    x,
+                    y,
+                    size,
+                    choke,
+                    noise,
+                    contour,
+                    seed,
+                })
+            }
+            4 => Effect::ColorOverlay(Overlay {
+                color: self.rgba()?,
+                opacity: self.upto(1.0)?,
+                blend: Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?,
+            }),
+            _ => return Err(Error::BadSpec),
         })
     }
 
@@ -385,6 +477,17 @@ impl<'a> Reader<'a> {
 ///       3 stroke:  f64 size, u32 n, then n points; one point is a dot
 /// u32 blend                    the letters' mode
 /// f64 fill opacity             0 to 1
+/// u32 effect count, then per effect, first of its kind on top, a u32 kind:
+///   1 outer glow, 2 inner glow:
+///     rgba colour, f64 opacity, u32 blend
+///     u32 technique            0 Softer, 1 Precise
+///     f64 size, f64 spread (or choke), f64 range, f64 noise   0 to 1 but size
+///     u32 seed, u32 contour (as a shadow's)
+///     u32 source               inner glow only: 0 edge, 1 center
+///   3 inner shadow:
+///     rgba colour, f64 opacity, u32 blend, f64 x, y, f64 size,
+///     f64 choke, f64 noise, u32 seed, u32 contour
+///   4 colour overlay: rgba colour, f64 opacity, u32 blend
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow
 /// u32 job byte length, then a glyph job in its own wire form
 /// ```
@@ -439,6 +542,8 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     };
     let blend = Blend::from_u32(r.u32()?).ok_or(Error::BadSpec)?;
     let fill_opacity = r.upto(1.0)?;
+    let n = r.count(usize::MAX, 20)?;
+    let effects = budget::collect((0..n).map(|_| r.effect()))?;
     let backdrop = match r.u32()? {
         0 => None,
         1 => {
@@ -461,6 +566,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         shadows,
         blend,
         fill_opacity,
+        effects,
         backdrop,
         blur,
         taps,
@@ -796,31 +902,41 @@ fn lay_styled(
 }
 
 /// The letters, their outlines and their fill, with the fill at the box's
-/// Fill Opacity. A faded fill is laid under its outlines cut to their outer
-/// halves, as Photoshop's Stroke lies outside a faded layer: the half of an
-/// outline the fill covered must not show through it.
+/// Fill Opacity and the interior effects laid on it. A faded fill is laid
+/// under its outlines cut to their outer halves, as Photoshop's Stroke lies
+/// outside a faded layer: the half of an outline the fill covered must not
+/// show through it. The interior effects are the fill's, under the outlines.
 fn paint_glyphs(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    carried: impl Fn(f64, f64) -> (f64, f64),
+    scale: f64,
 ) -> Result<Vec<Raster>, Error> {
     let job = &request.request.job;
     let fade = request.fill_opacity;
-    if fade >= 1.0 || job.no_fill || job.silhouette.is_some() {
+    let inside = !job.no_fill
+        && job.silhouette.is_none()
+        && request.effects.iter().any(|e| e.interior() && e.shows());
+    if (fade >= 1.0 && !inside) || job.no_fill || job.silhouette.is_some() {
         return Ok(paint_job_with(engine, &request.request, rasterizer)?
             .into_iter()
             .collect());
     }
     let mut out = Vec::new();
-    // The fill alone, faded.
+    // The fill alone, faded, with the effects on it.
     let bands = core::mem::take(&mut request.request.job.bands);
     let negative = request.request.job.effects.negative.take();
     let fill = paint_job_with(engine, &request.request, rasterizer);
     request.request.job.bands = bands;
     request.request.job.effects.negative = negative;
     if let Some(mut r) = fill? {
-        for p in r.data.chunks_exact_mut(4) {
-            p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
+        if inside {
+            r = effects::interior(&r, &request.effects, fade, scale, carried)?;
+        } else {
+            for p in r.data.chunks_exact_mut(4) {
+                p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
+            }
         }
         out.push(r);
     }
@@ -834,6 +950,77 @@ fn paint_glyphs(
         }
     }
     Ok(out)
+}
+
+/// The outer glows behind the letters, on `s`. Their shape is the letters'
+/// whole silhouette, outlines included, as a drop shadow's is; where the fill
+/// is see-through each glow is kept from behind the fill.
+fn lay_glows(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+    s: &mut Surface,
+    scale: f64,
+) -> Result<Option<IBox>, Error> {
+    let black = Some(Rgba([0, 0, 0, 255]));
+    let job_silhouette = request.request.job.silhouette;
+    request.request.job.silhouette = black;
+    let outline = paint_job_with(engine, &request.request, rasterizer);
+    request.request.job.silhouette = job_silhouette;
+    let Some(outline) = outline? else {
+        return Ok(None);
+    };
+    let reach = effects::outer_reach(&request.effects, scale);
+    let region = IBox {
+        x0: outline.x.saturating_sub(reach),
+        y0: outline.y.saturating_sub(reach),
+        x1: outline
+            .x
+            .saturating_add(outline.width as i32)
+            .saturating_add(reach),
+        y1: outline
+            .y
+            .saturating_add(outline.height as i32)
+            .saturating_add(reach),
+    }
+    .intersect(&IBox {
+        x0: 0,
+        y0: 0,
+        x1: s.width as i32,
+        y1: s.height as i32,
+    });
+    if region.is_empty() {
+        return Ok(None);
+    }
+    let shape = effects::alpha_map(&outline, region);
+    drop(outline);
+    let job = &request.request.job;
+    let fill = if request.fill_opacity < 1.0 && !job.no_fill {
+        let bands = core::mem::take(&mut request.request.job.bands);
+        let negative = request.request.job.effects.negative.take();
+        request.request.job.silhouette = black;
+        let fill = paint_job_with(engine, &request.request, rasterizer);
+        request.request.job.silhouette = job_silhouette;
+        request.request.job.bands = bands;
+        request.request.job.effects.negative = negative;
+        fill?.map(|r| effects::alpha_map(&r, region))
+    } else {
+        None
+    };
+    let page = request
+        .backdrop
+        .as_deref()
+        .map(|pixels| Backdrop { pixels });
+    effects::lay_outer_glows(
+        s,
+        &request.effects,
+        &shape,
+        fill.as_ref(),
+        request.fill_opacity,
+        region,
+        scale,
+        page.as_ref(),
+    )
 }
 
 fn paint(
@@ -886,6 +1073,7 @@ fn paint(
         && request.clip.is_none()
         && request.fill_opacity >= 1.0
         && !blends
+        && !request.effects.iter().any(Effect::shows)
     {
         // Nothing but glyphs: the glyph job, and its own raster.
         return match paint_job_with(engine, &request.request, rasterizer)? {
@@ -1034,8 +1222,17 @@ fn paint(
         i = end;
     }
     drop(layer);
+    if request
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::OuterGlow(_)) && e.shows())
+    {
+        if let Some(b) = lay_glows(engine, request, rasterizer, &mut s, scale)? {
+            lay(b);
+        }
+    }
 
-    let glyphs = paint_glyphs(engine, request, rasterizer)?;
+    let glyphs = paint_glyphs(engine, request, rasterizer, carried, scale)?;
     let mut own = if blends {
         Some(Surface::new(width, height)?)
     } else {

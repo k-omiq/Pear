@@ -23,6 +23,8 @@ import {
   shadowExtent,
   shadowSigma,
   boxShadows,
+  boxEffects,
+  reachShadows,
   strokeReach,
   drawInk,
 } from './text-paint.js';
@@ -229,7 +231,7 @@ function layoutBox(box, p) {
   // gaussian is done at about three sigma, so 2x the named blur clears it with
   // room to spare where the old `+ blur` cut into it.
   const strokeOut = strokeReach(s);
-  const shadowOut = shadowExtent(boxShadows(s));
+  const shadowOut = shadowExtent(reachShadows(s));
   const pad = Math.ceil(
     Math.max(
       strokeOut,
@@ -968,6 +970,8 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
     // The footprint in the layout's coordinates: every pixel the box can ink.
     rect: { x: L.ox - foot.ox, y: L.oy - foot.oy, w: foot.cw, h: foot.ch },
     shadows: boxShadows(s).map((sh, i) => ({ ...sh, seed: shadowSeed(box.id, i) })),
+    // Their grain apart from the shadows'.
+    effects: boxEffects(s).map((fx, i) => ({ ...fx, seed: shadowSeed(box.id, 1024 + i) })),
     blend: s.blendMode,
     fillOpacity: s.fillOpacity,
     blur: s.blur > 0 ? s.blur : 0,
@@ -1374,6 +1378,7 @@ function paintBoxOnPage(ctx, box, p, tips) {
     // path however plain its type is.
     warpActive(s, box.w, box.h) ||
     boxShadows(s).length > 0 ||
+    boxEffects(s).length > 0 ||
     (s.blur ?? 0) > 0 ||
     (s.motionBlur?.on && ((s.motionBlur.x ?? 0) !== 0 || (s.motionBlur.y ?? 0) !== 0)) ||
     clipActive(s.clip) ||

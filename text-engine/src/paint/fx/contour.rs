@@ -335,6 +335,15 @@ impl Lut {
     pub fn apply(&self, v: u8) -> u8 {
         self.0[v as usize]
     }
+
+    /// The table at `v` from 0 to 1, read between its entries.
+    pub fn at(&self, v: f32) -> f32 {
+        let x = v.clamp(0.0, 1.0) * 255.0;
+        let i = x.floor() as usize;
+        let j = (i + 1).min(255);
+        let (a, b) = (f32::from(self.0[i]), f32::from(self.0[j]));
+        (a + (b - a) * (x - i as f32)) / 255.0
+    }
 }
 
 /// Photoshop's Range (glows and the bevel's contour): the curve is laid over

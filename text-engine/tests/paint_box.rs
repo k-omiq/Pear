@@ -4,6 +4,7 @@
 
 use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::contour::{Curve, Lut};
+use mt_text::paint::fx::effects::{Effect, Glow, InnerShadow, Overlay, Technique};
 
 use mt_text::paint::{
     decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape,
@@ -72,6 +73,7 @@ fn plain(font: FontId) -> BoxRequest {
         clip: None,
         blend: Blend::Normal,
         fill_opacity: 1.0,
+        effects: Vec::new(),
         backdrop: None,
         request: request(font),
     }
@@ -588,7 +590,7 @@ fn job_bytes(font: u32) -> Vec<u8> {
 
 /// A box job on the wire with one of everything, and where each part
 /// starts: the shadow's opacity, the blur, the tap's weight, the clip mode.
-fn wire(font: u32) -> (Vec<u8>, [usize; 4]) {
+fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
     u(&mut b, BOX_WIRE_VERSION);
@@ -632,11 +634,51 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 4]) {
     f(&mut b, 8.0);
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
+    let effects_at = b.len();
+    u(&mut b, 4);
+    // An outer glow: yellow, Screen, Precise, size 5, spread 0.1, range 0.5.
+    u(&mut b, 1);
+    b.extend_from_slice(&[255, 255, 0, 255]);
+    f(&mut b, 0.75);
+    u(&mut b, 8); // screen
+    u(&mut b, 1); // precise
+    for v in [5.0, 0.1, 0.5, 0.0] {
+        f(&mut b, v);
+    }
+    u(&mut b, 11); // seed
+    u(&mut b, 0); // linear
+                  // An inner glow from the centre, the Cone.
+    u(&mut b, 2);
+    b.extend_from_slice(&[255, 255, 255, 255]);
+    f(&mut b, 1.0);
+    u(&mut b, 0);
+    u(&mut b, 0); // softer
+    for v in [3.0, 0.0, 1.0, 0.25] {
+        f(&mut b, v);
+    }
+    u(&mut b, 12);
+    u(&mut b, 1); // the Cone
+    u(&mut b, 1); // centre
+                  // An inner shadow.
+    u(&mut b, 3);
+    b.extend_from_slice(&[0, 0, 0, 255]);
+    f(&mut b, 0.5);
+    u(&mut b, 3); // multiply
+    for v in [2.0, 3.0, 4.0, 0.2, 0.0] {
+        f(&mut b, v);
+    }
+    u(&mut b, 13);
+    u(&mut b, 0);
+    // A colour overlay.
+    u(&mut b, 4);
+    b.extend_from_slice(&[0, 0, 255, 255]);
+    f(&mut b, 0.5);
+    u(&mut b, 0);
     u(&mut b, 0); // no page under them
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
-    (b, [opacity_at, blur_at, weight_at, mode_at])
+    (b, [opacity_at, blur_at, weight_at, mode_at, effects_at])
 }
 
 #[test]
@@ -697,14 +739,62 @@ fn the_wire_form_decodes_to_the_box_it_states() {
             ],
         })
     );
+    assert_eq!(
+        r.effects,
+        vec![
+            Effect::OuterGlow(Glow {
+                color: Rgba([255, 255, 0, 255]),
+                opacity: 0.75,
+                blend: Blend::Screen,
+                technique: Technique::Precise,
+                size: 5.0,
+                spread: 0.1,
+                range: 0.5,
+                noise: 0.0,
+                contour: None,
+                center: false,
+                seed: 11,
+            }),
+            Effect::InnerGlow(Glow {
+                color: Rgba([255, 255, 255, 255]),
+                opacity: 1.0,
+                blend: Blend::Normal,
+                technique: Technique::Softer,
+                size: 3.0,
+                spread: 0.0,
+                range: 1.0,
+                noise: 0.25,
+                contour: Some(Lut::new(&Curve::Preset(1))),
+                center: true,
+                seed: 12,
+            }),
+            Effect::InnerShadow(InnerShadow {
+                color: BLACK,
+                opacity: 0.5,
+                blend: Blend::Multiply,
+                x: 2.0,
+                y: 3.0,
+                size: 4.0,
+                choke: 0.2,
+                noise: 0.0,
+                contour: None,
+                seed: 13,
+            }),
+            Effect::ColorOverlay(Overlay {
+                color: BLUE,
+                opacity: 0.5,
+                blend: Blend::Normal,
+            }),
+        ]
+    );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 3));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 4));
 }
 
 #[test]
 fn a_damaged_box_is_refused_not_guessed_at() {
-    let (good, [opacity_at, blur_at, weight_at, mode_at]) = wire(1);
+    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at]) = wire(1);
     assert!(decode_box(&good).is_ok());
     for len in 0..good.len() {
         assert!(decode_box(&good[..len]).is_err(), "accepted {len} bytes");
@@ -760,6 +850,13 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(mode_at + 20, 4097), Some(Error::BadSpec));
     // A shape of no known kind.
     assert_eq!(with_u(mode_at + 24, 9), Some(Error::BadSpec));
+    // An effect of no known kind, a technique and a glow source that are
+    // not ones, and a range past 1.
+    assert_eq!(with_u(effects_at + 4, 5), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 24, 2), Some(Error::BadSpec));
+    assert_eq!(with_f(effects_at + 44, 1.5), Some(Error::BadSpec));
+    // The inner glow's source: past the outer glow's 64 bytes and its own 64.
+    assert_eq!(with_u(effects_at + 132, 2), Some(Error::BadSpec));
 }
 
 #[test]
@@ -776,10 +873,12 @@ fn a_box_read_from_the_wire_paints() {
     assert_eq!(paint_box(&mut e, &mut b).err(), Some(Error::UnknownFont));
 }
 
-/// The Blending Options at their defaults: Normal, the whole fill, no page.
+/// The Blending Options at their defaults: Normal, the whole fill, no
+/// effects, no page.
 fn no_blending(b: &mut Vec<u8>) {
     u(b, 0);
     f(b, 1.0);
+    u(b, 0);
     u(b, 0);
 }
 
@@ -1039,4 +1138,118 @@ fn black_multiply_and_an_unseen_knockout_take_the_quick_path() {
     b.shadows[0].blend = Blend::Multiply;
     b.shadows[0].knockout = true;
     assert_eq!(paint(&mut e, &mut b), quick);
+}
+
+fn glow(color: Rgba, size: f64) -> Glow {
+    Glow {
+        color,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        technique: Technique::Softer,
+        size,
+        spread: 0.0,
+        range: 0.5,
+        noise: 0.0,
+        contour: None,
+        center: false,
+        seed: 1,
+    }
+}
+
+#[test]
+fn an_outer_glow_lies_round_the_letters_and_not_on_them() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glyphs = inked(&paint(&mut e, &mut b));
+    b.effects = vec![Effect::OuterGlow(glow(RED, 8.0))];
+    let r = paint(&mut e, &mut b);
+    let lit = inked(&r);
+    // It reaches about its size past the letters, and no further.
+    let reach = glyphs.0 - lit.0;
+    assert!((6..=10).contains(&reach), "{reach}");
+    // Strong red against the stem (a tent of 8 keeps a third of the edge a
+    // pixel and a half out, which the Range of 50 % doubles); the letters
+    // stay black over it.
+    let (sx, sy) = stem(glyphs);
+    let red = |p: [u8; 4]| p[3] > 150 && p[0] == 255 && p[1] == 0;
+    assert!(
+        red(px(&r, glyphs.0 - 1, sy)),
+        "{:?}",
+        px(&r, glyphs.0 - 1, sy)
+    );
+    assert!(is_black(px(&r, sx, sy)));
+    // At Fill Opacity 0 the glow is kept from behind the letters.
+    b.fill_opacity = 0.0;
+    let r = paint(&mut e, &mut b);
+    assert!(px(&r, sx, sy)[3] < 40, "{:?}", px(&r, sx, sy));
+    assert!(red(px(&r, glyphs.0 - 1, sy)));
+}
+
+#[test]
+fn a_colour_overlay_recolours_the_letters_and_nothing_else() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let plain_r = paint(&mut e, &mut b);
+    b.effects = vec![Effect::ColorOverlay(Overlay {
+        color: BLUE,
+        opacity: 1.0,
+        blend: Blend::Normal,
+    })];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), inked(&plain_r));
+    let (sx, sy) = stem(inked(&plain_r));
+    assert_eq!(px(&r, sx, sy), [0, 0, 255, 255]);
+    // The edge keeps its coverage.
+    let diff = alpha_sum(&r).abs_diff(alpha_sum(&plain_r));
+    assert!(diff * 200 < alpha_sum(&plain_r), "{diff}");
+    // Still there at Fill Opacity 0, as Photoshop's are.
+    b.fill_opacity = 0.0;
+    let r = paint(&mut e, &mut b);
+    assert_eq!(px(&r, sx, sy), [0, 0, 255, 255]);
+}
+
+#[test]
+fn an_inner_glow_and_an_inner_shadow_stay_inside_the_letters() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let plain_r = paint(&mut e, &mut b);
+    let glyphs = inked(&plain_r);
+    b.effects = vec![Effect::InnerGlow(Glow {
+        size: 2.0,
+        ..glow(Rgba([255, 255, 255, 255]), 2.0)
+    })];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), glyphs);
+    let (_, sy) = stem(glyphs);
+    // White at the stem's inside edge.
+    let edge = px(&r, glyphs.0, sy);
+    assert!(edge[0] > 150 && edge[0] == edge[2], "{edge:?}");
+    b.effects = vec![Effect::InnerShadow(InnerShadow {
+        color: RED,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        x: 3.0,
+        y: 0.0,
+        size: 0.0,
+        choke: 0.0,
+        noise: 0.0,
+        contour: None,
+        seed: 1,
+    })];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), glyphs);
+    // Thrown right: red along the stem's left inside edge, black past it.
+    assert!(
+        is_red(px(&r, glyphs.0 + 1, sy)),
+        "{:?}",
+        px(&r, glyphs.0 + 1, sy)
+    );
+    assert!(
+        is_black(px(&r, glyphs.0 + 5, sy)),
+        "{:?}",
+        px(&r, glyphs.0 + 5, sy)
+    );
 }
