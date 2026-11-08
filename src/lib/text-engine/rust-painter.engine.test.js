@@ -304,6 +304,28 @@ describe('the Rust engine behind the glyph-painter seam', () => {
     expect(glow.x0).toBeLessThan(plain.x0 - 4);
   });
 
+  it('scatters a gradient glow by its Jitter and leaves a colour glow alone', () => {
+    const painter = createRustGlyphPainter(rust);
+    const pixels = (effects) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects });
+      return ctx.getImageData(0, 0, 400, 200).data;
+    };
+    const ramp = { style: 'linear', angle: 0, scale: 1, reverse: false, offset: [0, 0], stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 1 }] };
+    const glow = (over) => ({ kind: 'outerGlow', color: '#ff0000', opacity: 1, blend: 'normal', technique: 'precise', size: 8, spread: 0, range: 1, noise: 0, ...over });
+    const same = (a, b) => a.every((v, i) => v === b[i]);
+    expect(same(pixels([glow({ jitter: 0 })]), pixels([glow({ jitter: 0.6 })]))).toBe(true);
+    const calm = pixels([glow({ gradient: ramp, jitter: 0 })]);
+    const rough = pixels([glow({ gradient: ramp, jitter: 0.6 })]);
+    expect(same(calm, rough)).toBe(false);
+    // The glow's coverage is the same; only its colours move.
+    let alpha = 0;
+    for (let i = 3; i < calm.length; i += 4) alpha = Math.max(alpha, Math.abs(calm[i] - rough[i]));
+    expect(alpha).toBeLessThanOrEqual(1);
+  });
+
   it('paints a satin inside the letters, along its own angle', () => {
     const painter = createRustGlyphPainter(rust);
     const box = (effects) => {

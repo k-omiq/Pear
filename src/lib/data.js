@@ -802,10 +802,12 @@ function factoryShadow(light = { angle: 120 }) {
 //   source      inner only: 'edge' | 'center'
 //   contour, range   Quality: the falloff's shape, and the share of it the
 //               contour is spread over (0.01..1)
+//   jitter      Quality > Jitter, 0..1: scatters each pixel's sample of the
+//               gradient (a colour glow ignores it)
 // The defaults are Photoshop's (PhotoCraft's `fresh_effect`): Screen, 75 %,
 // the pale yellow, Softer, size 5, range 50 %.
 function glowDefault(inner) {
-  const g = { on: false, blend: 'screen', opacity: 0.75, noise: 0, color: '#ffffbe', fill: 'color', gradient: glowGradient('#ffffbe'), technique: 'softer', spread: 0, size: 5, contour: { preset: 'linear', aa: false }, range: 0.5 };
+  const g = { on: false, blend: 'screen', opacity: 0.75, noise: 0, color: '#ffffbe', fill: 'color', gradient: glowGradient('#ffffbe'), technique: 'softer', spread: 0, size: 5, contour: { preset: 'linear', aa: false }, range: 0.5, jitter: 0 };
   if (inner) g.source = 'edge';
   return g;
 }
@@ -824,6 +826,7 @@ export function normalizeGlow(x, inner = false) {
     size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, d.size))),
     contour: normalizeContour(x?.contour),
     range: Math.min(1, Math.max(0.01, num(x?.range, d.range))),
+    jitter: Math.min(1, Math.max(0, num(x?.jitter, 0))),
   };
   if (inner) g.source = x?.source === 'center' ? 'center' : 'edge';
   return g;

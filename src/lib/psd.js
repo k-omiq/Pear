@@ -883,7 +883,8 @@ export function textLayerFor(p, box, rendered) {
     antialiased: g.contour?.aa === true,
     ...psdContour(g.contour),
     noise: g.noise || 0,
-    jitter: 0,
+    // Quality > Jitter (ShdN): ag-psd writes whole percents.
+    jitter: Math.round((g.jitter || 0) * 100) / 100,
     range: g.range ?? 0.5,
     choke: { units: 'Pixels', value: Math.round((g.spread || 0) * 100) },
   });

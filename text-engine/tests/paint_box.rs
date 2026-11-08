@@ -669,7 +669,7 @@ fn gradient() -> Gradient {
     }
 }
 
-fn wire(font: u32) -> (Vec<u8>, [usize; 9]) {
+fn wire(font: u32) -> (Vec<u8>, [usize; 10]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
     u(&mut b, BOX_WIRE_VERSION);
@@ -743,7 +743,9 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 9]) {
     u(&mut b, 11); // seed
     u(&mut b, 0); // linear
     u(&mut b, 0); // its colour, not a gradient
-                  // An inner glow from the centre, the Cone.
+    let jitter_at = b.len();
+    f(&mut b, 0.0); // no jitter
+                    // An inner glow from the centre, the Cone.
     u(&mut b, 2);
     b.extend_from_slice(&[255, 255, 255, 255]);
     f(&mut b, 1.0);
@@ -757,7 +759,8 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 9]) {
     u(&mut b, 1); // centre
     u(&mut b, 1); // a gradient
     gradient_record(&mut b);
-    // An inner shadow.
+    f(&mut b, 0.6); // jittered
+                    // An inner shadow.
     u(&mut b, 3);
     b.extend_from_slice(&[0, 0, 0, 255]);
     f(&mut b, 0.5);
@@ -847,6 +850,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 9]) {
             satin_at,
             bevel_at,
             blending_at,
+            jitter_at,
         ],
     )
 }
@@ -944,6 +948,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                 noise: 0.0,
                 contour: None,
                 center: false,
+                jitter: 0.0,
                 seed: 11,
             }),
             Effect::InnerGlow(Glow {
@@ -958,6 +963,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                 noise: 0.25,
                 contour: Some(Lut::new(&Curve::Preset(1))),
                 center: true,
+                jitter: 0.6,
                 seed: 12,
             }),
             Effect::InnerShadow(InnerShadow {
@@ -1039,14 +1045,14 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 10));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 11));
 }
 
 #[test]
 fn a_damaged_box_is_refused_not_guessed_at() {
     let (
         good,
-        [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at, blending_at],
+        [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at, blending_at, jitter_at],
     ) = wire(1);
     assert!(decode_box(&good).is_ok());
     for len in 0..good.len() {
@@ -1108,16 +1114,20 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(effects_at + 4, 5), Some(Error::BadSpec));
     assert_eq!(with_u(effects_at + 24, 2), Some(Error::BadSpec));
     assert_eq!(with_f(effects_at + 44, 1.5), Some(Error::BadSpec));
-    // The inner glow's source: past the outer glow's 68 bytes and its own 64,
+    // A jitter outside 0 to 1 (v11).
+    for bad in [-0.1, 1.1, f64::NAN] {
+        assert_eq!(with_f(jitter_at, bad), Some(Error::BadSpec), "jitter {bad}");
+    }
+    // The inner glow's source: past the outer glow's 76 bytes and its own 64,
     // and its gradient flag after it.
-    assert_eq!(with_u(effects_at + 136, 2), Some(Error::BadSpec));
-    assert_eq!(with_u(effects_at + 140, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 144, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 148, 2), Some(Error::BadSpec));
     // A gradient style that is not one, and a stop past the end.
-    assert_eq!(with_u(effects_at + 144, 6), Some(Error::BadSpec));
-    assert_eq!(with_f(effects_at + 188, 1.5), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 152, 6), Some(Error::BadSpec));
+    assert_eq!(with_f(effects_at + 196, 1.5), Some(Error::BadSpec));
     // A gradient type that is not one: the inner glow's, after its two
     // colour stops and two opacity stops.
-    assert_eq!(with_u(effects_at + 144 + 104, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 152 + 104, 2), Some(Error::BadSpec));
     // A noise record's Roughness past 1, a model that is not one, a limit
     // whose min is past its max, and flags that are not ones.
     assert_eq!(with_f(noise_at + 4, 1.5), Some(Error::BadSpec));
@@ -1704,6 +1714,7 @@ fn glow(color: Rgba, size: f64) -> Glow {
         noise: 0.0,
         contour: None,
         center: false,
+        jitter: 0.0,
         seed: 1,
     }
 }

@@ -15,6 +15,7 @@ import {
   newTypesetting,
   normalizeSatin,
   normalizeBevel,
+  normalizeGlow,
   normalizeStyle,
 } from './data.js';
 import { shadowSigma, shadowOffset, resolveShadow, setGlobalLight, boxEffects, bevelReach, reachShadows } from './text-paint.js';
@@ -124,7 +125,7 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(10);
+    expect(BOX_WIRE_VERSION).toBe(11);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header, the blending options
@@ -137,6 +138,36 @@ describe('an effect gradient of Gradient Type Noise', () => {
     expect(dv(noisy).getUint32(typeAt + 4, true)).toBe(42);
     expect(dv(noisy).getUint32(typeAt + 16, true)).toBe(2);
     expect(dv(noisy).getUint32(typeAt + 20 + 48, true)).toBe(3);
+  });
+});
+
+describe('a glow\'s Jitter', () => {
+  it('starts at 0 and stays in 0 to 1, on both glows', () => {
+    expect(normalizeGlow({}).jitter).toBe(0);
+    expect(normalizeGlow({}, true).jitter).toBe(0);
+    expect(normalizeGlow({ jitter: 0.6 }).jitter).toBe(0.6);
+    expect(normalizeGlow({ jitter: 7 }, true).jitter).toBe(1);
+    expect(normalizeGlow({ jitter: -1 }).jitter).toBe(0);
+    expect(normalizeGlow({ jitter: 'x' }).jitter).toBe(0);
+  });
+
+  it('is sent with each glow and goes on the wire after its gradient (v11)', () => {
+    const style = normalizeStyle({ outerGlow: { on: true, fill: 'gradient', jitter: 0.6 }, innerGlow: { on: true, jitter: 0.25 } });
+    const fx = boxEffects(style);
+    expect(fx.find((e) => e.kind === 'outerGlow').jitter).toBe(0.6);
+    expect(fx.find((e) => e.kind === 'innerGlow').jitter).toBe(0.25);
+    const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
+    const glow = { kind: 'outerGlow', color: '#ffffbe', opacity: 0.75, blend: 'screen', technique: 'softer', size: 5, spread: 0, range: 0.5, noise: 0, jitter: 0.6 };
+    const b = dv(encodeBox({ ...job, width: 4, height: 4, effects: [glow] }).slice());
+    const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4;
+    expect(b.getUint32(head, true)).toBe(1);
+    // Past the colour, opacity, mode, technique, four numbers, seed, contour
+    // and the gradient flag (0: its colour).
+    expect(b.getUint32(head + 64, true)).toBe(0);
+    expect(b.getFloat64(head + 68, true)).toBe(0.6);
+    const none = dv(encodeBox({ ...job, width: 4, height: 4, effects: [{ ...glow, jitter: undefined }] }).slice());
+    expect(none.getFloat64(head + 68, true)).toBe(0);
   });
 });
 

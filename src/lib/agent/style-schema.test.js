@@ -338,10 +338,11 @@ describe('styleSchemaText', () => {
   // noise gradient's fields and Shape Burst, and to 15500 for the Satin, and
   // to 17000 for the Bevel & Emboss (Structure, Shading, Contour, Texture),
   // and to 17200 for the Advanced Blending options (interior, knockout),
-  // and to 17800 for Channels and Blend If (one slider pair printed once).
-  it('describes every key, field and item in under 17800 characters', () => {
+  // and to 17800 for Channels and Blend If (one slider pair printed once),
+  // and to 17900 for the glows' Jitter.
+  it('describes every key, field and item in under 17900 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(17800);
+    expect(text.length).toBeLessThan(17900);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.
@@ -456,6 +457,15 @@ describe('the bevel in the schema', () => {
     expect(validateStylePatch({ bevel: { technique: 'chisel' } }).length).toBeGreaterThan(0);
     expect(validateStylePatch({ bevel: { depth: 11 } }).length).toBeGreaterThan(0);
     expect(validateStylePatch({ bevel: { highlight: { blend: 'glow' } } }).length).toBeGreaterThan(0);
+  });
+
+  it('takes a glow\'s Jitter, 0 to 1, on both glows', () => {
+    const patch = { outerGlow: { on: true, fill: 'gradient', jitter: 0.6 }, innerGlow: { jitter: 0.2 } };
+    expect(validateStylePatch(patch)).toEqual([]);
+    const r = applyStylePatch(defaultStyle(), patch);
+    expect([r.style.outerGlow.jitter, r.style.innerGlow.jitter]).toEqual([0.6, 0.2]);
+    expect(validateStylePatch({ outerGlow: { jitter: 2 } }).length).toBeGreaterThan(0);
+    expect(styleSchemaText()).toContain('outerGlow.jitter');
   });
 
   it('prints the blend and contour lists by name, and the shadow half like the highlight', () => {

@@ -98,6 +98,7 @@ const glowFields = (spreadKey, spreadDesc) => ({
   size: number('reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),
   contour: contourField(),
   range: number('share of the falloff the contour spans', 0.01, 1),
+  jitter: alpha('gradient scatter'),
 });
 // A fill pattern's fields: the fill's own and an effect's.
 const patternFields = () => ({

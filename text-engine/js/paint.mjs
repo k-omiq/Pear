@@ -394,7 +394,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 10
+export const BOX_WIRE_VERSION = 11
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
@@ -652,6 +652,9 @@ function effectRecord(fx, tileIndex) {
   if (kind === 2) u32(fx.source === 'center' ? 1 : 0)
   u32(fx.gradient ? 1 : 0)
   if (fx.gradient) gradientRecord(fx.gradient)
+  // Quality > Jitter (v11), 0 to 1: moves each pixel's sample of the
+  // gradient; the engine ignores it on a colour glow.
+  f64(fx.jitter ?? 0)
 }
 
 // One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
@@ -721,7 +724,7 @@ function clipShape(sh) {
  * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay' | 'stroke' |
  *   'gradientOverlay' | 'patternOverlay' | 'satin' | 'bevel', color?: string,
  *   opacity: number, blend?: string, technique?: 'softer' | 'precise', source?: 'edge' | 'center',
- *   size?: number, spread?: number, choke?: number, range?: number, noise?: number,
+ *   size?: number, spread?: number, choke?: number, range?: number, noise?: number, jitter?: number,
  *   x?: number, y?: number, seed?: number, contour?: {preset: string, pts?: number[][], aa?: boolean},
  *   angle?: number, distance?: number, invert?: boolean,
  *   gradient?: object, position?: 'outside' | 'inside' | 'center',
@@ -733,7 +736,8 @@ function clipShape(sh) {
  *   shadow?: {blend: string, color: string, opacity: number},
  *   texture?: {depth: number, invert?: boolean, fill: object}}[]} [request.effects]
  *   the layer effects past the drop shadows, resolved: of a kind, first on top. A glow's
- *   `gradient` runs along it in place of its colour; a gradient is `{style, angle, scale,
+ *   `gradient` runs along it in place of its colour, `jitter` (0 to 1) scattering each
+ *   pixel's sample of it; a gradient is `{style, angle, scale,
  *   reverse, offset: [x, y], stops: [{pos, color, opacity?}], type?, noise?}` (style
  *   'shapeburst' runs from the painted shape's edge in; type 'noise' paints `noise`). A stroke paints a colour,
  *   a gradient or a fill (a pattern, as a glyph job's fill), and a pattern overlay its
