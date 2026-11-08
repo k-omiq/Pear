@@ -77,7 +77,7 @@ describe('the PSD effects, written and read back', () => {
 
   it('an Outer Glow in a colour and an Inner Glow in a gradient', () => {
     const outer = normalizeGlow({ on: true, blend: 'screen', opacity: 0.8, noise: 0.1, color: '#ffee00', technique: 'precise', spread: 0.3, size: 12, contour: { preset: 'ring-double', aa: true }, range: 0.6 });
-    const inner = normalizeGlow({ on: true, fill: 'gradient', gradient: { style: 'radial', reverse: true, stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 0.25 }] }, source: 'center', size: 6 }, true);
+    const inner = normalizeGlow({ on: true, fill: 'gradient', gradient: { style: 'radial', reverse: true, stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 0.25 }] }, source: 'center', size: 6, jitter: 0.604 }, true);
     const layer = layerFor({ outerGlow: outer, innerGlow: inner });
     const fx = layer.effects;
     expect(fx.outerGlow).toMatchObject({ color: { r: 255, g: 238, b: 0 }, jitter: 0, present: true });
@@ -86,7 +86,7 @@ describe('the PSD effects, written and read back', () => {
     expect(fx.outerGlow.contour.curve).toHaveLength(PSD_CONTOUR_POINTS);
     // The gradient glow: Grad, Rvrs, Type, and no colour, as PhotoCraft writes it.
     expect(fx.innerGlow.color).toBeUndefined();
-    expect(fx.innerGlow).toMatchObject({ reverse: true, type: 'radial', source: 'center' });
+    expect(fx.innerGlow).toMatchObject({ reverse: true, type: 'radial', source: 'center', jitter: 0.6 });
     expect(fx.innerGlow.gradient.colorStops).toHaveLength(2);
     const back = roundTrip(layer).layer.effects;
     expectSame(back.outerGlow, fx.outerGlow, 'outerGlow');

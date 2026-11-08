@@ -1180,11 +1180,11 @@ export function boxEffects(style) {
   const out = [];
   const og = style?.outerGlow;
   if (og?.on && og.opacity > 0) {
-    out.push({ kind: 'outerGlow', color: og.color, gradient: glowGradientOf(og), opacity: og.opacity, blend: og.blend, technique: og.technique, size: og.size, spread: og.spread, range: og.range, noise: og.noise, contour: og.contour });
+    out.push({ kind: 'outerGlow', color: og.color, gradient: glowGradientOf(og), opacity: og.opacity, blend: og.blend, technique: og.technique, size: og.size, spread: og.spread, range: og.range, noise: og.noise, jitter: og.jitter, contour: og.contour });
   }
   const ig = style?.innerGlow;
   if (ig?.on && ig.opacity > 0) {
-    out.push({ kind: 'innerGlow', color: ig.color, gradient: glowGradientOf(ig), opacity: ig.opacity, blend: ig.blend, technique: ig.technique, size: ig.size, choke: ig.spread, range: ig.range, noise: ig.noise, contour: ig.contour, source: ig.source });
+    out.push({ kind: 'innerGlow', color: ig.color, gradient: glowGradientOf(ig), opacity: ig.opacity, blend: ig.blend, technique: ig.technique, size: ig.size, choke: ig.spread, range: ig.range, noise: ig.noise, jitter: ig.jitter, contour: ig.contour, source: ig.source });
   }
   for (const sh of Array.isArray(style?.innerShadows) ? resolveShadows(style.innerShadows) : []) {
     if (!(sh.opacity > 0)) continue;

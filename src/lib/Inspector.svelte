@@ -1310,6 +1310,15 @@
         </select>
       </label>
     </div>
+    <!-- Quality > Jitter: scatters each pixel's colour along the gradient, so
+         only a gradient glow has it (Photoshop greys it out on a colour). -->
+    <div class="grp" title="Jitter: scatters the gradient's colours pixel by pixel, %">
+      <span class="lbl">Jitter</span>
+      <div class="slider-row">
+        <input type="range" min="0" max="100" step="1" value={pct(g.jitter ?? 0)} disabled={!g.on || g.fill !== 'gradient'} aria-label="{title} jitter" oninput={(e) => setAlpha(g, 'jitter', e.target.value)} />
+        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(g.jitter ?? 0)} disabled={!g.on || g.fill !== 'gradient'} title="Jitter, % (gradient glows only)" aria-label="{title} jitter, percent" onchange={(e) => commitAlpha(g, 'jitter', e)} />
+      </div>
+    </div>
   </div>
 {/snippet}
 

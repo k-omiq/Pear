@@ -57,6 +57,9 @@ pub struct Glow {
     pub contour: Option<Lut>,
     /// An inner glow's Source is the Center rather than the Edge.
     pub center: bool,
+    /// Quality > Jitter, 0 to 1: how far each pixel's sample of the
+    /// gradient is moved at random (`jittered`). Nothing on a colour glow.
+    pub jitter: f64,
     pub seed: u32,
 }
 
@@ -550,13 +553,42 @@ fn lay_glow(
                 h: m.h,
                 v: m.v.iter().map(|v| (v * gain).min(1.0)).collect(),
             };
-            let color = |_: i32, _: i32, i: usize| grad.sample(1.0 - m.v[i].clamp(0.0, 1.0));
+            let jitter = g.jitter.clamp(0.0, 1.0) as f32;
+            let color = |x: i32, y: i32, i: usize| {
+                let t = 1.0 - m.v[i].clamp(0.0, 1.0);
+                grad.sample(jittered(t, jitter, x, y, g.seed))
+            };
             lay_with(
                 dst, &strength, at, dev, &color, g.opacity, g.blend, page, g.seed,
             )
         }
     }
 }
+
+/// A glow's gradient position `t` (0 at the glow's strong end) moved by
+/// Photoshop's Jitter, `jitter` from 0 to 1, at device pixel `(x, y)`.
+///
+/// Ours, not PhotoCraft's (it carries Jitter and paints none) nor a
+/// measured match: a design from how Photoshop's Jitter behaves, after the
+/// rule Krita's layer styles state (`kis_ls_utils.cpp`, the gradient index
+/// moved by a random share of Jitter and wrapped). Each pixel's sample moves
+/// by `(n - 0.5) * jitter` of the ramp, `n` hashed from the pixel and the
+/// glow's seed as its Noise is (`noise::unit`, salted apart from the grain),
+/// and wraps round the ramp's ends: 0 leaves the gradient smooth, 100 % picks
+/// every pixel's colour from anywhere along it. Centred, so a pixel keeps its
+/// place on the ramp on average where Krita's one-sided step shifts it; the
+/// glow's strength is not touched, only which colour (and stop opacity) it
+/// takes.
+pub(crate) fn jittered(t: f32, jitter: f32, x: i32, y: i32, seed: u32) -> f32 {
+    if jitter.is_nan() || jitter <= 0.0 {
+        return t;
+    }
+    let n = noise::unit(x, y, seed ^ JITTER_SALT);
+    (t + (n - 0.5) * jitter.min(1.0)).rem_euclid(1.0)
+}
+
+/// Keeps a glow's Jitter apart from its Noise, which hashes the same seed.
+const JITTER_SALT: u32 = 0x6a09_e667;
 
 /// Lays the outer glows, the last listed first, behind the letters on `dst`.
 /// `shape` is the letters' outline (their whole silhouette, bands included)
@@ -1768,10 +1800,97 @@ mod tests {
             noise: 0.0,
             contour: None,
             center: false,
+            jitter: 0.0,
             seed: 0,
         };
         let (out, _) = inside(&square(20), &[Effect::InnerGlow(g)]);
         let edge = at(&out, 10, 20);
         assert!(edge[1] > 200 && edge[2] < 60, "{edge:?}");
+    }
+
+    #[test]
+    fn jitter_moves_a_sample_by_its_share_and_wraps() {
+        assert_eq!(jittered(0.3, 0.0, 4, 5, 9), 0.3);
+        assert_eq!(jittered(0.3, f32::NAN, 4, 5, 9), 0.3);
+        let mut moved = 0;
+        let mut low = 0;
+        for i in 0..2000 {
+            let (x, y) = (i % 50, i / 50);
+            let t = jittered(0.5, 0.4, x, y, 3);
+            assert!((0.3..=0.7).contains(&t), "{t}");
+            moved += usize::from((t - 0.5).abs() > 0.05);
+            low += usize::from(t < 0.5);
+            // The same pixel and seed move the same way every time.
+            assert_eq!(t, jittered(0.5, 0.4, x, y, 3));
+            // Past an end it comes back in at the other.
+            let w = jittered(0.95, 1.0, x, y, 3);
+            assert!((0.0..=1.0).contains(&w), "{w}");
+        }
+        assert!(moved > 1300, "{moved}");
+        assert!((800..1200).contains(&low), "{low}");
+        // Its own numbers, not the grain's.
+        let same = (0..200)
+            .filter(|&i| {
+                let n = noise::unit(i, 7, 3);
+                (jittered(0.5, 1.0, i, 7, 3) - n).abs() < 1e-6
+            })
+            .count();
+        assert!(same < 5, "{same}");
+    }
+
+    #[test]
+    fn jitter_scatters_a_gradient_glow_and_leaves_a_colour_glow_alone() {
+        let _scope = budget::Scope::new();
+        let glow = |gradient: Option<Gradient>, jitter: f64| Glow {
+            color: RED,
+            gradient,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            technique: Technique::Precise,
+            size: 8.0,
+            spread: 0.0,
+            range: 1.0,
+            noise: 0.0,
+            contour: None,
+            center: false,
+            jitter,
+            seed: 5,
+        };
+        let ramp = Gradient {
+            stops: vec![(0.0, [0.0, 1.0, 0.0]), (1.0, [0.0, 0.0, 1.0])],
+            opacity: Vec::new(),
+            style: gradient::Style::Linear,
+            angle: 0.0,
+            scale: 1.0,
+            reverse: false,
+            offset: (0.0, 0.0),
+            noise: None,
+        };
+        let paint = |g: Glow| inside(&square(30), &[Effect::InnerGlow(g)]).0;
+        // A colour glow: Jitter changes nothing.
+        assert_eq!(paint(glow(None, 0.0)).data, paint(glow(None, 0.8)).data);
+        // A gradient glow: the same strength, the colours scattered. Along a
+        // row a few pixels in, Jitter 0 is one colour; at 60 % neighbours
+        // differ.
+        let (calm, rough) = (
+            paint(glow(Some(ramp.clone()), 0.0)),
+            paint(glow(Some(ramp), 0.6)),
+        );
+        assert_ne!(calm.data, rough.data);
+        let row = |r: &Raster| (14..26).map(|x| at(r, x, 13)).collect::<Vec<_>>();
+        let (c, j) = (row(&calm), row(&rough));
+        assert!(c.windows(2).all(|w| w[0] == w[1]), "{c:?}");
+        let changes = j.windows(2).filter(|w| w[0] != w[1]).count();
+        assert!(changes >= 6, "{j:?}");
+        // Alpha is the shape's (inner glow over a whole fill): unchanged.
+        let alpha = |r: &Raster| {
+            r.data
+                .iter()
+                .skip(3)
+                .step_by(4)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(alpha(&calm), alpha(&rough));
     }
 }

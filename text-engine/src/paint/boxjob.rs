@@ -51,7 +51,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 10;
+pub const BOX_WIRE_VERSION: u32 = 11;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -445,6 +445,7 @@ impl<'a> Reader<'a> {
             1 => Some(self.gradient()?),
             _ => return Err(Error::BadSpec),
         };
+        let jitter = self.upto(1.0)?;
         Ok(Glow {
             color,
             gradient,
@@ -457,6 +458,7 @@ impl<'a> Reader<'a> {
             noise,
             contour,
             center,
+            jitter,
             seed,
         })
     }
@@ -739,6 +741,8 @@ impl<'a> Reader<'a> {
 ///     u32 seed, u32 contour (as a shadow's)
 ///     u32 source               inner glow only: 0 edge, 1 center
 ///     u32 gradient             0 its colour, 1: a gradient record follows
+///     f64 jitter (v11)         0 to 1, Quality > Jitter: moves each pixel's
+///                              sample of the gradient; nothing on a colour
 ///   3 inner shadow:
 ///     rgba colour, f64 opacity, u32 blend, f64 x, y, f64 size,
 ///     f64 choke, f64 noise, u32 seed, u32 contour
@@ -790,7 +794,7 @@ impl<'a> Reader<'a> {
 ///
 /// Refused: a surface with no size or past the painter's guards, more than
 /// 512 taps, a count the bytes cannot hold, an opacity, a weight, a spread, a
-/// noise or a fill opacity outside 0 to 1, a size or a blur outside 0 to
+/// noise, a jitter or a fill opacity outside 0 to 1, a size or a blur outside 0 to
 /// 4096, a throw, a tap or a point further than 65536 from zero, a mode or a
 /// contour that does not exist, a contour point outside 0 to 255 or out of
 /// order, a bevel style or technique that does not exist, a bevel depth
