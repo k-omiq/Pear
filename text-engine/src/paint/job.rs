@@ -268,6 +268,9 @@ pub struct Request {
     pub weight: f64,
     pub transform: Affine,
     pub tiles: Vec<Tile>,
+    /// The box's brush ink, painted with the letters in every pass of the
+    /// box job (`super::ink`). Only a box job carries it.
+    pub ink: Option<super::ink::Ink>,
 }
 
 /// First four bytes of the wire form: "MTPJ".
@@ -671,6 +674,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         weight,
         transform: Affine(m),
         tiles,
+        ink: None,
     })
 }
 
