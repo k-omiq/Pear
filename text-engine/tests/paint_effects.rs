@@ -248,6 +248,7 @@ fn boxed(font: FontId, shadows: Vec<Shadow>) -> BoxRequest {
         clip: None,
         blend: Blend::Normal,
         fill_opacity: 1.0,
+        effects: Vec::new(),
         backdrop: None,
         request: request(job(vec![letter(100.0)], 0.0), font),
     }

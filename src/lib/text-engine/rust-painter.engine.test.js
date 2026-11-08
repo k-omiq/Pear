@@ -253,6 +253,30 @@ describe('the Rust engine behind the glyph-painter seam', () => {
     expect(() => drawn(createRustGlyphPainter(rust), job({ face: face('Nobody Sans', 40) }))).toThrow(/not registered/);
   });
 
+  it('paints the glows, an inner shadow and a colour overlay a style asks for', () => {
+    const painter = createRustGlyphPainter(rust);
+    const box = (effects) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects });
+      return ink(canvas);
+    };
+    const plain = box([]);
+    // An outer glow reaches past the letters; an overlay recolours them.
+    const glow = box([{ kind: 'outerGlow', color: '#ff0000', opacity: 1, blend: 'normal', technique: 'softer', size: 6, spread: 0.5, range: 0.5, noise: 0 }]);
+    expect(glow.x0).toBeLessThan(plain.x0 - 4);
+    const blue = box([{ kind: 'colorOverlay', color: '#0000ff', opacity: 1, blend: 'normal' }]);
+    expect([blue.x0, blue.y0, blue.x1, blue.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
+    expect(blue.solid).toEqual([0, 0, 255]);
+    // The interior effects stay inside the letters.
+    const inner = box([
+      { kind: 'innerShadow', color: '#000000', opacity: 0.75, blend: 'multiply', x: 2, y: 2, size: 2, choke: 0, noise: 0 },
+      { kind: 'innerGlow', color: '#ffffbe', opacity: 0.75, blend: 'screen', technique: 'precise', size: 3, choke: 0, range: 0.5, noise: 0, source: 'center' },
+    ]);
+    expect([inner.x0, inner.y0, inner.x1, inner.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
+  });
+
   it('paints a box with as many shadows as its style has', () => {
     // The app counts no shadows, and the canvas passes paint every one: the
     // box job once refused a 17th, and the box was not painted at all.

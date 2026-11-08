@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { defaultStyle, normalizeStyle, normalizeStroke, normalizeShadow, normalizeSfx } from '../data.js';
+import { defaultStyle, normalizeStyle, normalizeStroke, normalizeShadow, normalizeInnerShadow, normalizeOverlay, normalizeSfx } from '../data.js';
 import { STYLE_SCHEMA, validateStylePatch, styleSchemaText } from './style-schema.js';
 import { applyStylePatch } from '../style-patch.js';
 
@@ -51,7 +51,9 @@ const stop = { color: '#fff', pos: 0, opacity: 1 };
 const anchor = { x: 10, y: 20, ix: -5, iy: 0, ox: 5, oy: 0 };
 const sfxPath = { a: [0, 0], b: [1, 0], bend: 0 };
 // A drawable item for each list whose default is empty.
-const EMPTY_ITEMS = { shadows: shadow, paths: sfxPath, pts: anchor };
+const innerShadow = { x: 2, y: 3, size: 4, color: '#000', opacity: 0.75, choke: 0.1 };
+const overlay = { color: '#f00', opacity: 1, blend: 'normal' };
+const EMPTY_ITEMS = { shadows: shadow, innerShadows: innerShadow, colorOverlays: overlay, paths: sfxPath, pts: anchor };
 const SHAPES = {
   ellipse: { kind: 'ellipse', cx: 40, cy: 30, rx: 20, ry: 10 },
   poly: { kind: 'poly', pts: [[0, 0], [50, 0], [25, 40]] },
@@ -79,6 +81,7 @@ describe('STYLE_SCHEMA drift', () => {
   it('covers item fields even for arrays whose defaults are empty', () => {
     for (const [key, value] of [
       ['strokes', normalizeStroke({})], ['shadows', normalizeShadow({})],
+      ['innerShadows', normalizeInnerShadow({})], ['colorOverlays', normalizeOverlay({})],
       ['sfx.paths', normalizeSfx({ paths: [sfxPath] }).paths[0]],
       ['path.pts', normalizeStyle({ path: { pts: [{ x: 1, y: 2 }] } }).path.pts[0]],
     ]) {
@@ -295,6 +298,8 @@ describe('normalizer numeric sanity', () => {
     it(`${path.join('.')} = ${value} survives normalization`, () => {
       const style = defaultStyle();
       style.shadows = [{ ...shadow }];
+      style.innerShadows = [{ ...innerShadow }];
+      style.colorOverlays = [{ ...overlay }];
       style.sfx.paths = [structuredClone(sfxPath)];
       style.path.pts = [{ ...anchor }];
       let target = style;
@@ -320,10 +325,14 @@ describe('styleSchemaText', () => {
   // and to 8600 for the sound types' layout fields and the SFX effects, and
   // to 8800 for the bold weight, the italic angle and the two dither kinds,
   // and to 10200 for the layer style: the shadow's Photoshop fields, Fill
-  // Opacity, and the blend mode list, which is named twice.
-  it('describes every key, field and item in under 10200 characters', () => {
+  // Opacity, and the blend mode list, and to 12400 for the glows, the inner
+  // shadows and the colour overlays (the blend mode and contour lists are
+  // printed once, under their names).
+  it('describes every key, field and item in under 12400 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(10200);
+    expect(text.length).toBeLessThan(12400);
+    expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
+    expect(text).toContain('outerGlow.blend: enum BLEND - ');
     for (const [path, entry] of allEntries) {
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }

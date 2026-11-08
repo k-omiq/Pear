@@ -8,6 +8,7 @@
 //! noise.rs     seeded grain, so a box paints the same every time
 //! distance.rs  distance transforms; a matte grown by a distance
 //! tent.rs      the soft edge of an effect: two box passes of its Size
+//! map.rs       the glows' and the inner shadow's maps
 //! ```
 //!
 //! and here, how an effect's Size, Spread and Choke become a grow and a
@@ -21,6 +22,8 @@
 pub mod blend;
 pub mod contour;
 pub mod distance;
+pub mod effects;
+pub(crate) mod map;
 pub mod noise;
 pub mod tent;
 

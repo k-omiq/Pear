@@ -96,9 +96,15 @@ export const iconEffectMask = wrap('<rect x="3" y="5" width="10" height="10" rx=
 // letters step up the line.
 export const iconEffectSfx = wrap('<path d="M4.5 16v-3.5"/><path d="M10 16V9.5"/><path d="M15.5 16V5"/>');
 
+// A disc with a soft ring round it: a glow.
+export const iconEffectGlow = wrap(
+  '<circle cx="10" cy="10" r="3.5"/><circle cx="10" cy="10" r="7" stroke-dasharray="1.5 2"/>',
+);
+
 export const effectsSubTabIcons = {
   stroke: iconEffectStroke,
   shadow: iconEffectShadow,
+  glow: iconEffectGlow,
   warp: iconEffectWarp,
   transform: iconEffectTransform,
   liquify: iconEffectLiquify,

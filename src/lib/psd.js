@@ -736,27 +736,54 @@ export function textLayerFor(p, box, rendered) {
   // _PLAN.md G1-G8). A named contour preset is not written yet: Photoshop
   // reads a contour's points, not its name, and the presets' points are the
   // engine's (fx/contour.rs); a custom curve is.
+  const customContour = (c) => (c?.preset === 'custom' && c.pts?.length >= 2 ? { contour: { name: 'Custom', curve: c.pts.map(([x, y]) => ({ x, y })) } } : null);
+  // A shadow thrown into the letters or under them: Photoshop's fields alike.
+  const shadowFx = (sh) => ({
+    enabled: true,
+    size: { units: 'Pixels', value: sh.size || 0 },
+    distance: { units: 'Pixels', value: Math.hypot(sh.x || 0, sh.y || 0) },
+    angle: (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI,
+    color: hexToRgb(sh.color),
+    opacity: sh.opacity ?? 1,
+    blendMode: psdBlend(sh.blend),
+    antialiased: sh.contour?.aa === true,
+    ...customContour(sh.contour),
+    useGlobalLight: sh.useGlobalLight === true,
+  });
   if ((s.shadows ?? []).length) {
-    effects.dropShadow = s.shadows.map(resolveShadow).map((sh) => {
-      const dist = Math.hypot(sh.x || 0, sh.y || 0);
-      const contour = sh.contour?.preset === 'custom' && sh.contour.pts?.length >= 2
-        ? { name: 'Custom', curve: sh.contour.pts.map(([x, y]) => ({ x, y })) }
-        : undefined;
-      return {
-        enabled: true,
-        size: { units: 'Pixels', value: sh.size || 0 },
-        distance: { units: 'Pixels', value: dist },
-        angle: (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI,
-        color: hexToRgb(sh.color),
-        opacity: sh.opacity ?? 1,
-        blendMode: psdBlend(sh.blend),
-        choke: { units: 'Pixels', value: Math.round((sh.spread || 0) * 100) },
-        antialiased: sh.contour?.aa === true,
-        ...(contour ? { contour } : null),
-        layerConceals: sh.knockout === true,
-        useGlobalLight: sh.useGlobalLight === true,
-      };
-    });
+    effects.dropShadow = s.shadows.map(resolveShadow).map((sh) => ({
+      ...shadowFx(sh),
+      choke: { units: 'Pixels', value: Math.round((sh.spread || 0) * 100) },
+      layerConceals: sh.knockout === true,
+    }));
+  }
+  // Inner Shadow carries Choke where a drop shadow has Spread, as its percent.
+  if ((s.innerShadows ?? []).length) {
+    effects.innerShadow = s.innerShadows.map(resolveShadow).map((sh) => ({
+      ...shadowFx(sh),
+      choke: { units: 'Pixels', value: Math.round((sh.choke || 0) * 100) },
+    }));
+  }
+  // The glows: a solid colour, Softer or Precise, Spread (Choke), Range and
+  // Noise as Photoshop's dialog has them.
+  const glowFx = (g, inner) => ({
+    enabled: true,
+    size: { units: 'Pixels', value: g.size || 0 },
+    color: hexToRgb(g.color),
+    blendMode: psdBlend(g.blend),
+    opacity: g.opacity ?? 1,
+    technique: g.technique === 'precise' ? 'precise' : 'softer',
+    ...(inner ? { source: g.source === 'center' ? 'center' : 'edge' } : null),
+    antialiased: g.contour?.aa === true,
+    ...customContour(g.contour),
+    noise: g.noise || 0,
+    range: g.range ?? 0.5,
+    choke: { units: 'Pixels', value: Math.round((g.spread || 0) * 100) },
+  });
+  if (s.outerGlow?.on) effects.outerGlow = glowFx(s.outerGlow, false);
+  if (s.innerGlow?.on) effects.innerGlow = glowFx(s.innerGlow, true);
+  if ((s.colorOverlays ?? []).length) {
+    effects.solidFill = s.colorOverlays.map((o) => ({ enabled: true, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
   }
   // A whole-block gradient is the one fill Photoshop can state itself. Its angle
   // is the direction the gradient travels, counter-clockwise from the +x axis
@@ -789,7 +816,7 @@ export function textLayerFor(p, box, rendered) {
       },
     ];
   }
-  const hasEffects = Boolean(effects.stroke || effects.dropShadow || effects.gradientOverlay);
+  const hasEffects = Object.keys(effects).length > 0;
 
   return {
     name: `${name}${flag}${borrowed ? BORROWED_MARK : ''}`,

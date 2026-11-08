@@ -17,6 +17,11 @@ names its source file in a comment.
 - `fx/mod.rs` `spread_split` (`crates/compose/src/effects/paint.rs`).
 - `fx/blend.rs`: Soft Light, Vivid Light, Hard Mix, Color Burn and Dodge
   edges (`crates/compose/src/psblend.rs`, `crates/color/src/blend.rs`).
+- `fx/map.rs`: the glow and inner shadow maps, Range, the exact distance
+  transform (`crates/compose/src/effects.rs`, `effects/paint.rs`,
+  `effects/distance.rs`).
+- `fx/effects.rs`: the effects' order and the interior compositing
+  (`crates/compose/src/effects/composite.rs`).
 
 MIT License
 

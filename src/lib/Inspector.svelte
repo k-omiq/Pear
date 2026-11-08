@@ -56,6 +56,9 @@
     SHADOW_SIZE_MAX,
     SHADOW_DISTANCE_MAX,
     newShadow,
+    newInnerShadow,
+    newOverlay,
+    LAYER_BLEND_MODES,
   } from './data.js';
   import { layoutShape } from './balloon.js';
   import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset } from './text-paint.js';
@@ -143,6 +146,7 @@
   const EFFECTS_TABS = [
     ['stroke', 'Stroke'],
     ['shadow', 'Shadow'],
+    ['glow', 'Glow'],
     ['warp', 'Warp'],
     // Not the same thing as the one above it, and the two labels are the only
     // place that says so to the user: `warp` bends the BASELINE (arc, circle,
@@ -817,6 +821,26 @@
     box.style.shadows.splice(i, 1);
     touch();
   }
+  // Inner Shadow: a drop shadow's controls, thrown into the letters.
+  function addInnerShadow() {
+    box.style.innerShadows.push(newInnerShadow(app.typesetting.light));
+    touch();
+  }
+  function removeInnerShadow(i) {
+    box.style.innerShadows.splice(i, 1);
+    touch();
+  }
+  // Color Overlay.
+  function addOverlay() {
+    box.style.colorOverlays.push(newOverlay());
+    touch();
+  }
+  function removeOverlay(i) {
+    box.style.colorOverlays.splice(i, 1);
+    touch();
+  }
+  // A blend mode's name as Photoshop's menu shows it.
+  const blendLabel = (m) => m.split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
 
   // ---- presets ----
   let presetId = $state('');
@@ -952,6 +976,157 @@
 
 <!-- A heading inside a tab. Not a button any more - there is nothing left to
      collapse, because the tab already did the collapsing. -->
+{#snippet shadowRows(list, inner)}
+  {@const name = inner ? 'Inner shadow' : 'Shadow'}
+  <div class="insp-list k-shadow">
+    {#if list.length}
+      <div class="insp-cap"><span></span><span>Angle</span><span>Dist</span><span>Size</span><span>Op %</span><span></span></div>
+    {/if}
+    {#each list as sh, i (sh)}
+      <!-- The Global Light is read here so a turn of it shows. -->
+      {@const angle = (app.typesetting.light?.angle, shadowAngle(sh))}
+      {@const key = inner ? 'choke' : 'spread'}
+      <div class="insp-row">
+        {@render swatchCell(sh, 'color', `${name} ${i + 1} colour`)}
+        <input type="number" min="-180" max="180" step="1" value={angle} aria-label="{name} {i + 1} angle" title={sh.useGlobalLight ? 'Angle of the chapter\'s light, degrees: turns every shadow on it' : 'Angle the light comes from, degrees'} onchange={(e) => setShadowAngle(sh, e)} />
+        <input type="number" min="0" max={SHADOW_DISTANCE_MAX} step="1" value={Math.round(shadowDistance(sh) * 100) / 100} aria-label="{name} {i + 1} distance" title="Distance, page px" onchange={(e) => setShadowDistance(sh, e)} />
+        <input type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={sh.size} aria-label="{name} {i + 1} size" title="Size: how far the soft edge reaches, page px" onchange={(e) => commitNum(sh, 'size', e, 0, SHADOW_SIZE_MAX)} />
+        <input type="number" min="0" max="100" step="1" value={pct(sh.opacity)} aria-label="{name} {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(sh, 'opacity', e.target.value)} />
+        {@render rmBtn(`${name.toLowerCase()} ${i + 1}`, () => (inner ? removeInnerShadow(i) : removeShadow(i)))}
+      </div>
+      <div class="sh-more">
+        <label class="sh-num" title="{inner ? 'Choke' : 'Spread'}: how much of the size is a hard edge, %">
+          <span>{inner ? 'Choke' : 'Spread'}</span>
+          <input type="number" min="0" max="100" step="1" value={pct(sh[key])} aria-label="{name} {i + 1} {key}, percent" onchange={(e) => commitAlpha(sh, key, e)} />
+        </label>
+        <label class="sh-num" title="Noise: grain in the shadow, %">
+          <span>Noise</span>
+          <input type="number" min="0" max="100" step="1" value={pct(sh.noise)} aria-label="{name} {i + 1} noise, percent" onchange={(e) => commitAlpha(sh, 'noise', e)} />
+        </label>
+        <label class="sh-contour" title="Contour: how the soft edge falls off">
+          <span>Contour</span>
+          <select value={sh.contour?.preset ?? 'linear'} aria-label="{name} {i + 1} contour" onchange={(e) => setShadowContour(sh, e.target.value)}>
+            {#each CONTOUR_PRESETS as id (id)}
+              <option value={id}>{CONTOUR_LABELS[id]}</option>
+            {/each}
+            {#if sh.contour?.preset === 'custom'}
+              <option value="custom">{CONTOUR_LABELS.custom}</option>
+            {/if}
+          </select>
+        </label>
+        <label class="sh-check" title="Anti-aliased: the contour read at every level, not a hundred steps">
+          <input type="checkbox" checked={sh.contour?.aa === true} aria-label="{name} {i + 1} contour anti-aliased" onchange={(e) => { sh.contour = { ...sh.contour, aa: e.target.checked }; touch(); }} />
+          <span>Anti-aliased</span>
+        </label>
+        <label class="sh-check" title="Use Global Light: the angle is the chapter's, shared by every shadow that uses it">
+          <input type="checkbox" checked={sh.useGlobalLight} aria-label="{name} {i + 1} uses the global light" onchange={(e) => setShadowGlobal(sh, e.target.checked)} />
+          <span>Global light</span>
+        </label>
+        {#if !inner}
+          <label class="sh-check" title="Layer Knocks Out Drop Shadow: the shadow does not show through see-through letters">
+            <input type="checkbox" checked={sh.knockout} aria-label="{name} {i + 1} knocked out by the letters" onchange={(e) => { sh.knockout = e.target.checked; touch(); }} />
+            <span>Knock out</span>
+          </label>
+        {/if}
+        <label class="sh-contour" title="Blend mode">
+          <span>Mode</span>
+          <select value={sh.blend} aria-label="{name} {i + 1} blend mode" onchange={(e) => { sh.blend = e.target.value; touch(); }}>
+            {#each LAYER_BLEND_MODES as m (m)}
+              <option value={m}>{blendLabel(m)}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+    {/each}
+  </div>
+{/snippet}
+
+<!-- Outer Glow or Inner Glow, as Photoshop's dialog has it: Structure, then
+     Elements, then Quality. A solid colour; gradient glows come later. -->
+{#snippet glowControls(g, title, inner)}
+  <div class="switch-row">
+    <button
+      type="button"
+      class="switch"
+      class:on={g.on}
+      role="switch"
+      aria-checked={g.on}
+      aria-label={title}
+      onclick={() => { g.on = !g.on; touch(); }}
+    ><span class="knob"></span></button>
+    <span class="lbl2">{title}</span>
+  </div>
+  <div class="insp-sub-body" class:disabled={!g.on} style="padding:0;border:none;gap:11px">
+    <div class="grp">
+      <span class="lbl">Colour</span>
+      {@render colorField(g, 'color', `${title} colour`)}
+    </div>
+    <div class="grp">
+      <span class="lbl">Opacity</span>
+      <div class="slider-row">
+        <input type="range" min="0" max="100" step="1" value={pct(g.opacity)} disabled={!g.on} aria-label="{title} opacity" oninput={(e) => setAlpha(g, 'opacity', e.target.value)} />
+        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(g.opacity)} disabled={!g.on} title="Opacity, %" aria-label="{title} opacity, percent" onchange={(e) => commitAlpha(g, 'opacity', e)} />
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Size</span>
+      <div class="slider-row">
+        <input type="range" min="0" max={SHADOW_SIZE_MAX} step="1" value={g.size} disabled={!g.on} aria-label="{title} size" oninput={(e) => setNum(g, 'size', e.target.value, 0, SHADOW_SIZE_MAX)} />
+        <input class="num-s" type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={g.size} disabled={!g.on} title="How far the glow reaches, page px" aria-label="{title} size, page px" onchange={(e) => commitNum(g, 'size', e, 0, SHADOW_SIZE_MAX)} />
+      </div>
+    </div>
+    <div class="sh-more" style="margin:0">
+      <label class="sh-num" title="{inner ? 'Choke' : 'Spread'}: how much of the size is solid, %">
+        <span>{inner ? 'Choke' : 'Spread'}</span>
+        <input type="number" min="0" max="100" step="1" value={pct(g.spread)} disabled={!g.on} aria-label="{title} {inner ? 'choke' : 'spread'}, percent" onchange={(e) => commitAlpha(g, 'spread', e)} />
+      </label>
+      <label class="sh-num" title="Range: how much of the falloff the contour spans, %">
+        <span>Range</span>
+        <input type="number" min="1" max="100" step="1" value={pct(g.range)} disabled={!g.on} aria-label="{title} range, percent" onchange={(e) => { commitAlpha(g, 'range', e); if (g.range < 0.01) { g.range = 0.01; e.target.value = '1'; } }} />
+      </label>
+      <label class="sh-num" title="Noise: grain in the glow, %">
+        <span>Noise</span>
+        <input type="number" min="0" max="100" step="1" value={pct(g.noise)} disabled={!g.on} aria-label="{title} noise, percent" onchange={(e) => commitAlpha(g, 'noise', e)} />
+      </label>
+      <label class="sh-num" title="Softer blurs the edge; Precise keeps its shape">
+        <span>Technique</span>
+        <select value={g.technique} disabled={!g.on} aria-label="{title} technique" onchange={(e) => { g.technique = e.target.value; touch(); }}>
+          <option value="softer">Softer</option>
+          <option value="precise">Precise</option>
+        </select>
+      </label>
+      {#if inner}
+        <label class="sh-num" title="Glow from the letters' edge, or from their centre out">
+          <span>Source</span>
+          <select value={g.source} disabled={!g.on} aria-label="{title} source" onchange={(e) => { g.source = e.target.value; touch(); }}>
+            <option value="edge">Edge</option>
+            <option value="center">Center</option>
+          </select>
+        </label>
+      {/if}
+      <label class="sh-contour" title="Blend mode">
+        <span>Mode</span>
+        <select value={g.blend} disabled={!g.on} aria-label="{title} blend mode" onchange={(e) => { g.blend = e.target.value; touch(); }}>
+          {#each LAYER_BLEND_MODES as m (m)}
+            <option value={m}>{blendLabel(m)}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="sh-contour" title="Contour: how the glow falls off">
+        <span>Contour</span>
+        <select value={g.contour?.preset ?? 'linear'} disabled={!g.on} aria-label="{title} contour" onchange={(e) => setShadowContour(g, e.target.value)}>
+          {#each CONTOUR_PRESETS as id (id)}
+            <option value={id}>{CONTOUR_LABELS[id]}</option>
+          {/each}
+          {#if g.contour?.preset === 'custom'}
+            <option value="custom">{CONTOUR_LABELS.custom}</option>
+          {/if}
+        </select>
+      </label>
+    </div>
+  </div>
+{/snippet}
+
 {#snippet secHead(title)}
   <div class="insp-sec">{title}</div>
 {/snippet}
@@ -1263,6 +1438,34 @@
             {:else}
               <p class="nofill-note">Needs the Rust text engine (Settings).</p>
             {/if}
+          </div>
+        {/if}
+        {#if fillMode !== 'none'}
+          <!-- Photoshop's Color Overlay: a flat colour over the fill, in its
+               own mode, under the strokes. The Rust engine paints it. -->
+          {@render secHead('Colour overlays · first on top')}
+          <div class="grp">
+            {#if !s.colorOverlays.length}
+              <div class="insp-none">No colour overlay.</div>
+            {/if}
+            <div class="insp-list k-overlay">
+              {#each s.colorOverlays as o, i (o)}
+                <div class="insp-row">
+                  {@render swatchCell(o, 'color', `Overlay ${i + 1} colour`)}
+                  <select value={o.blend} aria-label="Overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
+                    {#each LAYER_BLEND_MODES as m (m)}
+                      <option value={m}>{blendLabel(m)}</option>
+                    {/each}
+                  </select>
+                  <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Overlay {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(o, 'opacity', e.target.value)} />
+                  {@render rmBtn(`overlay ${i + 1}`, () => removeOverlay(i))}
+                </div>
+              {/each}
+            </div>
+            {#if s.colorOverlays.length && !rustBoxes}
+              <p class="nofill-note">Colour overlays need the Rust text engine (Settings).</p>
+            {/if}
+            {@render addBtn('Add colour overlay', addOverlay)}
           </div>
         {/if}
         {#if fillMode === 'none'}
@@ -1601,61 +1804,33 @@
             {#if !s.shadows.length}
               <div class="insp-none">No shadow.</div>
             {/if}
-            <div class="insp-list k-shadow">
-              {#if s.shadows.length}
-                <div class="insp-cap"><span></span><span>Angle</span><span>Dist</span><span>Size</span><span>Op %</span><span></span></div>
-              {/if}
-              {#each s.shadows as sh, i (sh)}
-                <!-- The Global Light is read here so a turn of it shows. -->
-                {@const angle = (app.typesetting.light?.angle, shadowAngle(sh))}
-                <div class="insp-row">
-                  {@render swatchCell(sh, 'color', `Shadow ${i + 1} colour`)}
-                  <input type="number" min="-180" max="180" step="1" value={angle} aria-label="Shadow {i + 1} angle" title={sh.useGlobalLight ? 'Angle of the chapter\'s light, degrees: turns every shadow on it' : 'Angle the light comes from, degrees'} onchange={(e) => setShadowAngle(sh, e)} />
-                  <input type="number" min="0" max={SHADOW_DISTANCE_MAX} step="1" value={Math.round(shadowDistance(sh) * 100) / 100} aria-label="Shadow {i + 1} distance" title="Distance, page px" onchange={(e) => setShadowDistance(sh, e)} />
-                  <input type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={sh.size} aria-label="Shadow {i + 1} size" title="Size: how far the soft edge reaches, page px" onchange={(e) => commitNum(sh, 'size', e, 0, SHADOW_SIZE_MAX)} />
-                  <input type="number" min="0" max="100" step="1" value={pct(sh.opacity)} aria-label="Shadow {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(sh, 'opacity', e.target.value)} />
-                  {@render rmBtn(`shadow ${i + 1}`, () => removeShadow(i))}
-                </div>
-                <div class="sh-more">
-                  <label class="sh-num" title="Spread: how much of the size is a hard edge, %">
-                    <span>Spread</span>
-                    <input type="number" min="0" max="100" step="1" value={pct(sh.spread)} aria-label="Shadow {i + 1} spread, percent" onchange={(e) => commitAlpha(sh, 'spread', e)} />
-                  </label>
-                  <label class="sh-num" title="Noise: grain in the shadow, %">
-                    <span>Noise</span>
-                    <input type="number" min="0" max="100" step="1" value={pct(sh.noise)} aria-label="Shadow {i + 1} noise, percent" onchange={(e) => commitAlpha(sh, 'noise', e)} />
-                  </label>
-                  <label class="sh-contour" title="Contour: how the soft edge falls off">
-                    <span>Contour</span>
-                    <select value={sh.contour?.preset ?? 'linear'} aria-label="Shadow {i + 1} contour" onchange={(e) => setShadowContour(sh, e.target.value)}>
-                      {#each CONTOUR_PRESETS as id (id)}
-                        <option value={id}>{CONTOUR_LABELS[id]}</option>
-                      {/each}
-                      {#if sh.contour?.preset === 'custom'}
-                        <option value="custom">{CONTOUR_LABELS.custom}</option>
-                      {/if}
-                    </select>
-                  </label>
-                  <label class="sh-check" title="Anti-aliased: the contour read at every level, not a hundred steps">
-                    <input type="checkbox" checked={sh.contour?.aa === true} aria-label="Shadow {i + 1} contour anti-aliased" onchange={(e) => { sh.contour = { ...sh.contour, aa: e.target.checked }; touch(); }} />
-                    <span>Anti-aliased</span>
-                  </label>
-                  <label class="sh-check" title="Use Global Light: the angle is the chapter's, shared by every shadow that uses it">
-                    <input type="checkbox" checked={sh.useGlobalLight} aria-label="Shadow {i + 1} uses the global light" onchange={(e) => setShadowGlobal(sh, e.target.checked)} />
-                    <span>Global light</span>
-                  </label>
-                  <label class="sh-check" title="Layer Knocks Out Drop Shadow: the shadow does not show through see-through letters">
-                    <input type="checkbox" checked={sh.knockout} aria-label="Shadow {i + 1} knocked out by the letters" onchange={(e) => { sh.knockout = e.target.checked; touch(); }} />
-                    <span>Knock out</span>
-                  </label>
-                </div>
-              {/each}
-            </div>
+            {@render shadowRows(s.shadows, false)}
             {#if s.shadows.length && !rustBoxes}
               <p class="nofill-note">Spread, Noise, Contour and Knock out need the Rust text engine (Settings).</p>
             {/if}
             {@render addBtn('Add shadow', addShadow)}
           </div>
+          <!-- Inner shadows: thrown from outside the letters into them. -->
+          {@render secHead('Inner shadows · first on top')}
+          <div class="grp">
+            {#if !s.innerShadows.length}
+              <div class="insp-none">No inner shadow.</div>
+            {/if}
+            {@render shadowRows(s.innerShadows, true)}
+            {#if s.innerShadows.length && !rustBoxes}
+              <p class="nofill-note">Inner shadows need the Rust text engine (Settings).</p>
+            {/if}
+            {@render addBtn('Add inner shadow', addInnerShadow)}
+          </div>
+        {/if}
+
+        {#if effectsTab === 'glow'}
+          {#if !rustBoxes}
+            <p class="nofill-note">Glows need the Rust text engine (Settings).</p>
+          {/if}
+          {@render glowControls(s.outerGlow, 'Outer glow', false)}
+          <div class="insp-rule"></div>
+          {@render glowControls(s.innerGlow, 'Inner glow', true)}
         {/if}
 
         {#if effectsTab === 'warp'}

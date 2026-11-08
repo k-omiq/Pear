@@ -91,7 +91,7 @@ import {
 } from './measure.js';
 import {
   strokeReach,
-  boxShadows,
+  reachShadows,
   shadowSpread,
   motionBlurTaps,
   inkActive,
@@ -417,7 +417,7 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
   const so = strokeReach(s);
   const sil = grow(r, so, so);
   let u = sil;
-  for (const sh of boxShadows(s)) {
+  for (const sh of reachShadows(s)) {
     if (!(Number(sh?.opacity ?? 1) > 0)) continue;
     const dx = Number(sh?.x) || 0;
     const dy = Number(sh?.y) || 0;

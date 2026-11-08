@@ -592,6 +592,27 @@ describe('textLayerFor', () => {
     }
   });
 
+  it('writes the glows, the inner shadows and the colour overlays as Photoshop states them', () => {
+    const style = {
+      ...baseStyle,
+      outerGlow: { on: true, blend: 'screen', opacity: 0.75, noise: 0.1, color: '#ffffbe', technique: 'precise', spread: 0.2, size: 9, contour: { preset: 'linear' }, range: 0.5 },
+      innerGlow: { on: true, blend: 'normal', opacity: 1, noise: 0, color: '#ffffff', technique: 'softer', spread: 0, size: 3, contour: { preset: 'linear' }, range: 1, source: 'center' },
+      innerShadows: [{ x: 3, y: 4, size: 2, color: '#000000', opacity: 0.5, blend: 'multiply', choke: 0.3 }],
+      colorOverlays: [{ color: '#ff0000', opacity: 0.4, blend: 'overlay' }],
+    };
+    const fx = textLayerFor(page, box(style), rendered).effects;
+    expect(fx.outerGlow).toMatchObject({ enabled: true, technique: 'precise', size: { units: 'Pixels', value: 9 }, noise: 0.1, range: 0.5, blendMode: 'screen' });
+    expect(fx.outerGlow.source).toBeUndefined();
+    expect(fx.innerGlow).toMatchObject({ technique: 'softer', source: 'center', range: 1 });
+    expect(fx.innerShadow).toHaveLength(1);
+    expect(fx.innerShadow[0]).toMatchObject({ distance: { units: 'Pixels', value: 5 }, choke: { value: 30 }, blendMode: 'multiply' });
+    expect(fx.innerShadow[0].layerConceals).toBeUndefined();
+    expect(fx.solidFill).toEqual([{ enabled: true, blendMode: 'overlay', color: { r: 255, g: 0, b: 0 }, opacity: 0.4 }]);
+    // Switched off, a glow is not written.
+    const off = textLayerFor(page, box({ ...baseStyle, outerGlow: { ...style.outerGlow, on: false } }), rendered);
+    expect(off.effects).toBeUndefined();
+  });
+
   it('leaves raster-only layers (curve, roughen, flip) completely free of effects', () => {
     const styledWithEffects = {
       ...baseStyle,

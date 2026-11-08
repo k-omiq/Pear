@@ -1171,6 +1171,39 @@ export function boxShadows(style) {
   return top.length || under.length ? [...top, ...own, ...under] : own;
 }
 
+// The box's layer effects past its drop shadows, as the engine's box job takes
+// them (`encodeBox`'s `effects`): Outer Glow, Inner Glow, each Inner Shadow
+// (thrown from the chapter's light when it follows it) and each Color
+// Overlay. Only the Rust engine paints them.
+export function boxEffects(style) {
+  const out = [];
+  const og = style?.outerGlow;
+  if (og?.on && og.opacity > 0) {
+    out.push({ kind: 'outerGlow', color: og.color, opacity: og.opacity, blend: og.blend, technique: og.technique, size: og.size, spread: og.spread, range: og.range, noise: og.noise, contour: og.contour });
+  }
+  const ig = style?.innerGlow;
+  if (ig?.on && ig.opacity > 0) {
+    out.push({ kind: 'innerGlow', color: ig.color, opacity: ig.opacity, blend: ig.blend, technique: ig.technique, size: ig.size, choke: ig.spread, range: ig.range, noise: ig.noise, contour: ig.contour, source: ig.source });
+  }
+  for (const sh of Array.isArray(style?.innerShadows) ? resolveShadows(style.innerShadows) : []) {
+    if (!(sh.opacity > 0)) continue;
+    out.push({ kind: 'innerShadow', color: sh.color, opacity: sh.opacity, blend: sh.blend, x: sh.x, y: sh.y, size: sh.size, choke: sh.choke, noise: sh.noise, contour: sh.contour });
+  }
+  for (const o of Array.isArray(style?.colorOverlays) ? style.colorOverlays : []) {
+    if (o.opacity > 0) out.push({ kind: 'colorOverlay', color: o.color, opacity: o.opacity, blend: o.blend });
+  }
+  return out;
+}
+
+// What reaches past the letters' silhouette, as shadows: every shadow the box
+// casts (`boxShadows`) and an outer glow, which reaches as far as an unmoved
+// shadow of its size does. What sizes the canvas a box lands in.
+export function reachShadows(style) {
+  const shadows = boxShadows(style);
+  const og = style?.outerGlow;
+  return og?.on && og.opacity > 0 ? [...shadows, { x: 0, y: 0, size: og.size, opacity: og.opacity }] : shadows;
+}
+
 // How far past the letters the box's outlines reach, page px: the strokes,
 // and a negative's blob they go round. An SFX letter's outlines grow with the
 // letter (to the 0.4 of its scale, `letterPen`), so an SFX box reaches up to
@@ -1224,7 +1257,7 @@ function finishOf(f) {
 // canvas and the export's footprint pad by.
 export function inkReach(style) {
   if (!inkActive(style?.ink)) return 0;
-  return inkExtent(style.ink) + Math.ceil(strokeReach(style) + shadowExtent(boxShadows(style)));
+  return inkExtent(style.ink) + Math.ceil(strokeReach(style) + shadowExtent(reachShadows(style)));
 }
 
 // The Euclidean distance from every pixel to the nearest one with alpha at or
