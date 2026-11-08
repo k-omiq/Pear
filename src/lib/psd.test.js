@@ -12,7 +12,7 @@ import {
   reconstructForeign,
   psdSelfTest,
 } from './psd.js';
-import { PAGE_W, PAGE_H, emptyFaces, defaultStyle, normalizeStyle, normalizeBevel } from './data.js';
+import { PAGE_W, PAGE_H, emptyFaces, defaultStyle, normalizeStyle, normalizeBevel, normalizeBlending } from './data.js';
 import { BOX_PAD, textInset } from './measure.js';
 import { app } from './store.svelte.js';
 import { _setPostScriptNameFor, _clearPostScriptNames } from './fonts.js';
@@ -603,6 +603,41 @@ describe('textLayerFor', () => {
     const bytes = writePsd({ width: 4, height: 4, children: [{ name: 'b', left: 0, top: 0, right: 4, bottom: 4, blendMode: layer.blendMode, blendInteriorElements: layer.blendInteriorElements, knockout: layer.knockout }] });
     const back = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true }).children[0];
     expect(back).toMatchObject({ blendMode: 'screen', blendInteriorElements: true, knockout: true });
+  });
+
+  it('writes Channels and Blend If as the layer record states them, and reads them back', () => {
+    const plain = textLayerFor(page, box({ ...baseStyle }), rendered);
+    expect(plain.channelBlendingRestrictions).toBeUndefined();
+    expect(plain.blendingRanges).toBeUndefined();
+    const blending = normalizeBlending({
+      channels: { r: false, b: false },
+      blendIf: { gray: { this: [0, 0, 200, 230], under: [64, 192, 255, 255] }, green: { under: [10, 20, 255, 255] } },
+    });
+    const layer = textLayerFor(page, box({ ...baseStyle, blending }), rendered);
+    expect(layer.channelBlendingRestrictions).toEqual([0, 2]);
+    expect(layer.blendingRanges).toEqual({
+      compositeGrayBlendSource: [0, 0, 200, 230],
+      compositeGraphBlendDestinationRange: [64, 192, 255, 255],
+      ranges: [
+        { sourceRange: [0, 0, 255, 255], destRange: [0, 0, 255, 255] },
+        { sourceRange: [0, 0, 255, 255], destRange: [10, 20, 255, 255] },
+        { sourceRange: [0, 0, 255, 255], destRange: [0, 0, 255, 255] },
+      ],
+    });
+    const bytes = writePsd({ width: 4, height: 4, children: [{ name: 'b', left: 0, top: 0, right: 4, bottom: 4, channelBlendingRestrictions: layer.channelBlendingRestrictions, blendingRanges: layer.blendingRanges }] });
+    const back = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true }).children[0];
+    expect(back.blendingRanges).toEqual(layer.blendingRanges);
+    // The `brst` block holds both channels, a 4-byte index each (Adobe's
+    // spec). ag-psd 31's reader stops one short (`while (left() > 4)`), so
+    // the block is read from the bytes here.
+    const u8 = new Uint8Array(bytes);
+    const tag = [...'8BIMbrst'].map((c) => c.charCodeAt(0));
+    const at = u8.findIndex((_, i) => tag.every((t, k) => u8[i + k] === t));
+    expect(at).toBeGreaterThan(0);
+    const dv = new DataView(u8.buffer, u8.byteOffset + at + 8);
+    const len = dv.getUint32(0);
+    expect(Array.from({ length: len / 4 }, (_, k) => dv.getInt32(4 + k * 4))).toEqual([0, 2]);
+    expect(back.channelBlendingRestrictions).toEqual([0]);
   });
 
   it('writes the glows, the inner shadows and the colour overlays as Photoshop states them', () => {

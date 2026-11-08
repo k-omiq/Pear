@@ -337,10 +337,11 @@ describe('styleSchemaText', () => {
   // gradient and a pattern are printed whole once), and to 15000 for the
   // noise gradient's fields and Shape Burst, and to 15500 for the Satin, and
   // to 17000 for the Bevel & Emboss (Structure, Shading, Contour, Texture),
-  // and to 17200 for the Advanced Blending options (interior, knockout).
-  it('describes every key, field and item in under 17200 characters', () => {
+  // and to 17200 for the Advanced Blending options (interior, knockout),
+  // and to 17800 for Channels and Blend If (one slider pair printed once).
+  it('describes every key, field and item in under 17800 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(17200);
+    expect(text.length).toBeLessThan(17800);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.
@@ -474,9 +475,28 @@ describe('the advanced blending options in the schema', () => {
     const r = applyStylePatch(defaultStyle(), patch);
     expect(r.errors).toEqual([]);
     expect(r.style.blendMode).toBe('screen');
-    expect(r.style.blending).toEqual({ interior: true, knockout: 'deep' });
+    expect(r.style.blending).toMatchObject({ interior: true, knockout: 'deep' });
     expect(validateStylePatch({ blending: { knockout: 'full' } }).length).toBeGreaterThan(0);
     expect(validateStylePatch({ blending: { interior: 'yes' } }).length).toBeGreaterThan(0);
     expect(styleSchemaText()).toContain('blending.knockout: enum none|shallow|deep - ');
+  });
+});
+
+describe('Channels and Blend If in the schema', () => {
+  it('takes a channel off and a Blend If slider, and refuses one that is not four levels', () => {
+    const patch = { blending: { channels: { r: false }, blendIf: { gray: { under: [64, 128, 255, 255] } } } };
+    expect(validateStylePatch(patch)).toEqual([]);
+    const r = applyStylePatch(defaultStyle(), patch);
+    expect(r.errors).toEqual([]);
+    expect(r.style.blending.channels).toEqual({ r: false, g: true, b: true });
+    expect(r.style.blending.blendIf.gray).toEqual({ this: [0, 0, 255, 255], under: [64, 128, 255, 255] });
+    expect(r.style.blending.blendIf.red).toEqual({ this: [0, 0, 255, 255], under: [0, 0, 255, 255] });
+    expect(validateStylePatch({ blending: { blendIf: { gray: { this: [0, 0, 255] } } } }).length).toBeGreaterThan(0);
+    expect(validateStylePatch({ blending: { blendIf: { gray: { this: [0, 0, 255, 300] } } } }).length).toBeGreaterThan(0);
+    expect(validateStylePatch({ blending: { blendIf: { cyan: { this: [0, 0, 255, 255] } } } }).length).toBeGreaterThan(0);
+    expect(validateStylePatch({ blending: { channels: { r: 'off' } } }).length).toBeGreaterThan(0);
+    const text = styleSchemaText();
+    expect(text).toContain('blending.blendIf.gray.under: array 4..4 items of integer - ');
+    expect(text).toContain('blending.blendIf.blue: object like blending.blendIf.gray - ');
   });
 });

@@ -28,7 +28,7 @@
 
 use super::blur::{self, Moved, Surface};
 use super::fx::blend::{self, Backdrop, Blend};
-use super::fx::blending::{shadow_see_through, Blending};
+use super::fx::blending::{self, shadow_see_through, Blending, Range};
 use super::fx::contour::{self, Curve, Lut, Table};
 use super::fx::effects::{
     self, Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay,
@@ -51,7 +51,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 9;
+pub const BOX_WIRE_VERSION: u32 = 10;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -722,6 +722,15 @@ impl<'a> Reader<'a> {
 /// u32 blend                    the letters' mode
 /// f64 fill opacity             0 to 1
 /// u32 blending flags (v9)      1 Blend Interior Effects as Group
+/// u32 channels left out (v10)  bit 0 R, 1 G, 2 B (Channels unticked)
+/// u32 blend if (v10)           0 none, or 1 and 8 ranges of 4 bytes:
+///                              gray this, gray under, R this, R under,
+///                              G this, G under, B this, B under; each
+///                              black low, black high, white low, white
+///                              high (PSD's order), 0 to 255
+///     Channels and Blend If change the box's blend onto the page and are
+///     painted only over a backdrop: with none (a PSD layer) Photoshop
+///     applies them from the layer's own fields.
 /// u32 effect count, then per effect, first of its kind on top, a u32 kind:
 ///   1 outer glow, 2 inner glow:
 ///     rgba colour, f64 opacity, u32 blend
@@ -786,7 +795,9 @@ impl<'a> Reader<'a> {
 /// contour that does not exist, a contour point outside 0 to 255 or out of
 /// order, a bevel style or technique that does not exist, a bevel depth
 /// outside 0 to 10, an altitude outside 0 to 90, a bevel texture that is not
-/// a fill, blending flags past 1, and anything a glyph job is refused for.
+/// a fill, blending flags past 1, a channel mask past 7, a Blend If that is
+/// not 0 or 1 or with a range out of order (black low, black high, white
+/// low, white high must not fall), and anything a glyph job is refused for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != BOX_MAGIC || r.u32()? != BOX_WIRE_VERSION {
@@ -831,7 +842,23 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     };
     let blend = Blend::from_u32(r.u32()?).ok_or(Error::BadSpec)?;
     let fill_opacity = r.upto(1.0)?;
-    let blending = Blending::from_flags(r.u32()?).ok_or(Error::BadSpec)?;
+    let mut blending = Blending::from_flags(r.u32()?).ok_or(Error::BadSpec)?;
+    blending.channels_out = match r.u32()? {
+        n @ 0..=7 => n as u8,
+        _ => return Err(Error::BadSpec),
+    };
+    match r.u32()? {
+        0 => {}
+        1 => {
+            for pair in blending.blend_if.ranges.iter_mut() {
+                for range in pair.iter_mut() {
+                    let b = r.take(4)?;
+                    *range = Range::from_bytes([b[0], b[1], b[2], b[3]]).ok_or(Error::BadSpec)?;
+                }
+            }
+        }
+        _ => return Err(Error::BadSpec),
+    }
     let n = r.count(usize::MAX, 20)?;
     let effects = budget::collect((0..n).map(|_| r.effect()))?;
     let backdrop = match r.u32()? {
@@ -1417,12 +1444,15 @@ fn paint(
         request.fill_opacity,
         request.request.job.no_fill,
     );
+    // Channels and Blend If, over a page only (`Blending::restricts`).
+    let restricts = request.blending.restricts() && request.backdrop.is_some();
     if shadows.clone().next().is_none()
         && !positive(blur_sigma)
         && taps.is_empty()
         && request.clip.is_none()
         && request.fill_opacity >= 1.0
         && !blends
+        && !restricts
         && !request.effects.iter().any(Effect::shows)
     {
         // Nothing but glyphs: the glyph job, and its own raster.
@@ -1600,12 +1630,24 @@ fn paint(
     };
     // What is drawn on `own` so far, for a special fill laid between.
     let mut own_drawn: Option<IBox> = None;
+    // The letters alone on a clear surface, for Blend If's This Layer: the
+    // fill, the outlines, the interior effects and the strokes' outside
+    // parts, not the shadows and glows under them (PhotoCraft judges a
+    // layer by its own content, `render_content`).
+    let mut this = if restricts && !request.blending.blend_if.this_is_full() {
+        Some(Surface::new(width, height)?)
+    } else {
+        None
+    };
     // The strokes' outside parts, slid under the letters.
     if let Some(o) = outside {
         let place = Place {
             transform,
             tiles: &request.request.tiles,
         };
+        if let Some(this) = this.as_mut() {
+            effects::lay_outside(this, &o, &request.effects, &place)?;
+        }
         effects::lay_outside(own.as_mut().unwrap_or(&mut s), &o, &request.effects, &place)?;
         let b = o.bounds().intersect(&surface);
         if !b.is_empty() {
@@ -1641,6 +1683,9 @@ fn paint(
             own.clear();
         }
         own.draw(&fill.data, fill.width as usize, fill.x, fill.y);
+        if let Some(this) = this.as_mut() {
+            this.draw(&fill.data, fill.width as usize, fill.x, fill.y);
+        }
         let bx = IBox {
             x0: fill.x,
             y0: fill.y,
@@ -1672,6 +1717,9 @@ fn paint(
             Some(own) => own.draw(&r.data, r.width as usize, r.x, r.y),
             None => s.draw(&r.data, r.width as usize, r.x, r.y),
         }
+        if let Some(this) = this.as_mut() {
+            this.draw(&r.data, r.width as usize, r.x, r.y);
+        }
         lay(bx);
     }
     drop(glyphs);
@@ -1695,6 +1743,14 @@ fn paint(
         }
     }
     drop(bevels);
+    // Channels, then Blend If, on the whole box, effects and all, at its
+    // blend onto the page: before the whole-box blur, the smear and the
+    // mask, which Photoshop would do to the layer's pixels (a filter, a
+    // mask) and not to its blend.
+    if let (true, Some(page), Some(bx)) = (restricts, request.backdrop.as_deref(), laid) {
+        blending::restrict(&mut s, bx, &request.blending, page, this.as_ref());
+    }
+    drop(this);
     blur::gaussian(&mut s, blur_sigma)?;
     if !taps.is_empty() {
         let mut moves = budget::Buffer::new();

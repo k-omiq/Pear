@@ -136,6 +136,8 @@ export function createRustGlyphPainter(rust, options = {}) {
       blend: spec.blend,
       fillOpacity: spec.fillOpacity,
       blendInterior: spec.blendInterior === true,
+      channels: spec.channels ?? null,
+      blendIf: spec.blendIf ?? null,
       effects: spec.effects ?? [],
       // The page under the surface: given, or asked for now the surface is
       // known (`backdrop.js`), with the matrix that carries the job onto it.

@@ -3,6 +3,7 @@
 #![cfg(feature = "paint")]
 
 use mt_text::paint::fx::blend::Blend;
+use mt_text::paint::fx::blending::{Blending, Range};
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
     Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
@@ -714,6 +715,20 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 9]) {
     f(&mut b, 0.5); // half their fill
     let blending_at = b.len();
     u(&mut b, 1); // interior effects as a group
+    u(&mut b, 4); // blue left out
+    u(&mut b, 1); // a Blend If: gray under 64/192 split, R this 0..200
+    for q in [
+        [0u8, 0, 255, 255],
+        [64, 192, 255, 255],
+        [0, 0, 200, 200],
+        [0, 0, 255, 255],
+        [0, 0, 255, 255],
+        [0, 0, 255, 255],
+        [0, 0, 255, 255],
+        [0, 0, 255, 255],
+    ] {
+        b.extend_from_slice(&q);
+    }
     let effects_at = b.len();
     u(&mut b, 9);
     // An outer glow: yellow, Screen, Precise, size 5, spread 0.1, range 0.5.
@@ -864,6 +879,25 @@ fn the_wire_form_decodes_to_the_box_it_states() {
         (Blend::Overlay, 0.5, true)
     );
     assert!(r.blending.interior);
+    assert_eq!(r.blending.channels_out, 4);
+    let bi = r.blending.blend_if.ranges;
+    assert_eq!(
+        (bi[0][0], bi[2][1], bi[3]),
+        (Range::FULL, Range::FULL, [Range::FULL; 2])
+    );
+    assert_eq!(
+        (bi[0][1], bi[1][0]),
+        (
+            Range {
+                black: [64, 192],
+                white: [255, 255]
+            },
+            Range {
+                black: [0, 0],
+                white: [200, 200]
+            }
+        )
+    );
     assert_eq!(
         r.taps,
         vec![Tap {
@@ -1005,7 +1039,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 9));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 10));
 }
 
 #[test]
@@ -1115,6 +1149,28 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     // Blending flags that are not ones.
     assert_eq!(with_u(blending_at, 2), Some(Error::BadSpec));
     assert_eq!(with_u(blending_at, 0), None);
+    // A channel mask past R, G and B; a Blend If that is not 0 or 1.
+    assert_eq!(with_u(blending_at + 4, 8), Some(Error::BadSpec));
+    assert_eq!(with_u(blending_at + 4, 7), None);
+    assert_eq!(with_u(blending_at + 8, 2), Some(Error::BadSpec));
+    // A range out of order: black low past black high, black high past
+    // white low, white low past white high.
+    let with_q = |at: usize, q: [u8; 4]| {
+        let mut b = good.clone();
+        b[at..at + 4].copy_from_slice(&q);
+        decode_box(&b).map(|_| ()).err()
+    };
+    let ranges_at = blending_at + 12;
+    assert_eq!(with_q(ranges_at, [10, 9, 255, 255]), Some(Error::BadSpec));
+    assert_eq!(
+        with_q(ranges_at + 4, [0, 200, 100, 255]),
+        Some(Error::BadSpec)
+    );
+    assert_eq!(
+        with_q(ranges_at + 28, [0, 0, 255, 254]),
+        Some(Error::BadSpec)
+    );
+    assert_eq!(with_q(ranges_at + 28, [9, 9, 9, 9]), None);
 }
 
 #[test]
@@ -1132,10 +1188,12 @@ fn a_box_read_from_the_wire_paints() {
 }
 
 /// The Blending Options at their defaults: Normal, the whole fill, no
-/// effects, no page.
+/// flags, every channel, no Blend If, no effects, no page.
 fn no_blending(b: &mut Vec<u8>) {
     u(b, 0);
     f(b, 1.0);
+    u(b, 0);
+    u(b, 0);
     u(b, 0);
     u(b, 0);
     u(b, 0);
@@ -1455,6 +1513,170 @@ fn a_mode_blends_with_the_page_it_is_given() {
     let lit = paint(&mut e, &mut b);
     let p = px(&lit, x, y + 50);
     assert_eq!(&p[..], &[200, 100, 255, 255]);
+}
+
+/// A page of one grey, as the app hands it: straight RGBA8, opaque.
+fn grey_page(v: u8) -> Vec<u8> {
+    [v, v, v, 255].repeat(200 * 160)
+}
+
+/// What a box raster shows laid source-over on a page of `page` at `(x, y)`.
+fn shown(r: &Raster, x: i32, y: i32, page: [u8; 3]) -> [f32; 3] {
+    let p = px(r, x, y);
+    let a = f32::from(p[3]) / 255.0;
+    [0, 1, 2].map(|c| f32::from(p[c]) * a + f32::from(page[c]) * (1.0 - a))
+}
+
+fn range(black: [u8; 2], white: [u8; 2]) -> Range {
+    Range { black, white }
+}
+
+/// Blend If, Underlying Layer (PhotoCraft's
+/// `blend_if_underlying_layer_hides_by_the_backdrop_value` and
+/// `blend_if_split_point_fades_like_opacity`): the page's grey decides how
+/// much of the box shows, its shadow too.
+#[test]
+fn blend_if_underlying_hides_the_box_over_dark_art() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let (x, y) = stem(inked(&paint(&mut e, &mut b)));
+    b.request.job.fill = Some(Fill::Solid(RED));
+    b.shadows = vec![shadow(BLUE, 0.0, 50.0)];
+    let mut gate = Blending::default();
+    gate.blend_if.ranges[0][1] = range([128, 128], [255, 255]);
+    b.blending = gate;
+    // Over a page darker than 128: nothing of the box, nor of its shadow.
+    b.backdrop = Some(grey_page(127));
+    let hid = paint_box(&mut e, &mut b).unwrap();
+    assert!(hid.is_none_or(|r| px(&r, x, y)[3] == 0 && px(&r, x, y + 50)[3] == 0));
+    // At 128 and over, all of it (a hard point takes in its own level).
+    b.backdrop = Some(grey_page(128));
+    let r = paint(&mut e, &mut b);
+    assert_eq!(px(&r, x, y), [255, 0, 0, 255]);
+    assert_eq!(px(&r, x, y + 50), [0, 0, 255, 255]);
+    // Split 64/192: half of it over 128, as at 50 % opacity.
+    gate.blend_if.ranges[0][1] = range([64, 192], [255, 255]);
+    b.blending = gate;
+    let half = paint(&mut e, &mut b);
+    let p = px(&half, x, y);
+    assert!(p[0] == 255 && p[3].abs_diff(128) <= 1, "{p:?}");
+    b.backdrop = Some(grey_page(192));
+    assert_eq!(px(&paint(&mut e, &mut b), x, y), [255, 0, 0, 255]);
+    // With no page (a PSD layer), Blend If is Photoshop's to do: none here.
+    b.backdrop = None;
+    b.blending = Blending::default();
+    let plain_r = paint(&mut e, &mut b);
+    b.blending = gate;
+    assert_eq!(paint(&mut e, &mut b), plain_r);
+}
+
+/// Blend If, This Layer (PhotoCraft's
+/// `blend_if_this_layer_hides_by_the_layers_own_value`): the box's own
+/// letters decide, by their own colour; a shadow where there are no letters
+/// is not asked.
+#[test]
+fn blend_if_this_layer_hides_the_letters_own_dark_pixels() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glyphs = inked(&paint(&mut e, &mut b));
+    let (x, y) = stem(glyphs);
+    b.request.job.bands = vec![mt_text::paint::Band {
+        color: Rgba([255, 255, 255, 255]),
+        opacity: 1.0,
+        line: 6.0,
+    }];
+    b.shadows = vec![shadow(BLUE, 0.0, 50.0)];
+    b.backdrop = Some(grey_page(100));
+    let whole = paint(&mut e, &mut b);
+    let edge = (glyphs.0 - 2, y);
+    assert_eq!(px(&whole, edge.0, edge.1), [255, 255, 255, 255]);
+    // Gray, This Layer, black at 50: the black fill goes, the white outline
+    // and the shadow stay.
+    let mut gate = Blending::default();
+    gate.blend_if.ranges[0][0] = range([50, 50], [255, 255]);
+    b.blending = gate;
+    let r = paint(&mut e, &mut b);
+    assert_eq!(px(&r, x, y)[3], 0, "{:?}", px(&r, x, y));
+    assert_eq!(px(&r, edge.0, edge.1), [255, 255, 255, 255]);
+    assert_eq!(px(&r, x, y + 50), [0, 0, 255, 255]);
+    // White at 200 as well: the outline goes too.
+    gate.blend_if.ranges[0][0] = range([50, 50], [200, 200]);
+    b.blending = gate;
+    let r = paint(&mut e, &mut b);
+    assert_eq!(px(&r, edge.0, edge.1)[3], 0);
+    assert_eq!(px(&r, x, y + 50), [0, 0, 255, 255]);
+    // The page has no say in This Layer: a white page changes nothing.
+    b.backdrop = Some(grey_page(255));
+    assert_eq!(paint(&mut e, &mut b), r);
+}
+
+/// PhotoCraft's `channel_restrictions_keep_the_backdrop`: a channel left
+/// out shows the page's, where the box is and nowhere else.
+#[test]
+fn a_channel_left_out_keeps_the_pages() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let (x, y) = stem(inked(&paint(&mut e, &mut b)));
+    b.request.job.fill = Some(Fill::Solid(Rgba([200, 60, 30, 255])));
+    let page = [20u8, 100, 220];
+    b.backdrop = Some([page[0], page[1], page[2], 255].repeat(200 * 160));
+    let whole = paint(&mut e, &mut b);
+    // R left out.
+    let mut out = Blending {
+        channels_out: 1,
+        ..Blending::default()
+    };
+    b.blending = out;
+    let r = paint(&mut e, &mut b);
+    let s = shown(&r, x, y, page);
+    assert!(
+        (s[0] - 20.0).abs() < 1.0 && (s[1] - 60.0).abs() < 1.0 && (s[2] - 30.0).abs() < 1.0,
+        "{s:?}"
+    );
+    // Its alpha is the box's: a page-coloured channel, not a hole.
+    assert_eq!(px(&r, x, y)[3], px(&whole, x, y)[3]);
+    // All three out: the box shows the page.
+    out.channels_out = 7;
+    b.blending = out;
+    let s = shown(&paint(&mut e, &mut b), x, y, page);
+    assert!(
+        s.iter()
+            .zip(page)
+            .all(|(a, b)| (a - f32::from(b)).abs() < 1.0),
+        "{s:?}"
+    );
+    // With no page, nothing to keep.
+    b.backdrop = None;
+    b.blending = Blending::default();
+    let alone = paint(&mut e, &mut b);
+    b.blending = out;
+    assert_eq!(paint(&mut e, &mut b), alone);
+}
+
+/// Every channel in and every slider at its end paints what a box with no
+/// Advanced Blending did, page or not.
+#[test]
+fn the_default_blending_changes_nothing() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.blend = Blend::Multiply;
+    b.shadows = vec![shadow(RED, 3.0, 4.0)];
+    b.backdrop = Some(grey_page(90));
+    let before = paint(&mut e, &mut b);
+    let mut full = Blending::default();
+    full.blend_if.ranges = [[Range::FULL; 2]; 4];
+    full.channels_out = 0;
+    b.blending = full;
+    assert_eq!(paint(&mut e, &mut b), before);
+    // And the quick path stays quick: a box of letters alone over a page.
+    let mut q = plain(font);
+    let glyph_only = paint(&mut e, &mut q);
+    q.backdrop = Some(grey_page(90));
+    assert_eq!(paint(&mut e, &mut q), glyph_only);
 }
 
 #[test]

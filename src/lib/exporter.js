@@ -986,6 +986,10 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
     blend: s.blendMode,
     fillOpacity: s.fillOpacity,
     blendInterior: s.blending?.interior === true,
+    // Channels and Blend If (phase 6b): the engine paints them over the page
+    // art only, so a PSD layer (no art) keeps them for Photoshop.
+    channels: s.blending?.channels ?? null,
+    blendIf: s.blending?.blendIf ?? null,
     // The page art under the surface, read once the painter knows it.
     backdrop: page ? (rect) => backdropPixels(page, A, rect) : null,
     blur: s.blur > 0 ? s.blur : 0,

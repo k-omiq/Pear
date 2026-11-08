@@ -69,6 +69,8 @@
     LIGHT_DEF,
     BEVEL_DEPTH_MAX,
     BEVEL_SOFTEN_MAX,
+    BLEND_IF_CHANNELS,
+    BLEND_RANGE_FULL,
   } from './data.js';
   import { layoutShape } from './balloon.js';
   import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
@@ -85,6 +87,7 @@
   import { patternTiles, restorePickedTile } from './pattern-tiles.svelte.js';
   import { patternPick, startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
+  import BlendRangeSlider from './BlendRangeSlider.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
   // Which tab is open is session state shared with the keyboard - see
   // inspector-tabs.svelte.js. The panel is one of two writers, not the owner.
@@ -731,6 +734,19 @@
   // The engine paints whole boxes: Fill Opacity, and a shadow's Spread,
   // Contour, Noise and knockout (the browser engine paints none of them).
   const rustBoxes = $derived(engineSwitch.painting && glyphPainter().box === true);
+  // Blend If's channel menu (Gray, Red, Green, Blue), as Photoshop's dialog
+  // shows one channel's two sliders at a time.
+  let blendIfChannel = $state('gray');
+  const BLEND_IF_LABEL = { gray: 'Gray', red: 'Red', green: 'Green', blue: 'Blue' };
+  function setBlendIf(s, channel, side, range) {
+    const bi = s.blending?.blendIf ?? {};
+    s.blending = { ...s.blending, blendIf: { ...bi, [channel]: { ...bi[channel], [side]: range } } };
+    touch();
+  }
+  function setChannel(s, key, on) {
+    s.blending = { ...s.blending, channels: { r: true, g: true, b: true, ...s.blending?.channels, [key]: on } };
+    touch();
+  }
   const shownKinds = $derived.by(() => {
     if (!rustPatterns) return CANVAS_PATTERN_KINDS;
     return patGroup === 'all' ? PATTERN_KINDS : PATTERN_GROUPS[patGroup];
@@ -2399,10 +2415,42 @@
               <p class="nofill-note">Fill works as in Photoshop for this mode: it changes the blend, not the coverage.</p>
             {/if}
             {@const inner = s.colorOverlays?.length > 0 || s.gradientOverlays?.length > 0 || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
+            <!-- Advanced Blending, in Photoshop's order: Channels, Blend
+                 Interior Effects as Group, Blend If (phase 6b). -->
+            <div class="blend-chans" role="group" aria-label="Channels" title="Channels: a channel left out shows the page art's">
+              <span class="lbl">Channels</span>
+              {#each [['r', 'R'], ['g', 'G'], ['b', 'B']] as [k, name] (k)}
+                <label class="sh-check">
+                  <input type="checkbox" checked={s.blending?.channels?.[k] !== false} aria-label="Channel {name}" onchange={(e) => setChannel(s, k, e.target.checked)} />
+                  <span>{name}</span>
+                </label>
+              {/each}
+            </div>
             <label class="sh-check" title="Blend Interior Effects as Group: Fill opacity also fades the overlays, the satin and the inner glow">
               <input type="checkbox" checked={s.blending?.interior === true} disabled={!inner} aria-label="Blend interior effects as group" onchange={(e) => { s.blending = { ...s.blending, interior: e.target.checked }; touch(); }} />
               <span>Blend interior effects as group</span>
             </label>
+            <div class="blend-if">
+              <div class="blend-if-head">
+                <span class="lbl" title="Blend If: hide the box where its own colour, or the page art's under it, is outside the sliders">Blend If</span>
+                <select value={blendIfChannel} aria-label="Blend If channel" onchange={(e) => (blendIfChannel = e.target.value)}>
+                  {#each BLEND_IF_CHANNELS as c (c)}
+                    <option value={c}>{BLEND_IF_LABEL[c]}</option>
+                  {/each}
+                </select>
+              </div>
+              <!-- A split set by hand belongs to one box's one channel. -->
+              {#key `${app.selectedId}|${blendIfChannel}`}
+                {#each [['this', 'This Layer'], ['under', 'Underlying Layer']] as [side, name] (side)}
+                  <BlendRangeSlider
+                    label={name}
+                    channel={blendIfChannel}
+                    value={s.blending?.blendIf?.[blendIfChannel]?.[side] ?? BLEND_RANGE_FULL}
+                    onchange={(r) => setBlendIf(s, blendIfChannel, side, r)}
+                  />
+                {/each}
+              {/key}
+            </div>
             {#if usesBackdrop(s)}
               <p class="nofill-note">Blends with the page art.</p>
             {/if}
@@ -3431,6 +3479,22 @@
   .sh-contour select {
     flex: 1 1 auto;
     min-width: 0;
+  }
+  /* Advanced Blending: Channels on one row, Blend If's channel menu beside
+     its heading, its two sliders under it. */
+  .blend-chans,
+  .blend-if-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .blend-if {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .blend-if-head select {
+    margin-left: auto;
   }
   .nofill-note {
     margin: 0;

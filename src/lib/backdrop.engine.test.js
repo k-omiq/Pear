@@ -178,6 +178,106 @@ describe('a box over the page art', () => {
   });
 });
 
+// ===========================================================================
+// Channels and Blend If (phase 6b), painted over the art
+// ===========================================================================
+
+// A box's texture over flat art, and its pixels.
+function texture(box, art) {
+  const under = art ? { image: flatArt(art), W, H, src: art } : null;
+  const r = renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, null, under);
+  const { width, height } = r.canvas;
+  return { width, height, data: r.canvas.getContext('2d').getImageData(0, 0, width, height).data };
+}
+const rgbOf = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+// The mean colour the texture shows laid on `art` over the pixels `where`
+// says (indices into the texture), and their mean alpha.
+function shownAt(tex, art, where) {
+  const a = rgbOf(art);
+  const sum = [0, 0, 0, 0];
+  for (const i of where) {
+    const al = tex.data[i + 3] / 255;
+    for (let k = 0; k < 3; k++) sum[k] += tex.data[i + k] * al + a[k] * (1 - al);
+    sum[3] += tex.data[i + 3];
+  }
+  return sum.map((v) => v / where.length);
+}
+// The pixels of a texture that `keep` says yes to.
+function pixelsWhere(tex, keep) {
+  const out = [];
+  for (let i = 0; i < tex.data.length; i += 4) if (keep(tex.data.subarray(i, i + 4))) out.push(i);
+  return out;
+}
+const near = (got, want, tol = 2) => want.forEach((v, k) => expect(Math.abs(got[k] - v), `${got} vs ${want}`).toBeLessThanOrEqual(tol));
+const range = (b0, b1, w0, w1) => [b0, b1, w0, w1];
+
+describe('Blend If and Channels over the page art', () => {
+  // Red letters; where they cover a pixel whole over the art.
+  const red = (blending) => boxOf({ color: '#ff0000', blending });
+  const letters = (art) => pixelsWhere(texture(red(undefined), art), (p) => p[3] === 255);
+
+  it('Underlying, black at 128: hides the letters over art darker than 128, shows them over 128', () => {
+    const gate = { blendIf: { gray: { under: range(128, 128, 255, 255) } } };
+    const at = letters('#808080');
+    expect(at.length).toBeGreaterThan(500);
+    near(shownAt(texture(red(gate), '#7f7f7f'), '#7f7f7f', at), [127, 127, 127, 0]);
+    near(shownAt(texture(red(gate), '#808080'), '#808080', at), [255, 0, 0, 255]);
+    // The painter was handed the page.
+    expect(asked.at(-1)).toMatchObject({ given: 'function' });
+  });
+
+  it('Underlying, split 64/192: half of the letters over 128, as at 50 % opacity', () => {
+    const gate = { blendIf: { gray: { under: range(64, 192, 255, 255) } } };
+    const at = letters('#808080');
+    near(shownAt(texture(red(gate), '#808080'), '#808080', at), [191.5, 64, 64, 127.5], 2);
+    near(shownAt(texture(red(gate), '#404040'), '#404040', at), [64, 64, 64, 0]);
+    near(shownAt(texture(red(gate), '#c0c0c0'), '#c0c0c0', at), [255, 0, 0, 255]);
+  });
+
+  it('This Layer, black at 50: hides the letters own black and keeps their white outline', () => {
+    const black = (blending) => boxOf({ color: '#000000', strokes: [{ color: '#ffffff', width: 4, opacity: 1 }], blending });
+    const plain = texture(black(undefined), '#808080');
+    const fill = pixelsWhere(plain, (p) => p[3] === 255 && p[0] === 0);
+    const outline = pixelsWhere(plain, (p) => p[3] === 255 && p[0] === 255);
+    expect(fill.length).toBeGreaterThan(300);
+    expect(outline.length).toBeGreaterThan(300);
+    const gate = { blendIf: { gray: { this: range(50, 50, 255, 255) } } };
+    const tex = texture(black(gate), '#808080');
+    near(shownAt(tex, '#808080', fill), [128, 128, 128, 0]);
+    near(shownAt(tex, '#808080', outline), [255, 255, 255, 255]);
+  });
+
+  it('a channel off keeps the page art channel where the box is', () => {
+    const at = letters('#40a0ff');
+    const tex = texture(red({ channels: { r: false } }), '#40a0ff');
+    // R from the art (64), G and B the letters' (0).
+    near(shownAt(tex, '#40a0ff', at), [64, 0, 0, 255]);
+    const g = texture(red({ channels: { g: false } }), '#40a0ff');
+    near(shownAt(g, '#40a0ff', at), [255, 160, 0, 255]);
+  });
+
+  it('at their defaults change nothing: the box paints what a 6a style (no Channels, no Blend If) did', () => {
+    const now = texture(boxOf({ color: '#ff0000', shadows: [{ x: 4, y: 4, size: 2, color: '#000000', opacity: 0.75, blend: 'multiply' }] }), '#808080');
+    expect(asked.at(-1)).toMatchObject({ given: 'object' });
+    const old = boxOf({ color: '#ff0000', shadows: [{ x: 4, y: 4, size: 2, color: '#000000', opacity: 0.75, blend: 'multiply' }] });
+    old.style.blending = { interior: false, knockout: 'none' };
+    const then = texture(old, '#808080');
+    expect([then.width, then.height]).toEqual([now.width, now.height]);
+    expect(Buffer.from(then.data).equals(Buffer.from(now.data))).toBe(true);
+  });
+
+  it('are left to Photoshop on a PSD layer: no page, nothing hidden', () => {
+    const box = red({ blendIf: { gray: { under: range(255, 255, 255, 255), this: range(0, 0, 10, 10) } }, channels: { r: false } });
+    const p = pageOf([box], { cleaned: flatArt('#000000').toDataURL('image/png') });
+    const layer = renderBoxLayer(box, W, H, null, p);
+    for (const a of asked) expect(a.given).toBe('object');
+    const d = layer.imageData.data;
+    let shown = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] === 255 && d[i + 1] === 0 && d[i + 3] === 255) shown++;
+    expect(shown).toBeGreaterThan(200);
+  });
+});
+
 describe('the export', () => {
   const pageArt = () => flatArt('#40a0ff').toDataURL('image/png');
 

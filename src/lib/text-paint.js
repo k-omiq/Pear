@@ -7,7 +7,7 @@
 // like - is answered here once, so a change lands on both at the same time.
 
 import { strokeStamps, strokeBounds, aaLevel, textureActive } from './brush.js';
-import { CANVAS_PATTERN_KINDS } from './data.js';
+import { CANVAS_PATTERN_KINDS, blendIfActive } from './data.js';
 
 // A stroke's `width` is the VISIBLE band the user asked for, but neither a
 // canvas stroke nor `-webkit-text-stroke` can draw a band: both draw a line
@@ -1245,10 +1245,24 @@ function readsPage(blend, color, opacity) {
 }
 const BEVEL_ON_PAGE = new Set(['outer', 'emboss', 'pillow', 'stroke']);
 
+/**
+ * Whether Advanced Blending's Channels or Blend If change how the box lays
+ * on the page (phase 6b). Blend If's Underlying Layer reads the page art; a
+ * channel left out shows it; and This Layer alone is painted at the box's
+ * blend onto the page too, over the art only, so that a PSD layer (no art)
+ * leaves all of them to Photoshop.
+ */
+export function blendingRestricts(blending) {
+  const ch = blending?.channels;
+  if (ch && (ch.r === false || ch.g === false || ch.b === false)) return true;
+  return blendIfActive(blending?.blendIf);
+}
+
 /** Whether the engine blends anything of the box with the page under it. */
 export function usesBackdrop(style) {
   if (!style) return false;
   if (!PAGE_FREE.has(style.blendMode ?? 'normal')) return true;
+  if (blendingRestricts(style.blending)) return true;
   if (boxShadows(style).some((sh) => readsPage(sh.blend, sh.color, sh.opacity))) return true;
   const og = style.outerGlow;
   // A gradient glow's colours are its stops': never taken for a no-op.

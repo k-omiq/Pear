@@ -72,6 +72,12 @@ const fxGradient = (desc) => shared('gradient', object(desc, {
     transparency: boolean('random alpha too'),
   }),
 }));
+// One Blend If channel: its This Layer and Underlying Layer sliders, printed
+// whole once (`shared`).
+const blendIfPair = () => shared('blendRange', object('sliders', {
+  this: array('This Layer, by box colour: [black lo, black hi, white lo, white hi] rising', integer('level', 0, 255), { minItems: 4, maxItems: 4 }),
+  under: array('Underlying, by page art', integer('level', 0, 255), { minItems: 4, maxItems: 4 }),
+}));
 // An Outer or Inner Glow's fields; `spread` is Choke on an inner one.
 // A bevel's Highlight or Shadow: its mode, colour and opacity.
 const bevelShade = () => ({
@@ -267,6 +273,8 @@ export const STYLE_SCHEMA = {
   blending: object('Photoshop advanced blending', {
     interior: boolean('Fill also fades overlays, satin, inner glow'),
     knockout: choice('stored and in the PSD, not painted', KNOCKOUT_MODES),
+    channels: object('false keeps the page art channel (Rust)', { r: boolean('R'), g: boolean('G'), b: boolean('B') }),
+    blendIf: object('Blend If (Rust)', Object.fromEntries(['gray', 'red', 'green', 'blue'].map((c) => [c, blendIfPair()]))),
   }),
   blur: number('whole-text blur px', 0),
   motionBlur: object('directional smear', {
