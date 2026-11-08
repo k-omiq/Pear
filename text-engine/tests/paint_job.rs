@@ -61,6 +61,7 @@ fn request(job: Job, face: Face) -> Request {
         weight: 0.0,
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
+        ink: None,
     }
 }
 

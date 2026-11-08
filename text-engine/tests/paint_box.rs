@@ -66,6 +66,7 @@ fn request(font: FontId) -> Request {
         weight: 0.0,
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
+        ink: None,
     }
 }
 
@@ -725,7 +726,7 @@ fn gradient() -> Gradient {
     }
 }
 
-fn wire(font: u32) -> (Vec<u8>, [usize; 10]) {
+fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
     u(&mut b, BOX_WIRE_VERSION);
@@ -890,6 +891,8 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 10]) {
     u(&mut b, 2);
     u(&mut b, 1);
     b.extend_from_slice(&[0, 0, 255, 255]);
+    let ink_at = b.len();
+    u(&mut b, 0); // no ink (v12)
     u(&mut b, 0); // no page under them
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
@@ -907,6 +910,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 10]) {
             bevel_at,
             blending_at,
             jitter_at,
+            ink_at,
         ],
     )
 }
@@ -1102,14 +1106,14 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 11));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 12));
 }
 
 #[test]
 fn a_damaged_box_is_refused_not_guessed_at() {
     let (
         good,
-        [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at, blending_at, jitter_at],
+        [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at, blending_at, jitter_at, ink_at],
     ) = wire(1);
     assert!(decode_box(&good).is_ok());
     for len in 0..good.len() {
@@ -1245,6 +1249,9 @@ fn a_damaged_box_is_refused_not_guessed_at() {
         Some(Error::BadSpec)
     );
     assert_eq!(with_q(ranges_at + 28, [9, 9, 9, 9]), None);
+    // An ink record flag that is not 0 or 1 (v12); 1 with no record after it.
+    assert_eq!(with_u(ink_at, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(ink_at, 1), Some(Error::BadSpec));
 }
 
 #[test]
@@ -1269,6 +1276,8 @@ fn no_blending(b: &mut Vec<u8>) {
     u(b, 0);
     u(b, 0);
     u(b, 0);
+    u(b, 0);
+    // No ink (v12), no page.
     u(b, 0);
     u(b, 0);
 }

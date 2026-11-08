@@ -51,7 +51,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 11;
+pub const BOX_WIRE_VERSION: u32 = 12;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -784,6 +784,41 @@ impl<'a> Reader<'a> {
 ///     if flags & 16: f64 texture depth (-10 to 10), a paint record that is
 ///                    a fill (kind 2): the pattern
 ///     The anti-aliased flags are carried, not painted.
+/// u32 ink (v12)                0 none, or 1 and the box's brush ink:
+///     f64 ox, oy               the box's corner in job units: the strokes
+///                              are stated from it
+///     u32 n tips, then per tip: u32 length, UTF-8 key (at most 4096 tips,
+///                              keys of at most 1024 bytes; empty while
+///                              every stroke is round)
+///     u32 n strokes (at most 4096), then per stroke:
+///       u32 flags              1 ribbon, 2 follow direction, 4 darken tips,
+///                              8 Compare density, 16 watercolour edge,
+///                              32 texture, 64 texture stress; bits 8-9
+///                              anti-aliasing 0 to 3, 10-11 flip x and
+///                              12-13 flip y (0 off, 1 on, 2 random), 14-15
+///                              tip order (0 repeat, 1 reverse, 2 once, 3
+///                              random); 16 taper in, 17 taper in in
+///                              percent, 18 taper out, 19 taper out in
+///                              percent
+///       rgba colour            opaque
+///       f64 opacity (0 to 1), size (0.5 to 2000), spacing (1 to 200),
+///         hardness (0 to 100), angle (degrees), angle jitter (0 to 100),
+///         flatness (0.01 to 1), corners (0 to 180 degrees)
+///       f64 taper in length (0 to 500), ratio (0 to 100), taper out
+///         length, ratio
+///       f64 watercolour width (1 to 20), power, darkness (0 to 1 each),
+///         blur (0 to 20)
+///       f64 texture density (0 to 1), scale (10 to 1000)
+///       f64 seed               as stored; cut to 32 bits as JS's `>>> 0`
+///       u32 tip                an index into the tips, 0xffffffff round
+///       u32 n, then n tip indices: the tip cycle (0xffffffff not in hand)
+///       u32 n points (at least 1; at most 2^20 over every stroke),
+///       u32 stride (3 or 5), then n * stride f64: x, y (within 65536),
+///         the width, opacity and thickness factors (0 to 1 each)
+///     The lengths are page px from the box's corner, which the job's
+///     transform carries like everything else. The box's outlines go round
+///     the ink and its shadows are thrown from the letters and the ink as
+///     one shape.
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow,
 ///                              straight RGBA8 read as opaque: the page art
 ///                              under each surface pixel
@@ -812,7 +847,10 @@ impl<'a> Reader<'a> {
 /// outside 0 to 10, an altitude outside 0 to 90, a bevel texture that is not
 /// a fill, blending flags past 1, a channel mask past 7, a Blend If that is
 /// not 0 or 1 or with a range out of order (black low, black high, white
-/// low, white high must not fall), and anything a glyph job is refused for.
+/// low, white high must not fall), ink past its limits above (a stroke's
+/// number out of its range, a flag that is not one, a tip index past the
+/// tips, a stride that is not 3 or 5), and anything a glyph job is refused
+/// for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != BOX_MAGIC || r.u32()? != BOX_WIRE_VERSION {
@@ -876,6 +914,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     }
     let n = r.count(usize::MAX, 20)?;
     let effects = budget::collect((0..n).map(|_| r.effect()))?;
+    let ink = super::ink::read(bytes, &mut r.at)?;
     let backdrop = match r.u32()? {
         0 => None,
         1 => {
@@ -888,10 +927,11 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         _ => return Err(Error::BadSpec),
     };
     let len = r.u32()? as usize;
-    let request = decode(r.take(len)?)?;
+    let mut request = decode(r.take(len)?)?;
     if r.at != bytes.len() {
         return Err(Error::BadSpec);
     }
+    request.ink = ink;
     Ok(BoxRequest {
         width,
         height,
@@ -1311,6 +1351,13 @@ fn paint_glyphs(
                 carried,
                 &place,
             )?;
+            // No fill hides the letters' fill and not the ink: it stays
+            // drawn, under the effects laid on it.
+            if hollow {
+                if let Some(c) = request.request.ink.as_ref().and_then(|i| i.content()) {
+                    out.push(c);
+                }
+            }
             out.push(r);
         } else if special {
             whole_fill = Some(r);
@@ -1324,7 +1371,16 @@ fn paint_glyphs(
     // The outlines, outside the letters.
     if !request.request.job.bands.is_empty() || request.request.job.effects.negative.is_some() {
         request.request.job.no_fill = true;
+        // And round the ink, with the ink cut out of them: the fill pass
+        // laid it.
+        let rims_of = |request: &mut BoxRequest, on: bool| {
+            if let Some(ink) = request.request.ink.as_mut() {
+                ink.rims = on;
+            }
+        };
+        rims_of(request, true);
         let rims = paint_job_with(engine, &request.request, rasterizer);
+        rims_of(request, false);
         request.request.job.no_fill = hollow;
         if let Some(r) = rims? {
             out.push(r);
@@ -1446,6 +1502,20 @@ fn paint(
         y1: height as i32,
     };
     let transform = request.request.transform;
+    // The brush ink, laid once for every pass below, with room round it for
+    // the widest outline and the most a shadow grows it.
+    if request.request.ink.is_some() {
+        let outer = request
+            .request
+            .job
+            .bands
+            .first()
+            .map_or(0.0, |b| (b.line / 2.0).max(0.0));
+        let grow = request.shadows.iter().map(|s| s.grow).fold(0.0, f64::max);
+        if let Some(ink) = request.request.ink.as_mut() {
+            ink.prepare(&transform, surface, outer + grow, rasterizer)?;
+        }
+    }
     // Lengths are carried by the scale that keeps areas, vectors by the
     // transform's linear part.
     let scale = transform.det().abs().sqrt();

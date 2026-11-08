@@ -394,7 +394,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 11
+export const BOX_WIRE_VERSION = 12
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
@@ -659,6 +659,107 @@ function effectRecord(fx, tileIndex) {
   f64(fx.jitter ?? 0)
 }
 
+// The box's brush ink (v12, `decode_box`'s ink record): the strokes as
+// `normalizeInkStroke` (src/lib/data.js) keeps them, each number held to the
+// range the engine takes. The tip table is empty while only round strokes
+// are sent: every stroke and every cycle entry is the round dab.
+const ROUND_TIP = 0xffffffff
+const INK_FLIP = { off: 0, on: 1, random: 2 }
+const INK_ORDER = { repeat: 0, reverse: 1, once: 2, random: 3 }
+const MAX_INK_COORD = 65536
+const MAX_SEED = 9007199254740991
+const held = (v, d, lo, hi) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d
+}
+// `aaLevel` (src/lib/brush.js): a switch is the two ends of the grades.
+function inkAA(v) {
+  if (v === false) return 0
+  if (v === true || v === undefined || v === null) return 3
+  const n = Math.round(Number(v))
+  return Number.isFinite(n) ? Math.min(3, Math.max(0, n)) : 3
+}
+const factor = (v) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1)
+
+function inkStroke(k, pts) {
+  const tex = k.texture ?? {}
+  const tin = k.taperIn ?? {}
+  const tout = k.taperOut ?? {}
+  const cycle = Array.isArray(k.tips) && k.tips.length > 1 ? k.tips.length : 0
+  u32(
+    (k.ribbon === true ? 1 : 0) |
+      (k.followDir === true ? 2 : 0) |
+      (k.darkenTips === true ? 4 : 0) |
+      (k.blend === 'density' ? 8 : 0) |
+      (k.waterEdge === true ? 16 : 0) |
+      (tex.on === true ? 32 : 0) |
+      (tex.stress === true ? 64 : 0) |
+      (inkAA(k.antialias) << 8) |
+      ((INK_FLIP[k.flipX] ?? 0) << 10) |
+      ((INK_FLIP[k.flipY] ?? 0) << 12) |
+      ((cycle ? (INK_ORDER[k.tipOrder] ?? 0) : 0) << 14) |
+      (tin.on ? 1 << 16 : 0) |
+      (tin.mode === 'pct' ? 1 << 17 : 0) |
+      (tout.on ? 1 << 18 : 0) |
+      (tout.mode === 'pct' ? 1 << 19 : 0),
+  )
+  rgba(k.color ?? '#000000')
+  f64(held(k.opacity, 1, 0, 1))
+  f64(held(k.size, 24, 0.5, 2000))
+  f64(held(k.spacing, 10, 1, 200))
+  f64(held(k.hardness, 100, 0, 100))
+  f64(held(k.angle, 0, -36000, 36000))
+  f64(held(k.angleJitter, 0, 0, 100))
+  f64(held(k.flatness, 1, 0.01, 1))
+  f64(held(k.corners, 0, 0, 180))
+  f64(held(tin.len, 20, 0, 500))
+  f64(held(tin.ratio, 60, 0, 100))
+  f64(held(tout.len, 20, 0, 500))
+  f64(held(tout.ratio, 60, 0, 100))
+  f64(held(k.waterEdgeWidth, 4, 1, 20))
+  f64(held(k.waterEdgePower, 0.5, 0, 1))
+  f64(held(k.waterEdgeDark, 0, 0, 1))
+  f64(held(k.waterEdgeBlur, 0, 0, 20))
+  f64(held(tex.density, 0.5, 0, 1))
+  f64(held(tex.scale, 100, 10, 1000))
+  f64(held(k.seed, 1, -MAX_SEED, MAX_SEED))
+  u32(ROUND_TIP)
+  u32(cycle)
+  for (let i = 0; i < cycle; i++) u32(ROUND_TIP)
+  const stride = pts.some((p) => p.length > 3) ? 5 : 3
+  u32(pts.length)
+  u32(stride)
+  for (const p of pts) {
+    f64(held(p[0], 0, -MAX_INK_COORD, MAX_INK_COORD))
+    f64(held(p[1], 0, -MAX_INK_COORD, MAX_INK_COORD))
+    f64(factor(p[2]))
+    if (stride === 5) {
+      f64(factor(p[3]))
+      f64(factor(p[4]))
+    }
+  }
+}
+
+function inkRecord(ink) {
+  // A point that is not one is dropped, as the normaliser drops it, and a
+  // stroke left with none is no stroke.
+  const strokes = []
+  for (const k of ink?.strokes ?? []) {
+    const pts = (Array.isArray(k?.pts) ? k.pts : []).filter((p) => Array.isArray(p) && Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
+    if (pts.length) strokes.push([k, pts])
+  }
+  if (!strokes.length) {
+    u32(0)
+    return
+  }
+  u32(1)
+  f64(held(ink.ox, 0, -MAX_INK_COORD, MAX_INK_COORD))
+  f64(held(ink.oy, 0, -MAX_INK_COORD, MAX_INK_COORD))
+  u32(0)
+  u32(strokes.length)
+  for (const [k, pts] of strokes) inkStroke(k, pts)
+}
+
 // One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
 // does not know, or with nothing to draw, is not written (`drawClipShapes`
 // draws nothing for it either).
@@ -755,13 +856,17 @@ function clipShape(sh) {
  *   Texture element. Unset fields take Photoshop's defaults: inner, smooth, 100 %,
  *   up, size 5, soften 0, 120 and 30 degrees, Linear, Screen white and Multiply
  *   black at 75 %
+ * @param {{ox: number, oy: number, strokes: object[]} | null} [request.ink] the box's
+ *   brush ink: its strokes as `normalizeInkStroke` keeps them, stated from the box's
+ *   corner (ox, oy) in the job's units. Round dabs only: a stroke's imported tip is
+ *   painted round
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
  *   the surface, straight RGBA8 of `width * height`, read as opaque: what a blend mode
  *   blends with
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, channels = null, blendIf = null, effects = [], backdrop = null } = request
+  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -808,6 +913,9 @@ export function encodeBox(request) {
   const collector = tileCollector(request.tiles)
   u32(effects.length)
   for (const fx of effects) effectRecord(fx, collector.index)
+  // The brush ink (v12): 0 none, or 1 and its record.
+  if (ink) inkRecord(ink)
+  else u32(0)
   if (backdrop) {
     if (backdrop.length !== width * height * 4) throw new Error('mt-text: a backdrop must be the surface, RGBA')
     u32(1)
@@ -940,6 +1048,14 @@ export function patternSwatch(engine, { width, height, fill: f, tiles }) {
 export function paintsBoxes(engine) {
   const ex = engine?.exports
   return typeof ex?.mt_paint_box === 'function' && ex.mt_paint_box_wire_version?.() === BOX_WIRE_VERSION
+}
+
+/**
+ * Whether this wasm paints a box's brush ink in its box job, round dabs
+ * (box wire v12 and on): one that paints box jobs of this loader's version.
+ */
+export function paintsInk(engine) {
+  return paintsBoxes(engine)
 }
 
 /**

@@ -75,6 +75,7 @@ fn sheet(
             weight: 0.0,
             transform,
             tiles: Vec::new(),
+            ink: None,
         },
     }
 }
