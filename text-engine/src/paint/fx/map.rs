@@ -1,12 +1,13 @@
-//! An effect's matte as floats, and the maps the glows and the inner shadow
-//! are built from.
+//! An effect's matte as floats, and the maps the glows, the inner shadow and
+//! the satin are built from.
 //!
 //! A map is `w * h` coverages from 0 to 1, row by row, over the same pixels
 //! as the surface it is laid on. The letters' shape goes in; what comes out
 //! is how much of the effect's colour each pixel takes.
 //!
 //! Ported from PhotoCraft, `crates/compose/src/effects.rs` (`Map`),
-//! `effects/paint.rs` (`shadow_map`, `glow_map`, `noise`, `ranged_lut`) and
+//! `effects/paint.rs` (`shadow_map`, `glow_map`, `noise`, `ranged_lut`),
+//! `effects/bevel.rs` (`satin_map`) and
 //! `effects/distance.rs` (`dt1`, `edt_nearest`, `dist_outside`,
 //! `dist_inside`, the chamfer `dist_*_by`, `local_coverage`,
 //! `STROKE_CHAMFER_MAX`), Copyright (c) 2026 ArtCraft Team and the PhotoCraft
@@ -413,6 +414,44 @@ pub(crate) fn inner_shadow(shape: &Map, dx: f32, dy: f32, s: &Soft) -> Map {
     m
 }
 
+/// Satin's map over `shape`: two copies of the shape moved `(dx, dy)` and
+/// `(-dx, -dy)` device pixels, each softened by `size`, and how far apart
+/// they are, `|a - b|`; inverted when `invert`, then through the contour's
+/// Satin table (`Lut::satin`), then kept to the shape. The order matters:
+/// the contour runs on the inverted value. `contour` `None` is Linear. The
+/// offsets come in whole and at least a pixel long (see `effects::satin`).
+/// Ported from PhotoCraft `crates/compose/src/effects/bevel.rs`
+/// `satin_map`; the two box passes are fitted there to 0.2 % mean error on
+/// psd-tools' layer_effects.
+pub(crate) fn satin(
+    shape: &Map,
+    dx: f32,
+    dy: f32,
+    size: f32,
+    invert: bool,
+    contour: Option<&Lut>,
+) -> Map {
+    let mut a = shape.shifted(dx, dy, 0.0);
+    let mut b = shape.shifted(-dx, -dy, 0.0);
+    blur(&mut a, size);
+    blur(&mut b, size);
+    let mut m = Map {
+        w: shape.w,
+        h: shape.h,
+        v: a.v.iter().zip(&b.v).map(|(x, y)| (x - y).abs()).collect(),
+    };
+    if invert {
+        m = m.map(|v| 1.0 - v);
+    }
+    if let Some(l) = contour.map(Lut::satin).filter(|l| !l.is_identity()) {
+        m = m.map(|v| l.at(v));
+    }
+    for (v, a) in m.v.iter_mut().zip(&shape.v) {
+        *v *= a;
+    }
+    m
+}
+
 /// Softer or Precise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Technique {
@@ -582,6 +621,49 @@ mod tests {
         // Strong at the edge, nothing at the middle.
         assert!(edge.v[30 * 60 + 30 - 14] > 0.6);
         assert!(edge.v[30 * 60 + 30] < 0.01);
+    }
+
+    /// A square of `n` with a 5 px empty border (PhotoCraft's `square_shape`).
+    fn square(n: usize) -> Map {
+        let mut m = Map::new(n, n, 0.0);
+        for y in 5..n - 5 {
+            for x in 5..n - 5 {
+                m.v[y * n + x] = 1.0;
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn a_satin_at_distance_zero_matches_photoshop() {
+        // PhotoCraft's `satin_at_distance_zero_matches_photoshop`
+        // (`crates/compose/src/effects/tests.rs`): Photoshop 27.11, Satin
+        // black 100 %, angle 90, Linear, distance 0 (drawn as 1 px), size 5
+        // over a #808080 square: the rows from the top edge read 82, 102,
+        // 123, 128. At 90 degrees the 1 px throw is (0, 1).
+        let m = satin(&square(60), 0.0, 1.0, 5.0, false, None);
+        for (row, gray) in [(5, 82.0), (7, 102.0), (9, 123.0), (11, 128.0), (30, 128.0)] {
+            let want = 1.0 - gray / 128.0;
+            let got = m.v[row * 60 + 30];
+            assert!((got - want).abs() < 0.02, "row {row}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn a_satin_is_kept_to_the_shape_and_inverts() {
+        let shape = square(60);
+        let m = satin(&shape, 3.0, 2.0, 4.0, false, None);
+        let inv = satin(&shape, 3.0, 2.0, 4.0, true, None);
+        for (i, a) in shape.v.iter().enumerate() {
+            if *a == 0.0 {
+                assert_eq!(m.v[i], 0.0);
+                assert_eq!(inv.v[i], 0.0);
+            } else {
+                assert!((m.v[i] + inv.v[i] - 1.0).abs() < 1e-5);
+            }
+        }
+        // The two copies cancel in the middle.
+        assert!(m.v[30 * 60 + 30] < 1e-5);
     }
 
     #[test]

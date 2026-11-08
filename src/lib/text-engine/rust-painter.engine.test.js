@@ -304,6 +304,25 @@ describe('the Rust engine behind the glyph-painter seam', () => {
     expect(glow.x0).toBeLessThan(plain.x0 - 4);
   });
 
+  it('paints a satin inside the letters, along its own angle', () => {
+    const painter = createRustGlyphPainter(rust);
+    const box = (effects) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects });
+      return ink(canvas);
+    };
+    const plain = box([]);
+    const satin = { kind: 'satin', color: '#ff0000', opacity: 1, blend: 'normal', angle: 90, distance: 2, size: 0, contour: { preset: 'linear' }, invert: false };
+    // Thrown up and down: the letters' top edge (the first solid pixel) is red.
+    const red = box([satin]);
+    expect([red.x0, red.y0, red.x1, red.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
+    expect(red.solid).toEqual([255, 0, 0]);
+    // Inverted, the edge keeps the letters' own black.
+    expect(box([{ ...satin, invert: true }]).solid).toEqual(plain.solid);
+  });
+
   it('paints a noise gradient the colours the native build bakes, and a Shape Burst', () => {
     const painter = createRustGlyphPainter(rust);
     const box = (effects) => {

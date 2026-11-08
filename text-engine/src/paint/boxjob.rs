@@ -30,7 +30,7 @@ use super::blur::{self, Moved, Surface};
 use super::fx::blend::{self, Backdrop, Blend};
 use super::fx::contour::{self, Curve, Lut};
 use super::fx::effects::{
-    self, Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Place, Position, Stroke,
+    self, Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Place, Position, Satin, Stroke,
     Technique,
 };
 use super::fx::gradient::{Gradient, Style};
@@ -50,7 +50,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 6;
+pub const BOX_WIRE_VERSION: u32 = 7;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -547,6 +547,31 @@ impl<'a> Reader<'a> {
                     _ => return Err(Error::BadSpec),
                 }
             }
+            8 => {
+                let color = self.rgba()?;
+                let opacity = self.upto(1.0)?;
+                let blend = Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+                let angle = self.within(MAX_THROW)?;
+                let distance = self.upto(MAX_THROW)?;
+                let size = self.upto(MAX_BLUR)?;
+                let flags = self.u32()?;
+                if flags & !3 != 0 {
+                    return Err(Error::BadSpec);
+                }
+                // Anti-aliased (2) is only carried: PhotoCraft paints none
+                // and matches Photoshop without it (`contour.rs`).
+                let contour = self.contour()?;
+                Effect::Satin(Satin {
+                    color,
+                    opacity,
+                    blend,
+                    angle,
+                    distance,
+                    size,
+                    invert: flags & 1 != 0,
+                    contour,
+                })
+            }
             _ => return Err(Error::BadSpec),
         })
     }
@@ -636,6 +661,9 @@ impl<'a> Reader<'a> {
 ///     f64 opacity, u32 blend, u32 seed, a paint record
 ///   6 gradient overlay: f64 opacity, u32 blend, a paint record (a gradient)
 ///   7 pattern overlay: f64 opacity, u32 blend, a paint record (a fill)
+///   8 satin (v7): rgba colour, f64 opacity, u32 blend, f64 angle (degrees,
+///     the box's own), f64 distance, f64 size, u32 flags (1 invert, 2
+///     contour anti-aliased), u32 contour (as a shadow's)
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow
 /// u32 job byte length, then a glyph job in its own wire form
 ///

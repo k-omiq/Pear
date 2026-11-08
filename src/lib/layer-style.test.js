@@ -13,8 +13,11 @@ import {
   NOISE_MODELS,
   newShadow,
   newTypesetting,
+  normalizeSatin,
+  normalizeStyle,
 } from './data.js';
-import { shadowSigma, shadowOffset, resolveShadow, setGlobalLight } from './text-paint.js';
+import { shadowSigma, shadowOffset, resolveShadow, setGlobalLight, boxEffects } from './text-paint.js';
+import { rescaleStyle } from './store.svelte.js';
 
 // ===========================================================================
 // The layer style's data: what a shadow, a mode and the light are
@@ -120,7 +123,7 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(6);
+    expect(BOX_WIRE_VERSION).toBe(7);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header, the blending options
@@ -133,5 +136,49 @@ describe('an effect gradient of Gradient Type Noise', () => {
     expect(dv(noisy).getUint32(typeAt + 4, true)).toBe(42);
     expect(dv(noisy).getUint32(typeAt + 16, true)).toBe(2);
     expect(dv(noisy).getUint32(typeAt + 20 + 48, true)).toBe(3);
+  });
+});
+
+describe('a satin', () => {
+  it('starts as Photoshop adds one, and keeps every field in range', () => {
+    expect(normalizeSatin(undefined)).toEqual({ on: false, blend: 'multiply', color: '#000000', opacity: 0.5, angle: 19, distance: 11, size: 14, contour: { preset: 'linear', aa: true }, invert: true });
+    const s = normalizeSatin({ on: true, blend: 'glow', color: 'red', opacity: 2, angle: 200, distance: -3, size: 900, contour: { preset: 'cone' }, invert: false });
+    expect(s).toEqual({ on: true, blend: 'multiply', color: '#000000', opacity: 1, angle: -160, distance: 0, size: 250, contour: { preset: 'cone', aa: false }, invert: false });
+    expect(normalizeSatin({ distance: 400 }).distance).toBe(250);
+    // A saved style keeps it.
+    expect(normalizeStyle({ satin: { on: true, angle: 45 } }).satin).toMatchObject({ on: true, angle: 45, invert: true });
+  });
+
+  it('is painted by its own angle, never the chapter light, and only when on', () => {
+    setGlobalLight({ angle: 90 });
+    const satin = normalizeSatin({ on: true, angle: 30 });
+    expect(boxEffects({ satin })).toEqual([{ kind: 'satin', color: '#000000', opacity: 0.5, blend: 'multiply', angle: 30, distance: 11, size: 14, contour: { preset: 'linear', aa: true }, invert: true }]);
+    expect(boxEffects({ satin: { ...satin, on: false } })).toEqual([]);
+    expect(boxEffects({ satin: { ...satin, opacity: 0 } })).toEqual([]);
+    setGlobalLight({ angle: 120 });
+  });
+
+  it('rescales its Distance and Size with the page, not its angle', () => {
+    const out = rescaleStyle({ satin: normalizeSatin({ on: true, angle: 30, distance: 10, size: 4 }) }, 2, 2);
+    expect(out.satin).toMatchObject({ angle: 30, distance: 20, size: 8 });
+  });
+
+  // Wire v7: kind 8, then colour, opacity, mode, angle, distance, size,
+  // flags (1 invert, 2 anti-aliased) and the contour (`decode_box`).
+  it('goes on the wire as kind 8', () => {
+    const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
+    const fx = { kind: 'satin', color: '#ff0000', opacity: 0.5, blend: 'multiply', angle: 19, distance: 11, size: 14, contour: { preset: 'gaussian', aa: true }, invert: true };
+    const b = dv(encodeBox({ ...job, width: 4, height: 4, effects: [fx] }).slice());
+    const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4;
+    expect(b.getUint32(head, true)).toBe(8);
+    expect([0, 1, 2, 3].map((k) => b.getUint8(head + 4 + k))).toEqual([255, 0, 0, 255]);
+    expect(b.getFloat64(head + 8, true)).toBe(0.5);
+    expect(b.getUint32(head + 16, true)).toBe(BLEND_MODE_IDS.multiply);
+    expect([b.getFloat64(head + 20, true), b.getFloat64(head + 28, true), b.getFloat64(head + 36, true)]).toEqual([19, 11, 14]);
+    expect(b.getUint32(head + 44, true)).toBe(3);
+    expect(b.getUint32(head + 48, true)).toBe(CONTOUR_IDS.gaussian);
+    const plain = dv(encodeBox({ ...job, width: 4, height: 4, effects: [{ ...fx, invert: false, contour: { preset: 'linear' } }] }).slice());
+    expect(plain.getUint32(head + 44, true)).toBe(0);
   });
 });
