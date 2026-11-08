@@ -613,6 +613,28 @@ describe('textLayerFor', () => {
     expect(off.effects).toBeUndefined();
   });
 
+  it('writes the Photoshop strokes after the outlines and the gradient overlays over the fill gradient', () => {
+    const g = { style: 'radial', angle: 30, scale: 0.5, reverse: true, offset: [0.1, -0.2], stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 0.5 }] };
+    const style = {
+      ...baseStyle,
+      strokes: [{ color: '#ffffff', width: 4, opacity: 1 }],
+      strokeEffects: [{ size: 2, position: 'center', blend: 'multiply', opacity: 0.5, fill: 'gradient', color: '#000000', gradient: g }],
+      gradientOverlays: [{ blend: 'screen', opacity: 0.7, gradient: g }],
+    };
+    const fx = textLayerFor(page, box(style), rendered).effects;
+    expect(fx.stroke).toHaveLength(2);
+    expect(fx.stroke[0].position).toBe('outside');
+    expect(fx.stroke[1]).toMatchObject({ size: { units: 'Pixels', value: 2 }, position: 'center', fillType: 'gradient', blendMode: 'multiply', opacity: 0.5 });
+    expect(fx.stroke[1].gradient).toMatchObject({ style: 'radial', angle: 30, scale: 0.5, reverse: true, offset: { x: 0.1, y: -0.2 } });
+    expect(fx.gradientOverlay).toHaveLength(1);
+    expect(fx.gradientOverlay[0]).toMatchObject({ type: 'radial', blendMode: 'screen', opacity: 0.7, align: true });
+    expect(fx.gradientOverlay[0].gradient.opacityStops[1]).toMatchObject({ opacity: 0.5, location: 1 });
+    // A pattern overlay or a pattern stroke has no pattern table to name: pixels.
+    expect(isRasterOnly({ ...style, patternOverlay: { on: true } })).toBe(true);
+    expect(isRasterOnly({ ...style, strokeEffects: [{ ...style.strokeEffects[0], fill: 'pattern' }] })).toBe(true);
+    expect(isRasterOnly(style)).toBe(false);
+  });
+
   it('leaves raster-only layers (curve, roughen, flip) completely free of effects', () => {
     const styledWithEffects = {
       ...baseStyle,

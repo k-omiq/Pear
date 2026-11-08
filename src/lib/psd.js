@@ -464,6 +464,10 @@ export function isRasterOnly(style) {
     (s.blur ?? 0) > 0 ||
     (mb?.on && ((mb.x ?? 0) !== 0 || (mb.y ?? 0) !== 0)) ||
     s.pattern?.on ||
+    // A Pattern Overlay or a pattern Stroke takes its pattern from the
+    // document's pattern table too.
+    s.patternOverlay?.on ||
+    (s.strokeEffects ?? []).some((k) => k.fill === 'pattern') ||
     (s.gradient?.on && !gradientOverlayable(s.gradient)) ||
     // No fill: a type layer always has a fill colour, and its own see-through
     // setting (the layer's fill opacity) is not one this writer states.
@@ -785,12 +789,48 @@ export function textLayerFor(p, box, rendered) {
   if ((s.colorOverlays ?? []).length) {
     effects.solidFill = s.colorOverlays.map((o) => ({ enabled: true, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
   }
+  // An effect gradient is Photoshop's own (`normalizeFxGradient`): its style,
+  // angle, scale, reverse and offset go in as they are, aligned with the layer.
+  const fxGradient = (g) => ({
+    name: 'Custom',
+    type: 'solid',
+    colorStops: g.stops.map((st) => ({ color: hexToRgb(st.color), location: st.pos, midpoint: 50 })),
+    opacityStops: g.stops.map((st) => ({ opacity: st.opacity ?? 1, location: st.pos, midpoint: 50 })),
+  });
+  const fxPlacement = (g) => ({ angle: g.angle, scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } });
+  const gradientOverlays = (s.gradientOverlays ?? []).map((o) => ({
+    enabled: true,
+    blendMode: psdBlend(o.blend),
+    opacity: o.opacity ?? 1,
+    type: o.gradient.style,
+    ...fxPlacement(o.gradient),
+    gradient: fxGradient(o.gradient),
+  }));
+  // The Photoshop strokes: the outlines are drawn over them, so in
+  // Photoshop's list (first on top) they come after the outlines. A pattern
+  // stroke sent the box down the raster branch (`isRasterOnly`).
+  const strokeFx = (s.strokeEffects ?? [])
+    .filter((k) => k.size > 0 && k.fill !== 'pattern')
+    .map((k) => ({
+      enabled: true,
+      size: { units: 'Pixels', value: k.size },
+      position: k.position,
+      fillType: k.fill === 'gradient' ? 'gradient' : 'color',
+      blendMode: psdBlend(k.blend),
+      opacity: k.opacity ?? 1,
+      color: hexToRgb(k.color),
+      ...(k.fill === 'gradient' ? { gradient: { ...fxGradient(k.gradient), style: k.gradient.style, ...fxPlacement(k.gradient) } } : null),
+    }));
+  if (strokeFx.length) effects.stroke = [...(effects.stroke ?? []), ...strokeFx];
   // A whole-block gradient is the one fill Photoshop can state itself. Its angle
   // is the direction the gradient travels, counter-clockwise from the +x axis
   // with y pointing UP, while the style stores CSS degrees clockwise from "up" -
   // so 90 minus it. Stop positions are 0..1 either way.
+  if (gradientOverlays.length) effects.gradientOverlay = gradientOverlays;
   if (s.gradient?.on && gradientOverlayable(s.gradient)) {
+    // The fill's gradient lies under the Gradient Overlays: last in the list.
     effects.gradientOverlay = [
+      ...gradientOverlays,
       {
         enabled: true,
         opacity: 1,

@@ -277,6 +277,33 @@ describe('the Rust engine behind the glyph-painter seam', () => {
     expect([inner.x0, inner.y0, inner.x1, inner.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
   });
 
+  it('paints the Photoshop strokes, a gradient overlay, a pattern overlay and a gradient glow', () => {
+    const painter = createRustGlyphPainter(rust);
+    const box = (effects) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects });
+      return ink(canvas);
+    };
+    const plain = box([]);
+    const g = { style: 'linear', angle: 0, scale: 1, reverse: false, offset: [0, 0], stops: [{ color: '#00ff00', pos: 0, opacity: 1 }, { color: '#00ff00', pos: 1, opacity: 1 }] };
+    // An outside stroke reaches past the letters by its size; an inside one does not.
+    const out = box([{ kind: 'stroke', size: 4, position: 'outside', opacity: 1, blend: 'normal', paint: { kind: 'color', color: '#ff0000' } }]);
+    expect(out.x0).toBeLessThanOrEqual(plain.x0 - 6);
+    const inside = box([{ kind: 'stroke', size: 2, position: 'inside', opacity: 1, blend: 'normal', paint: { kind: 'gradient', gradient: g } }]);
+    expect([inside.x0, inside.y0, inside.x1, inside.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
+    // A gradient overlay of one colour recolours the letters with it.
+    const green = box([{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient: g }]);
+    expect(green.solid).toEqual([0, 255, 0]);
+    // A pattern overlay takes a glyph job's fill record.
+    const solid = box([{ kind: 'patternOverlay', opacity: 1, blend: 'normal', fill: { kind: 'solid', color: '#0000ff' } }]);
+    expect(solid.solid).toEqual([0, 0, 255]);
+    // A glow with a gradient paints as one with a colour reaches.
+    const glow = box([{ kind: 'outerGlow', color: '#ff0000', gradient: g, opacity: 1, blend: 'normal', technique: 'softer', size: 6, spread: 0.5, range: 0.5, noise: 0 }]);
+    expect(glow.x0).toBeLessThan(plain.x0 - 4);
+  });
+
   it('paints a box with as many shadows as its style has', () => {
     // The app counts no shadows, and the canvas passes paint every one: the
     // box job once refused a 17th, and the box was not painted at all.

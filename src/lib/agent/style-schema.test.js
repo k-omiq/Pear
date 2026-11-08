@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { defaultStyle, normalizeStyle, normalizeStroke, normalizeShadow, normalizeInnerShadow, normalizeOverlay, normalizeSfx } from '../data.js';
+import { defaultStyle, normalizeStyle, normalizeStroke, normalizeShadow, normalizeInnerShadow, normalizeOverlay, normalizeSfx, newGradientOverlay, newStrokeEffect } from '../data.js';
 import { STYLE_SCHEMA, validateStylePatch, styleSchemaText } from './style-schema.js';
 import { applyStylePatch } from '../style-patch.js';
 
@@ -53,7 +53,9 @@ const sfxPath = { a: [0, 0], b: [1, 0], bend: 0 };
 // A drawable item for each list whose default is empty.
 const innerShadow = { x: 2, y: 3, size: 4, color: '#000', opacity: 0.75, choke: 0.1 };
 const overlay = { color: '#f00', opacity: 1, blend: 'normal' };
-const EMPTY_ITEMS = { shadows: shadow, innerShadows: innerShadow, colorOverlays: overlay, paths: sfxPath, pts: anchor };
+const gradientOverlay = newGradientOverlay();
+const strokeEffect = newStrokeEffect();
+const EMPTY_ITEMS = { shadows: shadow, innerShadows: innerShadow, colorOverlays: overlay, gradientOverlays: gradientOverlay, strokeEffects: strokeEffect, paths: sfxPath, pts: anchor };
 const SHAPES = {
   ellipse: { kind: 'ellipse', cx: 40, cy: 30, rx: 20, ry: 10 },
   poly: { kind: 'poly', pts: [[0, 0], [50, 0], [25, 40]] },
@@ -82,6 +84,7 @@ describe('STYLE_SCHEMA drift', () => {
     for (const [key, value] of [
       ['strokes', normalizeStroke({})], ['shadows', normalizeShadow({})],
       ['innerShadows', normalizeInnerShadow({})], ['colorOverlays', normalizeOverlay({})],
+      ['gradientOverlays', newGradientOverlay()], ['strokeEffects', newStrokeEffect()],
       ['sfx.paths', normalizeSfx({ paths: [sfxPath] }).paths[0]],
       ['path.pts', normalizeStyle({ path: { pts: [{ x: 1, y: 2 }] } }).path.pts[0]],
     ]) {
@@ -247,7 +250,7 @@ describe('validateStylePatch', () => {
   it('refuses every read-only payload with its setting instructions', () => {
     for (const [path, entry] of allEntries.filter(([, e]) => e.readOnly)) {
       for (const value of [null, [], {}, { 0: {} }]) {
-        expect(validateStylePatch(patchAt(path, value))).toEqual([{ path, error: entry.desc }]);
+        expect(validateStylePatch(patchAt(path, value))).toEqual([{ path: path.replaceAll('[]', '[0]'), error: entry.desc }]);
       }
     }
   });
@@ -300,6 +303,8 @@ describe('normalizer numeric sanity', () => {
       style.shadows = [{ ...shadow }];
       style.innerShadows = [{ ...innerShadow }];
       style.colorOverlays = [{ ...overlay }];
+      style.gradientOverlays = [structuredClone(gradientOverlay)];
+      style.strokeEffects = [structuredClone(strokeEffect)];
       style.sfx.paths = [structuredClone(sfxPath)];
       style.path.pts = [{ ...anchor }];
       let target = style;
@@ -327,15 +332,21 @@ describe('styleSchemaText', () => {
   // and to 10200 for the layer style: the shadow's Photoshop fields, Fill
   // Opacity, and the blend mode list, and to 12400 for the glows, the inner
   // shadows and the colour overlays (the blend mode and contour lists are
-  // printed once, under their names).
-  it('describes every key, field and item in under 12400 characters', () => {
+  // printed once, under their names), and to 14400 for the Photoshop
+  // strokes, the gradient and pattern overlays and the gradient glows (a
+  // gradient and a pattern are printed whole once).
+  it('describes every key, field and item in under 14400 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(12400);
+    expect(text.length).toBeLessThan(14400);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
+    // A shared object is printed whole once; after, its path points back.
+    const like = text.split('\n').filter((line) => / like \S+ - /.test(line)).map((line) => line.split(':')[0]);
     for (const [path, entry] of allEntries) {
+      if (like.some((p) => path.startsWith(`${p}.`) || path.startsWith(`${p}[]`))) continue;
       expect(text.split('\n').some((line) => line.startsWith(`${path}: ${entry.type}`)), path).toBe(true);
     }
+    expect(text).toContain('strokeEffects[].pattern: object like pattern - ');
     expect(text).toContain('gradient.radius: number 0.1..4');
     expect(text).toContain('gradient.stops: array 2..8 items');
     expect(text).toContain('warp.pts: any readOnly - set through');

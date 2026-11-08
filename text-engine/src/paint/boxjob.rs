@@ -29,10 +29,14 @@
 use super::blur::{self, Moved, Surface};
 use super::fx::blend::{self, Backdrop, Blend};
 use super::fx::contour::{self, Curve, Lut};
-use super::fx::effects::{self, Effect, Glow, InnerShadow, Overlay, Technique};
+use super::fx::effects::{
+    self, Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Place, Position, Stroke,
+    Technique,
+};
+use super::fx::gradient::{Gradient, Style};
 use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
-use super::job::{decode, Fill, Request, Rgba};
+use super::job::{decode, read_fill, Fill, Request, Rgba};
 use super::raster::{Part, Rasterizer};
 use super::shade::Shader;
 use super::sweep;
@@ -45,7 +49,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 4;
+pub const BOX_WIRE_VERSION: u32 = 5;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -60,6 +64,10 @@ pub const MAX_TAPS: usize = 512;
 /// units.
 pub const MAX_BLUR: f64 = 4096.0;
 pub const MAX_THROW: f64 = 65536.0;
+/// Most stops an effect gradient takes, of each kind.
+pub const MAX_GRADIENT_STOPS: usize = 256;
+/// Largest Scale an effect gradient takes (1 is 100 %).
+pub const MAX_GRADIENT_SCALE: f64 = 10.0;
 
 /// One shadow of the box (`style.shadows`): Photoshop's Drop Shadow.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -356,8 +364,14 @@ impl<'a> Reader<'a> {
         } else {
             false
         };
+        let gradient = match self.u32()? {
+            0 => None,
+            1 => Some(self.gradient()?),
+            _ => return Err(Error::BadSpec),
+        };
         Ok(Glow {
             color,
+            gradient,
             opacity,
             blend,
             technique,
@@ -371,8 +385,65 @@ impl<'a> Reader<'a> {
         })
     }
 
-    fn effect(&mut self) -> Result<Effect, Error> {
+    /// An effect gradient: style, angle, scale, reverse, offset, then the
+    /// colour stops (position, RGBA) and the opacity stops (position,
+    /// opacity), each in order.
+    fn gradient(&mut self) -> Result<Gradient, Error> {
+        let style = Style::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+        let angle = self.within(36_000.0)? as f32;
+        let scale = self.upto(MAX_GRADIENT_SCALE)? as f32;
+        let reverse = match self.u32()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::BadSpec),
+        };
+        let offset = (self.within(10.0)? as f32, self.within(10.0)? as f32);
+        let n = self.count(MAX_GRADIENT_STOPS, 12)?;
+        let mut stops = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = self.upto(1.0)? as f32;
+            let [r, g, b, _] = self.rgba()?.0;
+            stops.push((at, [r, g, b].map(|c| f32::from(c) / 255.0)));
+        }
+        let m = self.count(MAX_GRADIENT_STOPS, 16)?;
+        let mut opacity = Vec::with_capacity(m);
+        for _ in 0..m {
+            opacity.push((self.upto(1.0)? as f32, self.upto(1.0)? as f32));
+        }
+        if !stops.windows(2).all(|w| w[0].0 <= w[1].0)
+            || !opacity.windows(2).all(|w| w[0].0 <= w[1].0)
+        {
+            return Err(Error::BadSpec);
+        }
+        Ok(Gradient {
+            stops,
+            opacity,
+            style,
+            angle,
+            scale,
+            reverse,
+            offset,
+        })
+    }
+
+    /// What an effect paints with: 0 a colour, 1 a gradient, 2 a glyph job's
+    /// fill record (a pattern).
+    fn paint(&mut self) -> Result<Paint, Error> {
         Ok(match self.u32()? {
+            0 => Paint::Color(self.rgba()?),
+            1 => Paint::Gradient(self.gradient()?),
+            2 => {
+                let (fill, n) = read_fill(&self.bytes[self.at..])?;
+                self.at += n;
+                Paint::Fill(fill.ok_or(Error::BadSpec)?)
+            }
+            _ => return Err(Error::BadSpec),
+        })
+    }
+
+    fn effect(&mut self) -> Result<Effect, Error> {
+        let kind = self.u32()?;
+        Ok(match kind {
             1 => Effect::OuterGlow(self.glow(false)?),
             2 => Effect::InnerGlow(self.glow(true)?),
             3 => {
@@ -404,6 +475,41 @@ impl<'a> Reader<'a> {
                 opacity: self.upto(1.0)?,
                 blend: Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?,
             }),
+            5 => {
+                let size = self.upto(MAX_BLUR)?;
+                let position = match self.u32()? {
+                    0 => Position::Outside,
+                    1 => Position::Inside,
+                    2 => Position::Center,
+                    _ => return Err(Error::BadSpec),
+                };
+                let opacity = self.upto(1.0)?;
+                let blend = Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+                let seed = self.u32()?;
+                Effect::Stroke(Stroke {
+                    size,
+                    position,
+                    opacity,
+                    blend,
+                    paint: self.paint()?,
+                    seed,
+                })
+            }
+            6 | 7 => {
+                let opacity = self.upto(1.0)?;
+                let blend = Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+                let paint = self.paint()?;
+                let o = PaintOverlay {
+                    opacity,
+                    blend,
+                    paint,
+                };
+                match (kind, &o.paint) {
+                    (6, Paint::Gradient(_)) => Effect::GradientOverlay(o),
+                    (7, Paint::Fill(_)) => Effect::PatternOverlay(o),
+                    _ => return Err(Error::BadSpec),
+                }
+            }
             _ => return Err(Error::BadSpec),
         })
     }
@@ -484,12 +590,25 @@ impl<'a> Reader<'a> {
 ///     f64 size, f64 spread (or choke), f64 range, f64 noise   0 to 1 but size
 ///     u32 seed, u32 contour (as a shadow's)
 ///     u32 source               inner glow only: 0 edge, 1 center
+///     u32 gradient             0 its colour, 1: a gradient record follows
 ///   3 inner shadow:
 ///     rgba colour, f64 opacity, u32 blend, f64 x, y, f64 size,
 ///     f64 choke, f64 noise, u32 seed, u32 contour
 ///   4 colour overlay: rgba colour, f64 opacity, u32 blend
+///   5 stroke: f64 size, u32 position (0 outside, 1 inside, 2 center),
+///     f64 opacity, u32 blend, u32 seed, a paint record
+///   6 gradient overlay: f64 opacity, u32 blend, a paint record (a gradient)
+///   7 pattern overlay: f64 opacity, u32 blend, a paint record (a fill)
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow
 /// u32 job byte length, then a glyph job in its own wire form
+///
+/// paint record: u32 kind, then 0 rgba colour, 1 a gradient record, or 2 a
+///   fill record as the glyph job writes one (its tile numbers are the job's)
+/// gradient record: u32 style (0 Linear, 1 Radial, 2 Angle, 3 Reflected,
+///   4 Diamond), f64 angle (degrees), f64 scale (1 is 100 %, to 10),
+///   u32 reverse, f64 x, y (the centre moved, a share of the frame, within 10),
+///   u32 n then n (f64 position, rgba colour), u32 m then m (f64 position,
+///   f64 opacity); at most 256 of each, positions 0 to 1 and in order
 /// ```
 ///
 /// Refused: a surface with no size or past the painter's guards, more than
@@ -912,18 +1031,22 @@ fn paint_glyphs(
     rasterizer: &dyn Rasterizer,
     carried: impl Fn(f64, f64) -> (f64, f64),
     scale: f64,
-) -> Result<Vec<Raster>, Error> {
+) -> Result<(Vec<Raster>, Option<effects::Outside>), Error> {
     let job = &request.request.job;
     let fade = request.fill_opacity;
     let inside = !job.no_fill
         && job.silhouette.is_none()
         && request.effects.iter().any(|e| e.interior() && e.shows());
     if (fade >= 1.0 && !inside) || job.no_fill || job.silhouette.is_some() {
-        return Ok(paint_job_with(engine, &request.request, rasterizer)?
-            .into_iter()
-            .collect());
+        return Ok((
+            paint_job_with(engine, &request.request, rasterizer)?
+                .into_iter()
+                .collect(),
+            None,
+        ));
     }
     let mut out = Vec::new();
+    let mut outside = None;
     // The fill alone, faded, with the effects on it.
     let bands = core::mem::take(&mut request.request.job.bands);
     let negative = request.request.job.effects.negative.take();
@@ -932,7 +1055,11 @@ fn paint_glyphs(
     request.request.job.effects.negative = negative;
     if let Some(mut r) = fill? {
         if inside {
-            r = effects::interior(&r, &request.effects, fade, scale, carried)?;
+            let place = Place {
+                transform: request.request.transform,
+                tiles: &request.request.tiles,
+            };
+            (r, outside) = effects::interior(&r, &request.effects, fade, scale, carried, &place)?;
         } else {
             for p in r.data.chunks_exact_mut(4) {
                 p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
@@ -949,7 +1076,7 @@ fn paint_glyphs(
             out.push(r);
         }
     }
-    Ok(out)
+    Ok((out, outside))
 }
 
 /// The outer glows behind the letters, on `s`. Their shape is the letters'
@@ -1232,12 +1359,24 @@ fn paint(
         }
     }
 
-    let glyphs = paint_glyphs(engine, request, rasterizer, carried, scale)?;
+    let (glyphs, outside) = paint_glyphs(engine, request, rasterizer, carried, scale)?;
     let mut own = if blends {
         Some(Surface::new(width, height)?)
     } else {
         None
     };
+    // The strokes' outside parts, slid under the letters.
+    if let Some(o) = outside {
+        let place = Place {
+            transform,
+            tiles: &request.request.tiles,
+        };
+        effects::lay_outside(own.as_mut().unwrap_or(&mut s), &o, &request.effects, &place)?;
+        let b = o.bounds().intersect(&surface);
+        if !b.is_empty() {
+            lay(b);
+        }
+    }
     for r in &glyphs {
         let bx = IBox {
             x0: r.x,

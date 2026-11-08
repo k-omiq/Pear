@@ -1,7 +1,7 @@
 import {
   GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
-  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX,
+  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, FX_GRADIENT_STYLES, STROKE_POSITIONS, STROKE_FILLS,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -31,6 +31,9 @@ const union = (desc, key, variants) => ({
     { ...v, fields: { [key]: choice(`${key} ${name}`, [name]), ...v.fields } },
   ])),
 });
+// An object several fields take whole: `styleSchemaText` prints its fields
+// the first time and points back to that path after.
+const shared = (name, entry) => ({ ...entry, shape: name });
 const readOnly = (desc) => ({ type: 'any', readOnly: true, desc });
 const alpha = (desc) => number(desc, 0, 1);
 const point = (desc) => array(desc, number('px'), { minItems: 2, maxItems: 2 });
@@ -44,6 +47,19 @@ const contourField = () => object('edge falloff', {
   preset: listed('CONTOUR', 'contour', CONTOUR_PRESETS),
   aa: boolean('anti-aliased contour'),
 });
+// An effect gradient (Photoshop's, as Gradient Overlay and Stroke take it).
+const fxGradient = (desc) => shared('gradient', object(desc, {
+  style: choice('shape', FX_GRADIENT_STYLES),
+  angle: number('Photoshop degrees, 90=bottom to top', -180, 180),
+  scale: number('1=100%', 0.1, 1.5),
+  reverse: boolean('flip the ramp'),
+  offset: array('centre moved, share of the frame', number('share', -1, 1), { minItems: 2, maxItems: 2 }),
+  stops: array('ramp', object('stop', {
+    color: color('stop colour'),
+    pos: alpha('position'),
+    opacity: alpha('stop alpha'),
+  }), { minItems: GRADIENT_MIN_STOPS, maxItems: GRADIENT_MAX_STOPS }),
+}));
 // An Outer or Inner Glow's fields; `spread` is Choke on an inner one.
 const glowFields = (spreadKey, spreadDesc) => ({
   on: boolean('enable glow'),
@@ -51,11 +67,39 @@ const glowFields = (spreadKey, spreadDesc) => ({
   opacity: alpha('glow alpha'),
   noise: alpha('grain'),
   color: color('glow colour'),
+  fill: choice('colour or gradient', ['color', 'gradient']),
+  gradient: fxGradient('along the glow, first stop at the edge'),
   technique: choice('soft blur or exact distance', ['softer', 'precise']),
   [spreadKey]: alpha(spreadDesc),
   size: number('reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),
   contour: contourField(),
   range: number('share of the falloff the contour spans', 0.01, 1),
+});
+// A fill pattern's fields: the fill's own and an effect's.
+const patternFields = () => ({
+  on: boolean('enable pattern'),
+  kind: choice('tile kind', PATTERN_KINDS),
+  fg: color('tile ink'),
+  bg: color('tile background'),
+  scale: number('tile/font scale', 0.25, 4),
+  angle: number('turn degrees'),
+  density: alpha('ink; 0.5=designed'),
+  aspect: number('x stretch', 0.25, 4),
+  ox: alpha('x offset, tiles'),
+  oy: alpha('y offset, tiles'),
+  fgOpacity: alpha('ink alpha'),
+  bgOpacity: alpha('ground alpha'),
+  fade: object('ink fades across box', {
+    on: boolean('enable fade'),
+    angle: number('CSS degrees'),
+    from: alpha('full until'),
+    to: alpha('none from'),
+  }),
+  anchor: choice('tile origin', PATTERN_ANCHORS),
+  seed: integer('random kinds seed', 1, 9999),
+  src: readOnly('set through Pick from page'),
+  cell: readOnly('set through Pick from page'),
+  mode: choice('picked: recolour or keep', PATTERN_MODES),
 });
 const PATH_MAX_ANCHORS = 64;
 const MASK_MAX_SHAPES = 64;
@@ -98,31 +142,7 @@ export const STYLE_SCHEMA = {
       opacity: alpha('stop alpha'),
     }), { minItems: GRADIENT_MIN_STOPS, maxItems: GRADIENT_MAX_STOPS }),
   }),
-  pattern: object('tiled fill beats gradient', {
-    on: boolean('enable pattern'),
-    kind: choice('tile kind', PATTERN_KINDS),
-    fg: color('tile ink'),
-    bg: color('tile background'),
-    scale: number('tile/font scale', 0.25, 4),
-    angle: number('turn degrees'),
-    density: alpha('ink; 0.5=designed'),
-    aspect: number('x stretch', 0.25, 4),
-    ox: alpha('x offset, tiles'),
-    oy: alpha('y offset, tiles'),
-    fgOpacity: alpha('ink alpha'),
-    bgOpacity: alpha('ground alpha'),
-    fade: object('ink fades across box', {
-      on: boolean('enable fade'),
-      angle: number('CSS degrees'),
-      from: alpha('full until'),
-      to: alpha('none from'),
-    }),
-    anchor: choice('tile origin', PATTERN_ANCHORS),
-    seed: integer('random kinds seed', 1, 9999),
-    src: readOnly('set through Pick from page'),
-    cell: readOnly('set through Pick from page'),
-    mode: choice('picked: recolour or keep', PATTERN_MODES),
-  }),
+  pattern: shared('pattern', object('tiled fill beats gradient', patternFields())),
   noFill: boolean('hollow glyphs; overrides fills'),
   strokes: array('bands, inner first', object('stroke', {
     color: color('band colour'),
@@ -163,6 +183,27 @@ export const STYLE_SCHEMA = {
     color: color('overlay colour'),
     opacity: alpha('overlay alpha'),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+  })),
+  gradientOverlays: array('gradients over the fill, top first (Photoshop Gradient Overlay; Rust)', object('gradient overlay', {
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+    opacity: alpha('overlay alpha'),
+    gradient: fxGradient('over the letters'),
+  })),
+  patternOverlay: object('pattern over the fill (Photoshop Pattern Overlay; Rust)', {
+    on: boolean('enable overlay'),
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+    opacity: alpha('overlay alpha'),
+    pattern: shared('pattern', object('as the fill pattern', patternFields())),
+  }),
+  strokeEffects: array('Photoshop Stroke effects, top first, apart from strokes (Rust)', object('stroke effect', {
+    size: number('px', 0, SHADOW_SIZE_MAX),
+    position: choice('on the letters edge', STROKE_POSITIONS),
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+    opacity: alpha('stroke alpha'),
+    fill: choice('paint', STROKE_FILLS),
+    color: color('fill color'),
+    gradient: fxGradient('fill gradient, over the stroke'),
+    pattern: shared('pattern', object('fill pattern', patternFields())),
   })),
   fillOpacity: alpha('fill alpha only; strokes and shadows stay'),
   blendMode: listed('BLEND', 'how the box mixes with the page (Photoshop layer blend)', LAYER_BLEND_MODES),
@@ -436,8 +477,15 @@ export function validateStylePatch(patch) {
 export function styleSchemaText() {
   const lines = [];
   const lists = new Map();
+  // Where each shared object was printed whole.
+  const shapes = new Map();
   const scalar = (e) => !e.fields && !e.items && !e.variants;
   function walk(entry, path, required = false) {
+    if (entry.shape && shapes.has(entry.shape)) {
+      lines.push(`${path}: ${entry.type} like ${shapes.get(entry.shape)} - ${entry.desc}`);
+      return;
+    }
+    if (entry.shape) shapes.set(entry.shape, path);
     let type = entry.type;
     if (entry.list) {
       type += ` ${entry.list}`;

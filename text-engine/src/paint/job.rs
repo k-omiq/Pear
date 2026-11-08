@@ -299,6 +299,15 @@ struct Reader<'a> {
     at: usize,
 }
 
+/// One fill record as a glyph job states it, read from the front of `bytes`
+/// (a box job's pattern effects take the same record), and its length. `None`
+/// is the record for no fill.
+pub(crate) fn read_fill(bytes: &[u8]) -> Result<(Option<Fill>, usize), Error> {
+    let mut r = Reader { bytes, at: 0 };
+    let fill = r.fill()?;
+    Ok((fill, r.at))
+}
+
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
         let end = self.at.checked_add(n).ok_or(Error::BadSpec)?;

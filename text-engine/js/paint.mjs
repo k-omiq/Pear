@@ -310,8 +310,10 @@ function writeTiles(sent) {
 }
 
 // The job's bytes, appended where the buffer stands.
-function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0, transform, tiles }) {
-  const { sent, index: tileIndex } = tileCollector(tiles)
+// `collector` is the tile table, given when the box's effects already sent
+// tiles into it.
+function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0, transform, tiles }, collector = tileCollector(tiles)) {
+  const { sent, index: tileIndex } = collector
   const m = transform ?? [1, 0, 0, 1, 0, 0]
   u32(MAGIC)
   u32(WIRE_VERSION)
@@ -392,7 +394,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 4
+export const BOX_WIRE_VERSION = 5
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 
@@ -464,13 +466,76 @@ function contourRecord(contour) {
   u32(id)
 }
 
-const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4 }
+const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7 }
+const GRADIENT_STYLE = { linear: 0, radial: 1, angle: 2, reflected: 3, diamond: 4 }
+const STROKE_POSITION = { outside: 0, inside: 1, center: 2 }
+
+// An effect gradient (`Reader::gradient`): Photoshop's Style, Angle
+// (degrees), Scale (1 is 100 %), Reverse, the centre's offset as a share of
+// the frame, then the colour stops and the opacity stops, each by position.
+// A stop is `{pos, color, opacity?}`; with every stop opaque no opacity
+// stops are sent.
+function gradientRecord(g) {
+  const style = GRADIENT_STYLE[g?.style ?? 'linear']
+  if (style === undefined) throw new Error(`mt-text: unknown gradient style ${JSON.stringify(g.style)}`)
+  u32(style)
+  f64(g.angle ?? 90)
+  f64(g.scale ?? 1)
+  u32(g.reverse ? 1 : 0)
+  f64(g.offset?.[0] ?? 0)
+  f64(g.offset?.[1] ?? 0)
+  const list = [...(g.stops ?? [])].sort((a, b) => a.pos - b.pos)
+  u32(list.length)
+  for (const st of list) {
+    f64(st.pos)
+    rgba(st.color)
+  }
+  const fades = list.some((st) => (st.opacity ?? 1) < 1)
+  u32(fades ? list.length : 0)
+  if (fades) {
+    for (const st of list) {
+      f64(st.pos)
+      f64(st.opacity ?? 1)
+    }
+  }
+}
+
+// What a stroke paints with (`Reader::paint`): a colour, a gradient or a
+// glyph job's fill record.
+function paintRecord(p, tileIndex) {
+  if (p.kind === 'gradient') {
+    u32(1)
+    return gradientRecord(p.gradient)
+  }
+  if (p.kind === 'fill') {
+    u32(2)
+    return fill(p.fill, tileIndex)
+  }
+  u32(0)
+  rgba(p.color)
+}
 
 // One layer effect past the drop shadows (`decode_box`'s effect record).
-function effectRecord(fx) {
+// `tileIndex` numbers a pattern's tile in the glyph job's table.
+function effectRecord(fx, tileIndex) {
   const kind = EFFECT_KIND[fx.kind]
   if (!kind) throw new Error(`mt-text: unknown effect ${JSON.stringify(fx.kind)}`)
   u32(kind)
+  if (kind === 5) {
+    const position = STROKE_POSITION[fx.position ?? 'outside']
+    if (position === undefined) throw new Error(`mt-text: unknown stroke position ${JSON.stringify(fx.position)}`)
+    f64(fx.size ?? 0)
+    u32(position)
+    f64(fx.opacity)
+    u32(blendId(fx.blend))
+    u32((fx.seed ?? 0) >>> 0)
+    return paintRecord(fx.paint ?? { kind: 'color', color: fx.color }, tileIndex)
+  }
+  if (kind === 6 || kind === 7) {
+    f64(fx.opacity)
+    u32(blendId(fx.blend))
+    return paintRecord(kind === 6 ? { kind: 'gradient', gradient: fx.gradient } : { kind: 'fill', fill: fx.fill }, tileIndex)
+  }
   rgba(fx.color)
   f64(fx.opacity)
   u32(blendId(fx.blend))
@@ -493,6 +558,8 @@ function effectRecord(fx) {
   u32((fx.seed ?? 0) >>> 0)
   contourRecord(fx.contour)
   if (kind === 2) u32(fx.source === 'center' ? 1 : 0)
+  u32(fx.gradient ? 1 : 0)
+  if (fx.gradient) gradientRecord(fx.gradient)
 }
 
 // One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
@@ -548,11 +615,19 @@ function clipShape(sh) {
  *   box's corner in job space
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
  * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1
- * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay', color: string,
+ * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay' | 'stroke' |
+ *   'gradientOverlay' | 'patternOverlay', color?: string,
  *   opacity: number, blend?: string, technique?: 'softer' | 'precise', source?: 'edge' | 'center',
  *   size?: number, spread?: number, choke?: number, range?: number, noise?: number,
- *   x?: number, y?: number, seed?: number, contour?: {preset: string, pts?: number[][]}}[]} [request.effects]
- *   the layer effects past the drop shadows, resolved: of a kind, first on top
+ *   x?: number, y?: number, seed?: number, contour?: {preset: string, pts?: number[][]},
+ *   gradient?: object, position?: 'outside' | 'inside' | 'center',
+ *   paint?: {kind: 'color', color: string} | {kind: 'gradient', gradient: object} | {kind: 'fill', fill: object},
+ *   fill?: object}[]} [request.effects]
+ *   the layer effects past the drop shadows, resolved: of a kind, first on top. A glow's
+ *   `gradient` runs along it in place of its colour; a gradient is `{style, angle, scale,
+ *   reverse, offset: [x, y], stops: [{pos, color, opacity?}]}`. A stroke paints a colour,
+ *   a gradient or a fill (a pattern, as a glyph job's fill), and a pattern overlay its
+ *   `fill`, in job units
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
  *   the surface, straight RGBA8 of `width * height`: what a blend mode blends with
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
@@ -588,8 +663,10 @@ export function encodeBox(request) {
   }
   u32(blendId(blend))
   f64(fillOpacity)
+  // The effects' pattern tiles go in the glyph job's table, ahead of its own.
+  const collector = tileCollector(request.tiles)
   u32(effects.length)
-  for (const fx of effects) effectRecord(fx)
+  for (const fx of effects) effectRecord(fx, collector.index)
   if (backdrop) {
     if (backdrop.length !== width * height * 4) throw new Error('mt-text: a backdrop must be the surface, RGBA')
     u32(1)
@@ -599,7 +676,7 @@ export function encodeBox(request) {
   } else u32(0)
   const lenAt = at
   u32(0)
-  writeJob(request)
+  writeJob(request, collector)
   view.setUint32(lenAt, at - lenAt - 4, true)
   return u8.subarray(0, at)
 }

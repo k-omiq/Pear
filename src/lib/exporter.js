@@ -971,7 +971,7 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
     rect: { x: L.ox - foot.ox, y: L.oy - foot.oy, w: foot.cw, h: foot.ch },
     shadows: boxShadows(s).map((sh, i) => ({ ...sh, seed: shadowSeed(box.id, i) })),
     // Their grain apart from the shadows'.
-    effects: boxEffects(s).map((fx, i) => ({ ...fx, seed: shadowSeed(box.id, 1024 + i) })),
+    effects: effectPaints(box, L, boxEffects(s)).map((fx, i) => ({ ...fx, seed: shadowSeed(box.id, 1024 + i) })),
     blend: s.blendMode,
     fillOpacity: s.fillOpacity,
     blur: s.blur > 0 ? s.blur : 0,
@@ -981,6 +981,20 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
   });
   const caption = L.caption ? glyphPainter().paint(ctx, captionJob(box, L)) : null;
   return inkUnion([body, caption], ctx.canvas);
+}
+
+// The effects with each pattern a stroke or a Pattern Overlay paints made the
+// fill the painter takes: the fill's own procedural screen over the fill's
+// rect, in the job's units, so it lines up with a patterned fill.
+function effectPaints(box, L, effects) {
+  const page = { x: L.ox - (Number(box.x) || 0), y: L.oy - (Number(box.y) || 0) };
+  // A curved box's fill spans the box (`glyphJob`).
+  const rect = L.isCurve ? { x: L.ox, y: L.oy, w: box.w, h: box.h } : fillRect(box, L);
+  return effects.map((fx) => {
+    if (fx.paint?.kind !== 'pattern') return fx;
+    const fill = screenFill({ ...L.s, pattern: fx.paint.pattern }, rect, null, page);
+    return fx.kind === 'patternOverlay' ? { kind: fx.kind, opacity: fx.opacity, blend: fx.blend, fill } : { ...fx, paint: { kind: 'fill', fill } };
+  });
 }
 
 // The grain of a box's shadow `i` (its Noise, a Dissolve): the same box paints
