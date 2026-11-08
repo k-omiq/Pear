@@ -1,7 +1,8 @@
 import {
   GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
-  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, FX_GRADIENT_STYLES, STROKE_POSITIONS, STROKE_FILLS,
+  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
+  STROKE_POSITIONS, STROKE_FILLS,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -49,7 +50,7 @@ const contourField = () => object('edge falloff', {
 });
 // An effect gradient (Photoshop's, as Gradient Overlay and Stroke take it).
 const fxGradient = (desc) => shared('gradient', object(desc, {
-  style: choice('shape', FX_GRADIENT_STYLES),
+  style: choice('shape; shapeburst runs from the edge in', FX_GRADIENT_STYLES),
   angle: number('Photoshop degrees, 90=bottom to top', -180, 180),
   scale: number('1=100%', 0.1, 1.5),
   reverse: boolean('flip the ramp'),
@@ -59,6 +60,16 @@ const fxGradient = (desc) => shared('gradient', object(desc, {
     pos: alpha('position'),
     opacity: alpha('stop alpha'),
   }), { minItems: GRADIENT_MIN_STOPS, maxItems: GRADIENT_MAX_STOPS }),
+  type: choice('solid=stops, noise=random ramp (Rust)', FX_GRADIENT_TYPES),
+  noise: object('noise gradient', {
+    seed: integer('random seed', 0, 4294967295),
+    roughness: alpha('steps, 0 smooth'),
+    model: choice('channels walk in', NOISE_MODELS),
+    min: array('per-channel low limit', alpha('share'), { minItems: 3, maxItems: 3 }),
+    max: array('per-channel high limit', alpha('share'), { minItems: 3, maxItems: 3 }),
+    restrict: boolean('no oversaturated colours'),
+    transparency: boolean('random alpha too'),
+  }),
 }));
 // An Outer or Inner Glow's fields; `spread` is Choke on an inner one.
 const glowFields = (spreadKey, spreadDesc) => ({

@@ -635,6 +635,30 @@ describe('textLayerFor', () => {
     expect(isRasterOnly(style)).toBe(false);
   });
 
+  it('writes a noise gradient as Photoshop\'s, and a Shape Burst box as pixels', () => {
+    const noise = { seed: 3000000000, roughness: 0.8, model: 'hsb', min: [0, 0.25, 0.5], max: [1, 0.75, 1], restrict: false, transparency: true };
+    const g = { style: 'linear', angle: 90, scale: 1, reverse: false, offset: [0, 0], stops: [{ color: '#000000', pos: 0, opacity: 1 }, { color: '#ffffff', pos: 1, opacity: 1 }], type: 'noise', noise };
+    const style = { ...baseStyle, gradientOverlays: [{ blend: 'normal', opacity: 1, gradient: g }] };
+    const fx = textLayerFor(page, box(style), rendered).effects;
+    expect(fx.gradientOverlay[0].gradient).toEqual({
+      name: 'Custom',
+      type: 'noise',
+      roughness: 0.8,
+      colorModel: 'hsb',
+      randomSeed: 3000000000 | 0,
+      restrictColors: false,
+      addTransparency: true,
+      min: [0, 0.25, 0.5, 0],
+      max: [1, 0.75, 1, 1],
+    });
+    expect(isRasterOnly(style)).toBe(false);
+    const burst = { ...g, type: 'solid', style: 'shapeburst' };
+    expect(isRasterOnly({ ...baseStyle, gradientOverlays: [{ blend: 'normal', opacity: 1, gradient: burst }] })).toBe(true);
+    expect(isRasterOnly({ ...baseStyle, strokeEffects: [{ size: 3, position: 'outside', blend: 'normal', opacity: 1, fill: 'gradient', color: '#000000', gradient: burst }] })).toBe(true);
+    // A colour stroke keeps a Shape Burst gradient it does not paint: live type.
+    expect(isRasterOnly({ ...baseStyle, strokeEffects: [{ size: 3, position: 'outside', blend: 'normal', opacity: 1, fill: 'color', color: '#000000', gradient: burst }] })).toBe(false);
+  });
+
   it('leaves raster-only layers (curve, roughen, flip) completely free of effects', () => {
     const styledWithEffects = {
       ...baseStyle,

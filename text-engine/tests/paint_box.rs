@@ -8,6 +8,7 @@ use mt_text::paint::fx::effects::{
     Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Position, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
+use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 
 use mt_text::paint::{
     decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape,
@@ -612,6 +613,44 @@ fn gradient_record(b: &mut Vec<u8>) {
     f(b, 1.0);
     f(b, 1.0);
     f(b, 0.0);
+    u(b, 0); // solid
+}
+
+/// A Shape Burst noise gradient: the stops of [`gradient_record`], then
+/// type noise, seed 21, Roughness 0.4, HSB, the limits, Add Transparency.
+/// Hands back where the noise record starts.
+fn noise_gradient_record(b: &mut Vec<u8>) -> usize {
+    gradient_record(b);
+    b.truncate(b.len() - 4);
+    // style, angle, scale, reverse, offset, two colour stops, two opacity.
+    let style_at = b.len() - (4 + 8 + 8 + 4 + 16 + 4 + 2 * 12 + 4 + 2 * 16);
+    b[style_at..style_at + 4].copy_from_slice(&5u32.to_le_bytes());
+    u(b, 1);
+    let at = b.len();
+    u(b, 21);
+    f(b, 0.4);
+    u(b, 1);
+    for v in [0.0, 1.0, 0.25, 0.75, 0.5, 1.0] {
+        f(b, v);
+    }
+    u(b, 2);
+    at
+}
+
+fn noise_gradient() -> Gradient {
+    Gradient {
+        style: Style::ShapeBurst,
+        noise: Some(Ramp::new(Noise {
+            seed: 21,
+            roughness: 0.4,
+            model: Model::Hsb,
+            min: [0.0, 0.25, 0.5],
+            max: [1.0, 0.75, 1.0],
+            restrict: false,
+            transparency: true,
+        })),
+        ..gradient()
+    }
 }
 
 fn gradient() -> Gradient {
@@ -623,10 +662,11 @@ fn gradient() -> Gradient {
         scale: 0.5,
         reverse: true,
         offset: (0.1, 0.0),
+        noise: None,
     }
 }
 
-fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
+fn wire(font: u32) -> (Vec<u8>, [usize; 6]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
     u(&mut b, BOX_WIRE_VERSION);
@@ -722,12 +762,13 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     u(&mut b, 14);
     u(&mut b, 1);
     gradient_record(&mut b);
-    // A gradient overlay and a pattern overlay (a solid fill record).
+    // A gradient overlay (a Shape Burst noise gradient) and a pattern
+    // overlay (a solid fill record).
     u(&mut b, 6);
     f(&mut b, 0.5);
     u(&mut b, 0);
     u(&mut b, 1);
-    gradient_record(&mut b);
+    let noise_at = noise_gradient_record(&mut b);
     u(&mut b, 7);
     f(&mut b, 1.0);
     u(&mut b, 0);
@@ -738,7 +779,12 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
-    (b, [opacity_at, blur_at, weight_at, mode_at, effects_at])
+    (
+        b,
+        [
+            opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at,
+        ],
+    )
 }
 
 #[test]
@@ -858,7 +904,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
             Effect::GradientOverlay(PaintOverlay {
                 opacity: 0.5,
                 blend: Blend::Normal,
-                paint: Paint::Gradient(gradient()),
+                paint: Paint::Gradient(noise_gradient()),
             }),
             Effect::PatternOverlay(PaintOverlay {
                 opacity: 1.0,
@@ -869,12 +915,12 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 5));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 6));
 }
 
 #[test]
 fn a_damaged_box_is_refused_not_guessed_at() {
-    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at]) = wire(1);
+    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at]) = wire(1);
     assert!(decode_box(&good).is_ok());
     for len in 0..good.len() {
         assert!(decode_box(&good[..len]).is_err(), "accepted {len} bytes");
@@ -940,8 +986,17 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(effects_at + 136, 2), Some(Error::BadSpec));
     assert_eq!(with_u(effects_at + 140, 2), Some(Error::BadSpec));
     // A gradient style that is not one, and a stop past the end.
-    assert_eq!(with_u(effects_at + 144, 5), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 144, 6), Some(Error::BadSpec));
     assert_eq!(with_f(effects_at + 188, 1.5), Some(Error::BadSpec));
+    // A gradient type that is not one: the inner glow's, after its two
+    // colour stops and two opacity stops.
+    assert_eq!(with_u(effects_at + 144 + 104, 2), Some(Error::BadSpec));
+    // A noise record's Roughness past 1, a model that is not one, a limit
+    // whose min is past its max, and flags that are not ones.
+    assert_eq!(with_f(noise_at + 4, 1.5), Some(Error::BadSpec));
+    assert_eq!(with_u(noise_at + 12, 3), Some(Error::BadSpec));
+    assert_eq!(with_f(noise_at + 16 + 16, 0.9), Some(Error::BadSpec));
+    assert_eq!(with_u(noise_at + 16 + 48, 4), Some(Error::BadSpec));
 }
 
 #[test]

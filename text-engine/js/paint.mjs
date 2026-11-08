@@ -394,7 +394,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 5
+export const BOX_WIRE_VERSION = 6
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 
@@ -467,14 +467,17 @@ function contourRecord(contour) {
 }
 
 const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7 }
-const GRADIENT_STYLE = { linear: 0, radial: 1, angle: 2, reflected: 3, diamond: 4 }
+const GRADIENT_STYLE = { linear: 0, radial: 1, angle: 2, reflected: 3, diamond: 4, shapeburst: 5 }
+const NOISE_MODEL = { rgb: 0, hsb: 1, lab: 2 }
 const STROKE_POSITION = { outside: 0, inside: 1, center: 2 }
 
 // An effect gradient (`Reader::gradient`): Photoshop's Style, Angle
 // (degrees), Scale (1 is 100 %), Reverse, the centre's offset as a share of
 // the frame, then the colour stops and the opacity stops, each by position.
 // A stop is `{pos, color, opacity?}`; with every stop opaque no opacity
-// stops are sent.
+// stops are sent. `type: 'noise'` sends `noise` (`{seed, roughness, model,
+// min: [3], max: [3], restrict, transparency}`) too, whose colours the
+// engine paints in place of the stops'.
 function gradientRecord(g) {
   const style = GRADIENT_STYLE[g?.style ?? 'linear']
   if (style === undefined) throw new Error(`mt-text: unknown gradient style ${JSON.stringify(g.style)}`)
@@ -498,6 +501,19 @@ function gradientRecord(g) {
       f64(st.opacity ?? 1)
     }
   }
+  const n = g.type === 'noise' ? g.noise : null
+  u32(n ? 1 : 0)
+  if (!n) return
+  const model = NOISE_MODEL[n.model ?? 'rgb']
+  if (model === undefined) throw new Error(`mt-text: unknown noise colour model ${JSON.stringify(n.model)}`)
+  u32((n.seed ?? 0) >>> 0)
+  f64(n.roughness ?? 0.5)
+  u32(model)
+  for (let i = 0; i < 3; i++) {
+    f64(n.min?.[i] ?? 0)
+    f64(n.max?.[i] ?? 1)
+  }
+  u32((n.restrict ? 1 : 0) | (n.transparency ? 2 : 0))
 }
 
 // What a stroke paints with (`Reader::paint`): a colour, a gradient or a
@@ -625,7 +641,8 @@ function clipShape(sh) {
  *   fill?: object}[]} [request.effects]
  *   the layer effects past the drop shadows, resolved: of a kind, first on top. A glow's
  *   `gradient` runs along it in place of its colour; a gradient is `{style, angle, scale,
- *   reverse, offset: [x, y], stops: [{pos, color, opacity?}]}`. A stroke paints a colour,
+ *   reverse, offset: [x, y], stops: [{pos, color, opacity?}], type?, noise?}` (style
+ *   'shapeburst' runs from the painted shape's edge in; type 'noise' paints `noise`). A stroke paints a colour,
  *   a gradient or a fill (a pattern, as a glyph job's fill), and a pattern overlay its
  *   `fill`, in job units
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
