@@ -66,6 +66,18 @@ names its source file in a comment.
   `crates/compose/src/tests.rs` `channel_restrictions_keep_the_backdrop`
   and the `blend_if_*` tests).
 
+Outside the engine, for the PSD writer (`src/lib/`):
+
+- `contour-presets.js` `CONTOUR_PRESET_POINTS`: a copy of `fx/contour.rs`
+  `PRESETS` (above), checked against it by `contour-presets.test.js`;
+  `psdContourPoints`, `PSD_CONTOUR_POINTS`: a contour thinned to the 16
+  points Photoshop reads (`crates/io/src/effects_map.rs`
+  `psd_contour_points`, `PSD_CONTOUR_POINTS`).
+- `psd.js`: the effect keys and units as PhotoCraft writes them
+  (`crates/io/src/effects_map.rs` `with_common`, `gradient_keys`,
+  `write_one`): `present` and `showInDialog`, a glow's gradient without a
+  colour, Jitter and Overprint written as 0 / off.
+
 MIT License
 
 Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors
