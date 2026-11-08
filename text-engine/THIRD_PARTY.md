@@ -29,6 +29,11 @@ names its source file in a comment.
   (`crates/compose/src/effects/distance.rs`, `composite.rs`).
 - `fx/gradient.rs`: the five gradient styles, their lengths and the stop
   sampling (`crates/compose/src/effects/paint.rs`).
+- `fx/map.rs` `satin`, `fx/contour.rs` `Lut::satin`, `fx/effects.rs`
+  `satin_throw`: the Satin map, its mirrored contour table, and its throw
+  (Distance 0 drawn as 1 px, rounded to whole pixels)
+  (`crates/compose/src/effects/bevel.rs` `satin_map`, `satin_distance`;
+  `effects/paint.rs` `satin_lut`, `offset`).
 
 MIT License
 

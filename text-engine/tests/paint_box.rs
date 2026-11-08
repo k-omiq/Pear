@@ -5,7 +5,7 @@
 use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::contour::{Curve, Lut};
 use mt_text::paint::fx::effects::{
-    Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Position, Stroke, Technique,
+    Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
@@ -666,7 +666,7 @@ fn gradient() -> Gradient {
     }
 }
 
-fn wire(font: u32) -> (Vec<u8>, [usize; 6]) {
+fn wire(font: u32) -> (Vec<u8>, [usize; 7]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
     u(&mut b, BOX_WIRE_VERSION);
@@ -711,7 +711,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 6]) {
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
     let effects_at = b.len();
-    u(&mut b, 7);
+    u(&mut b, 8);
     // An outer glow: yellow, Screen, Precise, size 5, spread 0.1, range 0.5.
     u(&mut b, 1);
     b.extend_from_slice(&[255, 255, 0, 255]);
@@ -775,6 +775,18 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 6]) {
     u(&mut b, 2);
     u(&mut b, 1);
     b.extend_from_slice(&[0, 0, 255, 255]);
+    // A satin: Photoshop's own, black, Multiply, 50 %, 19 degrees, 11 away,
+    // size 14, inverted and anti-aliased, the Gaussian.
+    let satin_at = b.len();
+    u(&mut b, 8);
+    b.extend_from_slice(&[0, 0, 0, 255]);
+    f(&mut b, 0.5);
+    u(&mut b, 3);
+    for v in [19.0, 11.0, 14.0] {
+        f(&mut b, v);
+    }
+    u(&mut b, 3);
+    u(&mut b, 5);
     u(&mut b, 0); // no page under them
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
@@ -782,7 +794,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 6]) {
     (
         b,
         [
-            opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at,
+            opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at,
         ],
     )
 }
@@ -911,16 +923,26 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                 blend: Blend::Normal,
                 paint: Paint::Fill(Fill::Solid(BLUE)),
             }),
+            Effect::Satin(Satin {
+                color: BLACK,
+                opacity: 0.5,
+                blend: Blend::Multiply,
+                angle: 19.0,
+                distance: 11.0,
+                size: 14.0,
+                invert: true,
+                contour: Some(Lut::new(&Curve::Preset(5))),
+            }),
         ]
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 6));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 7));
 }
 
 #[test]
 fn a_damaged_box_is_refused_not_guessed_at() {
-    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at]) = wire(1);
+    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at]) = wire(1);
     assert!(decode_box(&good).is_ok());
     for len in 0..good.len() {
         assert!(decode_box(&good[..len]).is_err(), "accepted {len} bytes");
@@ -997,6 +1019,12 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(noise_at + 12, 3), Some(Error::BadSpec));
     assert_eq!(with_f(noise_at + 16 + 16, 0.9), Some(Error::BadSpec));
     assert_eq!(with_u(noise_at + 16 + 48, 4), Some(Error::BadSpec));
+    // A satin's distance below 0, its size past the guard, flags that are not
+    // ones and a contour that does not exist.
+    assert_eq!(with_f(satin_at + 28, -1.0), Some(Error::BadSpec));
+    assert_eq!(with_f(satin_at + 36, 4097.0), Some(Error::BadSpec));
+    assert_eq!(with_u(satin_at + 44, 4), Some(Error::BadSpec));
+    assert_eq!(with_u(satin_at + 48, 12), Some(Error::BadSpec));
 }
 
 #[test]
@@ -1393,4 +1421,60 @@ fn an_inner_glow_and_an_inner_shadow_stay_inside_the_letters() {
         "{:?}",
         px(&r, glyphs.0 + 5, sy)
     );
+}
+
+#[test]
+fn a_satin_stays_inside_the_letters_and_turns_with_the_box() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let plain_r = paint(&mut e, &mut b);
+    let glyphs = inked(&plain_r);
+    let satin = |angle: f64| Satin {
+        color: RED,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        angle,
+        distance: 2.0,
+        size: 0.0,
+        invert: false,
+        contour: None,
+    };
+    // Thrown across: red down the stem's left inside edge, black past it.
+    b.effects = vec![Effect::Satin(satin(0.0))];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), glyphs);
+    let (_, sy) = stem(glyphs);
+    assert!(
+        is_red(px(&r, glyphs.0 + 1, sy)),
+        "{:?}",
+        px(&r, glyphs.0 + 1, sy)
+    );
+    assert!(is_black(px(&r, glyphs.0 + 4, sy)));
+    // Thrown up and down instead, the stem's side is left black.
+    b.effects = vec![Effect::Satin(satin(90.0))];
+    let r = paint(&mut e, &mut b);
+    assert!(
+        is_black(px(&r, glyphs.0 + 1, sy)),
+        "{:?}",
+        px(&r, glyphs.0 + 1, sy)
+    );
+    // A quarter turn carries the across throw to up and down on the page:
+    // the turned stems' long sides run across, and are lit.
+    let turn = Affine::translate(100.0, 80.0)
+        .after(&Affine::rotate(0.0, 1.0))
+        .after(&Affine::translate(-100.0, -80.0));
+    b.request.transform = turn;
+    b.effects = Vec::new();
+    let turned = paint(&mut e, &mut b);
+    let tg = inked(&turned);
+    b.effects = vec![Effect::Satin(satin(0.0))];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), tg);
+    // Its second row (the first is the stem's soft edge), where the
+    // first stem lies across, is red.
+    let row: Vec<[u8; 4]> = (tg.0..tg.2).map(|x| px(&r, x, tg.1 + 1)).collect();
+    let lit = row.iter().filter(|p| is_red(**p)).count();
+    let solid = row.iter().filter(|p| p[3] > 200).count();
+    assert!(solid > 10 && lit * 10 > solid * 8, "{row:?}");
 }

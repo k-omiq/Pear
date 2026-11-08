@@ -335,10 +335,10 @@ describe('styleSchemaText', () => {
   // printed once, under their names), and to 14400 for the Photoshop
   // strokes, the gradient and pattern overlays and the gradient glows (a
   // gradient and a pattern are printed whole once), and to 15000 for the
-  // noise gradient's fields and Shape Burst.
-  it('describes every key, field and item in under 15000 characters', () => {
+  // noise gradient's fields and Shape Burst, and to 15500 for the Satin.
+  it('describes every key, field and item in under 15500 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(15000);
+    expect(text.length).toBeLessThan(15500);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.

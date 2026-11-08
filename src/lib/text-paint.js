@@ -1173,8 +1173,9 @@ export function boxShadows(style) {
 
 // The box's layer effects past its drop shadows, as the engine's box job takes
 // them (`encodeBox`'s `effects`): Outer Glow, Inner Glow, each Inner Shadow
-// (thrown from the chapter's light when it follows it) and each Color
-// Overlay. Only the Rust engine paints them.
+// (thrown from the chapter's light when it follows it), each Color and
+// Gradient Overlay, the Pattern Overlay, the Satin and each Stroke. Only the
+// Rust engine paints them.
 export function boxEffects(style) {
   const out = [];
   const og = style?.outerGlow;
@@ -1198,6 +1199,11 @@ export function boxEffects(style) {
   const po = style?.patternOverlay;
   if (po?.on && po.opacity > 0 && po.pattern) {
     out.push({ kind: 'patternOverlay', opacity: po.opacity, blend: po.blend, paint: { kind: 'pattern', pattern: po.pattern } });
+  }
+  // The satin's angle is its own: it never follows the chapter's light.
+  const sa = style?.satin;
+  if (sa?.on && sa.opacity > 0) {
+    out.push({ kind: 'satin', color: sa.color, opacity: sa.opacity, blend: sa.blend, angle: sa.angle, distance: sa.distance, size: sa.size, contour: sa.contour, invert: sa.invert });
   }
   for (const k of strokeEffectsOf(style)) {
     out.push({ kind: 'stroke', size: k.size, position: k.position, opacity: k.opacity, blend: k.blend, paint: strokePaint(k) });
@@ -1226,6 +1232,7 @@ function strokePaint(k) {
 // What reaches past the letters' silhouette, as shadows: every shadow the box
 // casts (`boxShadows`), an outer glow, which reaches as far as an unmoved
 // shadow of its size does, and the Photoshop strokes' outside parts. What sizes the canvas a box lands in.
+// The satin, like the other inside effects, never leaves the letters.
 export function reachShadows(style) {
   const shadows = boxShadows(style);
   const og = style?.outerGlow;

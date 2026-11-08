@@ -1213,6 +1213,7 @@ const BULK_VALUES = () => ({
   colorOverlays: [{ color: '#00ff00', opacity: 0.5, blend: 'multiply' }],
   gradientOverlays: [{ blend: 'screen', opacity: 0.5, gradient: { style: 'radial', angle: 30, scale: 0.5, reverse: true, offset: [0.1, 0], stops: [{ color: '#111111', pos: 0, opacity: 1 }, { color: '#eeeeee', pos: 1, opacity: 0.5 }], type: 'noise', noise: { seed: 77, roughness: 0.8, model: 'hsb', min: [0, 0.2, 0.3], max: [1, 0.9, 1], restrict: false, transparency: true } } }],
   patternOverlay: { on: true, blend: 'multiply', opacity: 0.5, pattern: { ...defaultStyle().pattern, on: true, kind: 'lines' } },
+  satin: { on: true, blend: 'screen', color: '#123123', opacity: 0.75, angle: -45, distance: 6, size: 9, contour: { preset: 'gaussian', aa: false }, invert: false },
   strokeEffects: [{ size: 4, position: 'outside', blend: 'normal', opacity: 1, fill: 'gradient', color: '#000000', gradient: { style: 'shapeburst', stops: [{ color: '#111111', pos: 0, opacity: 1 }, { color: '#eeeeee', pos: 1, opacity: 1 }] } }],
   blur: 7,
   motionBlur: { on: true, x: 3, y: -1, amount: 8 },

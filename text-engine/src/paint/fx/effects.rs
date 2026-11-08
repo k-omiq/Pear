@@ -1,11 +1,11 @@
 //! The layer effects past the drop shadow: Outer Glow, Inner Glow, Inner
-//! Shadow, Color Overlay, Gradient Overlay, Pattern Overlay and Stroke, and
-//! how each is laid.
+//! Shadow, Color Overlay, Gradient Overlay, Pattern Overlay, Satin and
+//! Stroke, and how each is laid.
 //!
 //! The order is Photoshop's, as PhotoCraft composites it
 //! (`crates/compose/src/effects/composite.rs`): behind the letters the drop
 //! shadows, then the outer glows; on the letters their fill at Fill Opacity,
-//! then the pattern, gradient and colour overlays, the inner glows, the inner
+//! then the pattern, gradient and colour overlays, the satin, the inner glows, the inner
 //! shadows and the inside of the strokes, laid inside the letters at full
 //! strength and then cut to the letters' own alpha; the outside of the
 //! strokes slid under the letters; then the outlines (`strokes`, the bands).
@@ -82,6 +82,25 @@ pub struct Overlay {
     pub blend: Blend,
 }
 
+/// Satin: two softened copies of the letters thrown apart along `angle`,
+/// the gap between them laid inside the letters. One per box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Satin {
+    pub color: Rgba,
+    pub opacity: f64,
+    pub blend: Blend,
+    /// Degrees, the box's own (Satin has no Global Light).
+    pub angle: f64,
+    /// How far each copy is thrown, job units.
+    pub distance: f64,
+    /// Size, job units.
+    pub size: f64,
+    pub invert: bool,
+    /// As the style states it; `None` is Linear. Read through its Satin
+    /// table (`Lut::satin`) when laid.
+    pub contour: Option<Lut>,
+}
+
 /// What an effect paints with: Photoshop's Fill Type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Paint {
@@ -142,6 +161,7 @@ pub enum Effect {
     ColorOverlay(Overlay),
     GradientOverlay(PaintOverlay),
     PatternOverlay(PaintOverlay),
+    Satin(Satin),
     Stroke(Stroke),
 }
 
@@ -157,6 +177,7 @@ impl Effect {
             Effect::InnerShadow(s) => s.opacity,
             Effect::ColorOverlay(o) => o.opacity,
             Effect::GradientOverlay(o) | Effect::PatternOverlay(o) => o.opacity,
+            Effect::Satin(s) => s.opacity,
             Effect::Stroke(s) => s.opacity * f64::from(u8::from(s.size > 0.0)),
         }
     }
@@ -742,6 +763,26 @@ pub(crate) fn lay_outside(
     Ok(())
 }
 
+/// A satin's throw in device pixels: `(-cos a, sin a) * distance` carried by
+/// `carried`, at least a pixel long (Photoshop draws Distance 0 as 1 px, an
+/// edge band of 2 / size, measured by PhotoCraft in Photoshop 27.11), and
+/// rounded to whole pixels as Photoshop does. The floor applies in job units
+/// first, so a box looks the same at every zoom, then in device pixels.
+/// Ported from PhotoCraft `crates/compose/src/effects/bevel.rs`
+/// `satin_distance` and `effects/paint.rs` `offset`.
+pub(crate) fn satin_throw(s: &Satin, carried: impl Fn(f64, f64) -> (f64, f64)) -> (f64, f64) {
+    let a = s.angle.to_radians();
+    let (ux, uy) = carried(-a.cos(), a.sin());
+    let d = s.distance.max(1.0);
+    let (mut dx, mut dy) = (ux * d, uy * d);
+    let len = dx.hypot(dy);
+    let unit = ux.hypot(uy);
+    if len < 1.0 && unit > 0.0 && unit.is_finite() {
+        (dx, dy) = (ux / unit, uy / unit);
+    }
+    (dx.round(), dy.round())
+}
+
 /// The fill raster `r` with the interior effects laid on it at Fill Opacity
 /// `fill_opacity`, and the outside parts of its strokes. `carried` turns a
 /// job-unit throw into device pixels; `scale` is device pixels to a job unit.
@@ -764,6 +805,12 @@ pub(crate) fn interior(
                 s.size * scale + dx.abs().max(dy.abs()) + 2.0
             }
             Effect::Stroke(s) => s.widths().1 * scale + 2.0,
+            // Without room the copy thrown off the far side of the letters
+            // falls off the map and the band there is lost.
+            Effect::Satin(s) => {
+                let (dx, dy) = satin_throw(s, &carried);
+                s.size * scale + dx.abs().max(dy.abs()) + 2.0
+            }
             _ => 0.0,
         });
     }
@@ -844,6 +891,32 @@ pub(crate) fn interior(
                 &|_, _, _| c,
                 o.opacity,
                 o.blend,
+                None,
+                0,
+            )?;
+        }
+    }
+    for e in shown() {
+        if let Effect::Satin(st) = e {
+            let (dx, dy) = satin_throw(st, &carried);
+            let m = map::satin(
+                &shape,
+                dx as f32,
+                dy as f32,
+                (st.size * scale) as f32,
+                st.invert,
+                st.contour.as_ref(),
+            );
+            let m = map::relative_to(&m, &shape);
+            let c = flat(st.color);
+            lay_with(
+                &mut lay,
+                &m,
+                (0, 0),
+                dev,
+                &|_, _, _| c,
+                st.opacity,
+                st.blend,
                 None,
                 0,
             )?;
@@ -1088,6 +1161,65 @@ mod tests {
     fn at(r: &Raster, x: i32, y: i32) -> [u8; 4] {
         let i = ((y - r.y) as usize * r.width as usize + (x - r.x) as usize) * 4;
         [r.data[i], r.data[i + 1], r.data[i + 2], r.data[i + 3]]
+    }
+
+    fn satin(angle: f64, distance: f64, invert: bool) -> Satin {
+        Satin {
+            color: BLUE,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            angle,
+            distance,
+            size: 0.0,
+            invert,
+            contour: None,
+        }
+    }
+
+    #[test]
+    fn a_satin_throw_is_whole_pixels_and_at_least_one() {
+        let same = |x: f64, y: f64| (x, y);
+        // Photoshop's offset: (-cos a, sin a) * distance, rounded.
+        assert_eq!(satin_throw(&satin(0.0, 3.0, false), same), (-3.0, 0.0));
+        assert_eq!(satin_throw(&satin(120.0, 10.0, false), same), (5.0, 9.0));
+        // Distance 0 is drawn as 1 px, along the angle.
+        assert_eq!(satin_throw(&satin(90.0, 0.0, false), same), (0.0, 1.0));
+        assert_eq!(satin_throw(&satin(45.0, 0.0, false), same), (-1.0, 1.0));
+        // A turned box carries the throw: a quarter turn makes across down.
+        let turn = |x: f64, y: f64| (-y, x);
+        assert_eq!(satin_throw(&satin(0.0, 3.0, false), turn), (0.0, -3.0));
+        // A mirrored one flips it; twice the scale throws twice as far.
+        let mirror = |x: f64, y: f64| (-x, y);
+        assert_eq!(satin_throw(&satin(0.0, 3.0, false), mirror), (3.0, 0.0));
+        let twice = |x: f64, y: f64| (2.0 * x, 2.0 * y);
+        assert_eq!(satin_throw(&satin(0.0, 3.0, false), twice), (-6.0, 0.0));
+        // Small on screen it is still a device pixel long.
+        let small = |x: f64, y: f64| (0.25 * x, 0.25 * y);
+        assert_eq!(satin_throw(&satin(0.0, 0.0, false), small), (-1.0, 0.0));
+    }
+
+    #[test]
+    fn a_satin_lays_the_gap_between_its_copies_inside_the_letters() {
+        let _scope = budget::Scope::new();
+        let r = square(20);
+        let (out, _) = inside(&r, &[Effect::Satin(satin(0.0, 3.0, false))]);
+        // Thrown 3 each way across: the side columns take it, the middle not.
+        assert_eq!(at(&out, 10, 20), [0, 0, 255, 255]);
+        assert_eq!(at(&out, 29, 20), [0, 0, 255, 255]);
+        assert_eq!(at(&out, 20, 20), [255, 0, 0, 255]);
+        // Never outside the letters.
+        for (x, y) in [(9, 20), (30, 20), (20, 9), (20, 30)] {
+            assert_eq!(at(&out, x, y)[3], 0, "({x}, {y})");
+        }
+        // Inverted, the other way round.
+        let (out, _) = inside(&r, &[Effect::Satin(satin(0.0, 3.0, true))]);
+        assert_eq!(at(&out, 10, 20), [255, 0, 0, 255]);
+        assert_eq!(at(&out, 20, 20), [0, 0, 255, 255]);
+        // Distance 0 is a 1 px throw, not two copies cancelling.
+        let (zero, _) = inside(&r, &[Effect::Satin(satin(0.0, 0.0, false))]);
+        let (one, _) = inside(&r, &[Effect::Satin(satin(0.0, 1.0, false))]);
+        assert_eq!(zero.data, one.data);
+        assert_eq!(at(&zero, 10, 20), [0, 0, 255, 255]);
     }
 
     #[test]

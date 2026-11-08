@@ -332,6 +332,21 @@ impl Lut {
         self.0.iter().enumerate().all(|(i, v)| *v as usize == i)
     }
 
+    /// Satin's table: the contour read from its far end, `|c(1 - v) - c(1)|`.
+    /// Measured by PhotoCraft in Photoshop 27.11: Cone and Cone - Inverted
+    /// Satins are identical, and a Gaussian Satin runs under the diagonal
+    /// (0.36 at 0.5) while the same Gaussian on a glow runs over it (0.65).
+    /// Linear stays Linear. Ported from PhotoCraft
+    /// `crates/compose/src/effects/paint.rs` `satin_lut`.
+    pub fn satin(&self) -> Self {
+        let end = i16::from(self.0[255]);
+        let mut out = [0u8; 256];
+        for (i, v) in out.iter_mut().enumerate() {
+            *v = (i16::from(self.0[255 - i]) - end).unsigned_abs() as u8;
+        }
+        Lut(out)
+    }
+
     pub fn apply(&self, v: u8) -> u8 {
         self.0[v as usize]
     }
@@ -485,6 +500,22 @@ mod tests {
         ];
         let l = Lut::new(&Curve::Points(cone));
         assert!((i32::from(l.apply(64)) - 128).abs() <= 1);
+    }
+
+    #[test]
+    fn satin_reads_the_contour_from_its_far_end() {
+        // Linear stays Linear.
+        assert!(Lut::identity().satin().is_identity());
+        // Photoshop draws Cone and Cone - Inverted Satins alike (the
+        // measured curves agree to within their 1 % thinning).
+        let cone = Lut::new(&Curve::Preset(1)).satin();
+        let inverted = Lut::new(&Curve::Preset(2)).satin();
+        for i in 0..256 {
+            let d = (i32::from(cone.0[i]) - i32::from(inverted.0[i])).abs();
+            assert!(d <= 6, "{i}: {} vs {}", cone.0[i], inverted.0[i]);
+        }
+        // A Gaussian Satin runs under the diagonal at the middle.
+        assert!(Lut::new(&Curve::Preset(5)).satin().apply(128) < 128);
     }
 
     #[test]

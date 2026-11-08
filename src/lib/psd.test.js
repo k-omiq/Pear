@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { readPsd, initializeCanvas } from 'ag-psd';
+import { readPsd, writePsd, initializeCanvas } from 'ag-psd';
 import {
   buildPagePsd,
   isRasterOnly,
@@ -611,6 +611,21 @@ describe('textLayerFor', () => {
     // Switched off, a glow is not written.
     const off = textLayerFor(page, box({ ...baseStyle, outerGlow: { ...style.outerGlow, on: false } }), rendered);
     expect(off.effects).toBeUndefined();
+  });
+
+  it('writes the Satin as Photoshop states it, and reads it back from ag-psd', () => {
+    const satin = { on: true, blend: 'multiply', color: '#102030', opacity: 0.5, angle: 19, distance: 11, size: 14, contour: { preset: 'custom', aa: true, pts: [[0, 0, false], [128, 255, true], [255, 0, false]] }, invert: true };
+    const fx = textLayerFor(page, box({ ...baseStyle, satin }), rendered).effects;
+    expect(fx.satin).toMatchObject({ enabled: true, size: { units: 'Pixels', value: 14 }, distance: { units: 'Pixels', value: 11 }, angle: 19, blendMode: 'multiply', opacity: 0.5, invert: true, antialiased: true });
+    expect(fx.satin.color).toEqual({ r: 16, g: 32, b: 48 });
+    expect(fx.satin.contour.curve).toHaveLength(3);
+    // ag-psd writes it as Photoshop's ChFX and reads the same fields back.
+    const bytes = writePsd({ width: 4, height: 4, children: [{ name: 'satin', left: 0, top: 0, right: 4, bottom: 4, effects: { satin: fx.satin } }] });
+    const back = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true }).children[0].effects.satin;
+    expect(back).toMatchObject({ size: { value: 14 }, distance: { value: 11 }, angle: 19, invert: true, opacity: 0.5 });
+    // Switched off, it is not written; it never sends a box down the raster branch.
+    expect(textLayerFor(page, box({ ...baseStyle, satin: { ...satin, on: false } }), rendered).effects).toBeUndefined();
+    expect(isRasterOnly({ ...baseStyle, satin })).toBe(false);
   });
 
   it('writes the Photoshop strokes after the outlines and the gradient overlays over the fill gradient', () => {

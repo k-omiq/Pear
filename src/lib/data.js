@@ -394,6 +394,9 @@ export function defaultStyle() {
     // engine does not.
     gradientOverlays: [],
     patternOverlay: patternOverlayDefault(),
+    // Photoshop's Satin (one, `normalizeSatin`). The Rust engine paints it;
+    // the browser engine does not.
+    satin: satinDefault(),
     strokeEffects: [],
     // How the outlines are laid: 'merged' (one shape under the fill) or
     // 'each' (letter by letter, a later letter's rim over an earlier
@@ -883,6 +886,38 @@ export function normalizePatternOverlay(x) {
     pattern: { ...normalizePattern(x?.pattern, d.pattern), on: true },
   };
 }
+// Photoshop's Satin, as its dialog has it: two softened copies of the
+// letters thrown `distance` apart each way along `angle`, the gap between
+// them laid inside the letters.
+//   on, blend, color, opacity    Structure
+//   angle       degrees, the box's own: Satin has no Global Light
+//   distance    page px, 0..250 (0 is drawn as 1, as Photoshop does)
+//   size        page px, 0..250
+//   contour     `normalizeContour`; Satin reads it from its far end
+//   invert      lay the inverse of the gap
+// The defaults are PhotoCraft's dialog defaults (Photoshop's): Multiply,
+// black, 50 %, 19 degrees, 11 px, size 14, Linear, anti-aliased, inverted.
+export const SATIN_DISTANCE_MAX = 250;
+function satinDefault() {
+  return { on: false, blend: 'multiply', color: '#000000', opacity: 0.5, angle: 19, distance: 11, size: 14, contour: { preset: 'linear', aa: true }, invert: true };
+}
+export function normalizeSatin(x) {
+  const d = satinDefault();
+  const a = num(x?.angle, d.angle);
+  return {
+    on: x?.on === true,
+    blend: blendMode(x?.blend, d.blend),
+    color: hex(x?.color, d.color),
+    opacity: Math.min(1, Math.max(0, num(x?.opacity, d.opacity))),
+    // -180..180, as Photoshop's dial reads; past it, turned back into it.
+    angle: Math.round((Math.abs(a) <= 180 ? a : (((a % 360) + 540) % 360) - 180) * 100) / 100,
+    distance: Math.min(SATIN_DISTANCE_MAX, Math.max(0, num(x?.distance, d.distance))),
+    size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, d.size))),
+    contour: x?.contour ? normalizeContour(x.contour) : { ...d.contour },
+    invert: typeof x?.invert === 'boolean' ? x.invert : d.invert,
+  };
+}
+
 // Photoshop's Stroke effect, apart from the outlines (`strokes`):
 //   size       page px, 0..250
 //   position   STROKE_POSITIONS: outside the letters' edge, inside it, or
@@ -1535,6 +1570,7 @@ export function normalizeStyle(s) {
     colorOverlays: Array.isArray(src.colorOverlays) ? src.colorOverlays.map(normalizeOverlay) : [],
     gradientOverlays: Array.isArray(src.gradientOverlays) ? src.gradientOverlays.map(normalizeGradientOverlay) : [],
     patternOverlay: normalizePatternOverlay(src.patternOverlay),
+    satin: normalizeSatin(src.satin),
     strokeEffects: Array.isArray(src.strokeEffects) ? src.strokeEffects.map(normalizeStrokeEffect) : [],
     roughen: { ...d.roughen, ...(src.roughen || {}) },
   };

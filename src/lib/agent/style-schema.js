@@ -1,7 +1,7 @@
 import {
   GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
-  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
+  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, SATIN_DISTANCE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
   STROKE_POSITIONS, STROKE_FILLS,
 } from '../data.js';
 
@@ -205,6 +205,17 @@ export const STYLE_SCHEMA = {
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     opacity: alpha('overlay alpha'),
     pattern: shared('pattern', object('as the fill pattern', patternFields())),
+  }),
+  satin: object('silky inner sheen (Photoshop Satin; Rust)', {
+    on: boolean('enable satin'),
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+    color: color('satin colour'),
+    opacity: alpha('satin alpha'),
+    angle: number('deg, own (no global light)', -180, 180),
+    distance: number('px each copy is thrown', 0, SATIN_DISTANCE_MAX),
+    size: number('soft edge px', 0, SHADOW_SIZE_MAX),
+    contour: contourField(),
+    invert: boolean('lay the inverse'),
   }),
   strokeEffects: array('Photoshop Stroke effects, top first, apart from strokes (Rust)', object('stroke effect', {
     size: number('px', 0, SHADOW_SIZE_MAX),

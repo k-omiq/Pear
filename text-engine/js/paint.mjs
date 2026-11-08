@@ -394,7 +394,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 6
+export const BOX_WIRE_VERSION = 7
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 
@@ -466,7 +466,7 @@ function contourRecord(contour) {
   u32(id)
 }
 
-const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7 }
+const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7, satin: 8 }
 const GRADIENT_STYLE = { linear: 0, radial: 1, angle: 2, reflected: 3, diamond: 4, shapeburst: 5 }
 const NOISE_MODEL = { rgb: 0, hsb: 1, lab: 2 }
 const STROKE_POSITION = { outside: 0, inside: 1, center: 2 }
@@ -556,6 +556,14 @@ function effectRecord(fx, tileIndex) {
   f64(fx.opacity)
   u32(blendId(fx.blend))
   if (kind === 4) return
+  if (kind === 8) {
+    f64(fx.angle ?? 19)
+    f64(fx.distance ?? 11)
+    f64(fx.size ?? 14)
+    u32((fx.invert ? 1 : 0) | (fx.contour?.aa ? 2 : 0))
+    contourRecord(fx.contour)
+    return
+  }
   if (kind === 3) {
     f64(fx.x)
     f64(fx.y)
@@ -632,10 +640,11 @@ function clipShape(sh) {
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
  * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1
  * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay' | 'stroke' |
- *   'gradientOverlay' | 'patternOverlay', color?: string,
+ *   'gradientOverlay' | 'patternOverlay' | 'satin', color?: string,
  *   opacity: number, blend?: string, technique?: 'softer' | 'precise', source?: 'edge' | 'center',
  *   size?: number, spread?: number, choke?: number, range?: number, noise?: number,
- *   x?: number, y?: number, seed?: number, contour?: {preset: string, pts?: number[][]},
+ *   x?: number, y?: number, seed?: number, contour?: {preset: string, pts?: number[][], aa?: boolean},
+ *   angle?: number, distance?: number, invert?: boolean,
  *   gradient?: object, position?: 'outside' | 'inside' | 'center',
  *   paint?: {kind: 'color', color: string} | {kind: 'gradient', gradient: object} | {kind: 'fill', fill: object},
  *   fill?: object}[]} [request.effects]
@@ -644,7 +653,8 @@ function clipShape(sh) {
  *   reverse, offset: [x, y], stops: [{pos, color, opacity?}], type?, noise?}` (style
  *   'shapeburst' runs from the painted shape's edge in; type 'noise' paints `noise`). A stroke paints a colour,
  *   a gradient or a fill (a pattern, as a glyph job's fill), and a pattern overlay its
- *   `fill`, in job units
+ *   `fill`, in job units. A satin throws two copies `distance` apart along its own
+ *   `angle` (degrees; no global light) and lays the gap, `invert`ed or not
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
  *   the surface, straight RGBA8 of `width * height`: what a blend mode blends with
  * @returns {Uint8Array} a view of a buffer that the next call overwrites

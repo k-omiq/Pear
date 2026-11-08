@@ -797,6 +797,24 @@ export function textLayerFor(p, box, rendered) {
   });
   if (s.outerGlow?.on) effects.outerGlow = glowFx(s.outerGlow, false);
   if (s.innerGlow?.on) effects.innerGlow = glowFx(s.innerGlow, true);
+  // The Satin (ChFX): its own angle (no Global Light), Distance and Size in
+  // pixels, Invert, and the contour (Photoshop reads it from its far end,
+  // as the engine does). Names as PhotoCraft's `crates/io/src/effects_map.rs`.
+  const sa = s.satin;
+  if (sa?.on) {
+    effects.satin = {
+      enabled: true,
+      size: { units: 'Pixels', value: sa.size || 0 },
+      distance: { units: 'Pixels', value: sa.distance || 0 },
+      angle: sa.angle ?? 19,
+      color: hexToRgb(sa.color),
+      opacity: sa.opacity ?? 1,
+      blendMode: psdBlend(sa.blend),
+      invert: sa.invert === true,
+      antialiased: sa.contour?.aa === true,
+      ...customContour(sa.contour),
+    };
+  }
   if ((s.colorOverlays ?? []).length) {
     effects.solidFill = s.colorOverlays.map((o) => ({ enabled: true, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
   }

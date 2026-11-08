@@ -55,6 +55,7 @@
     CONTOUR_LABELS,
     SHADOW_SIZE_MAX,
     SHADOW_DISTANCE_MAX,
+    SATIN_DISTANCE_MAX,
     newShadow,
     newInnerShadow,
     newOverlay,
@@ -1211,6 +1212,89 @@
   </div>
 {/snippet}
 
+<!-- Photoshop's Satin, in its dialog's order: Blend Mode and colour,
+     Opacity, Angle (its own: no Global Light), Distance, Size, Contour with
+     Anti-aliased, Invert. The Rust engine paints it. -->
+{#snippet satinControls(sa)}
+  <div class="switch-row">
+    <button
+      type="button"
+      class="switch"
+      class:on={sa.on}
+      role="switch"
+      aria-checked={sa.on}
+      aria-label="Satin"
+      onclick={() => { sa.on = !sa.on; touch(); }}
+    ><span class="knob"></span></button>
+    <span class="lbl2">Satin</span>
+  </div>
+  <div class="insp-sub-body" class:disabled={!sa.on} style="padding:0;border:none;gap:11px">
+    <div class="sh-more" style="margin:0">
+      <label class="sh-contour" title="Blend mode">
+        <span>Mode</span>
+        <select value={sa.blend} disabled={!sa.on} aria-label="Satin blend mode" onchange={(e) => { sa.blend = e.target.value; touch(); }}>
+          {#each LAYER_BLEND_MODES as m (m)}
+            <option value={m}>{blendLabel(m)}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+    <div class="grp">
+      <span class="lbl">Colour</span>
+      {@render colorField(sa, 'color', 'Satin colour')}
+    </div>
+    <div class="grp">
+      <span class="lbl">Opacity</span>
+      <div class="slider-row">
+        <input type="range" min="0" max="100" step="1" value={pct(sa.opacity)} disabled={!sa.on} aria-label="Satin opacity" oninput={(e) => setAlpha(sa, 'opacity', e.target.value)} />
+        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(sa.opacity)} disabled={!sa.on} title="Opacity, %" aria-label="Satin opacity, percent" onchange={(e) => commitAlpha(sa, 'opacity', e)} />
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Angle</span>
+      <div class="slider-row">
+        <input type="range" min="-180" max="180" step="1" value={sa.angle} disabled={!sa.on} aria-label="Satin angle" oninput={(e) => setNum(sa, 'angle', e.target.value, -180, 180)} />
+        <input class="num-s" type="number" min="-180" max="180" step="1" value={sa.angle} disabled={!sa.on} title="Angle the two copies are thrown along, degrees: the box's own, not the chapter's light" aria-label="Satin angle, degrees" onchange={(e) => commitNum(sa, 'angle', e, -180, 180)} />
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Distance</span>
+      <div class="slider-row">
+        <input type="range" min="0" max={SATIN_DISTANCE_MAX} step="1" value={sa.distance} disabled={!sa.on} aria-label="Satin distance" oninput={(e) => setNum(sa, 'distance', e.target.value, 0, SATIN_DISTANCE_MAX)} />
+        <input class="num-s" type="number" min="0" max={SATIN_DISTANCE_MAX} step="1" value={sa.distance} disabled={!sa.on} title="How far each copy is thrown, page px (0 draws as 1, as Photoshop does)" aria-label="Satin distance, page px" onchange={(e) => commitNum(sa, 'distance', e, 0, SATIN_DISTANCE_MAX)} />
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Size</span>
+      <div class="slider-row">
+        <input type="range" min="0" max={SHADOW_SIZE_MAX} step="1" value={sa.size} disabled={!sa.on} aria-label="Satin size" oninput={(e) => setNum(sa, 'size', e.target.value, 0, SHADOW_SIZE_MAX)} />
+        <input class="num-s" type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={sa.size} disabled={!sa.on} title="How soft the copies are, page px" aria-label="Satin size, page px" onchange={(e) => commitNum(sa, 'size', e, 0, SHADOW_SIZE_MAX)} />
+      </div>
+    </div>
+    <div class="sh-more" style="margin:0">
+      <label class="sh-contour" title="Contour: Satin reads it from its far end, as Photoshop does">
+        <span>Contour</span>
+        <select value={sa.contour?.preset ?? 'linear'} disabled={!sa.on} aria-label="Satin contour" onchange={(e) => setShadowContour(sa, e.target.value)}>
+          {#each CONTOUR_PRESETS as id (id)}
+            <option value={id}>{CONTOUR_LABELS[id]}</option>
+          {/each}
+          {#if sa.contour?.preset === 'custom'}
+            <option value="custom">{CONTOUR_LABELS.custom}</option>
+          {/if}
+        </select>
+      </label>
+      <label class="sh-check" title="Anti-aliased: the contour read at every level, not a hundred steps">
+        <input type="checkbox" checked={sa.contour?.aa === true} disabled={!sa.on} aria-label="Satin contour anti-aliased" onchange={(e) => { sa.contour = { ...sa.contour, aa: e.target.checked }; touch(); }} />
+        <span>Anti-aliased</span>
+      </label>
+      <label class="sh-check" title="Invert: lay the inverse of the gap between the copies">
+        <input type="checkbox" checked={sa.invert} disabled={!sa.on} aria-label="Satin invert" onchange={(e) => { sa.invert = e.target.checked; touch(); }} />
+        <span>Invert</span>
+      </label>
+    </div>
+  </div>
+{/snippet}
+
 <!-- An effect gradient, as Photoshop's Gradient Overlay and Stroke take one:
      Style, Angle, Scale, Reverse, and its stops. `placed` false hides what a
      glow's gradient does not read (it runs along the glow). -->
@@ -2154,11 +2238,13 @@
 
         {#if effectsTab === 'glow'}
           {#if !rustBoxes}
-            <p class="nofill-note">Glows need the Rust text engine (Settings).</p>
+            <p class="nofill-note">Glows and Satin need the Rust text engine (Settings).</p>
           {/if}
           {@render glowControls(s.outerGlow, 'Outer glow', false)}
           <div class="insp-rule"></div>
           {@render glowControls(s.innerGlow, 'Inner glow', true)}
+          <div class="insp-rule"></div>
+          {@render satinControls(s.satin)}
         {/if}
 
         {#if effectsTab === 'warp'}
