@@ -545,7 +545,7 @@ import {
               {@render tick('noFill')}
               <span class="lbl">No fill</span>
               <div class="seg">
-                <button class:on={s.noFill} aria-pressed={s.noFill} title="No fill: the letters are see-through and only the strokes show" onclick={() => set('noFill', !s.noFill)}>{@html iconNoFill}</button>
+                <button class:on={s.noFill} aria-pressed={s.noFill} title="No fill: the letters are see-through; only the strokes and layer effects show" onclick={() => set('noFill', !s.noFill)}>{@html iconNoFill}</button>
               </div>
             </div>
             <div class="brow" class:off={!app.bulk.mask.opacity}>

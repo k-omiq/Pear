@@ -1251,6 +1251,12 @@ fn lay_styled(
 /// page (`Blend::fill_is_special`), where Fill is part of the blend and not
 /// coverage. A plain fill (no interior effects on it) is then handed back
 /// whole, apart from the rest, for `blend::lay_fill`.
+///
+/// A box with no fill is Photoshop's layer at Fill 0 %: its interior
+/// effects (overlays, Satin, glows, inner shadows, the Photoshop strokes, an
+/// Inner Bevel, and the outer bevels after them) are laid from the letters'
+/// shape as they would have been filled, and the fill itself is not seen.
+/// Its outlines are cut to their outer halves, as without effects.
 fn paint_glyphs(
     engine: &mut Engine,
     request: &mut BoxRequest,
@@ -1260,11 +1266,11 @@ fn paint_glyphs(
     special: bool,
 ) -> Result<Glyphs, Error> {
     let job = &request.request.job;
-    let fade = request.fill_opacity;
-    let inside = !job.no_fill
-        && job.silhouette.is_none()
-        && request.effects.iter().any(|e| e.interior() && e.shows());
-    if (fade >= 1.0 && !inside) || job.no_fill || job.silhouette.is_some() {
+    let hollow = job.no_fill;
+    let fade = if hollow { 0.0 } else { request.fill_opacity };
+    let inside =
+        job.silhouette.is_none() && request.effects.iter().any(|e| e.interior() && e.shows());
+    if job.silhouette.is_some() || (!inside && (hollow || fade >= 1.0)) {
         return Ok(Glyphs {
             rasters: paint_job_with(engine, &request.request, rasterizer)?
                 .into_iter()
@@ -1276,10 +1282,18 @@ fn paint_glyphs(
     let mut outside = None;
     let mut bevels = None;
     let mut whole_fill = None;
-    // The fill alone, faded, with the effects on it.
+    // The fill alone, faded, with the effects on it. With no fill, the
+    // letters' shape as they would have been filled: their solid
+    // silhouette, at Fill 0.
     let bands = core::mem::take(&mut request.request.job.bands);
     let negative = request.request.job.effects.negative.take();
+    if hollow {
+        request.request.job.no_fill = false;
+        request.request.job.silhouette = Some(Rgba([0, 0, 0, 255]));
+    }
     let fill = paint_job_with(engine, &request.request, rasterizer);
+    request.request.job.no_fill = hollow;
+    request.request.job.silhouette = None;
     request.request.job.bands = bands;
     request.request.job.effects.negative = negative;
     if let Some(mut r) = fill? {
@@ -1311,7 +1325,7 @@ fn paint_glyphs(
     if !request.request.job.bands.is_empty() || request.request.job.effects.negative.is_some() {
         request.request.job.no_fill = true;
         let rims = paint_job_with(engine, &request.request, rasterizer);
-        request.request.job.no_fill = false;
+        request.request.job.no_fill = hollow;
         if let Some(r) = rims? {
             out.push(r);
         }

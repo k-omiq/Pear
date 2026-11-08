@@ -129,3 +129,50 @@ describe.each([
     expect(none.data.some((v) => v !== 0)).toBe(false);
   });
 });
+
+// Photoshop's Fill 0 %: the layer's effects are drawn from its shape though
+// the fill is not. The engine lays a no-fill box's interior effects, its
+// Photoshop strokes and its bevel from the letters as they would have been
+// filled; the canvas passes paint no layer effects at all.
+describe('a box with no fill and layer effects, painted whole by the engine', () => {
+  const GREEN = '#00ff00';
+  it('lays an inner shadow and an inside Photoshop stroke from the letters, the fill unseen', () => {
+    const fx = {
+      strokes: [],
+      innerShadows: [{ x: 3, y: 0, size: 0, color: GREEN, opacity: 1, blend: 'normal' }],
+      strokeEffects: [{ size: 1, position: 'inside', color: '#ffff00', opacity: 1 }],
+    };
+    const filled = texture(boxOf(fx), whole);
+    const hollow = texture(boxOf({ ...fx, noFill: true }), whole);
+    expect([hollow.width, hollow.height]).toEqual([filled.width, filled.height]);
+    let red = 0;
+    let shown = 0;
+    let through = 0;
+    for (let i = 0; i < filled.data.length; i += 4) {
+      // Nothing of the fill's red, where the filled box shows it.
+      if (is(filled, i, 255, 0, 0)) {
+        red++;
+        expect(hollow.data[i + 3]).toBe(0);
+        through++;
+      }
+      // Where the filled box shows an effect, the hollow one shows it too.
+      if (is(filled, i, 0, 255, 0) || is(filled, i, 255, 255, 0)) {
+        shown++;
+        expect([...hollow.data.subarray(i, i + 4)]).toEqual([...filled.data.subarray(i, i + 4)]);
+      }
+      expect(hollow.data[i] === 255 && hollow.data[i + 1] === 0 && hollow.data[i + 3] > 0).toBe(false);
+    }
+    expect(red).toBeGreaterThan(500);
+    expect(shown).toBeGreaterThan(500);
+    expect(through).toBe(red);
+  });
+
+  it('shows a colour overlay in the letters\' place', () => {
+    const over = texture(boxOf({ strokes: [], noFill: true, colorOverlays: [{ color: GREEN, opacity: 1, blend: 'normal' }] }), whole);
+    const solid = texture(boxOf({ strokes: [], color: GREEN }), whole);
+    expect([over.width, over.height]).toEqual([solid.width, solid.height]);
+    let same = 0;
+    for (let i = 0; i < solid.data.length; i += 4) if (solid.data[i + 3] === 255 && is(over, i, 0, 255, 0)) same++;
+    expect(same).toBeGreaterThan(2000);
+  });
+});

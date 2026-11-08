@@ -375,7 +375,9 @@ export function defaultStyle() {
     // No fill at all: the letters are cut out of their own strokes, so what
     // shows is each stroke's visible width and the page through the letter.
     // It wins over the pattern and the gradient, and a box with no stroke
-    // either shows nothing. A shadow is then the strokes' shadow.
+    // either shows only its layer effects. A shadow is then the strokes'
+    // shadow. As Photoshop's Fill 0 %, the interior effects, the Photoshop
+    // strokes and the bevel are still laid from the letters' shape (Rust).
     noFill: false,
     // ---- strokes ----
     // Ordered innermost first: strokes[0] sits right against the glyph,
