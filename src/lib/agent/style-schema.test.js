@@ -336,10 +336,11 @@ describe('styleSchemaText', () => {
   // strokes, the gradient and pattern overlays and the gradient glows (a
   // gradient and a pattern are printed whole once), and to 15000 for the
   // noise gradient's fields and Shape Burst, and to 15500 for the Satin, and
-  // to 17000 for the Bevel & Emboss (Structure, Shading, Contour, Texture).
-  it('describes every key, field and item in under 17000 characters', () => {
+  // to 17000 for the Bevel & Emboss (Structure, Shading, Contour, Texture),
+  // and to 17200 for the Advanced Blending options (interior, knockout).
+  it('describes every key, field and item in under 17200 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(17000);
+    expect(text.length).toBeLessThan(17200);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.
@@ -463,5 +464,19 @@ describe('the bevel in the schema', () => {
     expect(text).toContain('bevel.gloss.preset: enum CONTOUR - ');
     expect(text).toContain('bevel.shadow: object like bevel.highlight - ');
     expect(text).toContain('bevel.texture.pattern: object like pattern - ');
+  });
+});
+
+describe('the advanced blending options in the schema', () => {
+  it('takes Blend Interior Effects as Group and a Knockout, and refuses a knockout Photoshop has no name for', () => {
+    const patch = { blendMode: 'screen', blending: { interior: true, knockout: 'deep' } };
+    expect(validateStylePatch(patch)).toEqual([]);
+    const r = applyStylePatch(defaultStyle(), patch);
+    expect(r.errors).toEqual([]);
+    expect(r.style.blendMode).toBe('screen');
+    expect(r.style.blending).toEqual({ interior: true, knockout: 'deep' });
+    expect(validateStylePatch({ blending: { knockout: 'full' } }).length).toBeGreaterThan(0);
+    expect(validateStylePatch({ blending: { interior: 'yes' } }).length).toBeGreaterThan(0);
+    expect(styleSchemaText()).toContain('blending.knockout: enum none|shallow|deep - ');
   });
 });

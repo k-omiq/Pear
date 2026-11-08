@@ -19,6 +19,7 @@
 // tested without one.
 import { renderBoxTexture, warpTexture } from '../exporter.js';
 import { glyphPainter } from '../text-engine/index.js';
+import { usesBackdrop } from '../text-paint.js';
 
 // The most pixels one box's canvas holds: 8 megapixels, 32 MB of RGBA.
 //
@@ -52,10 +53,13 @@ export const PICTURE_MAX_PX = 8 * 1024 * 1024;
 //
 // The texture says where its ink is (`ink`, canvas px, or null when the
 // painter could not say): the SFX panel's previews cut to it from there.
-export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, at = null) {
+//
+// `under` is the page art the box is shown over, for a box that blends with
+// the page (`backdrop.js`, `usesBackdrop`), or null.
+export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, at = null, under = null) {
   // The editor's smear is the coarse one (`paintBoxJob`): this picture is
   // painted again at every edit.
-  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true, at);
+  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true, at, under);
 }
 
 // A turned box is painted finer than the screen. Its turn is CSS's, so the
@@ -169,9 +173,12 @@ function show(el, r, maxPx, release, unit = 1) {
  * `corner` is where the box's top-left lands on the screen, device px, for a
  * box `pictureCss` sets on whole device pixels; the fraction of a pixel the
  * picture was painted moved by comes back as `phase` (undefined when none).
+ *
+ * `under` is the page art for a box that blends with the page
+ * (`pictureTexture`).
  */
-export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null) {
-  const tex = pictureTexture(box, p, tips, scale, maxPx, false, corner);
+export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null) {
+  const tex = pictureTexture(box, p, tips, scale, maxPx, false, corner, under);
   const ss = tex.ss;
   const phase = tex.phase ?? null;
   const whole = ss === scale && Math.abs(unit - Math.round(unit)) < 1e-9 ? Math.round(unit) : 1;
@@ -254,6 +261,19 @@ export function pageCorner(frameEl) {
   return c;
 }
 
+/**
+ * The part of a picture's key (`pictureKey`'s `under`) that a box blending
+ * with the page (`usesBackdrop`) is painted from besides its style: the page
+ * art `src` it is shown over and whether it has loaded (`ready`), where the
+ * box stands, its turn, its mirror and the page's size. Empty for every
+ * other box, whose picture is the same wherever it is.
+ */
+export function pageUnderKey(box, pg, src, ready) {
+  const s = box?.style;
+  if (!usesBackdrop(s)) return '';
+  return `${src ?? '-'}|${ready ? 1 : 0}|${box.x},${box.y}|${s.rotation || 0}|${s.flipH ? 1 : 0}${s.flipV ? 1 : 0}|${pg?.w ?? 0}x${pg?.h ?? 0}`;
+}
+
 // What a repaint key says for a box that is to hold no pixels: on a hidden
 // page, or too far from the viewport to be seen.
 export const PICTURE_OFF = 'e|off';
@@ -268,16 +288,23 @@ export const PICTURE_OFF = 'e|off';
  *        version.
  *   out: where the box is. A move repaints nothing.
  *
+ * Except for a box that blends with the page (`usesBackdrop`): its picture
+ * is of the page under it too, so `under` names that page art and where the
+ * box stands on it, turned and mirrored (TextBox.svelte's `underKey`), and a
+ * move, a turn or another page art repaints it.
+ *
  * The ink block is not stringified here - it is the heaviest part of a style
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
-export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '' }) {
+export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '' }) {
   const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
     `${lines ? lines.join('\n') : ''}|${indents ? indents.join(',') : ''}|${scale}|${fonts}` +
     (tiles ? `|${tiles}` : '') +
     // The chapter's Global Light, for a box with a shadow that follows it.
-    (light ? `|L${light}` : '')
+    (light ? `|L${light}` : '') +
+    // The page art under a box that blends with it, and where it stands.
+    (under ? `|B${under}` : '')
   );
 }

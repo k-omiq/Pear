@@ -28,6 +28,7 @@
 
 use super::blur::{self, Moved, Surface};
 use super::fx::blend::{self, Backdrop, Blend};
+use super::fx::blending::{shadow_see_through, Blending};
 use super::fx::contour::{self, Curve, Lut, Table};
 use super::fx::effects::{
     self, Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay,
@@ -50,7 +51,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 8;
+pub const BOX_WIRE_VERSION: u32 = 9;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -198,8 +199,11 @@ pub struct BoxRequest {
     /// page only where a `backdrop` is given; with none it is Normal.
     pub blend: Blend,
     /// Photoshop's Fill Opacity, 0 to 1: the fill fades, the outlines and
-    /// the shadows do not.
+    /// the shadows do not. Over a page, in one of the special eight modes
+    /// (`Blend::fill_is_special`), it changes the blend instead.
     pub fill_opacity: f64,
+    /// The Advanced Blending options.
+    pub blending: Blending,
     /// The layer effects past the drop shadows: glows, inner shadows, colour
     /// overlays. Of a kind, first on top.
     pub effects: Vec<Effect>,
@@ -222,6 +226,7 @@ impl BoxRequest {
             clip: None,
             blend: Blend::Normal,
             fill_opacity: 1.0,
+            blending: Blending::default(),
             effects: Vec::new(),
             backdrop: None,
             request,
@@ -716,6 +721,7 @@ impl<'a> Reader<'a> {
 ///       3 stroke:  f64 size, u32 n, then n points; one point is a dot
 /// u32 blend                    the letters' mode
 /// f64 fill opacity             0 to 1
+/// u32 blending flags (v9)      1 Blend Interior Effects as Group
 /// u32 effect count, then per effect, first of its kind on top, a u32 kind:
 ///   1 outer glow, 2 inner glow:
 ///     rgba colour, f64 opacity, u32 blend
@@ -754,7 +760,9 @@ impl<'a> Reader<'a> {
 ///     if flags & 16: f64 texture depth (-10 to 10), a paint record that is
 ///                    a fill (kind 2): the pattern
 ///     The anti-aliased flags are carried, not painted.
-/// u32 backdrop                 0 none, 1: width * height * 4 bytes follow
+/// u32 backdrop                 0 none, 1: width * height * 4 bytes follow,
+///                              straight RGBA8 read as opaque: the page art
+///                              under each surface pixel
 /// u32 job byte length, then a glyph job in its own wire form
 ///
 /// paint record: u32 kind, then 0 rgba colour, 1 a gradient record, or 2 a
@@ -778,7 +786,7 @@ impl<'a> Reader<'a> {
 /// contour that does not exist, a contour point outside 0 to 255 or out of
 /// order, a bevel style or technique that does not exist, a bevel depth
 /// outside 0 to 10, an altitude outside 0 to 90, a bevel texture that is not
-/// a fill, and anything a glyph job is refused for.
+/// a fill, blending flags past 1, and anything a glyph job is refused for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != BOX_MAGIC || r.u32()? != BOX_WIRE_VERSION {
@@ -823,6 +831,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     };
     let blend = Blend::from_u32(r.u32()?).ok_or(Error::BadSpec)?;
     let fill_opacity = r.upto(1.0)?;
+    let blending = Blending::from_flags(r.u32()?).ok_or(Error::BadSpec)?;
     let n = r.count(usize::MAX, 20)?;
     let effects = budget::collect((0..n).map(|_| r.effect()))?;
     let backdrop = match r.u32()? {
@@ -847,6 +856,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         shadows,
         blend,
         fill_opacity,
+        blending,
         effects,
         backdrop,
         blur,
@@ -1075,9 +1085,10 @@ fn alpha_of(layer: &Surface) -> Result<budget::Buffer<u8>, Error> {
 /// What one Drop Shadow lays under the letters when it is more than a moved,
 /// blurred silhouette (`Shadow::styled`), in Photoshop's order: the
 /// silhouette's matte grown by the spread, blurred by the rest of the size,
-/// passed through the contour, grained by the noise, moved, cut where the
-/// letters stand when they knock it out, and laid in its mode at its
-/// opacity. Hands back where it can have laid ink.
+/// passed through the contour, grained by the noise, moved, cut by `knock`
+/// (0 to 1, `shadow_see_through`) where the letters stand when they knock it
+/// out, and laid in its mode at its opacity. Hands back where it can have
+/// laid ink.
 #[allow(clippy::too_many_arguments)]
 fn lay_styled(
     engine: &mut Engine,
@@ -1087,7 +1098,7 @@ fn lay_styled(
     s: &mut Surface,
     scale: f64,
     moved: (f64, f64),
-    knock: bool,
+    knock: f32,
     acc: &mut budget::Buffer<f32>,
 ) -> Result<Option<IBox>, Error> {
     let (width, height) = (s.width, s.height);
@@ -1107,7 +1118,11 @@ fn lay_styled(
     let rgb = [red, green, blue];
     let mut matte = alpha_of(&layer)?;
     // The letters as they stand, unmoved: what a knockout cuts away.
-    let letters = if knock { Some(alpha_of(&layer)?) } else { None };
+    let letters = if knock > 0.0 {
+        Some(alpha_of(&layer)?)
+    } else {
+        None
+    };
     let (grow, rest) = spread_split(sh.size, sh.spread);
     if positive(grow * scale) {
         distance::dilate(&mut matte, width, height, grow * scale)?;
@@ -1156,11 +1171,13 @@ fn lay_styled(
     drop(layer);
     let landed_at = landed(ink, moved);
     if let Some(letters) = &letters {
+        // PhotoCraft's `knock_out_exterior`: the map times 1 - alpha * knock.
+        let knock = (knock.min(1.0) * 255.0 + 0.5) as u32;
         for (p, &a) in thrown.data.chunks_exact_mut(4).zip(letters.iter()) {
             if a == 0 {
                 continue;
             }
-            let keep = 255 - u32::from(a);
+            let keep = 255 - (u32::from(a) * knock + 127) / 255;
             for v in p.iter_mut() {
                 *v = ((u32::from(*v) * keep + 127) / 255) as u8;
             }
@@ -1187,12 +1204,18 @@ fn lay_styled(
 /// under its outlines cut to their outer halves, as Photoshop's Stroke lies
 /// outside a faded layer: the half of an outline the fill covered must not
 /// show through it. The interior effects are the fill's, under the outlines.
+///
+/// `special`: the box lays its fill in one of the special eight modes over a
+/// page (`Blend::fill_is_special`), where Fill is part of the blend and not
+/// coverage. A plain fill (no interior effects on it) is then handed back
+/// whole, apart from the rest, for `blend::lay_fill`.
 fn paint_glyphs(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
     carried: impl Fn(f64, f64) -> (f64, f64),
     scale: f64,
+    special: bool,
 ) -> Result<Glyphs, Error> {
     let job = &request.request.job;
     let fade = request.fill_opacity;
@@ -1200,17 +1223,17 @@ fn paint_glyphs(
         && job.silhouette.is_none()
         && request.effects.iter().any(|e| e.interior() && e.shows());
     if (fade >= 1.0 && !inside) || job.no_fill || job.silhouette.is_some() {
-        return Ok((
-            paint_job_with(engine, &request.request, rasterizer)?
+        return Ok(Glyphs {
+            rasters: paint_job_with(engine, &request.request, rasterizer)?
                 .into_iter()
                 .collect(),
-            None,
-            None,
-        ));
+            ..Glyphs::default()
+        });
     }
     let mut out = Vec::new();
     let mut outside = None;
     let mut bevels = None;
+    let mut whole_fill = None;
     // The fill alone, faded, with the effects on it.
     let bands = core::mem::take(&mut request.request.job.bands);
     let negative = request.request.job.effects.negative.take();
@@ -1223,14 +1246,24 @@ fn paint_glyphs(
                 transform: request.request.transform,
                 tiles: &request.request.tiles,
             };
-            (r, outside, bevels) =
-                effects::interior(&r, &request.effects, fade, scale, carried, &place)?;
+            (r, outside, bevels) = effects::interior(
+                &r,
+                &request.effects,
+                fade,
+                request.blending.interior,
+                scale,
+                carried,
+                &place,
+            )?;
+            out.push(r);
+        } else if special {
+            whole_fill = Some(r);
         } else {
             for p in r.data.chunks_exact_mut(4) {
                 p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
             }
+            out.push(r);
         }
-        out.push(r);
     }
     // The outlines, outside the letters.
     if !request.request.job.bands.is_empty() || request.request.job.effects.negative.is_some() {
@@ -1241,16 +1274,27 @@ fn paint_glyphs(
             out.push(r);
         }
     }
-    Ok((out, outside, bevels))
+    Ok(Glyphs {
+        rasters: out,
+        whole_fill,
+        outside,
+        bevels,
+    })
 }
 
-/// The letters' rasters, the outside parts of their strokes, and the bevels
-/// laid round them (`paint_glyphs`).
-type Glyphs = (
-    Vec<Raster>,
-    Option<effects::Outside>,
-    Option<effects::Bevels>,
-);
+/// What `paint_glyphs` paints of the letters.
+#[derive(Default)]
+struct Glyphs {
+    /// The letters' rasters, laid as they are.
+    rasters: Vec<Raster>,
+    /// A special-eight fill at its whole Fill, laid by `blend::lay_fill`
+    /// under `rasters`.
+    whole_fill: Option<Raster>,
+    /// The outside parts of the strokes.
+    outside: Option<effects::Outside>,
+    /// The bevels laid round them.
+    bevels: Option<effects::Bevels>,
+}
 
 /// The outer glows behind the letters, on `s`. Their shape is the letters'
 /// whole silhouette, outlines included, as a drop shadow's is; where the fill
@@ -1365,8 +1409,14 @@ fn paint(
     // with, or where the mode is Dissolve, which needs none.
     let blends = request.blend == Blend::Dissolve
         || (request.blend != Blend::Normal && request.backdrop.is_some());
-    // What a knockout cuts shows: the letters do not cover their shadow.
-    let see_through = request.fill_opacity < 1.0 || request.request.job.no_fill || blends;
+    // How much of what a knockout cuts shows: the share of their shadow the
+    // letters do not cover.
+    let see_through = shadow_see_through(
+        request.blend,
+        blends,
+        request.fill_opacity,
+        request.request.job.no_fill,
+    );
     if shadows.clone().next().is_none()
         && !positive(blur_sigma)
         && taps.is_empty()
@@ -1412,8 +1462,8 @@ fn paint(
     let job_grow = request.request.job.effects.grow;
     let mut i = 0;
     while let Some(sh) = order.get(i).copied() {
-        if sh.styled(see_through) {
-            let knock = sh.knockout && see_through;
+        if sh.styled(see_through > 0.0) {
+            let knock = if sh.knockout { see_through } else { 0.0 };
             if let Some(b) = lay_styled(
                 engine,
                 request,
@@ -1532,12 +1582,24 @@ fn paint(
         }
     }
 
-    let (glyphs, outside, bevels) = paint_glyphs(engine, request, rasterizer, carried, scale)?;
+    // Over a page, one of the special eight takes Fill into its blend.
+    let special = blends
+        && request.backdrop.is_some()
+        && request.blend.fill_is_special()
+        && request.fill_opacity < 1.0;
+    let Glyphs {
+        rasters: glyphs,
+        whole_fill,
+        outside,
+        bevels,
+    } = paint_glyphs(engine, request, rasterizer, carried, scale, special)?;
     let mut own = if blends {
         Some(Surface::new(width, height)?)
     } else {
         None
     };
+    // What is drawn on `own` so far, for a special fill laid between.
+    let mut own_drawn: Option<IBox> = None;
     // The strokes' outside parts, slid under the letters.
     if let Some(o) = outside {
         let place = Place {
@@ -1548,6 +1610,7 @@ fn paint(
         let b = o.bounds().intersect(&surface);
         if !b.is_empty() {
             lay(b);
+            own_drawn = Some(b);
         }
     }
     // An Outer Bevel, under the letters with the strokes' outside parts.
@@ -1562,8 +1625,42 @@ fn paint(
         };
         if let Some(b) = effects::lay_bevels(dst, bv, &request.effects, false, page)? {
             lay(b);
+            own_drawn = Some(own_drawn.map_or(b, |l| l.union(&b)));
         }
     }
+    // A special-eight fill: what is under it laid first, then the fill at
+    // its whole Fill in its mode, with Fill in the blend; the outlines go
+    // over it below, at Fill 1.
+    if let (Some(fill), Some(own)) = (&whole_fill, own.as_mut()) {
+        let page = request
+            .backdrop
+            .as_deref()
+            .map(|pixels| Backdrop { pixels });
+        if let Some(bx) = own_drawn {
+            blend::lay(&mut s, own, bx, 1.0, request.blend, page.as_ref(), 0);
+            own.clear();
+        }
+        own.draw(&fill.data, fill.width as usize, fill.x, fill.y);
+        let bx = IBox {
+            x0: fill.x,
+            y0: fill.y,
+            x1: fill.x.saturating_add(fill.width as i32),
+            y1: fill.y.saturating_add(fill.height as i32),
+        };
+        blend::lay_fill(
+            &mut s,
+            own,
+            bx,
+            1.0,
+            request.blend,
+            page.as_ref(),
+            0,
+            request.fill_opacity as f32,
+        );
+        own.clear();
+        lay(bx);
+    }
+    drop(whole_fill);
     for r in &glyphs {
         let bx = IBox {
             x0: r.x,

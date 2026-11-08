@@ -951,6 +951,11 @@ export function textLayerFor(p, box, rendered) {
     opacity: s.opacity ?? 1,
     fillOpacity: s.fillOpacity ?? 1,
     blendMode: psdBlend(s.blendMode),
+    // Advanced Blending (ag-psd `infx`, `knko`). ag-psd writes Knockout as on
+    // or off, so Shallow and Deep both arrive as on (Photoshop's Shallow);
+    // Deep needs a patch (PORT_NOTES_BACKDROP_PSD.md G10).
+    ...(s.blending?.interior ? { blendInteriorElements: true } : null),
+    ...(s.blending?.knockout && s.blending.knockout !== 'none' ? { knockout: true } : null),
     ...(hasEffects ? { effects } : null),
     // The cached pixels keep the outline and shadow baked in for non-Photoshop
     // readers and fallback viewing when the font is not installed. curve is 0

@@ -297,10 +297,16 @@ export function defaultStyle() {
     // Photoshop's Blending Options. `fillOpacity` fades the fill alone: the
     // strokes and the shadows stay (the Rust engine paints it; the browser
     // engine does not). `blendMode` is how the letters blend with the page,
-    // a LAYER_BLEND_MODES name; it shows in the PSD, and in the app once the
-    // engine is handed the page (LAYER_STYLES_PLAN.md phase 6).
+    // a LAYER_BLEND_MODES name; the Rust engine blends it with the page art
+    // under the box (LAYER_STYLES_PLAN.md phase 6a, `backdrop.js`).
     fillOpacity: 1,
     blendMode: 'normal',
+    // Photoshop's Advanced Blending (`normalizeBlending`). `interior` is
+    // Blend Interior Effects as Group: Fill Opacity fades the overlays, the
+    // satin and the inner glows with the fill. `knockout` is stored and
+    // written to the PSD; it paints nothing while the page art is all a box
+    // blends with (phase 6c).
+    blending: { interior: false, knockout: 'none' },
     // ---- fill ----
     // Solid fill colour. Still the single source for the glyph colour when
     // neither gradient nor pattern is on; when one of them is on it is the
@@ -606,6 +612,17 @@ export const LAYER_BLEND_MODES = [
   'hue', 'saturation', 'color', 'luminosity',
 ];
 const blendMode = (v, d) => (LAYER_BLEND_MODES.includes(v) ? v : d);
+
+// Photoshop's Knockout: None, Shallow, Deep.
+export const KNOCKOUT_MODES = ['none', 'shallow', 'deep'];
+
+/** A style's Advanced Blending options, every field present (`defaultStyle`'s `blending`). */
+export function normalizeBlending(x) {
+  return {
+    interior: x?.interior === true,
+    knockout: KNOCKOUT_MODES.includes(x?.knockout) ? x.knockout : 'none',
+  };
+}
 
 // Photoshop's contour presets, in its picker's order (`PRESET_NAMES` in
 // text-engine/src/paint/fx/contour.rs), and 'custom' for a curve of points.
@@ -1646,6 +1663,7 @@ export function normalizeStyle(s) {
     blur: Math.max(0, num(src.blur, 0)),
     fillOpacity: legacyFill ? 1 : Math.min(1, Math.max(0, num(flat.fillOpacity, 1))),
     blendMode: blendMode(flat.blendMode, 'normal'),
+    blending: normalizeBlending(src.blending),
     motionBlur: mb,
     path: pth,
     clip: cl,

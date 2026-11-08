@@ -66,14 +66,16 @@
     TILE_SS,
     resolveShadow,
     shadowSigma,
+    usesBackdrop,
   } from './text-paint.js';
+  import { pageArtSrc, artImage, artReady } from './page-art.svelte.js';
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
   import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords } from './contain.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
-  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, PICTURE_OFF, pictureScale, pictureKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
+  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
@@ -678,6 +680,27 @@
   // What else a pattern's picture is painted from: a picked tile that lands
   // after the box first painted, and, for tiles that start at the page's
   // corner, where the box stands on the page (a move slides its tone).
+  // A BOX THAT BLENDS WITH THE PAGE (`usesBackdrop`: a blend mode, a shadow
+  // or glow in a mode that reads the page) is painted over the page art under
+  // it (`backdrop.js`), the art the frame shows (`pageArtSrc`), so where it
+  // stands, how it is turned and mirrored and what art is there are in its
+  // key - and only its: an ordinary box still repaints nothing on a move.
+  // While it is dragged or turned by hand the key is held as the press found
+  // it (`underHeld`): the last picture rides along under the pointer, and the
+  // box is painted against its new place once, when it is let go.
+  const blendsPage = $derived(enginePaints && usesBackdrop(s));
+  const artSrc = $derived(blendsPage ? pageArtSrc(pg, app) : null);
+  const underLive = $derived(blendsPage ? pageUnderKey(box, pg, artSrc, artReady(artSrc)) : '');
+  let underHeld = $state(null);
+  const underKey = $derived(underHeld ?? underLive);
+  // The art to blend with, as the painter takes it, or null while it loads
+  // (its load moves `underLive`, which paints the box again).
+  function pageUnder() {
+    if (!blendsPage) return null;
+    const image = artImage(artSrc);
+    if (!image) return null;
+    return { image, W: pg.w || image.naturalWidth, H: pg.h || image.naturalHeight, src: artSrc, key: box };
+  }
   const patternTileKey = $derived.by(() => {
     const p = s.pattern;
     if (!p?.on) return '';
@@ -702,6 +725,7 @@
             fonts: app.fontsVersion,
             tiles: patternTileKey,
             light: lightKey,
+            under: underKey,
           })
         : PICTURE_OFF
       : '',
@@ -739,7 +763,7 @@
     const page = pageCorner(pageFrameEl);
     const dpr = displayScale();
     const corner = page && !s.rotation && !mirror ? { x: (page.x + box.x * z) * dpr, y: (page.y + box.y * z) * dpr } : null;
-    const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner);
+    const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner, pageUnder());
     // Lower than asked for under the drag's budget: to be painted again when
     // the drag settles (`settleResize`), or the keys do (`settleKeys`).
     dragSoft = live && g.ss < pictureRes;
@@ -1478,6 +1502,8 @@
     const pageId = dims.id;
     // The box moves alone; its balloon fit stays on the bubble (`moveBoxTo`).
     const before = moveGeom(box);
+    // A box that blends with the page keeps its picture until it is let go.
+    if (blendsPage) underHeld = underLive;
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
       const x = clamp(ox + (ev.clientX - sx) / zz, -box.w + 20, dims.w - 20);
@@ -1493,6 +1519,7 @@
       if (ev.pointerId !== pid) return;
       live.delete(ac);
       ac.abort();
+      underHeld = null;
 
       if (box.x !== before.x || box.y !== before.y) {
         record({ t: 'move', pageId, boxId: box.id, before, after: moveGeom(box) });
@@ -1528,6 +1555,9 @@
     const pageId = dims.id;
     // Rotation gesture records style edit.
     const styleBefore = isRot ? cloneStyle(box.style) : null;
+    // A box that blends with the page is turned on its last picture and
+    // painted against the page once, when the handle is let go.
+    if (isRot && blendsPage) underHeld = underLive;
 
     const fitBefore = isRot ? { y: box.y, h: box.h } : null;
     const cx = () => box.x + box.w / 2;
@@ -1605,6 +1635,7 @@
       live.delete(ac);
       ac.abort();
       if (transformEnd === finish) transformEnd = null;
+      underHeld = null;
       settleResize();
       sizingDrag = false;
       // Both gestures on this handle CHANGE THE STYLE - the rotation handle

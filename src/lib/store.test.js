@@ -1182,6 +1182,7 @@ const BULK_VALUES = () => ({
   opacity: 0.33,
   fillOpacity: 0.4,
   blendMode: 'screen',
+  blending: { interior: true, knockout: 'deep' },
   // Three stops rather than the default two, and one of them part-transparent:
   // a bulk edit moves the WHOLE gradient, so a stop list of a different length
   // than the target box already has is the case that has to survive the merge.

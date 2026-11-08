@@ -124,12 +124,12 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(8);
+    expect(BOX_WIRE_VERSION).toBe(9);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header, the blending options
     // and the effect's kind, opacity and blend: its style is Shape Burst.
-    const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4;
+    const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4;
     expect(dv(solid).getUint32(head + 4 + 8 + 4 + 4, true)).toBe(5);
     const typeAt = head + 4 + 8 + 4 + 4 + 4 + 8 + 8 + 4 + 8 + 8 + 4 + 2 * 12 + 4;
     expect(dv(solid).getUint32(typeAt, true)).toBe(0);
@@ -171,7 +171,7 @@ describe('a satin', () => {
     const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
     const fx = { kind: 'satin', color: '#ff0000', opacity: 0.5, blend: 'multiply', angle: 19, distance: 11, size: 14, contour: { preset: 'gaussian', aa: true }, invert: true };
     const b = dv(encodeBox({ ...job, width: 4, height: 4, effects: [fx] }).slice());
-    const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4;
+    const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4;
     expect(b.getUint32(head, true)).toBe(8);
     expect([0, 1, 2, 3].map((k) => b.getUint8(head + 4 + k))).toEqual([255, 0, 0, 255]);
     expect(b.getFloat64(head + 8, true)).toBe(0.5);
@@ -187,7 +187,7 @@ describe('a satin', () => {
 describe('a bevel', () => {
   const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
   const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
-  const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4;
+  const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4;
   const encoded = (fx) => dv(encodeBox({ ...job, width: 4, height: 4, effects: [fx] }).slice());
 
   // Wire v8: kind 9, then style, technique, depth, size, soften, angle,

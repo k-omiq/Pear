@@ -71,7 +71,7 @@
     BEVEL_SOFTEN_MAX,
   } from './data.js';
   import { layoutShape } from './balloon.js';
-  import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset } from './text-paint.js';
+  import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
   import { maskTool, setMaskTool } from './mask-tool.svelte.js';
   import { regridWarp } from './warp-gizmo.js';
@@ -2382,6 +2382,33 @@
             <input type="range" min="0" max="100" step="1" value={pct(s.opacity)} aria-label="Opacity" oninput={(e) => setAlpha(s, 'opacity', e.target.value)} />
             <input class="num-s" type="number" min="0" max="100" step="1" value={pct(s.opacity)} title="Opacity, %" aria-label="Opacity, percent" onchange={(e) => commitAlpha(s, 'opacity', e)} />
           </div>
+        </div>
+
+        <!-- Photoshop's Blending Options: the box's mode over the page art,
+             and Blend Interior Effects as Group. The Rust engine paints them
+             (LAYER_STYLES_PLAN.md phase 6a). -->
+        <div class="grp">
+          <span class="lbl" title="How the box mixes with the page art under it">Blend mode</span>
+          {#if rustBoxes}
+            <select value={s.blendMode} aria-label="Box blend mode" title="Blend mode" onchange={(e) => { s.blendMode = e.target.value; touch(); }}>
+              {#each LAYER_BLEND_MODES as m (m)}
+                <option value={m}>{blendLabel(m)}</option>
+              {/each}
+            </select>
+            {#if FILL_SPECIAL_MODES.includes(s.blendMode) && s.fillOpacity < 1}
+              <p class="nofill-note">Fill works as in Photoshop for this mode: it changes the blend, not the coverage.</p>
+            {/if}
+            {@const inner = s.colorOverlays?.length > 0 || s.gradientOverlays?.length > 0 || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
+            <label class="sh-check" title="Blend Interior Effects as Group: Fill opacity also fades the overlays, the satin and the inner glow">
+              <input type="checkbox" checked={s.blending?.interior === true} disabled={!inner} aria-label="Blend interior effects as group" onchange={(e) => { s.blending = { ...s.blending, interior: e.target.checked }; touch(); }} />
+              <span>Blend interior effects as group</span>
+            </label>
+            {#if usesBackdrop(s)}
+              <p class="nofill-note">Blends with the page art.</p>
+            {/if}
+          {:else}
+            <p class="nofill-note">Needs the Rust text engine (Settings).</p>
+          {/if}
         </div>
       </div>
     {/if}

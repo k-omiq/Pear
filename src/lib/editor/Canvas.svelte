@@ -20,12 +20,12 @@
     setZoomLive,
     normalizeZoom,
     isTranslateMode,
-    isTranslateChapter,
     isLongstrip,
     gotoPage,
     toast,
   } from '../store.svelte.js';
   import { rememberPagePixels, notePageImage } from '../page-pixels.js';
+  import { pageArtSrc } from '../page-art.svelte.js';
   import { wasPageImage, RESIDENT_RADIUS } from '../page-images.js';
   import {
     fitWidthZoom,
@@ -201,11 +201,8 @@
   // A translate chapter shows the raw, and with its typesetting tools out the
   // cleaned page only when asked for (`app.viewCleaned`, the pane's Cleaned
   // switch) - there is no reference sidebar beside it to hold the raw.
-  const srcOf = (pg) => {
-    if (app.peekRaw) return pg.raw;
-    if (isTranslateChapter()) return app.translateTypeset && app.viewCleaned ? (pg.cleaned ?? pg.raw) : pg.raw;
-    return translate ? pg.raw : (pg.cleaned ?? pg.raw);
-  };
+  // One answer with what a box in a blend mode blends with (page-art.svelte.js).
+  const srcOf = (pg) => pageArtSrc(pg, app);
 
   // ---------- the pages a paged chapter keeps in the DOM ----------
   //

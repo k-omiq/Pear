@@ -7103,6 +7103,7 @@ export const BULK_PROPS = [
   'opacity',
   'fillOpacity',
   'blendMode',
+  'blending',
   'gradient',
   'pattern',
   'strokes',
@@ -7152,7 +7153,7 @@ export const BULK_PROPS = [
 // comment on BULK_PROPS). Named once here because two places have to agree on
 // it: the style-leaf arithmetic that pins BULK_PROPS against `defaultStyle`
 // treats these as single leaves rather than groups of them.
-export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'strokeEffects', 'motionBlur', 'clip', 'circle'];
+export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', 'blending', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'strokeEffects', 'motionBlur', 'clip', 'circle'];
 
 // How the panel rows group the mask's vocabulary for its tick-all headers.
 // Declared beside BULK_PROPS rather than inside the panel so there is one list
@@ -7161,7 +7162,7 @@ export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', '
 // together. Every key appears in exactly one group.
 export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
-  fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
+  fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blending', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
   shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'strokeEffects'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],

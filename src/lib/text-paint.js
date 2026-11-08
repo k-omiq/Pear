@@ -1213,6 +1213,58 @@ export function boxEffects(style) {
   return out;
 }
 
+// ---- what blends with the page ----
+//
+// A box whose picture reads the page under it (LAYER_STYLES_PLAN.md phase 6):
+// the engine is handed the page art under its footprint (`backdrop.js`), and
+// its picture depends on where it stands, how it is turned and what art is
+// there, so only such a box has those in its repaint key (`pictureKey`).
+//
+// What the engine blends with the page: the letters in their mode (not Normal
+// or Dissolve, which reads nothing), and the shadows, the outer glow and the
+// bevels that lie outside the letters (Outer Bevel, Emboss, Pillow and Stroke
+// Emboss), each in its own mode. What blends only with the box's own letters
+// (the overlays, an inner glow, an inner shadow, the satin, an Inner Bevel,
+// the strokes' outside parts) does not read the page. A colour that is its
+// mode's no-op (black under Multiply, Darken or Linear Burn, white under
+// Screen, Lighten or Linear Dodge) paints exactly as Normal, so the default
+// black Multiply shadow and the default bevel stay off the page.
+const PAGE_FREE = new Set(['normal', 'dissolve']);
+const BLACK_SAME = new Set(['multiply', 'darken', 'linear-burn']);
+const WHITE_SAME = new Set(['screen', 'lighten', 'linear-dodge']);
+function readsPage(blend, color, opacity) {
+  if (!(opacity > 0)) return false;
+  const mode = blend ?? 'normal';
+  if (PAGE_FREE.has(mode)) return false;
+  if (color) {
+    const [r, g, b] = channels(color);
+    if (r === 0 && g === 0 && b === 0 && BLACK_SAME.has(mode)) return false;
+    if (r === 255 && g === 255 && b === 255 && WHITE_SAME.has(mode)) return false;
+  }
+  return true;
+}
+const BEVEL_ON_PAGE = new Set(['outer', 'emboss', 'pillow', 'stroke']);
+
+/** Whether the engine blends anything of the box with the page under it. */
+export function usesBackdrop(style) {
+  if (!style) return false;
+  if (!PAGE_FREE.has(style.blendMode ?? 'normal')) return true;
+  if (boxShadows(style).some((sh) => readsPage(sh.blend, sh.color, sh.opacity))) return true;
+  const og = style.outerGlow;
+  // A gradient glow's colours are its stops': never taken for a no-op.
+  if (og?.on && readsPage(og.blend, og.fill === 'gradient' && og.gradient ? null : og.color, og.opacity)) return true;
+  const bv = bevelOf(style);
+  if (bv && BEVEL_ON_PAGE.has(bv.style ?? 'inner')) {
+    if (readsPage(bv.highlight?.blend, bv.highlight?.color, bv.highlight?.opacity)) return true;
+    if (readsPage(bv.shadow?.blend, bv.shadow?.color, bv.shadow?.opacity)) return true;
+  }
+  return false;
+}
+
+// The Photoshop special eight (`Blend::fill_is_special`, fx/blend.rs): over the
+// page, Fill Opacity below 100 % changes their blend instead of fading.
+export const FILL_SPECIAL_MODES = ['color-burn', 'linear-burn', 'color-dodge', 'linear-dodge', 'vivid-light', 'linear-light', 'hard-mix', 'difference'];
+
 // The box's Bevel & Emboss as the engine takes it (`encodeBox`'s `kind:
 // 'bevel'`), or null when it lays nothing. Last in the list, as it is the top
 // of Photoshop's stack (B9); the engine lays each style at its own place in

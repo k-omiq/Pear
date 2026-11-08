@@ -78,6 +78,7 @@ fn plain(font: FontId) -> BoxRequest {
         clip: None,
         blend: Blend::Normal,
         fill_opacity: 1.0,
+        blending: Default::default(),
         effects: Vec::new(),
         backdrop: None,
         request: request(font),
@@ -667,7 +668,7 @@ fn gradient() -> Gradient {
     }
 }
 
-fn wire(font: u32) -> (Vec<u8>, [usize; 8]) {
+fn wire(font: u32) -> (Vec<u8>, [usize; 9]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
     u(&mut b, BOX_WIRE_VERSION);
@@ -711,6 +712,8 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 8]) {
     f(&mut b, 8.0);
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
+    let blending_at = b.len();
+    u(&mut b, 1); // interior effects as a group
     let effects_at = b.len();
     u(&mut b, 9);
     // An outer glow: yellow, Screen, Precise, size 5, spread 0.1, range 0.5.
@@ -820,7 +823,15 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 8]) {
     (
         b,
         [
-            opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at,
+            opacity_at,
+            blur_at,
+            weight_at,
+            mode_at,
+            effects_at,
+            noise_at,
+            satin_at,
+            bevel_at,
+            blending_at,
         ],
     )
 }
@@ -852,6 +863,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
         (r.blend, r.fill_opacity, r.backdrop.is_none()),
         (Blend::Overlay, 0.5, true)
     );
+    assert!(r.blending.interior);
     assert_eq!(
         r.taps,
         vec![Tap {
@@ -993,13 +1005,15 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 8));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 9));
 }
 
 #[test]
 fn a_damaged_box_is_refused_not_guessed_at() {
-    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at]) =
-        wire(1);
+    let (
+        good,
+        [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at, blending_at],
+    ) = wire(1);
     assert!(decode_box(&good).is_ok());
     for len in 0..good.len() {
         assert!(decode_box(&good[..len]).is_err(), "accepted {len} bytes");
@@ -1098,6 +1112,9 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_f(bevel_at + 96, 1.5), Some(Error::BadSpec));
     assert_eq!(with_f(bevel_at + 104, 10.5), Some(Error::BadSpec));
     assert_eq!(with_u(bevel_at + 112, 0), Some(Error::BadSpec));
+    // Blending flags that are not ones.
+    assert_eq!(with_u(blending_at, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(blending_at, 0), None);
 }
 
 #[test]
@@ -1119,6 +1136,7 @@ fn a_box_read_from_the_wire_paints() {
 fn no_blending(b: &mut Vec<u8>) {
     u(b, 0);
     f(b, 1.0);
+    u(b, 0);
     u(b, 0);
     u(b, 0);
 }
@@ -1314,24 +1332,94 @@ fn fill_opacity_fades_the_fill_and_not_its_outline_or_shadow() {
     // shows through the faded fill.
     assert_eq!(px(&faded, glyphs.0 + 1, y), px(&full, glyphs.0 + 1, y));
     assert!(px(&faded, x + 3, y)[2] < 20);
-    // A shadow under it is cut out where the letters knock it out.
+    // A shadow under it is cut out where the letters knock it out, by the
+    // share the fill leaves (Photoshop's, PhotoCraft's `shadow_see_through`):
+    // at Fill 25 % three quarters of it.
+    let red = |p: [u8; 4]| u32::from(p[0]) * u32::from(p[3]) / 255;
     b.shadows = vec![Shadow {
         knockout: true,
         ..shadow(RED, 2.0, 0.0)
     }];
     let knocked = paint(&mut e, &mut b);
-    assert!(
-        px(&knocked, x + 3, y)[0] < 20,
-        "{:?}",
-        px(&knocked, x + 3, y)
-    );
+    let p = px(&knocked, x + 3, y);
+    // A quarter of the red, under the quarter of black: 255 / 4 * 3 / 4.
+    assert!((40..=56).contains(&red(p)), "{p:?}");
     b.shadows[0].knockout = false;
     let through = paint(&mut e, &mut b);
+    let p = px(&through, x + 3, y);
+    assert!(red(p) > 180, "{p:?}");
+    // A fill of nothing knocks all of it out.
+    b.shadows[0].knockout = true;
+    b.fill_opacity = 0.0;
+    let gone = paint(&mut e, &mut b);
+    assert!(red(px(&gone, x + 3, y)) < 4, "{:?}", px(&gone, x + 3, y));
+}
+
+#[test]
+fn a_special_eight_mode_takes_fill_into_its_blend_over_a_page() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let (x, y) = stem(inked(&paint(&mut e, &mut b)));
+    b.request.job.fill = Some(Fill::Solid(Rgba([200, 200, 200, 255])));
+    b.backdrop = Some([50u8, 50, 50, 255].repeat(200 * 160));
+    b.blend = Blend::Difference;
+    b.fill_opacity = 0.5;
+    // What shows over the page, laid source-over on it.
+    let shown = |r: &Raster| {
+        let p = px(r, x, y);
+        let a = f32::from(p[3]) / 255.0;
+        f32::from(p[0]) * a + 50.0 * (1.0 - a)
+    };
+    // Photoshop: the source pulled halfway to black, at full strength:
+    // |50 - 100| = 50. As coverage it would be (150 + 50) / 2 = 100.
+    let special = paint(&mut e, &mut b);
+    assert!((shown(&special) - 50.0).abs() <= 2.0, "{}", shown(&special));
+    // Multiply is not one of the eight: Fill is coverage.
+    b.blend = Blend::Multiply;
+    let mult = paint(&mut e, &mut b);
+    let want = 50.0 * 0.5 + 50.0 * (200.0 / 255.0) * 0.5;
+    assert!((shown(&mult) - want).abs() <= 2.0, "{}", shown(&mult));
+    // With no page there is nothing to blend with: Fill is coverage.
+    b.blend = Blend::Difference;
+    b.backdrop = None;
+    let alone = paint(&mut e, &mut b);
     assert!(
-        px(&through, x + 3, y)[0] > 128,
+        px(&alone, x, y)[3].abs_diff(128) <= 1,
         "{:?}",
-        px(&through, x + 3, y)
+        px(&alone, x, y)
     );
+}
+
+/// PhotoCraft's `blend_interior_effects_as_group_puts_overlays_under_fill_opacity`
+/// (`crates/compose/src/advanced_tests.rs`, MIT licence): blue letters with a
+/// red Color Overlay.
+#[test]
+fn interior_effects_as_a_group_fade_with_the_fill() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let (x, y) = stem(inked(&paint(&mut e, &mut b)));
+    b.request.job.fill = Some(Fill::Solid(BLUE));
+    b.effects = vec![Effect::ColorOverlay(Overlay {
+        color: RED,
+        opacity: 1.0,
+        blend: Blend::Normal,
+    })];
+    b.fill_opacity = 0.0;
+    // Off (the default): the overlay ignores Fill.
+    assert_eq!(px(&paint(&mut e, &mut b), x, y), [255, 0, 0, 255]);
+    // As a group at Fill 0: nothing.
+    b.blending.interior = true;
+    let none = paint_box(&mut e, &mut b).unwrap();
+    assert!(none.is_none_or(|r| px(&r, x, y)[3] == 0));
+    // As a group at Fill 50 %: half the red.
+    b.fill_opacity = 0.5;
+    let p = px(&paint(&mut e, &mut b), x, y);
+    assert!(p[0] == 255 && p[2] == 0 && p[3].abs_diff(128) <= 1, "{p:?}");
+    // Off at Fill 50 %: red, whole.
+    b.blending.interior = false;
+    assert_eq!(px(&paint(&mut e, &mut b), x, y), [255, 0, 0, 255]);
 }
 
 #[test]
