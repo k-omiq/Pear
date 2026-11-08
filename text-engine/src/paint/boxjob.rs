@@ -28,10 +28,10 @@
 
 use super::blur::{self, Moved, Surface};
 use super::fx::blend::{self, Backdrop, Blend};
-use super::fx::contour::{self, Curve, Lut};
+use super::fx::contour::{self, Curve, Lut, Table};
 use super::fx::effects::{
-    self, Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Place, Position, Satin, Stroke,
-    Technique,
+    self, Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay,
+    Paint, PaintOverlay, Place, Position, Satin, Stroke, Technique,
 };
 use super::fx::gradient::{Gradient, Style};
 use super::fx::noise_gradient::{Model, Noise, Ramp};
@@ -50,7 +50,7 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
-pub const BOX_WIRE_VERSION: u32 = 7;
+pub const BOX_WIRE_VERSION: u32 = 8;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -69,6 +69,8 @@ pub const MAX_THROW: f64 = 65536.0;
 pub const MAX_GRADIENT_STOPS: usize = 256;
 /// Largest Scale an effect gradient takes (1 is 100 %).
 pub const MAX_GRADIENT_SCALE: f64 = 10.0;
+/// Largest bevel Depth and Texture Depth (1 is 100 %): Photoshop's 1000 %.
+pub const MAX_BEVEL_DEPTH: f64 = 10.0;
 
 /// One shadow of the box (`style.shadows`): Photoshop's Drop Shadow.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -334,6 +336,74 @@ impl<'a> Reader<'a> {
         Ok(Rgba([b[0], b[1], b[2], b[3]]))
     }
 
+    /// A contour baked to floats (the bevel's), or `None` for Linear.
+    fn table(&mut self) -> Result<Option<Table>, Error> {
+        Ok(self.curve()?.and_then(|c| Table::new(&c)))
+    }
+
+    /// A bevel's highlight or shadow: colour, opacity, mode.
+    fn shade(&mut self) -> Result<Overlay, Error> {
+        Ok(Overlay {
+            color: self.rgba()?,
+            opacity: self.upto(1.0)?,
+            blend: Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?,
+        })
+    }
+
+    fn bevel(&mut self) -> Result<Bevel, Error> {
+        let style = BevelStyle::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+        let technique = BevelTechnique::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+        let depth = self.upto(MAX_BEVEL_DEPTH)?;
+        let size = self.upto(MAX_BLUR)?;
+        let soften = self.upto(MAX_BLUR)?;
+        let angle = self.within(MAX_THROW)?;
+        let altitude = self.upto(90.0)?;
+        let highlight = self.shade()?;
+        let shadow = self.shade()?;
+        let flags = self.u32()?;
+        // A texture's Invert with no texture is not a bevel anyone wrote.
+        if flags & !63 != 0 || (flags & 32 != 0 && flags & 16 == 0) {
+            return Err(Error::BadSpec);
+        }
+        let gloss = self.table()?;
+        let (contour, range) = if flags & 4 != 0 {
+            (self.table()?, self.upto(1.0)?)
+        } else {
+            (None, 0.5)
+        };
+        let texture = if flags & 16 != 0 {
+            let depth = self.within(MAX_BEVEL_DEPTH)?;
+            match self.paint()? {
+                Paint::Fill(fill) => Some(BevelTexture {
+                    depth,
+                    invert: flags & 32 != 0,
+                    fill,
+                }),
+                _ => return Err(Error::BadSpec),
+            }
+        } else {
+            None
+        };
+        Ok(Bevel {
+            style,
+            technique,
+            depth,
+            up: flags & 1 != 0,
+            size,
+            soften,
+            angle,
+            altitude,
+            highlight,
+            shadow,
+            gloss,
+            gloss_aa: flags & 2 != 0,
+            contour,
+            range,
+            contour_aa: flags & 8 != 0,
+            texture,
+        })
+    }
+
     fn contour(&mut self) -> Result<Option<Lut>, Error> {
         Ok(self
             .curve()?
@@ -572,6 +642,7 @@ impl<'a> Reader<'a> {
                     contour,
                 })
             }
+            9 => Effect::Bevel(self.bevel()?),
             _ => return Err(Error::BadSpec),
         })
     }
@@ -664,6 +735,25 @@ impl<'a> Reader<'a> {
 ///   8 satin (v7): rgba colour, f64 opacity, u32 blend, f64 angle (degrees,
 ///     the box's own), f64 distance, f64 size, u32 flags (1 invert, 2
 ///     contour anti-aliased), u32 contour (as a shadow's)
+///   9 bevel & emboss (v8):
+///     u32 style                0 inner, 1 outer, 2 emboss, 3 pillow emboss,
+///                              4 stroke emboss
+///     u32 technique            0 smooth, 1 chisel hard, 2 chisel soft
+///     f64 depth                0 to 10 (1 is 100 %)
+///     f64 size, f64 soften     job units, 0 to 4096 each
+///     f64 angle, f64 altitude  degrees (altitude 0 to 90), Use Global Light
+///                              already resolved
+///     rgba highlight, f64 opacity, u32 blend
+///     rgba shadow, f64 opacity, u32 blend
+///     u32 flags                1 up, 2 gloss anti-aliased, 4 contour on,
+///                              8 contour anti-aliased, 16 texture on,
+///                              32 texture invert (only with 16)
+///     u32 gloss contour        as a shadow's
+///     if flags & 4:  u32 contour (as a shadow's), f64 range (0 to 1;
+///                    carried, never applied)
+///     if flags & 16: f64 texture depth (-10 to 10), a paint record that is
+///                    a fill (kind 2): the pattern
+///     The anti-aliased flags are carried, not painted.
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow
 /// u32 job byte length, then a glyph job in its own wire form
 ///
@@ -686,7 +776,9 @@ impl<'a> Reader<'a> {
 /// noise or a fill opacity outside 0 to 1, a size or a blur outside 0 to
 /// 4096, a throw, a tap or a point further than 65536 from zero, a mode or a
 /// contour that does not exist, a contour point outside 0 to 255 or out of
-/// order, and anything a glyph job is refused for.
+/// order, a bevel style or technique that does not exist, a bevel depth
+/// outside 0 to 10, an altitude outside 0 to 90, a bevel texture that is not
+/// a fill, and anything a glyph job is refused for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != BOX_MAGIC || r.u32()? != BOX_WIRE_VERSION {
@@ -1101,7 +1193,7 @@ fn paint_glyphs(
     rasterizer: &dyn Rasterizer,
     carried: impl Fn(f64, f64) -> (f64, f64),
     scale: f64,
-) -> Result<(Vec<Raster>, Option<effects::Outside>), Error> {
+) -> Result<Glyphs, Error> {
     let job = &request.request.job;
     let fade = request.fill_opacity;
     let inside = !job.no_fill
@@ -1113,10 +1205,12 @@ fn paint_glyphs(
                 .into_iter()
                 .collect(),
             None,
+            None,
         ));
     }
     let mut out = Vec::new();
     let mut outside = None;
+    let mut bevels = None;
     // The fill alone, faded, with the effects on it.
     let bands = core::mem::take(&mut request.request.job.bands);
     let negative = request.request.job.effects.negative.take();
@@ -1129,7 +1223,8 @@ fn paint_glyphs(
                 transform: request.request.transform,
                 tiles: &request.request.tiles,
             };
-            (r, outside) = effects::interior(&r, &request.effects, fade, scale, carried, &place)?;
+            (r, outside, bevels) =
+                effects::interior(&r, &request.effects, fade, scale, carried, &place)?;
         } else {
             for p in r.data.chunks_exact_mut(4) {
                 p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
@@ -1146,8 +1241,16 @@ fn paint_glyphs(
             out.push(r);
         }
     }
-    Ok((out, outside))
+    Ok((out, outside, bevels))
 }
+
+/// The letters' rasters, the outside parts of their strokes, and the bevels
+/// laid round them (`paint_glyphs`).
+type Glyphs = (
+    Vec<Raster>,
+    Option<effects::Outside>,
+    Option<effects::Bevels>,
+);
 
 /// The outer glows behind the letters, on `s`. Their shape is the letters'
 /// whole silhouette, outlines included, as a drop shadow's is; where the fill
@@ -1429,7 +1532,7 @@ fn paint(
         }
     }
 
-    let (glyphs, outside) = paint_glyphs(engine, request, rasterizer, carried, scale)?;
+    let (glyphs, outside, bevels) = paint_glyphs(engine, request, rasterizer, carried, scale)?;
     let mut own = if blends {
         Some(Surface::new(width, height)?)
     } else {
@@ -1444,6 +1547,20 @@ fn paint(
         effects::lay_outside(own.as_mut().unwrap_or(&mut s), &o, &request.effects, &place)?;
         let b = o.bounds().intersect(&surface);
         if !b.is_empty() {
+            lay(b);
+        }
+    }
+    // An Outer Bevel, under the letters with the strokes' outside parts.
+    if let Some(bv) = &bevels {
+        let page = request
+            .backdrop
+            .as_deref()
+            .map(|pixels| Backdrop { pixels });
+        let (dst, page) = match own.as_mut() {
+            Some(own) => (own, None),
+            None => (&mut s, page.as_ref()),
+        };
+        if let Some(b) = effects::lay_bevels(dst, bv, &request.effects, false, page)? {
             lay(b);
         }
     }
@@ -1469,6 +1586,18 @@ fn paint(
         blend::lay(&mut s, own, bx, 1.0, request.blend, page.as_ref(), 0);
     }
     drop(own);
+    // An Emboss, a Pillow Emboss or a Stroke Emboss, over the finished
+    // letters: PhotoCraft shades the composited layer with them.
+    if let Some(bv) = &bevels {
+        let page = request
+            .backdrop
+            .as_deref()
+            .map(|pixels| Backdrop { pixels });
+        if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, true, page.as_ref())? {
+            laid = Some(laid.map_or(b, |l| l.union(&b)));
+        }
+    }
+    drop(bevels);
     blur::gaussian(&mut s, blur_sigma)?;
     if !taps.is_empty() {
         let mut moves = budget::Buffer::new();

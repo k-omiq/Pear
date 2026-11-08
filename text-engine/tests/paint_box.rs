@@ -3,9 +3,10 @@
 #![cfg(feature = "paint")]
 
 use mt_text::paint::fx::blend::Blend;
-use mt_text::paint::fx::contour::{Curve, Lut};
+use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
-    Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Position, Satin, Stroke, Technique,
+    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
+    PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
@@ -666,7 +667,7 @@ fn gradient() -> Gradient {
     }
 }
 
-fn wire(font: u32) -> (Vec<u8>, [usize; 7]) {
+fn wire(font: u32) -> (Vec<u8>, [usize; 8]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
     u(&mut b, BOX_WIRE_VERSION);
@@ -711,7 +712,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 7]) {
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
     let effects_at = b.len();
-    u(&mut b, 8);
+    u(&mut b, 9);
     // An outer glow: yellow, Screen, Precise, size 5, spread 0.1, range 0.5.
     u(&mut b, 1);
     b.extend_from_slice(&[255, 255, 0, 255]);
@@ -787,6 +788,31 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 7]) {
     }
     u(&mut b, 3);
     u(&mut b, 5);
+    // A bevel: Pillow Emboss, Chisel Soft, 150 %, size 6, soften 2, light at
+    // 120 and 30, Photoshop's highlight and shadow, up, the Gaussian gloss,
+    // the Cone contour at Range 50 %, and an inverted texture carving 200 %
+    // of a solid blue fill.
+    let bevel_at = b.len();
+    u(&mut b, 9);
+    u(&mut b, 3);
+    u(&mut b, 2);
+    for v in [1.5, 6.0, 2.0, 120.0, 30.0] {
+        f(&mut b, v);
+    }
+    b.extend_from_slice(&[255, 255, 255, 255]);
+    f(&mut b, 0.75);
+    u(&mut b, 8);
+    b.extend_from_slice(&[0, 0, 0, 255]);
+    f(&mut b, 0.75);
+    u(&mut b, 3);
+    u(&mut b, 1 | 4 | 16 | 32);
+    u(&mut b, 5);
+    u(&mut b, 1);
+    f(&mut b, 0.5);
+    f(&mut b, -2.0);
+    u(&mut b, 2);
+    u(&mut b, 1);
+    b.extend_from_slice(&[0, 0, 255, 255]);
     u(&mut b, 0); // no page under them
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
@@ -794,7 +820,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 7]) {
     (
         b,
         [
-            opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at,
+            opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at,
         ],
     )
 }
@@ -933,16 +959,47 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                 invert: true,
                 contour: Some(Lut::new(&Curve::Preset(5))),
             }),
+            Effect::Bevel(Bevel {
+                style: BevelStyle::Pillow,
+                technique: BevelTechnique::ChiselSoft,
+                depth: 1.5,
+                up: true,
+                size: 6.0,
+                soften: 2.0,
+                angle: 120.0,
+                altitude: 30.0,
+                highlight: Overlay {
+                    color: Rgba([255, 255, 255, 255]),
+                    opacity: 0.75,
+                    blend: Blend::Screen,
+                },
+                shadow: Overlay {
+                    color: BLACK,
+                    opacity: 0.75,
+                    blend: Blend::Multiply,
+                },
+                gloss: Table::new(&Curve::Preset(5)),
+                gloss_aa: false,
+                contour: Table::new(&Curve::Preset(1)),
+                range: 0.5,
+                contour_aa: false,
+                texture: Some(BevelTexture {
+                    depth: -2.0,
+                    invert: true,
+                    fill: Fill::Solid(BLUE),
+                }),
+            }),
         ]
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 7));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 8));
 }
 
 #[test]
 fn a_damaged_box_is_refused_not_guessed_at() {
-    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at]) = wire(1);
+    let (good, [opacity_at, blur_at, weight_at, mode_at, effects_at, noise_at, satin_at, bevel_at]) =
+        wire(1);
     assert!(decode_box(&good).is_ok());
     for len in 0..good.len() {
         assert!(decode_box(&good[..len]).is_err(), "accepted {len} bytes");
@@ -1025,6 +1082,22 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_f(satin_at + 36, 4097.0), Some(Error::BadSpec));
     assert_eq!(with_u(satin_at + 44, 4), Some(Error::BadSpec));
     assert_eq!(with_u(satin_at + 48, 12), Some(Error::BadSpec));
+    // A bevel style and technique that are not ones, a depth past 1000 %, an
+    // altitude past 90, flags that are not ones (and a texture's Invert with
+    // no texture), a gloss contour that does not exist, a Range past 1, a
+    // texture depth past 1000 %, and a texture that is not a fill.
+    assert_eq!(with_u(bevel_at + 4, 5), Some(Error::BadSpec));
+    assert_eq!(with_u(bevel_at + 8, 3), Some(Error::BadSpec));
+    assert_eq!(with_f(bevel_at + 12, 10.5), Some(Error::BadSpec));
+    assert_eq!(with_f(bevel_at + 12, -0.5), Some(Error::BadSpec));
+    assert_eq!(with_f(bevel_at + 20, 4097.0), Some(Error::BadSpec));
+    assert_eq!(with_f(bevel_at + 44, 91.0), Some(Error::BadSpec));
+    assert_eq!(with_u(bevel_at + 84, 64 | 53), Some(Error::BadSpec));
+    assert_eq!(with_u(bevel_at + 84, 32 | 1), Some(Error::BadSpec));
+    assert_eq!(with_u(bevel_at + 88, 12), Some(Error::BadSpec));
+    assert_eq!(with_f(bevel_at + 96, 1.5), Some(Error::BadSpec));
+    assert_eq!(with_f(bevel_at + 104, 10.5), Some(Error::BadSpec));
+    assert_eq!(with_u(bevel_at + 112, 0), Some(Error::BadSpec));
 }
 
 #[test]
@@ -1477,4 +1550,317 @@ fn a_satin_stays_inside_the_letters_and_turns_with_the_box() {
     let lit = row.iter().filter(|p| is_red(**p)).count();
     let solid = row.iter().filter(|p| p[3] > 200).count();
     assert!(solid > 10 && lit * 10 > solid * 8, "{row:?}");
+}
+
+// ---- Bevel & Emboss ----
+
+const WHITE: Rgba = Rgba([255, 255, 255, 255]);
+const GREEN: Rgba = Rgba([0, 255, 0, 255]);
+
+/// A bevel lit from the top at 30 degrees, size 5, its highlight plain
+/// white and its shadow plain blue, so each shows on red letters.
+fn bevel(style: BevelStyle, technique: BevelTechnique) -> Bevel {
+    Bevel {
+        style,
+        technique,
+        depth: 1.0,
+        up: true,
+        size: 5.0,
+        soften: 0.0,
+        angle: 90.0,
+        altitude: 30.0,
+        highlight: Overlay {
+            color: WHITE,
+            opacity: 1.0,
+            blend: Blend::Normal,
+        },
+        shadow: Overlay {
+            color: BLUE,
+            opacity: 1.0,
+            blend: Blend::Normal,
+        },
+        gloss: None,
+        gloss_aa: false,
+        contour: None,
+        range: 0.5,
+        contour_aa: false,
+        texture: None,
+    }
+}
+
+/// Red letters, and where they lie.
+fn red_box(e: &mut Engine) -> (BoxRequest, (i32, i32, i32, i32)) {
+    let font = load(e);
+    let mut b = plain(font);
+    b.request.job.fill = Some(Fill::Solid(RED));
+    let g = inked(&paint(e, &mut b));
+    (b, g)
+}
+
+/// Lit by the white highlight: on red letters their green comes up, off them
+/// the pixel is white.
+fn lit(p: [u8; 4]) -> bool {
+    p[3] > 60 && p[1] > 90 && p[0] > 90
+}
+
+/// In the blue shadow.
+fn shaded(p: [u8; 4]) -> bool {
+    p[3] > 60 && p[2] > 90 && p[1] < 60
+}
+
+#[test]
+fn an_inner_bevel_lights_the_letters_inside_only() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (sx, sy) = stem(glyphs);
+    for technique in [
+        BevelTechnique::Smooth,
+        BevelTechnique::ChiselHard,
+        BevelTechnique::ChiselSoft,
+    ] {
+        b.effects = vec![Effect::Bevel(bevel(BevelStyle::Inner, technique))];
+        let r = paint(&mut e, &mut b);
+        assert_eq!(inked(&r), glyphs, "{technique:?}");
+        let top = px(&r, sx, glyphs.1 + 1);
+        let bottom = px(&r, sx, glyphs.3 - 2);
+        assert!(lit(top), "{technique:?} {top:?}");
+        assert!(shaded(bottom), "{technique:?} {bottom:?}");
+        assert!(is_red(px(&r, sx, sy)), "{technique:?}");
+    }
+}
+
+#[test]
+fn an_outer_bevel_lies_round_the_letters_and_leaves_them_red() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (sx, sy) = stem(glyphs);
+    for technique in [
+        BevelTechnique::Smooth,
+        BevelTechnique::ChiselHard,
+        BevelTechnique::ChiselSoft,
+    ] {
+        b.effects = vec![Effect::Bevel(bevel(BevelStyle::Outer, technique))];
+        let r = paint(&mut e, &mut b);
+        let ink = inked(&r);
+        // Out past the letters by about its size, no further than its reach.
+        assert!(
+            ink.0 <= glyphs.0 - 3 && ink.0 >= glyphs.0 - 12,
+            "{technique:?} {ink:?}"
+        );
+        assert!(
+            ink.3 >= glyphs.3 + 3 && ink.3 <= glyphs.3 + 12,
+            "{technique:?} {ink:?}"
+        );
+        assert!(is_red(px(&r, sx, sy)) && is_red(px(&r, sx, glyphs.1 + 1)));
+        let above = px(&r, sx, glyphs.1 - 2);
+        let below = px(&r, sx, glyphs.3 + 1);
+        assert!(lit(above), "{technique:?} {above:?}");
+        assert!(shaded(below), "{technique:?} {below:?}");
+    }
+}
+
+#[test]
+fn an_emboss_lights_both_sides_and_a_pillow_turns_the_outside_over() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (sx, _) = stem(glyphs);
+    b.effects = vec![Effect::Bevel(bevel(
+        BevelStyle::Emboss,
+        BevelTechnique::Smooth,
+    ))];
+    let r = paint(&mut e, &mut b);
+    assert!(inked(&r).1 < glyphs.1 && inked(&r).3 > glyphs.3);
+    let p = |r: &Raster, y: i32| px(r, sx, y);
+    assert!(lit(p(&r, glyphs.1 - 1)), "{:?}", p(&r, glyphs.1 - 1));
+    assert!(lit(p(&r, glyphs.1 + 1)), "{:?}", p(&r, glyphs.1 + 1));
+    assert!(shaded(p(&r, glyphs.3)), "{:?}", p(&r, glyphs.3));
+    b.effects = vec![Effect::Bevel(bevel(
+        BevelStyle::Pillow,
+        BevelTechnique::Smooth,
+    ))];
+    let r = paint(&mut e, &mut b);
+    assert!(shaded(p(&r, glyphs.1 - 1)), "{:?}", p(&r, glyphs.1 - 1));
+    assert!(lit(p(&r, glyphs.1 + 1)), "{:?}", p(&r, glyphs.1 + 1));
+    assert!(lit(p(&r, glyphs.3)), "{:?}", p(&r, glyphs.3));
+}
+
+#[test]
+fn down_swaps_the_lit_and_the_dark_sides() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (sx, _) = stem(glyphs);
+    b.effects = vec![Effect::Bevel(Bevel {
+        up: false,
+        ..bevel(BevelStyle::Inner, BevelTechnique::Smooth)
+    })];
+    let r = paint(&mut e, &mut b);
+    assert!(shaded(px(&r, sx, glyphs.1 + 1)));
+    assert!(lit(px(&r, sx, glyphs.3 - 2)));
+}
+
+#[test]
+fn the_angle_moves_the_light_round_the_letters() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (_, sy) = stem(glyphs);
+    let mut at = |angle: f64| {
+        b.effects = vec![Effect::Bevel(Bevel {
+            angle,
+            ..bevel(BevelStyle::Inner, BevelTechnique::Smooth)
+        })];
+        px(&paint(&mut e, &mut b), glyphs.0 + 1, sy)
+    };
+    // From the left the stem's left side is lit, from the right it is dark.
+    assert!(lit(at(180.0)));
+    assert!(shaded(at(0.0)));
+    // From the top it is neither: the side faces across the light.
+    let side = at(90.0);
+    assert!(!lit(side) && !shaded(side), "{side:?}");
+}
+
+#[test]
+fn a_texture_raises_the_flat_of_the_letters() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (sx, sy) = stem(glyphs);
+    // Darker to lighter down the page: the stem's flat middle tilts towards
+    // a light from the top.
+    let ramp = Fill::Linear {
+        from: Pt::new(0.0, 50.0),
+        to: Pt::new(0.0, 100.0),
+        stops: vec![
+            mt_text::paint::Stop {
+                pos: 0.0,
+                color: BLACK,
+            },
+            mt_text::paint::Stop {
+                pos: 1.0,
+                color: WHITE,
+            },
+        ],
+    };
+    let textured = |invert: bool| {
+        Effect::Bevel(Bevel {
+            texture: Some(BevelTexture {
+                depth: 10.0,
+                invert,
+                fill: ramp.clone(),
+            }),
+            ..bevel(BevelStyle::Inner, BevelTechnique::Smooth)
+        })
+    };
+    b.effects = vec![textured(false)];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), glyphs);
+    let mid = px(&r, sx, sy);
+    assert!(mid[1] > 30, "{mid:?}");
+    // Inverted, it tilts away and the middle falls in shadow.
+    b.effects = vec![textured(true)];
+    let mid = px(&paint(&mut e, &mut b), sx, sy);
+    assert!(mid[2] > 30 && mid[1] == 0, "{mid:?}");
+}
+
+#[test]
+fn a_stroke_emboss_raises_the_stroke_and_needs_one() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let plain_r = paint(&mut e, &mut b);
+    let (sx, sy) = stem(glyphs);
+    let emboss = Effect::Bevel(bevel(BevelStyle::StrokeEmboss, BevelTechnique::Smooth));
+    // No stroke: nothing to raise, as in Photoshop.
+    b.effects = vec![emboss.clone()];
+    let r = paint(&mut e, &mut b);
+    assert_eq!((inked(&r), &r.data), (inked(&plain_r), &plain_r.data));
+    // A green stroke 4 outside: its band is lit and shaded, the letters stay
+    // red and nothing goes past the stroke.
+    let stroke = Effect::Stroke(Stroke {
+        size: 4.0,
+        position: Position::Outside,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        paint: Paint::Color(GREEN),
+        seed: 0,
+    });
+    b.effects = vec![stroke.clone()];
+    let stroked = paint(&mut e, &mut b);
+    b.effects = vec![emboss, stroke];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), inked(&stroked));
+    assert!(is_red(px(&r, sx, sy)));
+    let band: Vec<[u8; 4]> = (glyphs.1 - 4..glyphs.1).map(|y| px(&r, sx, y)).collect();
+    let before: Vec<[u8; 4]> = (glyphs.1 - 4..glyphs.1)
+        .map(|y| px(&stroked, sx, y))
+        .collect();
+    assert!(
+        before.iter().all(|p| p[1] > 200 && p[0] < 40 && p[2] < 40),
+        "{before:?}"
+    );
+    // Up the band's outer slope, faced to the light: lighter; its inner
+    // slope, against the letters, faces away: bluer.
+    assert!(band.iter().any(|p| p[0] > 60), "{band:?}");
+    assert!(band.iter().any(|p| p[2] > 60), "{band:?}");
+}
+
+#[test]
+fn a_turned_box_turns_its_light() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (sx, _) = stem(glyphs);
+    let turn = Affine::translate(100.0, 80.0)
+        .after(&Affine::rotate(0.0, 1.0))
+        .after(&Affine::translate(-100.0, -80.0));
+    b.request.transform = turn;
+    b.effects = vec![Effect::Bevel(bevel(
+        BevelStyle::Inner,
+        BevelTechnique::Smooth,
+    ))];
+    let r = paint(&mut e, &mut b);
+    // The letters' own top edge, wherever the turn takes it, is lit; their
+    // bottom edge is in shadow.
+    let dev = |x: f64, y: f64| {
+        let p = turn.apply(Pt::new(x, y));
+        px(&r, p.x.floor() as i32, p.y.floor() as i32)
+    };
+    let top = dev(f64::from(sx) + 0.5, f64::from(glyphs.1) + 1.5);
+    let bottom = dev(f64::from(sx) + 0.5, f64::from(glyphs.3) - 1.5);
+    assert!(lit(top), "{top:?}");
+    assert!(shaded(bottom), "{bottom:?}");
+}
+
+/// How long a big bevel takes: a box of letters about 1300 x 310, size 150.
+/// Run with `cargo test --release --test paint_box -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn a_big_bevel_takes_this_long() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.width = 2000;
+    b.height = 1000;
+    b.request.job.fill = Some(Fill::Solid(RED));
+    b.request.face = Face::new(font, 420.0);
+    b.request.job.runs[0].text = "BEVEL".to_owned();
+    b.request.job.runs[0].x = 150.0;
+    b.request.job.runs[0].y = 650.0;
+    let g = inked(&paint(&mut e, &mut b));
+    println!("letters {}x{} px", g.2 - g.0, g.3 - g.1);
+    for (style, technique) in [
+        (BevelStyle::Inner, BevelTechnique::ChiselHard),
+        (BevelStyle::Inner, BevelTechnique::Smooth),
+        (BevelStyle::Outer, BevelTechnique::ChiselHard),
+        (BevelStyle::Emboss, BevelTechnique::ChiselSoft),
+    ] {
+        b.effects = vec![Effect::Bevel(Bevel {
+            size: 150.0,
+            ..bevel(style, technique)
+        })];
+        let t = std::time::Instant::now();
+        let r = paint(&mut e, &mut b);
+        println!(
+            "{style:?} {technique:?} size 150: {:?}, raster {}x{}",
+            t.elapsed(),
+            r.width,
+            r.height
+        );
+    }
 }

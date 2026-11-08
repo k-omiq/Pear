@@ -1231,15 +1231,36 @@ function strokePaint(k) {
 
 // What reaches past the letters' silhouette, as shadows: every shadow the box
 // casts (`boxShadows`), an outer glow, which reaches as far as an unmoved
-// shadow of its size does, and the Photoshop strokes' outside parts. What sizes the canvas a box lands in.
+// shadow of its size does, the Photoshop strokes' outside parts, and an outer
+// or emboss bevel (`bevelReach`). What sizes the canvas a box lands in.
 // The satin, like the other inside effects, never leaves the letters.
 export function reachShadows(style) {
   const shadows = boxShadows(style);
   const og = style?.outerGlow;
-  const out = og?.on && og.opacity > 0 ? [...shadows, { x: 0, y: 0, size: og.size, opacity: og.opacity }] : shadows;
+  let out = og?.on && og.opacity > 0 ? [...shadows, { x: 0, y: 0, size: og.size, opacity: og.opacity }] : shadows;
   // A stroke's outside part reaches as far as its outside width.
   const width = Math.max(0, ...strokeEffectsOf(style).map((k) => (k.position === 'outside' ? k.size : k.position === 'center' ? k.size / 2 : 0)));
-  return width > 0 ? [...out, { x: 0, y: 0, size: width, opacity: 1 }] : out;
+  if (width > 0) out = [...out, { x: 0, y: 0, size: width, opacity: 1 }];
+  // A bevel is read from the effect the engine is sent, so the reach follows
+  // whatever `boxEffects` resolves.
+  const bevel = Math.max(0, ...boxEffects(style).filter((fx) => fx.kind === 'bevel').map(bevelReach));
+  return bevel > 0 ? [...out, { x: 0, y: 0, size: 0, grow: bevel, opacity: 1 }] : out;
+}
+
+// How far a resolved bevel (`encodeBox`'s `kind: 'bevel'`) reaches past the
+// letters, job units, as `bevel::outward` in text-engine/src/paint/fx/bevel.rs
+// states it in device pixels: an outer bevel its Size (at least 1), an Emboss
+// or Pillow half of it rounded up (Chisel Soft blurs a quarter more), plus
+// Soften from 1 up, plus 4 to spare. An inner bevel and a Stroke Emboss stay
+// inside the letters and the strokes.
+export function bevelReach(fx) {
+  const size = Math.max(1, Number(fx?.size) || 0);
+  const soften = Number(fx?.soften) >= 1 ? Number(fx.soften) : 0;
+  const style = fx?.style ?? 'inner';
+  if (style === 'outer') return size + soften + 4;
+  if (style !== 'emboss' && style !== 'pillow') return 0;
+  const soft = fx.technique === 'chisel-soft' ? Math.max(1, size / 4) + 1 : 0;
+  return Math.ceil(size / 2) + soft + soften + 4;
 }
 
 // How far past the letters the box's outlines reach, page px: the strokes,

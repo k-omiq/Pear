@@ -323,6 +323,29 @@ describe('the Rust engine behind the glyph-painter seam', () => {
     expect(box([{ ...satin, invert: true }]).solid).toEqual(plain.solid);
   });
 
+  it('paints a bevel: an inner one inside the letters, an outer one round them', () => {
+    const painter = createRustGlyphPainter(rust);
+    const box = (effects) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects });
+      return ink(canvas);
+    };
+    const plain = box([]);
+    // Lit from the top in plain white: the letters' top edge (the first solid
+    // pixel) takes the highlight, and nothing leaves the letters.
+    const bevel = { kind: 'bevel', style: 'inner', technique: 'chisel-hard', size: 3, angle: 90, altitude: 30, highlight: { blend: 'normal', color: '#ffffff', opacity: 1 }, shadow: { blend: 'normal', color: '#0000ff', opacity: 1 } };
+    const inner = box([bevel]);
+    expect([inner.x0, inner.y0, inner.x1, inner.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
+    expect(inner.solid[1]).toBeGreaterThan(100);
+    // An outer bevel reaches past the letters: lit above them, in shadow
+    // below (their sides face across the light and take little of either).
+    const outer = box([{ ...bevel, style: 'outer' }]);
+    expect(outer.y0).toBeLessThan(plain.y0 - 2);
+    expect(outer.y1).toBeGreaterThan(plain.y1 + 2);
+  });
+
   it('paints a noise gradient the colours the native build bakes, and a Shape Burst', () => {
     const painter = createRustGlyphPainter(rust);
     const box = (effects) => {

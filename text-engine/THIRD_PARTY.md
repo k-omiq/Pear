@@ -34,6 +34,18 @@ names its source file in a comment.
   (Distance 0 drawn as 1 px, rounded to whole pixels)
   (`crates/compose/src/effects/bevel.rs` `satin_map`, `satin_distance`;
   `effects/paint.rs` `satin_lut`, `offset`).
+- `fx/bevel.rs`: Bevel & Emboss, its geometry, height map, chisel ramps and
+  shading (`crates/compose/src/effects/bevel.rs` `BevelPaint`,
+  `BEVEL_H_EPS`, `BevelGeom`, `bevel_geom`, `bevel_height`,
+  `bevel_chisel_h`, `bevel_maps`); `fx/contour.rs` `Table`, the contour as
+  4096 floats (`effects/paint.rs` `bevel_contour_lut`, `lut_at`;
+  `adjust/tone.rs` `contour_curve_lut`).
+- `fx/edges.rs`: the chisel's distances with the edge placed by its
+  anti-aliased pixels (`crates/compose/src/effects/distance.rs`
+  `edge_offset`, `SharpEdge`, `SharpEdges`, `sharp_edges`,
+  `refine_edge_normals`, `edge_distance`, `bevel_dist_inside`,
+  `bevel_dist_outside`, `bevel_dists`), and their tests
+  (`effects/tests.rs`).
 
 MIT License
 

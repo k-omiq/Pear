@@ -303,25 +303,10 @@ impl Lut {
 
     /// `curve` baked.
     pub fn new(curve: &Curve) -> Self {
-        let preset;
-        let pts: &[Point] = match curve {
-            Curve::Preset(n) => {
-                let p = PRESETS.get(*n as usize).unwrap_or(&PRESETS[0]).1;
-                preset = p
-                    .iter()
-                    .map(|&(x, y, corner)| Point {
-                        x: x * 255.0,
-                        y: y * 255.0,
-                        corner,
-                    })
-                    .collect::<Vec<_>>();
-                &preset
-            }
-            Curve::Points(pts) => pts,
-        };
+        let pts = points(curve);
         let mut out = [0u8; 256];
         for (i, v) in out.iter_mut().enumerate() {
-            let y = through(pts, i as f64 / 255.0).clamp(0.0, 1.0);
+            let y = through(&pts, i as f64 / 255.0).clamp(0.0, 1.0);
             *v = (y * 255.0).round() as u8;
         }
         Lut(out)
@@ -361,7 +346,66 @@ impl Lut {
     }
 }
 
-/// Photoshop's Range (glows and the bevel's contour): the curve is laid over
+/// A curve's points from 0 to 255, a preset's read from its table.
+fn points(curve: &Curve) -> std::borrow::Cow<'_, [Point]> {
+    match curve {
+        Curve::Preset(n) => {
+            let p = PRESETS.get(*n as usize).unwrap_or(&PRESETS[0]).1;
+            p.iter()
+                .map(|&(x, y, corner)| Point {
+                    x: x * 255.0,
+                    y: y * 255.0,
+                    corner,
+                })
+                .collect::<Vec<_>>()
+                .into()
+        }
+        Curve::Points(pts) => pts.as_slice().into(),
+    }
+}
+
+/// A contour baked to [`Table::LEN`] floats from 0 to 1, read between its
+/// entries: the bevel's Contour (on the height map) and its Gloss Contour
+/// (on the shading). Not the 8-bit [`Lut`]: the bevel's shading is the
+/// slope of the height map times `depth * size`, and a height in steps of
+/// 1/255 shades as a staircase of noise. PhotoCraft's table is 4096 floats
+/// too (`crates/compose/src/effects/paint.rs` `bevel_contour_lut`, `lut_at`;
+/// `crates/compose/src/adjust/tone.rs` `contour_curve_lut`), Copyright (c)
+/// 2026 ArtCraft Team and the PhotoCraft contributors, MIT licence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Table(Vec<f32>);
+
+impl Table {
+    pub const LEN: usize = 4096;
+
+    /// `curve` baked, or `None` when it changes nothing (Linear).
+    pub fn new(curve: &Curve) -> Option<Self> {
+        let pts = points(curve);
+        let n = Self::LEN - 1;
+        let v: Vec<f32> = (0..=n)
+            .map(|k| through(&pts, k as f64 / n as f64).clamp(0.0, 1.0) as f32)
+            .collect();
+        let linear = v
+            .iter()
+            .enumerate()
+            .all(|(k, y)| (y - k as f32 / n as f32).abs() < 1e-5);
+        (!linear).then_some(Table(v))
+    }
+
+    /// The table at `v`, clamped to 0 to 1, read between its entries
+    /// (PhotoCraft `lut_at`).
+    pub fn at(&self, v: f32) -> f32 {
+        let l = &self.0;
+        let x = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) } * (l.len() - 1) as f32;
+        let i = x.floor() as usize;
+        let j = (i + 1).min(l.len() - 1);
+        l[i] + (l[j] - l[i]) * (x - i as f32)
+    }
+}
+
+/// Photoshop's Range (glows; the bevel's contour carries one but PhotoCraft
+/// found no `v / range` stretch that matches Photoshop there, so the bevel
+/// applies none): the curve is laid over
 /// the inner `range` percent of the matte, so a smaller range pulls the whole
 /// curve towards the far edge.
 pub fn range(v: u8, range: f64) -> u8 {
@@ -516,6 +560,43 @@ mod tests {
         }
         // A Gaussian Satin runs under the diagonal at the middle.
         assert!(Lut::new(&Curve::Preset(5)).satin().apply(128) < 128);
+    }
+
+    #[test]
+    fn the_float_table_is_the_curve_and_linear_is_none() {
+        assert!(Table::new(&Curve::Preset(0)).is_none());
+        let p = |x: f64, y: f64| Point {
+            x,
+            y,
+            corner: false,
+        };
+        assert!(Table::new(&Curve::Points(vec![p(0.0, 0.0), p(255.0, 255.0)])).is_none());
+        for n in 1..PRESETS.len() as u32 {
+            let c = Curve::Preset(n);
+            let t = Table::new(&c).expect("not linear");
+            let pts = points(&c);
+            for k in 0..=64 {
+                let v = k as f64 / 64.0;
+                let want = through(&pts, v).clamp(0.0, 1.0);
+                assert!(
+                    (f64::from(t.at(v as f32)) - want).abs() < 1e-3,
+                    "{n} at {v}"
+                );
+            }
+            // Clamped at both ends.
+            assert_eq!(t.at(-1.0), t.at(0.0));
+            assert_eq!(t.at(2.0), t.at(1.0));
+        }
+        // Finer than the 8-bit table: a gentle curve keeps steps far below
+        // 1/255.
+        let t = Table::new(&Curve::Points(vec![
+            p(0.0, 0.0),
+            p(128.0, 100.0),
+            p(255.0, 255.0),
+        ]))
+        .unwrap();
+        let step = (t.at(0.5 + 1.0 / 4095.0) - t.at(0.5)).abs();
+        assert!(step < 1.0 / 1000.0, "{step}");
     }
 
     #[test]

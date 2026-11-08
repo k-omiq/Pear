@@ -9,6 +9,8 @@
 //! distance.rs  distance transforms; a matte grown by a distance
 //! tent.rs      the soft edge of an effect: two box passes of its Size
 //! map.rs       the glows' and the inner shadow's maps
+//! bevel.rs     Bevel & Emboss: the height, the shading, where it lies
+//! edges.rs     a chisel's distances, the edge placed by its coverage
 //! noise_gradient.rs  Photoshop's noise gradients (ours, not PhotoCraft's)
 //! ```
 //!
@@ -20,9 +22,11 @@
 //! its source. Copyright (c) 2026 ArtCraft Team and the PhotoCraft
 //! contributors, MIT licence (see `THIRD_PARTY.md`).
 
+pub mod bevel;
 pub mod blend;
 pub mod contour;
 pub mod distance;
+pub(crate) mod edges;
 pub mod effects;
 pub mod gradient;
 pub(crate) mod map;
