@@ -26,6 +26,7 @@ pub(crate) mod budget;
 mod compose;
 pub mod fx;
 mod geom;
+pub mod ink;
 mod job;
 mod outline;
 mod pattern;
@@ -679,6 +680,21 @@ pub fn paint_job_with(
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
     let _budget = budget::Scope::new();
+    let glyphs = paint_letters(engine, request, rasterizer)?;
+    // A box's brush ink, joined to its letters in the way this job paints
+    // them: a silhouette, the letters, or the rims (`ink::join`).
+    match &request.ink {
+        Some(ink) => ink::join(glyphs, ink, request, rasterizer),
+        None => Ok(glyphs),
+    }
+}
+
+/// The letters of a job, without its ink.
+fn paint_letters(
+    engine: &mut Engine,
+    request: &Request,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
     let Request {
         job,
         face,
@@ -686,6 +702,7 @@ pub fn paint_job_with(
         weight,
         transform,
         tiles,
+        ..
     } = request;
     let face: Face = *face;
     let bold_draw = bold_draw.unwrap_or(BoldDraw::for_rule(engine.rules.bold_advance));
@@ -1007,6 +1024,7 @@ mod hardening_tests {
             weight: 0.,
             transform: Affine::IDENTITY,
             tiles: vec![],
+            ink: None,
             job: job::Job {
                 curved: false,
                 align: job::Align::Left,
