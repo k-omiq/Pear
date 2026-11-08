@@ -593,6 +593,18 @@ describe('textLayerFor', () => {
     }
   });
 
+  it('writes the Advanced Blending options, and reads them back', () => {
+    const plain = textLayerFor(page, box({ ...baseStyle, blendMode: 'multiply' }), rendered);
+    expect(plain.blendMode).toBe('multiply');
+    expect(plain.blendInteriorElements).toBeUndefined();
+    expect(plain.knockout).toBeUndefined();
+    const layer = textLayerFor(page, box({ ...baseStyle, blendMode: 'screen', blending: { interior: true, knockout: 'deep' } }), rendered);
+    expect(layer).toMatchObject({ blendMode: 'screen', blendInteriorElements: true, knockout: true });
+    const bytes = writePsd({ width: 4, height: 4, children: [{ name: 'b', left: 0, top: 0, right: 4, bottom: 4, blendMode: layer.blendMode, blendInteriorElements: layer.blendInteriorElements, knockout: layer.knockout }] });
+    const back = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true }).children[0];
+    expect(back).toMatchObject({ blendMode: 'screen', blendInteriorElements: true, knockout: true });
+  });
+
   it('writes the glows, the inner shadows and the colour overlays as Photoshop states them', () => {
     const style = {
       ...baseStyle,

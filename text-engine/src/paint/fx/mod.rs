@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! blend.rs     the 27 blend modes, and laying a layer over another in one
+//! blending.rs  the Advanced Blending options: interior as group, see-through
 //! contour.rs   the curve a matte is passed through, its presets, and Range
 //! noise.rs     seeded grain, so a box paints the same every time
 //! distance.rs  distance transforms; a matte grown by a distance
@@ -24,6 +25,7 @@
 
 pub mod bevel;
 pub mod blend;
+pub mod blending;
 pub mod contour;
 pub mod distance;
 pub(crate) mod edges;

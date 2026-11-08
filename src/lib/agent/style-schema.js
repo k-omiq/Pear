@@ -3,7 +3,7 @@ import {
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
   LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, SATIN_DISTANCE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
   STROKE_POSITIONS, STROKE_FILLS, BEVEL_STYLES, BEVEL_TECHNIQUES, BEVEL_DIRECTIONS, BEVEL_DEPTH_MAX,
-  BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX,
+  BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX, KNOCKOUT_MODES,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -263,7 +263,11 @@ export const STYLE_SCHEMA = {
     pattern: shared('pattern', object('fill pattern', patternFields())),
   })),
   fillOpacity: alpha('fill alpha only; strokes and shadows stay'),
-  blendMode: listed('BLEND', 'how the box mixes with the page (Photoshop layer blend)', LAYER_BLEND_MODES),
+  blendMode: listed('BLEND', 'how the box mixes with the page art (Photoshop layer blend, Rust)', LAYER_BLEND_MODES),
+  blending: object('Photoshop advanced blending', {
+    interior: boolean('Fill also fades overlays, satin, inner glow'),
+    knockout: choice('stored and in the PSD, not painted', KNOCKOUT_MODES),
+  }),
   blur: number('whole-text blur px', 0),
   motionBlur: object('directional smear', {
     on: boolean('enable smear'),

@@ -24,6 +24,7 @@ import {
   shadowSigma,
   boxShadows,
   boxEffects,
+  usesBackdrop,
   reachShadows,
   strokeReach,
   drawInk,
@@ -33,6 +34,7 @@ import { findTag } from './tags.svelte.js';
 import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, ITALIC_ANGLE_DEF } from './data.js';
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
+import { backdropPixels, boxToPage } from './backdrop.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
@@ -888,8 +890,9 @@ export function textureScale(cw, ch, scale, maxPx = Infinity, maxSide = Infinity
 // 16,384). The area is a canvas's, `MAX_DEVICE_AREA` (warp-paint.js), which is
 // under the engine's own (67 MP) too. Only a box over one of them is touched,
 // and only its resolution: an ordinary box is painted at 2 exactly as before.
-export function renderBox(box, p, tips) {
-  return warpTexture(renderBoxTexture(box, p, tips, 2, MAX_DEVICE_AREA, glyphPainter().maxSide ?? Infinity), box);
+// `under` is the page art for a box that blends with the page (`paintBoxJob`).
+export function renderBox(box, p, tips, under = null) {
+  return warpTexture(renderBoxTexture(box, p, tips, 2, MAX_DEVICE_AREA, glyphPainter().maxSide ?? Infinity, false, false, null, under), box);
 }
 
 // Everything `renderBox` does EXCEPT the mesh - the finished, unwarped picture
@@ -957,8 +960,16 @@ export function boxInJob(box) {
 // a turned box is painted turned and not painted straight and resampled.
 // Hands back where the painter's pixels landed in the canvas's device pixels
 // (`inkUnion`), for `renderBoxTexture`'s `ink`.
-function paintBoxJob(ctx, box, L, foot, coarse = false) {
+//
+// `under` is the page art the box is shown over (`{ image, W, H, src, key,
+// at }`, `backdrop.js`), for a box that blends with the page
+// (`usesBackdrop`); null paints it without the page, as Normal. `at` moves
+// the box's place on the page where the caller lays the picture somewhere
+// else than the box's own corner (the export's whole-pixel snap).
+function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
   const s = L.s;
+  const page = under?.image && usesBackdrop(s) ? under : null;
+  const A = page ? boxToPage(box, L, page.at) : null;
   const mb = s.motionBlur;
   // The editor's picture is repainted at every edit, and a smear is its
   // steps times four copies of the box: it takes the coarser list the
@@ -974,6 +985,9 @@ function paintBoxJob(ctx, box, L, foot, coarse = false) {
     effects: effectPaints(box, L, boxEffects(s)).map((fx, i) => ({ ...fx, seed: shadowSeed(box.id, 1024 + i) })),
     blend: s.blendMode,
     fillOpacity: s.fillOpacity,
+    blendInterior: s.blending?.interior === true,
+    // The page art under the surface, read once the painter knows it.
+    backdrop: page ? (rect) => backdropPixels(page, A, rect) : null,
     blur: s.blur > 0 ? s.blur : 0,
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
     // The mask's shapes are the box's own, so the box's corner goes with them.
@@ -1049,7 +1063,10 @@ function inkUnion(rects, canvas) {
 // rasters are cut to what they ink, so it costs nothing to know. Null where
 // the canvas drew part of the box (the passes below the job) or the painter
 // did not say: a caller then has the whole canvas.
-export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null) {
+//
+// `under` is the page art the box is shown over, for a box that blends with
+// the page (`paintBoxJob`); only the engine's whole-box paint takes it.
+export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null, under = null) {
   const { L, F, foot } = boxPlan(box, p, flat);
   const s = L.s;
   const SS = textureScale(foot.cw, foot.ch, scale, maxPx, maxSide);
@@ -1075,7 +1092,12 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
   // The whole box in one job where the painter does that: every pass below
   // is the engine's, in this order, and the canvas only holds the result.
   if (job) {
-    const ink = paintBoxJob(ctx, box, L, foot, coarse);
+    // A bitmap the page composite sets on whole page px (`paintBoxOnPage`'s
+    // upright route) lays the box's corner where the snap puts it.
+    const page = under?.snap ? { ...under, at: { x: Math.round(box.x - foot.ox) + foot.ox, y: Math.round(box.y - foot.oy) + foot.oy } } : under;
+    // A mesh the texture warp bends afterwards would move the letters off the
+    // page pixels they were blended with: such a box paints without the page.
+    const ink = paintBoxJob(ctx, box, L, foot, coarse, !F && warpActive(s, box.w, box.h) ? null : page);
     return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, phase: phased ? { x: fx, y: fy } : null, ink };
   }
   paintShadows(ctx, box, L, SS, foot);
@@ -1354,10 +1376,14 @@ export async function renderPageCanvas(p, scale = 1) {
   // what the editor shows, so a raws-only chapter doesn't export as a blank
   // white sheet.
   const base = p.cleaned ?? p.raw;
+  // The art a box in a blend mode blends with (`backdrop.js`): this page's,
+  // as the editor shows it, and not the boxes under it (phase 6a).
+  let art = null;
   if (base) {
     try {
       const img = await loadImage(base);
       ctx.drawImage(img, 0, 0, W, H);
+      art = { image: img, W, H, src: base };
     } catch {
       /* draw text on white if image fails */
     }
@@ -1366,7 +1392,7 @@ export async function renderPageCanvas(p, scale = 1) {
   for (const box of p.boxes ?? []) {
     ctx.save();
     ctx.globalAlpha = box.style.opacity ?? 1;
-    paintBoxOnPage(ctx, box, p, tips);
+    paintBoxOnPage(ctx, box, p, tips, art);
     ctx.restore();
   }
   return canvas;
@@ -1377,7 +1403,12 @@ export async function renderPageCanvas(p, scale = 1) {
 // fallback for roughened/translucent. Opacity is applied by the caller (via
 // ctx.globalAlpha or a layer opacity), NOT here, so the same pixels can back a
 // translucent PSD layer.
-function paintBoxOnPage(ctx, box, p, tips) {
+//
+// `art` is the page art (`{ image, W, H, src }`) a box in a blend mode blends
+// with, the flat export's (`renderPageCanvas`); each route below hands it on
+// in the frame that route paints in. Null for the PSD's layers
+// (`renderBoxLayer`): Photoshop blends those from their `blendMode`.
+function paintBoxOnPage(ctx, box, p, tips, art = null) {
   const s = box.style;
   const rot = s.rotation || 0;
   const opaque = (s.opacity ?? 1) >= 0.999;
@@ -1420,7 +1451,9 @@ function paintBoxOnPage(ctx, box, p, tips) {
       if (flipped) ctx.scale(fx, fy);
       ctx.translate(-box.w / 2 - L.ox, -box.h / 2 - L.oy);
       try {
-        paintBoxJob(ctx, box, L, foot);
+        // At the angle, straight into the page: the crop is the page under
+        // the turned surface in the page's device pixels.
+        paintBoxJob(ctx, box, L, foot, false, art);
         return;
       } catch {
         // A surface the engine will not paint (a box across a huge page at a
@@ -1450,7 +1483,11 @@ function paintBoxOnPage(ctx, box, p, tips) {
     // `ox`/`oy` is where the box's own top-left sits inside the bitmap: the
     // layout's padding and overflow for an ordinary box, and whatever the mesh
     // made of them for a warped one.
-    const { canvas: bc, ox, oy, cw, ch } = renderBox(box, p, tips);
+    // The bitmap is painted in the box's own frame at its scale, so its crop
+    // is the page carried into that frame (`boxToPage`); an upright unmirrored
+    // one is laid at the whole-pixel corner below (`snap`).
+    const under = art ? { ...art, snap: rot === 0 && !flipped } : null;
+    const { canvas: bc, ox, oy, cw, ch } = renderBox(box, p, tips, under);
     if (rot === 0) {
       // Integer-snap the bitmap origin so a sub-pixel box position doesn't
       // force a bilinear resample of the whole text block (the primary blur).
@@ -1509,7 +1546,10 @@ export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, d
   if (scale !== 1) ctx.scale(scale, scale);
   if (dx || dy) ctx.translate(dx, dy);
   ctx.imageSmoothingQuality = 'high';
-  paintBoxOnPage(ctx, box, p, tips); // full opacity; layer opacity applied by consumer
+  // Full opacity; the layer opacity is the consumer's. No page art: the
+  // layer's pixels are un-blended and Photoshop blends them from the layer's
+  // `blendMode`, so a backdrop here would blend twice.
+  paintBoxOnPage(ctx, box, p, tips);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   const full = ctx.getImageData(0, 0, SW, SH);
   const d = full.data;
@@ -1732,6 +1772,9 @@ export async function renderStripSliceCanvas(pages, tops, y0, y1, scale = 1, che
   await settlePickedTiles(painted);
 
   check?.();
+  // Each page's art as drawn, for its boxes in a blend mode (`backdrop.js`):
+  // a box blends with its own page's art, in that page's space.
+  const arts = new Map();
   // Pass 1: paint all artwork intersecting the requested output rectangle.
   await withPagesImages(
     artHits.map((h) => h.p),
@@ -1745,6 +1788,7 @@ export async function renderStripSliceCanvas(pages, tops, y0, y1, scale = 1, che
           try {
             const img = await loadImage(base);
             ctx.drawImage(img, x, y, w, h);
+            arts.set(p, { image: img, W: w, H: h, src: base });
           } catch {
             /* draw this page's text on white if its image fails */
           }
@@ -1762,7 +1806,7 @@ export async function renderStripSliceCanvas(pages, tops, y0, y1, scale = 1, che
     ctx.save();
     ctx.translate(x, y);
     ctx.globalAlpha = box.style.opacity ?? 1;
-    paintBoxOnPage(ctx, box, p, tips);
+    paintBoxOnPage(ctx, box, p, tips, arts.get(p) ?? null);
     ctx.restore();
   }
   return canvas;

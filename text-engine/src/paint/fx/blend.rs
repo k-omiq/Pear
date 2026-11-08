@@ -134,6 +134,52 @@ impl Blend {
         }
     }
 
+    /// Photoshop's "special eight": the modes for which a layer's Fill is
+    /// not just less coverage. Ported from PhotoCraft,
+    /// `crates/compose/src/psblend.rs` `fill_is_special`, Copyright (c) 2026
+    /// ArtCraft Team and the PhotoCraft contributors, MIT licence (see
+    /// `THIRD_PARTY.md`).
+    pub fn fill_is_special(self) -> bool {
+        matches!(
+            self,
+            Blend::ColorBurn
+                | Blend::LinearBurn
+                | Blend::ColorDodge
+                | Blend::LinearDodge
+                | Blend::VividLight
+                | Blend::LinearLight
+                | Blend::HardMix
+                | Blend::Difference
+        )
+    }
+
+    /// [`mix`](Self::mix) for a layer at Fill `fill` (0 to 1). Below 100 %
+    /// the special eight blend, at full strength, a source pulled toward the
+    /// mode's neutral colour (the one that leaves the backdrop as it is):
+    /// white for the two burns, mid grey for Vivid and Linear Light, black
+    /// for the dodges and Difference; Hard Mix has its own formula. Every
+    /// other mode, or a whole fill, is plain `mix`. Ported from PhotoCraft,
+    /// `crates/compose/src/psblend.rs` `blend_rgb_fill` (measured on
+    /// Photoshop 27.11, Fill 50 %, eight modes, within a level), MIT licence.
+    pub fn mix_fill(self, b: [f32; 3], s: [f32; 3], fill: f32) -> [f32; 3] {
+        let f = fill.clamp(0.0, 1.0);
+        if f >= 1.0 || !self.fill_is_special() {
+            return self.mix(b, s);
+        }
+        let toward =
+            |neutral: f32| -> [f32; 3] { core::array::from_fn(|i| neutral + (s[i] - neutral) * f) };
+        match self {
+            // At Fill f: (b - f (1 - s)) / (1 - f), clamped. At f = 1 it is
+            // the hard threshold (b + s >= 1), at f = 0 the backdrop.
+            Blend::HardMix => {
+                core::array::from_fn(|i| ((b[i] - f * (1.0 - s[i])) / (1.0 - f)).clamp(0.0, 1.0))
+            }
+            Blend::ColorBurn | Blend::LinearBurn => self.mix(b, toward(1.0)),
+            Blend::VividLight | Blend::LinearLight => self.mix(b, toward(0.5)),
+            _ => self.mix(b, toward(0.0)),
+        }
+    }
+
     fn channel(self, b: f32, s: f32) -> f32 {
         match self {
             Blend::Normal | Blend::Dissolve => s,
@@ -361,6 +407,44 @@ pub(crate) fn lay(
     backdrop: Option<&Backdrop<'_>>,
     seed: u32,
 ) {
+    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, 1.0);
+}
+
+/// [`lay`] for a layer whose Fill Opacity is `fill`, its `src` drawn at the
+/// whole fill. Over a page the special eight ([`Blend::fill_is_special`])
+/// take Fill into the blend ([`Blend::mix_fill`]) and leave coverage to
+/// `opacity`; with no page, or in any other mode, Fill is coverage, as
+/// `opacity` is. Ported from PhotoCraft, `crates/compose/src/psblend.rs`
+/// `composite_fill`, with the backdrop opaque (the page is), MIT licence.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lay_fill(
+    dst: &mut Surface,
+    src: &Surface,
+    bx: IBox,
+    opacity: f32,
+    mode: Blend,
+    backdrop: Option<&Backdrop<'_>>,
+    seed: u32,
+    fill: f32,
+) {
+    let fill = fill.clamp(0.0, 1.0);
+    if fill >= 1.0 || !mode.fill_is_special() || backdrop.is_none() {
+        return lay_at_fill(dst, src, bx, opacity * fill, mode, backdrop, seed, 1.0);
+    }
+    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, fill);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lay_at_fill(
+    dst: &mut Surface,
+    src: &Surface,
+    bx: IBox,
+    opacity: f32,
+    mode: Blend,
+    backdrop: Option<&Backdrop<'_>>,
+    seed: u32,
+    fill: f32,
+) {
     let w = dst.width;
     let bx = bx.intersect(&IBox {
         x0: 0,
@@ -404,7 +488,7 @@ pub(crate) fn lay(
                         d_col[1] * da + p[1] * (1.0 - da),
                         d_col[2] * da + p[2] * (1.0 - da),
                     ];
-                    let mixed = mode.mix(under, s_col);
+                    let mixed = mode.mix_fill(under, s_col, fill);
                     let alpha = sa + da * (1.0 - sa);
                     // What shows: the blend over what was under.
                     let shown = [
@@ -573,6 +657,105 @@ mod tests {
         lay(&mut a, &s, ONE, 1.0, Blend::Multiply, Some(&back), 0);
         lay(&mut b, &s, ONE, 1.0, Blend::Normal, Some(&back), 0);
         assert_eq!(&a.data[..], &b.data[..]);
+    }
+
+    /// What an opaque layer of `layer` at Fill `fill` in `mode` shows over a
+    /// page of `page`, through `lay_fill`, as 0 to 255 per channel.
+    fn shown_at_fill(mode: Blend, page: [u8; 3], layer: [u8; 3], fill: f32) -> [f32; 3] {
+        let pg = [page[0], page[1], page[2], 255];
+        let back = Backdrop { pixels: &pg };
+        let s = surface([layer[0], layer[1], layer[2], 255]);
+        let mut d = Surface::new(1, 1).unwrap();
+        lay_fill(&mut d, &s, ONE, 1.0, mode, Some(&back), 0, fill);
+        let a = f32::from(d.data[3]) / 255.0;
+        core::array::from_fn(|k| f32::from(d.data[k]) + f32::from(page[k]) * (1.0 - a))
+    }
+
+    /// PhotoCraft's `special_eight_fill_matches_photoshop`
+    /// (`crates/compose/src/psblend.rs`, MIT licence): Photoshop 27.11's own
+    /// composites of a layer at Fill 25, 50 and 75 % in each of the eight.
+    #[test]
+    fn special_eight_fill_matches_photoshop() {
+        let measured: [(Blend, [u8; 3]); 8] = [
+            (Blend::ColorBurn, [176, 132, 88]),
+            (Blend::LinearBurn, [122, 112, 82]),
+            (Blend::ColorDodge, [249, 232, 176]),
+            (Blend::LinearDodge, [250, 240, 210]),
+            (Blend::VividLight, [193, 188, 157]),
+            (Blend::LinearLight, [171, 202, 192]),
+            (Blend::HardMix, [245, 225, 165]),
+            (Blend::Difference, [150, 60, 10]),
+        ];
+        let (b, t) = ([200, 150, 100], [100, 180, 220]);
+        for (mode, want) in measured {
+            assert!(mode.fill_is_special());
+            let got = shown_at_fill(mode, b, t, 128.0 / 255.0);
+            for i in 0..3 {
+                assert!(
+                    (got[i] - f32::from(want[i])).abs() <= 2.0,
+                    "{mode:?} channel {i}: {} vs Photoshop {}",
+                    got[i],
+                    want[i]
+                );
+            }
+            // At Fill 0 the page, as it was.
+            let none = shown_at_fill(mode, b, t, 0.0);
+            assert!(
+                (0..3).all(|i| (none[i] - f32::from(b[i])).abs() <= 1.0),
+                "{mode:?} {none:?}"
+            );
+        }
+        let confirm: [(Blend, [u8; 3], [u8; 3]); 8] = [
+            (Blend::ColorBurn, [51, 94, 159], [30, 0, 33]),
+            (Blend::LinearBurn, [49, 79, 124], [26, 0, 11]),
+            (Blend::ColorDodge, [76, 132, 186], [156, 163, 197]),
+            (Blend::LinearDodge, [113, 143, 188], [217, 187, 202]),
+            (Blend::VividLight, [71, 109, 162], [117, 81, 80]),
+            (Blend::LinearLight, [100, 100, 130], [183, 63, 33]),
+            (Blend::HardMix, [65, 105, 166], [102, 0, 47]),
+            (Blend::Difference, [7, 97, 172], [97, 53, 158]),
+        ];
+        let (b2, t2) = ([60, 120, 180], [210, 90, 30]);
+        for (mode, q, tq) in confirm {
+            for (fill, want) in [(64.0 / 255.0, q), (191.0 / 255.0, tq)] {
+                let got = shown_at_fill(mode, b2, t2, fill);
+                // Hard Mix at 75 % divides by 1 - f = 0.25, which magnifies
+                // Photoshop's 8-bit rounding.
+                let tol = if mode == Blend::HardMix { 4.0 } else { 2.0 };
+                for i in 0..3 {
+                    assert!(
+                        (got[i] - f32::from(want[i])).abs() <= tol,
+                        "{mode:?} fill {fill} channel {i}: {} vs Photoshop {}",
+                        got[i],
+                        want[i]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fill_is_coverage_off_the_special_eight_and_off_the_page() {
+        let page = [200u8, 150, 100, 255];
+        let back = Backdrop { pixels: &page };
+        let s = surface([100, 180, 220, 255]);
+        // Multiply at Fill 50 % is Multiply at half the coverage.
+        let mut a = Surface::new(1, 1).unwrap();
+        let mut b = Surface::new(1, 1).unwrap();
+        lay_fill(&mut a, &s, ONE, 0.8, Blend::Multiply, Some(&back), 0, 0.5);
+        lay(&mut b, &s, ONE, 0.4, Blend::Multiply, Some(&back), 0);
+        assert_eq!(a.data, b.data);
+        // With no page, a special mode's Fill is coverage too.
+        let mut a = Surface::new(1, 1).unwrap();
+        lay_fill(&mut a, &s, ONE, 1.0, Blend::LinearDodge, None, 0, 0.5);
+        assert!(a.data[3].abs_diff(128) <= 1, "{:?}", a.data);
+        // A whole fill is the plain blend.
+        let mut a = Surface::new(1, 1).unwrap();
+        let mut b = Surface::new(1, 1).unwrap();
+        lay_fill(&mut a, &s, ONE, 1.0, Blend::ColorDodge, Some(&back), 0, 1.0);
+        lay(&mut b, &s, ONE, 1.0, Blend::ColorDodge, Some(&back), 0);
+        assert_eq!(a.data, b.data);
+        assert!(!Blend::Multiply.fill_is_special() && !Blend::Overlay.fill_is_special());
     }
 
     #[test]

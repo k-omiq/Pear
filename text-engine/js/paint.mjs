@@ -394,7 +394,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   writeTiles(sent)
 }
 
-export const BOX_WIRE_VERSION = 8
+export const BOX_WIRE_VERSION = 9
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 
@@ -681,7 +681,11 @@ function clipShape(sh) {
  *   the visibility mask: `style.clip.shapes`, which are box-local, and the
  *   box's corner in job space
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
- * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1
+ * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1; over a backdrop,
+ *   in one of the special eight modes (Color Burn, Linear Burn, Color Dodge, Linear Dodge,
+ *   Vivid Light, Linear Light, Hard Mix, Difference), part of the blend, as in Photoshop
+ * @param {boolean} [request.blendInterior] Blend Interior Effects as Group: Fill Opacity
+ *   fades the overlays, the satin and the inner glows with the fill
  * @param {{kind: 'outerGlow' | 'innerGlow' | 'innerShadow' | 'colorOverlay' | 'stroke' |
  *   'gradientOverlay' | 'patternOverlay' | 'satin' | 'bevel', color?: string,
  *   opacity: number, blend?: string, technique?: 'softer' | 'precise', source?: 'edge' | 'center',
@@ -714,11 +718,12 @@ function clipShape(sh) {
  *   up, size 5, soften 0, 120 and 30 degrees, Linear, Screen white and Multiply
  *   black at 75 %
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
- *   the surface, straight RGBA8 of `width * height`: what a blend mode blends with
+ *   the surface, straight RGBA8 of `width * height`, read as opaque: what a blend mode
+ *   blends with
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, effects = [], backdrop = null } = request
+  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, effects = [], backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -748,6 +753,8 @@ export function encodeBox(request) {
   }
   u32(blendId(blend))
   f64(fillOpacity)
+  // The blending flags (v9): 1 Blend Interior Effects as Group.
+  u32(blendInterior ? 1 : 0)
   // The effects' pattern tiles go in the glyph job's table, ahead of its own.
   const collector = tileCollector(request.tiles)
   u32(effects.length)

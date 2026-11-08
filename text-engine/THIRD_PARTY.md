@@ -46,6 +46,16 @@ names its source file in a comment.
   `refine_edge_normals`, `edge_distance`, `bevel_dist_inside`,
   `bevel_dist_outside`, `bevel_dists`), and their tests
   (`effects/tests.rs`).
+- `fx/blend.rs` `Blend::fill_is_special`, `Blend::mix_fill`, `lay_fill`:
+  Fill Opacity in Photoshop's special eight modes, and its measured test
+  (`crates/compose/src/psblend.rs` `fill_is_special`, `blend_rgb_fill`,
+  `composite_fill`, `special_eight_fill_matches_photoshop`).
+- `fx/blending.rs` `shadow_see_through`: how far a knocked-out drop shadow
+  shows through the letters; `fx/effects.rs` `interior`'s `group`: Blend
+  Interior Effects as Group (`crates/compose/src/effects/composite.rs`
+  `shadow_see_through`, `knock_out_exterior`, `interior_group`,
+  `layer_pixels`, `paint_interior`; the group test after
+  `crates/compose/src/advanced_tests.rs`).
 
 MIT License
 

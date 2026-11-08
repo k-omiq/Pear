@@ -1014,10 +1014,20 @@ pub(crate) fn satin_throw(s: &Satin, carried: impl Fn(f64, f64) -> (f64, f64)) -
 /// `fill_opacity`, the outside parts of its strokes, and the bevels laid
 /// outside it. `carried` turns a job-unit throw into device pixels; `scale`
 /// is device pixels to a job unit.
+///
+/// `group` is Blend Interior Effects as Group: the fill is laid whole, the
+/// overlays, the satin and the inner glows on it, and then Fill Opacity
+/// fades them all together; the inner shadows, the strokes and the bevel
+/// come after and are not faded. Off (Photoshop's default), Fill fades the
+/// fill alone. Ported from PhotoCraft,
+/// `crates/compose/src/effects/composite.rs` (`interior_group`,
+/// `layer_pixels`, `paint_interior`), MIT licence.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn interior(
     r: &Raster,
     effects: &[Effect],
     fill_opacity: f64,
+    group: bool,
     scale: f64,
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
@@ -1052,6 +1062,9 @@ pub(crate) fn interior(
     let (rw, rh) = (r.width as usize, r.height as usize);
     let (w, h) = (rw + 2 * pad, rh + 2 * pad);
     let dev = (r.x - pad as i32, r.y - pad as i32);
+    let group = group && fill_opacity < 1.0;
+    // Grouped, the fill is whole until the group is faded.
+    let content_fill = if group { 1.0 } else { fill_opacity };
     // The fill, straight, as a surface at its own alpha, and its shape.
     let mut shape = Map::new(w, h, 0.0);
     let mut lay = Surface::new(w, h)?;
@@ -1066,7 +1079,7 @@ pub(crate) fn interior(
             }
             // Relative to the shape, the fill is whole; Fill Opacity is
             // all of its alpha.
-            let k = (fill_opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+            let k = (content_fill.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
             let d = &mut lay.data[i * 4..i * 4 + 4];
             for c in 0..3 {
                 d[c] = ((u32::from(p[c]) * k + 127) / 255) as u8;
@@ -1169,6 +1182,13 @@ pub(crate) fn interior(
             let m = map::glow(&shape, g.technique, true, g.center, &s);
             let m = map::relative_to(&m, &shape);
             lay_glow(&mut lay, &m, (0, 0), dev, g, None)?;
+        }
+    }
+    // Grouped: Fill Opacity fades the fill and what is on it so far.
+    if group {
+        let k = (fill_opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        for v in lay.data.iter_mut() {
+            *v = ((u32::from(*v) * k + 127) / 255) as u8;
         }
     }
     for e in shown() {
@@ -1420,7 +1440,7 @@ mod tests {
     }
 
     fn inside(r: &Raster, effects: &[Effect]) -> (Raster, Option<Outside>) {
-        let (r, o, _) = interior(r, effects, 1.0, 1.0, |x, y| (x, y), &place()).unwrap();
+        let (r, o, _) = interior(r, effects, 1.0, false, 1.0, |x, y| (x, y), &place()).unwrap();
         (r, o)
     }
 
@@ -1510,7 +1530,8 @@ mod tests {
         let (out, _) = inside(&square(8), std::slice::from_ref(&o));
         assert_eq!(at(&out, 13, 13), [0, 0, 255, 255]);
         // At Fill Opacity 0 the overlay still shows; nothing outside the fill.
-        let (out, _, _) = interior(&square(8), &[o], 0.0, 1.0, |x, y| (x, y), &place()).unwrap();
+        let (out, _, _) =
+            interior(&square(8), &[o], 0.0, false, 1.0, |x, y| (x, y), &place()).unwrap();
         assert_eq!(at(&out, 13, 13), [0, 0, 255, 255]);
         assert_eq!(at(&out, 9, 9)[3], 0);
     }
