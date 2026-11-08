@@ -655,7 +655,7 @@ describe('textLayerFor', () => {
     expect(fx.innerShadow).toHaveLength(1);
     expect(fx.innerShadow[0]).toMatchObject({ distance: { units: 'Pixels', value: 5 }, choke: { value: 30 }, blendMode: 'multiply' });
     expect(fx.innerShadow[0].layerConceals).toBeUndefined();
-    expect(fx.solidFill).toEqual([{ enabled: true, blendMode: 'overlay', color: { r: 255, g: 0, b: 0 }, opacity: 0.4 }]);
+    expect(fx.solidFill).toEqual([{ enabled: true, present: true, showInDialog: true, blendMode: 'overlay', color: { r: 255, g: 0, b: 0 }, opacity: 0.4 }]);
     // Switched off, a glow is not written.
     const off = textLayerFor(page, box({ ...baseStyle, outerGlow: { ...style.outerGlow, on: false } }), rendered);
     expect(off.effects).toBeUndefined();

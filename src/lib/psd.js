@@ -22,7 +22,8 @@ import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/i
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
-import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL } from './data.js';
+import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES } from './data.js';
+import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
 import { strokeBands, clipActive, inkActive, resolveShadow, globalLight } from './text-paint.js';
 import { warpActive } from './warp.js';
 import { withPageImages } from './page-images.js';
@@ -122,6 +123,28 @@ function psdBlendIf(b) {
     };
   }
   return out;
+}
+
+// Every effect object as PhotoCraft writes it (`with_common`, crates/io/src/
+// effects_map.rs): on, and Photoshop's `present` and `showInDialog` flags,
+// which ag-psd writes only when given.
+const FX_ON = Object.freeze({ enabled: true, present: true, showInDialog: true });
+
+// The gradient styles ag-psd can name (GrdT); Shape Burst is not one.
+const PSD_GRADIENT_TYPES = FX_GRADIENT_STYLES.filter((t) => t !== 'shapeburst');
+
+// A contour as Photoshop writes one (`ShpC`): its name, and its points from 0
+// to 255, at most PSD_CONTOUR_POINTS of them (`psdContourPoints`). A preset's
+// points are the engine's (contour-presets.js). The corner flag (`Cnty`) is
+// not written: ag-psd's contour points carry x and y only.
+function psdContour(c) {
+  const custom = c?.preset === 'custom' && Array.isArray(c.pts) && c.pts.length >= 2;
+  const preset = custom ? 'custom' : CONTOUR_PRESET_POINTS[c?.preset] ? c.preset : 'linear';
+  const pts = custom
+    ? c.pts.map(([x, y]) => [x, y])
+    : CONTOUR_PRESET_POINTS[preset].map(([x, y]) => [Math.round(x * 255 * 1000) / 1000, Math.round(y * 255 * 1000) / 1000]);
+  const curve = psdContourPoints(pts).map((i) => ({ x: pts[i][0], y: pts[i][1] }));
+  return { contour: { name: CONTOUR_LABELS[preset] ?? 'Custom', curve } };
 }
 
 // A bevel's Style and Technique as ag-psd names them (BESl, bvlT).
@@ -765,7 +788,7 @@ export function textLayerFor(p, box, rendered) {
   const bands = strokeBands(s.strokes);
   if (bands.length) {
     effects.stroke = bands.map((band) => ({
-      enabled: true,
+      ...FX_ON,
       size: { units: 'Pixels', value: band.line / 2 },
       position: 'outside',
       fillType: 'color',
@@ -778,21 +801,26 @@ export function textLayerFor(p, box, rendered) {
   // says so, and the document carries the chapter's light (`writePsdPage`).
   // Spread is written as its percent: Photoshop's dialog shows it so, and the
   // unit Photoshop tags it with in its own files is not settled (LAYER_STYLES
-  // _PLAN.md G1-G8). A named contour preset is not written yet: Photoshop
-  // reads a contour's points, not its name, and the presets' points are the
-  // engine's (fx/contour.rs); a custom curve is.
-  const customContour = (c) => (c?.preset === 'custom' && c.pts?.length >= 2 ? { contour: { name: 'Custom', curve: c.pts.map(([x, y]) => ({ x, y })) } } : null);
+  // _PLAN.md G1-G8). Noise is its percent (Nose), as the glows'.
+  //
+  // Every contour goes in as Photoshop writes one (`psdContour`): a preset by
+  // its name AND its points, a custom curve as 'Custom', each at most 16
+  // points (more and Photoshop drops all the layer's effects). ag-psd writes a
+  // point's x and y only, so a corner point arrives smooth (no `Cnty`).
   // A shadow thrown into the letters or under them: Photoshop's fields alike.
   const shadowFx = (sh) => ({
-    enabled: true,
+    ...FX_ON,
     size: { units: 'Pixels', value: sh.size || 0 },
     distance: { units: 'Pixels', value: Math.hypot(sh.x || 0, sh.y || 0) },
-    angle: (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI,
+    // On the Global Light the chapter's angle itself, not one read back off
+    // the rounded offset.
+    angle: sh.useGlobalLight ? globalLight().angle : (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI,
     color: hexToRgb(sh.color),
     opacity: sh.opacity ?? 1,
     blendMode: psdBlend(sh.blend),
     antialiased: sh.contour?.aa === true,
-    ...customContour(sh.contour),
+    ...psdContour(sh.contour),
+    noise: sh.noise || 0,
     useGlobalLight: sh.useGlobalLight === true,
   });
   if ((s.shadows ?? []).length) {
@@ -808,81 +836,6 @@ export function textLayerFor(p, box, rendered) {
       ...shadowFx(sh),
       choke: { units: 'Pixels', value: Math.round((sh.choke || 0) * 100) },
     }));
-  }
-  // The glows: a solid colour, Softer or Precise, Spread (Choke), Range and
-  // Noise as Photoshop's dialog has them.
-  const glowFx = (g, inner) => ({
-    enabled: true,
-    size: { units: 'Pixels', value: g.size || 0 },
-    color: hexToRgb(g.color),
-    blendMode: psdBlend(g.blend),
-    opacity: g.opacity ?? 1,
-    technique: g.technique === 'precise' ? 'precise' : 'softer',
-    ...(inner ? { source: g.source === 'center' ? 'center' : 'edge' } : null),
-    antialiased: g.contour?.aa === true,
-    ...customContour(g.contour),
-    noise: g.noise || 0,
-    range: g.range ?? 0.5,
-    choke: { units: 'Pixels', value: Math.round((g.spread || 0) * 100) },
-  });
-  if (s.outerGlow?.on) effects.outerGlow = glowFx(s.outerGlow, false);
-  if (s.innerGlow?.on) effects.innerGlow = glowFx(s.innerGlow, true);
-  // The Satin (ChFX): its own angle (no Global Light), Distance and Size in
-  // pixels, Invert, and the contour (Photoshop reads it from its far end,
-  // as the engine does). Names as PhotoCraft's `crates/io/src/effects_map.rs`.
-  const sa = s.satin;
-  if (sa?.on) {
-    effects.satin = {
-      enabled: true,
-      size: { units: 'Pixels', value: sa.size || 0 },
-      distance: { units: 'Pixels', value: sa.distance || 0 },
-      angle: sa.angle ?? 19,
-      color: hexToRgb(sa.color),
-      opacity: sa.opacity ?? 1,
-      blendMode: psdBlend(sa.blend),
-      invert: sa.invert === true,
-      antialiased: sa.contour?.aa === true,
-      ...customContour(sa.contour),
-    };
-  }
-  // Bevel & Emboss (ebbl): Style, Technique, Depth (ag-psd `strength`, 1 =
-  // Photoshop's 100 %), Direction, Size and Soften in pixels, the light (the
-  // chapter's on the Global Light: the document carries it), Highlight and
-  // Shadow, the Gloss Contour (a custom one; a preset as for the other
-  // effects), and the Contour element as Photoshop's useShape and Range. ag-psd
-  // has one `contour` slot, written as the Gloss Contour (TrnS), so the
-  // Contour element's own curve is not written. A textured bevel never gets
-  // here: ag-psd cannot write the Texture's pattern, so `isRasterOnly` sends
-  // that box down the raster branch, as a Pattern Overlay does.
-  const bv = s.bevel;
-  if (bv?.on) {
-    const lit = bv.useGlobalLight ? globalLight() : bv;
-    effects.bevel = {
-      enabled: true,
-      style: PSD_BEVEL_STYLE[bv.style] ?? 'inner bevel',
-      technique: PSD_BEVEL_TECHNIQUE[bv.technique] ?? 'smooth',
-      strength: bv.depth ?? 1,
-      direction: bv.direction === 'down' ? 'down' : 'up',
-      size: { units: 'Pixels', value: bv.size || 0 },
-      soften: { units: 'Pixels', value: bv.soften || 0 },
-      angle: lit.angle ?? 120,
-      altitude: lit.altitude ?? 30,
-      useGlobalLight: bv.useGlobalLight === true,
-      highlightBlendMode: psdBlend(bv.highlight?.blend ?? 'screen'),
-      highlightColor: hexToRgb(bv.highlight?.color ?? '#ffffff'),
-      highlightOpacity: bv.highlight?.opacity ?? 0.75,
-      shadowBlendMode: psdBlend(bv.shadow?.blend ?? 'multiply'),
-      shadowColor: hexToRgb(bv.shadow?.color ?? '#000000'),
-      shadowOpacity: bv.shadow?.opacity ?? 0.75,
-      antialiasGloss: bv.gloss?.aa === true,
-      ...customContour(bv.gloss),
-      useShape: bv.contour?.on === true,
-      ...(bv.contour?.on ? { range: bv.contour.range ?? 0.5, antialiased: bv.contour.curve?.aa === true } : null),
-      useTexture: false,
-    };
-  }
-  if ((s.colorOverlays ?? []).length) {
-    effects.solidFill = s.colorOverlays.map((o) => ({ enabled: true, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
   }
   // An effect gradient is Photoshop's own (`normalizeFxGradient`): its style,
   // angle, scale, reverse and offset go in as they are, aligned with the layer.
@@ -906,9 +859,96 @@ export function textLayerFor(p, box, rendered) {
     colorStops: g.stops.map((st) => ({ color: hexToRgb(st.color), location: st.pos, midpoint: 50 })),
     opacityStops: g.stops.map((st) => ({ opacity: st.opacity ?? 1, location: st.pos, midpoint: 50 })),
   };
+  // The glows: a colour or a gradient, Softer or Precise, Spread (Choke),
+  // Range and Noise as Photoshop's dialog has them, and Jitter 0 (ours has
+  // none). A gradient glow goes in as PhotoCraft writes one (Grad, Rvrs, Type,
+  // no colour): ag-psd's typings leave `gradient` off the glows, but its
+  // writer takes it for any effect. Its Angle is not written (ag-psd would
+  // write it as a light angle, lagl); a glow's gradient runs along the glow
+  // whatever its angle, in Photoshop as in the engine.
+  const glowFx = (g, inner) => ({
+    ...FX_ON,
+    size: { units: 'Pixels', value: g.size || 0 },
+    ...(g.fill === 'gradient' && g.gradient
+      ? {
+          gradient: fxGradient(g.gradient),
+          reverse: g.gradient.reverse === true,
+          ...(PSD_GRADIENT_TYPES.includes(g.gradient.style) ? { type: g.gradient.style } : null),
+        }
+      : { color: hexToRgb(g.color) }),
+    blendMode: psdBlend(g.blend),
+    opacity: g.opacity ?? 1,
+    technique: g.technique === 'precise' ? 'precise' : 'softer',
+    ...(inner ? { source: g.source === 'center' ? 'center' : 'edge' } : null),
+    antialiased: g.contour?.aa === true,
+    ...psdContour(g.contour),
+    noise: g.noise || 0,
+    jitter: 0,
+    range: g.range ?? 0.5,
+    choke: { units: 'Pixels', value: Math.round((g.spread || 0) * 100) },
+  });
+  if (s.outerGlow?.on) effects.outerGlow = glowFx(s.outerGlow, false);
+  if (s.innerGlow?.on) effects.innerGlow = glowFx(s.innerGlow, true);
+  // The Satin (ChFX): its own angle (no Global Light), Distance and Size in
+  // pixels, Invert, and the contour (Photoshop reads it from its far end,
+  // as the engine does). Names as PhotoCraft's `crates/io/src/effects_map.rs`.
+  const sa = s.satin;
+  if (sa?.on) {
+    effects.satin = {
+      ...FX_ON,
+      size: { units: 'Pixels', value: sa.size || 0 },
+      distance: { units: 'Pixels', value: sa.distance || 0 },
+      angle: sa.angle ?? 19,
+      color: hexToRgb(sa.color),
+      opacity: sa.opacity ?? 1,
+      blendMode: psdBlend(sa.blend),
+      invert: sa.invert === true,
+      antialiased: sa.contour?.aa === true,
+      ...psdContour(sa.contour),
+    };
+  }
+  // Bevel & Emboss (ebbl): Style, Technique, Depth (ag-psd `strength`, 1 =
+  // Photoshop's 100 %), Direction, Size and Soften in pixels, the light (the
+  // chapter's on the Global Light: the document carries it), Highlight and
+  // Shadow, the Gloss Contour (a custom one; a preset as for the other
+  // effects), and the Contour element as Photoshop's useShape and Range. ag-psd
+  // has one `contour` slot, written as the Gloss Contour (TrnS), so the
+  // Contour element's own curve is not written. A textured bevel never gets
+  // here: ag-psd cannot write the Texture's pattern, so `isRasterOnly` sends
+  // that box down the raster branch, as a Pattern Overlay does.
+  const bv = s.bevel;
+  if (bv?.on) {
+    const lit = bv.useGlobalLight ? globalLight() : bv;
+    effects.bevel = {
+      ...FX_ON,
+      style: PSD_BEVEL_STYLE[bv.style] ?? 'inner bevel',
+      technique: PSD_BEVEL_TECHNIQUE[bv.technique] ?? 'smooth',
+      strength: bv.depth ?? 1,
+      direction: bv.direction === 'down' ? 'down' : 'up',
+      size: { units: 'Pixels', value: bv.size || 0 },
+      soften: { units: 'Pixels', value: bv.soften || 0 },
+      angle: lit.angle ?? 120,
+      altitude: lit.altitude ?? 30,
+      useGlobalLight: bv.useGlobalLight === true,
+      highlightBlendMode: psdBlend(bv.highlight?.blend ?? 'screen'),
+      highlightColor: hexToRgb(bv.highlight?.color ?? '#ffffff'),
+      highlightOpacity: bv.highlight?.opacity ?? 0.75,
+      shadowBlendMode: psdBlend(bv.shadow?.blend ?? 'multiply'),
+      shadowColor: hexToRgb(bv.shadow?.color ?? '#000000'),
+      shadowOpacity: bv.shadow?.opacity ?? 0.75,
+      antialiasGloss: bv.gloss?.aa === true,
+      ...psdContour(bv.gloss),
+      useShape: bv.contour?.on === true,
+      ...(bv.contour?.on ? { range: bv.contour.range ?? 0.5, antialiased: bv.contour.curve?.aa === true } : null),
+      useTexture: false,
+    };
+  }
+  if ((s.colorOverlays ?? []).length) {
+    effects.solidFill = s.colorOverlays.map((o) => ({ ...FX_ON, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
+  }
   const fxPlacement = (g) => ({ angle: g.angle, scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } });
   const gradientOverlays = (s.gradientOverlays ?? []).map((o) => ({
-    enabled: true,
+    ...FX_ON,
     blendMode: psdBlend(o.blend),
     opacity: o.opacity ?? 1,
     type: o.gradient.style,
@@ -921,13 +961,15 @@ export function textLayerFor(p, box, rendered) {
   const strokeFx = (s.strokeEffects ?? [])
     .filter((k) => k.size > 0 && k.fill !== 'pattern')
     .map((k) => ({
-      enabled: true,
+      ...FX_ON,
       size: { units: 'Pixels', value: k.size },
       position: k.position,
       fillType: k.fill === 'gradient' ? 'gradient' : 'color',
       blendMode: psdBlend(k.blend),
       opacity: k.opacity ?? 1,
       color: hexToRgb(k.color),
+      // Overprint: ours has none, so off, as PhotoCraft writes it.
+      overprint: false,
       ...(k.fill === 'gradient' ? { gradient: { ...fxGradient(k.gradient), style: k.gradient.style, ...fxPlacement(k.gradient) } } : null),
     }));
   if (strokeFx.length) effects.stroke = [...(effects.stroke ?? []), ...strokeFx];
@@ -941,7 +983,7 @@ export function textLayerFor(p, box, rendered) {
     effects.gradientOverlay = [
       ...gradientOverlays,
       {
-        enabled: true,
+        ...FX_ON,
         opacity: 1,
         angle: 90 - (Number(s.gradient.angle) || 0),
         type: 'linear',
@@ -1119,8 +1161,10 @@ export function pagePsdDocument({ w, h, textLayers = [], baseLayers = [], projec
     imageResources: {
       // The chapter's Global Light: Photoshop keeps one per document, and a
       // drop shadow with Use Global Light reads its angle from here.
-      globalAngle: globalLight().angle,
-      globalAltitude: globalLight().altitude,
+      // Both are whole degrees in the file (resources 1037, 1049, integers):
+      // rounded here, where ag-psd would cut 120.7 to 120.
+      globalAngle: Math.round(globalLight().angle),
+      globalAltitude: Math.round(globalLight().altitude),
       // 72 PPI, i.e. no scaling claim at all: the document is the page's own
       // pixel grid, and a pixel is a pixel. It was 144 when the document was
       // supersampled 2x, to keep the printed size constant across that.
