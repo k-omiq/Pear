@@ -144,9 +144,15 @@ describe('each pass is the picture the canvas made', () => {
     // browser does not.) The engine's own picture of one is held below.
     'an outline, a shadow, a blur and a mask at once': [{ strokes: [{ color: '#ffffff', width: 3, opacity: 1 }], shadows: [SHADOW], blur: 0.8, clip: { on: true, mode: 'include', shapes: [{ kind: 'ellipse', cx: 130, cy: 65, rx: 120, ry: 60 }] } }, 3, 72],
   };
+  // The engine lays a Photoshop drop shadow on whole pixels (PhotoCraft's
+  // `offset`, `whole_throw` in fx/effects.rs) where the canvas resamples it
+  // to the part of a pixel: at 2.74 the shadows' throws (16.44, 13.7; 27.4)
+  // are not whole, so the three shadow cases are held at the scales where
+  // they are, and the rounding on its own below.
+  const WHOLE_SCALES = new Set(['a hard shadow', 'a soft shadow', 'two shadows over an outline']);
   for (const [name, [over, mean, worst, inkMost = 1.03]] of Object.entries(CASES)) {
     it(name, () => {
-      for (const scale of [1, 2, 2.74]) {
+      for (const scale of WHOLE_SCALES.has(name) ? [1, 2] : [1, 2, 2.74]) {
         const a = texture(boxOf(over), whole, scale);
         const b = texture(boxOf(over), canvasPasses, scale);
         expect([a.ox, a.oy, a.cw, a.ch]).toEqual([b.ox, b.oy, b.cw, b.ch]);
@@ -159,6 +165,16 @@ describe('each pass is the picture the canvas made', () => {
       }
     });
   }
+
+  it('a drop shadow lands on whole pixels at any scale, as Photoshop lays one', () => {
+    for (const scale of [1, 2.74]) {
+      // Thrown 6, 5 or a part of a pixel short of it: the same picture.
+      const a = texture(boxOf({ shadows: [{ ...SHADOW, blur: 0 }] }), whole, scale);
+      const b = texture(boxOf({ shadows: [{ ...SHADOW, x: 5.6, y: 4.6, blur: 0 }] }), whole, scale);
+      expect([a.ox, a.oy, a.cw, a.ch]).toEqual([b.ox, b.oy, b.cw, b.ch]);
+      expect(against(a.img, b.img).worst, `scale ${scale}`).toBe(0);
+    }
+  });
 
   const ALL = { ...CASES['an outline, a shadow, a blur and a mask at once'][0], motionBlur: { on: true, x: 1, y: 0, amount: 4 } };
 

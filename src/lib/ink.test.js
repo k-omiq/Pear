@@ -1229,6 +1229,11 @@ describe('the finish\'s reach', () => {
     const ink = { on: true, strokes: [normalizeInkStroke({ size: 20, pts: [[2, 50, 1], [100, 50, 1]] })] };
     expect(inkReach({ ink, strokes: [], shadows: [] })).toBe(8);
     expect(shadowExtent([{ x: 3, y: 4, size: 3 }, { x: -1, y: 0, size: 0 }])).toBe(9);
+    // A Photoshop shadow lands on whole pixels, so 2.5 reaches 3; an SFX
+    // copy reaches as far as it is thrown.
+    expect(shadowExtent([{ x: 2.5, y: 0, size: 0 }])).toBe(3);
+    expect(shadowExtent([{ x: 2.4, y: 0, size: 0 }])).toBe(2.4);
+    expect(shadowExtent([{ x: 2.5, y: 0, size: 0, exact: true }])).toBe(2.5);
     expect(inkReach({ ink, strokes: [{ width: 3 }, { width: 2 }], shadows: [{ x: 3, y: 4, size: 3 }] })).toBe(8 + 5 + 9);
     expect(inkReach({ ink: { on: false, strokes: [] }, strokes: [{ width: 3 }], shadows: [] })).toBe(0);
   });

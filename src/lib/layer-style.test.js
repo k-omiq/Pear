@@ -141,6 +141,19 @@ describe('an effect gradient of Gradient Type Noise', () => {
   });
 });
 
+describe('a shadow on the wire', () => {
+  it('says an SFX copy is exact (flag 4, v11); a Photoshop shadow is rounded by the engine', () => {
+    const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
+    const sh = { color: '#000000', opacity: 1, x: 2.4, y: 1.5, size: 0, knockout: true };
+    // Magic, version, size, the count, then colour, seven numbers and the mode.
+    const flagsAt = 4 * 4 + 4 + 4 + 7 * 8 + 4;
+    const flags = (s) => dv(encodeBox({ ...job, width: 4, height: 4, shadows: [s] }).slice()).getUint32(flagsAt, true);
+    expect(flags(sh)).toBe(1);
+    expect(flags({ ...sh, exact: true })).toBe(5);
+  });
+});
+
 describe('a glow\'s Jitter', () => {
   it('starts at 0 and stays in 0 to 1, on both glows', () => {
     expect(normalizeGlow({}).jitter).toBe(0);

@@ -95,6 +95,11 @@ pub struct Shadow {
     pub blend: Blend,
     /// Layer Knocks Out Drop Shadow: no shadow shows through the letters.
     pub knockout: bool,
+    /// Laid at its exact throw: an SFX copy (an extrude's step, a shake, a
+    /// shade side), which must not step. A Photoshop Drop Shadow is not: its
+    /// throw is rounded to whole pixels as Photoshop's is
+    /// ([`effects::whole_throw`]).
+    pub exact: bool,
     /// The contour the matte is passed through; `None` is Linear.
     pub contour: Option<Lut>,
     /// The noise's and Dissolve's grain.
@@ -114,6 +119,7 @@ impl Default for Shadow {
             noise: 0.0,
             blend: Blend::Normal,
             knockout: false,
+            exact: false,
             contour: None,
             seed: 0,
         }
@@ -315,7 +321,7 @@ impl<'a> Reader<'a> {
         let noise = self.upto(1.0)?;
         let blend = Blend::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
         let flags = self.u32()?;
-        if flags & !3 != 0 {
+        if flags & !7 != 0 {
             return Err(Error::BadSpec);
         }
         let seed = self.u32()?;
@@ -331,6 +337,7 @@ impl<'a> Reader<'a> {
             noise,
             blend,
             knockout: flags & 1 != 0,
+            exact: flags & 4 != 0,
             contour,
             seed,
         })
@@ -709,7 +716,11 @@ impl<'a> Reader<'a> {
 ///     rgba colour, f64 opacity, f64 x, y, f64 size, f64 grow,
 ///     f64 spread, f64 noise    0 to 1 each
 ///     u32 blend                a mode number (`Blend::from_u32`)
-///     u32 flags                1 knockout, 2 contour anti-aliased
+///     u32 flags                1 knockout, 2 contour anti-aliased, 4 exact
+///                              (v11): laid at its exact throw (an SFX copy);
+///                              without it the throw is rounded to whole
+///                              pixels, in job units and then in device
+///                              pixels, as Photoshop rounds a Drop Shadow's
 ///     u32 seed
 ///     u32 contour              0 to 11 a preset (Linear is 0), 255 points:
 ///       u32 n, then n points (f64 x, y from 0 to 255, u32 corner)
@@ -1428,6 +1439,15 @@ fn paint(
         let m = &transform.0;
         (m[0] * x + m[2] * y, m[1] * x + m[3] * y)
     };
+    // Where a shadow lands, device pixels: whole pixels for a Photoshop Drop
+    // Shadow, the exact throw for an SFX copy.
+    let thrown = |sh: &Shadow| {
+        if sh.exact {
+            carried(sh.x, sh.y)
+        } else {
+            effects::whole_throw(sh.x, sh.y, carried)
+        }
+    };
     let shadows = request.shadows.iter().filter(|s| positive(s.opacity));
     let taps: Vec<Tap> = request
         .taps
@@ -1505,7 +1525,7 @@ fn paint(
                 &sh,
                 &mut s,
                 scale,
-                carried(sh.x, sh.y),
+                thrown(&sh),
                 knock,
                 &mut acc,
             )? {
@@ -1572,36 +1592,21 @@ fn paint(
             continue;
         };
         for n in &order[i..end] {
-            lay(landed(ink, carried(n.x, n.y)));
+            lay(landed(ink, thrown(n)));
         }
         match &runs {
             Some(runs) if end - i >= 2 => {
                 moves.clear();
                 for n in &order[i..end] {
-                    budget::push(&mut moves, carried(n.x, n.y))?;
+                    budget::push(&mut moves, thrown(n))?;
                 }
                 sweep::over_swept(&mut s, layer, ink, runs, &moves)?;
             }
             // A faded copy, as a shake's are: along the rows' runs.
             Some(runs) => {
-                sweep::over_runs(
-                    &mut s,
-                    layer,
-                    ink,
-                    runs,
-                    carried(sh.x, sh.y),
-                    sh.opacity,
-                    &mut acc,
-                );
+                sweep::over_runs(&mut s, layer, ink, runs, thrown(&sh), sh.opacity, &mut acc);
             }
-            None => blur::over_moved_in(
-                &mut s,
-                layer,
-                ink,
-                carried(sh.x, sh.y),
-                sh.opacity,
-                &mut acc,
-            ),
+            None => blur::over_moved_in(&mut s, layer, ink, thrown(&sh), sh.opacity, &mut acc),
         }
         i = end;
     }

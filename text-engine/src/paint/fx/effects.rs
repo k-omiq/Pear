@@ -1022,6 +1022,19 @@ pub(crate) fn lay_bevels(
     Ok(laid)
 }
 
+/// A drop or inner shadow's throw `(x, y)`, job units, in device pixels
+/// and rounded to whole pixels as Photoshop does (PhotoCraft
+/// `crates/compose/src/effects/paint.rs` `offset`, which rounds each axis of
+/// the offset). The rounding applies in job units first, so a box shows its
+/// shadow the same way at every zoom and in the export, then in device
+/// pixels after `carried` (a zoom, a turn or a mirror), so the shadow is
+/// laid without a resample. Rust's `round` takes halves away from zero, as
+/// PhotoCraft's does.
+pub(crate) fn whole_throw(x: f64, y: f64, carried: impl Fn(f64, f64) -> (f64, f64)) -> (f64, f64) {
+    let (dx, dy) = carried(x.round(), y.round());
+    (dx.round(), dy.round())
+}
+
 /// A satin's throw in device pixels: `(-cos a, sin a) * distance` carried by
 /// `carried`, at least a pixel long (Photoshop draws Distance 0 as 1 px, an
 /// edge band of 2 / size, measured by PhotoCraft in Photoshop 27.11), and
@@ -1071,7 +1084,7 @@ pub(crate) fn interior(
         pad = pad.max(match e {
             Effect::InnerGlow(g) => g.size * scale + 2.0,
             Effect::InnerShadow(s) => {
-                let (dx, dy) = carried(s.x, s.y);
+                let (dx, dy) = whole_throw(s.x, s.y, &carried);
                 s.size * scale + dx.abs().max(dy.abs()) + 2.0
             }
             Effect::Stroke(s) => s.widths().1 * scale + 2.0,
@@ -1225,7 +1238,7 @@ pub(crate) fn interior(
     }
     for e in shown() {
         if let Effect::InnerShadow(sh) = e {
-            let (dx, dy) = carried(sh.x, sh.y);
+            let (dx, dy) = whole_throw(sh.x, sh.y, &carried);
             let s = soft(
                 sh.size * scale,
                 sh.choke,
@@ -1503,6 +1516,27 @@ mod tests {
             invert,
             contour: None,
         }
+    }
+
+    #[test]
+    fn a_shadow_throw_is_rounded_in_job_units_then_in_device_pixels() {
+        let same = |x: f64, y: f64| (x, y);
+        assert_eq!(whole_throw(3.4, -2.6, same), (3.0, -3.0));
+        // Halves go away from zero, as PhotoCraft's `round` takes them.
+        assert_eq!(whole_throw(2.5, -2.5, same), (3.0, -3.0));
+        assert_eq!(whole_throw(0.0, 0.4, same), (0.0, 0.0));
+        // At twice the zoom the throw is the export's, doubled: 3.4 is 3
+        // page px, so 6 device px, not 7.
+        let twice = |x: f64, y: f64| (2.0 * x, 2.0 * y);
+        assert_eq!(whole_throw(3.4, 0.0, twice), (6.0, 0.0));
+        // A zoom that makes half pixels of it rounds again in device pixels.
+        let half_more = |x: f64, y: f64| (1.5 * x, 1.5 * y);
+        assert_eq!(whole_throw(3.0, -1.0, half_more), (5.0, -2.0));
+        // A turned or mirrored box carries the rounded throw.
+        let turn = |x: f64, y: f64| (-y, x);
+        assert_eq!(whole_throw(3.4, 1.2, turn), (-1.0, 3.0));
+        let tilt = |x: f64, y: f64| (0.6 * x - 0.8 * y, 0.8 * x + 0.6 * y);
+        assert_eq!(whole_throw(5.0, 0.0, tilt), (3.0, 4.0));
     }
 
     #[test]

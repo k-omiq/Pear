@@ -1025,11 +1025,15 @@ export function inkExtent(ink) {
 // How far a list of shadows throws ink past the shape that casts them, page
 // px: the furthest offset (a diagonal, not the sum of its legs) plus how far
 // its soft edge reaches (`shadowSpread`): its Size, which is three of its
-// sigmas and a pixel.
+// sigmas and a pixel. The Rust engine lays a Photoshop shadow at its throw
+// rounded to whole page px (`whole_throw` in fx/effects.rs; an SFX copy,
+// `exact`, where it is thrown), so a leg counts as the further of the two.
 export function shadowExtent(shadows) {
   let out = 0;
+  const leg = (v, exact) => (exact ? Math.abs(v) : Math.max(Math.abs(v), Math.round(Math.abs(v))));
   for (const sh of shadows ?? []) {
-    out = Math.max(out, Math.hypot(Number(sh?.x) || 0, Number(sh?.y) || 0) + shadowSpread(sh));
+    const exact = sh?.exact === true;
+    out = Math.max(out, Math.hypot(leg(Number(sh?.x) || 0, exact), leg(Number(sh?.y) || 0, exact)) + shadowSpread(sh));
   }
   return out;
 }
@@ -1124,7 +1128,9 @@ function darkest(style) {
 
 // The effects' shadows of `style`, as `{ top, under }`: `top` lies right under
 // the letters (the shade side, the shake), `under` beneath the box's own
-// shadows (the extrude). Lengths in the style's page px.
+// shadows (the extrude). Lengths in the style's page px. Each is `exact`:
+// the engine lays a copy at its throw, where a Photoshop Drop Shadow's is
+// rounded to whole pixels, so an extrude's steps stay even.
 export function effectShadows(style) {
   const top = [];
   const under = [];
@@ -1135,7 +1141,7 @@ export function effectShadows(style) {
   if (shade > 0) {
     const outer = style.strokes?.length ? style.strokes[style.strokes.length - 1].color : style.color;
     const d = shade * 0.08 * size;
-    top.push({ color: outer, opacity: 1, x: d * Math.SQRT1_2, y: d * Math.SQRT1_2, size: 0, grow: 0 });
+    top.push({ color: outer, opacity: 1, x: d * Math.SQRT1_2, y: d * Math.SQRT1_2, size: 0, grow: 0, exact: true });
   }
   const sh = style.shake;
   if (sh?.on && sh.amp > 0) {
@@ -1144,7 +1150,7 @@ export function effectShadows(style) {
     for (let k = 1; k <= sh.count; k++) {
       const d = (sh.amp * size * k) / sh.count;
       const opacity = 0.45 * (1 - (k - 1) / (sh.count + 1));
-      for (const s of [1, -1]) top.push({ color, opacity, x: s * ux * d, y: s * uy * d, size: 0, grow: 0 });
+      for (const s of [1, -1]) top.push({ color, opacity, x: s * ux * d, y: s * uy * d, size: 0, grow: 0, exact: true });
     }
   }
   const ex = style.extrude;
@@ -1155,10 +1161,10 @@ export function effectShadows(style) {
     const n = Math.max(1, Math.min(48, Math.ceil(len / 1.5)));
     const steps = [];
     for (let k = 1; k <= n; k++) steps.push([(ux * len * k) / n, (uy * len * k) / n]);
-    for (const [x, y] of steps) under.push({ color: ex.color, opacity: 1, x, y, size: 0, grow: 0 });
+    for (const [x, y] of steps) under.push({ color: ex.color, opacity: 1, x, y, size: 0, grow: 0, exact: true });
     if (ex.edge) {
       const grow = Math.max(1, 0.03 * size);
-      for (const [x, y] of steps) under.push({ color: ex.edge, opacity: 1, x, y, size: 0, grow });
+      for (const [x, y] of steps) under.push({ color: ex.edge, opacity: 1, x, y, size: 0, grow, exact: true });
     }
   }
   return { top, under };
