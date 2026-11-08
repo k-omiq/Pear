@@ -3883,6 +3883,7 @@ export function rescaleStyle(st, sx, sy) {
   for (const k of ['outerGlow', 'innerGlow']) {
     if (st[k] && typeof st[k] === 'object') out[k] = { ...st[k], size: len(st[k].size) };
   }
+  if (Array.isArray(st.strokeEffects)) out.strokeEffects = st.strokeEffects.map((k) => ({ ...k, size: len(k.size) }));
   if (st.roughen && typeof st.roughen === 'object') {
     // `amount` is a displacement in page px; `detail` is the noise's frequency,
     // which is cycles PER page px - so it moves the other way, or the same
@@ -7105,6 +7106,9 @@ export const BULK_PROPS = [
   'innerGlow',
   'innerShadows',
   'colorOverlays',
+  'gradientOverlays',
+  'patternOverlay',
+  'strokeEffects',
   'blur',
   'motionBlur',
   // Warp & Edges
@@ -7141,7 +7145,7 @@ export const BULK_PROPS = [
 // comment on BULK_PROPS). Named once here because two places have to agree on
 // it: the style-leaf arithmetic that pins BULK_PROPS against `defaultStyle`
 // treats these as single leaves rather than groups of them.
-export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'motionBlur', 'clip', 'circle'];
+export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'strokeEffects', 'motionBlur', 'clip', 'circle'];
 
 // How the panel rows group the mask's vocabulary for its tick-all headers.
 // Declared beside BULK_PROPS rather than inside the panel so there is one list
@@ -7151,7 +7155,7 @@ export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', '
 export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
   fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
-  shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays'],
+  shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'strokeEffects'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
   transform: ['rotation', 'flipH', 'flipV', 'autoHeight', 'fitText', 'fitMax'],

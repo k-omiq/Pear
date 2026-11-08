@@ -58,6 +58,11 @@
     newShadow,
     newInnerShadow,
     newOverlay,
+    newGradientOverlay,
+    newStrokeEffect,
+    FX_GRADIENT_STYLES,
+    STROKE_POSITIONS,
+    GRADIENT_MIN_STOPS,
     LAYER_BLEND_MODES,
   } from './data.js';
   import { layoutShape } from './balloon.js';
@@ -839,6 +844,52 @@
     box.style.colorOverlays.splice(i, 1);
     touch();
   }
+  // Gradient Overlay, and Photoshop's Stroke effect: lists, first on top.
+  function addGradientOverlay() {
+    box.style.gradientOverlays.push(newGradientOverlay());
+    touch();
+  }
+  function removeGradientOverlay(i) {
+    box.style.gradientOverlays.splice(i, 1);
+    touch();
+  }
+  function addStrokeEffect() {
+    box.style.strokeEffects.push(newStrokeEffect());
+    touch();
+  }
+  function removeStrokeEffect(i) {
+    box.style.strokeEffects.splice(i, 1);
+    touch();
+  }
+  // An effect gradient's stops: added in the widest gap, removed down to two,
+  // kept in order.
+  function addFxStop(g) {
+    const st = g.stops;
+    let at = 0;
+    let gap = -1;
+    for (let i = 0; i + 1 < st.length; i++) {
+      if (st[i + 1].pos - st[i].pos > gap) {
+        gap = st[i + 1].pos - st[i].pos;
+        at = i;
+      }
+    }
+    const pos = st.length > 1 ? (st[at].pos + st[at + 1].pos) / 2 : 0.5;
+    st.splice(at + 1, 0, { color: st[at]?.color ?? '#000000', pos, opacity: 1 });
+    touch();
+  }
+  function removeFxStop(g, i) {
+    if (g.stops.length <= GRADIENT_MIN_STOPS) return;
+    g.stops.splice(i, 1);
+    touch();
+  }
+  function sortFxStops(g) {
+    g.stops.sort((a, b) => a.pos - b.pos);
+    touch();
+  }
+  // The ramp as CSS, for the strip over an effect gradient's stops.
+  const fxRamp = (g) => `linear-gradient(90deg, ${g.stops.map((st) => `color-mix(in srgb, ${st.color} ${pct(st.opacity)}%, transparent) ${pct(st.pos)}%`).join(', ')})`;
+  const FX_STYLE_LABELS = { linear: 'Linear', radial: 'Radial', angle: 'Angle', reflected: 'Reflected', diamond: 'Diamond' };
+  const POSITION_LABELS = { outside: 'Outside', inside: 'Inside', center: 'Center' };
   // A blend mode's name as Photoshop's menu shows it.
   const blendLabel = (m) => m.split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
 
@@ -1042,7 +1093,7 @@
 {/snippet}
 
 <!-- Outer Glow or Inner Glow, as Photoshop's dialog has it: Structure, then
-     Elements, then Quality. A solid colour; gradient glows come later. -->
+     Elements, then Quality. A colour, or a gradient run along the glow. -->
 {#snippet glowControls(g, title, inner)}
   <div class="switch-row">
     <button
@@ -1058,9 +1109,20 @@
   </div>
   <div class="insp-sub-body" class:disabled={!g.on} style="padding:0;border:none;gap:11px">
     <div class="grp">
-      <span class="lbl">Colour</span>
-      {@render colorField(g, 'color', `${title} colour`)}
+      <span class="lbl">Fill</span>
+      <div class="seg">
+        <button type="button" class:on={g.fill !== 'gradient'} aria-pressed={g.fill !== 'gradient'} disabled={!g.on} onclick={() => { g.fill = 'color'; touch(); }}>Colour</button>
+        <button type="button" class:on={g.fill === 'gradient'} aria-pressed={g.fill === 'gradient'} disabled={!g.on} title="A gradient along the glow: its first stop at the letters' edge" onclick={() => { g.fill = 'gradient'; touch(); }}>Gradient</button>
+      </div>
     </div>
+    {#if g.fill === 'gradient'}
+      {@render fxGradientControls(g.gradient, `${title} gradient`, false)}
+    {:else}
+      <div class="grp">
+        <span class="lbl">Colour</span>
+        {@render colorField(g, 'color', `${title} colour`)}
+      </div>
+    {/if}
     <div class="grp">
       <span class="lbl">Opacity</span>
       <div class="slider-row">
@@ -1124,6 +1186,130 @@
         </select>
       </label>
     </div>
+  </div>
+{/snippet}
+
+<!-- An effect gradient, as Photoshop's Gradient Overlay and Stroke take one:
+     Style, Angle, Scale, Reverse, and its stops. `placed` false hides what a
+     glow's gradient does not read (it runs along the glow). -->
+{#snippet fxGradientControls(g, title, placed = true)}
+  <div class="fx-ramp" style="background:{fxRamp(g)}" aria-hidden="true"></div>
+  <div class="insp-list k-fxstop">
+    {#each g.stops as st, i (st)}
+      <div class="insp-row">
+        {@render swatchCell(st, 'color', `${title} stop ${i + 1} colour`)}
+        <input type="number" min="0" max="100" step="1" value={pct(st.pos)} aria-label="{title} stop {i + 1} position" title="Position along the gradient, %" oninput={(e) => setAlpha(st, 'pos', e.target.value)} onchange={() => sortFxStops(g)} />
+        <input type="number" min="0" max="100" step="1" value={pct(st.opacity)} aria-label="{title} stop {i + 1} opacity" title="Opacity of this stop, %" oninput={(e) => setAlpha(st, 'opacity', e.target.value)} />
+        {@render rmBtn(`${title.toLowerCase()} stop ${i + 1}`, () => removeFxStop(g, i), g.stops.length > GRADIENT_MIN_STOPS)}
+      </div>
+    {/each}
+  </div>
+  {#if g.stops.length < GRADIENT_MAX_STOPS}
+    {@render addBtn('Add stop', () => addFxStop(g))}
+  {/if}
+  {#if placed}
+    <div class="sh-more" style="margin:0">
+      <label class="sh-contour" title="Style: the gradient's shape">
+        <span>Style</span>
+        <select value={g.style} aria-label="{title} style" onchange={(e) => { g.style = e.target.value; touch(); }}>
+          {#each FX_GRADIENT_STYLES as st (st)}
+            <option value={st}>{FX_STYLE_LABELS[st]}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="sh-num" title="Angle, degrees: 90 runs bottom to top, as Photoshop's dial">
+        <span>Angle</span>
+        <input type="number" min="-180" max="180" step="1" value={g.angle} aria-label="{title} angle" onchange={(e) => commitNum(g, 'angle', e, -180, 180)} />
+      </label>
+      <label class="sh-num" title="Scale, %">
+        <span>Scale</span>
+        <input type="number" min="10" max="150" step="1" value={pct(g.scale)} aria-label="{title} scale, percent" onchange={(e) => { const v = clamp(+e.target.value || 100, 10, 150); g.scale = v / 100; e.target.value = String(v); touch(); }} />
+      </label>
+      <label class="sh-check" title="Reverse: the ramp the other way">
+        <input type="checkbox" checked={g.reverse} aria-label="{title} reversed" onchange={(e) => { g.reverse = e.target.checked; touch(); }} />
+        <span>Reverse</span>
+      </label>
+    </div>
+  {/if}
+{/snippet}
+
+<!-- An effect's pattern: the fill's patterns, its two colours, its size and
+     its turn. The finer controls stay the fill's own. -->
+{#snippet fxPatternControls(p, title)}
+  <div class="sh-more" style="margin:0">
+    <label class="sh-contour" title="Pattern">
+      <span>Pattern</span>
+      <select value={p.kind} aria-label="{title} kind" onchange={(e) => { p.kind = e.target.value; touch(); }}>
+        {#each PATTERN_KINDS.filter((k) => k !== 'picked') as k (k)}
+          <option value={k}>{patLabel(k)}</option>
+        {/each}
+      </select>
+    </label>
+    <label class="sh-num" title="Scale: the tile against the font size, %">
+      <span>Scale</span>
+      <input type="number" min="25" max="400" step="5" value={pct(p.scale)} aria-label="{title} scale, percent" onchange={(e) => { const v = clamp(+e.target.value || 100, 25, 400); p.scale = v / 100; e.target.value = String(v); touch(); }} />
+    </label>
+    <label class="sh-num" title="Turns the pattern, degrees">
+      <span>Angle</span>
+      <input type="number" min="-180" max="180" step="1" value={p.angle} aria-label="{title} angle" onchange={(e) => commitNum(p, 'angle', e, -180, 180)} />
+    </label>
+  </div>
+  <div class="insp-row fx-pat-colours">
+    {@render swatchCell(p, 'fg', `${title} ink`)}
+    <span class="lbl">Ink</span>
+    {@render swatchCell(p, 'bg', `${title} ground`)}
+    <span class="lbl">Ground</span>
+    <input type="number" min="0" max="100" step="1" value={pct(p.bgOpacity)} aria-label="{title} ground opacity" title="Ground opacity, %; 0 lets the letters show between" oninput={(e) => setAlpha(p, 'bgOpacity', e.target.value)} />
+  </div>
+{/snippet}
+
+<!-- One Photoshop Stroke effect: Size, Position, Mode, Opacity, and what it
+     is filled with. -->
+{#snippet strokeEffectRows(k, i)}
+  {@const name = `Photoshop stroke ${i + 1}`}
+  <div class="fx-block">
+    <div class="fx-head">
+      <span class="lbl">Stroke {i + 1}</span>
+      {@render rmBtn(name.toLowerCase(), () => removeStrokeEffect(i))}
+    </div>
+    <div class="sh-more" style="margin:0">
+      <label class="sh-num" title="Size, page px">
+        <span>Size</span>
+        <input type="number" min="0" max={SHADOW_SIZE_MAX} step="0.5" value={k.size} aria-label="{name} size" onchange={(e) => commitNum(k, 'size', e, 0, SHADOW_SIZE_MAX)} />
+      </label>
+      <label class="sh-contour" title="Position: outside the letters' edge, inside it, or half and half">
+        <span>Position</span>
+        <select value={k.position} aria-label="{name} position" onchange={(e) => { k.position = e.target.value; touch(); }}>
+          {#each STROKE_POSITIONS as pos (pos)}
+            <option value={pos}>{POSITION_LABELS[pos]}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="sh-num" title="Opacity, %">
+        <span>Opacity</span>
+        <input type="number" min="0" max="100" step="1" value={pct(k.opacity)} aria-label="{name} opacity" oninput={(e) => setAlpha(k, 'opacity', e.target.value)} />
+      </label>
+      <label class="sh-contour" title="Blend mode">
+        <span>Mode</span>
+        <select value={k.blend} aria-label="{name} blend mode" onchange={(e) => { k.blend = e.target.value; touch(); }}>
+          {#each LAYER_BLEND_MODES as m (m)}
+            <option value={m}>{blendLabel(m)}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+    <div class="seg">
+      {#each [['color', 'Colour'], ['gradient', 'Gradient'], ['pattern', 'Pattern']] as [f, label] (f)}
+        <button type="button" class:on={k.fill === f} aria-pressed={k.fill === f} aria-label="{name} fill: {label}" onclick={() => { k.fill = f; touch(); }}>{label}</button>
+      {/each}
+    </div>
+    {#if k.fill === 'gradient'}
+      {@render fxGradientControls(k.gradient, `${name} gradient`)}
+    {:else if k.fill === 'pattern'}
+      {@render fxPatternControls(k.pattern, `${name} pattern`)}
+    {:else}
+      {@render colorField(k, 'color', `${name} colour`)}
+    {/if}
   </div>
 {/snippet}
 
@@ -1467,6 +1653,61 @@
             {/if}
             {@render addBtn('Add colour overlay', addOverlay)}
           </div>
+          <!-- Photoshop's Gradient Overlay and Pattern Overlay: under the
+               colour overlays, over the fill. The Rust engine paints them. -->
+          {@render secHead('Gradient overlays · first on top')}
+          <div class="grp">
+            {#if !s.gradientOverlays.length}
+              <div class="insp-none">No gradient overlay.</div>
+            {/if}
+            {#each s.gradientOverlays as o, i (o)}
+              <div class="fx-block">
+                <div class="insp-row k-goverlay">
+                  <select value={o.blend} aria-label="Gradient overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
+                    {#each LAYER_BLEND_MODES as m (m)}
+                      <option value={m}>{blendLabel(m)}</option>
+                    {/each}
+                  </select>
+                  <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Gradient overlay {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(o, 'opacity', e.target.value)} />
+                  {@render rmBtn(`gradient overlay ${i + 1}`, () => removeGradientOverlay(i))}
+                </div>
+                {@render fxGradientControls(o.gradient, `Gradient overlay ${i + 1}`)}
+              </div>
+            {/each}
+            {#if s.gradientOverlays.length && !rustBoxes}
+              <p class="nofill-note">Gradient overlays need the Rust text engine (Settings).</p>
+            {/if}
+            {@render addBtn('Add gradient overlay', addGradientOverlay)}
+          </div>
+          {@const po = s.patternOverlay}
+          <div class="switch-row">
+            <button
+              type="button"
+              class="switch"
+              class:on={po.on}
+              role="switch"
+              aria-checked={po.on}
+              aria-label="Pattern overlay"
+              onclick={() => { po.on = !po.on; touch(); }}
+            ><span class="knob"></span></button>
+            <span class="lbl2">Pattern overlay</span>
+          </div>
+          {#if po.on}
+            <div class="fx-block">
+              <div class="insp-row k-goverlay">
+                <select value={po.blend} aria-label="Pattern overlay blend mode" title="Blend mode" onchange={(e) => { po.blend = e.target.value; touch(); }}>
+                  {#each LAYER_BLEND_MODES as m (m)}
+                    <option value={m}>{blendLabel(m)}</option>
+                  {/each}
+                </select>
+                <input type="number" min="0" max="100" step="1" value={pct(po.opacity)} aria-label="Pattern overlay opacity" title="Opacity, %" oninput={(e) => setAlpha(po, 'opacity', e.target.value)} />
+              </div>
+              {@render fxPatternControls(po.pattern, 'Pattern overlay')}
+              {#if !rustBoxes}
+                <p class="nofill-note">The pattern overlay needs the Rust text engine (Settings).</p>
+              {/if}
+            </div>
+          {/if}
         {/if}
         {#if fillMode === 'none'}
           <p class="nofill-note">{s.strokes.length ? 'The letters are see-through. Only the strokes show.' : 'No fill and no stroke: this box shows nothing. Add a stroke.'}</p>
@@ -1794,6 +2035,25 @@
               {/each}
             </div>
             {@render addBtn('Add stroke', addStroke)}
+          </div>
+          <!-- Photoshop's Stroke effect, under the outlines above: Outside,
+               Inside or Center, filled with a colour, a gradient or a
+               pattern. The Rust engine paints it. -->
+          {@render secHead('Photoshop strokes · first on top')}
+          <div class="grp">
+            {#if !s.strokeEffects.length}
+              <div class="insp-none">No Photoshop stroke.</div>
+            {/if}
+            {#each s.strokeEffects as k, i (k)}
+              {@render strokeEffectRows(k, i)}
+            {/each}
+            {#if s.strokeEffects.length && !rustBoxes}
+              <p class="nofill-note">Photoshop strokes need the Rust text engine (Settings).</p>
+            {/if}
+            {#if s.strokeEffects.length && s.noFill}
+              <p class="nofill-note">A box with no fill has no edge for these strokes.</p>
+            {/if}
+            {@render addBtn('Add Photoshop stroke', addStrokeEffect)}
           </div>
         {/if}
 

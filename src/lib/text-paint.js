@@ -1179,11 +1179,11 @@ export function boxEffects(style) {
   const out = [];
   const og = style?.outerGlow;
   if (og?.on && og.opacity > 0) {
-    out.push({ kind: 'outerGlow', color: og.color, opacity: og.opacity, blend: og.blend, technique: og.technique, size: og.size, spread: og.spread, range: og.range, noise: og.noise, contour: og.contour });
+    out.push({ kind: 'outerGlow', color: og.color, gradient: glowGradientOf(og), opacity: og.opacity, blend: og.blend, technique: og.technique, size: og.size, spread: og.spread, range: og.range, noise: og.noise, contour: og.contour });
   }
   const ig = style?.innerGlow;
   if (ig?.on && ig.opacity > 0) {
-    out.push({ kind: 'innerGlow', color: ig.color, opacity: ig.opacity, blend: ig.blend, technique: ig.technique, size: ig.size, choke: ig.spread, range: ig.range, noise: ig.noise, contour: ig.contour, source: ig.source });
+    out.push({ kind: 'innerGlow', color: ig.color, gradient: glowGradientOf(ig), opacity: ig.opacity, blend: ig.blend, technique: ig.technique, size: ig.size, choke: ig.spread, range: ig.range, noise: ig.noise, contour: ig.contour, source: ig.source });
   }
   for (const sh of Array.isArray(style?.innerShadows) ? resolveShadows(style.innerShadows) : []) {
     if (!(sh.opacity > 0)) continue;
@@ -1192,16 +1192,47 @@ export function boxEffects(style) {
   for (const o of Array.isArray(style?.colorOverlays) ? style.colorOverlays : []) {
     if (o.opacity > 0) out.push({ kind: 'colorOverlay', color: o.color, opacity: o.opacity, blend: o.blend });
   }
+  for (const o of Array.isArray(style?.gradientOverlays) ? style.gradientOverlays : []) {
+    if (o.opacity > 0 && o.gradient) out.push({ kind: 'gradientOverlay', opacity: o.opacity, blend: o.blend, gradient: o.gradient });
+  }
+  const po = style?.patternOverlay;
+  if (po?.on && po.opacity > 0 && po.pattern) {
+    out.push({ kind: 'patternOverlay', opacity: po.opacity, blend: po.blend, paint: { kind: 'pattern', pattern: po.pattern } });
+  }
+  for (const k of strokeEffectsOf(style)) {
+    out.push({ kind: 'stroke', size: k.size, position: k.position, opacity: k.opacity, blend: k.blend, paint: strokePaint(k) });
+  }
   return out;
 }
 
+// A glow's gradient, when it paints one.
+function glowGradientOf(g) {
+  return g.fill === 'gradient' && g.gradient ? g.gradient : undefined;
+}
+
+// The Photoshop strokes that lay anything.
+function strokeEffectsOf(style) {
+  return (Array.isArray(style?.strokeEffects) ? style.strokeEffects : []).filter((k) => k.opacity > 0 && k.size > 0);
+}
+
+// What a stroke paints with. A pattern is the style's pattern record; the
+// exporter turns it into the fill the painter takes (`effectPaints`).
+function strokePaint(k) {
+  if (k.fill === 'gradient' && k.gradient) return { kind: 'gradient', gradient: k.gradient };
+  if (k.fill === 'pattern' && k.pattern) return { kind: 'pattern', pattern: k.pattern };
+  return { kind: 'color', color: k.color };
+}
+
 // What reaches past the letters' silhouette, as shadows: every shadow the box
-// casts (`boxShadows`) and an outer glow, which reaches as far as an unmoved
-// shadow of its size does. What sizes the canvas a box lands in.
+// casts (`boxShadows`), an outer glow, which reaches as far as an unmoved
+// shadow of its size does, and the Photoshop strokes' outside parts. What sizes the canvas a box lands in.
 export function reachShadows(style) {
   const shadows = boxShadows(style);
   const og = style?.outerGlow;
-  return og?.on && og.opacity > 0 ? [...shadows, { x: 0, y: 0, size: og.size, opacity: og.opacity }] : shadows;
+  const out = og?.on && og.opacity > 0 ? [...shadows, { x: 0, y: 0, size: og.size, opacity: og.opacity }] : shadows;
+  // A stroke's outside part reaches as far as its outside width.
+  const width = Math.max(0, ...strokeEffectsOf(style).map((k) => (k.position === 'outside' ? k.size : k.position === 'center' ? k.size / 2 : 0)));
+  return width > 0 ? [...out, { x: 0, y: 0, size: width, opacity: 1 }] : out;
 }
 
 // How far past the letters the box's outlines reach, page px: the strokes,

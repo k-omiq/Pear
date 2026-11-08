@@ -253,6 +253,31 @@ export function applyBoxDefaults(style) {
 }
 
 // default style applied to a freshly-dropped text box
+// A fill pattern at its defaults (`defaultStyle().pattern`; the fields are
+// told there).
+function defaultPattern() {
+  return {
+    on: false,
+    kind: 'dots',
+    fg: '#000000',
+    bg: '#ffffff',
+    scale: 1,
+    angle: 0,
+    density: 0.5,
+    aspect: 1,
+    ox: 0,
+    oy: 0,
+    fgOpacity: 1,
+    bgOpacity: 1,
+    fade: { on: false, angle: 180, from: 0, to: 1 },
+    anchor: 'box',
+    seed: 1,
+    src: '',
+    cell: [],
+    mode: 'tone',
+  };
+}
+
 export function defaultStyle() {
   return {
     font: 'Comic Neue',
@@ -336,26 +361,7 @@ export function defaultStyle() {
     //   src, cell  a picked tile: its file in <chapter>/patterns/, and the
     //              lattice cell `[ax, ay, bx, by]` in page px it repeats on
     //   mode       picked: 'tone' recolours it with fg/bg, 'image' keeps it
-    pattern: {
-      on: false,
-      kind: 'dots',
-      fg: '#000000',
-      bg: '#ffffff',
-      scale: 1,
-      angle: 0,
-      density: 0.5,
-      aspect: 1,
-      ox: 0,
-      oy: 0,
-      fgOpacity: 1,
-      bgOpacity: 1,
-      fade: { on: false, angle: 180, from: 0, to: 1 },
-      anchor: 'box',
-      seed: 1,
-      src: '',
-      cell: [],
-      mode: 'tone',
-    },
+    pattern: defaultPattern(),
     // No fill at all: the letters are cut out of their own strokes, so what
     // shows is each stroke's visible width and the page through the letter.
     // It wins over the pattern and the gradient, and a box with no stroke
@@ -381,6 +387,14 @@ export function defaultStyle() {
     innerGlow: glowDefault(true),
     innerShadows: [],
     colorOverlays: [],
+    // Photoshop's Gradient Overlay (a list), Pattern Overlay (one) and Stroke
+    // (a list: `strokeEffects`, apart from `strokes`, the outlines above).
+    // `normalizeGradientOverlay`, `normalizePatternOverlay`,
+    // `normalizeStrokeEffect`. The Rust engine paints them; the browser
+    // engine does not.
+    gradientOverlays: [],
+    patternOverlay: patternOverlayDefault(),
+    strokeEffects: [],
     // How the outlines are laid: 'merged' (one shape under the fill) or
     // 'each' (letter by letter, a later letter's rim over an earlier
     // letter's fill), with 'round' or 'miter' corners. `strokeShade` (0..1)
@@ -702,8 +716,10 @@ export function newShadow(light = { angle: 120 }) {
 }
 // Outer Glow and Inner Glow, as Photoshop's dialog has them:
 //   on          the effect's box in the list
-//   blend, opacity, noise, color     Structure (a solid colour; gradient glows
-//               come with the gradient work, LAYER_STYLES_PLAN.md phase 3)
+//   blend, opacity, noise, color     Structure
+//   fill        'color' | 'gradient': the colour, or `gradient` (an effect
+//               gradient, `normalizeFxGradient`) run along the glow, its
+//               first stop at the edge
 //   technique   'softer' | 'precise'
 //   spread      Spread (outer) or Choke (inner), 0..1
 //   size        page px, 0 to 250
@@ -713,7 +729,7 @@ export function newShadow(light = { angle: 120 }) {
 // The defaults are Photoshop's (PhotoCraft's `fresh_effect`): Screen, 75 %,
 // the pale yellow, Softer, size 5, range 50 %.
 function glowDefault(inner) {
-  const g = { on: false, blend: 'screen', opacity: 0.75, noise: 0, color: '#ffffbe', technique: 'softer', spread: 0, size: 5, contour: { preset: 'linear', aa: false }, range: 0.5 };
+  const g = { on: false, blend: 'screen', opacity: 0.75, noise: 0, color: '#ffffbe', fill: 'color', gradient: glowGradient('#ffffbe'), technique: 'softer', spread: 0, size: 5, contour: { preset: 'linear', aa: false }, range: 0.5 };
   if (inner) g.source = 'edge';
   return g;
 }
@@ -725,6 +741,8 @@ export function normalizeGlow(x, inner = false) {
     opacity: Math.min(1, Math.max(0, num(x?.opacity, d.opacity))),
     noise: Math.min(1, Math.max(0, num(x?.noise, 0))),
     color: hex(x?.color, d.color),
+    fill: x?.fill === 'gradient' ? 'gradient' : 'color',
+    gradient: normalizeFxGradient(x?.gradient, glowGradient(hex(x?.color, d.color))),
     technique: x?.technique === 'precise' ? 'precise' : 'softer',
     spread: Math.min(1, Math.max(0, num(x?.spread, 0))),
     size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, d.size))),
@@ -757,6 +775,104 @@ export function normalizeOverlay(x) {
 // Photoshop's new one: Normal, red, 100 %.
 export function newOverlay() {
   return normalizeOverlay({});
+}
+
+// An effect gradient, as Photoshop's Gradient Overlay, a gradient Stroke and
+// a gradient glow take one (PhotoCraft's `Gradient`):
+//   style     FX_GRADIENT_STYLES
+//   angle     degrees, counter-clockwise from pointing right (90 runs bottom
+//             to top), as Photoshop's dial; a turned box turns it with it
+//   scale     0.1..1.5, 1 is 100 %
+//   reverse   the ramp the other way
+//   offset    [x, y], the centre moved by that share of the letters' frame
+//             (Photoshop's drag in the dialog)
+//   stops     GRADIENT_MIN_STOPS..GRADIENT_MAX_STOPS, each a colour, a
+//             position and its own opacity, sorted by position
+// Photoshop's Align with Layer is always on: the gradient spans the letters'
+// frame (a stroke's, the frame grown by the stroke).
+export const FX_GRADIENT_STYLES = ['linear', 'radial', 'angle', 'reflected', 'diamond'];
+const FX_BW = [
+  { color: '#000000', pos: 0, opacity: 1 },
+  { color: '#ffffff', pos: 1, opacity: 1 },
+];
+function fxGradientDefault(stops = FX_BW) {
+  return { style: 'linear', angle: 90, scale: 1, reverse: false, offset: [0, 0], stops: stops.map((st) => ({ ...st })) };
+}
+// A glow's gradient as Photoshop starts one: its colour, fading out.
+function glowGradient(color) {
+  return fxGradientDefault([
+    { color, pos: 0, opacity: 1 },
+    { color, pos: 1, opacity: 0 },
+  ]);
+}
+export function normalizeFxGradient(x, d = fxGradientDefault()) {
+  const src = x && typeof x === 'object' ? x : {};
+  const off = Array.isArray(src.offset) ? src.offset : d.offset;
+  const stops = Array.isArray(src.stops) && src.stops.length >= GRADIENT_MIN_STOPS ? src.stops : d.stops;
+  return {
+    style: FX_GRADIENT_STYLES.includes(src.style) ? src.style : d.style,
+    angle: Math.min(180, Math.max(-180, num(src.angle, d.angle))),
+    scale: Math.min(1.5, Math.max(0.1, num(src.scale, d.scale))),
+    reverse: src.reverse === true,
+    offset: [0, 1].map((i) => Math.min(1, Math.max(-1, num(off[i], 0)))),
+    stops: stops
+      .map(normalizeStop)
+      .sort((a, b) => a.pos - b.pos)
+      .slice(0, GRADIENT_MAX_STOPS),
+  };
+}
+// A Gradient Overlay: an effect gradient over the letters' fill.
+export function normalizeGradientOverlay(x) {
+  return {
+    blend: blendMode(x?.blend, 'normal'),
+    opacity: Math.min(1, Math.max(0, num(x?.opacity, 1))),
+    gradient: normalizeFxGradient(x?.gradient),
+  };
+}
+// Photoshop's new one: Normal, 100 %, black to white at 90 degrees.
+export function newGradientOverlay() {
+  return normalizeGradientOverlay({});
+}
+// The Pattern Overlay: one of the fill's own patterns (`normalizePattern`)
+// over the letters' fill, in its own mode. Its tile follows the box's size
+// as the fill's does; `scale`, `angle` and `anchor` are the pattern's.
+function patternOverlayDefault() {
+  return { on: false, blend: 'normal', opacity: 1, pattern: { ...defaultPattern(), on: true } };
+}
+export function normalizePatternOverlay(x) {
+  const d = patternOverlayDefault();
+  return {
+    on: x?.on === true,
+    blend: blendMode(x?.blend, d.blend),
+    opacity: Math.min(1, Math.max(0, num(x?.opacity, d.opacity))),
+    pattern: { ...normalizePattern(x?.pattern, d.pattern), on: true },
+  };
+}
+// Photoshop's Stroke effect, apart from the outlines (`strokes`):
+//   size       page px, 0..250
+//   position   STROKE_POSITIONS: outside the letters' edge, inside it, or
+//              half and half
+//   blend, opacity
+//   fill       STROKE_FILLS: `color`, `gradient` (an effect gradient over the
+//              stroke's own frame) or `pattern` (as the fill's)
+// Of the list the first is on top: a higher stroke covers the ones under it.
+// The defaults are PhotoCraft's: 1 px, Inside, black, Normal, 100 %.
+export const STROKE_POSITIONS = ['outside', 'inside', 'center'];
+export const STROKE_FILLS = ['color', 'gradient', 'pattern'];
+export function normalizeStrokeEffect(x) {
+  return {
+    size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, 1))),
+    position: STROKE_POSITIONS.includes(x?.position) ? x.position : 'inside',
+    blend: blendMode(x?.blend, 'normal'),
+    opacity: Math.min(1, Math.max(0, num(x?.opacity, 1))),
+    fill: STROKE_FILLS.includes(x?.fill) ? x.fill : 'color',
+    color: hex(x?.color, '#000000'),
+    gradient: normalizeFxGradient(x?.gradient),
+    pattern: { ...normalizePattern(x?.pattern, { ...defaultPattern(), on: true }), on: true },
+  };
+}
+export function newStrokeEffect() {
+  return normalizeStrokeEffect({});
 }
 // One hand-drawn brush stroke, sanitised. Returns null for a stroke that
 // cannot be drawn at all - no points, or a size of zero - because a stroke
@@ -1382,6 +1498,9 @@ export function normalizeStyle(s) {
     innerGlow: normalizeGlow(src.innerGlow, true),
     innerShadows: Array.isArray(src.innerShadows) ? src.innerShadows.map(normalizeInnerShadow) : [],
     colorOverlays: Array.isArray(src.colorOverlays) ? src.colorOverlays.map(normalizeOverlay) : [],
+    gradientOverlays: Array.isArray(src.gradientOverlays) ? src.gradientOverlays.map(normalizeGradientOverlay) : [],
+    patternOverlay: normalizePatternOverlay(src.patternOverlay),
+    strokeEffects: Array.isArray(src.strokeEffects) ? src.strokeEffects.map(normalizeStrokeEffect) : [],
     roughen: { ...d.roughen, ...(src.roughen || {}) },
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));

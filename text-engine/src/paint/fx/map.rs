@@ -8,7 +8,8 @@
 //! Ported from PhotoCraft, `crates/compose/src/effects.rs` (`Map`),
 //! `effects/paint.rs` (`shadow_map`, `glow_map`, `noise`, `ranged_lut`) and
 //! `effects/distance.rs` (`dt1`, `edt_nearest`, `dist_outside`,
-//! `dist_inside`), Copyright (c) 2026 ArtCraft Team and the PhotoCraft
+//! `dist_inside`, the chamfer `dist_*_by`, `local_coverage`,
+//! `STROKE_CHAMFER_MAX`), Copyright (c) 2026 ArtCraft Team and the PhotoCraft
 //! contributors, MIT licence (see `THIRD_PARTY.md`). PhotoCraft measured each
 //! against Photoshop's renders; the measurements are kept in the comments.
 //! Changed: one thread, a seed per effect, contours as 256-entry tables.
@@ -288,6 +289,87 @@ pub(crate) fn dist_inside(s: &Map) -> Vec<f32> {
     let (d, _) = edt_nearest(&outside, s.w, s.h);
     (0..s.v.len())
         .map(|i| if outside[i] { -0.5 } else { d[i] - 0.5 })
+        .collect()
+}
+
+/// Outside width from which a stroke's outer edge takes the exact Euclidean
+/// distance instead of the 5 x 5 chamfer. The chamfer's level sets are
+/// octagons, up to `0.027 r` past the true radius: half a pixel at r = 19.
+/// Narrower, Photoshop matches the chamfer's sub-pixel edge seeding.
+pub(crate) const STROKE_CHAMFER_MAX: f32 = 20.0;
+
+/// The chamfer distance outside the shape, its seeds starting at their
+/// sub-pixel edge (1 - coverage). Inside reads -0.5.
+pub(crate) fn chamfer_outside(s: &Map) -> Vec<f32> {
+    let mut d: Vec<f32> =
+        s.v.iter()
+            .map(|&a| {
+                if a > INSIDE_EPS {
+                    1.0 - a.min(1.0)
+                } else {
+                    distance::FAR
+                }
+            })
+            .collect();
+    distance::chamfer(&mut d, s.w, s.h);
+    d.iter()
+        .zip(&s.v)
+        .map(|(d, &a)| if a > INSIDE_EPS { -0.5 } else { d - 0.5 })
+        .collect()
+}
+
+/// Alpha relative to its 3 x 3 neighbourhood's highest: an edge's coverage
+/// apart from the fill's own opacity.
+fn local_coverage(s: &Map) -> Map {
+    let mut out = Map::new(s.w, s.h, 0.0);
+    let (w, h) = (s.w as i64, s.h as i64);
+    let get = |x: i64, y: i64| {
+        if x < 0 || y < 0 || x >= w || y >= h {
+            0.0
+        } else {
+            s.v[y as usize * s.w + x as usize]
+        }
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let a = get(x, y);
+            if a <= INSIDE_EPS {
+                continue;
+            }
+            let mut mx = a;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    mx = mx.max(get(x + dx, y + dy));
+                }
+            }
+            out.v[y as usize * s.w + x as usize] = (a / mx).min(1.0);
+        }
+    }
+    out
+}
+
+/// The chamfer distance inside the shape: partly covered edge pixels are
+/// seeds starting at their coverage, so a 25 % edge column puts the edge a
+/// quarter pixel in. Outside reads -0.5.
+pub(crate) fn chamfer_inside(s: &Map) -> Vec<f32> {
+    let cov = local_coverage(s);
+    let mut d: Vec<f32> =
+        s.v.iter()
+            .zip(&cov.v)
+            .map(|(&a, &c)| {
+                if a <= INSIDE_EPS {
+                    0.0
+                } else if c < 1.0 - INSIDE_EPS {
+                    c
+                } else {
+                    distance::FAR
+                }
+            })
+            .collect();
+    distance::chamfer(&mut d, s.w, s.h);
+    d.iter()
+        .zip(&s.v)
+        .map(|(d, &a)| if a <= INSIDE_EPS { -0.5 } else { d - 0.5 })
         .collect()
 }
 

@@ -23,6 +23,7 @@ pub mod blend;
 pub mod contour;
 pub mod distance;
 pub mod effects;
+pub mod gradient;
 pub(crate) mod map;
 pub mod noise;
 pub mod tent;

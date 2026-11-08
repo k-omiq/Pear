@@ -4,7 +4,10 @@
 
 use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::contour::{Curve, Lut};
-use mt_text::paint::fx::effects::{Effect, Glow, InnerShadow, Overlay, Technique};
+use mt_text::paint::fx::effects::{
+    Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay, Position, Stroke, Technique,
+};
+use mt_text::paint::fx::gradient::{Gradient, Style};
 
 use mt_text::paint::{
     decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape,
@@ -590,6 +593,39 @@ fn job_bytes(font: u32) -> Vec<u8> {
 
 /// A box job on the wire with one of everything, and where each part
 /// starts: the shadow's opacity, the blur, the tap's weight, the clip mode.
+/// A radial gradient at 45 degrees, 50 %, reversed, moved a tenth across:
+/// red to blue, fading out.
+fn gradient_record(b: &mut Vec<u8>) {
+    u(b, 1);
+    f(b, 45.0);
+    f(b, 0.5);
+    u(b, 1);
+    f(b, 0.1);
+    f(b, 0.0);
+    u(b, 2);
+    f(b, 0.0);
+    b.extend_from_slice(&[255, 0, 0, 255]);
+    f(b, 1.0);
+    b.extend_from_slice(&[0, 0, 255, 255]);
+    u(b, 2);
+    f(b, 0.0);
+    f(b, 1.0);
+    f(b, 1.0);
+    f(b, 0.0);
+}
+
+fn gradient() -> Gradient {
+    Gradient {
+        stops: vec![(0.0, [1.0, 0.0, 0.0]), (1.0, [0.0, 0.0, 1.0])],
+        opacity: vec![(0.0, 1.0), (1.0, 0.0)],
+        style: Style::Radial,
+        angle: 45.0,
+        scale: 0.5,
+        reverse: true,
+        offset: (0.1, 0.0),
+    }
+}
+
 fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     let mut b = Vec::new();
     u(&mut b, BOX_MAGIC);
@@ -635,7 +671,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
     let effects_at = b.len();
-    u(&mut b, 4);
+    u(&mut b, 7);
     // An outer glow: yellow, Screen, Precise, size 5, spread 0.1, range 0.5.
     u(&mut b, 1);
     b.extend_from_slice(&[255, 255, 0, 255]);
@@ -647,6 +683,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     }
     u(&mut b, 11); // seed
     u(&mut b, 0); // linear
+    u(&mut b, 0); // its colour, not a gradient
                   // An inner glow from the centre, the Cone.
     u(&mut b, 2);
     b.extend_from_slice(&[255, 255, 255, 255]);
@@ -659,7 +696,9 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     u(&mut b, 12);
     u(&mut b, 1); // the Cone
     u(&mut b, 1); // centre
-                  // An inner shadow.
+    u(&mut b, 1); // a gradient
+    gradient_record(&mut b);
+    // An inner shadow.
     u(&mut b, 3);
     b.extend_from_slice(&[0, 0, 0, 255]);
     f(&mut b, 0.5);
@@ -674,6 +713,27 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 5]) {
     b.extend_from_slice(&[0, 0, 255, 255]);
     f(&mut b, 0.5);
     u(&mut b, 0);
+    // A centred stroke of 2 painted with the gradient.
+    u(&mut b, 5);
+    f(&mut b, 2.0);
+    u(&mut b, 2);
+    f(&mut b, 1.0);
+    u(&mut b, 3);
+    u(&mut b, 14);
+    u(&mut b, 1);
+    gradient_record(&mut b);
+    // A gradient overlay and a pattern overlay (a solid fill record).
+    u(&mut b, 6);
+    f(&mut b, 0.5);
+    u(&mut b, 0);
+    u(&mut b, 1);
+    gradient_record(&mut b);
+    u(&mut b, 7);
+    f(&mut b, 1.0);
+    u(&mut b, 0);
+    u(&mut b, 2);
+    u(&mut b, 1);
+    b.extend_from_slice(&[0, 0, 255, 255]);
     u(&mut b, 0); // no page under them
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
@@ -744,6 +804,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
         vec![
             Effect::OuterGlow(Glow {
                 color: Rgba([255, 255, 0, 255]),
+                gradient: None,
                 opacity: 0.75,
                 blend: Blend::Screen,
                 technique: Technique::Precise,
@@ -757,6 +818,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
             }),
             Effect::InnerGlow(Glow {
                 color: Rgba([255, 255, 255, 255]),
+                gradient: Some(gradient()),
                 opacity: 1.0,
                 blend: Blend::Normal,
                 technique: Technique::Softer,
@@ -785,11 +847,29 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                 opacity: 0.5,
                 blend: Blend::Normal,
             }),
+            Effect::Stroke(Stroke {
+                size: 2.0,
+                position: Position::Center,
+                opacity: 1.0,
+                blend: Blend::Multiply,
+                paint: Paint::Gradient(gradient()),
+                seed: 14,
+            }),
+            Effect::GradientOverlay(PaintOverlay {
+                opacity: 0.5,
+                blend: Blend::Normal,
+                paint: Paint::Gradient(gradient()),
+            }),
+            Effect::PatternOverlay(PaintOverlay {
+                opacity: 1.0,
+                blend: Blend::Normal,
+                paint: Paint::Fill(Fill::Solid(BLUE)),
+            }),
         ]
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 4));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 5));
 }
 
 #[test]
@@ -855,8 +935,13 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(effects_at + 4, 5), Some(Error::BadSpec));
     assert_eq!(with_u(effects_at + 24, 2), Some(Error::BadSpec));
     assert_eq!(with_f(effects_at + 44, 1.5), Some(Error::BadSpec));
-    // The inner glow's source: past the outer glow's 64 bytes and its own 64.
-    assert_eq!(with_u(effects_at + 132, 2), Some(Error::BadSpec));
+    // The inner glow's source: past the outer glow's 68 bytes and its own 64,
+    // and its gradient flag after it.
+    assert_eq!(with_u(effects_at + 136, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 140, 2), Some(Error::BadSpec));
+    // A gradient style that is not one, and a stop past the end.
+    assert_eq!(with_u(effects_at + 144, 5), Some(Error::BadSpec));
+    assert_eq!(with_f(effects_at + 188, 1.5), Some(Error::BadSpec));
 }
 
 #[test]
@@ -1143,6 +1228,7 @@ fn black_multiply_and_an_unseen_knockout_take_the_quick_path() {
 fn glow(color: Rgba, size: f64) -> Glow {
     Glow {
         color,
+        gradient: None,
         opacity: 1.0,
         blend: Blend::Normal,
         technique: Technique::Softer,

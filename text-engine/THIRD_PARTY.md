@@ -20,8 +20,15 @@ names its source file in a comment.
 - `fx/map.rs`: the glow and inner shadow maps, Range, the exact distance
   transform (`crates/compose/src/effects.rs`, `effects/paint.rs`,
   `effects/distance.rs`).
-- `fx/effects.rs`: the effects' order and the interior compositing
-  (`crates/compose/src/effects/composite.rs`).
+- `fx/effects.rs`: the effects' order, the interior compositing, the
+  Stroke effect (`stroke_widths`, the inside band, `outline_share`, the
+  outside strokes slid under the letters, `stroke_frame`) and the gradient
+  glow (`crates/compose/src/effects/composite.rs`, `effects/paint.rs`).
+- `fx/map.rs` `chamfer_outside`, `chamfer_inside`, `local_coverage`,
+  `STROKE_CHAMFER_MAX`: the strokes' distance fields
+  (`crates/compose/src/effects/distance.rs`, `composite.rs`).
+- `fx/gradient.rs`: the five gradient styles, their lengths and the stop
+  sampling (`crates/compose/src/effects/paint.rs`).
 
 MIT License
 
