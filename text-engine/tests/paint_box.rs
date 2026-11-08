@@ -2249,3 +2249,136 @@ fn a_big_bevel_takes_this_long() {
         );
     }
 }
+
+// ---- No Fill ----
+
+/// A box with no fill is Photoshop's layer at Fill 0 %: its interior
+/// effects, its Photoshop strokes and its bevel are laid from the letters'
+/// shape, and the fill itself is not seen.
+#[test]
+fn a_box_with_no_fill_lays_its_effects_from_the_letters_shape() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (sx, sy) = stem(glyphs);
+    b.request.job.no_fill = true;
+    // With nothing on it, it shows nothing (no outline either).
+    assert!(paint_box(&mut e, &mut b).unwrap().is_none());
+    // An inner shadow: blue thrown in along the stem's left inside edge,
+    // and nothing of the fill past it.
+    b.effects = vec![Effect::InnerShadow(InnerShadow {
+        color: BLUE,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        x: 3.0,
+        y: 0.0,
+        size: 0.0,
+        choke: 0.0,
+        noise: 0.0,
+        contour: None,
+        seed: 1,
+    })];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), glyphs);
+    let edge = px(&r, glyphs.0 + 1, sy);
+    assert!(edge[3] > 200 && edge[2] > 200, "{edge:?}");
+    assert_eq!(px(&r, glyphs.0 + 6, sy)[3], 0);
+    // A colour overlay brings the letters back in its colour, whole.
+    b.effects = vec![Effect::ColorOverlay(Overlay {
+        color: BLUE,
+        opacity: 1.0,
+        blend: Blend::Normal,
+    })];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(px(&r, sx, sy), [0, 0, 255, 255]);
+    // A satin lays its bands inside the letters only.
+    b.effects = vec![Effect::Satin(Satin {
+        color: BLUE,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        angle: 0.0,
+        distance: 3.0,
+        size: 0.0,
+        invert: false,
+        contour: None,
+    })];
+    let r = paint(&mut e, &mut b);
+    let ink = inked(&r);
+    assert!(ink.0 >= glyphs.0 && ink.2 <= glyphs.2, "{ink:?} {glyphs:?}");
+    assert!(alpha_sum(&r) > 0);
+    // An inside Photoshop stroke rings the inside of the letters, see-through
+    // past it; an outside one rings them, the letters still see-through.
+    let ring = |position: Position, color: Rgba| {
+        Effect::Stroke(Stroke {
+            size: 2.0,
+            position,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            paint: Paint::Color(color),
+            seed: 0,
+        })
+    };
+    b.effects = vec![ring(Position::Inside, GREEN)];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(inked(&r), glyphs);
+    let p = px(&r, glyphs.0 + 1, sy);
+    assert!(p[3] > 200 && p[1] > 200, "{p:?}");
+    assert!(px(&r, sx, sy)[3] < 40, "{:?}", px(&r, sx, sy));
+    b.effects = vec![ring(Position::Outside, GREEN)];
+    let r = paint(&mut e, &mut b);
+    let p = px(&r, glyphs.0 - 1, sy);
+    assert!(p[3] > 200 && p[1] > 200, "{p:?}");
+    assert_eq!(px(&r, sx, sy)[3], 0);
+    // An inner bevel lights and shades inside the letters, on nothing.
+    b.effects = vec![Effect::Bevel(bevel(
+        BevelStyle::Inner,
+        BevelTechnique::Smooth,
+    ))];
+    let r = paint(&mut e, &mut b);
+    let ink = inked(&r);
+    assert!(
+        ink.0 >= glyphs.0 && ink.1 >= glyphs.1 && ink.2 <= glyphs.2 && ink.3 <= glyphs.3,
+        "{ink:?} {glyphs:?}"
+    );
+    let pixels: Vec<[u8; 4]> = r.data.chunks(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+    let lit_px = pixels.iter().filter(|p| lit(**p)).count();
+    let shaded_px = pixels.iter().filter(|p| shaded(**p)).count();
+    assert!(lit_px > 20 && shaded_px > 20, "{lit_px} {shaded_px}");
+    // No red: the fill stays unseen under all of them.
+    assert!(pixels.iter().all(|p| !is_red(*p)));
+}
+
+#[test]
+fn a_box_with_no_fill_keeps_its_outlines_cut_under_its_effects() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    let (_, sy) = stem(glyphs);
+    b.request.job.bands = vec![mt_text::paint::Band {
+        color: BLUE,
+        opacity: 1.0,
+        line: 6.0,
+    }];
+    b.request.job.no_fill = true;
+    let rims = paint(&mut e, &mut b);
+    // The outline's outer half, the letter see-through.
+    assert!(px(&rims, glyphs.0 - 1, sy)[2] > 200);
+    assert_eq!(px(&rims, glyphs.0 + 2, sy)[3], 0);
+    // An inner shadow inside the letter; the outline is as it was.
+    b.effects = vec![Effect::InnerShadow(InnerShadow {
+        color: GREEN,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        x: 2.0,
+        y: 0.0,
+        size: 0.0,
+        choke: 0.0,
+        noise: 0.0,
+        contour: None,
+        seed: 1,
+    })];
+    let r = paint(&mut e, &mut b);
+    assert_eq!(px(&r, glyphs.0 - 1, sy), px(&rims, glyphs.0 - 1, sy));
+    let p = px(&r, glyphs.0 + 1, sy);
+    assert!(p[3] > 200 && p[1] > 200, "{p:?}");
+    // And the job it came from is left as it was.
+    assert!(b.request.job.no_fill && b.request.job.silhouette.is_none());
+}

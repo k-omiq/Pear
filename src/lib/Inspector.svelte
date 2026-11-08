@@ -2180,7 +2180,7 @@
           {/if}
         {/if}
         {#if fillMode === 'none'}
-          <p class="nofill-note">{s.strokes.length ? 'The letters are see-through. Only the strokes show.' : 'No fill and no stroke: this box shows nothing. Add a stroke.'}</p>
+          <p class="nofill-note">{s.strokes.length ? 'The letters are see-through: their outlines and layer effects show, as a Photoshop layer at Fill 0 % does.' : 'No fill and no stroke: only the layer effects show. Add a stroke or an effect.'}</p>
         {:else if fillMode === 'solid'}
           <div class="grp">
             <span class="lbl">Colour</span>
@@ -2582,9 +2582,6 @@
             {#if s.strokeEffects.length && !rustBoxes}
               <p class="nofill-note">Photoshop strokes need the Rust text engine (Settings).</p>
             {/if}
-            {#if s.strokeEffects.length && s.noFill}
-              <p class="nofill-note">A box with no fill has no edge for these strokes.</p>
-            {/if}
             {@render addBtn('Add Photoshop stroke', addStrokeEffect)}
           </div>
         {/if}
@@ -2632,9 +2629,6 @@
             <p class="nofill-note">Bevel & Emboss needs the Rust text engine (Settings).</p>
           {/if}
           {@render bevelControls(s.bevel)}
-          {#if s.bevel.on && s.noFill}
-            <p class="nofill-note">A box with no fill gets no bevel yet.</p>
-          {/if}
         {/if}
 
         {#if effectsTab === 'warp'}
