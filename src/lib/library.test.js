@@ -1202,7 +1202,7 @@ describe('saveOpenChapter', () => {
     await openChapter(p.id, c.id);
     expect(app.pages[0].boxes[0].style.font).toBe('Bangers');
     expect(app.pages[0].boxes[0].style.shadows).toEqual([
-      { x: 3, y: 3, size: 5.67, color: '#000000', opacity: 0.5, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false },
+      { x: 3, y: 3, size: 5, color: '#000000', opacity: 0.5, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false },
     ]);
     // Unset keys are filled from the current schema, not left undefined.
     expect(app.pages[0].boxes[0].style.roughen.amount).toBe(4);

@@ -1070,7 +1070,7 @@ describe('the style schema migration', () => {
 
   it('turns a shadow that was on into the shadow list, and one that was off into none', () => {
     const on = normalizeStyle({ shadow: { on: true, x: 3, y: 4, blur: 5, color: '#010203', opacity: 0.4 } });
-    expect(on.shadows).toEqual([{ x: 3, y: 4, size: 7.33, color: '#010203', opacity: 0.4, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
+    expect(on.shadows).toEqual([{ x: 3, y: 4, size: 6.25, color: '#010203', opacity: 0.4, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
     expect(normalizeStyle({ shadow: { on: false, x: 3, y: 4 } }).shadows).toEqual([]);
     expect('shadow' in on).toBe(false);
   });
@@ -2297,8 +2297,8 @@ describe('the page coordinate space', () => {
     expect(s.blur).toBe(8);
     expect(s.letterSpacing).toBe(10);
     expect(s.strokes[0].width).toBe(6);
-    // The old blur 6 reads as Size 9, and Size is a length.
-    expect(s.shadows[0]).toMatchObject({ x: 4, y: 8, size: 18 });
+    // The old blur 6 reads as Size 7.5, and Size is a length.
+    expect(s.shadows[0]).toMatchObject({ x: 4, y: 8, size: 15 });
     // Everything that is not a length is left exactly as it was.
     expect(s.strokes[0].color).toBe('#ffffff');
     expect(s.shadows[0].opacity).toBeCloseTo(0.6);
@@ -2317,7 +2317,7 @@ describe('the page coordinate space', () => {
     expect(s.strokes[0].width).toBeCloseTo(3 * Math.sqrt(6), 10);
     expect(s.shadows[0].x).toBe(4);
     expect(s.shadows[0].y).toBe(12);
-    expect(s.shadows[0].size).toBeCloseTo(9 * Math.sqrt(6), 10);
+    expect(s.shadows[0].size).toBeCloseTo(7.5 * Math.sqrt(6), 10);
   });
 
   it('turns the roughening grain with the page rather than against it', () => {

@@ -719,10 +719,10 @@ describe('strokes and shadows', () => {
       }),
     );
     // Supersampled 2x, so every device-pixel number is doubled - and a canvas
-    // filter's radius is the sigma Size 7 stands for, 0.3 * 7 + 0.3.
+    // filter's radius is the sigma that stands in for Size 7's tent, 0.4 * 7.
     expect(shadowed).toEqual([
       { x: -10, y: 0, filter: 'none', alpha: 1 },
-      { x: 4, y: 6, filter: 'blur(4.8px)', alpha: 0.6 },
+      { x: 4, y: 6, filter: 'blur(5.6px)', alpha: 0.6 },
     ]);
   });
 
@@ -1456,7 +1456,7 @@ describe('a box with every effect on at once', () => {
       ['#000000', 6],
       ['#ffffff', 6],
     ]);
-    expect(shadowed).toEqual([{ x: 4, y: 6, filter: 'blur(4.8px)', alpha: 0.6 }]);
+    expect(shadowed).toEqual([{ x: 4, y: 6, filter: 'blur(5.6px)', alpha: 0.6 }]);
 
     // Two fills: the shadow's flat silhouette, then the gradient over the glyphs.
     expect(painted).toEqual(['ONE', 'ONE']);

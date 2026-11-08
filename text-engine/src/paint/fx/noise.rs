@@ -6,9 +6,6 @@
 //! export must not shimmer. So every number here is a hash of the pixel and
 //! a seed the caller owns (a box and an effect slot).
 
-use super::super::budget;
-use crate::Error;
-
 /// A well-mixed 32-bit hash of a pixel and a seed.
 pub fn hash(x: i32, y: i32, seed: u32) -> u32 {
     // Two rounds of a murmur-style finaliser over the three words.
@@ -29,52 +26,44 @@ pub fn unit(x: i32, y: i32, seed: u32) -> f32 {
     (hash(x, y, seed) >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// How far a grain of noise moves a pixel's matte, in pixels either way.
-pub const SCATTER: i32 = 4;
-
-/// Noise over a matte: every pixel takes the matte of a pixel up to
-/// [`SCATTER`] away, picked by the hash, and the result is mixed with the
-/// matte as it was by `amount` (0 to 1). The grain is in device pixels, as
-/// Photoshop's is in the document's.
+/// Photoshop's Noise slider over an effect's matte: a monochrome speckle in
+/// the coverage, `amount` from 0 to 1, after the contour. A pixel keeps `1 +
+/// (n - 0.5) * 2 * amount` of itself for its hashed `n`, so the speckle fades
+/// out with the effect rather than lighting the blur's faint tail.
 ///
-/// `alpha` is `width * height` values row by row; `bx` limits the work to
-/// the rows and columns that can change (the matte's ink grown by the
-/// scatter), and is `(x0, y0, x1, y1)`.
-pub fn scatter(
+/// From PhotoCraft's `noise` (`crates/compose/src/effects/paint.rs`),
+/// Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, MIT
+/// licence (see `THIRD_PARTY.md`). Changed: 8-bit mattes, a seed per effect.
+///
+/// `alpha` is `width * height` values row by row; only `bx`, `(x0, y0, x1,
+/// y1)`, is touched.
+pub fn grain(
     alpha: &mut [u8],
     width: usize,
     height: usize,
     bx: (i32, i32, i32, i32),
     amount: f32,
     seed: u32,
-) -> Result<(), Error> {
-    if amount <= 0.0 || width == 0 || height == 0 {
-        return Ok(());
+) {
+    if amount.is_nan() || amount <= 0.0 || width == 0 || height == 0 {
+        return;
     }
     let amount = amount.min(1.0);
     let x0 = bx.0.max(0);
     let y0 = bx.1.max(0);
     let x1 = bx.2.min(width as i32);
     let y1 = bx.3.min(height as i32);
-    if x1 <= x0 || y1 <= y0 {
-        return Ok(());
-    }
-    let src = budget::collect(alpha.iter().map(|&a| Ok(a)))?;
-    let span = (2 * SCATTER + 1) as u32;
     for y in y0..y1 {
         for x in x0..x1 {
-            let h = hash(x, y, seed);
-            let dx = (h % span) as i32 - SCATTER;
-            let dy = ((h >> 8) % span) as i32 - SCATTER;
-            let sx = (x + dx).clamp(0, width as i32 - 1) as usize;
-            let sy = (y + dy).clamp(0, height as i32 - 1) as usize;
-            let i = y as usize * width + x as usize;
-            let was = f32::from(src[i]);
-            let moved = f32::from(src[sy * width + sx]);
-            alpha[i] = (was + (moved - was) * amount + 0.5).clamp(0.0, 255.0) as u8;
+            let a = &mut alpha[y as usize * width + x as usize];
+            if *a == 0 {
+                continue;
+            }
+            let n = unit(x, y, seed);
+            let v = f32::from(*a) * (1.0 + (n - 0.5) * 2.0 * amount);
+            *a = (v + 0.5).clamp(0.0, 255.0) as u8;
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -100,18 +89,21 @@ mod tests {
     }
 
     #[test]
-    fn no_noise_changes_nothing_and_full_noise_moves_the_edge() {
+    fn no_noise_changes_nothing_and_noise_never_reaches_past_the_matte() {
         let (w, h) = (16, 16);
         let mut a: Vec<u8> = (0..w * h)
-            .map(|i| if i % w < 8 { 255 } else { 0 })
+            .map(|i| if i % w < 8 { 200 } else { 0 })
             .collect();
         let before = a.clone();
-        scatter(&mut a, w, h, (0, 0, 16, 16), 0.0, 1).unwrap();
+        grain(&mut a, w, h, (0, 0, 16, 16), 0.0, 1);
         assert_eq!(a, before);
-        scatter(&mut a, w, h, (0, 0, 16, 16), 1.0, 1).unwrap();
+        grain(&mut a, w, h, (0, 0, 16, 16), 1.0, 1);
         assert_ne!(a, before);
-        // Far from the edge nothing can change.
-        assert_eq!(a[8 * w], 255);
-        assert_eq!(a[8 * w + 15], 0);
+        // Nothing appears where the matte had nothing.
+        for (i, v) in a.iter().enumerate() {
+            if before[i] == 0 {
+                assert_eq!(*v, 0);
+            }
+        }
     }
 }

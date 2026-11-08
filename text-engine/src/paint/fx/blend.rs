@@ -148,22 +148,23 @@ impl Blend {
             Blend::Overlay => hard_light(s, b),
             Blend::SoftLight => {
                 // Photoshop's Soft Light, which is not the W3C one: the dark
-                // half darkens by a square, the light half lightens towards
-                // the square root.
+                // half darkens by a square; the light half lightens towards
+                // the square root, by W3C's polynomial in the darkest
+                // quarter (PhotoCraft's `soft_light_ps`).
                 if s <= 0.5 {
                     2.0 * b * s + b * b * (1.0 - 2.0 * s)
                 } else {
-                    2.0 * b * (1.0 - s) + b.sqrt() * (2.0 * s - 1.0)
+                    let c = b.max(0.0);
+                    let d = if c <= 0.25 {
+                        ((16.0 * c - 12.0) * c + 4.0) * c
+                    } else {
+                        c.sqrt()
+                    };
+                    2.0 * b * (1.0 - s) + d * (2.0 * s - 1.0)
                 }
             }
             Blend::HardLight => hard_light(b, s),
-            Blend::VividLight => {
-                if s <= 0.5 {
-                    color_burn(b, 2.0 * s)
-                } else {
-                    color_dodge(b, 2.0 * s - 1.0)
-                }
-            }
+            Blend::VividLight => vivid_light_ps(b, s),
             Blend::LinearLight => b + 2.0 * s - 1.0,
             Blend::PinLight => {
                 if s <= 0.5 {
@@ -172,8 +173,10 @@ impl Blend {
                     b.max(2.0 * s - 1.0)
                 }
             }
+            // The generic Vivid Light thresholded: `b + s >= 1` inside, and
+            // the backdrop's extremes win at the ends, as Photoshop's do.
             Blend::HardMix => {
-                if b + s >= 1.0 {
+                if vivid_light(b, s) >= 0.5 - 1e-6 {
                     1.0
                 } else {
                     0.0
@@ -211,8 +214,43 @@ fn hard_light(b: f32, s: f32) -> f32 {
     }
 }
 
+// What follows of Color Burn, Color Dodge, Vivid Light and Hard Mix is
+// PhotoCraft's (`crates/compose/src/psblend.rs`), measured on Photoshop's
+// composites of psd-tools `blend-modes/*.psd`. Copyright (c) 2026 ArtCraft
+// Team and the PhotoCraft contributors, MIT licence (see `THIRD_PARTY.md`).
+
+/// A backdrop within this of 0 or 1 counts as exactly that where the result
+/// jumps there: a value that should be 1 can arrive a rounding step under.
+const EDGE: f32 = 1e-4;
+
+/// Photoshop's Vivid Light: the source's extremes win, so a black source
+/// gives black even over white, and a white one white even over black.
+fn vivid_light_ps(b: f32, s: f32) -> f32 {
+    if s <= 0.5 {
+        if s <= 0.0 {
+            0.0
+        } else {
+            1.0 - ((1.0 - b) / (2.0 * s)).min(1.0)
+        }
+    } else if s >= 1.0 {
+        1.0
+    } else {
+        (b / (2.0 * (1.0 - s))).min(1.0)
+    }
+}
+
+/// Vivid Light as Color Burn and Color Dodge give it, the backdrop's
+/// extremes winning: what Hard Mix thresholds.
+fn vivid_light(b: f32, s: f32) -> f32 {
+    if s <= 0.5 {
+        color_burn(b, 2.0 * s)
+    } else {
+        color_dodge(b, 2.0 * s - 1.0)
+    }
+}
+
 fn color_dodge(b: f32, s: f32) -> f32 {
-    if b <= 0.0 {
+    if b <= EDGE {
         0.0
     } else if s >= 1.0 {
         1.0
@@ -222,7 +260,7 @@ fn color_dodge(b: f32, s: f32) -> f32 {
 }
 
 fn color_burn(b: f32, s: f32) -> f32 {
-    if b >= 1.0 {
+    if b >= 1.0 - EDGE {
         1.0
     } else if s <= 0.0 {
         0.0

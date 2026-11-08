@@ -6,14 +6,22 @@
 //! contour as points from 0 to 255, each smooth or a corner; this bakes it
 //! into a 256-entry table that is read once a pixel.
 //!
-//! The twelve presets are drawn from their shapes in Photoshop's picker, not
-//! from Adobe's own point lists, which are not published. A Photoshop golden
-//! fixes each (LAYER_STYLES_PLAN.md, G3).
+//! The twelve presets are Photoshop's own curves as PhotoCraft measured them
+//! in Photoshop 27.11 (a Satin of each preset against a Linear one, read
+//! back and thinned to within 1 %), straight segments between the points.
+//! PhotoCraft does not use a contour's Anti-aliased box when it renders, and
+//! matches Photoshop's renders without it; neither does this. The flag is
+//! only carried, for the PSD.
+//!
+//! The preset points and the reading of a curve are PhotoCraft's
+//! (`crates/engine/src/layer_style.rs` `CONTOURS`, `crates/compose/src/
+//! adjust/tone.rs` `contour_curve_lut`), Copyright (c) 2026 ArtCraft Team
+//! and the PhotoCraft contributors, MIT licence (see `THIRD_PARTY.md`).
 
 /// A contour as the style states it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
-    /// One of the twelve built-in curves, by its number (`PRESET_NAMES`).
+    /// One of the twelve built-in curves, by its number (`PRESETS`).
     Preset(u32),
     /// Points from 0 to 255 in both directions, in order of `x`. A corner
     /// point breaks the curve there; between corners it is one smooth curve.
@@ -27,21 +35,254 @@ pub struct Point {
     pub corner: bool,
 }
 
-/// The presets' names, in wire order: Photoshop's picker order.
-pub const PRESET_NAMES: [&str; 12] = [
-    "Linear",
-    "Cone",
-    "Cone - Inverted",
-    "Cove - Deep",
-    "Cove - Shallow",
-    "Gaussian",
-    "Half Round",
-    "Ring",
-    "Ring - Double",
-    "Rolling Slope - Descending",
-    "Rounded Steps",
-    "Sawtooth 1",
+/// The presets, in wire order (Photoshop's picker order): a name and the
+/// curve's points, input to output, both 0 to 1, and whether each is a
+/// corner.
+pub const PRESETS: [(&str, &[(f64, f64, bool)]); 12] = [
+    ("Linear", &[(0.0, 0.0, false), (1.0, 1.0, false)]),
+    (
+        "Cone",
+        &[
+            (0.0, 0.0, false),
+            (0.172, 0.477, true),
+            (0.195, 0.555, true),
+            (0.266, 0.711, true),
+            (0.383, 0.922, true),
+            (0.43, 0.969, true),
+            (0.477, 0.992, true),
+            (0.523, 0.992, true),
+            (0.57, 0.969, true),
+            (0.664, 0.859, true),
+            (0.703, 0.789, true),
+            (0.742, 0.711, true),
+            (0.836, 0.477, true),
+            (0.859, 0.398, true),
+            (0.914, 0.266, true),
+            (0.945, 0.156, true),
+            (0.977, 0.078, true),
+            (1.0, 0.0, false),
+        ],
+    ),
+    (
+        "Cone - Inverted",
+        &[
+            (0.0, 1.0, false),
+            (0.031, 0.922, true),
+            (0.07, 0.789, true),
+            (0.172, 0.523, true),
+            (0.195, 0.445, true),
+            (0.266, 0.289, true),
+            (0.383, 0.078, true),
+            (0.43, 0.031, true),
+            (0.477, 0.008, true),
+            (0.523, 0.008, true),
+            (0.57, 0.031, true),
+            (0.664, 0.141, true),
+            (0.703, 0.211, true),
+            (0.742, 0.289, true),
+            (0.836, 0.523, true),
+            (0.859, 0.602, true),
+            (0.914, 0.734, true),
+            (0.945, 0.844, true),
+            (0.977, 0.922, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Cove - Deep",
+        &[
+            (0.0, 0.258, false),
+            (0.344, 0.289, true),
+            (0.383, 0.297, true),
+            (0.477, 0.352, true),
+            (0.57, 0.43, true),
+            (0.617, 0.484, true),
+            (0.664, 0.57, true),
+            (0.703, 0.711, true),
+            (0.742, 0.906, true),
+            (0.773, 1.0, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Cove - Shallow",
+        &[
+            (0.0, 0.0, false),
+            (0.008, 0.164, true),
+            (0.016, 0.477, true),
+            (0.039, 0.508, true),
+            (0.172, 0.57, true),
+            (0.305, 0.688, true),
+            (0.344, 0.734, true),
+            (0.477, 0.945, true),
+            (0.523, 1.0, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Gaussian",
+        &[
+            (0.0, 0.0, false),
+            (0.117, 0.023, true),
+            (0.172, 0.055, true),
+            (0.234, 0.117, true),
+            (0.305, 0.234, true),
+            (0.383, 0.414, true),
+            (0.523, 0.688, true),
+            (0.617, 0.812, true),
+            (0.703, 0.891, true),
+            (0.805, 0.953, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Half Round",
+        &[
+            (0.0, 0.0, false),
+            (0.07, 0.18, true),
+            (0.195, 0.445, true),
+            (0.266, 0.555, true),
+            (0.383, 0.703, true),
+            (0.523, 0.828, true),
+            (0.617, 0.883, true),
+            (0.773, 0.945, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Ring",
+        &[
+            (0.0, 0.0, false),
+            (0.031, 0.078, true),
+            (0.039, 0.117, true),
+            (0.117, 0.383, true),
+            (0.172, 0.609, true),
+            (0.195, 0.734, true),
+            (0.266, 0.953, true),
+            (0.305, 1.0, true),
+            (0.344, 0.992, true),
+            (0.383, 0.922, true),
+            (0.43, 0.805, true),
+            (0.477, 0.641, true),
+            (0.57, 0.281, true),
+            (0.617, 0.141, true),
+            (0.664, 0.055, true),
+            (0.703, 0.016, true),
+            (0.742, 0.016, true),
+            (0.773, 0.062, true),
+            (0.836, 0.234, true),
+            (0.859, 0.344, true),
+            (0.891, 0.445, true),
+            (0.914, 0.547, true),
+            (0.945, 0.734, true),
+            (0.977, 0.875, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Ring - Double",
+        &[
+            (0.0, 0.0, false),
+            (0.055, 0.086, true),
+            (0.094, 0.172, true),
+            (0.117, 0.242, true),
+            (0.172, 0.477, true),
+            (0.195, 0.625, true),
+            (0.266, 0.891, true),
+            (0.305, 0.945, true),
+            (0.344, 0.891, true),
+            (0.383, 0.695, true),
+            (0.43, 0.367, true),
+            (0.477, 0.07, true),
+            (0.523, 0.047, true),
+            (0.57, 0.32, true),
+            (0.617, 0.648, true),
+            (0.664, 0.867, true),
+            (0.703, 0.93, true),
+            (0.742, 0.852, true),
+            (0.773, 0.641, true),
+            (0.805, 0.375, true),
+            (0.836, 0.156, true),
+            (0.859, 0.031, true),
+            (0.891, 0.023, true),
+            (0.914, 0.109, true),
+            (0.977, 0.703, true),
+            (0.984, 0.82, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Rolling Slope - Descending",
+        &[
+            (0.0, 1.0, false),
+            (0.008, 1.0, true),
+            (0.031, 0.93, true),
+            (0.039, 0.883, true),
+            (0.07, 0.758, true),
+            (0.141, 0.539, true),
+            (0.195, 0.406, true),
+            (0.266, 0.352, true),
+            (0.305, 0.352, true),
+            (0.523, 0.57, true),
+            (0.57, 0.602, true),
+            (0.617, 0.617, true),
+            (0.703, 0.602, true),
+            (0.742, 0.562, true),
+            (0.836, 0.391, true),
+            (0.914, 0.211, true),
+            (0.945, 0.109, true),
+            (0.977, 0.039, true),
+            (0.984, 0.008, true),
+            (1.0, 0.0, false),
+        ],
+    ),
+    (
+        "Rounded Steps",
+        &[
+            (0.0, 0.234, false),
+            (0.031, 0.305, true),
+            (0.039, 0.336, true),
+            (0.094, 0.43, true),
+            (0.141, 0.477, true),
+            (0.234, 0.492, true),
+            (0.266, 0.516, true),
+            (0.305, 0.602, true),
+            (0.344, 0.664, true),
+            (0.383, 0.711, true),
+            (0.477, 0.734, true),
+            (0.523, 0.797, true),
+            (0.57, 0.898, true),
+            (0.617, 0.953, true),
+            (0.664, 0.984, true),
+            (0.773, 0.984, true),
+            (0.836, 0.906, true),
+            (0.891, 0.891, true),
+            (0.914, 0.898, true),
+            (1.0, 1.0, false),
+        ],
+    ),
+    (
+        "Sawtooth 1",
+        &[
+            (0.0, 0.0, false),
+            (0.031, 0.047, true),
+            (0.195, 0.375, true),
+            (0.266, 0.492, true),
+            (0.477, 0.047, true),
+            (0.523, 0.055, true),
+            (0.742, 0.469, true),
+            (0.773, 0.445, true),
+            (0.914, 0.18, true),
+            (0.945, 0.102, true),
+            (1.0, 0.0, false),
+        ],
+    ),
 ];
+
+/// The presets' names, in wire order.
+pub fn preset_name(n: u32) -> Option<&'static str> {
+    PRESETS.get(n as usize).map(|p| p.0)
+}
 
 /// Most points a custom curve may have. Photoshop's curve editor stops at 16.
 pub const MAX_POINTS: usize = 64;
@@ -61,32 +302,26 @@ impl Lut {
     }
 
     /// `curve` baked.
-    ///
-    /// `aa` is Photoshop's Anti-aliased box: off, the curve is read at a
-    /// hundred steps only, so a curve that turns sharply shows bands as
-    /// Photoshop's does; on, at every level. `edge_hidden` is for an effect
-    /// that lies outside the letters (a drop shadow, an outer glow): the
-    /// curve is faded to nothing over the last tenth of the matte, so a curve
-    /// that is high at 0 does not flood the whole surface.
-    pub fn new(curve: &Curve, aa: bool, edge_hidden: bool) -> Self {
-        let f = |t: f64| -> f64 {
-            match curve {
-                Curve::Preset(n) => preset(*n, t),
-                Curve::Points(pts) => through(pts, t),
+    pub fn new(curve: &Curve) -> Self {
+        let preset;
+        let pts: &[Point] = match curve {
+            Curve::Preset(n) => {
+                let p = PRESETS.get(*n as usize).unwrap_or(&PRESETS[0]).1;
+                preset = p
+                    .iter()
+                    .map(|&(x, y, corner)| Point {
+                        x: x * 255.0,
+                        y: y * 255.0,
+                        corner,
+                    })
+                    .collect::<Vec<_>>();
+                &preset
             }
+            Curve::Points(pts) => pts,
         };
         let mut out = [0u8; 256];
         for (i, v) in out.iter_mut().enumerate() {
-            let at = if aa {
-                i as f64
-            } else {
-                // A hundred steps across 0..255.
-                ((i as f64 / 2.55).floor() * 2.55).round()
-            };
-            let mut y = f(at / 255.0).clamp(0.0, 1.0);
-            if edge_hidden {
-                y *= (i as f64 / EDGE_RAMP).min(1.0);
-            }
+            let y = through(pts, i as f64 / 255.0).clamp(0.0, 1.0);
             *v = (y * 255.0).round() as u8;
         }
         Lut(out)
@@ -102,9 +337,6 @@ impl Lut {
     }
 }
 
-/// How many matte levels the edge fade of an outer effect spans.
-const EDGE_RAMP: f64 = 23.0;
-
 /// Photoshop's Range (glows and the bevel's contour): the curve is laid over
 /// the inner `range` percent of the matte, so a smaller range pulls the whole
 /// curve towards the far edge.
@@ -114,51 +346,6 @@ pub fn range(v: u8, range: f64) -> u8 {
     }
     let r = range.max(1.0);
     (f64::from(v) * 100.0 / r).min(255.0) as u8
-}
-
-fn smoothstep(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// Preset number `n` at `t`, both 0..1. Past the last preset, Linear.
-fn preset(n: u32, t: f64) -> f64 {
-    use core::f64::consts::PI;
-    match n {
-        // Cone: up to full at the middle, down again, a sharp peak.
-        1 => 1.0 - (2.0 * t - 1.0).abs(),
-        2 => (2.0 * t - 1.0).abs(),
-        // Coves: hollow, the deep one far more.
-        3 => t.powf(3.0),
-        4 => t.powf(1.6),
-        // An S: slow at both ends.
-        5 => smoothstep(smoothstep(t)),
-        // A quarter circle, bulging up.
-        6 => (1.0 - (1.0 - t) * (1.0 - t)).max(0.0).sqrt(),
-        // A rounded hump, and two.
-        7 => (PI * t).sin().powi(2),
-        8 => (2.0 * PI * t).sin().powi(2),
-        // Falls from full to none in two rolls.
-        9 => {
-            let base = 1.0 - t;
-            (base + 0.12 * (3.0 * PI * t).sin()).clamp(0.0, 1.0)
-        }
-        // Four flat levels joined by smooth steps.
-        10 => {
-            let k = t * 4.0;
-            if k >= 4.0 {
-                return 1.0;
-            }
-            let step = k.floor();
-            (step + smoothstep((k - step - 0.75) / 0.25)) / 4.0
-        }
-        // Two teeth: up, drop, up.
-        11 => {
-            let k = (t * 2.0).min(1.999_999);
-            k - k.floor()
-        }
-        _ => t,
-    }
 }
 
 /// A curve through `pts` (0..255) at `t` (0..1): straight before the first
@@ -232,40 +419,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn linear_with_aa_is_identity() {
-        assert!(Lut::new(&Curve::Preset(0), true, false).is_identity());
+    fn linear_is_identity() {
+        assert!(Lut::new(&Curve::Preset(0)).is_identity());
         assert!(Lut::identity().is_identity());
     }
 
     #[test]
-    fn linear_without_aa_steps() {
-        let l = Lut::new(&Curve::Preset(0), false, false);
-        assert!(!l.is_identity());
-        // A hundred levels at most.
-        let mut levels: Vec<u8> = l.0.to_vec();
-        levels.dedup();
-        assert!(levels.len() <= 101, "{}", levels.len());
-    }
-
-    #[test]
-    fn every_preset_starts_and_ends_in_range() {
-        for n in 0..PRESET_NAMES.len() as u32 {
-            for i in 0..=100 {
-                let y = preset(n, f64::from(i) / 100.0);
-                assert!((0.0..=1.0 + 1e-9).contains(&y), "preset {n} at {i}: {y}");
-            }
+    fn every_preset_runs_from_0_to_1_and_stays_in_range() {
+        for (name, pts) in PRESETS {
+            assert!(pts.len() >= 2, "{name}");
+            assert_eq!(pts[0].0, 0.0, "{name}");
+            assert_eq!(pts[pts.len() - 1].0, 1.0, "{name}");
+            assert!(pts.windows(2).all(|w| w[0].0 < w[1].0), "{name}");
+            assert!(pts.iter().all(|p| (0.0..=1.0).contains(&p.1)), "{name}");
         }
-        assert!((preset(1, 0.5) - 1.0).abs() < 1e-9);
-        assert!(preset(2, 0.5).abs() < 1e-9);
-        assert!((preset(6, 1.0) - 1.0).abs() < 1e-9);
+        assert_eq!(preset_name(2), Some("Cone - Inverted"));
+        assert_eq!(preset_name(12), None);
     }
 
     #[test]
-    fn edge_hidden_fades_the_far_edge() {
-        let inv = Lut::new(&Curve::Preset(2), true, true);
-        assert_eq!(inv.apply(0), 0);
-        assert!(inv.apply(10) < 128);
-        assert_eq!(inv.apply(255), 255);
+    fn presets_read_as_their_points() {
+        // Cone peaks in the middle and is 0 at both ends; Cone - Inverted the
+        // reverse.
+        let cone = Lut::new(&Curve::Preset(1));
+        assert_eq!(cone.apply(0), 0);
+        assert!(cone.apply(128) > 250);
+        assert_eq!(cone.apply(255), 0);
+        let inverted = Lut::new(&Curve::Preset(2));
+        assert_eq!(inverted.apply(0), 255);
+        assert!(inverted.apply(128) < 5);
+        // Between two points, straight.
+        let half = Lut::new(&Curve::Preset(6));
+        let (a, b) = (PRESETS[6].1[1], PRESETS[6].1[2]);
+        let mid = (a.0 + b.0) / 2.0;
+        let want = (a.1 + b.1) / 2.0 * 255.0;
+        assert!((f64::from(half.apply((mid * 255.0).round() as u8)) - want).abs() <= 2.0);
     }
 
     #[test]
@@ -276,7 +464,7 @@ mod tests {
             p(128.0, 200.0, false),
             p(255.0, 255.0, false),
         ];
-        let l = Lut::new(&Curve::Points(smooth), true, false);
+        let l = Lut::new(&Curve::Points(smooth));
         assert_eq!(l.apply(0), 0);
         assert!((i32::from(l.apply(128)) - 200).abs() <= 1);
         assert_eq!(l.apply(255), 255);
@@ -286,7 +474,7 @@ mod tests {
             p(128.0, 255.0, true),
             p(255.0, 0.0, false),
         ];
-        let l = Lut::new(&Curve::Points(cone), true, false);
+        let l = Lut::new(&Curve::Points(cone));
         assert!((i32::from(l.apply(64)) - 128).abs() <= 1);
     }
 

@@ -2,9 +2,9 @@
 //!
 //! Felzenszwalb and Huttenlocher, "Distance Transforms of Sampled Functions"
 //! (2012): the squared distance to the nearest inked pixel, a row at a time
-//! and then a column at a time, each pass linear in its length. Photoshop's
-//! Spread and Choke grow a matte by a distance, and its Precise technique
-//! measures one; both are this.
+//! and then a column at a time, each pass linear in its length: what a
+//! Precise glow and a chiselled bevel measure. Spread and Choke grow a matte
+//! by the cheaper 5 x 5 chamfer instead ([`dilate`]), as Photoshop does.
 
 use super::super::budget;
 use crate::Error;
@@ -98,29 +98,87 @@ pub fn squared(inside: &[bool], width: usize, height: usize) -> Result<budget::B
     Ok(out)
 }
 
-/// Grows a matte by `by` pixels: the edge of its inside (the pixels half
-/// covered or more) moves out by `by`, and a pixel the new edge crosses is
-/// covered by the share of it inside. The matte only gains.
-pub fn grow(alpha: &mut [u8], width: usize, height: usize, by: f64) -> Result<(), Error> {
-    if by <= 0.0 || width == 0 || height == 0 {
+/// Photoshop's Spread and Choke: a matte grown by `by` pixels with the 5 x 5
+/// chamfer metric, keeping its soft edge. A partly covered pixel grows by
+/// `by` from its own coverage, so a small spread does not make every
+/// anti-aliased edge pixel solid; a pixel outside takes `by + 0.5` less its
+/// distance to the edge, which starts inside the nearest inked pixel by its
+/// coverage.
+///
+/// Photoshop's spread of a drop shadow round an ellipse is round at 0 and 45
+/// degrees and falls short between, as the chamfer does; an exact Euclidean
+/// grow is 5 levels lighter there, the chamfer within 2.
+///
+/// Ported from PhotoCraft, `crates/compose/src/effects/blur.rs` (`dilate`)
+/// and `distance.rs` (`chamfer_from`, `dist_outside_by`), Copyright (c) 2026
+/// ArtCraft Team and the PhotoCraft contributors, MIT licence (see
+/// `THIRD_PARTY.md`). Changed: 8-bit mattes, no nearest-seed index.
+pub fn dilate(alpha: &mut [u8], width: usize, height: usize, by: f64) -> Result<(), Error> {
+    if by.is_nan() || by <= 0.0 || width == 0 || height == 0 {
         return Ok(());
     }
-    let inside = budget::collect(alpha.iter().map(|&a| Ok(a >= 128)))?;
-    let d2 = squared(&inside, width, height)?;
-    // An inside pixel's edge is half a pixel from its centre, and a pixel
-    // `d` away spans `d - 0.5` to `d + 0.5`.
-    let reach = by as f32 + 1.0;
-    for (a, d2) in alpha.iter_mut().zip(d2.iter()) {
-        if *d2 >= FAR {
-            continue;
-        }
-        let cover = (reach - d2.sqrt()).clamp(0.0, 1.0);
-        let v = (cover * 255.0 + 0.5) as u8;
-        if v > *a {
-            *a = v;
+    let by = by as f32;
+    let mut d = budget::filled(width * height, FAR)?;
+    for (d, &a) in d.iter_mut().zip(alpha.iter()) {
+        if a > 0 {
+            *d = 1.0 - f32::from(a) / 255.0;
         }
     }
+    chamfer(&mut d, width, height);
+    for (o, &d) in alpha.iter_mut().zip(d.iter()) {
+        let a = f32::from(*o) / 255.0;
+        let v = if *o > 0 {
+            (a + by).min(1.0)
+        } else {
+            (by + 0.5 - (d - 0.5)).clamp(0.0, 1.0)
+        };
+        *o = (v * 255.0 + 0.5) as u8;
+    }
     Ok(())
+}
+
+/// The 5 x 5 chamfer distance from the seeds of `d` (a start value; [`FAR`]
+/// is no seed): two raster passes, each pixel taking the least of its own
+/// and a visited neighbour's plus the step to it.
+fn chamfer(d: &mut [f32], width: usize, height: usize) {
+    const S2: f32 = core::f32::consts::SQRT_2;
+    const S5: f32 = 2.236_068;
+    const FWD: [(i64, i64, f32); 8] = [
+        (-1, 0, 1.0),
+        (-1, -1, S2),
+        (0, -1, 1.0),
+        (1, -1, S2),
+        (-1, -2, S5),
+        (1, -2, S5),
+        (-2, -1, S5),
+        (2, -1, S5),
+    ];
+    let (w, h) = (width as i64, height as i64);
+    let mut relax = |x: i64, y: i64, sign: i64| {
+        let i = (y * w + x) as usize;
+        let mut best = d[i];
+        for &(ox, oy, step) in &FWD {
+            let (nx, ny) = (x + ox * sign, y + oy * sign);
+            if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                continue;
+            }
+            let c = d[(ny * w + nx) as usize] + step;
+            if c < best {
+                best = c;
+            }
+        }
+        d[i] = best;
+    };
+    for y in 0..h {
+        for x in 0..w {
+            relax(x, y, 1);
+        }
+    }
+    for y in (0..h).rev() {
+        for x in (0..w).rev() {
+            relax(x, y, -1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -163,14 +221,20 @@ mod tests {
     }
 
     #[test]
-    fn grow_reaches_as_far_as_asked() {
-        let (w, h) = (21, 1);
-        let mut a = vec![0u8; w];
-        a[10] = 255;
-        grow(&mut a, w, h, 3.5).unwrap();
-        assert_eq!(a[13], 255);
-        assert_eq!(a[7], 255);
-        assert!(a[14] > 0 && a[14] < 255);
-        assert_eq!(a[15], 0);
+    fn a_chamfer_dilate_grows_by_whole_pixels_and_keeps_partial_edges() {
+        let (w, h) = (21, 21);
+        let mut a = vec![0u8; w * h];
+        a[10 * w + 10] = 255;
+        a[10 * w + 11] = 64;
+        dilate(&mut a, w, h, 3.0).unwrap();
+        // Straight out, three pixels and the half of the edge.
+        assert_eq!(a[10 * w + 7], 255);
+        assert_eq!(a[10 * w + 5], 0);
+        // A quarter-covered pixel grows by its own coverage, to full.
+        assert_eq!(a[10 * w + 11], 255);
+        let mut b = vec![0u8; w * h];
+        b[10 * w + 10] = 64;
+        dilate(&mut b, w, h, 0.25).unwrap();
+        assert_eq!(b[10 * w + 10], 128);
     }
 }

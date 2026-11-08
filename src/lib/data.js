@@ -619,9 +619,10 @@ export function normalizeContour(c) {
 }
 
 // What a canvas shadow's `blur` (twice a gaussian's sigma) is as Photoshop's
-// Size, whose sigma is `0.3 * size + 0.3` (`size_sigma` in fx/mod.rs): how a
-// shadow saved before Size existed keeps its softness.
-const sizeFromBlur = (blur) => (blur > 0 ? Math.max(0, Math.round(((blur / 2 - 0.3) / 0.3) * 100) / 100) : 0);
+// Size, whose tent blurs about as much as a gaussian of `0.4 * size`
+// (`shadowSigma`): how a shadow saved before Size existed keeps its softness.
+// The old default blur of 4 is Photoshop's default Size of 5.
+const sizeFromBlur = (blur) => (blur > 0 ? Math.round(blur * 125) / 100 : 0);
 const num = (v, d) => (Number.isFinite(+v) ? +v : d);
 // Exactly the lengths CSS reads as hex: 3/4-digit shorthand and 6/8-digit full
 // forms. A 5- or 7-digit string is a typo mid-edit, not a colour - accepting it
