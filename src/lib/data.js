@@ -771,8 +771,12 @@ export function normalizeShadow(x) {
 export const SHADOW_SIZE_MAX = 250;
 export const SHADOW_DISTANCE_MAX = 30000;
 // A shadow as Photoshop adds one: Multiply, 75%, the chapter's light, 5 away,
-// size 5, knocked out by the letters.
+// size 5, knocked out by the letters; or the person's own default for one
+// (`fxDefault`, Make Default), thrown from the same light.
 export function newShadow(light = { angle: 120 }) {
+  return newFx('dropShadow', light);
+}
+function factoryShadow(light = { angle: 120 }) {
   const a = (light.angle * Math.PI) / 180;
   const r2 = (v) => Math.round(v * 100) / 100;
   return normalizeShadow({
@@ -831,9 +835,12 @@ export function normalizeInnerShadow(x) {
   return { ...sh, choke: Math.min(1, Math.max(0, num(x?.choke, 0))) };
 }
 // One as Photoshop adds it: Multiply, black, 75 %, the chapter's light, 5
-// away, size 5.
+// away, size 5 (or the person's default, `fxDefault`).
 export function newInnerShadow(light = { angle: 120 }) {
-  const { knockout, ...sh } = newShadow(light);
+  return newFx('innerShadow', light);
+}
+function factoryInnerShadow(light) {
+  const { knockout, ...sh } = factoryShadow(light);
   return normalizeInnerShadow(sh);
 }
 // A Color Overlay: a flat colour over the letters' fill, in its own mode.
@@ -844,9 +851,9 @@ export function normalizeOverlay(x) {
     blend: blendMode(x?.blend, 'normal'),
   };
 }
-// Photoshop's new one: Normal, red, 100 %.
+// Photoshop's new one: Normal, red, 100 % (or the person's default).
 export function newOverlay() {
-  return normalizeOverlay({});
+  return newFx('colorOverlay');
 }
 
 // An effect gradient, as Photoshop's Gradient Overlay, a gradient Stroke and
@@ -936,9 +943,10 @@ export function normalizeGradientOverlay(x) {
     gradient: normalizeFxGradient(x?.gradient),
   };
 }
-// Photoshop's new one: Normal, 100 %, black to white at 90 degrees.
+// Photoshop's new one: Normal, 100 %, black to white at 90 degrees (or the
+// person's default).
 export function newGradientOverlay() {
-  return normalizeGradientOverlay({});
+  return newFx('gradientOverlay');
 }
 // The Pattern Overlay: one of the fill's own patterns (`normalizePattern`)
 // over the letters' fill, in its own mode. Its tile follows the box's size
@@ -1103,7 +1111,166 @@ export function normalizeStrokeEffect(x) {
   };
 }
 export function newStrokeEffect() {
-  return normalizeStrokeEffect({});
+  return newFx('strokeEffect');
+}
+
+// ===== Make Default / Reset to Default (LAYER_STYLES_PLAN.md item 12) =====
+// Photoshop keeps, for each effect, the values a new one starts from: "Make
+// Default" saves an effect's settings as that default, "Reset to Default"
+// puts an effect back to it, and the built-in values (the factory) stay under
+// both. Ours are per app, the person's, as Photoshop's are: `prefs.svelte.js`
+// holds them (`prefs.fxDefaults`) and mirrors them here with `setFxDefaults`,
+// the way `setBoxDefaults` works, because this module imports nothing.
+//
+// A default decides what Add (and switching on an effect never edited) and
+// Reset give. It changes no stored box: a stored effect is whole. A new box
+// still inherits the last box's effects (`app.lastStyle`).
+//
+// The stored form is the effect as its normaliser returns it, minus what
+// belongs to one instance: `on`, the random seeds (`gradient.noise.seed`,
+// a pattern's `seed`) and a tile picked from a page (`src`, `cell`). A
+// shadow keeps its distance, its Use Global Light and, off the light, its own
+// angle, never its x and y: those would freeze one chapter's light into the
+// default.
+export const FX_KINDS = ['dropShadow', 'innerShadow', 'outerGlow', 'innerGlow', 'colorOverlay', 'gradientOverlay', 'patternOverlay', 'strokeEffect', 'satin', 'bevel', 'blending'];
+// The effects a style has one of, each with its own switch (`on`).
+const FX_SINGLE = ['outerGlow', 'innerGlow', 'patternOverlay', 'satin', 'bevel'];
+const fxDefaults = {};
+
+const wrapAngle = (a) => Math.round((Math.abs(a) <= 180 ? a : (((a % 360) + 540) % 360) - 180) * 100) / 100;
+const round2 = (v) => Math.round(v * 100) / 100 || 0;
+
+// The built-in effect of a kind, as a new one is made: a shadow thrown from
+// `light`.
+function factoryFx(kind, light) {
+  switch (kind) {
+    case 'dropShadow': return factoryShadow(light);
+    case 'innerShadow': return factoryInnerShadow(light);
+    default: return normalizeFxKind(kind, {});
+  }
+}
+
+// Every kind but the two shadows, through its own normaliser.
+function normalizeFxKind(kind, x) {
+  switch (kind) {
+    case 'outerGlow': return normalizeGlow(x, false);
+    case 'innerGlow': return normalizeGlow(x, true);
+    case 'colorOverlay': return normalizeOverlay(x);
+    case 'gradientOverlay': return normalizeGradientOverlay(x);
+    case 'patternOverlay': return normalizePatternOverlay(x);
+    case 'strokeEffect': return normalizeStrokeEffect(x);
+    case 'satin': return normalizeSatin(x);
+    case 'bevel': return normalizeBevel(x);
+    case 'blending': return normalizeBlending(x);
+    default: return null;
+  }
+}
+
+// Where an effect keeps its gradients and patterns, for the seeds and picked
+// tiles that are the instance's own.
+const fxGradients = (kind, fx) => (kind === 'outerGlow' || kind === 'innerGlow' || kind === 'gradientOverlay' || kind === 'strokeEffect' ? [fx.gradient] : []).filter(Boolean);
+const fxPatterns = (kind, fx) => (kind === 'patternOverlay' || kind === 'strokeEffect' ? [fx.pattern] : kind === 'bevel' ? [fx.texture?.pattern] : []).filter(Boolean);
+
+/**
+ * An effect (an instance, or a default as stored) in the stored form, or null
+ * when it is not an effect of that kind at all. Anything unreadable in it
+ * takes the factory value, as the normalisers do.
+ */
+export function fxStored(kind, x) {
+  if (!FX_KINDS.includes(kind) || !x || typeof x !== 'object' || Array.isArray(x)) return null;
+  try {
+    if (kind === 'dropShadow' || kind === 'innerShadow') {
+      const sh = kind === 'dropShadow' ? normalizeShadow(x) : normalizeInnerShadow(x);
+      // A stored default says its distance (and angle); an instance its x, y.
+      const stored = Number.isFinite(+x.distance) && x.distance !== null && x.distance !== '';
+      const distance = Math.min(SHADOW_DISTANCE_MAX, Math.max(0, stored ? +x.distance : Math.hypot(sh.x, sh.y)));
+      const own = stored ? num(x.angle, LIGHT_DEF.angle) : sh.x || sh.y ? (Math.atan2(sh.y, -sh.x) * 180) / Math.PI : LIGHT_DEF.angle;
+      const { x: _x, y: _y, ...rest } = sh;
+      return { ...rest, distance: round2(distance), ...(rest.useGlobalLight ? null : { angle: wrapAngle(own) }) };
+    }
+    const fx = normalizeFxKind(kind, x);
+    if (FX_SINGLE.includes(kind)) delete fx.on;
+    for (const g of fxGradients(kind, fx)) delete g.noise.seed;
+    for (const p of fxPatterns(kind, fx)) {
+      delete p.seed;
+      if (p.kind === 'picked') p.kind = defaultPattern().kind;
+      delete p.src;
+      delete p.cell;
+    }
+    return fx;
+  } catch {
+    return null;
+  }
+}
+
+// An instance from a stored default: a shadow thrown from `light` when it is
+// on the Global Light, else from its own angle.
+function fxFromStored(kind, d, light) {
+  if (kind === 'dropShadow' || kind === 'innerShadow') {
+    const { distance, angle, ...rest } = d;
+    const a = rest.useGlobalLight ? num(light?.angle, LIGHT_DEF.angle) : num(angle, LIGHT_DEF.angle);
+    const r = (a * Math.PI) / 180;
+    const off = { x: round2(-Math.cos(r) * distance), y: round2(Math.sin(r) * distance) };
+    return kind === 'dropShadow' ? normalizeShadow({ ...rest, ...off }) : normalizeInnerShadow({ ...rest, ...off });
+  }
+  return normalizeFxKind(kind, d);
+}
+
+/** Every kind's stored default from what was handed in (a stored blob, say); kinds that are not readable are left out. */
+export function normalizeFxDefaults(x) {
+  const out = {};
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return out;
+  for (const k of FX_KINDS) {
+    const v = fxStored(k, x[k]);
+    if (v) out[k] = v;
+  }
+  return out;
+}
+
+/** The person's effect defaults, from prefs.svelte.js: the whole set, replacing the last. */
+export function setFxDefaults(next) {
+  const clean = normalizeFxDefaults(next);
+  for (const k of FX_KINDS) {
+    if (clean[k]) fxDefaults[k] = clean[k];
+    else delete fxDefaults[k];
+  }
+}
+
+/** A new effect of `kind` from the person's default (a shadow thrown from `light`), or null when there is none. */
+export function fxDefault(kind, light = LIGHT_DEF) {
+  const d = fxDefaults[kind];
+  return d ? fxFromStored(kind, structuredClone(d), light) : null;
+}
+
+/** A new effect of `kind`: the person's default, else the factory's. */
+export function newFx(kind, light = LIGHT_DEF) {
+  return fxDefault(kind, light) ?? factoryFx(kind, light);
+}
+
+/**
+ * Reset to Default (or, `factory`, to the built-in values): the values for
+ * `inst`, a plain object to assign over it. Its switch and its seeds stay
+ * its own.
+ */
+export function fxReset(kind, inst, light = LIGHT_DEF, factory = false) {
+  const next = factory ? factoryFx(kind, light) : newFx(kind, light);
+  if (!next) return null;
+  if (FX_SINGLE.includes(kind)) next.on = inst?.on === true;
+  const ga = fxGradients(kind, inst ?? {});
+  fxGradients(kind, next).forEach((g, i) => {
+    if (Number.isFinite(ga[i]?.noise?.seed)) g.noise.seed = ga[i].noise.seed;
+  });
+  const pa = fxPatterns(kind, inst ?? {});
+  fxPatterns(kind, next).forEach((p, i) => {
+    if (Number.isFinite(pa[i]?.seed)) p.seed = pa[i].seed;
+  });
+  return next;
+}
+
+/** Whether a one-of effect still has the factory's values (its switch and seeds aside): never edited. */
+export function fxUntouched(kind, inst) {
+  const a = fxStored(kind, inst);
+  return !!a && JSON.stringify(a) === JSON.stringify(fxStored(kind, factoryFx(kind)));
 }
 // One hand-drawn brush stroke, sanitised. Returns null for a stroke that
 // cannot be drawn at all - no points, or a size of zero - because a stroke

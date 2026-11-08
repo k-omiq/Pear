@@ -71,7 +71,12 @@
     BEVEL_SOFTEN_MAX,
     BLEND_IF_CHANNELS,
     BLEND_RANGE_FULL,
+    fxDefault,
+    fxReset,
+    fxUntouched,
   } from './data.js';
+  import FxMenu from './FxMenu.svelte';
+  import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
   import { layoutShape } from './balloon.js';
   import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
@@ -804,6 +809,39 @@
     touch();
   }
 
+  // ---- Make Default / Reset to Default (LAYER_STYLES_PLAN.md item 12) ----
+  // Each effect's "…" menu (FxMenu). Make Default saves a copy for the
+  // person (prefs.svelte.js strips what is this instance's own); Reset puts
+  // the saved default (or the factory's) back over the effect, keeping its
+  // switch and seeds, as ONE undo step: the burst before it is closed, the box
+  // as it is now is the step's start, and the step is closed straight after.
+  function fxPick(kind, fx, name, id) {
+    if (!box || !fx) return;
+    if (id === 'make') {
+      setFxDefault(kind, $state.snapshot(fx));
+      toast(`${name}: saved as the default.`);
+      return;
+    }
+    if (id === 'factory') clearFxDefault(kind);
+    const next = fxReset(kind, $state.snapshot(fx), app.typesetting.light ?? LIGHT_DEF, id === 'factory');
+    if (!next) return;
+    settle();
+    armSnap();
+    Object.assign(fx, next);
+    touch();
+    settle();
+  }
+  // Switching on a one-of effect (a glow, the Satin, the Bevel, the Pattern
+  // Overlay) that was never edited is Photoshop's Add: it starts from the
+  // person's default when there is one.
+  function switchFx(kind, fx) {
+    if (!fx.on && fxDefault(kind) && fxUntouched(kind, $state.snapshot(fx))) {
+      Object.assign(fx, fxReset(kind, $state.snapshot(fx), app.typesetting.light ?? LIGHT_DEF));
+    }
+    fx.on = !fx.on;
+    touch();
+  }
+
   // ---- shadows ----
   // Photoshop's Drop Shadow: a new one is Photoshop's, on the chapter's light.
   function addShadow() {
@@ -1115,7 +1153,7 @@
   {@const name = inner ? 'Inner shadow' : 'Shadow'}
   <div class="insp-list k-shadow">
     {#if list.length}
-      <div class="insp-cap"><span></span><span>Angle</span><span>Dist</span><span>Size</span><span>Op %</span><span></span></div>
+      <div class="insp-cap"><span></span><span>Angle</span><span>Dist</span><span>Size</span><span>Op %</span><span></span><span></span></div>
     {/if}
     {#each list as sh, i (sh)}
       <!-- The Global Light is read here so a turn of it shows. -->
@@ -1127,6 +1165,7 @@
         <input type="number" min="0" max={SHADOW_DISTANCE_MAX} step="1" value={Math.round(shadowDistance(sh) * 100) / 100} aria-label="{name} {i + 1} distance" title="Distance, page px" onchange={(e) => setShadowDistance(sh, e)} />
         <input type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={sh.size} aria-label="{name} {i + 1} size" title="Size: how far the soft edge reaches, page px" onchange={(e) => commitNum(sh, 'size', e, 0, SHADOW_SIZE_MAX)} />
         <input type="number" min="0" max="100" step="1" value={pct(sh.opacity)} aria-label="{name} {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(sh, 'opacity', e.target.value)} />
+        <FxMenu kind={inner ? 'innerShadow' : 'dropShadow'} name="{name} {i + 1}" onpick={(id) => fxPick(inner ? 'innerShadow' : 'dropShadow', sh, `${name} ${i + 1}`, id)} />
         {@render rmBtn(`${name.toLowerCase()} ${i + 1}`, () => (inner ? removeInnerShadow(i) : removeShadow(i)))}
       </div>
       <div class="sh-more">
@@ -1187,9 +1226,10 @@
       role="switch"
       aria-checked={g.on}
       aria-label={title}
-      onclick={() => { g.on = !g.on; touch(); }}
+      onclick={() => switchFx(inner ? 'innerGlow' : 'outerGlow', g)}
     ><span class="knob"></span></button>
     <span class="lbl2">{title}</span>
+    <span class="fx-menu-end"><FxMenu kind={inner ? 'innerGlow' : 'outerGlow'} name={title} onpick={(id) => fxPick(inner ? 'innerGlow' : 'outerGlow', g, title, id)} /></span>
   </div>
   <div class="insp-sub-body" class:disabled={!g.on} style="padding:0;border:none;gap:11px">
     <div class="grp">
@@ -1285,9 +1325,10 @@
       role="switch"
       aria-checked={sa.on}
       aria-label="Satin"
-      onclick={() => { sa.on = !sa.on; touch(); }}
+      onclick={() => switchFx('satin', sa)}
     ><span class="knob"></span></button>
     <span class="lbl2">Satin</span>
+    <span class="fx-menu-end"><FxMenu kind="satin" name="Satin" onpick={(id) => fxPick('satin', sa, 'Satin', id)} /></span>
   </div>
   <div class="insp-sub-body" class:disabled={!sa.on} style="padding:0;border:none;gap:11px">
     <div class="sh-more" style="margin:0">
@@ -1371,9 +1412,10 @@
       role="switch"
       aria-checked={bv.on}
       aria-label="Bevel & Emboss"
-      onclick={() => { bv.on = !bv.on; touch(); }}
+      onclick={() => switchFx('bevel', bv)}
     ><span class="knob"></span></button>
     <span class="lbl2">Bevel & Emboss</span>
+    <span class="fx-menu-end"><FxMenu kind="bevel" name="Bevel & Emboss" onpick={(id) => fxPick('bevel', bv, 'Bevel & Emboss', id)} /></span>
   </div>
   <div class="insp-sub-body" class:disabled={!bv.on} style="padding:0;border:none;gap:11px">
     {@render secHead('Structure')}
@@ -1513,6 +1555,7 @@
           <input type="number" min="0" max="100" step="1" value={pct(bv.contour.range)} disabled={!bv.on} aria-label="Bevel contour range, percent" onchange={(e) => commitAlpha(bv.contour, 'range', e)} />
         </label>
       </div>
+      <p class="nofill-note">In a PSD this curve is not written (Photoshop shows Linear); Range and Anti-aliased are.</p>
     {/if}
 
     <div class="switch-row">
@@ -1682,7 +1725,10 @@
   <div class="fx-block">
     <div class="fx-head">
       <span class="lbl">Stroke {i + 1}</span>
-      {@render rmBtn(name.toLowerCase(), () => removeStrokeEffect(i))}
+      <span class="fx-head-end">
+        <FxMenu kind="strokeEffect" name={name} onpick={(id) => fxPick('strokeEffect', k, name, id)} />
+        {@render rmBtn(name.toLowerCase(), () => removeStrokeEffect(i))}
+      </span>
     </div>
     <div class="sh-more" style="margin:0">
       <label class="sh-num" title="Size, page px">
@@ -2056,6 +2102,7 @@
                     {/each}
                   </select>
                   <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Overlay {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(o, 'opacity', e.target.value)} />
+                  <FxMenu kind="colorOverlay" name="Overlay {i + 1}" onpick={(id) => fxPick('colorOverlay', o, `Overlay ${i + 1}`, id)} />
                   {@render rmBtn(`overlay ${i + 1}`, () => removeOverlay(i))}
                 </div>
               {/each}
@@ -2074,13 +2121,14 @@
             {/if}
             {#each s.gradientOverlays as o, i (o)}
               <div class="fx-block">
-                <div class="insp-row k-goverlay">
+                <div class="insp-row k-fxrow">
                   <select value={o.blend} aria-label="Gradient overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
                     {#each LAYER_BLEND_MODES as m (m)}
                       <option value={m}>{blendLabel(m)}</option>
                     {/each}
                   </select>
                   <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Gradient overlay {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(o, 'opacity', e.target.value)} />
+                  <FxMenu kind="gradientOverlay" name="Gradient overlay {i + 1}" onpick={(id) => fxPick('gradientOverlay', o, `Gradient overlay ${i + 1}`, id)} />
                   {@render rmBtn(`gradient overlay ${i + 1}`, () => removeGradientOverlay(i))}
                 </div>
                 {@render fxGradientControls(o.gradient, `Gradient overlay ${i + 1}`)}
@@ -2100,9 +2148,10 @@
               role="switch"
               aria-checked={po.on}
               aria-label="Pattern overlay"
-              onclick={() => { po.on = !po.on; touch(); }}
+              onclick={() => switchFx('patternOverlay', po)}
             ><span class="knob"></span></button>
             <span class="lbl2">Pattern overlay</span>
+            <span class="fx-menu-end"><FxMenu kind="patternOverlay" name="Pattern overlay" onpick={(id) => fxPick('patternOverlay', po, 'Pattern overlay', id)} /></span>
           </div>
           {#if po.on}
             <div class="fx-block">
@@ -2404,7 +2453,10 @@
              and Blend Interior Effects as Group. The Rust engine paints them
              (LAYER_STYLES_PLAN.md phase 6a). -->
         <div class="grp">
-          <span class="lbl" title="How the box mixes with the page art under it">Blend mode</span>
+          <div class="fx-head">
+            <span class="lbl" title="How the box mixes with the page art under it">Blend mode</span>
+            <FxMenu kind="blending" name="Blending options" onpick={(id) => fxPick('blending', s.blending, 'Blending options', id)} />
+          </div>
           {#if rustBoxes}
             <select value={s.blendMode} aria-label="Box blend mode" title="Blend mode" onchange={(e) => { s.blendMode = e.target.value; touch(); }}>
               {#each LAYER_BLEND_MODES as m (m)}

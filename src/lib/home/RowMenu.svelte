@@ -8,11 +8,12 @@
   // same menu opens at the pointer on a right-click: the row calls `openAt`.
   // It is drawn `position: fixed` so no scrolling ancestor clips it.
   //
-  // `items`: { id, label, danger?, disabled?, separator? }. `onpick(id)` runs
-  // after the menu closes.
+  // `items`: { id, label, title?, danger?, disabled?, separator? }. `onpick(id)`
+  // runs after the menu closes. `compact` draws the trigger at the size of the
+  // Inspector's row buttons (the effects' Make Default menu).
   import { tick } from 'svelte';
 
-  let { items, label, onpick } = $props();
+  let { items, label, onpick, compact = false } = $props();
 
   let trigger = $state(null);
   let menuEl = $state(null);
@@ -94,6 +95,7 @@
 <button
   bind:this={trigger}
   class="row-menu-btn"
+  class:compact
   class:open={!!at}
   aria-label={label}
   aria-haspopup="menu"
@@ -110,7 +112,7 @@
       {#if it.separator}
         <div class="row-menu-sep" role="separator"></div>
       {:else}
-        <button role="menuitem" class="row-menu-item" class:danger={it.danger} disabled={it.disabled} onclick={() => pick(it)}>{it.label}</button>
+        <button role="menuitem" class="row-menu-item" class:danger={it.danger} disabled={it.disabled} title={it.title} onclick={() => pick(it)}>{it.label}</button>
       {/if}
     {/each}
   </div>
@@ -130,6 +132,11 @@
     color: var(--t2);
     cursor: pointer;
     transition: background 0.12s, color 0.12s, opacity 0.12s;
+  }
+  .row-menu-btn.compact {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
   }
   .row-menu-btn:hover,
   .row-menu-btn.open {

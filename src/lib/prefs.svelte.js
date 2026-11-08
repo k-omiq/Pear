@@ -13,7 +13,7 @@
 // Both consumers are leaves or near-leaves and neither imports this module back,
 // which is what keeps that import-time apply safe: nothing here can run before
 // the module it is writing into has finished evaluating.
-import { setBoxDefaults, setLegacyTypeset } from './data.js';
+import { setBoxDefaults, setLegacyTypeset, setFxDefaults, normalizeFxDefaults, fxStored } from './data.js';
 import { app, setTool, setBrushToolAllowed, setSfxToolAllowed, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
 import { normalizeOcrModels } from './ocr-models.js';
 import { useTextEngine } from './engine-switch.svelte.js';
@@ -38,7 +38,11 @@ let legacyTypeset = 'plain';
 //      engine measures text.
 //   2  2026-11-03: the second detector is on. It tells text in a bubble from
 //      text on the art and finds the bubbles, which placement now relies on.
-const DEFAULTS_REV = 2;
+//   3  2026-11-08: the effects' own defaults (`fxDefaults`, Make Default). A
+//      blob from before has none, which is the factory's answer: nothing to
+//      change. Each stored default is read through `normalizeFxDefaults`, so
+//      a default saved by an older build takes today's fields.
+const DEFAULTS_REV = 3;
 // The engine a build starts on: the Rust engine, unless the build says
 // otherwise (`VITE_MT_TEXT_ENGINE=browser`; the test lanes do, and measure
 // with the engine only where a test asks for it).
@@ -121,6 +125,11 @@ export const prefs = $state({
   // and a chapter carries nothing of it. A build without the engine measures
   // with the browser whatever this says (`start`).
   textEngine: ENGINE_DEFAULT,
+  // The layer effects' own defaults (Photoshop's Make Default), one per kind
+  // (`FX_KINDS` in data.js), in the stored form `fxStored` gives. Only the
+  // kinds the person saved are here; the rest start from the factory. Per
+  // person, as Photoshop's are: never in a chapter or a series.
+  fxDefaults: {},
 });
 
 // The two font lists are string arrays; anything else in them is dropped.
@@ -188,6 +197,7 @@ function persist() {
         secondReader: prefs.secondReader,
         secondDetector: prefs.secondDetector,
         textEngine: prefs.textEngine,
+        fxDefaults: $state.snapshot(prefs.fxDefaults),
         legacyTypeset,
         defaultsRev: DEFAULTS_REV,
       }),
@@ -204,6 +214,7 @@ export function setPref(key, value) {
   // a number - and an array is an object too, but not the kind of map this is.
   if (key === 'shortcuts' && (!value || typeof value !== 'object' || Array.isArray(value))) return;
   if (key === 'ocrModels') value = normalizeOcrModels(value);
+  if (key === 'fxDefaults') value = normalizeFxDefaults(value);
   if (NAME_LIST_KEYS.includes(key)) {
     value = cleanNames(value);
     if (!value) return;
@@ -245,6 +256,8 @@ export function setPref(key, value) {
   // The one preference that re-measures everything, and it does so itself:
   // the engine is swapped and every box laid out again once it is in.
   if (key === 'textEngine') useTextEngine(value);
+  // Mirrored into data.js, where every new effect is made.
+  if (key === 'fxDefaults') setFxDefaults(value);
   // No relayout for these: they are what the NEXT box is born with, and boxes
   // already on the page keep the flags they carry. Re-measuring here would be
   // re-measuring nothing.
@@ -303,6 +316,11 @@ function load() {
     if (names) prefs[k] = names;
   }
   prefs.ocrModels = normalizeOcrModels(saved?.ocrModels);
+  // Each kind read on its own: one unreadable default is dropped (that effect
+  // starts from the factory), the rest stand.
+  const fx = normalizeFxDefaults(saved?.fxDefaults);
+  prefs.fxDefaults = fx;
+  setFxDefaults(fx);
   // A blob written under older defaults (`DEFAULTS_REV`). Nothing is written
   // here: the next write stamps it, and until then each launch makes the same
   // change to the same blob.
@@ -330,6 +348,20 @@ function load() {
   // the engine has to be standing in the way of its first fit by then. A
   // no-op for 'browser', which is every install that never touched the switch.
   useTextEngine(prefs.textEngine);
+}
+
+// Make Default for one effect: `effect` is a plain copy (`$state.snapshot`),
+// stripped of what is the instance's own on the way in (`fxStored`).
+export function setFxDefault(kind, effect) {
+  const v = fxStored(kind, effect);
+  if (!v) return;
+  setPref('fxDefaults', { ...$state.snapshot(prefs.fxDefaults), [kind]: v });
+}
+// Reset to factory: the saved default is forgotten.
+export function clearFxDefault(kind) {
+  if (!prefs.fxDefaults[kind]) return;
+  const { [kind]: _gone, ...rest } = $state.snapshot(prefs.fxDefaults);
+  setPref('fxDefaults', rest);
 }
 
 load();
