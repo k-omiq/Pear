@@ -91,3 +91,44 @@ describe('the second detector switch (DTC-2)', () => {
     expect((await import('./prefs.svelte.js')).prefs.secondDetector).toBe(false);
   });
 });
+
+describe('the layer effects\' defaults (Make Default)', () => {
+  it('are none on a fresh install, and a new shadow is the factory\'s', async () => {
+    const { prefs } = await import('./prefs.svelte.js');
+    const { newShadow } = await import('./data.js');
+    expect(prefs.fxDefaults).toEqual({});
+    expect(newShadow({ angle: 120 })).toMatchObject({ size: 5, opacity: 0.75 });
+  });
+
+  it('save one, stamped, and bring it back on the next launch, mirrored where effects are made', async () => {
+    const { setFxDefault, clearFxDefault } = await import('./prefs.svelte.js');
+    const data = await import('./data.js');
+    setFxDefault('dropShadow', { ...data.newShadow({ angle: 120 }), size: 17, opacity: 0.3 });
+    const blob = JSON.parse(storage['mt.prefs']);
+    expect(blob.defaultsRev).toBe(3);
+    expect(blob.fxDefaults.dropShadow).toMatchObject({ size: 17, opacity: 0.3, distance: 5, useGlobalLight: true });
+    expect(blob.fxDefaults.dropShadow).not.toHaveProperty('x');
+    expect(data.newShadow({ angle: 120 }).size).toBe(17);
+
+    vi.resetModules();
+    const again = await import('./prefs.svelte.js');
+    const data2 = await import('./data.js');
+    expect(again.prefs.fxDefaults.dropShadow.size).toBe(17);
+    expect(data2.newShadow({ angle: 120 })).toMatchObject({ size: 17, opacity: 0.3 });
+    // Reset to factory forgets it.
+    again.clearFxDefault('dropShadow');
+    expect(JSON.parse(storage['mt.prefs']).fxDefaults).toEqual({});
+    expect(data2.newShadow({ angle: 120 }).size).toBe(5);
+    expect(clearFxDefault).toBeTypeOf('function');
+  });
+
+  it('drop a corrupted stored default and keep the readable ones', async () => {
+    storage['mt.prefs'] = JSON.stringify({ defaultsRev: 2, fxDefaults: { dropShadow: 'junk', satin: { size: 3 }, outerGlow: [1] } });
+    const { prefs } = await import('./prefs.svelte.js');
+    const { newShadow, fxDefault } = await import('./data.js');
+    expect(Object.keys(prefs.fxDefaults)).toEqual(['satin']);
+    expect(fxDefault('satin').size).toBe(3);
+    expect(fxDefault('outerGlow')).toBeNull();
+    expect(newShadow({ angle: 120 }).size).toBe(5);
+  });
+});

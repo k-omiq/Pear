@@ -978,7 +978,7 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
     expect(old.prefs.defaultBalloon).toBe(false);
     expect(old.prefs.textEngine).toBe('rust');
     old.setPref('defaultBalloon', true);
-    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(2);
+    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(3);
     const since = await withStorage(old.map.get('mt.prefs'));
     expect(since.prefs.defaultBalloon).toBe(true);
     expect(since.prefs.textEngine).toBe('rust');
@@ -994,6 +994,15 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
     expect(old.prefs.secondDetector).toBe(true);
     const chose = await withStorage('{"secondDetector":false,"defaultsRev":2}');
     expect(chose.prefs.secondDetector).toBe(false);
+  });
+
+  // 2026-11-08 (rev 3): the effects' own defaults. A blob from before has
+  // none, which is every effect at the factory's values.
+  it('reads a blob from before the effect defaults as none, and keeps one written since', async () => {
+    const old = await withStorage('{"defaultsRev":2}');
+    expect(old.prefs.fxDefaults).toEqual({});
+    const since = await withStorage('{"defaultsRev":3,"fxDefaults":{"colorOverlay":{"color":"#00ff00","opacity":0.5,"blend":"screen"}}}');
+    expect(since.prefs.fxDefaults).toEqual({ colorOverlay: { color: '#00ff00', opacity: 0.5, blend: 'screen' } });
   });
 
   it('takes stored box defaults, and refuses values of the wrong type or range', async () => {
