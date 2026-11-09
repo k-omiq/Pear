@@ -357,7 +357,7 @@
   const sizing = $derived(box ? sizingOf(box.style) : 'auto');
   const SIZINGS = [
     ['auto', 'Auto height', 'The height follows the text. You set the width and the size.'],
-    ['fixed', 'Fixed', 'You set the width, the height and the size. Text that does not fit is flagged.'],
+    ['fixed', 'Fixed', 'You set the width, the height and the size. The box still grows if the text needs more room.'],
     ['fit', 'Fit to box', 'You set the width and the height. The size is the largest that fits.'],
   ];
 

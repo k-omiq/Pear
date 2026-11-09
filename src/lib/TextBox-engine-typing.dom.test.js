@@ -264,7 +264,9 @@ describe('the marks, drawn from the rows the picture is painted from', () => {
     expect(m.q('.tpad')).toBe(null);
     cleanup();
     const w = await typing('wrapped');
-    // Three rows of 24 in a box 120 high fit; make the box too short for them.
+    // Three rows of 24 in a box 120 high fit; make the box too short for
+    // them. Locked, or the box grows straight back to hold its text.
+    w.box.locked = true;
     w.box.h = 40;
     await tick();
     const rows = rowsOf(w.box);

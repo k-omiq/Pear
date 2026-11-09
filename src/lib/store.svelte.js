@@ -99,7 +99,6 @@ import {
   inkHeight,
   growAround,
   fitBox,
-  fitLimit,
   reviewFor,
   isAutoBox,
   handPlacedBox,
@@ -1502,7 +1501,7 @@ function growAndReview(b, p, cand, place, lineCount) {
   // is the engine's doing, when the box is still as the engine last left it.
   const was = fitting(b);
   const held = solveStands(b, cand.text);
-  const changed = isAutoBox(cand) && !boxLocked(b) ? growHeightTo(b, lineCount, p, cand, place) : false;
+  const changed = holdsItsText(cand) && !boxLocked(b) ? growHeightTo(b, lineCount, p, cand, place) : false;
   if (changed && held) b.auto.stamp = solveStamp(b, cand.text);
   reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text)) : place);
   fitted(b, was);
@@ -1510,15 +1509,19 @@ function growAndReview(b, p, cand, place, lineCount) {
   return changed;
 }
 
+// The boxes that rule reaches: every box whose text is laid out in lines -
+// Auto height and Fixed alike, since text never stands outside its box. A
+// Fixed height is the least the box is, not a cut-off. Not Fit to box, whose
+// size gives way instead, and not text placed by hand (`handPlacedBox`).
+const holdsItsText = (cand) => !!cand?.style && !cand.style.fitText && cand.w > 0 && !handPlacedBox(cand);
+
 // The grow-only height rule, once: the taller of what the lines need and what
 // the ink needs, anchored by `valign`, capped by the page - or by the whole
 // strip in a longstrip document, where a box may hang over a seam.
 //
-// A box the solver manages is capped by its balloon instead, within its page
-// (`fitLimit`, never smaller than the box as it stands), and never by the whole
-// strip (FIT-2): the page cap is how an oversized font once became a box 708 px
-// tall that had left its bubble, and in a longstrip the whole chapter was the
-// cap. What its balloon cannot hold is flagged, like any overflow.
+// A box the solver manages too, past its balloon if it must: text never
+// stands outside its box. (It was once capped by its balloon, FIT-2, and what
+// the balloon could not hold hung out of the box.)
 //
 // The lines: their line boxes inside the content box (the box less
 // `textInset` - its padding and its outline's reach - above and below).
@@ -1535,8 +1538,7 @@ function growAndReview(b, p, cand, place, lineCount) {
 function growHeightTo(b, lineCount, p, cand, place) {
   const s = b.style;
   const need = Math.max(neededHeight(lineCount, s, textInset(s)), inkHeight(cand, place));
-  const lim = b.auto?.on ? fitLimit(cand, p, null) : null;
-  const extent = lim ? { top: -lim.y0, total: lim.y1 - lim.y0 } : stripOf(p);
+  const extent = stripOf(p);
   const from = extent && extent.total > 0 ? b.y + extent.top : b.y;
   const next = extent && extent.total > 0
     ? growToFit({ y: from, h: b.h, valign: s.valign }, need, extent.total)
@@ -5102,7 +5104,12 @@ export function heightFloorAt(b, w, p = page()) {
 // not broken again: the widest of them is the floor. The width a side drag
 // takes and the Inspector's Width. The plain minimum for text placed by hand,
 // and while its face is arriving, for the reason `edgeDragFloor` gives.
+//
+// And never below four characters to a line (`LINE_MIN_CHARS`): past that a
+// width only stacks the text into a column of letter pairs, so the side stops
+// there and the height has already grown to hold every line.
 export const EDGE_DRAG_MIN_W = 40;
+export const LINE_MIN_CHARS = 4;
 export function edgeDragWidthFloor(b, p = page()) {
   const s = b?.style;
   if (!s || !(s.size > 0) || !canMeasure() || handPlacedBox(b)) return EDGE_DRAG_MIN_W;
@@ -5112,9 +5119,17 @@ export function edgeDragWidthFloor(b, p = page()) {
   const held = b.auto?.locks?.breaks ? brokenLines(cased, s, s.size, keptBreaks(b)) : null;
   let widest = 0;
   for (const piece of held ?? cased.split(/\s+/)) widest = Math.max(widest, lineWidth(piece, s, s.size));
-  const whole = Math.max(EDGE_DRAG_MIN_W, Math.ceil(widest + textInset(s) * 2));
+  const inset = textInset(s) * 2;
+  const whole = Math.max(EDGE_DRAG_MIN_W, Math.ceil(widest + inset));
+  // Four characters at the text's own average advance - or the whole text on
+  // one line, when it has fewer.
+  const letters = cased.replace(/\s+/g, '');
+  const least = Math.max(
+    EDGE_DRAG_MIN_W,
+    Math.ceil(Math.min((lineWidth(letters, s, s.size) / letters.length) * LINE_MIN_CHARS, lineWidth(cased.trim().replace(/\s+/g, ' '), s, s.size)) + inset),
+  );
   // Only the shaped breaker hyphenates (`PLAIN_BREAKS`).
-  if (held || s.hyphenate === false || (s.shape ?? 'auto') === 'off') return whole;
+  if (held || s.hyphenate === false || (s.shape ?? 'auto') === 'off') return Math.max(whole, least);
   // Whether the lines broken at width `w` all fit it. A curve has no lines.
   const fits = (w) => {
     const place = placeBlock(rebrokenAt(b, w, text));
@@ -5122,9 +5137,9 @@ export function edgeDragWidthFloor(b, p = page()) {
     const room = contentWidth(w, place.s) + 0.5;
     return place.lines.every((line) => lineWidth(line.trim(), place.s, place.s.size) <= room);
   };
-  let lo = EDGE_DRAG_MIN_W, hi = whole;
+  let lo = least, hi = Math.max(whole, least);
   if (fits(lo)) return lo;
-  if (!fits(hi)) return whole;
+  if (!fits(hi)) return hi;
   while (hi - lo > 1) {
     const mid = Math.floor((lo + hi) / 2);
     if (fits(mid)) hi = mid;
@@ -6894,7 +6909,9 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   const cand = boxCandidate(b, boxText(b, p));
   if (mode === 'fit') fitTextToBox(b, p, cand);
   else if (mode === 'auto' && (reshaped || (widened && nh === oh))) hugBox(b, p, cand);
-  else reviewBox(b, p);
+  // Anything else - a Fixed box, a scale, a height typed in - is never left
+  // shorter than its text and its ink: it grows to hold them (`refitBox`).
+  else refitBox(b, p);
   return b;
 }
 
