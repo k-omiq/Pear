@@ -61,7 +61,7 @@ pub use job::{
 pub(crate) use outline::glyph_polys;
 pub use outline::FLATTEN_TOLERANCE;
 pub use pattern::{tile as pattern_tile, Kind as PatternKind, MAX_TILE_SIDE};
-pub use raster::{Coverage, Exact, Part, Rasterizer, STRIP_ROWS};
+pub use raster::{Coverage, Exact, Part, PlainScratch, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
@@ -159,6 +159,23 @@ impl Bends<'_> {
     pub(crate) fn at(&self, p: Pt) -> Pt {
         let p = self.rough.map_or(p, |r| r.at(p));
         self.mesh.map_or(p, |m| m.at(p))
+    }
+
+    /// A box (job space) that holds where [`Bends::at`] takes every point
+    /// of the box `bounds`, found without bending an outline, or `None`
+    /// where the mesh gives none (`MeshMap::reach`).
+    pub(crate) fn reach(
+        &self,
+        (x0, y0, x1, y1): (f64, f64, f64, f64),
+    ) -> Option<(f64, f64, f64, f64)> {
+        let r = self.rough.map_or(0.0, |r| r.reach());
+        // With a little over for the rounding of the move.
+        let r = if r > 0.0 { r * (1.0 + 1e-9) + 1e-9 } else { 0.0 };
+        let b = (x0 - r, y0 - r, x1 + r, y1 + r);
+        match self.mesh {
+            Some(m) => m.reach(b),
+            None => Some(b),
+        }
     }
 
     /// How an outline inside `bounds` (job space, unbent) is cut for this

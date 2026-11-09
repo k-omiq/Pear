@@ -224,6 +224,9 @@ impl Level {
     /// its half), 0 to 1: bilinear between the four nearest centres, the
     /// edge pixels carried on past the edge; or the pixel it falls in,
     /// with `smooth` off.
+    // Read inside every pixel of a tip's stamp: kept in its caller's loop
+    // (measured in WebKit, 2026-11-09).
+    #[inline(always)]
     pub fn sample(&self, x: f64, y: f64, smooth: bool) -> f32 {
         let (w, h) = (self.width as i64, self.height as i64);
         let at = |px: i64, py: i64| -> f32 {
