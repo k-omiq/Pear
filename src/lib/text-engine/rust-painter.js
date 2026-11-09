@@ -7,7 +7,7 @@
 // The engine turns a job into pixels (text-engine/js/paint.mjs); this file's
 // whole work is to hand it what only the page has - the canvas's transform and
 // the pattern tiles - and to put the pixels it gives back onto the canvas.
-import { drawsPatternTiles, drawsScreens, forgetInkTips, hasInkTip, paintBox as paintBoxJob, paintJob, paintsBoxes, paintsInk, patternTile, putInkTip } from '../../../text-engine/js/paint.mjs';
+import { drawsPatternTiles, drawsScreens, encodeBox, forgetInkTips, hasInkTip, paintBox as paintBoxJob, paintJob, paintsBoxes, paintsInk, patternTile, putInkTip } from '../../../text-engine/js/paint.mjs';
 import { canvasPatternKind, patternTileCanvas, patternTilePx, tipCoverage, TILE_SS } from '../text-paint.js';
 import { pickedTile } from '../pattern-tiles.svelte.js';
 
@@ -102,6 +102,10 @@ export function createRustGlyphPainter(rust, options = {}) {
   // wants the picture cut to its ink (the SFX panel's previews) reads it here
   // instead of scanning the pixels back. Null when the job drew nothing.
   function paint(ctx, job) {
+    if (capture) {
+      capture.spoiled = true;
+      return null;
+    }
     const m = ctx.getTransform();
     const raster = paintJob(rust.low, request(job, [m.a, m.b, m.c, m.d, m.e, m.f]));
     if (!raster) return null;
@@ -133,7 +137,10 @@ export function createRustGlyphPainter(rust, options = {}) {
     });
   }
 
-  function paintBox(ctx, spec) {
+  // The surface a box job paints, in the canvas's device pixels: the corners
+  // of `spec.rect` carried by the canvas's matrix, cut outwards to whole
+  // pixels. Null when it covers no pixel.
+  function surfaceOf(ctx, spec) {
     const m = ctx.getTransform();
     const r = spec.rect;
     let x0 = Infinity;
@@ -155,8 +162,12 @@ export function createRustGlyphPainter(rust, options = {}) {
     const width = Math.ceil(x1 - EPS) - x0;
     const height = Math.ceil(y1 - EPS) - y0;
     if (!(width > 0 && height > 0)) return null;
-    if (spec.ink) sendTips(spec.ink);
-    const raster = paintBoxJob(rust.low, {
+    return { m, x0, y0, width, height };
+  }
+
+  // The box job as the engine is asked for it, on the surface `surfaceOf` cut.
+  function boxRequest(spec, { m, x0, y0, width, height }) {
+    return {
       ...request(spec.job, [m.a, m.b, m.c, m.d, m.e - x0, m.f - y0]),
       width,
       height,
@@ -186,10 +197,53 @@ export function createRustGlyphPainter(rust, options = {}) {
         typeof spec.backdrop === 'function'
           ? spec.backdrop({ x0, y0, width, height, m: [m.a, m.b, m.c, m.d, m.e, m.f] })
           : (spec.backdrop ?? null),
-    });
+    };
+  }
+
+  function paintBox(ctx, spec) {
+    const at = surfaceOf(ctx, spec);
+    if (!at) return null;
+    // Captured for the paint worker (`capture`): the job encoded exactly as
+    // below, and not painted. A box with brush ink is not (its tips are the
+    // main instance's): the capture is spoiled and the caller paints here.
+    if (capture) {
+      if (spec.ink) {
+        capture.spoiled = true;
+        return null;
+      }
+      const bytes = encodeBox(boxRequest(spec, at)).slice();
+      capture.jobs.push({ ctx, bytes, x0: at.x0, y0: at.y0 });
+      return undefined;
+    }
+    if (spec.ink) sendTips(spec.ink);
+    const raster = paintBoxJob(rust.low, boxRequest(spec, at));
     if (!raster) return null;
-    blit(ctx, raster, x0 + raster.x, y0 + raster.y);
-    return { x: x0 + raster.x, y: y0 + raster.y, w: raster.width, h: raster.height };
+    blit(ctx, raster, at.x0 + raster.x, at.y0 + raster.y);
+    return { x: at.x0 + raster.x, y: at.y0 + raster.y, w: raster.width, h: raster.height };
+  }
+
+  // THE PAINT WORKER (paint-worker.js, editor/box-picture.js). While `fn`
+  // runs, a box job is encoded and kept rather than painted, and any other
+  // paint spoils the capture (a caption, a canvas pass): what `fn` made is
+  // then the caller's to throw away, and it paints the box here instead.
+  // Returns `{ value, jobs, spoiled }`, `value` what `fn` returned.
+  let capture = null;
+  function capturePaints(fn) {
+    const was = capture;
+    const cap = { jobs: [], spoiled: false };
+    capture = cap;
+    try {
+      return { value: fn(), jobs: cap.jobs, spoiled: cap.spoiled };
+    } finally {
+      capture = was;
+    }
+  }
+  // A captured job's pixels, painted elsewhere, onto the canvas it was
+  // captured from: the same blit, at the same place, as `paintBox` makes.
+  function finishCaptured(job, raster) {
+    if (!raster) return null;
+    blit(job.ctx, raster, job.x0 + raster.x, job.y0 + raster.y);
+    return { x: job.x0 + raster.x, y: job.y0 + raster.y, w: raster.width, h: raster.height };
   }
 
   // Where the surface's corner (x0, y0), canvas device px, is on the page, in
@@ -272,5 +326,12 @@ export function createRustGlyphPainter(rust, options = {}) {
     forgetInkTips(rust.low);
     tipEpochs.delete(rust);
   };
-  return { id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen, ink, forgetTips };
+  // `worker` is the engine's paint worker (paint-mirror.js) or null; `capture`
+  // and `finishCaptured` are how a box job goes to it and comes back.
+  return {
+    id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen, ink, forgetTips,
+    worker: box ? (rust.paintMirror ?? null) : null,
+    capture: capturePaints,
+    finishCaptured,
+  };
 }
