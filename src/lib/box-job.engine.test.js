@@ -100,10 +100,10 @@ describe('the gate', () => {
     expect(whole.box).toBe(true);
     expect(boxInJob(boxOf())).toBe(true);
     expect(boxInJob(boxOf({ ink: INK }))).toBe(true);
-    // Imported tips are the engine's too (phase 8b); ink under a mesh or
-    // roughening is not yet (8c): the canvas draws those.
+    // Imported tips are the engine's too (phase 8b), and so is ink under a
+    // mesh or a roughening (8c).
     expect(boxInJob(boxOf({ ink: { ...INK, strokes: [{ ...INK.strokes[0], brush: 'tip', tips: ['a', 'b'] }] } }))).toBe(true);
-    expect(boxInJob(boxOf({ ink: INK, roughen: { on: true, amount: 6, detail: 0.07, seed: 7 } }))).toBe(false);
+    expect(boxInJob(boxOf({ ink: INK, roughen: { on: true, amount: 6, detail: 0.07, seed: 7 } }))).toBe(true);
     // An engine built before the ink was (no `ink` on its painter).
     setGlyphPainter({ ...whole, ink: false });
     expect(boxInJob(boxOf({ ink: INK }))).toBe(false);
@@ -207,12 +207,16 @@ describe('each pass is the picture the canvas made', () => {
 describe('a roughened box', () => {
   const ROUGH = { roughen: { on: true, amount: 6, detail: 0.07, seed: 7 } };
 
-  // An inked box that is roughened is the canvas's whole (boxInJob), until the
-  // engine roughens ink (phase 8c).
-  it('is roughened in its outlines, except where the canvas draws ink on it', () => {
+  // The engine roughens brush ink as it roughens the letters (phase 8c); an
+  // inked box goes to the canvas's passes whole only where the engine paints
+  // no ink (boxInJob).
+  it('is roughened in its outlines, ink and all, except where the canvas draws the ink', () => {
     expect(roughenInJob(boxOf(ROUGH))).toBe(true);
     expect(roughenInJob(boxOf())).toBe(false);
+    expect(roughenInJob(boxOf({ ...ROUGH, ink: INK }))).toBe(true);
+    setGlyphPainter({ ...whole, ink: false });
     expect(roughenInJob(boxOf({ ...ROUGH, ink: INK }))).toBe(false);
+    expect(roughenInJob(boxOf(ROUGH))).toBe(true);
     setGlyphPainter(canvasPasses);
     expect(roughenInJob(boxOf(ROUGH))).toBe(false);
   });
