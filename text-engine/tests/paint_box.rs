@@ -2420,3 +2420,248 @@ fn a_box_takes_a_bounded_number_of_bevels_and_noise_gradients() {
     assert_eq!(more(&overlay, 63), Ok(72));
     assert_eq!(more(&overlay, 64), Err(Error::BadSpec));
 }
+
+// ---- How the box and its effects are laid onto the page (review F4, F5,
+// F9, F10, F11, F14, F60) ----
+
+fn outside_stroke(size: f64, color: Rgba, blend: Blend) -> Effect {
+    Effect::Stroke(Stroke {
+        size,
+        position: Position::Outside,
+        opacity: 1.0,
+        blend,
+        paint: Paint::Color(color),
+        seed: 0,
+    })
+}
+
+fn near(got: [f32; 3], want: [f32; 3], by: f32) -> bool {
+    got.iter().zip(want).all(|(g, w)| (g - w).abs() <= by)
+}
+
+/// F4: the strokes' outside parts and an Outer Bevel are laid in their own
+/// modes, not the box's (PhotoCraft `composite_with_effects_prepared`).
+#[test]
+fn a_blending_boxs_outside_stroke_and_outer_bevel_keep_their_own_modes() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glyphs = inked(&paint(&mut e, &mut b));
+    let (sx, y) = stem(glyphs);
+    let (ox, oy) = (glyphs.0 - 2, y);
+    b.backdrop = Some(grey_page(128));
+    // A white Normal stroke on a Multiply box over grey 128: white, not 128.
+    b.blend = Blend::Multiply;
+    b.effects = vec![outside_stroke(4.0, WHITE, Blend::Normal)];
+    let r = paint(&mut e, &mut b);
+    let p = shown(&r, ox, oy, [128; 3]);
+    assert!(near(p, [255.0; 3], 1.0), "{p:?}");
+    // The letters still multiply: black.
+    assert!(near(shown(&r, sx, y, [128; 3]), [0.0; 3], 1.0));
+    // A black Normal stroke on a Screen box: black, not 100.
+    b.blend = Blend::Screen;
+    b.effects = vec![outside_stroke(4.0, BLACK, Blend::Normal)];
+    let r = paint(&mut e, &mut b);
+    let p = shown(&r, ox, oy, [128; 3]);
+    assert!(near(p, [0.0; 3], 1.0), "{p:?}");
+    // An Outer Bevel's Screen highlight shows on a Multiply box as on a
+    // Normal one.
+    let mut bv = bevel(BevelStyle::Outer, BevelTechnique::Smooth);
+    bv.highlight.blend = Blend::Screen;
+    b.effects = vec![Effect::Bevel(bv)];
+    let above = (sx, glyphs.1 - 2);
+    b.blend = Blend::Normal;
+    let normal = shown(&paint(&mut e, &mut b), above.0, above.1, [128; 3]);
+    assert!(normal[0] > 160.0, "{normal:?}");
+    b.blend = Blend::Multiply;
+    let multiply = shown(&paint(&mut e, &mut b), above.0, above.1, [128; 3]);
+    assert!(near(multiply, normal, 1.0), "{multiply:?} {normal:?}");
+}
+
+/// F5 and F60: a stroke's outside part blends in its own mode with what is
+/// under it, the page where the box is clear and a shadow where it lies.
+#[test]
+fn an_outside_stroke_multiplies_the_page_and_a_shadow_under_it() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glyphs = inked(&paint(&mut e, &mut b));
+    let (_, y) = stem(glyphs);
+    let (ox, oy) = (glyphs.0 - 2, y);
+    b.effects = vec![outside_stroke(4.0, RED, Blend::Multiply)];
+    // With no page, red over nothing is red.
+    let alone = paint(&mut e, &mut b);
+    assert_eq!(px(&alone, ox, oy), [255, 0, 0, 255]);
+    // Over grey 128: (128, 0, 0), as Photoshop and PhotoCraft show it.
+    b.backdrop = Some(grey_page(128));
+    let r = paint(&mut e, &mut b);
+    let p = shown(&r, ox, oy, [128; 3]);
+    assert!(near(p, [128.0, 0.0, 0.0], 1.0), "{p:?}");
+    // Over a Normal grey shadow that reaches under it, no page: the product.
+    b.backdrop = None;
+    b.shadows = vec![Shadow {
+        grow: 6.0,
+        ..shadow(Rgba([128, 128, 128, 255]), 0.0, 0.0)
+    }];
+    let r = paint(&mut e, &mut b);
+    let p = px(&r, ox, oy);
+    assert!(
+        p[3] == 255 && p[0].abs_diff(128) <= 1 && p[1] == 0 && p[2] == 0,
+        "{p:?}"
+    );
+}
+
+/// F9: a box with no fill and an interior effect keeps its afterimages'
+/// own fill, under the effects.
+#[test]
+fn a_box_with_no_fill_keeps_its_afterimages_fill_under_an_interior_effect() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glyphs = inked(&paint(&mut e, &mut b));
+    let (sx, sy) = stem(glyphs);
+    let mut ghost = b.request.job.runs[0].clone();
+    ghost.x += 75.0;
+    ghost.ghost = true;
+    ghost.fill = Some(Fill::Solid(Rgba([0x88, 0x88, 0x88, 0x80])));
+    b.request.job.runs.push(ghost);
+    b.request.job.no_fill = true;
+    let gx = sx + 75;
+    // With nothing on it, the afterimage alone.
+    let bare = paint(&mut e, &mut b);
+    let p = px(&bare, gx, sy);
+    assert!(p[..3] == [0x88; 3] && p[3].abs_diff(0x80) <= 1, "{p:?}");
+    b.effects = vec![Effect::InnerShadow(InnerShadow {
+        color: BLUE,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        x: 3.0,
+        y: 0.0,
+        size: 0.0,
+        choke: 0.0,
+        noise: 0.0,
+        contour: None,
+        seed: 1,
+    })];
+    let r = paint(&mut e, &mut b);
+    // Its grey is still there, whole (within the surface's rounding).
+    let p = px(&r, gx, sy);
+    assert!(
+        p[..3].iter().all(|v| v.abs_diff(0x88) <= 1) && p[3].abs_diff(0x80) <= 1,
+        "{p:?}"
+    );
+    // The letters still take the shadow; their fill is unseen.
+    let edge = px(&r, glyphs.0 + 1, sy);
+    assert!(edge[3] > 200 && edge[2] > 200, "{edge:?}");
+    assert_eq!(px(&r, glyphs.0 + 6, sy)[3], 0);
+    // And the job is left as it was.
+    assert_eq!(b.request.job.runs.len(), 2);
+    assert!(b.request.job.runs[1].ghost && b.request.job.no_fill);
+}
+
+/// F10: This Layer judges the box's own content, not its effects' colour.
+#[test]
+fn blend_if_this_layer_reads_the_letters_not_their_overlay() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let (x, y) = stem(inked(&paint(&mut e, &mut b)));
+    b.backdrop = Some(grey_page(128));
+    b.effects = vec![Effect::ColorOverlay(Overlay {
+        color: WHITE,
+        opacity: 1.0,
+        blend: Blend::Normal,
+    })];
+    let whole = paint(&mut e, &mut b);
+    assert_eq!(px(&whole, x, y), [255, 255, 255, 255]);
+    // Gray, This Layer, white point 100: the black letters pass it.
+    let mut gate = Blending::default();
+    gate.blend_if.ranges[0][0] = range([0, 0], [100, 100]);
+    b.blending = gate;
+    let r = paint(&mut e, &mut b);
+    assert_eq!(alpha_sum(&r), alpha_sum(&whole));
+    assert_eq!(px(&r, x, y), [255, 255, 255, 255]);
+    // A black point over them hides them, overlay and all.
+    gate.blend_if.ranges[0][0] = range([10, 10], [255, 255]);
+    b.blending = gate;
+    let hid = paint_box(&mut e, &mut b).unwrap();
+    assert!(hid.is_none_or(|r| alpha_sum(&r) == 0));
+}
+
+/// F11: This Layer reads the letters' colour straight: a faint pixel keeps
+/// its grey whole and is not rounded under a black point.
+#[test]
+fn blend_if_this_layer_keeps_faint_letters_their_colour() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.request.job.fill = Some(Fill::Solid(Rgba([130, 130, 130, 255])));
+    b.backdrop = Some(grey_page(255));
+    let mut gate = Blending::default();
+    gate.blend_if.ranges[0][0] = range([128, 128], [255, 255]);
+    for fill in [1.0, 0.1] {
+        b.fill_opacity = fill;
+        b.blending = Blending::default();
+        let whole = paint(&mut e, &mut b);
+        b.blending = gate;
+        let r = paint(&mut e, &mut b);
+        assert_eq!(alpha_sum(&r), alpha_sum(&whole), "Fill {fill}");
+    }
+}
+
+/// F14: a knocked-out drop shadow is cut by the letters' fill, not by their
+/// outlines (PhotoCraft `knock_out_exterior`).
+#[test]
+fn a_knockout_cuts_the_shadow_by_the_fill_and_not_the_outline() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    // The letters' fill: where a knockout may cut.
+    let matte = paint(&mut e, &mut b);
+    let inside: Vec<(i32, i32)> = (matte.y..matte.y + matte.height as i32)
+        .flat_map(|y| (matte.x..matte.x + matte.width as i32).map(move |x| (x, y)))
+        .filter(|&(x, y)| px(&matte, x, y)[3] == 255)
+        .collect();
+    let reds = |r: &Raster| inside.iter().filter(|&&(x, y)| px(r, x, y)[0] > 0).count();
+    // (a) No fill, an 8 px white outline, a red shadow thrown (5, 5).
+    b.request.job.no_fill = true;
+    b.request.job.bands = vec![mt_text::paint::Band {
+        color: WHITE,
+        opacity: 1.0,
+        line: 8.0,
+    }];
+    b.shadows = vec![shadow(RED, 5.0, 5.0)];
+    let through = paint(&mut e, &mut b);
+    assert!(reds(&through) > 100, "{}", reds(&through));
+    b.shadows[0].knockout = true;
+    let knocked = paint(&mut e, &mut b);
+    assert_eq!(reds(&knocked), 0);
+    // (b) Fill 50 %, an opaque outline, a soft shadow: the knockout cuts
+    // under the fill only, and leaves the outline's rim as it was.
+    b.request.job.no_fill = false;
+    b.fill_opacity = 0.5;
+    b.shadows = vec![Shadow {
+        size: 6.0,
+        ..shadow(RED, 5.0, 5.0)
+    }];
+    let soft_through = paint(&mut e, &mut b);
+    b.shadows[0].knockout = true;
+    let soft_knocked = paint(&mut e, &mut b);
+    let mut changed = 0;
+    for y in 0..160 {
+        for x in 0..200 {
+            if px(&matte, x, y)[3] != 0 {
+                continue;
+            }
+            let (a, k) = (px(&soft_through, x, y), px(&soft_knocked, x, y));
+            if a.iter().zip(k).any(|(a, k)| a.abs_diff(k) > 1) {
+                changed += 1;
+            }
+        }
+    }
+    assert_eq!(changed, 0);
+    // Under the fill it is cut by half.
+    let (sx, sy) = stem(inked(&matte));
+    let red = |p: [u8; 4]| u32::from(p[0]) * u32::from(p[3]) / 255;
+    assert!(red(px(&soft_knocked, sx + 2, sy)) < red(px(&soft_through, sx + 2, sy)));
+}

@@ -1227,11 +1227,12 @@ export function boxEffects(style) {
 // there, so only such a box has those in its repaint key (`pictureKey`).
 //
 // What the engine blends with the page: the letters in their mode (not Normal
-// or Dissolve, which reads nothing), and the shadows, the outer glow and the
+// or Dissolve, which reads nothing), and the shadows, the outer glow, the
+// Photoshop strokes' outside parts (an outside or center stroke) and the
 // bevels that lie outside the letters (Outer Bevel, Emboss, Pillow and Stroke
 // Emboss), each in its own mode. What blends only with the box's own letters
 // (the overlays, an inner glow, an inner shadow, the satin, an Inner Bevel,
-// the strokes' outside parts) does not read the page. A colour that is its
+// an inside stroke) does not read the page. A colour that is its
 // mode's no-op (black under Multiply, Darken or Linear Burn, white under
 // Screen, Lighten or Linear Dodge) paints exactly as Normal, so the default
 // black Multiply shadow and the default bevel stay off the page.
@@ -1273,6 +1274,12 @@ export function usesBackdrop(style) {
   const og = style.outerGlow;
   // A gradient glow's colours are its stops': never taken for a no-op.
   if (og?.on && readsPage(og.blend, og.fill === 'gradient' && og.gradient ? null : og.color, og.opacity)) return true;
+  // A stroke's outside part lies on the page; a gradient's or a pattern's
+  // colours are never taken for a no-op.
+  for (const k of strokeEffectsOf(style)) {
+    if (k.position === 'inside') continue;
+    if (readsPage(k.blend, strokePaint(k).kind === 'color' ? k.color : null, k.opacity)) return true;
+  }
   const bv = bevelOf(style);
   if (bv && BEVEL_ON_PAGE.has(bv.style ?? 'inner')) {
     if (readsPage(bv.highlight?.blend, bv.highlight?.color, bv.highlight?.opacity)) return true;

@@ -197,15 +197,17 @@ pub fn gray(r: f32, g: f32, b: f32) -> f32 {
 /// channel times the pixel's alpha, which shows the page's there, and
 /// mixing the box back toward the page by `k` is scaling the premultiplied
 /// pixel by `k`. `page` is the page under the surface, straight RGBA8 read
-/// as opaque, one pixel to each of `s`'s. `this` is the box's own letters
-/// on a clear surface (their colour is This Layer's), or `None` when no
-/// This Layer slider hides anything.
+/// as opaque, one pixel to each of `s`'s. `this` is the box's own content
+/// (its fill and outlines, before any effect: PhotoCraft's
+/// `render_content`) as straight RGBA8, one pixel to each of `s`'s, whose
+/// colour is This Layer's; straight, so a faint pixel keeps its colour
+/// whole. `None` when no This Layer slider hides anything.
 pub(crate) fn restrict(
     s: &mut Surface,
     bx: IBox,
     blending: &Blending,
     page: &[u8],
-    this: Option<&Surface>,
+    this: Option<&[u8]>,
 ) {
     let w = s.width;
     let bx = bx.intersect(&IBox {
@@ -238,13 +240,12 @@ pub(crate) fn restrict(
                 continue;
             }
             let own = this.and_then(|t| {
-                let q = &t.data[i * 4..i * 4 + 4];
-                let qa = f32::from(q[3]);
+                let q = t.get(i * 4..i * 4 + 4)?;
                 (q[3] > 0).then(|| {
                     [
-                        f32::from(q[0]) / qa,
-                        f32::from(q[1]) / qa,
-                        f32::from(q[2]) / qa,
+                        f32::from(q[0]) / 255.0,
+                        f32::from(q[1]) / 255.0,
+                        f32::from(q[2]) / 255.0,
                     ]
                 })
             });
