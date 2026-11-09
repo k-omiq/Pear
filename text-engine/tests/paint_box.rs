@@ -2824,3 +2824,144 @@ fn a_ticked_linear_bevel_contour_is_a_table() {
     assert_eq!(t.at(1.2), 1.0);
     assert!(Table::new(&Curve::Preset(0)).is_none());
 }
+
+// ---- the same at every zoom (review F23, F24) ----
+
+/// `b` painted at `scale`, its surface grown to hold it.
+fn at_scale(e: &mut Engine, b: &mut BoxRequest, scale: f64) -> Raster {
+    b.width = (200.0 * scale) as u32;
+    b.height = (160.0 * scale) as u32;
+    b.request.transform = Affine::scale(scale, scale);
+    paint(e, b)
+}
+
+/// F23: a Texture is laid in job units, so its slope is too. Measured per
+/// device pixel, an Inner Smooth bevel's Texture at 300 % lit the flat of
+/// the stem 23, 9 and 2 levels at zooms 1, 2 and 4; now 23, 22 and 21.
+#[test]
+fn a_bevel_texture_has_the_same_relief_at_every_zoom() {
+    let mut e = Engine::new();
+    let (mut b, glyphs) = red_box(&mut e);
+    // Ten down the H's left stem: past the bevel's size from its top and
+    // above the bar.
+    let sy = glyphs.1 + 10;
+    // Darker to lighter down the page: the stem's flat tilts to the light.
+    let ramp = Fill::Linear {
+        from: Pt::new(0.0, 50.0),
+        to: Pt::new(0.0, 100.0),
+        stops: vec![
+            mt_text::paint::Stop {
+                pos: 0.0,
+                color: BLACK,
+            },
+            mt_text::paint::Stop {
+                pos: 1.0,
+                color: WHITE,
+            },
+        ],
+    };
+    b.effects = vec![Effect::Bevel(Bevel {
+        texture: Some(BevelTexture {
+            depth: 3.0,
+            invert: false,
+            fill: ramp,
+        }),
+        ..bevel(BevelStyle::Inner, BevelTechnique::Smooth)
+    })];
+    // The middle of the stem across, job units.
+    let plain_r = paint(&mut e, &mut b);
+    let row: Vec<i32> = (glyphs.0..glyphs.0 + 20)
+        .filter(|&x| px(&plain_r, x, sy)[3] == 255)
+        .collect();
+    let mid = (row[0] + row.last().unwrap()) / 2;
+    // The light over that job pixel, the mean of the device pixels in it:
+    // the white highlight's level on the red, or minus the blue shadow's.
+    let lit: Vec<i32> = [1, 2, 4]
+        .iter()
+        .map(|&s| {
+            let r = at_scale(&mut e, &mut b, f64::from(s));
+            let mut sum = 0;
+            for dy in 0..s {
+                for dx in 0..s {
+                    let p = px(&r, mid * s + dx, sy * s + dy);
+                    sum += 2 * i32::from(p[1]) - i32::from(p[2]);
+                }
+            }
+            sum / (s * s)
+        })
+        .collect();
+    assert!(lit[0] > 20, "{lit:?}");
+    for l in &lit[1..] {
+        assert!((lit[0] - l).abs() <= 2, "{lit:?}");
+    }
+}
+
+/// The red an effect lays per page pixel (on black letters, the effect's
+/// alone): each pixel's red times its alpha, summed, over the scale squared.
+fn red_per_page_px(r: &Raster, scale: f64) -> f64 {
+    let sum: u64 = r
+        .data
+        .chunks_exact(4)
+        .map(|p| u64::from(p[0]) * u64::from(p[3]))
+        .sum();
+    sum as f64 / 255.0 / (scale * scale)
+}
+
+/// F24: an Inner Shadow's Choke and a glow's Spread or Choke take their
+/// whole pixels of the Size in job units, as a Drop Shadow's Spread does.
+/// Size 5, Choke 30 % is a grow of 2 page px at every zoom; split in device
+/// pixels it was 2, 3 and 5 device px at zooms 1, 2 and 3, and the shadow
+/// laid 10 % less per page pixel at 2 than at 1 (192299 / 173992 / 180198;
+/// now within 0.2 %). An Outer Glow's Spread 30 % laid 18 % less.
+#[test]
+fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let check = |name: &str, got: &[f64]| {
+        for g in &got[1..] {
+            let off = (g - got[0]).abs() / got[0];
+            assert!(off < 0.02, "{name}: {got:?}");
+        }
+    };
+    for choke in [0.3, 0.5] {
+        b.effects = vec![Effect::InnerShadow(InnerShadow {
+            color: RED,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            x: 3.0,
+            y: 3.0,
+            size: 5.0,
+            choke,
+            noise: 0.0,
+            contour: None,
+            seed: 1,
+        })];
+        let got: Vec<f64> = [1.0, 2.0, 3.0]
+            .iter()
+            .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
+            .collect();
+        check(&format!("inner shadow choke {choke}"), &got);
+    }
+    for spread in [0.3, 0.5] {
+        // On black letters: a red Inner Glow, a red Outer Glow round them.
+        b.effects = vec![Effect::InnerGlow(Glow {
+            spread,
+            ..glow(RED, 5.0)
+        })];
+        let got: Vec<f64> = [1.0, 2.0, 3.0]
+            .iter()
+            .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
+            .collect();
+        check(&format!("inner glow choke {spread}"), &got);
+        b.effects = vec![Effect::OuterGlow(Glow {
+            spread,
+            ..glow(RED, 5.0)
+        })];
+        let got: Vec<f64> = [1.0, 2.0, 3.0]
+            .iter()
+            .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
+            .collect();
+        check(&format!("outer glow spread {spread}"), &got);
+    }
+}
