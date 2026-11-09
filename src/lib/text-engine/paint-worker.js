@@ -18,13 +18,19 @@
 // entry at the bottom only queues its messages through it, one at a time.
 import { createEngine } from '../../../text-engine/js/engine.mjs';
 import { addInstance } from '../../../text-engine/js/instance.mjs';
-import { paintsBoxes, WIRE_VERSION } from '../../../text-engine/js/paint.mjs';
+import { paintStatusText, paintsBoxes, WIRE_VERSION } from '../../../text-engine/js/paint.mjs';
+
+// The engine refused the job (its own status code): the job's fault, not the
+// instance's, and the main thread's engine would refuse it the same way.
+class Refused extends Error {}
 
 /**
  * Paints one encoded box job on `low` (an engine from `createEngine`): the
  * same calls `paintBox` in paint.mjs makes after it has encoded the job.
  * Returns `{ x, y, width, height, data }` with `data` a copy of the pixels
- * (straight RGBA8), or null when the job draws nothing; throws as `paintBox` does.
+ * (straight RGBA8), or null when the job draws nothing; throws as `paintBox`
+ * does. A refusal by the engine is a `Refused`; anything else (a trap, a
+ * wasm of another version) is an instance that cannot be trusted again.
  */
 export function paintBoxBytes(low, bytes) {
   const ex = low.exports;
@@ -36,7 +42,7 @@ export function paintBoxBytes(low, bytes) {
   if (!ptr) throw new Error(`mt-text: paintBox: the engine refused a job of ${bytes.length} bytes`);
   new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes);
   const code = ex.mt_paint_box(bytes.length);
-  if (code < 0) throw new Error(`mt-text: paintBox: error ${code}`);
+  if (code < 0) throw new Refused(`mt-text: paintBox: ${paintStatusText(code)}`);
   if (code === 0) return null;
   const [x, y, width, height] = new Float64Array(ex.memory.buffer, ex.mt_paint_job_result(), 4);
   const pixels = ex.mt_paint_job_pixels();
@@ -106,15 +112,35 @@ export function createPaintHandler({ fetchBytes = (url) => fetch(url).then((r) =
     }
   }
 
+  // Whatever throws in here ends the worker, said as `dead` (with the paint's
+  // id, when it was one): never a message left without an answer.
   async function handle(msg) {
+    try {
+      return await handleOne(msg);
+    } catch (error) {
+      die(`the worker broke: ${error?.message ?? error}`);
+      return { type: 'dead', reason: dead, id: msg?.id };
+    }
+  }
+
+  async function handleOne(msg) {
     if (msg.op === 'paint') {
       if (dead) return { type: 'dead', reason: dead, id: msg.id };
+      if (!low) {
+        die('a paint before the engine started');
+        return { type: 'dead', reason: dead, id: msg.id };
+      }
       const t0 = now();
       try {
         const raster = paintBoxBytes(low, msg.bytes);
         return { type: 'painted', id: msg.id, raster, ms: now() - t0 };
       } catch (error) {
-        return { type: 'failed', id: msg.id, message: String(error?.message ?? error) };
+        const message = String(error?.message ?? error);
+        if (error instanceof Refused) return { type: 'failed', id: msg.id, message };
+        // A trapped instance (a RuntimeError, memory past its limit) or one
+        // that paints no such job: nothing more is painted here.
+        die(`a paint broke the engine: ${message}`);
+        return { type: 'dead', reason: dead, id: msg.id };
       }
     }
     if (dead) return null;
@@ -144,11 +170,22 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined' && s
   let queue = Promise.resolve();
   self.onmessage = (e) => {
     const msg = e.data;
-    queue = queue.then(async () => {
-      const reply = await handler.handle(msg);
-      if (!reply) return;
-      const data = reply.raster?.data;
-      self.postMessage(reply, data ? [data.buffer] : []);
-    });
+    queue = queue
+      .then(async () => {
+        const reply = await handler.handle(msg);
+        if (!reply) return;
+        const data = reply.raster?.data;
+        self.postMessage(reply, data ? [data.buffer] : []);
+      })
+      // A throw here must not stop the queue: every later paint would wait
+      // for ever. The main thread is told the worker is gone, and paints
+      // everything itself from then on.
+      .catch((error) => {
+        try {
+          self.postMessage({ type: 'dead', reason: `the worker broke: ${error?.message ?? error}`, id: msg?.id });
+        } catch {
+          /* nothing more can be said */
+        }
+      });
   };
 }

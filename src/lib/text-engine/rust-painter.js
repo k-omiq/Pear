@@ -7,7 +7,7 @@
 // The engine turns a job into pixels (text-engine/js/paint.mjs); this file's
 // whole work is to hand it what only the page has - the canvas's transform and
 // the pattern tiles - and to put the pixels it gives back onto the canvas.
-import { drawsPatternTiles, drawsScreens, encodeBox, forgetInkTips, hasInkTip, paintBox as paintBoxJob, paintJob, paintsBoxes, paintsInk, patternTile, putInkTip } from '../../../text-engine/js/paint.mjs';
+import { drawsPatternTiles, drawsScreens, encodeBox, releaseWire, forgetInkTips, hasInkTip, paintBox as paintBoxJob, paintJob, paintsBoxes, paintsInk, patternTile, putInkTip } from '../../../text-engine/js/paint.mjs';
 import { canvasPatternKind, patternTileCanvas, patternTilePx, tipCoverage, TILE_SS } from '../text-paint.js';
 import { pickedTile } from '../pattern-tiles.svelte.js';
 
@@ -212,6 +212,9 @@ export function createRustGlyphPainter(rust, options = {}) {
         return null;
       }
       const bytes = encodeBox(boxRequest(spec, at)).slice();
+      // The copy is the job's now: a buffer a backdrop grew goes, as the
+      // synchronous paint lets it go.
+      releaseWire();
       capture.jobs.push({ ctx, bytes, x0: at.x0, y0: at.y0 });
       return undefined;
     }
