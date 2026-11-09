@@ -1404,7 +1404,7 @@ fn lay_styled(
 /// `this`, when Blend If's This Layer needs it, is given the box's own
 /// content, before any effect (PhotoCraft's `render_content`): the fill at
 /// its whole Fill, the afterimages, the ink and the outlines. A box with no
-/// fill has none of its fill there.
+/// fill gives the same content as at Fill 0 % ([`own_content`]).
 #[allow(clippy::too_many_arguments)]
 fn paint_glyphs(
     engine: &mut Engine,
@@ -1420,11 +1420,20 @@ fn paint_glyphs(
     let fade = if hollow { 0.0 } else { request.fill_opacity };
     let inside =
         job.silhouette.is_none() && request.effects.iter().any(|e| e.interior() && e.shows());
-    if job.silhouette.is_some() || (!inside && (hollow || fade >= 1.0)) {
+    let silhouette = job.silhouette.is_some();
+    // No Fill reads as Fill 0 % for This Layer: its content is painted on
+    // its own, and nothing below draws into it.
+    let mut this = this.as_mut();
+    if hollow && !silhouette {
+        if let Some(t) = this.take() {
+            own_content(engine, request, rasterizer, t)?;
+        }
+    }
+    if silhouette || (!inside && (hollow || fade >= 1.0)) {
         let rasters: Vec<Raster> = paint_job_with(engine, &request.request, rasterizer)?
             .into_iter()
             .collect();
-        if let Some(t) = this.as_mut() {
+        if let Some(t) = this {
             rasters.iter().for_each(|r| t.draw(r));
         }
         return Ok(Glyphs {
@@ -1437,39 +1446,39 @@ fn paint_glyphs(
     let mut bevels = None;
     let mut whole_fill = None;
     // With no fill, the afterimages in their own fill, under everything.
-    let ghostly = hollow && inside && job.runs.iter().any(|r| r.ghost);
+    let ghostly = hollow && inside && request.request.job.runs.iter().any(|r| r.ghost);
     if ghostly {
         if let Some(g) = paint_ghosts(engine, request, rasterizer)? {
-            if let Some(t) = this.as_mut() {
-                t.draw(&g);
-            }
             out.push(g);
         }
     }
     // The fill alone, faded, with the effects on it. With no fill, the
     // letters' shape as they would have been filled: their solid
     // silhouette, at Fill 0, without the afterimages.
-    let bands = core::mem::take(&mut request.request.job.bands);
-    let negative = request.request.job.effects.negative.take();
-    let runs = if ghostly {
-        let runs = core::mem::take(&mut request.request.job.runs);
-        request.request.job.runs = runs.iter().filter(|r| !r.ghost).cloned().collect();
-        Some(runs)
-    } else {
-        None
-    };
-    if hollow {
+    let fill = if hollow {
+        let bands = core::mem::take(&mut request.request.job.bands);
+        let negative = request.request.job.effects.negative.take();
+        let runs = if ghostly {
+            let runs = core::mem::take(&mut request.request.job.runs);
+            request.request.job.runs = runs.iter().filter(|r| !r.ghost).cloned().collect();
+            Some(runs)
+        } else {
+            None
+        };
         request.request.job.no_fill = false;
         request.request.job.silhouette = Some(Rgba([0, 0, 0, 255]));
-    }
-    let fill = paint_job_with(engine, &request.request, rasterizer);
-    request.request.job.no_fill = hollow;
-    request.request.job.silhouette = None;
-    request.request.job.bands = bands;
-    request.request.job.effects.negative = negative;
-    if let Some(runs) = runs {
-        request.request.job.runs = runs;
-    }
+        let fill = paint_job_with(engine, &request.request, rasterizer);
+        request.request.job.no_fill = hollow;
+        request.request.job.silhouette = None;
+        request.request.job.bands = bands;
+        request.request.job.effects.negative = negative;
+        if let Some(runs) = runs {
+            request.request.job.runs = runs;
+        }
+        fill
+    } else {
+        paint_fill(engine, request, rasterizer)
+    };
     if let Some(mut r) = fill? {
         if inside {
             let place = Place {
@@ -1490,9 +1499,6 @@ fn paint_glyphs(
             // drawn, under the effects laid on it.
             if hollow {
                 if let Some(c) = request.request.ink.as_ref().and_then(|i| i.content()) {
-                    if let Some(t) = this.as_mut() {
-                        t.draw(&c);
-                    }
                     out.push(c);
                 }
             } else if let Some(t) = this.as_mut() {
@@ -1516,25 +1522,11 @@ fn paint_glyphs(
         }
     }
     // The outlines, outside the letters.
-    if !request.request.job.bands.is_empty() || request.request.job.effects.negative.is_some() {
-        request.request.job.no_fill = true;
-        // And round the ink, with the ink cut out of them: the fill pass
-        // laid it.
-        let rims_of = |request: &mut BoxRequest, on: bool| {
-            if let Some(ink) = request.request.ink.as_mut() {
-                ink.rims = on;
-            }
-        };
-        rims_of(request, true);
-        let rims = paint_job_with(engine, &request.request, rasterizer);
-        rims_of(request, false);
-        request.request.job.no_fill = hollow;
-        if let Some(r) = rims? {
-            if let Some(t) = this.as_mut() {
-                t.draw(&r);
-            }
-            out.push(r);
+    if let Some(r) = paint_rims(engine, request, rasterizer)? {
+        if let Some(t) = this.as_mut() {
+            t.draw(&r);
         }
+        out.push(r);
     }
     Ok(Glyphs {
         rasters: out,
@@ -1542,6 +1534,72 @@ fn paint_glyphs(
         outside,
         bevels,
     })
+}
+
+/// The fill pass of a box with a fill: the afterimages, the letters' fill
+/// at Fill 100 % and the ink, without the outlines or a negative's blob.
+/// With no fill, the fill it hides, all the same.
+fn paint_fill(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
+    let job = &mut request.request.job;
+    let bands = core::mem::take(&mut job.bands);
+    let negative = job.effects.negative.take();
+    let no_fill = core::mem::replace(&mut job.no_fill, false);
+    let painted = paint_job_with(engine, &request.request, rasterizer);
+    let job = &mut request.request.job;
+    job.bands = bands;
+    job.effects.negative = negative;
+    job.no_fill = no_fill;
+    painted
+}
+
+/// The rim pass: the outlines outside the letters, and round the ink with
+/// the ink cut out of them (the fill pass laid it). `None` with no outline
+/// and no negative.
+fn paint_rims(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
+    let job = &request.request.job;
+    if job.bands.is_empty() && job.effects.negative.is_none() {
+        return Ok(None);
+    }
+    let rims_of = |request: &mut BoxRequest, on: bool| {
+        if let Some(ink) = request.request.ink.as_mut() {
+            ink.rims = on;
+        }
+    };
+    let no_fill = core::mem::replace(&mut request.request.job.no_fill, true);
+    rims_of(request, true);
+    let rims = paint_job_with(engine, &request.request, rasterizer);
+    rims_of(request, false);
+    request.request.job.no_fill = no_fill;
+    rims
+}
+
+/// The box's own content for This Layer, the fill pass and then the rim
+/// pass, as a box with a fill gives them at Fill under 100 %. A box with no
+/// fill goes through here too: user decision 2026-11-09, No Fill reads as
+/// Fill 0 %. Photoshop judges a layer's pixels before Fill Opacity, so This
+/// Layer sees the fill No Fill hides, whole, with the outlines, ink and
+/// afterimages; what is painted does not change.
+fn own_content(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+    t: &mut Content,
+) -> Result<(), Error> {
+    if let Some(r) = paint_fill(engine, request, rasterizer)? {
+        t.draw(&r);
+    }
+    if let Some(r) = paint_rims(engine, request, rasterizer)? {
+        t.draw(&r);
+    }
+    Ok(())
 }
 
 /// The afterimages alone, each in its own fill: no letters, no outlines, no
@@ -1943,6 +2001,9 @@ fn paint(
     // The box's own content alone, for Blend If's This Layer: its fill and
     // outlines before any effect, not the shadows, glows or strokes round
     // it (PhotoCraft judges a layer by its own content, `render_content`).
+    // The fill is there at its whole Fill, and a No Fill box's hidden fill
+    // is there too, whole (user decision 2026-11-09, No Fill reads as Fill
+    // 0 %): Photoshop judges a layer's pixels before Fill Opacity.
     let mut this = if restricts && !request.blending.blend_if.this_is_full() {
         Some(Content::new(width, height)?)
     } else {
