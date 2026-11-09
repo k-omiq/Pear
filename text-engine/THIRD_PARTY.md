@@ -103,6 +103,14 @@ Outside the engine, for the PSD writer (`src/lib/`):
   (`crates/io/src/effects_map.rs` `with_common`, `gradient_keys`,
   `write_one`): `present` and `showInDialog`, a glow's gradient without a
   colour, Jitter and Overprint written as 0 / off.
+- `psd-knockout.js`: the walk over a written or read PSD's layer records
+  that sets and reads Knockout Deep (`knko` 2): the record layout
+  (`crates/psd/src/layer.rs` `LayerRecord::read`, `MAX_LAYER_CHANNELS`), the
+  Pascal name's padding (`crates/psd/src/io.rs` `read_pascal`), and the
+  block list with its padding found by where the next signature starts
+  (`crates/psd/src/tagged.rs` `read_blocks_with`, `is_sig`); the `knko`
+  values 0 / 1 / 2 (`tagged.rs` `BlockData::Knockout`). The PSB long-length
+  rule there is ag-psd's, not PhotoCraft's.
 
 MIT License
 
