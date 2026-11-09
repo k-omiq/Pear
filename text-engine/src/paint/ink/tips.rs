@@ -320,7 +320,10 @@ impl TipCache {
         {
             return Err(Error::BadSpec);
         }
-        let need = tip_bytes(w, h);
+        // Built (and so checked) before anything is let go for it: a tip
+        // that is refused costs the cache nothing.
+        let tip = Tip::new(w, h, natural, data)?;
+        let need = tip.bytes();
         if let Some(old) = self.map.remove(key) {
             self.bytes -= old.bytes;
         }
@@ -352,8 +355,7 @@ impl TipCache {
                 }
             }
         }
-        let tip = Tip::new(w, h, natural, data)?;
-        let bytes = tip.bytes();
+        let bytes = need;
         self.clock += 1;
         self.map.try_reserve(1).map_err(|_| Error::BadSpec)?;
         self.map.insert(
@@ -527,6 +529,25 @@ mod tests {
         assert_eq!(c.bytes(), one * 3);
         c.forget();
         assert!(c.is_empty() && c.bytes() == 0 && !c.has("a"));
+    }
+
+    #[test]
+    fn a_refused_tip_lets_nothing_go() {
+        let side = 256;
+        let one = tip_bytes(side, side);
+        let mut c = TipCache::with_ceiling(one * 2);
+        let px = vec![7u8; side * side];
+        for k in ["a", "b"] {
+            c.put(k, side, side, (side as u32, side as u32), &px)
+                .unwrap();
+        }
+        c.end_job();
+        // Full, and the new tip is bad (no natural size; then too few bytes):
+        // nothing is let go for it, the same key included.
+        assert_eq!(c.put("c", side, side, (0, 0), &px), Err(Error::BadSpec));
+        assert_eq!(c.put("a", side, side, (1, 1), &px[1..]), Err(Error::BadSpec));
+        assert!(c.has("a") && c.has("b") && !c.has("c"));
+        assert_eq!(c.bytes(), one * 2);
     }
 
     #[test]
