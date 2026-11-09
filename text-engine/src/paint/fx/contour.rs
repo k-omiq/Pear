@@ -349,20 +349,30 @@ impl Lut {
     }
 
     /// [`Lut::at`] with the edge hidden, for the effects that spread out
-    /// past the letters (an Outer Glow, a Drop Shadow): the output times a
-    /// ramp on the input ([`edge_hide`]), so where the matte is 0 the effect
-    /// is too. A contour that does not start at 0 (Cone - Inverted, Cove -
-    /// Deep) would otherwise fill the whole rectangle the effect is worked
-    /// out over. The plan's B4 rule, after the behaviour Krita's layer
-    /// styles have with `edgeHidden` on for these two effects.
+    /// past the letters (an Outer Glow, a Drop Shadow): a contour that does
+    /// not start at 0 (Cone - Inverted, Cove - Deep) lifts the ground to its
+    /// value at 0, which would fill the whole rectangle the effect is worked
+    /// out over. That floor is taken away near 0, along a ramp on the input
+    /// ([`edge_hide`]), so where the matte is 0 the effect is too. A contour
+    /// that starts at 0 (Linear, Cone, Gaussian) is left exactly as it is.
+    /// The plan's B4 rule, after the behaviour Krita's layer styles have
+    /// with `edgeHidden` on for these two effects.
     pub fn at_hidden(&self, v: f32) -> f32 {
-        self.at(v) * edge_hide(v)
+        let out = self.at(v);
+        if self.0[0] == 0 {
+            return out;
+        }
+        (out - self.at(0.0) * (1.0 - edge_hide(v))).max(0.0)
     }
 
     /// [`Lut::apply`] with the edge hidden, as [`Lut::at_hidden`].
     pub fn apply_hidden(&self, v: u8) -> u8 {
-        let out = f32::from(self.apply(v)) * edge_hide(f32::from(v) / 255.0);
-        (out + 0.5) as u8
+        let out = self.apply(v);
+        if self.0[0] == 0 {
+            return out;
+        }
+        let floor = f32::from(self.0[0]) * (1.0 - edge_hide(f32::from(v) / 255.0));
+        ((f32::from(out) - floor).max(0.0) + 0.5) as u8
     }
 }
 
@@ -394,12 +404,28 @@ fn points(curve: &Curve) -> std::borrow::Cow<'_, [Point]> {
                 .into()
         }
         Curve::Points(pts) => {
-            // A smooth point at the x of the one before it has no curve
-            // through it: the spline would floor the gap and run to 0 or 255.
-            // It is dropped, as PhotoCraft's `contour_curve_lut` dedups before
-            // its fit and the app's `normalizeContour` does; a corner may
-            // stay, as a vertical step.
-            let keep = |i: usize| i == 0 || pts[i].corner || pts[i].x != pts[i - 1].x;
+            // A smooth point that shares its x with another has no curve
+            // through it: the spline would floor the gap and run to 0 or 255
+            // (review F13). At a repeated x the corners stay (two are a
+            // vertical step) and the smooth points go, whether before or
+            // after them; with no corner there, the first smooth point stays.
+            // As PhotoCraft's `contour_curve_lut` dedups before its fit, and
+            // as the app's `normalizeContour` does.
+            let keep = |i: usize| {
+                let x = pts[i].x;
+                let (mut lo, mut hi) = (i, i);
+                while lo > 0 && pts[lo - 1].x == x {
+                    lo -= 1;
+                }
+                while hi + 1 < pts.len() && pts[hi + 1].x == x {
+                    hi += 1;
+                }
+                if pts[lo..=hi].iter().any(|p| p.corner) {
+                    pts[i].corner
+                } else {
+                    i == lo
+                }
+            };
             if (0..pts.len()).all(keep) {
                 pts.as_slice().into()
             } else {
@@ -683,6 +709,32 @@ mod tests {
             "{}",
             step.apply(129)
         );
+        // A smooth point and a corner at one x, either way round: the
+        // corner stays, the smooth one goes, and the curve below 128 does
+        // not collapse to 0.
+        for pair in [
+            [p(128.0, 60.0, false), p(128.0, 200.0, true)],
+            [p(128.0, 200.0, true), p(128.0, 60.0, false)],
+        ] {
+            let mut pts = vec![p(0.0, 0.0, false), p(100.0, 50.0, false)];
+            pts.extend(pair);
+            pts.push(p(255.0, 255.0, false));
+            let l = Lut::new(&Curve::Points(pts));
+            let want = Lut::new(&Curve::Points(vec![
+                p(0.0, 0.0, false),
+                p(100.0, 50.0, false),
+                p(128.0, 200.0, true),
+                p(255.0, 255.0, false),
+            ]));
+            assert_eq!(l, want);
+            assert!(
+                (i32::from(l.apply(100)) - 50).abs() <= 1,
+                "{}",
+                l.apply(100)
+            );
+            // The run from 100 up to the corner climbs from 50, not 0.
+            assert!(l.0[100..128].iter().all(|&v| v >= 49), "{:?}", &l.0[..128]);
+        }
     }
 
     /// Review F7: the edge-hide ramp keeps 0 at 0 whatever the curve.
@@ -698,11 +750,30 @@ mod tests {
             assert_eq!(inverted.apply_hidden(v), inverted.apply(v));
             assert_eq!(deep.apply_hidden(v), deep.apply(v));
         }
-        // Half way up it, half.
-        assert_eq!(
-            inverted.apply_hidden(4),
-            (f32::from(inverted.apply(4)) * 0.5 + 0.5) as u8
-        );
+        // Half way up it, half the floor taken away.
+        let half = (f32::from(inverted.apply(4)) - 127.5).max(0.0);
+        assert_eq!(inverted.apply_hidden(4), (half + 0.5) as u8);
+    }
+
+    /// Review F7 follow-up: a contour that starts at 0 keeps every level,
+    /// the faint ones near 0 too (Cone's 3 at 1 and 11 at 4 were once
+    /// damped to 0 and 6).
+    #[test]
+    fn a_contour_from_0_is_not_touched_by_the_hidden_edge() {
+        let cone = Lut::new(&Curve::Preset(1));
+        assert_eq!((cone.apply(1), cone.apply(4)), (3, 11));
+        for n in 0..PRESETS.len() as u32 {
+            let l = Lut::new(&Curve::Preset(n));
+            if l.apply(0) != 0 {
+                continue;
+            }
+            for v in 0..=255u8 {
+                assert_eq!(l.apply_hidden(v), l.apply(v), "{n} at {v}");
+                let f = f32::from(v) / 255.0;
+                assert_eq!(l.at_hidden(f), l.at(f), "{n} at {v}");
+            }
+        }
+        assert_eq!(Lut::identity().apply_hidden(3), 3);
     }
 
     #[test]

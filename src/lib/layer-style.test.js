@@ -391,8 +391,14 @@ describe('a custom contour', () => {
   it('drops a smooth point at the x of the one before, and keeps a corner step', () => {
     const smooth = normalizeContour({ preset: 'custom', pts: [[0, 0], [100, 50], [128, 60], [128, 200], [255, 255]] });
     expect(smooth.pts.map((q) => q[0])).toEqual([0, 100, 128, 255]);
-    const step = normalizeContour({ preset: 'custom', pts: [[0, 0], [128, 60], [128, 200, true], [255, 255]] });
+    const step = normalizeContour({ preset: 'custom', pts: [[0, 0], [128, 60, true], [128, 200, true], [255, 255]] });
     expect(step.pts).toHaveLength(4);
+  });
+  it('drops a smooth point that shares its x with a corner, before or after it', () => {
+    const after = normalizeContour({ preset: 'custom', pts: [[0, 0], [100, 50], [128, 60], [128, 200, true], [255, 255]] });
+    expect(after.pts).toEqual([[0, 0, false], [100, 50, false], [128, 200, true], [255, 255, false]]);
+    const before = normalizeContour({ preset: 'custom', pts: [[0, 0], [100, 50], [128, 200, true], [128, 60], [255, 255]] });
+    expect(before.pts).toEqual(after.pts);
   });
 });
 
