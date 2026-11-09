@@ -398,7 +398,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // here and in boxjob.rs (BOX_WIRE_VERSION) at once. paintsBoxes() compares
 // only the number. v11 had two forms: 7858367 added shadow flag 4 (exact)
 // without a bump, so an early v11 wasm refuses every SFX copy's shadow.
-export const BOX_WIRE_VERSION = 13
+export const BOX_WIRE_VERSION = 14
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
@@ -504,13 +504,15 @@ export const BEVEL_STYLE_IDS = Object.freeze({ inner: 0, outer: 1, emboss: 2, pi
 export const BEVEL_TECHNIQUE_IDS = Object.freeze({ smooth: 0, 'chisel-hard': 1, 'chisel-soft': 2 })
 const GRADIENT_STYLE = { linear: 0, radial: 1, angle: 2, reflected: 3, diamond: 4, shapeburst: 5 }
 const NOISE_MODEL = { rgb: 0, hsb: 1, lab: 2 }
+const GRADIENT_METHOD = { classic: 0, perceptual: 1, linear: 2, smooth: 3 }
 const STROKE_POSITION = { outside: 0, inside: 1, center: 2 }
 
 // An effect gradient (`Reader::gradient`): Photoshop's Style, Angle
 // (degrees), Scale (1 is 100 %), Reverse, the centre's offset as a share of
-// the frame, then the colour stops and the opacity stops, each by position.
-// A stop is `{pos, color, opacity?}`; with every stop opaque no opacity
-// stops are sent. `type: 'noise'` sends `noise` (`{seed, roughness, model,
+// the frame, then the colour stops and the opacity stops, each by position,
+// their midpoints, Dither, the Method and Smoothness. A colour stop is
+// `{pos, color, mid?}`, an opacity stop (`opacityStops`) `{pos, opacity,
+// mid?}`; with every one opaque no opacity stops are sent. `type: 'noise'` sends `noise` (`{seed, roughness, model,
 // min: [3], max: [3], restrict, transparency}`) too, whose colours the
 // engine paints in place of the stops'.
 function gradientRecord(g) {
@@ -528,14 +530,27 @@ function gradientRecord(g) {
     f64(st.pos)
     rgba(st.color)
   }
-  const fades = list.some((st) => (st.opacity ?? 1) < 1)
-  u32(fades ? list.length : 0)
+  // The opacity stops are their own list (v14); a gradient from before
+  // them keeps one opacity per colour stop, which is read as an opacity
+  // stop at the same place.
+  const ops = Array.isArray(g.opacityStops)
+    ? [...g.opacityStops].sort((a, b) => a.pos - b.pos)
+    : list.map((st) => ({ pos: st.pos, opacity: st.opacity ?? 1 }))
+  const fades = ops.some((st) => (st.opacity ?? 1) < 1)
+  u32(fades ? ops.length : 0)
   if (fades) {
-    for (const st of list) {
+    for (const st of ops) {
       f64(st.pos)
       f64(st.opacity ?? 1)
     }
   }
+  gradientMids(list)
+  gradientMids(fades ? ops : [])
+  u32(g.dither ? 1 : 0)
+  const method = GRADIENT_METHOD[g.method ?? 'classic']
+  if (method === undefined) throw new Error(`mt-text: unknown gradient method ${JSON.stringify(g.method)}`)
+  u32(method)
+  f64(Math.min(1, Math.max(0, Number(g.smoothness) || 0)))
   const n = g.type === 'noise' ? g.noise : null
   u32(n ? 1 : 0)
   if (!n) return
@@ -549,6 +564,16 @@ function gradientRecord(g) {
     f64(n.max?.[i] ?? 1)
   }
   u32((n.restrict ? 1 : 0) | (n.transparency ? 2 : 0))
+}
+
+// A gradient's midpoints (v14): one per segment between sorted `stops`,
+// each stored, as Photoshop stores it, on the stop that ends its segment
+// (`mid`, 0.05 to 0.95); none at all when every one is even.
+function gradientMids(stops) {
+  const mids = stops.slice(1).map((st) => Math.min(1, Math.max(0, Number.isFinite(st?.mid) ? st.mid : 0.5)))
+  const even = mids.every((m) => m === 0.5)
+  u32(even ? 0 : mids.length)
+  if (!even) for (const m of mids) f64(m)
 }
 
 // What a stroke paints with (`Reader::paint`): a colour, a gradient or a
@@ -848,7 +873,8 @@ function clipShape(sh) {
  *   the layer effects past the drop shadows, resolved: of a kind, first on top. A glow's
  *   `gradient` runs along it in place of its colour, `jitter` (0 to 1) scattering each
  *   pixel's sample of it; a gradient is `{style, angle, scale,
- *   reverse, offset: [x, y], stops: [{pos, color, opacity?}], type?, noise?}` (style
+ *   reverse, offset: [x, y], stops: [{pos, color, mid?}], opacityStops?: [{pos, opacity,
+ *   mid?}], method?, smoothness?, dither?, type?, noise?}` (style
  *   'shapeburst' runs from the painted shape's edge in; type 'noise' paints `noise`). A stroke paints a colour,
  *   a gradient or a fill (a pattern, as a glyph job's fill), and a pattern overlay its
  *   `fill`, in job units. A satin throws two copies `distance` apart along its own
