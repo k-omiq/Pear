@@ -1,7 +1,7 @@
 import {
   GRADIENT_KINDS, GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, PATTERN_KINDS, PATTERN_ANCHORS, PATTERN_MODES,
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
-  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, SATIN_DISTANCE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
+  LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, SATIN_DISTANCE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, FX_GRADIENT_METHODS, GRADIENT_MID_MIN, GRADIENT_MID_MAX, NOISE_MODELS,
   STROKE_POSITIONS, STROKE_FILLS, BEVEL_STYLES, BEVEL_TECHNIQUES, BEVEL_DIRECTIONS, BEVEL_DEPTH_MAX,
   BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX, KNOCKOUT_MODES,
 } from '../data.js';
@@ -51,18 +51,28 @@ const contourField = () => shared('contour', object('edge falloff (Rust)', {
   aa: boolean('anti-aliased contour'),
   pts: { ...array('custom: points [x, y, corner?], 0..255', { type: 'contourPoint', desc: '[x, y, corner?]' }, { minItems: 2, maxItems: 64 }), optional: true },
 }));
+// A gradient stop's midpoint: of the segment from the stop before it.
+const gradientMid = () => ({ ...number('half-way of the span it ends', GRADIENT_MID_MIN, GRADIENT_MID_MAX), optional: true });
 // An effect gradient (Photoshop's, as Gradient Overlay and Stroke take it).
 const fxGradient = (desc) => shared('gradient', object(desc, {
-  style: choice('shape; shapeburst runs from the edge in', FX_GRADIENT_STYLES),
-  angle: number('Photoshop degrees, 90=bottom to top', -180, 180),
+  style: choice('shapeburst: edge in', FX_GRADIENT_STYLES),
+  angle: number('PS degrees, 90=up', -180, 180),
   scale: number('1=100%', 0.1, 1.5),
   reverse: boolean('flip the ramp'),
-  offset: array('centre moved, share of the frame', number('share', -1, 1), { minItems: 2, maxItems: 2 }),
-  stops: array('ramp', object('stop', {
+  offset: array('centre shift, frame share', number('share', -1, 1), { minItems: 2, maxItems: 2 }),
+  stops: array('colour stops', object('stop', {
     color: color('stop colour'),
     pos: alpha('position'),
-    opacity: alpha('stop alpha'),
+    mid: gradientMid(),
   }), { minItems: GRADIENT_MIN_STOPS, maxItems: GRADIENT_MAX_STOPS }),
+  opacityStops: array('alpha stops', object('stop', {
+    opacity: alpha('alpha'),
+    pos: alpha('position'),
+    mid: gradientMid(),
+  }), { minItems: GRADIENT_MIN_STOPS, maxItems: GRADIENT_MAX_STOPS }),
+  smoothness: alpha('1 eases'),
+  method: choice('blend space', FX_GRADIENT_METHODS),
+  dither: boolean('no banding'),
   type: choice('solid=stops, noise=random ramp (Rust)', FX_GRADIENT_TYPES),
   noise: object('noise gradient', {
     seed: integer('random seed', 0, 4294967295),
