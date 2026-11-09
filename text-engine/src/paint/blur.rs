@@ -522,23 +522,7 @@ pub(crate) fn tent_flat(s: &mut Surface, width: f64, rgb: [u8; 3]) -> Result<(),
             a[y * w + x] = f64::from(p[3]) / 255.0;
         }
     }
-    let mut mid = Vec::new();
-    let mut src = vec![0f64; w.max(h)];
-    let mut dst = vec![0f64; w.max(h)];
-    for y in 0..h {
-        src[..w].copy_from_slice(&a[y * w..(y + 1) * w]);
-        tent::line(&src[..w], &mut dst[..w], width, &mut mid);
-        a[y * w..(y + 1) * w].copy_from_slice(&dst[..w]);
-    }
-    for x in 0..w {
-        for y in 0..h {
-            src[y] = a[y * w + x];
-        }
-        tent::line(&src[..h], &mut dst[..h], width, &mut mid);
-        for y in 0..h {
-            a[y * w + x] = dst[y];
-        }
-    }
+    tent::grid(&mut a, w, h, width)?;
     for y in 0..h {
         let from = ((y + bx.y0 as usize) * s.width + bx.x0 as usize) * 4;
         for (x, p) in s.data[from..from + w * 4].as_chunks_mut::<4>().0.iter_mut().enumerate() {

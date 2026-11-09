@@ -1805,19 +1805,30 @@ struct Glyphs {
 /// The outer glows behind the letters, on `s`. Their shape is the letters'
 /// whole silhouette, outlines included, as a drop shadow's is; where the fill
 /// is see-through each glow is kept from behind the fill.
+///
+/// `painted` is that silhouette when a shadow has painted it already (not
+/// grown, in an opaque colour): only its alpha is read, which is the same in
+/// any opaque colour.
 fn lay_glows(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
     s: &mut Surface,
     scale: f64,
+    painted: Option<Raster>,
 ) -> Result<Option<IBox>, Error> {
     let black = Some(Rgba([0, 0, 0, 255]));
     let job_silhouette = request.request.job.silhouette;
-    request.request.job.silhouette = black;
-    let outline = paint_job_with(engine, &request.request, rasterizer);
-    request.request.job.silhouette = job_silhouette;
-    let Some(outline) = outline? else {
+    let outline = match painted {
+        Some(r) => Some(r),
+        None => {
+            request.request.job.silhouette = black;
+            let outline = paint_job_with(engine, &request.request, rasterizer);
+            request.request.job.silhouette = job_silhouette;
+            outline?
+        }
+    };
+    let Some(outline) = outline else {
         return Ok(None);
     };
     let reach = effects::outer_reach(&request.effects, scale);
@@ -1995,6 +2006,14 @@ fn paint(
     let mut painted_as: Option<(Rgba, f64, f64)> = None;
     let job_silhouette = request.request.job.silhouette;
     let job_grow = request.request.job.effects.grow;
+    // The letters' silhouette as a shadow painted it, kept for the outer
+    // glows when it is theirs too: not grown, and in an opaque colour, whose
+    // alpha is what black's would be. `Some(None)`: painted, and nothing.
+    let glows = request
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::OuterGlow(_)) && e.shows());
+    let mut silhouette: Option<Option<Raster>> = None;
     let mut i = 0;
     while let Some(sh) = order.get(i).copied() {
         if sh.styled(see_through > 0.0) {
@@ -2032,7 +2051,15 @@ fn paint(
                 }
                 none => none.insert(Surface::new(width, height)?),
             };
-            if let Some(r) = painted? {
+            let painted = painted?;
+            let shared = glows
+                && silhouette.is_none()
+                && sh.color.0[3] == 255
+                && sh.grow.to_bits() == job_grow.to_bits();
+            if shared && painted.is_none() {
+                silhouette = Some(None);
+            }
+            if let Some(r) = painted {
                 layer.draw(&r.data, r.width as usize, r.x, r.y);
                 // A silhouette is one colour, so only its alpha needs the blur.
                 let [red, green, blue, _] = sh.color.0;
@@ -2047,7 +2074,11 @@ fn paint(
                     x1: r.x.saturating_add(r.width as i32).saturating_add(reach),
                     y1: r.y.saturating_add(r.height as i32).saturating_add(reach),
                 };
-                drop(r);
+                if shared {
+                    silhouette = Some(Some(r));
+                } else {
+                    drop(r);
+                }
                 ink = layer.ink_in(drawn);
                 // Finding the runs costs about what laying a copy along them
                 // saves, so only a layer laid again finds them.
@@ -2092,12 +2123,14 @@ fn paint(
         i = end;
     }
     drop(layer);
-    if request
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::OuterGlow(_)) && e.shows())
-    {
-        if let Some(b) = lay_glows(engine, request, rasterizer, &mut s, scale)? {
+    if glows {
+        let laid = match silhouette {
+            // A shadow painted it and it was nothing: no glow either.
+            Some(None) => None,
+            Some(painted) => lay_glows(engine, request, rasterizer, &mut s, scale, painted)?,
+            None => lay_glows(engine, request, rasterizer, &mut s, scale, None)?,
+        };
+        if let Some(b) = laid {
             lay(b);
         }
     }

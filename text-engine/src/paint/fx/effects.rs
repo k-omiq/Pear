@@ -407,9 +407,9 @@ enum Brush<'a> {
     Flat([f32; 4]),
     Ramp {
         g: &'a Gradient,
-        frame: Frame,
+        /// The gradient over its frame, at the size of a device pixel.
+        run: gradient::Run,
         to_job: Affine,
-        px: f32,
         /// [`Place::grain`]: Dither is hashed from the page's pixel.
         grain: (i32, i32),
     },
@@ -432,13 +432,12 @@ impl Brush<'_> {
             Brush::Flat(c) => *c,
             Brush::Ramp {
                 g,
-                frame,
+                run,
                 to_job,
-                px,
                 grain,
             } => {
                 let p = to_job.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
-                let t = g.t(*frame, *px, p.x as f32, p.y as f32);
+                let t = g.t_along(run, p.x as f32, p.y as f32);
                 g.sample_at(t, x.wrapping_add(grain.0), y.wrapping_add(grain.1))
             }
             Brush::Burst {
@@ -494,17 +493,15 @@ fn brush<'a>(paint: &'a Paint, frame: Frame, place: &Place<'a>) -> Option<Brush<
                 let (frame, to_page) = page.frame(&place.transform)?;
                 Brush::Ramp {
                     g,
-                    frame,
+                    run: g.run(frame, to_page.det().abs().sqrt() as f32),
                     to_job: to_page,
-                    px: to_page.det().abs().sqrt() as f32,
                     grain: place.grain,
                 }
             }
             None => Brush::Ramp {
                 g,
-                frame,
+                run: g.run(frame, place.px()),
                 to_job: place.transform.invert()?,
-                px: place.px(),
                 grain: place.grain,
             },
         },
@@ -575,6 +572,57 @@ fn lay_with(
     seed: u32,
     grain: (i32, i32),
 ) -> Result<Option<IBox>, Error> {
+    lay_through(dst, m, at, dev, color, opacity, mode, page, seed, grain)
+}
+
+/// [`lay_with`] for a paint of one colour, `c` straight: nothing is asked a
+/// pixel at a time.
+#[allow(clippy::too_many_arguments)]
+fn lay_flat(
+    dst: &mut Surface,
+    m: &Map,
+    at: (i32, i32),
+    dev: (i32, i32),
+    c: [f32; 4],
+    opacity: f64,
+    mode: Blend,
+    page: Option<&Backdrop<'_>>,
+    seed: u32,
+    grain: (i32, i32),
+) -> Result<Option<IBox>, Error> {
+    lay_through(
+        dst,
+        m,
+        at,
+        dev,
+        move |_, _, _| c,
+        opacity,
+        mode,
+        page,
+        seed,
+        grain,
+    )
+}
+
+/// [`lay_with`] for any way of asking the paint. Each pixel of the paint
+/// through the map is rounded to premultiplied RGBA8 and laid from that, as
+/// from a surface, with no surface made for it.
+#[allow(clippy::too_many_arguments)]
+fn lay_through<C>(
+    dst: &mut Surface,
+    m: &Map,
+    at: (i32, i32),
+    dev: (i32, i32),
+    color: C,
+    opacity: f64,
+    mode: Blend,
+    page: Option<&Backdrop<'_>>,
+    seed: u32,
+    grain: (i32, i32),
+) -> Result<Option<IBox>, Error>
+where
+    C: Fn(i32, i32, usize) -> [f32; 4],
+{
     let Some(bx) = ink(m) else {
         return Ok(None);
     };
@@ -593,28 +641,52 @@ fn lay_with(
     if bx.is_empty() {
         return Ok(None);
     }
-    // The paint through the map, premultiplied, on a surface of `dst`'s
-    // size: only `bx` is written or read.
-    let mut src = Surface::new(dst.width, dst.height)?;
-    for y in bx.y0..bx.y1 {
-        for x in bx.x0..bx.x1 {
-            let i = (y - at.1) as usize * m.w + (x - at.0) as usize;
-            let v = m.v[i].clamp(0.0, 1.0);
-            if v <= 0.0 {
-                continue;
-            }
-            let c = color(x + dev.0, y + dev.1, i);
-            let a = (v * c[3].clamp(0.0, 1.0)).clamp(0.0, 1.0);
-            let p = &mut src.data[(y as usize * dst.width + x as usize) * 4..][..4];
-            for k in 0..3 {
-                p[k] = (c[k].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8;
-            }
-            p[3] = (a * 255.0 + 0.5) as u8;
-        }
-    }
     let hashed = (dev.0.wrapping_add(grain.0), dev.1.wrapping_add(grain.1));
-    blend::lay_from(dst, &src, bx, opacity as f32, mode, page, seed, hashed);
+    let source = Through { m, at, dev, color };
+    blend::lay_source(
+        dst,
+        bx,
+        opacity as f32,
+        mode,
+        page,
+        seed,
+        1.0,
+        hashed,
+        source,
+    );
     Ok(Some(bx))
+}
+
+/// A paint through a map whose corner is `at` on the surface laid on:
+/// `color(x, y, i)` at device pixel `(x, y)`, map pixel `i`, the surface's
+/// corner at device `dev`.
+struct Through<'a, C> {
+    m: &'a Map,
+    at: (i32, i32),
+    dev: (i32, i32),
+    color: C,
+}
+
+impl<C> blend::Source for Through<'_, C>
+where
+    C: Fn(i32, i32, usize) -> [f32; 4],
+{
+    #[inline(always)]
+    fn at(&self, _: usize, x: i32, y: i32) -> [u8; 4] {
+        let i = (y - self.at.1) as usize * self.m.w + (x - self.at.0) as usize;
+        let v = self.m.v[i].clamp(0.0, 1.0);
+        if v <= 0.0 {
+            return [0; 4];
+        }
+        let c = (self.color)(x + self.dev.0, y + self.dev.1, i);
+        let a = (v * c[3].clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        [
+            (c[0].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8,
+            (c[1].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8,
+            (c[2].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8,
+            (a * 255.0 + 0.5) as u8,
+        ]
+    }
 }
 
 /// A glow's paint over its map: its colour, or its gradient run along the
@@ -632,12 +704,11 @@ fn lay_glow(
     match &g.gradient {
         None => {
             let c = flat(g.color);
-            lay_with(
-                dst,
+            lay_flat(dst,
                 m,
                 at,
                 dev,
-                &|_, _, _| c,
+                c,
                 g.opacity,
                 g.blend,
                 page,
@@ -1203,12 +1274,11 @@ pub(crate) fn lay_bevels(
         }
         for (m, o) in [(hi, &bv.highlight), (sh, &bv.shadow)] {
             let c = flat(o.color);
-            if let Some(bx) = lay_with(
-                dst,
+            if let Some(bx) = lay_flat(dst,
                 m,
                 b.dev,
                 (0, 0),
-                &|_, _, _| c,
+                c,
                 o.opacity,
                 o.blend,
                 page,
@@ -1370,6 +1440,9 @@ fn interior_at(
     // The fill, straight, as a surface at its own alpha, and its shape.
     let mut shape = Map::filled(w, h, 0.0)?;
     let mut lay = Surface::new(w, h)?;
+    // Relative to the shape, the fill is whole; Fill Opacity is all of its
+    // alpha.
+    let k = (content_fill.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
     for y in 0..rh {
         for x in 0..rw {
             let p = &r.data[(y * rw + x) * 4..(y * rw + x) * 4 + 4];
@@ -1379,9 +1452,6 @@ fn interior_at(
             if a <= map::INSIDE_EPS {
                 continue;
             }
-            // Relative to the shape, the fill is whole; Fill Opacity is
-            // all of its alpha.
-            let k = (content_fill.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
             let d = &mut lay.data[i * 4..i * 4 + 4];
             for c in 0..3 {
                 d[c] = ((u32::from(p[c]) * k + 127) / 255) as u8;
@@ -1459,12 +1529,11 @@ fn interior_at(
     for e in shown() {
         if let Effect::ColorOverlay(o) = e {
             let c = flat(o.color);
-            lay_with(
-                &mut lay,
+            lay_flat(&mut lay,
                 &full,
                 (0, 0),
                 dev,
-                &|_, _, _| c,
+                c,
                 o.opacity,
                 o.blend,
                 None,
@@ -1487,12 +1556,11 @@ fn interior_at(
             )?;
             let m = map::relative_to(&m, &shape)?;
             let c = flat(st.color);
-            lay_with(
-                &mut lay,
+            lay_flat(&mut lay,
                 &m,
                 (0, 0),
                 dev,
-                &|_, _, _| c,
+                c,
                 st.opacity,
                 st.blend,
                 None,
@@ -1527,12 +1595,11 @@ fn interior_at(
             let m = map::inner_shadow(&shape, dx as f32, dy as f32, &s)?;
             let m = map::relative_to(&m, &shape)?;
             let c = flat(sh.color);
-            lay_with(
-                &mut lay,
+            lay_flat(&mut lay,
                 &m,
                 (0, 0),
                 dev,
-                &|_, _, _| c,
+                c,
                 sh.opacity,
                 sh.blend,
                 None,
@@ -1625,12 +1692,11 @@ fn interior_at(
         for (m, o) in [(&hi, &b.highlight), (&sh, &b.shadow)] {
             let m = map::relative_to(m, &shape)?;
             let c = flat(o.color);
-            lay_with(
-                &mut lay,
+            lay_flat(&mut lay,
                 &m,
                 (0, 0),
                 dev,
-                &|_, _, _| c,
+                c,
                 o.opacity,
                 o.blend,
                 None,
@@ -1642,7 +1708,9 @@ fn interior_at(
     drop(band);
     // The shape's own alpha, and back to straight colour.
     let mut data = budget::filled(n * 4, 0u8)?;
-    let mut alpha = budget::filled(n, 0f32)?;
+    // The letters' alpha as laid, which only an outside stroke reads.
+    let outside_strokes = strokes.iter().any(|(_, s)| s.widths().1 > 0.0);
+    let mut alpha = budget::filled(if outside_strokes { n } else { 0 }, 0f32)?;
     for (i, (d, p)) in data
         .as_chunks_mut::<4>().0.iter_mut()
         .zip(lay.data.as_chunks::<4>().0.iter())
@@ -1652,17 +1720,30 @@ fn interior_at(
         if la == 0 {
             continue;
         }
-        let a = (f32::from(p[3]) * shape.v[i]).round().clamp(0.0, 255.0) as u8;
-        for c in 0..3 {
-            d[c] = ((u32::from(p[c]) * 255 + la / 2) / la).min(255) as u8;
+        // A whole pixel of the shape keeps the alpha it has, and a whole
+        // alpha the colour it has: nothing to round or divide.
+        let cover = shape.v[i];
+        let a = if cover == 1.0 {
+            p[3]
+        } else {
+            (f32::from(p[3]) * cover).round().clamp(0.0, 255.0) as u8
+        };
+        if la == 255 {
+            d[..3].copy_from_slice(&p[..3]);
+        } else {
+            for c in 0..3 {
+                d[c] = ((u32::from(p[c]) * 255 + la / 2) / la).min(255) as u8;
+            }
         }
         d[3] = a;
-        alpha[i] = f32::from(a) / 255.0;
+        if let Some(al) = alpha.get_mut(i) {
+            *al = f32::from(a) / 255.0;
+        }
     }
     drop(lay);
     // The outside parts: each stroke's share, the first listed first.
     let mut items = Vec::new();
-    if strokes.iter().any(|(_, s)| s.widths().1 > 0.0) {
+    if outside_strokes {
         let mut chamfer = None;
         let mut exact = None;
         let mut cover = budget::filled(n, 0.0f32)?;
