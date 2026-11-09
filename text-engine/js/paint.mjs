@@ -398,7 +398,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // here and in boxjob.rs (BOX_WIRE_VERSION) at once. paintsBoxes() compares
 // only the number. v11 had two forms: 7858367 added shadow flag 4 (exact)
 // without a bump, so an early v11 wasm refuses every SFX copy's shadow.
-export const BOX_WIRE_VERSION = 12
+export const BOX_WIRE_VERSION = 13
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
@@ -803,6 +803,11 @@ function clipShape(sh) {
  * @param {object} request everything `encodeJob` takes for the glyph job, and
  * @param {number} request.width the surface, device pixels; its corner is (0, 0)
  * @param {number} request.height
+ * @param {number[]} [request.grain] `[x, y]`: the surface's corner in device pixels
+ *   anchored to the page (v13). Every grain the box paints (a shadow's or a glow's
+ *   Noise, Dissolve, Jitter) is hashed from a surface pixel plus it, so a page pixel
+ *   keeps its grain however much room the surface takes; `[0, 0]` hashes the surface's
+ *   own pixels
  * @param {{color: string, opacity: number, x: number, y: number, size: number, grow?: number,
  *   spread?: number, noise?: number, blend?: string, knockout?: boolean, exact?: boolean,
  *   seed?: number, contour?: {preset: string, aa?: boolean, pts?: number[][]}}[]} [request.shadows]
@@ -870,12 +875,14 @@ function clipShape(sh) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
+  const { width, height, grain = null, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
   u32(width)
   u32(height)
+  // Whole device pixels, as i32: the engine reads two's complement.
+  for (const v of [grain?.[0], grain?.[1]]) u32(Number.isFinite(v) ? Math.round(v) | 0 : 0)
   u32(shadows.length)
   for (const sh of shadows) shadowRecord(sh)
   f64(blur)

@@ -35,6 +35,7 @@ fn sheet(
     BoxRequest {
         width,
         height,
+        grain: (0, 0),
         shadows: Vec::new(),
         blur: 0.0,
         taps: Vec::new(),
