@@ -112,7 +112,7 @@ describe('with the Rust engine on', () => {
     expect(resizeBoxMath(0, -1, 's', o, 0, edgeDragFloor(b, 's', standIn, page())).h).toBe(need - 1);
   });
 
-  it('and a box dragged shorter than its text meanwhile is Fixed where the drag left it, and flagged when the face lands', () => {
+  it('and a box dragged shorter than its text meanwhile is Fixed, and grows to hold the text when the face lands', () => {
     setFontSource({ ready: () => arrived });
     const b = open(box());
     const need = neededHeight(linesOf(b), b.style, textInset(b.style));
@@ -131,9 +131,10 @@ describe('with the Rust engine on', () => {
     clearLayoutMemo();
     noteFontsChanged();
     expect(fitHeld(b)).toBe(false);
-    expect(b.h).toBe(EDGE_DRAG_MIN);
     expect(need).toBeGreaterThan(EDGE_DRAG_MIN);
-    expect(b.review).toBeTruthy();
+    expect(b.h).toBeGreaterThanOrEqual(need);
+    expect(b.style.autoHeight).toBe(false);
+    expect(b.review).toBeFalsy();
   });
 });
 
@@ -174,7 +175,7 @@ describe('a drag that takes no floor', () => {
   // while the face is away. The stand-in is wide, the text is "too wide" for
   // the box by its measure, and a fit owed from the drag re-set the box when
   // the face landed - a width and an x the user never chose.
-  it('a corner dragged while the face is arriving is where the drag left it when the face lands', () => {
+  it('a corner dragged while the face is arriving keeps its width and place when the face lands, and grows only to hold the text', () => {
     setFontSource({ ready: () => arrived });
     const b = open(box({ text: 'JJJJ', w: 40, h: 150, style: { size: 100, align: 'center' } }));
     arrived = false;
@@ -192,6 +193,9 @@ describe('a drag that takes no floor', () => {
     arrived = true;
     clearLayoutMemo();
     noteFontsChanged();
-    expect({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size }).toEqual(left);
+    expect({ x: b.x, w: b.w, size: b.style.size }).toEqual({ x: left.x, w: left.w, size: left.size });
+    // (A 100 px "J" is wider than 48 px: that overflow is sideways, where no
+    // height can help, and is flagged.)
+    expect(b.h).toBeGreaterThanOrEqual(left.h);
   });
 });

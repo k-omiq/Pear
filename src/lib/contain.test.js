@@ -983,12 +983,31 @@ describe('the ladder, on an auto box', () => {
 // Test 6: a manual box is never moved, resized or shrunk automatically.
 describe('a manual box', () => {
   const tooMuch = (extra = {}) => ({ id: 'b1', lineN: null, text: 'AAAA BBBB CCCC DDDD', x: 100, y: 100, w: 60, h: 20, style: style({ autoHeight: false, ...extra }) });
+  // A Fixed box never stands shorter than its text (it grows, below), so the
+  // overflow the commands are for is made by hand: the state an agent's edit
+  // or an older file can leave.
+  const squeezed = (p) => {
+    const b = byId('b1');
+    b.h = 20;
+    reviewBox(b, p);
+    hist.resetHistory();
+    return b;
+  };
+
+  it('grows a Fixed box to its text, and flags nothing', () => {
+    load([tooMuch()]);
+    const b = byId('b1');
+    expect(b.h).toBeGreaterThan(20);
+    expect(b.w).toBe(60);
+    expect(b.style.autoHeight).toBe(false);
+    expect(b.review).toBeUndefined();
+  });
 
   it('is flagged, and its geometry and size are left alone', () => {
-    const p = load([tooMuch()]);
+    const p = load([tooMuch({ clip: { on: true, mode: 'exclude', brushSize: 20, shapes: [{ kind: 'ellipse', cx: 10, cy: 10, rx: 4, ry: 4 }] } })]);
     const b = byId('b1');
     const before = geomOf(b);
-    expect(b.review).toMatchObject({ kind: 'overflow', reason: REVIEW_REASONS.manual });
+    expect(b.review).toMatchObject({ kind: 'overflow', reason: REVIEW_REASONS.mask });
     expect(autoFitBox(b, p)).toBe(false);
     expect(refitPage(p)).toBe(0);
     expect(geomOf(b)).toEqual(before);
@@ -997,7 +1016,7 @@ describe('a manual box', () => {
 
   it('is fitted by "Fit now", once, as one undo step - and stays manual', () => {
     const p = load([tooMuch()]);
-    const b = byId('b1');
+    const b = squeezed(p);
     const before = geomOf(b);
     expect(fitBoxNow('b1', p)).toBe(true);
     expect(verdict(b).fits).toBe(true);
@@ -1017,6 +1036,7 @@ describe('a manual box', () => {
 
   it('becomes auto with "Make auto", fitted in the same undo step', () => {
     const p = load([tooMuch()]);
+    squeezed(p);
     const before = geomOf(byId('b1'));
     expect(makeBoxAuto('b1', p)).toBe(true);
     const b = byId('b1');
@@ -1436,7 +1456,7 @@ describe('the grow-only paths', () => {
 
 describe('the flag in the document', () => {
   it('survives a save and a load', () => {
-    load([{ id: 'b1', lineN: null, text: 'AAAA BBBB CCCC DDDD', x: 100, y: 100, w: 60, h: 20, style: style({ autoHeight: false }) }]);
+    load([{ id: 'b1', lineN: null, text: 'AAAA BBBB CCCC DDDD', x: 100, y: 100, w: 60, h: 20, style: style({ autoHeight: false, clip: { on: true, mode: 'exclude', brushSize: 20, shapes: [{ kind: 'ellipse', cx: 10, cy: 10, rx: 4, ry: 4 }] } }) }]);
     const flagged = JSON.parse(JSON.stringify(byId('b1').review));
     expect(flagged).toBeTruthy();
     const saved = JSON.parse(JSON.stringify(app.pages));
@@ -1508,6 +1528,9 @@ describe('parity', () => {
   it('a flagged box says so in its PSD layer name, and the importer takes it off again', () => {
     const p = load([{ id: 'b1', lineN: null, text: 'AAAA BBBB CCCC DDDD', x: 100, y: 100, w: 60, h: 20, style: style({ autoHeight: false }) }]);
     const b = byId('b1');
+    // Squeezed by hand: a Fixed box grows to its text on its own.
+    b.h = 20;
+    reviewBox(b, p);
     expect(psd.textLayerFor(p, b, null).name.endsWith(psd.REVIEW_MARK)).toBe(true);
     const raster = psd.textLayerFor(p, { ...b, style: { ...b.style, roughen: { on: true, amount: 2 } } }, { left: 0, top: 0, right: 1, bottom: 1, imageData: {} });
     expect(raster.name.endsWith(`${psd.REVIEW_MARK}${psd.RASTER_MARK}`)).toBe(true);

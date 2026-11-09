@@ -159,9 +159,13 @@ describe('the box grows to its text, anchored where the text is', () => {
     expect(geom(page().boxes[0])).toEqual({ y: 500, h: 20 });
   });
 
-  it('declines when the box has opted out', () => {
+  // Text never stands outside its box: a Fixed height is the least the box
+  // is, and it grows to its text as an Auto height box does.
+  it('grows a Fixed box too', () => {
     loadProjectPages(doc([twoLiner({ style: { size: 20, lineHeight: 1.1, valign: 'middle', autoHeight: false } })]));
-    expect(geom(page().boxes[0])).toEqual({ y: 500, h: 20 });
+    const g = geom(page().boxes[0]);
+    expect(g.h).toBeGreaterThan(20);
+    expect(g.y + g.h / 2).toBeCloseTo(510, 6);
   });
 
   it('is capped at the page and clamped inside it', () => {
@@ -410,15 +414,17 @@ describe('undo restores the height an edit grew', () => {
       },
     ]);
     const b = byId('b1');
+    // Taller than its text: a Fixed height the load leaves alone, and the
+    // switch to Auto height shrinks it.
+    b.h = 200;
     const before = geom(b);
-    expect(before.h).toBe(20); // the load's refit declined, as it must
     openBulk();
     toggleBulkTarget('b1');
     app.bulk.style.autoHeight = true;
     setBulkProp('autoHeight', true);
     applyBulk();
     const grown = geom(byId('b1'));
-    expect(grown.h).toBeGreaterThan(20);
+    expect(grown.h).toBeLessThan(200);
     undo();
     expect(byId('b1').style.autoHeight).toBe(false);
     expect(geom(byId('b1'))).toEqual(before);
