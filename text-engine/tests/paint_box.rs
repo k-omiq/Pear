@@ -1123,7 +1123,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 15));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 16));
     assert_eq!(r.grain, (-3, 7));
 }
 
