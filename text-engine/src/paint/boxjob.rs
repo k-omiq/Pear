@@ -788,8 +788,10 @@ impl<'a> Reader<'a> {
 ///     f64 ox, oy               the box's corner in job units: the strokes
 ///                              are stated from it
 ///     u32 n tips, then per tip: u32 length, UTF-8 key (at most 4096 tips,
-///                              keys of at most 1024 bytes; empty while
-///                              every stroke is round)
+///                              keys of at most 1024 bytes): the tips the
+///                              strokes stamp with, put in the engine's tip
+///                              cache beforehand (`mt_ink_tip_put`); a key
+///                              it does not hold paints round
 ///     u32 n strokes (at most 4096), then per stroke:
 ///       u32 flags              1 ribbon, 2 follow direction, 4 darken tips,
 ///                              8 Compare density, 16 watercolour edge,

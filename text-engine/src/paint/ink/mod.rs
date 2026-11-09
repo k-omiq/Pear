@@ -11,6 +11,8 @@
 //!
 //! ```text
 //! stamps.rs   strokeStamps: a stored stroke as its dabs (brush.js's twin)
+//! tips.rs     imported tips: the engine's cache of them, their halvings,
+//!             the sampler a stamp reads one with
 //! pixels.rs   the passes over a finished stroke: grain, watercolour edge,
 //!             anti-aliasing grade, Compare density
 //! ```
@@ -25,12 +27,22 @@
 //! the ink's densest alpha (`paintFinish`). The finish's shadows are the box
 //! job's own, thrown from one silhouette of letters, ink and outlines.
 //!
-//! Round dabs only, so far: an imported tip is the canvas's.
+//! A dab is the round one or an imported tip (`stampTip`): the tip's
+//! coverage drawn into its rectangle under the stamp's turn, flips and
+//! flatness, read bilinear from the level `pickTipLevel` picks (nearest with
+//! anti-aliasing None); a ribbon unrolls the tip along the path in slices
+//! (`sliceTip`). The colour is the stroke's, laid at composite. A tip the
+//! engine has not been given is the round dab (`tipFor`); a tip of a cycle
+//! it has not been given is the stroke's own.
 
 mod pixels;
 pub mod stamps;
+pub mod tips;
 
 pub use stamps::{stroke_bounds, stroke_stamps, Stamp};
+pub use tips::Tip;
+
+use std::rc::Rc;
 
 use super::budget;
 use super::fx::distance;
@@ -185,8 +197,10 @@ impl Default for Stroke {
 pub struct Ink {
     /// The box's top-left in job units: the strokes are stated from it.
     pub origin: Pt,
-    /// The tip table, by key. Empty while every stroke is round.
+    /// The tip table, by key (`tips`): what a stroke's tip and cycle index.
     pub tips: Vec<String>,
+    /// Each key's tip, where the engine holds it (`name_tips`).
+    resolved: Vec<Option<Rc<Tip>>>,
     pub strokes: Vec<Stroke>,
     /// The box job's rim pass: the outlines round the ink with the ink cut
     /// out of them, and not the ink (`join`).
@@ -201,11 +215,21 @@ impl Ink {
         Self {
             origin,
             tips: Vec::new(),
+            resolved: Vec::new(),
             strokes,
             rims: false,
             layer: None,
             prepared_for: None,
         }
+    }
+
+    /// Names the tip table, `keys`, and takes each key's tip from the
+    /// engine's cache (`tips::with_cache`), where it is; one it does not
+    /// hold paints round. Names them for the job being prepared, so none is
+    /// let go before it is painted.
+    pub fn name_tips(&mut self, keys: Vec<String>) {
+        self.resolved = tips::with_cache(|c| keys.iter().map(|k| c.get(k)).collect());
+        self.tips = keys;
     }
 
     /// Lays the ink under `transform`, cut to `surface`, for every pass of a
@@ -222,6 +246,7 @@ impl Ink {
         self.layer = InkLayer::build(
             self.origin,
             &self.strokes,
+            &self.resolved,
             transform,
             Some(surface),
             reach,
@@ -340,29 +365,121 @@ fn wants_water_edge(k: &Stroke) -> bool {
 
 /// How flat a round dab's polygon may be from its circle, device px.
 const DAB_TOLERANCE: f64 = 0.02;
+/// How far past its top and foot a ribbon's slice takes a pixel's centre,
+/// in the slice's own units (`Pen::image`).
+const SEAM: f64 = 1e-7;
 
-/// One round dab's coverage, and how strong its soft ramp is there: `each`
-/// is called with the pixel's index in `rect` (row by row), its coverage
-/// and the ramp's alpha `g` (1 for a hard dab). The canvas fills the dab's
-/// arc with its colour, or with a radial gradient from the colour at
-/// `hardness` of the radius to clear at the rim, interpolated before it is
-/// premultiplied: at ramp alpha `g` the colour is `g` of the way from black.
-#[allow(clippy::too_many_arguments)]
-fn dab(
-    s: &Stamp,
-    k: &Stroke,
-    t: &Affine,
+/// What one stamp is pressed with: the round dab, an imported tip, or a
+/// ribbon's slice of one.
+#[derive(Clone, Copy)]
+enum Press<'a> {
+    Round,
+    Tip(&'a Tip),
+    Slice(&'a Tip),
+}
+
+/// A stroke's tips, where the engine holds them: its own, and its cycle's.
+struct Tips<'a> {
+    own: Option<&'a Tip>,
+    cycle: Vec<Option<&'a Tip>>,
+}
+
+impl<'a> Tips<'a> {
+    fn of(k: &Stroke, table: &'a [Option<Rc<Tip>>]) -> Self {
+        let at = |i: Option<u32>| {
+            i.and_then(|i| table.get(i as usize))
+                .and_then(|t| t.as_deref())
+        };
+        let own = at(k.tip);
+        let cycle = if own.is_some() {
+            k.cycle.iter().map(|&c| at(c)).collect()
+        } else {
+            Vec::new()
+        };
+        Self { own, cycle }
+    }
+
+    /// `drawInk`'s `stamper`: round where the stroke's own tip is not in
+    /// hand (`tipFor`); a ribbon's slice of its own tip; the cycle's tip of
+    /// the stamp where that is in hand, and the stroke's own where it is not
+    /// and for the cycle's first, as the canvas draws them.
+    fn press(&self, s: &Stamp) -> Press<'a> {
+        let Some(own) = self.own else {
+            return Press::Round;
+        };
+        if s.ribbon.is_some() {
+            return Press::Slice(own);
+        }
+        match s.tip {
+            Some(i) if i > 0 => Press::Tip(self.cycle.get(i).copied().flatten().unwrap_or(own)),
+            _ => Press::Tip(own),
+        }
+    }
+}
+
+/// The rasteriser's scratch, kept over a stroke's stamps.
+#[derive(Default)]
+struct Scratch {
+    cov: Vec<f32>,
+    spans: Vec<(u32, u32)>,
+}
+
+/// Called for each pixel a stamp reaches, with its index in the stroke's
+/// rectangle (row by row), its coverage by the stamp's shape, the stamp's
+/// strength there (the soft dab's ramp, the tip's coverage) and how much of
+/// the colour it carries there (the ramp again for a soft dab, whose
+/// gradient runs to clear black; all of it for a tip, tinted flat).
+type Each<'e> = dyn FnMut(usize, f32, f32, f32) + 'e;
+
+/// The coverage of `polys` over `rect`: `each` with each pixel's index in
+/// `rect`, its device position and its coverage.
+fn cover(
+    polys: Polys,
     rect: IBox,
     rasterizer: &dyn Rasterizer,
-    cov: &mut Vec<f32>,
-    spans: &mut Vec<(u32, u32)>,
-    mut each: impl FnMut(usize, f32, f32),
+    sc: &mut Scratch,
+    mut each: impl FnMut(usize, i32, i32, f32),
 ) -> Result<(), Error> {
-    let r = s.size / 2.0;
-    if r.is_nan() || r <= 0.0 {
+    budget::check()?;
+    let Some(bx) = super::raster::pixel_box(&polys).map(|b| b.intersect(&rect)) else {
+        return Ok(());
+    };
+    if bx.is_empty() {
         return Ok(());
     }
-    let flat = s.flat.unwrap_or(k.flatness);
+    let mut coverage = rasterizer.prepare(&[Part::plain(polys)], bx)?;
+    let stride = bx.width() + 2;
+    let rw = rect.width();
+    let mut y = bx.y0;
+    while y < bx.y1 {
+        let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
+        let rows = (y_end - y) as usize;
+        sc.cov.clear();
+        sc.cov.resize(stride * rows, 0.0);
+        sc.spans.clear();
+        sc.spans.resize(rows, (0, 0));
+        coverage.render(y, y_end, &mut sc.cov, stride, &mut sc.spans)?;
+        for (row, &(lo, hi)) in sc.spans.iter().enumerate() {
+            let dy = y + row as i32;
+            let hi = (hi as usize).min(bx.width());
+            for x in lo as usize..hi {
+                let c = sc.cov[row * stride + x];
+                if c <= 0.0 {
+                    continue;
+                }
+                let dx = bx.x0 + x as i32;
+                let i = (dy - rect.y0) as usize * rw + (dx - rect.x0) as usize;
+                each(i, dx, dy, c.min(1.0));
+            }
+        }
+        y = y_end;
+    }
+    Ok(())
+}
+
+/// A stamp's own frame under `t`: moved to it, turned, flipped, and
+/// squashed by `flat` where that is given (a ribbon's slice is not).
+fn frame(t: &Affine, s: &Stamp, flat: Option<f64>) -> Affine {
     let mut m = t.after(&Affine::translate(s.x, s.y));
     if s.angle != 0.0 {
         let (sin, cos) = ((s.angle * core::f64::consts::PI) / 180.0).sin_cos();
@@ -371,82 +488,235 @@ fn dab(
     if s.fx == -1.0 || s.fy == -1.0 {
         m = m.after(&Affine::scale(s.fx, s.fy));
     }
-    if flat != 1.0 {
-        m = m.after(&Affine::scale(1.0, flat));
+    if let Some(f) = flat.filter(|&f| f != 1.0) {
+        m = m.after(&Affine::scale(1.0, f));
     }
-    // The polygon's corners on a circle a little wider than the arc, so it
-    // holds the arc's area.
-    let device = r * m.max_scale();
-    let step = if DAB_TOLERANCE < device {
-        2.0 * (1.0 - DAB_TOLERANCE / device).acos()
-    } else {
-        core::f64::consts::FRAC_PI_2
-    };
-    let n = (core::f64::consts::TAU / step).ceil().clamp(8.0, 4096.0) as usize;
-    let a = core::f64::consts::TAU / n as f64;
-    let wide = r * (a / a.sin()).sqrt();
-    let mut polys = Polys::default();
-    for i in 0..n {
-        let (sin, cos) = (a * i as f64).sin_cos();
-        polys.push(m.apply(Pt::new(wide * cos, wide * sin)));
-    }
-    polys.close();
-    budget::check()?;
-    let Some(bx) = super::raster::pixel_box(&polys).map(|b| b.intersect(&rect)) else {
-        return Ok(());
-    };
-    if bx.is_empty() {
-        return Ok(());
-    }
-    let soft = k.hardness < 100.0;
-    let inv = if soft { m.invert() } else { None };
-    if soft && inv.is_none() {
-        return Ok(());
-    }
-    let r0 = r * (k.hardness / 100.0);
-    let ramp = |x: i32, y: i32| -> f32 {
-        let Some(inv) = &inv else {
-            return 1.0;
-        };
-        let q = inv.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
-        let d = q.x.hypot(q.y);
-        let tg = if r > r0 {
-            ((d - r0) / (r - r0)).clamp(0.0, 1.0)
-        } else if d < r {
-            0.0
-        } else {
-            1.0
-        };
-        (1.0 - tg) as f32
-    };
-    let mut coverage = rasterizer.prepare(&[Part::plain(polys)], bx)?;
-    let stride = bx.width() + 2;
-    let rw = rect.width();
-    let mut y = bx.y0;
-    while y < bx.y1 {
-        let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
-        let rows = (y_end - y) as usize;
-        cov.clear();
-        cov.resize(stride * rows, 0.0);
-        spans.clear();
-        spans.resize(rows, (0, 0));
-        coverage.render(y, y_end, cov, stride, spans)?;
-        for (row, &(lo, hi)) in spans.iter().enumerate() {
-            let dy = y + row as i32;
-            let hi = (hi as usize).min(bx.width());
-            for x in lo as usize..hi {
-                let c = cov[row * stride + x];
-                if c <= 0.0 {
-                    continue;
-                }
-                let dx = bx.x0 + x as i32;
-                let i = (dy - rect.y0) as usize * rw + (dx - rect.x0) as usize;
-                each(i, c.min(1.0), ramp(dx, dy));
-            }
+    m
+}
+
+/// How a stroke is pressed, the same for each of its stamps.
+struct Pen<'a> {
+    k: &'a Stroke,
+    tips: Tips<'a>,
+    t: &'a Affine,
+    /// Device px a page px is worth (`transformScale`).
+    scale: f64,
+    /// A tip read bilinear, not nearest: anti-aliasing above None.
+    smooth: bool,
+    rect: IBox,
+    rasterizer: &'a dyn Rasterizer,
+}
+
+impl Pen<'_> {
+    fn press(&self, s: &Stamp, sc: &mut Scratch, each: &mut Each) -> Result<(), Error> {
+        match self.tips.press(s) {
+            Press::Round => self.dab(s, sc, each),
+            Press::Tip(tip) => self.stamp_tip(s, tip, sc, each),
+            Press::Slice(tip) => self.slice_tip(s, tip, sc, each),
         }
-        y = y_end;
     }
-    Ok(())
+
+    /// `stampRound`: one round dab. The canvas fills the dab's arc with its
+    /// colour, or with a radial gradient from the colour at `hardness` of
+    /// the radius to clear at the rim, interpolated before it is
+    /// premultiplied: at ramp alpha `g` the colour is `g` of the way from
+    /// black.
+    fn dab(&self, s: &Stamp, sc: &mut Scratch, each: &mut Each) -> Result<(), Error> {
+        let k = self.k;
+        let r = s.size / 2.0;
+        if r.is_nan() || r <= 0.0 {
+            return Ok(());
+        }
+        let m = frame(self.t, s, Some(s.flat.unwrap_or(k.flatness)));
+        // The polygon's corners on a circle a little wider than the arc, so it
+        // holds the arc's area.
+        let device = r * m.max_scale();
+        let step = if DAB_TOLERANCE < device {
+            2.0 * (1.0 - DAB_TOLERANCE / device).acos()
+        } else {
+            core::f64::consts::FRAC_PI_2
+        };
+        let n = (core::f64::consts::TAU / step).ceil().clamp(8.0, 4096.0) as usize;
+        let a = core::f64::consts::TAU / n as f64;
+        let wide = r * (a / a.sin()).sqrt();
+        let mut polys = Polys::default();
+        for i in 0..n {
+            let (sin, cos) = (a * i as f64).sin_cos();
+            polys.push(m.apply(Pt::new(wide * cos, wide * sin)));
+        }
+        polys.close();
+        let soft = k.hardness < 100.0;
+        let inv = if soft { m.invert() } else { None };
+        if soft && inv.is_none() {
+            return Ok(());
+        }
+        let r0 = r * (k.hardness / 100.0);
+        let ramp = |x: i32, y: i32| -> f32 {
+            let Some(inv) = &inv else {
+                return 1.0;
+            };
+            let q = inv.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+            let d = q.x.hypot(q.y);
+            let tg = if r > r0 {
+                ((d - r0) / (r - r0)).clamp(0.0, 1.0)
+            } else if d < r {
+                0.0
+            } else {
+                1.0
+            };
+            (1.0 - tg) as f32
+        };
+        cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
+            let g = ramp(x, y);
+            each(i, c, g, g);
+        })
+    }
+
+    /// `drawImage` of the level's `src` rectangle (level px: x, y, width,
+    /// height) into `dst` (the same, in the stamp's frame) under `m`: each
+    /// pixel the rectangle covers, and the level read where the pixel's
+    /// centre falls in it.
+    ///
+    /// `cut` is a ribbon's slice: its top and foot are where it meets the
+    /// slices before and after it, so a pixel there is the slice's whole
+    /// when its centre is in it and not at all when it is not (the top in,
+    /// the foot out), and only the band's sides are anti-aliased. Laid one
+    /// over the other, two slices that each covered part of such a pixel
+    /// would leave it short: a seam across the band at every slice, where
+    /// the canvas lays its slices close to seamless.
+    #[allow(clippy::too_many_arguments)]
+    fn image(
+        &self,
+        level: &tips::Level,
+        src: (f64, f64, f64, f64),
+        dst: (f64, f64, f64, f64),
+        m: &Affine,
+        cut: bool,
+        sc: &mut Scratch,
+        each: &mut Each,
+    ) -> Result<(), Error> {
+        let (dx, dy, dw, dh) = dst;
+        let Some(inv) = m.invert() else {
+            return Ok(());
+        };
+        // A cut slice's rectangle reaches past its top and foot, by more
+        // than a pixel's half-diagonal on the device, so the coverage of a
+        // pixel whose centre is in the slice is its sides' alone.
+        let reach = if cut {
+            let along = m.0[2].hypot(m.0[3]);
+            if along.is_nan() || along <= 0.0 {
+                return Ok(());
+            }
+            1.5 / along
+        } else {
+            0.0
+        };
+        let (y0, y1) = (dy - reach, dy + dh + reach);
+        let mut polys = Polys::default();
+        for (x, y) in [(dx, y0), (dx + dw, y0), (dx + dw, y1), (dx, y1)] {
+            polys.push(m.apply(Pt::new(x, y)));
+        }
+        polys.close();
+        let (sx, sy, sw, sh) = src;
+        let (kx, ky) = (sw / dw, sh / dh);
+        let smooth = self.smooth;
+        cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
+            let q = inv.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+            // A hair either way: two slices state the line they meet on each
+            // from its own centre, and a pixel's centre on that line must
+            // not fall between them.
+            if cut && !(q.y >= dy - SEAM && q.y < dy + dh + SEAM) {
+                return;
+            }
+            let g = level.sample(sx + (q.x - dx) * kx, sy + (q.y - dy) * ky, smooth);
+            if g > 0.0 {
+                each(i, c, g, 1.0);
+            }
+        })
+    }
+
+    /// `stampTip`: one stamp of an imported tip. Its longest side is the
+    /// stamp's size, and the flatness squashes its own y as it squashes the
+    /// round dab's; read from the smallest level still as big as the stamp
+    /// is on the device.
+    fn stamp_tip(
+        &self,
+        s: &Stamp,
+        tip: &Tip,
+        sc: &mut Scratch,
+        each: &mut Each,
+    ) -> Result<(), Error> {
+        let (nw, nh) = tip.natural;
+        let f = s.size / nw.max(nh);
+        let (dw, dh) = (nw * f, nh * f);
+        if !(dw > 0.0 && dh > 0.0) {
+            return Ok(());
+        }
+        let m = frame(self.t, s, Some(s.flat.unwrap_or(self.k.flatness)));
+        let level = tip.pick(s.size * self.scale);
+        let (lw, lh) = (level.width as f64, level.height as f64);
+        self.image(
+            level,
+            (0.0, 0.0, lw, lh),
+            (-dw / 2.0, -dh / 2.0, dw, dh),
+            &m,
+            false,
+            sc,
+            each,
+        )
+    }
+
+    /// `sliceTip`: one slice of a ribbon. The tip's width is the band's,
+    /// the stamp's size, and its height runs along the path at the same
+    /// scale, again from the top once it is used up: the rows of the tip
+    /// for the stretch of path the slice covers, in two parts where that
+    /// stretch runs past the tip's foot.
+    fn slice_tip(
+        &self,
+        s: &Stamp,
+        tip: &Tip,
+        sc: &mut Scratch,
+        each: &mut Each,
+    ) -> Result<(), Error> {
+        let Some((d, len)) = s.ribbon else {
+            return Ok(());
+        };
+        let (nw, nh) = tip.natural;
+        let f = s.size / nw;
+        let period = nh * f;
+        if !(f > 0.0 && period > 0.0) {
+            return Ok(());
+        }
+        let level = tip.pick(s.size.max(len) * self.scale);
+        let k = level.height as f64 / nh;
+        let lw = level.width as f64;
+        let m = frame(self.t, s, None);
+        let mut v0 = ((d - len / 2.0) % period + period) % period / f;
+        let mut left = len / f;
+        let mut y = -len / 2.0;
+        while left > 1e-6 {
+            let take = left.min(nh - v0);
+            if take.is_nan() || take <= 0.0 {
+                // Rounding put the start on the tip's foot: that is its top.
+                v0 = 0.0;
+                continue;
+            }
+            let dh = take * f;
+            self.image(
+                level,
+                (0.0, v0 * k, lw, take * k),
+                (-s.size / 2.0, y, s.size, dh),
+                &m,
+                true,
+                sc,
+                each,
+            )?;
+            y += dh;
+            left -= take;
+            v0 = 0.0;
+        }
+        Ok(())
+    }
 }
 
 /// What one stroke has laid before it goes on the ink under it.
@@ -476,12 +746,13 @@ impl Laid {
 }
 
 /// One stroke laid in `rect` and put on `block` (premultiplied over `bx`):
-/// `paintStrokes` for one stroke of round dabs.
+/// `paintStrokes` for one stroke.
 #[allow(clippy::too_many_arguments)]
 fn paint_stroke(
     k: &Stroke,
+    tips: Tips,
     stamps: &[Stamp],
-    t: &Affine,
+    (t, scale): (&Affine, f64),
     rect: IBox,
     (water_r, water_blur): (f64, f64),
     rasterizer: &dyn Rasterizer,
@@ -489,18 +760,38 @@ fn paint_stroke(
     bx: IBox,
 ) -> Result<(), Error> {
     let fade = stamps.iter().any(|s| s.alpha < k.opacity - 1e-6);
+    // Blend brush tips with Darken: only a tip has anything inside its edge
+    // to keep.
+    let darken = !fade && k.darken_tips && tips.own.is_some();
     let solid = k.opacity >= 0.999;
     let water = wants_water_edge(k);
     let grain = k.texture && k.texture_density > 0.0;
     let density = k.density;
     let aa = k.antialias;
-    let layered = !solid || aa < 3 || water || fade || grain || density;
+    let layered = !solid || aa < 3 || water || darken || fade || grain || density;
     let (w, h) = (rect.width(), rect.height());
     let n = w * h;
     let [cr, cg, cb, _] = k.color.0;
     let rgb = [cr, cg, cb].map(|c| f32::from(c) / 255.0);
-    let mut cov = Vec::new();
-    let mut spans = Vec::new();
+    let pen = Pen {
+        k,
+        tips,
+        t,
+        scale,
+        smooth: aa > 0,
+        rect,
+        rasterizer,
+    };
+    let mut sc = Scratch::default();
+    // A ground read back as the mask, eight bits a dab: the stroke's colour
+    // at that alpha.
+    let mask = |grey: Vec<u8>| {
+        let mut px = vec![0u8; n * 4];
+        for (p, &a) in px.as_chunks_mut::<4>().0.iter_mut().zip(&grey) {
+            p.copy_from_slice(&[cr, cg, cb, a]);
+        }
+        Laid::Straight(px)
+    };
     let mut laid = if fade {
         // Densest wins: each dab white at its own strength on black, eight
         // bits, merged by lighten, read back as the mask.
@@ -516,49 +807,41 @@ fn paint_stroke(
                 continue;
             }
             let o = o as f32;
-            dab(
-                s,
-                k,
-                t,
-                rect,
-                rasterizer,
-                &mut cov,
-                &mut spans,
-                |i, c, g| {
-                    let v = clamped(f64::from(g * g * c * o) * 255.0);
-                    if v > grey[i] {
-                        grey[i] = v;
-                    }
-                },
-            )?;
+            pen.press(s, &mut sc, &mut |i, c, g, shade| {
+                let v = clamped(f64::from(shade * g * c * o) * 255.0);
+                if v > grey[i] {
+                    grey[i] = v;
+                }
+            })?;
         }
-        let mut px = vec![0u8; n * 4];
-        for (p, &a) in px.as_chunks_mut::<4>().0.iter_mut().zip(&grey) {
-            p.copy_from_slice(&[cr, cg, cb, a]);
+        mask(grey)
+    } else if darken {
+        // Each dab's density as darkness on white, merged by darken: where
+        // dabs overlap the denser wins, as coverage `d + c (max(d, g) - d)`
+        // for a dab of coverage `g` that covers the pixel by `c`; eight bits
+        // a dab, read back as the mask.
+        let mut grey = vec![0u8; n];
+        for s in stamps {
+            pen.press(s, &mut sc, &mut |i, c, g, _| {
+                let d = f64::from(grey[i]) / 255.0;
+                let v = d + f64::from(c) * (d.max(f64::from(g)) - d);
+                grey[i] = clamped(v * 255.0);
+            })?;
         }
-        Laid::Straight(px)
+        mask(grey)
     } else {
         let mut px = vec![0.0f32; n * 4];
         for s in stamps {
             let ga = if layered { 1.0 } else { s.alpha as f32 };
-            dab(
-                s,
-                k,
-                t,
-                rect,
-                rasterizer,
-                &mut cov,
-                &mut spans,
-                |i, c, g| {
-                    let a = g * c * ga;
-                    let pc = g * a;
-                    over(
-                        &mut px[i * 4..i * 4 + 4],
-                        [rgb[0] * pc, rgb[1] * pc, rgb[2] * pc, a],
-                        1.0,
-                    );
-                },
-            )?;
+            pen.press(s, &mut sc, &mut |i, c, g, shade| {
+                let a = g * c * ga;
+                let pc = shade * a;
+                over(
+                    &mut px[i * 4..i * 4 + 4],
+                    [rgb[0] * pc, rgb[1] * pc, rgb[2] * pc, a],
+                    1.0,
+                );
+            })?;
         }
         Laid::Premul(px)
     };
@@ -645,6 +928,7 @@ impl InkLayer {
     fn build(
         origin: Pt,
         strokes: &[Stroke],
+        tips: &[Option<Rc<Tip>>],
         transform: &Affine,
         surface: Option<IBox>,
         reach: f64,
@@ -705,7 +989,17 @@ impl InkLayer {
         }
         let mut content = budget::filled(w * h * 4, 0.0f32)?;
         for (k, stamps, rect, water) in &laid {
-            paint_stroke(k, stamps, &t, *rect, *water, rasterizer, &mut content, bx)?;
+            paint_stroke(
+                k,
+                Tips::of(k, tips),
+                stamps,
+                (&t, scale),
+                *rect,
+                *water,
+                rasterizer,
+                &mut content,
+                bx,
+            )?;
         }
         let mut alpha = budget::filled(w * h, 0u8)?;
         let mut top = 0u8;
@@ -832,6 +1126,7 @@ pub(crate) fn join(
         transient = InkLayer::build(
             ink.origin,
             &ink.strokes,
+            &ink.resolved,
             &request.transform,
             None,
             reach,
@@ -1024,7 +1319,7 @@ impl<'a> Reader<'a> {
             strokes.push(k);
         }
         let mut ink = Ink::new(origin, strokes);
-        ink.tips = tips;
+        ink.name_tips(tips);
         Ok(ink)
     }
 
