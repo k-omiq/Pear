@@ -964,9 +964,25 @@ function boxPlan(box, p, flat = false) {
 // passes whole. Never true under the browser engine.
 export function boxInJob(box) {
   if (!engineDraws() || glyphPainter().box !== true) return false;
+  return inkJobGap(box) === null;
+}
+
+// Why a box's brush ink keeps the box out of the job (`boxInJob`) where the
+// painter paints whole boxes, or null where it does not: 'engine' (a wasm
+// before box wire v12, which paints no ink), 'tip' (a stroke with an imported
+// tip or a cycle of tips), 'mesh' (a mesh that moves something) or 'roughen'.
+// Such a box is painted by the canvas, which paints none of its layer
+// effects, Fill Opacity, blend mode, Channels or Blend If: the Inspector says
+// so (its ink note) rather than showing them as live. The question is asked of a
+// painter that paints whole boxes (`glyphPainter().box`), as `boxInJob` asks.
+export function inkJobGap(box) {
   const s = box.style;
-  if (!inkActive(s.ink)) return true;
-  return glyphPainter().ink === true && inkIsRound(s.ink) && !warpActive(s, box.w, box.h) && s.roughen?.on !== true;
+  if (!inkActive(s.ink)) return null;
+  if (glyphPainter().ink !== true) return 'engine';
+  if (!inkIsRound(s.ink)) return 'tip';
+  if (warpActive(s, box.w, box.h)) return 'mesh';
+  if (s.roughen?.on === true) return 'roughen';
+  return null;
 }
 
 // Every stroke of the ink stamped with the round dab: no imported tip, no

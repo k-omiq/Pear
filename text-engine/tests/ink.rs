@@ -4,6 +4,13 @@
 //! shadow is thrown from it, Fill Opacity fades it and No Fill keeps it.
 #![cfg(feature = "paint")]
 
+use mt_text::paint::fx::blend::Blend;
+use mt_text::paint::fx::blending::{Blending, Range};
+use mt_text::paint::fx::effects::{
+    Bevel, BevelStyle, BevelTechnique, Effect, Glow, InnerShadow, Overlay, Paint, PaintOverlay,
+    Position, Satin, Stroke as FxStroke, Technique,
+};
+use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::ink::{stroke_stamps, Flip, Ink, Stamp, Stroke, Taper, TipOrder};
 use mt_text::paint::{
     decode_box, paint_box, Affine, Align, Band, BoxRequest, Effects, Fill, Job, Pt, Raster,
@@ -703,4 +710,232 @@ fn no_fill_hides_the_letters_fill_and_keeps_the_ink() {
     let out = paint(&mut e, &mut r);
     assert_eq!(px(&out, 80, 50), [0, 0, 0, 255]);
     assert!(!out.data.as_chunks::<4>().0.contains(&[0, 0, 255, 255]));
+}
+
+fn glow(color: Rgba, size: f64) -> Glow {
+    Glow {
+        color,
+        gradient: None,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        technique: Technique::Softer,
+        size,
+        spread: 0.0,
+        range: 0.5,
+        noise: 0.0,
+        contour: None,
+        center: false,
+        jitter: 0.0,
+        seed: 1,
+    }
+}
+
+/// Decision A2's gap (review Gaps, first row): every layer effect, Fill
+/// Opacity, the blend mode, Channels and Blend If paint on a box of brush
+/// ink alone, from the ink as the box's content, as they do on letters.
+/// The stroke lies from (24, 44) to (136, 56), its middle row 50.
+#[test]
+fn every_effect_and_blending_option_paints_on_ink_alone() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let with = |e: &mut Engine, effects: Vec<Effect>| {
+        let mut r = inked(font, "");
+        r.effects = effects;
+        paint(e, &mut r)
+    };
+    let plain = with(&mut e, Vec::new());
+    assert_eq!(px(&plain, 80, 50), [0, 0, 0, 255]);
+    let green = Rgba([0, 255, 0, 255]);
+    // Outer Glow: round the ink, under it.
+    let r = with(&mut e, vec![Effect::OuterGlow(glow(RED, 6.0))]);
+    assert_eq!(px(&r, 80, 50), [0, 0, 0, 255]);
+    assert!(
+        px(&r, 80, 57)[0] > 100 && px(&r, 80, 57)[3] > 100,
+        "{:?}",
+        px(&r, 80, 57)
+    );
+    assert!(
+        px(&r, 80, 60)[3] > 0 && px(&r, 80, 64)[3] == 0,
+        "{:?}",
+        px(&r, 80, 60)
+    );
+    // Inner Glow: in from the ink's edge, the middle less lit.
+    let r = with(&mut e, vec![Effect::InnerGlow(glow(RED, 4.0))]);
+    assert!(px(&r, 80, 45)[0] > 60, "{:?}", px(&r, 80, 45));
+    assert!(px(&r, 80, 50)[0] < px(&r, 80, 45)[0]);
+    // Inner Shadow thrown 3 down: the top of the ink.
+    let r = with(
+        &mut e,
+        vec![Effect::InnerShadow(InnerShadow {
+            color: RED,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            x: 0.0,
+            y: 3.0,
+            size: 0.0,
+            choke: 0.0,
+            noise: 0.0,
+            contour: None,
+            seed: 1,
+        })],
+    );
+    assert_eq!(px(&r, 80, 45), [255, 0, 0, 255]);
+    assert_eq!(px(&r, 80, 54), [0, 0, 0, 255]);
+    // The three overlays recolour it.
+    let r = with(
+        &mut e,
+        vec![Effect::ColorOverlay(Overlay {
+            color: BLUE,
+            opacity: 1.0,
+            blend: Blend::Normal,
+        })],
+    );
+    assert_eq!(px(&r, 80, 50), [0, 0, 255, 255]);
+    let ramp = Gradient {
+        stops: vec![(0.0, [0.0, 0.0, 1.0]), (1.0, [1.0, 0.0, 0.0])],
+        opacity: vec![(0.0, 1.0), (1.0, 1.0)],
+        style: Style::Linear,
+        angle: 0.0,
+        scale: 1.0,
+        reverse: false,
+        offset: (0.0, 0.0),
+        noise: None,
+    };
+    let r = with(
+        &mut e,
+        vec![Effect::GradientOverlay(PaintOverlay {
+            opacity: 1.0,
+            blend: Blend::Normal,
+            paint: Paint::Gradient(ramp),
+        })],
+    );
+    // Across the ink's own frame: blue at its left end, red at its right.
+    let (left, right) = (px(&r, 30, 50), px(&r, 130, 50));
+    assert!(left[2] > 200 && left[0] < 50, "{left:?}");
+    assert!(right[0] > 200 && right[2] < 50, "{right:?}");
+    let r = with(
+        &mut e,
+        vec![Effect::PatternOverlay(PaintOverlay {
+            opacity: 1.0,
+            blend: Blend::Normal,
+            paint: Paint::Fill(Fill::Solid(green)),
+        })],
+    );
+    assert_eq!(px(&r, 80, 50), [0, 255, 0, 255]);
+    // Satin: light inside the ink, nothing past it.
+    let r = with(
+        &mut e,
+        vec![Effect::Satin(Satin {
+            color: RED,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            angle: 90.0,
+            distance: 3.0,
+            size: 2.0,
+            invert: false,
+            contour: None,
+        })],
+    );
+    assert!((44..57).any(|y| px(&r, 80, y)[0] > 100));
+    assert_eq!(px(&r, 80, 60)[3], 0);
+    // A Photoshop stroke outside it.
+    let r = with(
+        &mut e,
+        vec![Effect::Stroke(FxStroke {
+            size: 3.0,
+            position: Position::Outside,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            paint: Paint::Color(RED),
+            seed: 1,
+        })],
+    );
+    assert_eq!(px(&r, 80, 50), [0, 0, 0, 255]);
+    assert_eq!(px(&r, 80, 57), [255, 0, 0, 255]);
+    // An Inner Bevel: its highlight lights the top edge of black ink.
+    let r = with(
+        &mut e,
+        vec![Effect::Bevel(Bevel {
+            style: BevelStyle::Inner,
+            technique: BevelTechnique::Smooth,
+            depth: 1.0,
+            up: true,
+            size: 4.0,
+            soften: 0.0,
+            angle: 90.0,
+            altitude: 30.0,
+            highlight: Overlay {
+                color: Rgba([255, 255, 255, 255]),
+                opacity: 1.0,
+                blend: Blend::Screen,
+            },
+            shadow: Overlay {
+                color: Rgba([0, 0, 0, 255]),
+                opacity: 1.0,
+                blend: Blend::Multiply,
+            },
+            gloss: None,
+            gloss_aa: false,
+            contour: None,
+            range: 0.5,
+            contour_aa: false,
+            texture: None,
+        })],
+    );
+    assert!(px(&r, 80, 45)[0] > 60, "{:?}", px(&r, 80, 45));
+    assert_eq!(px(&r, 80, 60)[3], 0);
+
+    // Over a grey page: the blend mode, Channels and Blend If.
+    let page = [100u8, 100, 100, 255].repeat(200 * 160);
+    let on_page = |e: &mut Engine, color: Rgba, f: &dyn Fn(&mut BoxRequest)| {
+        let mut r = inked(font, "");
+        r.effects = vec![Effect::ColorOverlay(Overlay {
+            color,
+            opacity: 1.0,
+            blend: Blend::Normal,
+        })];
+        r.backdrop = Some(page.clone());
+        f(&mut r);
+        // Nothing drawn (the whole box hidden) shows the page.
+        paint_box(e, &mut r).unwrap().unwrap_or(Raster {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            data: Vec::new(),
+        })
+    };
+    // What a box pixel shows laid over the page.
+    let shown = |r: &Raster, x: i32, y: i32| {
+        let p = px(r, x, y);
+        let a = f32::from(p[3]) / 255.0;
+        [0, 1, 2].map(|c| (f32::from(p[c]) * a + 100.0 * (1.0 - a)).round() as u8)
+    };
+    let white = Rgba([255, 255, 255, 255]);
+    let r = on_page(&mut e, white, &|r| r.blend = Blend::Multiply);
+    assert_eq!(shown(&r, 80, 50), [100, 100, 100]);
+    let r = on_page(&mut e, white, &|r| r.blend = Blend::Normal);
+    assert_eq!(shown(&r, 80, 50), [255, 255, 255]);
+    // Channels: red left out shows the page's red.
+    let r = on_page(&mut e, white, &|r| {
+        r.blending = Blending {
+            channels_out: 1,
+            ..Blending::default()
+        }
+    });
+    assert_eq!(shown(&r, 80, 50), [100, 255, 255]);
+    // Blend If, Underlying Layer: a page darker than the black point hides it.
+    let r = on_page(&mut e, white, &|r| {
+        let mut b = Blending::default();
+        b.blend_if.ranges[0][1] = Range {
+            black: [150, 150],
+            white: [255, 255],
+        };
+        r.blending = b;
+    });
+    assert_eq!(shown(&r, 80, 50), [100, 100, 100]);
+    // Fill Opacity on the ink and its overlay as on letters: Fill fades the
+    // ink, not the overlay laid on it (Blend Interior Effects as Group off).
+    let r = on_page(&mut e, white, &|r| r.fill_opacity = 0.0);
+    assert_eq!(shown(&r, 80, 50), [255, 255, 255]);
 }
