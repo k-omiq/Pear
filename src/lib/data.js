@@ -831,7 +831,8 @@ export function normalizeGlow(x, inner = false) {
     noise: Math.min(1, Math.max(0, num(x?.noise, 0))),
     color: hex(x?.color, d.color),
     fill: x?.fill === 'gradient' ? 'gradient' : 'color',
-    gradient: normalizeFxGradient(x?.gradient, glowGradient(hex(x?.color, d.color))),
+    // A glow's gradient has no Dither, in Photoshop as here.
+    gradient: { ...normalizeFxGradient(x?.gradient, glowGradient(hex(x?.color, d.color))), dither: false },
     technique: x?.technique === 'precise' ? 'precise' : 'softer',
     spread: Math.min(1, Math.max(0, num(x?.spread, 0))),
     size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, d.size))),
@@ -879,8 +880,29 @@ export function newOverlay() {
 //   reverse   the ramp the other way
 //   offset    [x, y], the centre moved by that share of the letters' frame
 //             (Photoshop's drag in the dialog)
-//   stops     GRADIENT_MIN_STOPS..GRADIENT_MAX_STOPS, each a colour, a
-//             position and its own opacity, sorted by position
+//   stops     the colour stops, GRADIENT_MIN_STOPS..GRADIENT_MAX_STOPS,
+//             each a colour and a position, sorted by position
+//   opacityStops  the opacity stops apart from them, as Photoshop's
+//             Gradient Editor has them: the same count limits, each an
+//             opacity and a position, sorted
+//             A stop of either kind may carry `mid`, the midpoint of the
+//             segment it ends (from the stop before it): where the blend is
+//             half-way, as a share of the segment, GRADIENT_MID_MIN..
+//             GRADIENT_MID_MAX (Photoshop's 5 to 95 %). An even one (0.5)
+//             is left out; the first stop's is not painted.
+//   smoothness  Photoshop's Smoothness, 0..1: 0 runs straight between the
+//             stops, 1 eases through them (a Catmull-Rom curve)
+//   method    FX_GRADIENT_METHODS, Photoshop's Interpolation Method: which
+//             colour space the blend runs in ('classic' is sRGB, as every
+//             gradient was before it; 'perceptual' Oklab; 'linear' linear
+//             light; 'smooth' Oklab with Photoshop's own easing)
+//   dither    Photoshop's Dither: a fraction of a level of noise so a long,
+//             gentle ramp does not band (Gradient Overlay and Stroke; a
+//             glow has none)
+// A gradient saved before opacity stops were their own carries an opacity
+// on each colour stop: each becomes an opacity stop at the same place, so it
+// paints as it did. One saved before the three settings above paints as
+// Classic at 0 %, undithered: what it painted with.
 //   type      FX_GRADIENT_TYPES: 'solid' paints the stops, 'noise' the
 //             Rust engine's random ramp from `noise` (the stops are kept for
 //             a switch back)
@@ -892,6 +914,9 @@ export function newOverlay() {
 // along the glow whatever its style.
 export const FX_GRADIENT_STYLES = ['linear', 'radial', 'angle', 'reflected', 'diamond', 'shapeburst'];
 export const FX_GRADIENT_TYPES = ['solid', 'noise'];
+export const FX_GRADIENT_METHODS = ['classic', 'perceptual', 'linear', 'smooth'];
+export const GRADIENT_MID_MIN = 0.05;
+export const GRADIENT_MID_MAX = 0.95;
 // A noise gradient, as Photoshop's Gradient Editor has one:
 //   seed          the random seed (Randomize picks a new one), 0..2^32-1
 //   roughness     0..1: how many steps and how sharp
@@ -918,33 +943,75 @@ export function normalizeNoiseGradient(x) {
   };
 }
 const FX_BW = [
-  { color: '#000000', pos: 0, opacity: 1 },
-  { color: '#ffffff', pos: 1, opacity: 1 },
+  { color: '#000000', pos: 0 },
+  { color: '#ffffff', pos: 1 },
 ];
-function fxGradientDefault(stops = FX_BW) {
-  return { style: 'linear', angle: 90, scale: 1, reverse: false, offset: [0, 0], stops: stops.map((st) => ({ ...st })), type: 'solid', noise: normalizeNoiseGradient({}) };
+const FX_OPAQUE = [
+  { opacity: 1, pos: 0 },
+  { opacity: 1, pos: 1 },
+];
+function fxGradientDefault(stops = FX_BW, opacityStops = FX_OPAQUE) {
+  return { style: 'linear', angle: 90, scale: 1, reverse: false, offset: [0, 0], stops: stops.map((st) => ({ ...st })), opacityStops: opacityStops.map((st) => ({ ...st })), smoothness: 0, method: 'classic', dither: false, type: 'solid', noise: normalizeNoiseGradient({}) };
 }
 // A glow's gradient as Photoshop starts one: its colour, fading out.
 function glowGradient(color) {
-  return fxGradientDefault([
-    { color, pos: 0, opacity: 1 },
-    { color, pos: 1, opacity: 0 },
-  ]);
+  return fxGradientDefault(
+    [
+      { color, pos: 0 },
+      { color, pos: 1 },
+    ],
+    [
+      { opacity: 1, pos: 0 },
+      { opacity: 0, pos: 1 },
+    ],
+  );
 }
+// A stop's midpoint, kept to Photoshop's 5 to 95 %; undefined when even (or
+// missing), so it is left out.
+function fxMid(m) {
+  const v = Math.min(GRADIENT_MID_MAX, Math.max(GRADIENT_MID_MIN, num(m, 0.5)));
+  return Math.abs(v - 0.5) < 1e-6 ? undefined : v;
+}
+// One stop list sorted and cut to the panel's ceiling, each stop made by
+// `make` and its midpoint carried (the first stop's ends no segment and is
+// not painted, as Photoshop keeps one there too).
+function fxStopList(list, make) {
+  return list
+    .map((st) => {
+      const o = make(st);
+      const mid = fxMid(st?.mid);
+      if (mid !== undefined) o.mid = mid;
+      return o;
+    })
+    .sort((a, b) => a.pos - b.pos)
+    .slice(0, GRADIENT_MAX_STOPS);
+}
+const fxColourStop = (st) => ({ color: hex(st?.color, '#000000'), pos: Math.min(1, Math.max(0, num(st?.pos, 0))) });
+const fxOpacityStop = (st) => ({ opacity: Math.min(1, Math.max(0, num(st?.opacity, 1))), pos: Math.min(1, Math.max(0, num(st?.pos, 0))) });
 export function normalizeFxGradient(x, d = fxGradientDefault()) {
   const src = x && typeof x === 'object' ? x : {};
   const off = Array.isArray(src.offset) ? src.offset : d.offset;
-  const stops = Array.isArray(src.stops) && src.stops.length >= GRADIENT_MIN_STOPS ? src.stops : d.stops;
+  const own = Array.isArray(src.stops) && src.stops.length >= GRADIENT_MIN_STOPS;
+  const stops = own ? src.stops : d.stops;
+  // Opacity stops of their own, or (a gradient from before them) one per
+  // colour stop at its place, with its opacity (1 when it had none).
+  const ops =
+    Array.isArray(src.opacityStops) && src.opacityStops.length >= GRADIENT_MIN_STOPS
+      ? src.opacityStops
+      : own
+        ? src.stops.map((st) => ({ pos: st?.pos, opacity: st?.opacity ?? 1 }))
+        : d.opacityStops;
   return {
     style: FX_GRADIENT_STYLES.includes(src.style) ? src.style : d.style,
     angle: Math.min(180, Math.max(-180, num(src.angle, d.angle))),
     scale: Math.min(1.5, Math.max(0.1, num(src.scale, d.scale))),
     reverse: src.reverse === true,
     offset: [0, 1].map((i) => Math.min(1, Math.max(-1, num(off[i], 0)))),
-    stops: stops
-      .map(normalizeStop)
-      .sort((a, b) => a.pos - b.pos)
-      .slice(0, GRADIENT_MAX_STOPS),
+    stops: fxStopList(stops, fxColourStop),
+    opacityStops: fxStopList(ops, fxOpacityStop),
+    smoothness: Math.min(1, Math.max(0, num(src.smoothness, 0))),
+    method: FX_GRADIENT_METHODS.includes(src.method) ? src.method : 'classic',
+    dither: src.dither === true,
     type: src.type === 'noise' ? 'noise' : 'solid',
     noise: normalizeNoiseGradient(src.noise ?? d.noise),
   };
