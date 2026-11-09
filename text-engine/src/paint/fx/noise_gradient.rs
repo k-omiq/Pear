@@ -503,3 +503,7 @@ mod tests {
         assert_eq!(Ramp::charged(noise(7, 0.5)), Err(Error::BadSpec));
     }
 }
+
+#[cfg(test)]
+#[path = "noise_gradient_gaps.rs"]
+mod gaps;
