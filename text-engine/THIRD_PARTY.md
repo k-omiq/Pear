@@ -102,7 +102,17 @@ Outside the engine, for the PSD writer (`src/lib/`):
 - `psd.js`: the effect keys and units as PhotoCraft writes them
   (`crates/io/src/effects_map.rs` `with_common`, `gradient_keys`,
   `write_one`): `present` and `showInDialog`, a glow's gradient without a
-  colour, Jitter and Overprint written as 0 / off.
+  colour, Jitter written as set, and Overprint written as stored.
+- Stroke Overprint (`data.js` `normalizeStrokeEffect`, `psd.js` writer and
+  `splitStrokes`, the Inspector's Stroke checkbox, the agent schema): a
+  stored on/off, written and read back, a missing key read as off, kept
+  when another setting changes, and not painted, as PhotoCraft has it
+  (`crates/doc/src/effects.rs` `StrokeFx::overprint`;
+  `crates/io/src/effects_map.rs` `bool_of(d, "overprint")` and its write;
+  `crates/engine/src/layer_style.rs` `overlay_bool`;
+  `crates/ui-egui/src/dialogs/layer_style.rs` the Overprint row; tests
+  `stroke_overprint_is_read_and_written`, `stroke_overprint_is_a_param`,
+  `stroke_overprint_survives_the_dialog`).
 
 MIT License
 

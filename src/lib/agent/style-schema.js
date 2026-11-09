@@ -293,6 +293,7 @@ export const STYLE_SCHEMA = {
     position: choice('on the letters edge', STROKE_POSITIONS),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     opacity: alpha('stroke alpha'),
+    overprint: { ...boolean('PSD only, not painted'), optional: true },
     fill: choice('paint', STROKE_FILLS),
     color: color('fill color'),
     gradient: fxGradient('fill gradient, over the stroke'),

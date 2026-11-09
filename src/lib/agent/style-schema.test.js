@@ -388,10 +388,11 @@ describe('styleSchemaText', () => {
   // angle at Distance 0, to 18500 for the multi effects' own switches and
   // their cap of 10, and Blend Clipped Layers as Group, Transparency Shapes
   // Layer and Vector Mask Hides Effects, and to 19000 for the effect
-  // gradient's opacity stops, midpoints, Smoothness, Method and Dither.
-  it('describes every key, field and item in under 19000 characters', () => {
+  // gradient's opacity stops, midpoints, Smoothness, Method and Dither,
+  // and to 19100 for the Photoshop stroke's Overprint.
+  it('describes every key, field and item in under 19100 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(19000);
+    expect(text.length).toBeLessThan(19100);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.
