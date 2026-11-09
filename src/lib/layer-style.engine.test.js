@@ -108,6 +108,23 @@ describe('a shadow with the Photoshop fields', () => {
     expect(ringed.data).not.toEqual(plain.data);
   });
 
+  // Known values, not just "different": the Ring preset is the curve in
+  // text-engine/src/paint/fx/contour.rs, so a custom contour through the same
+  // points (0..255) must paint the same shadow, and the identity curve must
+  // paint the plain one.
+  it('paints the Ring preset as the curve it names, and a straight custom curve as none', () => {
+    const RING = [[0, 0], [0.031, 0.078], [0.039, 0.117], [0.117, 0.383], [0.172, 0.609], [0.195, 0.734], [0.266, 0.953], [0.305, 1], [0.344, 0.992], [0.383, 0.922], [0.43, 0.805], [0.477, 0.641], [0.57, 0.281], [0.617, 0.141], [0.664, 0.055], [0.703, 0.016], [0.742, 0.016], [0.773, 0.062], [0.836, 0.234], [0.859, 0.344], [0.891, 0.445], [0.914, 0.547], [0.945, 0.734], [0.977, 0.875], [1, 1]];
+    const pts = RING.map(([x, y], i) => [x * 255, y * 255, i > 0 && i < RING.length - 1]);
+    const of = (contour) => texture(boxOf({ shadows: [shadow({ x: 0, y: 30, size: 10, contour })] }));
+    const maxDiff = (a, b) => a.data.reduce((m, v, i) => Math.max(m, Math.abs(v - b.data[i])), 0);
+    const plain = of({ preset: 'linear', aa: true });
+    const ring = of({ preset: 'ring', aa: true });
+    expect(maxDiff(ring, of({ preset: 'custom', aa: true, pts }))).toBe(0);
+    expect(maxDiff(of({ preset: 'custom', aa: true, pts: [[0, 0, false], [255, 255, false]] }), plain)).toBe(0);
+    // And the ring really is a different shadow from the plain one.
+    expect(maxDiff(ring, plain)).toBeGreaterThan(20);
+  });
+
   it('dissolves to whole pixels or none at all', () => {
     const img = texture(boxOf({ shadows: [shadow({ x: 0, y: 30, opacity: 0.5, blend: 'dissolve' })] }));
     const shade = pixels(img, green);

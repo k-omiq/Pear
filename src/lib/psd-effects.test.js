@@ -59,6 +59,9 @@ describe('the PSD effects, written and read back', () => {
     const fx = layerFor({ shadows: [sh] }).effects.dropShadow;
     expect(fx[0]).toMatchObject({ present: true, showInDialog: true, noise: 0.35, angle: 60, useGlobalLight: true, layerConceals: true });
     expect(fx[0].contour.name).toBe('Cone');
+    // Spread 0.25 is written as a 25 percent Choke (psd.js), not read back from ag-psd.
+    expect(fx[0].choke).toEqual({ units: 'Pixels', value: 25 });
+    expect(fx[0].size).toMatchObject({ value: 7 });
     expect(fx[0].contour.curve.length).toBeLessThanOrEqual(PSD_CONTOUR_POINTS);
     const { layer, psd } = roundTrip(layerFor({ shadows: [sh] }));
     expectSame(layer.effects.dropShadow, fx, 'dropShadow');
@@ -82,6 +85,7 @@ describe('the PSD effects, written and read back', () => {
     const fx = layer.effects;
     expect(fx.outerGlow).toMatchObject({ color: { r: 255, g: 238, b: 0 }, jitter: 0, present: true });
     expect(fx.outerGlow.gradient).toBeUndefined();
+    expect(fx.outerGlow.choke).toEqual({ units: 'Pixels', value: 30 });
     expect(fx.outerGlow.contour).toMatchObject({ name: 'Ring - Double' });
     expect(fx.outerGlow.contour.curve).toHaveLength(PSD_CONTOUR_POINTS);
     // The gradient glow: Grad, Rvrs, Type, and no colour, as PhotoCraft writes it.
