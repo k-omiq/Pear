@@ -213,7 +213,7 @@
         type="button"
         class="fxg-stop down"
         class:on={sel.kind === 'opacity' && !sel.mid && sel.i === i}
-        style="left:{clamp(st.pos, 0, 1) * 100}%;--stop-c:rgb(0 0 0 / {st.opacity})"
+        style="left:{clamp(st.pos, 0, 1) * 100}%;--stop-c:color-mix(in srgb, var(--text) {pct(st.opacity)}%, var(--surface))"
         aria-label="{title} opacity stop {opacityRail.order.indexOf(i) + 1} at {pct(st.pos)} percent, {pct(st.opacity)} percent opaque"
         title="Opacity stop · {pct(st.opacity)}% at {pct(st.pos)}% · drag to move"
         onpointerdown={(e) => onHandleDown(e, 'opacity', i, false)}
@@ -305,11 +305,11 @@
   }
   .fxg-rail.top {
     border-bottom: none;
-    border-radius: 7px 7px 0 0;
+    border-radius: var(--radius) var(--radius) 0 0;
   }
   .fxg-rail.bottom {
     border-top: none;
-    border-radius: 0 0 7px 7px;
+    border-radius: 0 0 var(--radius) var(--radius);
   }
   .fxg-bar {
     position: relative;
@@ -317,7 +317,9 @@
     border-left: 1px solid var(--line2);
     border-right: 1px solid var(--line2);
     overflow: hidden;
-    /* The chequerboard an opacity is read against. */
+    /* The chequerboard an opacity is read against: fixed light and mid
+       greys in both themes, as the fill gradient's bar has, so a stop's
+       alpha reads the same however the panel is themed. */
     background-color: #fff;
     background-image:
       linear-gradient(45deg, #c9c9c9 25%, transparent 25%),
@@ -339,8 +341,9 @@
     margin-left: -6.5px;
     padding: 0;
     border: none;
-    background: var(--stop-c, #000);
-    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.45);
+    background: var(--stop-c, var(--text));
+    /* The ink at 45 %: an outline that reads on a light or a dark stop. */
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 45%, transparent);
     cursor: ew-resize;
     touch-action: none;
   }
@@ -391,14 +394,14 @@
   }
   .fxg-kind {
     font-size: 11px;
-    color: var(--muted);
+    color: var(--t2);
   }
   .fxg-num {
     display: flex;
     align-items: center;
     gap: 4px;
     font-size: 11px;
-    color: var(--muted);
+    color: var(--t2);
   }
   .fxg-num input {
     width: 46px;
