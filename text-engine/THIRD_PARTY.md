@@ -60,6 +60,12 @@ names its source file in a comment.
   `refine_edge_normals`, `edge_distance`, `bevel_dist_inside`,
   `bevel_dist_outside`, `bevel_dists`), and their tests
   (`effects/tests.rs`).
+- `tests/data/bevel_photocraft.txt` and `fx/bevel_photocraft.rs`: the
+  values PhotoCraft's `bevel_maps` (`crates/compose/src/effects/bevel.rs`)
+  gives on our cases (Chisel Soft emboss, the Texture, a Stroke Emboss
+  band), made by a throwaway harness that called the crate, and the test
+  that compares ours with them. The letters and tile generators there are
+  ours.
 - `fx/blend.rs` `Blend::fill_is_special`, `Blend::mix_fill`, `lay_fill`:
   Fill Opacity in Photoshop's special eight modes, and its measured test
   (`crates/compose/src/psblend.rs` `fill_is_special`, `blend_rgb_fill`,

@@ -1013,8 +1013,17 @@ fn bevel_light(b: &Bevel, carried: impl Fn(f64, f64) -> (f64, f64)) -> [f32; 3] 
 /// times the letters' coverage) and outside part (all of a pixel the
 /// letters leave, out to the stroke's width, as the strokes are painted),
 /// united over the strokes as `1 - prod(1 - band)`. `None` with no stroke.
-/// Ours, not PhotoCraft's: PhotoCraft draws a Stroke Emboss as an Inner
-/// Bevel of the letters, and there is no Photoshop measurement of it.
+/// Ours, not PhotoCraft's, and a limit: unmeasured. PhotoCraft dada110 maps
+/// Stroke Emboss to its Inner Bevel of the letters (`bevel.rs:40`, painted
+/// in the inner pass, `effects/composite.rs:213`) with no comment or measurement;
+/// we follow Photoshop's documented behaviour instead (the emboss is kept
+/// to the Stroke effect, and shows nothing without one). The height and
+/// shading over the band are PhotoCraft's Inner Bevel
+/// (`bevel_photocraft::stroke_emboss_band_shades_as_photocraft`); the band
+/// and where it is laid (over the finished box) are ours. Its pinned
+/// Photoshop oracles (`xtask/photoshop-corpus.sha256`:157-161, five
+/// `effects/bevel-stroke-*.psd` in storytold/photocraft-corpus at f5b1178)
+/// are not fetched here; they are how to measure it.
 /// `din` is the letters' [`map::chamfer_inside`], there when a stroke has
 /// an inside part.
 fn stroke_band(
@@ -2545,3 +2554,7 @@ mod tests {
 #[cfg(test)]
 #[path = "effects_gaps.rs"]
 mod gaps;
+
+#[cfg(test)]
+#[path = "bevel_photocraft.rs"]
+mod bevel_photocraft;
