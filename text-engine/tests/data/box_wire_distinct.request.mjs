@@ -73,6 +73,8 @@ export const request = {
   // The box.
   width: 211,
   height: 137,
+  // A corner on the page past i32's sign, and one in front of it.
+  grain: [-1234567, 89012],
   shadows: [
     { color: '#102030', opacity: 0.3125, x: 1.5, y: -2.5, size: 3.25, grow: 0.75, spread: 0.125, noise: 0.4375, blend: 'multiply', knockout: true, exact: true, seed: 90210, contour: { preset: 'ring' } },
     { color: '#a0b0c0', opacity: 0.8125, x: -3.75, y: 4.25, size: 5.5, grow: 1.25, spread: 0.375, noise: 0.0625, blend: 'screen', knockout: false, exact: false, seed: 1357, contour: { preset: 'sawtooth-1' } },

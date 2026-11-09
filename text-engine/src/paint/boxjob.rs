@@ -59,7 +59,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 14;
+pub const BOX_WIRE_VERSION: u32 = 15;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -212,6 +212,12 @@ pub struct BoxRequest {
     /// The surface, device pixels. Its corner is device `(0, 0)`.
     pub width: u32,
     pub height: u32,
+    /// The surface's corner in device pixels anchored to the page (the
+    /// page's corner times the device pixels to a page pixel): every grain
+    /// the box paints (Noise, Dissolve, a glow's Jitter) is hashed from a
+    /// surface pixel plus this, so the same page pixel keeps its grain
+    /// however much room the surface takes round the box (wire v15).
+    pub grain: (i32, i32),
     /// First on top.
     pub shadows: Vec<Shadow>,
     /// The whole-box blur: a gaussian's sigma, job units. Zero for none.
@@ -245,6 +251,7 @@ impl BoxRequest {
         Self {
             width,
             height,
+            grain: (0, 0),
             shadows: Vec::new(),
             blur: 0.0,
             taps: Vec::new(),
@@ -782,6 +789,8 @@ impl<'a> Reader<'a> {
 /// ```text
 /// u32 magic, u32 version
 /// u32 width, u32 height        the surface, device pixels; its corner is (0, 0)
+/// i32 x, i32 y (v15)           the surface's corner in device pixels anchored
+///                              to the page: each grain is hashed from it on
 /// u32 shadow count, then per shadow, first in the style first:
 ///     rgba colour, f64 opacity, f64 x, y, f64 size, f64 grow,
 ///     f64 spread, f64 noise    0 to 1 each
@@ -963,6 +972,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         return Err(Error::BadSpec);
     }
     let (width, height) = (r.u32()?, r.u32()?);
+    let grain = (r.u32()? as i32, r.u32()? as i32);
     if width == 0
         || height == 0
         || width > MAX_SIDE
@@ -1041,6 +1051,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     Ok(BoxRequest {
         width,
         height,
+        grain,
         shadows,
         blend,
         fill_opacity,
@@ -1348,8 +1359,11 @@ fn lay_styled(
         distance::dilate(&mut matte, width, height, grow * scale)?;
         set_flat(&mut layer, rgb, &matte);
     }
-    blur::tent_flat(&mut layer, rest * scale, rgb)?;
+    // The tent's width for the zoom, so the edge lays as at zoom 1.
+    let tent = super::fx::tent_width(rest, scale);
+    blur::tent_flat(&mut layer, tent, rgb)?;
     let reach = (size_reach(sh.size) * scale)
+        .max(grow * scale + f64::from(super::fx::tent::reach(tent)))
         .ceil()
         .min(f64::from(i32::MAX)) as i32
         + 1;
@@ -1381,6 +1395,7 @@ fn lay_styled(
                 (ink.x0, ink.y0, ink.x1, ink.y1),
                 sh.noise as f32,
                 sh.seed,
+                request.grain,
             );
         }
         set_flat(&mut layer, rgb, &matte);
@@ -1410,7 +1425,7 @@ fn lay_styled(
         .backdrop
         .as_deref()
         .map(|pixels| Backdrop { pixels });
-    blend::lay(
+    blend::lay_from(
         s,
         &thrown,
         landed_at,
@@ -1418,6 +1433,7 @@ fn lay_styled(
         sh.mode(),
         page.as_ref(),
         sh.seed,
+        request.grain,
     );
     Ok(Some(landed_at))
 }
@@ -1526,6 +1542,7 @@ fn paint_glyphs(
             let place = Place {
                 transform: request.request.transform,
                 tiles: &request.request.tiles,
+                grain: request.grain,
             };
             let (laid, o, b) = effects::interior(
                 &r,
@@ -1806,6 +1823,7 @@ fn lay_glows(
         region,
         scale,
         page.as_ref(),
+        request.grain,
     )
 }
 
@@ -1969,7 +1987,7 @@ fn paint(
                 layer.draw(&r.data, r.width as usize, r.x, r.y);
                 // A silhouette is one colour, so only its alpha needs the blur.
                 let [red, green, blue, _] = sh.color.0;
-                let width = sh.size * scale;
+                let width = super::fx::tent_width(sh.size, scale);
                 blur::tent_flat(layer, width, [red, green, blue])?;
                 // The ink is the raster's, and as far round it as the blur
                 // spread it.
@@ -2075,6 +2093,7 @@ fn paint(
         let place = Place {
             transform,
             tiles: &request.request.tiles,
+            grain: request.grain,
         };
         effects::lay_outside(&mut s, &o, &request.effects, &place, page.as_ref())?;
         let b = o.bounds().intersect(&surface);
@@ -2105,7 +2124,7 @@ fn paint(
         let lay_fill = if request.blending.shapeless {
             blend::lay_fill_shapeless
         } else {
-            blend::lay_fill
+            blend::lay_fill_from
         };
         lay_fill(
             &mut s,
@@ -2116,6 +2135,7 @@ fn paint(
             page.as_ref(),
             0,
             request.fill_opacity as f32,
+            request.grain,
         );
         own.clear();
         lay(bx);
@@ -2136,7 +2156,16 @@ fn paint(
     }
     drop(glyphs);
     if let (Some(own), Some(bx)) = (&own, laid) {
-        blend::lay(&mut s, own, bx, 1.0, request.blend, page.as_ref(), 0);
+        blend::lay_from(
+            &mut s,
+            own,
+            bx,
+            1.0,
+            request.blend,
+            page.as_ref(),
+            0,
+            request.grain,
+        );
     }
     drop(own);
     // An Emboss, a Pillow Emboss or a Stroke Emboss, over the finished

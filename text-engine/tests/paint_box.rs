@@ -74,6 +74,7 @@ fn plain(font: FontId) -> BoxRequest {
     BoxRequest {
         width: 200,
         height: 160,
+        grain: (0, 0),
         shadows: Vec::new(),
         blur: 0.0,
         taps: Vec::new(),
@@ -745,6 +746,9 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     u(&mut b, BOX_WIRE_VERSION);
     u(&mut b, 200);
     u(&mut b, 160);
+    // The grain's corner (v15): (-3, 7).
+    u(&mut b, (-3i32) as u32);
+    u(&mut b, 7);
     u(&mut b, 1);
     b.extend_from_slice(&[255, 0, 0, 255]);
     let opacity_at = b.len();
@@ -1119,7 +1123,8 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 14));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 15));
+    assert_eq!(r.grain, (-3, 7));
 }
 
 #[test]
@@ -1183,9 +1188,10 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(4, 1), Some(Error::BadSpec));
     assert_eq!(with_u(8, 0), Some(Error::BadSpec));
     assert_eq!(with_u(8, 1 << 20), Some(Error::BadSpec));
-    // Counts past their guards, and counts the bytes cannot hold.
-    assert_eq!(with_u(16, 17), Some(Error::BadSpec));
-    assert_eq!(with_u(16, 2), Some(Error::BadSpec));
+    // Counts past their guards, and counts the bytes cannot hold (the
+    // shadow count is past the grain's corner, v15).
+    assert_eq!(with_u(24, 17), Some(Error::BadSpec));
+    assert_eq!(with_u(24, 2), Some(Error::BadSpec));
     assert_eq!(with_u(blur_at + 8, 513), Some(Error::BadSpec));
     assert_eq!(with_u(mode_at + 20, 4097), Some(Error::BadSpec));
     // A shape of no known kind.
@@ -1312,6 +1318,9 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     u(&mut b, BOX_WIRE_VERSION);
     u(&mut b, 200);
     u(&mut b, 160);
+    // The grain's corner (v15).
+    u(&mut b, 0);
+    u(&mut b, 0);
     u(&mut b, n);
     for i in 0..n {
         b.extend_from_slice(&[255, 0, 0, 255]);
@@ -1354,7 +1363,7 @@ fn a_box_has_every_shadow_its_style_has() {
     // A count the bytes cannot hold is still refused before anything is
     // allocated.
     let mut b = shadowed(font, 17);
-    b[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    b[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
     assert_eq!(decode_box(&b).map(|_| ()).err(), Some(Error::BadSpec));
 }
 
@@ -1366,6 +1375,9 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
     u(&mut b, BOX_WIRE_VERSION);
     u(&mut b, 200);
     u(&mut b, 160);
+    // The grain's corner (v15).
+    u(&mut b, 0);
+    u(&mut b, 0);
     u(&mut b, 0);
     f(&mut b, 0.0);
     u(&mut b, 0);
@@ -2989,18 +3001,70 @@ fn red_per_page_px(r: &Raster, scale: f64) -> f64 {
 /// Size 5, Choke 30 % is a grow of 2 page px at every zoom; split in device
 /// pixels it was 2, 3 and 5 device px at zooms 1, 2 and 3, and the shadow
 /// laid 10 % less per page pixel at 2 than at 1 (192299 / 173992 / 180198;
-/// now within 0.2 %). An Outer Glow's Spread 30 % laid 18 % less.
+/// now within 0.2 %). An Outer Glow's Spread 30 % laid 18 % less (now
+/// 1.1 %, 1.5 % before the tent below was fixed).
+///
+/// With no Spread or Choke the tent itself moved with the zoom: a box of
+/// 10 taps spreads further than two of 5 (`fx::tent_width`), and a plain
+/// Outer Glow of 5 laid 132294, 136195 and 134355 per page pixel at zooms
+/// 1, 2 and 3 (3 %); an Inner Glow 3 %, an Outer Glow of 2 17 % at zoom 4.
+/// Now each within 0.4 % (2: 1.6 %). An Inner Shadow of Size 0 (no tent)
+/// was and is within 0.01 %. A glow of Size 0 or 1 is no tent at any zoom,
+/// and only lights the letters' own anti-aliased edge, one device pixel
+/// wide, so it is left out.
 #[test]
 fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
     let mut e = Engine::new();
     let font = load(&mut e);
     let mut b = plain(font);
-    let check = |name: &str, got: &[f64]| {
+    let check = |name: &str, got: &[f64], within: f64| {
         for g in &got[1..] {
             let off = (g - got[0]).abs() / got[0];
-            assert!(off < 0.02, "{name}: {got:?}");
+            assert!(off < within, "{name}: {got:?}");
         }
     };
+    let shadow = |size: f64, choke: f64| {
+        vec![Effect::InnerShadow(InnerShadow {
+            color: RED,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            x: 3.0,
+            y: 3.0,
+            size,
+            choke,
+            noise: 0.0,
+            contour: None,
+            seed: 1,
+        })]
+    };
+    fn laid(e: &mut Engine, b: &mut BoxRequest) -> Vec<f64> {
+        [1.0, 2.0, 3.0, 4.0]
+            .iter()
+            .map(|&s| red_per_page_px(&at_scale(e, b, s), s))
+            .collect()
+    }
+    for (size, within) in [(0.0, 0.001), (2.0, 0.005), (5.0, 0.005)] {
+        b.effects = shadow(size, 0.0);
+        check(
+            &format!("inner shadow size {size}"),
+            &laid(&mut e, &mut b),
+            within,
+        );
+    }
+    for (size, within) in [(2.0, 0.02), (5.0, 0.005), (8.0, 0.005)] {
+        b.effects = vec![Effect::OuterGlow(glow(RED, size))];
+        check(
+            &format!("outer glow size {size}"),
+            &laid(&mut e, &mut b),
+            within,
+        );
+        b.effects = vec![Effect::InnerGlow(glow(RED, size))];
+        check(
+            &format!("inner glow size {size}"),
+            &laid(&mut e, &mut b),
+            within,
+        );
+    }
     for choke in [0.3, 0.5] {
         b.effects = vec![Effect::InnerShadow(InnerShadow {
             color: RED,
@@ -3018,7 +3082,7 @@ fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
             .iter()
             .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
             .collect();
-        check(&format!("inner shadow choke {choke}"), &got);
+        check(&format!("inner shadow choke {choke}"), &got, 0.01);
     }
     for spread in [0.3, 0.5] {
         // On black letters: a red Inner Glow, a red Outer Glow round them.
@@ -3030,7 +3094,7 @@ fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
             .iter()
             .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
             .collect();
-        check(&format!("inner glow choke {spread}"), &got);
+        check(&format!("inner glow choke {spread}"), &got, 0.01);
         b.effects = vec![Effect::OuterGlow(Glow {
             spread,
             ..glow(RED, 5.0)
@@ -3039,7 +3103,7 @@ fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
             .iter()
             .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
             .collect();
-        check(&format!("outer glow spread {spread}"), &got);
+        check(&format!("outer glow spread {spread}"), &got, 0.015);
     }
 }
 
@@ -3117,4 +3181,94 @@ fn blend_if_this_layer_reads_no_fill_as_fill_zero() {
             assert!(fewer > 0, "{fewer}");
         }
     }
+}
+
+/// The grain is anchored to the page (`BoxRequest::grain`, wire v15): a
+/// drop shadow's Noise and Dissolve, an Outer Glow's Noise and Dissolve,
+/// an Inner Glow's and an Inner Shadow's Noise, a Dissolve stroke and the
+/// letters' own Dissolve paint the same grain on the same page pixel when
+/// the surface round the box takes more room on each side. The shadow's
+/// Noise and the outer glow's Dissolve once hashed the surface's own
+/// pixels, so more room re-rolled them.
+#[test]
+fn the_grain_stays_on_the_page_when_the_surface_takes_more_room() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    b.shadows = vec![
+        Shadow {
+            size: 4.0,
+            spread: 0.2,
+            noise: 0.6,
+            seed: 7,
+            ..shadow(BLUE, 6.0, 5.0)
+        },
+        Shadow {
+            opacity: 0.5,
+            blend: Blend::Dissolve,
+            seed: 8,
+            ..shadow(RED, -5.0, 4.0)
+        },
+    ];
+    b.effects = vec![
+        Effect::OuterGlow(Glow {
+            noise: 0.5,
+            opacity: 0.7,
+            blend: Blend::Dissolve,
+            ..glow(RED, 6.0)
+        }),
+        Effect::InnerGlow(Glow {
+            noise: 0.8,
+            seed: 3,
+            ..glow(BLUE, 4.0)
+        }),
+        Effect::InnerShadow(InnerShadow {
+            color: RED,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            x: 2.0,
+            y: 2.0,
+            size: 3.0,
+            choke: 0.0,
+            noise: 0.7,
+            contour: None,
+            seed: 4,
+        }),
+        Effect::Stroke(Stroke {
+            size: 2.0,
+            position: Position::Outside,
+            opacity: 0.5,
+            blend: Blend::Dissolve,
+            paint: Paint::Color(BLUE),
+            seed: 5,
+        }),
+    ];
+    b.blend = Blend::Dissolve;
+    b.fill_opacity = 0.6;
+    let tight = paint(&mut e, &mut b);
+    // The same box, the surface 23 px more on the left and 17 more on top
+    // (and some more right and below): its corner is 23 px further left
+    // and 17 up on the page.
+    let (dx, dy) = (23, 17);
+    b.width += 23 + 11;
+    b.height += 17 + 5;
+    b.request.transform = Affine::translate(f64::from(dx), f64::from(dy));
+    b.grain = (-dx, -dy);
+    let roomy = paint(&mut e, &mut b);
+    let same = |r: &Raster| {
+        let mut off = 0;
+        for y in 0..160 {
+            for x in 0..200 {
+                if px(&tight, x, y) != px(r, x + dx, y + dy) {
+                    off += 1;
+                }
+            }
+        }
+        off
+    };
+    assert_eq!(same(&roomy), 0);
+    // Hashed from the surface's own pixels, it moves.
+    b.grain = (0, 0);
+    let moved = paint(&mut e, &mut b);
+    assert!(same(&moved) > 500, "{}", same(&moved));
 }

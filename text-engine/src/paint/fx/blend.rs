@@ -399,7 +399,10 @@ impl Backdrop<'_> {
 /// is drawn under. With no backdrop, what is under is `dst` alone, and the
 /// mode blends with nothing where `dst` is clear (the W3C rule).
 ///
-/// `seed` decides Dissolve's pattern, hashed from `dst`'s own pixels.
+/// `seed` decides Dissolve's pattern, hashed from `dst`'s own pixels. The
+/// box job lays with [`lay_from`], its surface's corner anchored to the
+/// page; this is that at a corner of `(0, 0)`, for the tests.
+#[cfg(test)]
 pub(crate) fn lay(
     dst: &mut Surface,
     src: &Surface,
@@ -436,6 +439,9 @@ pub(crate) fn lay_from(
 /// `opacity`; with no page, or in any other mode, Fill is coverage, as
 /// `opacity` is. Ported from PhotoCraft, `crates/compose/src/psblend.rs`
 /// `composite_fill`, with the backdrop opaque (the page is), MIT licence.
+/// The box job lays with [`lay_fill_from`]; this is it at a corner of
+/// `(0, 0)`, for the tests.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lay_fill(
     dst: &mut Surface,
@@ -446,6 +452,23 @@ pub(crate) fn lay_fill(
     backdrop: Option<&Backdrop<'_>>,
     seed: u32,
     fill: f32,
+) {
+    lay_fill_from(dst, src, bx, opacity, mode, backdrop, seed, fill, (0, 0));
+}
+
+/// [`lay_fill`] onto a `dst` whose corner is device pixel `origin`, which
+/// Dissolve's pattern is hashed from (as [`lay_from`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lay_fill_from(
+    dst: &mut Surface,
+    src: &Surface,
+    bx: IBox,
+    opacity: f32,
+    mode: Blend,
+    backdrop: Option<&Backdrop<'_>>,
+    seed: u32,
+    fill: f32,
+    origin: (i32, i32),
 ) {
     let fill = fill.clamp(0.0, 1.0);
     if fill >= 1.0 || !mode.fill_is_special() || backdrop.is_none() {
@@ -458,17 +481,17 @@ pub(crate) fn lay_fill(
             backdrop,
             seed,
             1.0,
-            (0, 0),
+            origin,
         );
     }
-    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, fill, (0, 0));
+    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, fill, origin);
 }
 
-/// [`lay_fill`] for a box with Transparency Shapes Layer off: in the special
+/// [`lay_fill_from`] for a box with Transparency Shapes Layer off: in the special
 /// eight, over a page, the letters' own transparency blends as Fill does. A
 /// pixel of alpha `a` at Fill `f` is laid as an opaque one at Fill `a * f`,
 /// covering the page by `opacity` alone wherever the letters have any alpha
-/// at all. Every other mode, and with no page, it is [`lay_fill`]: they look
+/// at all. Every other mode, and with no page, it is [`lay_fill_from`]: they look
 /// the same either way. A box has no masks, so the letters' alpha is all of
 /// the layer's transparency. Ported from PhotoCraft,
 /// `crates/compose/src/composite.rs` `blend_layer_into` (measured in
@@ -484,9 +507,10 @@ pub(crate) fn lay_fill_shapeless(
     backdrop: Option<&Backdrop<'_>>,
     seed: u32,
     fill: f32,
+    origin: (i32, i32),
 ) {
     let Some(page) = backdrop.filter(|_| mode.fill_is_special()) else {
-        return lay_fill(dst, src, bx, opacity, mode, backdrop, seed, fill);
+        return lay_fill_from(dst, src, bx, opacity, mode, backdrop, seed, fill, origin);
     };
     let fill = fill.clamp(0.0, 1.0);
     let w = dst.width;
@@ -882,7 +906,7 @@ mod tests {
         let s = surface([pm(layer[0]), pm(layer[1]), pm(layer[2]), alpha]);
         let mut d = Surface::new(1, 1).unwrap();
         if shapeless {
-            lay_fill_shapeless(&mut d, &s, ONE, opacity, mode, Some(&back), 0, fill);
+            lay_fill_shapeless(&mut d, &s, ONE, opacity, mode, Some(&back), 0, fill, (0, 0));
         } else {
             lay_fill(&mut d, &s, ONE, opacity, mode, Some(&back), 0, fill);
         }
