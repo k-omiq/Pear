@@ -285,6 +285,14 @@ impl RoughMap {
         p.minus(self.offset(p))
     }
 
+    /// Where the point that [`RoughMap::at`] took to `p` came from, to first
+    /// order in the field: `p + d(p)`, the lookup the pixel pass made for
+    /// every pixel (see the top of this file). A roughened brush stamp is
+    /// read through it from inside its bent outline (`ink.rs`).
+    pub(crate) fn back(&self, p: Pt) -> Pt {
+        p.plus(self.offset(p))
+    }
+
     /// How an outline is cut for this map. Inside one cell of the finest
     /// octave's lattice the field is one polynomial, so no piece is longer
     /// than half of that cell; how far a piece then leaves its chord is

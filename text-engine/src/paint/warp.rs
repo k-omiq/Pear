@@ -256,7 +256,26 @@ impl MeshMap<'_> {
     /// of a letter; the slope at one point would follow every dent of a fine
     /// mesh. The identity moved to where the middle goes when there is no
     /// slope to read (a fold, a horizon).
-    pub(crate) fn tangent_over(&self, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> Affine {
+    pub(crate) fn tangent_over(&self, bounds: (f64, f64, f64, f64)) -> Affine {
+        let (x0, y0, x1, y1) = bounds;
+        match self.tangent_exact(bounds) {
+            Ok(m) => m,
+            Err(o) if o.x.is_finite() && o.y.is_finite() => {
+                let p = Pt::new((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+                Affine::translate(o.x - p.x, o.y - p.y)
+            }
+            Err(_) => Affine::IDENTITY,
+        }
+    }
+
+    /// [`MeshMap::tangent_over`] where it has a slope to read, and where
+    /// the middle goes where it has none: a brush stamp a fold or a horizon
+    /// crushes to nothing is not drawn (`ink.rs`), where a gradient's frame
+    /// is still moved.
+    pub(crate) fn tangent_exact(
+        &self,
+        (x0, y0, x1, y1): (f64, f64, f64, f64),
+    ) -> Result<Affine, Pt> {
         let p = Pt::new((x0 + x1) / 2.0, (y0 + y1) / 2.0);
         let least = self.mesh.w.min(self.mesh.h).min(1.0) * 1e-3;
         let (hx, hy) = (((x1 - x0) / 2.0).max(least), ((y1 - y0) / 2.0).max(least));
@@ -277,11 +296,9 @@ impl MeshMap<'_> {
             o.y - (dx.y * p.x + dy.y * p.y),
         ]);
         if m.invert().is_some() {
-            m
-        } else if o.x.is_finite() && o.y.is_finite() {
-            Affine::translate(o.x - p.x, o.y - p.y)
+            Ok(m)
         } else {
-            Affine::IDENTITY
+            Err(o)
         }
     }
 }
@@ -367,6 +384,47 @@ pub(crate) fn bend(
     } else {
         Err(Error::BadSpec)
     }
+}
+
+/// One straight line `a` to `b` carried through `map`, cut as [`bend`]
+/// cuts an edge: pushes onto `out` the points after where `a` goes, up to
+/// and including where `b` goes. For a line two shapes share (a ribbon's
+/// slices meet on one), each computes the same points from the same ends.
+pub(crate) fn bend_line(
+    out: &mut Polys,
+    map: impl Fn(Pt) -> Pt,
+    (a, b): (Pt, Pt),
+    cut: Cut,
+    tol: f64,
+) {
+    let flat2 = cut.flat_len * cut.flat_len;
+    let len = b.minus(a).len();
+    let n = (len / cut.max_len).ceil();
+    let n = if n >= 1.0 {
+        n.min(MAX_PIECES) as usize
+    } else {
+        1
+    };
+    let (mut p, mut mp) = (a, map(a));
+    for i in 1..=n {
+        let q = if i == n {
+            b
+        } else {
+            a.plus(b.minus(a).scale(i as f64 / n as f64))
+        };
+        let mq = map(q);
+        refine(out, &map, (p, mp), (q, mq), (tol, flat2), 0);
+        out.push(mq);
+        (p, mp) = (q, mq);
+    }
+}
+
+/// Whether every point of `polys` is one the rasteriser takes ([`bend`]).
+pub(crate) fn sound(polys: &Polys) -> bool {
+    polys
+        .pts
+        .iter()
+        .all(|p| p.x.abs() < MAX_COORD && p.y.abs() < MAX_COORD)
 }
 
 /// Pushes the points strictly between the two ends of one piece: none when

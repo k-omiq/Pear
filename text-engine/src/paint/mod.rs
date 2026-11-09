@@ -147,6 +147,34 @@ pub(crate) struct Bends<'a> {
     pub mesh: Option<&'a warp::MeshMap<'a>>,
 }
 
+impl Bends<'_> {
+    /// Whether nothing bends.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rough.is_none() && self.mesh.is_none()
+    }
+
+    /// Where the job-space point `p` goes: roughened, then through the mesh.
+    /// The letters (`GlyphPolys::placed`, after their drip) and the brush
+    /// ink (`ink.rs`) are bent by this one map.
+    pub(crate) fn at(&self, p: Pt) -> Pt {
+        let p = self.rough.map_or(p, |r| r.at(p));
+        self.mesh.map_or(p, |m| m.at(p))
+    }
+
+    /// How an outline inside `bounds` (job space, unbent) is cut for this
+    /// map: the one map's own cut where only one bends, the finer of the
+    /// two (`Cut::both`) where both do, and `None` where nothing bends.
+    pub(crate) fn cut(&self, bounds: (f64, f64, f64, f64), tol: f64) -> Option<Cut> {
+        let cuts = [
+            self.rough.map(|r| r.cut(tol)),
+            self.mesh.map(|m| m.cut(bounds, tol)),
+        ];
+        let mut cuts = cuts.into_iter().flatten();
+        let first = cuts.next()?;
+        Some(cuts.fold(first, Cut::both))
+    }
+}
+
 /// One glyph's outline in job space, and what a synthesised bold does to it.
 struct GlyphPolys {
     polys: Polys,
@@ -198,25 +226,18 @@ impl GlyphPolys {
         let Some(bounds) = polys.bounds() else {
             return Ok(polys.map(transform));
         };
-        let (drip, rough, mesh) = (self.drip, bends.rough, bends.mesh);
-        let cuts = [
-            drip.map(|d| d.cut(tol)),
-            rough.map(|r| r.cut(tol)),
-            mesh.map(|m| m.cut(bounds, tol)),
-        ];
-        let mut cuts = cuts.into_iter().flatten();
-        // Nothing bends: the numbers a job always had.
-        let Some(first) = cuts.next() else {
-            return Ok(polys.map(transform));
-        };
+        let drip = self.drip;
         // One map is cut as that map asks; one after another, by the finer
-        // cut of them all.
-        let cut = cuts.fold(first, Cut::both);
-        let map = |p: Pt| {
-            let p = drip.map_or(p, |d| d.at(p));
-            let p = rough.map_or(p, |r| r.at(p));
-            mesh.map_or(p, |m| m.at(p))
+        // cut of them all (`Cut::both` is the least of the lengths, and
+        // takes no piece on trust, in any order).
+        let cut = match (drip.map(|d| d.cut(tol)), bends.cut(bounds, tol)) {
+            // Nothing bends: the numbers a job always had.
+            (None, None) => return Ok(polys.map(transform)),
+            (Some(d), None) => d,
+            (None, Some(b)) => b,
+            (Some(d), Some(b)) => d.both(b),
         };
+        let map = |p: Pt| bends.at(drip.map_or(p, |d| d.at(p)));
         Ok(warp::bend(polys, map, cut, tol)?.map(transform))
     }
 
@@ -1056,5 +1077,96 @@ mod hardening_tests {
         };
         assert_eq!(paint_job(&mut e, &req).err(), Some(Error::BadSpec));
         assert_eq!(e.line, before);
+    }
+}
+
+#[cfg(test)]
+mod bends_tests {
+    use super::*;
+
+    fn bumpy() -> warp::Mesh {
+        let mut pts = Vec::new();
+        for j in 0..=3u32 {
+            for i in 0..=3u32 {
+                pts.push(Pt::new(
+                    200.0 * f64::from(i) / 3.0,
+                    120.0 * f64::from(j) / 3.0,
+                ));
+            }
+        }
+        pts[5] = Pt::new(pts[5].x - 12.0, pts[5].y - 18.0);
+        pts[10] = Pt::new(pts[10].x - 20.0, pts[10].y - 12.0);
+        warp::Mesh {
+            cols: 3,
+            rows: 3,
+            pts,
+            x: 20.0,
+            y: 30.0,
+            w: 200.0,
+            h: 120.0,
+        }
+    }
+
+    fn rough() -> roughen::Roughen {
+        roughen::Roughen {
+            amount: 6.0,
+            detail: 0.07,
+            seed: 7.0,
+            origin: Pt::new(20.0, 30.0),
+            grit: 1.5,
+        }
+    }
+
+    /// The letters' map before it was shared (a858107), written out by
+    /// hand: their drip, then the roughening, then the mesh, and the cut
+    /// as a left fold of every map's own.
+    #[test]
+    fn the_shared_map_is_roughen_then_mesh_bit_for_bit_and_cuts_as_the_old_fold() {
+        let m = bumpy();
+        let mesh = m.map().unwrap().unwrap();
+        let rough = rough().map().unwrap().unwrap();
+        let drip = warp::Drip {
+            mid: 60.0,
+            bottom: 110.0,
+            pull: 9.0,
+        };
+        let (bounds, tol) = ((25.0, 40.0, 180.0, 130.0), 0.01);
+        for (r, ms) in [(true, true), (true, false), (false, true), (false, false)] {
+            let bends = Bends {
+                rough: r.then_some(&rough),
+                mesh: ms.then_some(&mesh),
+            };
+            for i in 0..200 {
+                let p = Pt::new(15.0 + f64::from(i) * 1.13, 25.0 + f64::from(i * 7 % 130));
+                let mut want = p;
+                if r {
+                    want = rough.at(want);
+                }
+                if ms {
+                    want = mesh.at(want);
+                }
+                let got = bends.at(p);
+                assert_eq!(
+                    (got.x.to_bits(), got.y.to_bits()),
+                    (want.x.to_bits(), want.y.to_bits())
+                );
+            }
+            for with_drip in [false, true] {
+                let old = [
+                    with_drip.then(|| drip.cut(tol)),
+                    r.then(|| rough.cut(tol)),
+                    ms.then(|| mesh.cut(bounds, tol)),
+                ];
+                let mut old = old.into_iter().flatten();
+                let old = old.next().map(|first| old.fold(first, Cut::both));
+                let new = match (with_drip.then(|| drip.cut(tol)), bends.cut(bounds, tol)) {
+                    (None, None) => None,
+                    (Some(d), None) => Some(d),
+                    (None, Some(b)) => Some(b),
+                    (Some(d), Some(b)) => Some(d.both(b)),
+                };
+                assert_eq!(new, old, "rough {r}, mesh {ms}, drip {with_drip}");
+            }
+        }
     }
 }
