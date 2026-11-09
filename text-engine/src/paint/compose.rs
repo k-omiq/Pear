@@ -7,6 +7,7 @@
 //! eight bits exactly once, at the end, so a pixel under three translucent
 //! layers is as accurate as one under a single layer.
 
+use super::blur::to_u8;
 use super::budget;
 use super::geom::IBox;
 use super::raster::{strip_of, Coverage, STRIP_ROWS};
@@ -147,14 +148,22 @@ fn over(px: &mut [f32], src: [f32; 4], c: f32) {
 /// else.
 #[inline]
 pub(super) fn store(px: &[f32], out: &mut [u8]) {
-    let a = px[3].min(1.0);
-    let a8 = (a * 255.0 + 0.5) as u8;
+    // `min(1.0)`, said as the one compare it is.
+    let a = if px[3] < 1.0 { px[3] } else { 1.0 };
+    let a8 = to_u8(a * 255.0);
     if a8 == 0 {
         out.fill(0);
         return;
     }
-    for k in 0..3 {
-        out[k] = ((px[k] / a).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    // A whole alpha divides nothing: `v / 1` is `v`.
+    if a == 1.0 {
+        for k in 0..3 {
+            out[k] = to_u8(px[k].clamp(0.0, 1.0) * 255.0);
+        }
+    } else {
+        for k in 0..3 {
+            out[k] = to_u8((px[k] / a).clamp(0.0, 1.0) * 255.0);
+        }
     }
     out[3] = a8;
 }
@@ -162,6 +171,53 @@ pub(super) fn store(px: &[f32], out: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store as it was first written.
+    fn store_as_first_written(px: &[f32], out: &mut [u8]) {
+        let a = px[3].min(1.0);
+        let a8 = (a * 255.0 + 0.5) as u8;
+        if a8 == 0 {
+            out.fill(0);
+            return;
+        }
+        for k in 0..3 {
+            out[k] = ((px[k] / a).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        }
+        out[3] = a8;
+    }
+
+    #[test]
+    fn a_stored_pixel_is_what_it_was_to_the_byte() {
+        let mut seed = 3u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        for _ in 0..200_000 {
+            let mut px = [0.0f32; 4];
+            for v in px.iter_mut() {
+                let r = next();
+                let unit = (r % 100_001) as f32 / 100_000.0;
+                *v = match (r >> 20) % 16 {
+                    0 => 0.0,
+                    1 | 2 => 1.0,
+                    3 => -unit,
+                    4 => unit * 3.0,
+                    5 => f32::NAN,
+                    6 => f32::INFINITY,
+                    7 => -0.0,
+                    8 => unit * 0.004,
+                    _ => unit,
+                };
+            }
+            let (mut now, mut then) = ([7u8; 4], [7u8; 4]);
+            store(&px, &mut now);
+            store_as_first_written(&px, &mut then);
+            assert_eq!(now, then, "{px:?}");
+        }
+    }
     use crate::paint::geom::{Polys, Pt};
     use crate::paint::raster::{Exact, Part, Rasterizer};
 
