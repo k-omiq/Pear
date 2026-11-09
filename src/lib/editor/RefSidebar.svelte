@@ -3,6 +3,8 @@
   import { app, page, isLongstrip, rawZoomIn, rawZoomOut, rawZoomBy } from '../store.svelte.js';
   import { stripScroll } from './strip-sync.svelte.js';
   import { scrollTopForFraction } from './strip.js';
+  import { untrack } from 'svelte';
+  import { releaseLeavingImages } from '../release-image.js';
 
   const strip = $derived(isLongstrip());
   const rawWidth = $derived(app.rawZoom === 0 ? '100%' : 100 * app.rawZoom + '%');
@@ -22,6 +24,16 @@
     ratios;
     if (!strip || !scrollEl) return;
     scrollEl.scrollTop = scrollTopForFraction(stripScroll.fraction, scrollEl);
+  });
+
+  // A raw page leaving the column gives its picture back before it goes
+  // (release-image.js). The strip shows every page that has a raw; one page
+  // shows the current one.
+  $effect.pre(() => {
+    const keep = new Set();
+    if (strip) for (const pg of app.pages) pg.raw && keep.add(pg.raw);
+    else if (page()?.raw) keep.add(page().raw);
+    untrack(() => releaseLeavingImages(scrollEl, 'img', keep));
   });
 
   // Zoom column with modifier + wheel.
