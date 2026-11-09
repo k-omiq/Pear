@@ -398,7 +398,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // here and in boxjob.rs (BOX_WIRE_VERSION) at once. paintsBoxes() compares
 // only the number. v11 had two forms: 7858367 added shadow flag 4 (exact)
 // without a bump, so an early v11 wasm refuses every SFX copy's shadow.
-export const BOX_WIRE_VERSION = 12
+export const BOX_WIRE_VERSION = 13
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
@@ -821,6 +821,9 @@ function clipShape(sh) {
  *   Vivid Light, Linear Light, Hard Mix, Difference), part of the blend, as in Photoshop
  * @param {boolean} [request.blendInterior] Blend Interior Effects as Group: Fill Opacity
  *   fades the overlays, the satin and the inner glows with the fill
+ * @param {boolean} [request.transparencyShapes] Transparency Shapes Layer (default true);
+ *   false: over a backdrop, in one of the special eight, the letters' own transparency
+ *   blends as Fill does
  * @param {{r?: boolean, g?: boolean, b?: boolean} | null} [request.channels] Advanced
  *   Blending's Channels (`style.blending.channels`): a channel that is false shows the
  *   backdrop's. Painted over a backdrop only
@@ -870,7 +873,7 @@ function clipShape(sh) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
+  const { width, height, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -900,8 +903,9 @@ export function encodeBox(request) {
   }
   u32(blendId(blend))
   f64(fillOpacity)
-  // The blending flags (v9): 1 Blend Interior Effects as Group.
-  u32(blendInterior ? 1 : 0)
+  // The blending flags (v9): 1 Blend Interior Effects as Group, 2 (v13)
+  // Transparency Shapes Layer off.
+  u32((blendInterior ? 1 : 0) | (transparencyShapes === false ? 2 : 0))
   // The channels left out (v10): bit 0 R, 1 G, 2 B.
   u32(BLEND_CHANNELS.reduce((m, k, i) => (channels?.[k] === false ? m | (1 << i) : m), 0))
   // Blend If (v10): 0 none, or 1 and Gray, R, G, B, each This Layer then

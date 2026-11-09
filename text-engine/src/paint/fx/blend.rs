@@ -464,6 +464,69 @@ pub(crate) fn lay_fill(
     lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, fill, (0, 0));
 }
 
+/// [`lay_fill`] for a box with Transparency Shapes Layer off: in the special
+/// eight, over a page, the letters' own transparency blends as Fill does. A
+/// pixel of alpha `a` at Fill `f` is laid as an opaque one at Fill `a * f`,
+/// covering the page by `opacity` alone wherever the letters have any alpha
+/// at all. Every other mode, and with no page, it is [`lay_fill`]: they look
+/// the same either way. A box has no masks, so the letters' alpha is all of
+/// the layer's transparency. Ported from PhotoCraft,
+/// `crates/compose/src/composite.rs` `blend_layer_into` (measured in
+/// Photoshop, PhotoCraft #5692), Copyright (c) 2026 ArtCraft Team and the
+/// PhotoCraft contributors, MIT licence (see `THIRD_PARTY.md`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lay_fill_shapeless(
+    dst: &mut Surface,
+    src: &Surface,
+    bx: IBox,
+    opacity: f32,
+    mode: Blend,
+    backdrop: Option<&Backdrop<'_>>,
+    seed: u32,
+    fill: f32,
+) {
+    let Some(page) = backdrop.filter(|_| mode.fill_is_special()) else {
+        return lay_fill(dst, src, bx, opacity, mode, backdrop, seed, fill);
+    };
+    let fill = fill.clamp(0.0, 1.0);
+    let w = dst.width;
+    let bx = bx.intersect(&IBox {
+        x0: 0,
+        y0: 0,
+        x1: w as i32,
+        y1: dst.height as i32,
+    });
+    let sa = opacity.min(1.0);
+    if bx.is_empty() || sa <= 0.0 {
+        return;
+    }
+    for y in bx.y0..bx.y1 {
+        for x in bx.x0..bx.x1 {
+            let i = y as usize * w + x as usize;
+            let sp = &src.data[i * 4..i * 4 + 4];
+            let a = f32::from(sp[3]) / 255.0;
+            if a <= 0.0 {
+                continue;
+            }
+            let s_col = unpremul(sp);
+            let dp = &mut dst.data[i * 4..i * 4 + 4];
+            let da = f32::from(dp[3]) / 255.0;
+            let d_col = unpremul(dp);
+            let p = page.at(i);
+            // What is under the layer: the box so far over the page.
+            let under: [f32; 3] = core::array::from_fn(|k| d_col[k] * da + p[k] * (1.0 - da));
+            let mixed = mode.mix_fill(under, s_col, fill * a);
+            let alpha = sa + da * (1.0 - sa);
+            let shown: [f32; 3] = core::array::from_fn(|k| mixed[k] * sa + under[k] * (1.0 - sa));
+            for k in 0..3 {
+                let c = ((shown[k] - p[k] * (1.0 - alpha)) / alpha).clamp(0.0, 1.0);
+                dp[k] = super::super::blur::to_u8(c * alpha * 255.0);
+            }
+            dp[3] = super::super::blur::to_u8(alpha * 255.0);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lay_at_fill(
     dst: &mut Surface,
@@ -806,6 +869,73 @@ mod tests {
         lay(&mut b, &s, ONE, 1.0, Blend::ColorDodge, Some(&back), 0);
         assert_eq!(a.data, b.data);
         assert!(!Blend::Multiply.fill_is_special() && !Blend::Overlay.fill_is_special());
+    }
+
+    /// What a layer of `layer` at alpha `alpha` shows over an opaque page in
+    /// `mode` at `opacity` and Fill `fill`, Transparency Shapes Layer off
+    /// (`shapeless`) or on, as 0 to 255 per channel.
+    fn shown_alpha(mode: Blend, layer: [u8; 3], alpha: u8, opacity: f32, fill: f32, shapeless: bool) -> [f32; 3] {
+        let page = [90u8, 110, 130, 255];
+        let back = Backdrop { pixels: &page };
+        let a = f32::from(alpha) / 255.0;
+        let pm = |c: u8| (f32::from(c) * a).round() as u8;
+        let s = surface([pm(layer[0]), pm(layer[1]), pm(layer[2]), alpha]);
+        let mut d = Surface::new(1, 1).unwrap();
+        if shapeless {
+            lay_fill_shapeless(&mut d, &s, ONE, opacity, mode, Some(&back), 0, fill);
+        } else {
+            lay_fill(&mut d, &s, ONE, opacity, mode, Some(&back), 0, fill);
+        }
+        let da = f32::from(d.data[3]) / 255.0;
+        core::array::from_fn(|k| f32::from(d.data[k]) + f32::from(page[k]) * (1.0 - da))
+    }
+
+    /// PhotoCraft's `transparency_shapes_off_blends_alpha_as_fill`
+    /// (`crates/compose/src/advanced_tests.rs`, MIT licence): Photoshop's own
+    /// flattened pixels of a layer (200, 150, 80) at alpha 30 % (77) and
+    /// 70 % (179) over (90, 110, 130), Transparency Shapes Layer off and on.
+    #[test]
+    fn transparency_shapes_off_blends_alpha_as_fill() {
+        type Rgb = [u8; 3];
+        let (o53, f50) = (135.0 / 255.0, 128.0 / 255.0);
+        // (mode, opacity, fill, off at 30 %, off at 70 %, on at 30 %, on at 70 %)
+        let measured: [(Blend, f32, f32, Rgb, Rgb, Rgb, Rgb); 7] = [
+            (Blend::ColorDodge, o53, 1.0, [105, 123, 137], [148, 151, 150], [117, 133, 139], [151, 164, 152]),
+            (Blend::ColorBurn, o53, 1.0, [84, 99, 113], [74, 79, 69], [83, 94, 109], [73, 72, 82]),
+            (Blend::LinearDodge, o53, 1.0, [122, 134, 143], [164, 166, 160], [117, 133, 143], [151, 164, 160]),
+            (Blend::HardMix, o53, 1.0, [98, 111, 119], [133, 117, 75], [117, 133, 109], [151, 164, 82]),
+            (Blend::Difference, o53, 1.0, [58, 86, 117], [69, 54, 100], [93, 99, 117], [97, 84, 100]),
+            (Blend::ColorDodge, 1.0, f50, [102, 121, 136], [125, 139, 146], [108, 124, 137], [131, 142, 147]),
+            (Blend::Difference, 1.0, f50, [59, 87, 118], [19, 57, 102], [66, 87, 118], [34, 57, 102]),
+        ];
+        let layer = [200, 150, 80];
+        for (mode, opacity, fill, off30, off70, on30, on70) in measured {
+            for (alpha, shapeless, want) in [(77, true, off30), (179, true, off70), (77, false, on30), (179, false, on70)] {
+                let got = shown_alpha(mode, layer, alpha, opacity, fill, shapeless);
+                for k in 0..3 {
+                    assert!(
+                        (got[k] - f32::from(want[k])).abs() <= 2.0,
+                        "{mode:?} opacity {opacity} fill {fill} alpha {alpha} shapeless {shapeless} channel {k}: {} vs Photoshop {}",
+                        got[k],
+                        want[k]
+                    );
+                }
+            }
+        }
+        // Outside the special eight it looks the same either way.
+        for mode in [Blend::Normal, Blend::Multiply, Blend::Screen, Blend::Overlay] {
+            for alpha in [77, 179] {
+                assert_eq!(
+                    shown_alpha(mode, layer, alpha, o53, f50, true),
+                    shown_alpha(mode, layer, alpha, o53, f50, false),
+                    "{mode:?}"
+                );
+            }
+        }
+        // An opaque pixel is the same either way, and a clear one is not laid.
+        let opaque = |shapeless| shown_alpha(Blend::ColorDodge, layer, 255, o53, f50, shapeless);
+        assert_eq!(opaque(true), opaque(false));
+        assert_eq!(shown_alpha(Blend::ColorDodge, layer, 0, 1.0, 1.0, true), [90.0, 110.0, 130.0]);
     }
 
     #[test]
