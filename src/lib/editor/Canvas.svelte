@@ -434,7 +434,11 @@
     // page moves by at most 3px between adjacent quanta, which is below what the
     // fit's own padding reserves, and a turn between two pages of the same size
     // writes no zoom at all.
-    const z = Math.round(raw * 1000) / 1000;
+    // Down, never to the nearest: rounded up, the page and its padding stood
+    // up to half a thousandth of the page past the viewport (a pixel and a
+    // half on a 3000px page), which is an overflow, a scrollbar, a smaller
+    // viewport, a new fit without one, and round again.
+    const z = Math.floor(raw * 1000) / 1000;
     // A fit is "the whole page, centred, nothing cut off", which a leftover
     // hand-pan would immediately contradict. Fit is also the one control that
     // is always reachable, so this doubles as the way out of any pan.
@@ -1221,7 +1225,8 @@
           : ''}
   >
     <!-- The pan is a transform rather than a change to the layout box on
-         purpose: it moves the picture without touching the stage's scroll size,
+         purpose: it moves the picture without touching the stage's scroll size
+         (the stage clips what is moved past it, see `.stage` in styles.css),
          so the scrollbars, the fit measurement and the 60px of air around the
          page all go on meaning what they meant. `frameCoords` and TextBox's own
          drags read this element's `getBoundingClientRect()`, which already
