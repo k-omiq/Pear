@@ -17,6 +17,7 @@ import { setBoxDefaults, setLegacyTypeset, setFxDefaults, normalizeFxDefaults, f
 import { app, setTool, setBrushToolAllowed, setSfxToolAllowed, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
 import { normalizeOcrModels } from './ocr-models.js';
 import { useTextEngine } from './engine-switch.svelte.js';
+import { setPaintWorkerAllowed } from './text-engine/paint-mirror.js';
 import { guide, onSeriesTypeset, SERIES_TYPESET_KEYS } from './guide.svelte.js';
 
 const KEY = 'mt.prefs';
@@ -125,6 +126,11 @@ export const prefs = $state({
   // and a chapter carries nothing of it. A build without the engine measures
   // with the browser whatever this says (`start`).
   textEngine: ENGINE_DEFAULT,
+  // A box's full paint in a Web Worker (text-engine/paint-mirror.js), so the
+  // window does not wait for it. Off, every box paints on the main thread as
+  // before; read when the engine starts, and before each paint. No Settings
+  // control: a way out without a rebuild.
+  paintWorker: true,
   // The layer effects' own defaults (Photoshop's Make Default), one per kind
   // (`FX_KINDS` in data.js), in the stored form `fxStored` gives. Only the
   // kinds the person saved are here; the rest start from the factory. Per
@@ -139,7 +145,7 @@ const cleanNames = (v) =>
 
 // The box defaults, split by what a value of theirs may be. Named once so the
 // setter's validation and the loader's validation cannot drift apart.
-const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector'];
+const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector', 'paintWorker'];
 const NUM_KEYS = { defaultMinOrphan: [1, 8], minFontSize: [4, 48] };
 const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'] };
 
@@ -197,6 +203,7 @@ function persist() {
         secondReader: prefs.secondReader,
         secondDetector: prefs.secondDetector,
         textEngine: prefs.textEngine,
+        paintWorker: prefs.paintWorker,
         fxDefaults: $state.snapshot(prefs.fxDefaults),
         legacyTypeset,
         defaultsRev: DEFAULTS_REV,
@@ -256,6 +263,7 @@ export function setPref(key, value) {
   // The one preference that re-measures everything, and it does so itself:
   // the engine is swapped and every box laid out again once it is in.
   if (key === 'textEngine') useTextEngine(value);
+  if (key === 'paintWorker') setPaintWorkerAllowed(value);
   // Mirrored into data.js, where every new effect is made.
   if (key === 'fxDefaults') setFxDefaults(value);
   // No relayout for these: they are what the NEXT box is born with, and boxes
@@ -344,6 +352,8 @@ function load() {
   setBrushToolAllowed(prefs.brushTool);
   setSfxToolAllowed(prefs.sfxTool);
   setInheritBoxStyle(prefs.inheritBoxStyle);
+  // Before the engine starts: the worker starts with it, or not at all.
+  setPaintWorkerAllowed(prefs.paintWorker);
   // Here and not at first use: a chapter can open before anything asks, and
   // the engine has to be standing in the way of its first fit by then. A
   // no-op for 'browser', which is every install that never touched the switch.

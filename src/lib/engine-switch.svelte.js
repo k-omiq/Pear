@@ -55,6 +55,7 @@ import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { createFontSync } from './text-engine/font-sync.js';
 import { osOf } from './text-engine/last-resort.js';
 import { engineWasmUrl, fetchEngineWasm } from './text-engine/wasm.js';
+import { startPaintMirror } from './text-engine/paint-mirror.js';
 
 async function tauriInvoke() {
   if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return null;
@@ -66,7 +67,18 @@ async function tauriInvoke() {
 const REAL = {
   available: () => !!engineWasmUrl,
   compile: async () => WebAssembly.compile(await fetchEngineWasm()),
-  createEngine: (module) => createRustTextEngine(module),
+  // With the paint worker (paint-mirror.js), started with the instance and
+  // before it holds anything, so the worker's instance is told every font.
+  // None in node and jsdom, or with the `paintWorker` preference off.
+  createEngine: async (module) => {
+    const mirror = startPaintMirror(module, engineWasmUrl);
+    try {
+      return await createRustTextEngine(module, { mirror });
+    } catch (error) {
+      mirror?.close();
+      throw error;
+    }
+  },
   createPainter: (engine) => createRustGlyphPainter(engine),
   invoke: tauriInvoke,
   booted: fontsBooted,
@@ -183,6 +195,8 @@ function leave(phase, error = '') {
 // Off therefore drops the instance, and the next on makes a new one out of the
 // compiled module.
 function dispose() {
+  // The paint worker's instance goes with this one.
+  rust?.paintMirror?.close();
   rust = null;
   lettersMemoFor = null;
   lettersMemo.clear();
@@ -244,7 +258,10 @@ async function start() {
     }
     // Turned off meanwhile: the instance just made is nobody's, and is left
     // to the collector rather than kept for a turn that may never come.
-    if (stale()) return;
+    if (stale()) {
+      made?.paintMirror?.close();
+      return;
+    }
     rust = made;
     await deps.booted();
     if (stale()) return;

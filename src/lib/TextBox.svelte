@@ -75,7 +75,7 @@
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
-  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, pictureDragPx, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
+  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, pictureDragPx, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture, requestBoxPicture } from './editor/box-picture.js';
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
@@ -768,25 +768,40 @@
   // What the last paint of this box's picture cost, ms a pixel painted (0
   // until one is timed): the next live paint's budget (`pictureDragPx`).
   let paintCost = 0;
-  function paintWarp(el, tips) {
+  // An upright box is set on whole device pixels (`pictureCss`), so it is
+  // painted moved by the fraction of a pixel its corner falls short of one:
+  // where the box's top-left lands on the screen now, device px.
+  function paintPlace() {
+    const page = pageCorner(pageFrameEl);
+    const dpr = displayScale();
+    const corner = page && !s.rotation && !mirror ? { x: (page.x + box.x * z) * dpr, y: (page.y + box.y * z) * dpr } : null;
+    return { page, corner };
+  }
+  // An IME's text is not the box's until the composition ends, so the box
+  // is painted with it standing in for its own.
+  const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText } : box);
+  // `key` is the picture key this paint is for: the effect's paints have one,
+  // and only those may go to the paint worker (`paintFull`).
+  function paintWarp(el, tips, key = null) {
     if (!engineShown) {
       warpGeom = paintWarpedBox(el, box, pg, z, tips);
       return;
     }
     const live = resizing || sfxDragging;
+    // THE FULL PAINT IN THE WORKER. A picture at rest (no drag, no keys: the
+    // whole budget) is painted off the main thread where it can be; the live
+    // ones stay here, inside a frame, and on screen in the frame they were
+    // asked in. A box whose roughening still waits for the session's noise
+    // phase is painted here too: the settle after it repaints it here.
+    if (key != null && !live && !keying && !(s.roughen?.on && !noiseSettled) && paintFull(el, tips, key)) return;
+    // A picture painted now is newer than any on its way from the worker.
+    fullSeq++;
     // The drag budget is what the last paint of this box says fits a frame
     // (`pictureDragPx`): a stack of layer effects has fewer pixels in the hand.
     const shown = warpGeom ? warpGeom.cw * z * warpGeom.ch * z : 0;
     const budget = live || keying ? pictureDragPx(paintCost, shown) : PICTURE_MAX_PX;
-    // An IME's text is not the box's until the composition ends, so the box
-    // is painted with it standing in for its own.
-    const of = editing && composeText != null ? { ...box, text: composeText } : box;
-    // An upright box is set on whole device pixels (`pictureCss`), so it is
-    // painted moved by the fraction of a pixel its corner falls short of one:
-    // where the box's top-left lands on the screen now, device px.
-    const page = pageCorner(pageFrameEl);
-    const dpr = displayScale();
-    const corner = page && !s.rotation && !mirror ? { x: (page.x + box.x * z) * dpr, y: (page.y + box.y * z) * dpr } : null;
+    const of = paintedBox();
+    const { page, corner } = paintPlace();
     const t0 = performance.now();
     const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner, pageUnder(), gradientSheet);
     const painted = el.width * el.height;
@@ -797,6 +812,75 @@
     keySoft = keying && g.ss < pictureRes;
     warpGeom = { ...g, page };
     keepReach(warpGeom);
+  }
+
+  // ---- the full paint, in the paint worker ----
+  //
+  // One paint of this box in flight at a time (`fullBusy`). One asked for
+  // meanwhile waits (`fullNext`), and a later one takes its place: only the
+  // newest is ever painted. Every request and every paint made here takes a
+  // number (`fullSeq`), and a result is shown only if it is still the newest,
+  // the picture it was asked for is still the one wanted (`warpDrawn`), and
+  // the canvas is still this box's - otherwise it is let go. While it is on
+  // its way the picture already on screen stays.
+  let fullSeq = 0;
+  let fullBusy = false;
+  let fullNext = null;
+  // True when the paint is the worker's now (sent, or waiting its turn).
+  function paintFull(el, tips, key) {
+    const seq = ++fullSeq;
+    if (fullBusy) {
+      fullNext = { el, tips, key, seq };
+      return true;
+    }
+    return sendFull(el, tips, key, seq);
+  }
+  function sendFull(el, tips, key, seq) {
+    const { page, corner } = paintPlace();
+    const req = requestBoxPicture(paintedBox(), pg, pictureRes, tips, PICTURE_MAX_PX, pictureRes / z, corner, pageUnder(), gradientSheet);
+    if (!req) return false;
+    fullBusy = true;
+    const wanted = () => seq === fullSeq && key === warpDrawn && warpLive === el && !warpDragging;
+    req.promise.then(
+      (res) => {
+        fullBusy = false;
+        if (!wanted()) req.cancel();
+        else if (res?.dead) {
+          // The worker is gone: this picture is painted here, now.
+          req.cancel();
+          tryPaint(el, tips, key);
+        } else {
+          try {
+            const g = req.apply(el, res);
+            const painted = el.width * el.height;
+            if (painted > 0) paintCost = (req.prepMs + (res.ms || 0)) / painted;
+            dragSoft = false;
+            keySoft = false;
+            warpGeom = { ...g, page };
+            keepReach(warpGeom);
+            failSaid = false;
+          } catch (err) {
+            paintFailedWith(el, key, err);
+          }
+        }
+        nextFull();
+      },
+      (err) => {
+        fullBusy = false;
+        req.cancel();
+        if (wanted()) paintFailedWith(el, key, err);
+        nextFull();
+      },
+    );
+    return true;
+  }
+  // The one that waited, if it is still the one wanted; painted here if the
+  // worker will not take it.
+  function nextFull() {
+    const n = fullNext;
+    fullNext = null;
+    if (!n || n.seq !== fullSeq || n.key !== warpDrawn || warpLive !== n.el || warpDragging) return;
+    if (!sendFull(n.el, n.tips, n.key, n.seq)) tryPaint(n.el, n.tips, n.key);
   }
 
   // The paint, for the effect: true when it painted. When it threw, the canvas
@@ -815,22 +899,26 @@
       return true;
     }
     try {
-      paintWarp(el, tips);
+      paintWarp(el, tips, key);
       failSaid = false;
       return true;
     } catch (err) {
-      el.width = 0;
-      el.height = 0;
-      warpGeom = null;
-      warpTips = null;
-      warpSeq++;
-      if (!failSaid) {
-        failSaid = true;
-        console.error(`the picture of box ${box.id} could not be painted; it is shown as its text${warped ? ', without its mesh' : ''}`, err);
-      }
-      paintFailed = key;
+      paintFailedWith(el, key, err);
       return false;
     }
+  }
+  function paintFailedWith(el, key, err) {
+    el.width = 0;
+    el.height = 0;
+    warpGeom = null;
+    warpTips = null;
+    warpSeq++;
+    fullSeq++;
+    if (!failSaid) {
+      failSaid = true;
+      console.error(`the picture of box ${box.id} could not be painted; it is shown as its text${warped ? ', without its mesh' : ''}`, err);
+    }
+    paintFailed = key;
   }
 
   // ---- the gizmo's live drag ----

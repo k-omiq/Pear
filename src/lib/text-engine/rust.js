@@ -72,6 +72,12 @@ export function weightOnAxis(axis, bold, slot) {
  */
 export async function createRustTextEngine(source, options = {}) {
   const low = await createEngine(source);
+  // The paint worker's mirror (paint-mirror.js), attached before the first
+  // rule or font: everything that changes the instance from here goes to the
+  // worker's instance too, in the same order.
+  const mirror = options.mirror ?? null;
+  mirror?.attach(low);
+  const makeInstance = mirror ? (font, settings) => mirror.addInstance(addInstance, low, font, settings) : (font, settings) => addInstance(low, font, settings);
   // family -> { regular, bold, italic, boldItalic }: engine font ids, 0 = absent
   const families = new Map();
   // face.key -> the resolved engine face; emptied whenever the faces change
@@ -142,7 +148,7 @@ export async function createRustTextEngine(source, options = {}) {
     let made = instances.get(font);
     if (!made) instances.set(font, (made = new Map()));
     if (!made.has(at.wght)) {
-      const instance = addInstance(low, font, { wght: at.wght });
+      const instance = makeInstance(font, { wght: at.wght });
       made.set(at.wght, instance);
       const source = fontSources.get(font);
       fontSources.set(instance, { ...source, location: [['wght', Math.fround(at.wght)]] });
@@ -580,5 +586,7 @@ export async function createRustTextEngine(source, options = {}) {
     },
     /** The low-level engine, for tools that need font ids or raw runs. */
     low,
+    /** The paint worker's mirror of this instance, or null (paint-mirror.js). */
+    paintMirror: mirror,
   };
 }

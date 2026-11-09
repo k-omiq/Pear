@@ -17,9 +17,10 @@
 // are TextBox.svelte's, the same ones the warped box had; this file is the
 // arithmetic and the two paints, kept out of the component so they can be
 // tested without one.
-import { renderBoxTexture, warpTexture } from '../exporter.js';
+import { boxInJob, renderBoxTexture, warpTexture } from '../exporter.js';
 import { glyphPainter } from '../text-engine/index.js';
-import { pageGradients, usesBackdrop } from '../text-paint.js';
+import { paintWorkerAllowed } from '../text-engine/paint-mirror.js';
+import { inkActive, pageGradients, usesBackdrop } from '../text-paint.js';
 
 // The most pixels one box's canvas holds: 8 megapixels, 32 MB of RGBA.
 //
@@ -207,12 +208,73 @@ function show(el, r, maxPx, release, unit = 1) {
  * (`pictureTexture`).
  */
 export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null, sheet = null) {
-  const tex = pictureTexture(box, p, tips, scale, maxPx, false, corner, under, sheet);
+  return showTexture(el, pictureTexture(box, p, tips, scale, maxPx, false, corner, under, sheet), box, scale, maxPx, unit);
+}
+
+// A finished texture of `box` onto `el`, and where it sits: the second half
+// of `paintBoxPicture`, shared with the worker's paint (`requestBoxPicture`).
+function showTexture(el, tex, box, scale, maxPx, unit) {
   const ss = tex.ss;
   const phase = tex.phase ?? null;
   const whole = ss === scale && Math.abs(unit - Math.round(unit)) < 1e-9 ? Math.round(unit) : 1;
   const { k, ...at } = show(el, warpTexture(tex, box), maxPx, true, whole);
   return { ...at, ss: k === 1 ? ss : ss * k, phase: k === 1 && phase ? phase : undefined };
+}
+
+/**
+ * `paintBoxPicture` with the engine's paint in the paint worker
+ * (text-engine/paint-worker.js), so the main thread does not wait for it.
+ * Everything up to the paint is done here and now, exactly as the
+ * synchronous paint does it - the layout, the surface, the page under the
+ * box, the tiles, the job's bytes - and the bytes go to the worker.
+ *
+ * Returns null where the box is not for the worker, and the caller paints it
+ * with `paintBoxPicture`: no worker (or the preference off, or it died), a box
+ * the engine does not paint whole, one with brush ink (its tips are the main
+ * instance's), or anything else the capture saw that was not the one box job
+ * (a caption, a canvas pass). Otherwise `{ promise, prepMs, apply, cancel }`:
+ *
+ *   promise  resolves `{ raster, ms }` from the worker, or `{ dead: true }`
+ *            when it cannot paint (paint the box synchronously then); rejects
+ *            where the engine refused the job, as `paintBoxPicture` throws.
+ *   apply(el, result)  the pixels onto the texture through the painter's own
+ *            blit, and the texture onto `el`: what `paintBoxPicture` returns.
+ *   cancel() lets go of the texture, for a result nobody wants.
+ *   prepMs   what the main thread spent on it, for the drag budget.
+ */
+export function requestBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null, sheet = null) {
+  const painter = glyphPainter();
+  const worker = painter?.worker;
+  if (!paintWorkerAllowed() || !worker?.alive?.() || typeof painter.capture !== 'function') return null;
+  if (!boxInJob(box) || inkActive(box.style?.ink)) return null;
+  const t0 = performance.now();
+  let cap;
+  try {
+    cap = painter.capture(() => pictureTexture(box, p, tips, scale, maxPx, false, corner, under, sheet));
+  } catch {
+    // The synchronous paint will meet the same, and says it as it always has.
+    return null;
+  }
+  const tex = cap.value;
+  const cancel = () => {
+    tex.canvas.width = 0;
+    tex.canvas.height = 0;
+  };
+  if (cap.spoiled || cap.jobs.length !== 1) {
+    cancel();
+    return null;
+  }
+  const job = cap.jobs[0];
+  const prepMs = performance.now() - t0;
+  return {
+    promise: worker.paint(job.bytes),
+    prepMs,
+    apply(el, result) {
+      painter.finishCaptured(job, result?.raster ?? null);
+      return showTexture(el, tex, box, scale, maxPx, unit);
+    },
+    cancel,
+  };
 }
 
 /**
