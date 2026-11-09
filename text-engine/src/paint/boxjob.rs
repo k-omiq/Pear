@@ -881,19 +881,19 @@ impl<'a> Reader<'a> {
 ///
 /// Refused (`BadSpec`, or the painter's budget error):
 /// - a surface with no size, past [`MAX_SIDE`] a side or [`MAX_PIXELS`] in all;
-/// - a count the bytes cannot hold, or past its cap: more than [`MAX_TAPS`]
-///   taps, [`MAX_GRADIENT_STOPS`] stops of a kind, [`contour::MAX_POINTS`]
-///   custom contour points, more than [`MAX_BEVELS`] bevels or
-///   [`MAX_NOISE_GRADIENTS`] noise gradients;
+/// - a count the bytes cannot hold, or past its cap: more than `MAX_TAPS`
+///   taps, `MAX_GRADIENT_STOPS` stops of a kind, [`contour::MAX_POINTS`]
+///   custom contour points, more than `MAX_BEVELS` bevels or
+///   `MAX_NOISE_GRADIENTS` noise gradients;
 /// - a number that is not finite, or outside its range: an opacity, weight,
 ///   spread, choke, noise, jitter, Range, fill opacity, gradient stop
 ///   position, noise limit or roughness outside 0 to 1; a noise limit's min
 ///   above its max; a stop or contour x out of order; a size or blur outside
-///   0 to [`MAX_BLUR`]; a throw, tap, point or the
-///   centre of a gradient further than [`MAX_THROW`] from zero (a gradient
+///   0 to `MAX_BLUR`; a throw, tap, point or the
+///   centre of a gradient further than `MAX_THROW` from zero (a gradient
 ///   offset further than 10); a gradient angle past 36000 degrees or a scale
-///   outside 0 to [`MAX_GRADIENT_SCALE`]; a bevel depth or texture depth
-///   outside 0 to [`MAX_BEVEL_DEPTH`]; an altitude outside 0 to 90; a
+///   outside 0 to `MAX_GRADIENT_SCALE`; a bevel depth or texture depth
+///   outside 0 to `MAX_BEVEL_DEPTH`; an altitude outside 0 to 90; a
 ///   contour point outside 0 to 255;
 /// - a name that does not exist: a blend mode, a contour preset, a gradient
 ///   style, a glow technique, a stroke position, a bevel style or technique,
