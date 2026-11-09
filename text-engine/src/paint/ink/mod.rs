@@ -437,6 +437,7 @@ struct Chord {
 }
 
 impl Chord {
+    /// The chord from `a` to `b`, whose inside is the side `inside` is on.
     fn new(a: Pt, b: Pt, inside: Pt) -> Option<Self> {
         let d = b.minus(a);
         let len = d.len();
@@ -894,10 +895,14 @@ impl<'a> Pen<'a> {
         let job = |x: f64, y: f64| c.j.apply(Pt::new(x, y));
         let (lt, lf, rf, rt) = (job(-hw, -hl), job(-hw, hl), job(hw, hl), job(hw, -hl));
         let dev = |p: Pt| self.base.apply(bend.bends.at(p));
-        let middle = dev(job(0.0, 0.0));
+        // Each chord's inside is toward the other's middle: the slice's own
+        // middle may be carried off the strip between them (a roughening
+        // moves it by its own field, the chords by their ends').
+        let (dlt, drt, dlf, drf) = (dev(lt), dev(rt), dev(lf), dev(rf));
+        let mid = |a: Pt, b: Pt| a.plus(b).scale(0.5);
         let (Some(top), Some(foot)) = (
-            Chord::new(dev(lt), dev(rt), middle),
-            Chord::new(dev(lf), dev(rf), middle),
+            Chord::new(dlt, drt, mid(dlf, drf)),
+            Chord::new(dlf, drf, mid(dlt, drt)),
         ) else {
             return Ok(None);
         };
@@ -917,16 +922,16 @@ impl<'a> Pen<'a> {
         };
         let (left_side, right_side) = (side(lt, lf), side(rf, rt));
         let mut polys = Polys::default();
-        polys.push(top.out(dev(lt)));
+        polys.push(top.out(dlt));
         for p in left_side.pts.iter() {
             polys.push(self.base.apply(*p));
         }
-        polys.push(foot.out(dev(lf)));
-        polys.push(foot.out(dev(rf)));
+        polys.push(foot.out(dlf));
+        polys.push(foot.out(drf));
         for p in right_side.pts.iter() {
             polys.push(self.base.apply(*p));
         }
-        polys.push(top.out(dev(rt)));
+        polys.push(top.out(drt));
         polys.close();
         if !warp::sound(&polys) {
             return Err(Error::BadSpec);
