@@ -36,6 +36,7 @@ fn sheet(
         width,
         height,
         grain: (0, 0),
+        page: None,
         shadows: Vec::new(),
         blur: 0.0,
         taps: Vec::new(),

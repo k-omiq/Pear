@@ -24,6 +24,7 @@ import {
   shadowSigma,
   boxShadows,
   boxEffects,
+  pageGradients,
   usesBackdrop,
   strokeReach,
   drawInk,
@@ -899,11 +900,11 @@ export function textureScale(cw, ch, scale, maxPx = Infinity, maxSide = Infinity
 // under the engine's own (67 MP) too. Only a box over one of them is touched,
 // and only its resolution: an ordinary box is painted at 2 exactly as before.
 // `under` is the page art for a box that blends with the page (`paintBoxJob`).
-export function renderBox(box, p, tips, under = null) {
+export function renderBox(box, p, tips, under = null, sheet = null) {
   // A box that blends with the page keeps its surface within the backdrop's
   // guard, so the page always arrives (a larger one is painted at a lower scale).
   const cap = under?.image && usesBackdrop(box.style) ? Math.min(MAX_DEVICE_AREA, BACKDROP_MAX_PX) : MAX_DEVICE_AREA;
-  return warpTexture(renderBoxTexture(box, p, tips, 2, cap, glyphPainter().maxSide ?? Infinity, false, false, null, under), box);
+  return warpTexture(renderBoxTexture(box, p, tips, 2, cap, glyphPainter().maxSide ?? Infinity, false, false, null, under, sheet), box);
 }
 
 // Everything `renderBox` does EXCEPT the mesh - the finished, unwarped picture
@@ -1009,7 +1010,14 @@ export function inkSpec(s, L, tips = null) {
 // (`usesBackdrop`); null paints it without the page, as Normal. `at` moves
 // the box's place on the page where the caller lays the picture somewhere
 // else than the box's own corner (the export's whole-pixel snap).
-function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = null) {
+//
+// `sheet` is the page the box sits on as the route painting it knows it,
+// `{ w, h, at }`: its size, page px (the export's `pageSpace`, the PSD's
+// document, the editor's measured page) and, where the route lays the picture
+// at a snapped corner, the box's place there (`at`). A gradient with Align
+// with Layer off is laid over that page (`pageGradients`); with no sheet (an
+// SFX card, the editor before the page is measured) it paints as Align on.
+function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = null, sheet = null) {
   const s = L.s;
   const page = under?.image && usesBackdrop(s) ? under : null;
   const A = page ? boxToPage(box, L, page.at) : null;
@@ -1051,6 +1059,7 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = nul
     // (Noise, Dissolve, Jitter) to the page with it (`grainOrigin`), so how
     // much room the surface takes round the box does not move it.
     toPage: A ?? boxToPage(box, L, under?.at ?? null),
+    page: sheet?.w > 0 && sheet?.h > 0 && pageGradients(s) ? { toPage: boxToPage(box, L, sheet.at ?? under?.at ?? null), w: sheet.w, h: sheet.h } : null,
     blur: s.blur > 0 ? s.blur : 0,
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
     // The mask's shapes are the box's own, so the box's corner goes with them.
@@ -1134,7 +1143,7 @@ function inkUnion(rects, canvas) {
 //
 // `under` is the page art the box is shown over, for a box that blends with
 // the page (`paintBoxJob`); only the engine's whole-box paint takes it.
-export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null, under = null) {
+export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null, under = null, sheet = null) {
   const { L, F, foot } = boxPlan(box, p, flat);
   const s = L.s;
   let SS = textureScale(foot.cw, foot.ch, scale, maxPx, maxSide);
@@ -1173,7 +1182,16 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
     const page = under?.snap ? { ...under, at: { x: Math.round(box.x - foot.ox) + foot.ox, y: Math.round(box.y - foot.oy) + foot.oy } } : under;
     // A mesh the texture warp bends afterwards would move the letters off the
     // page pixels they were blended with: such a box paints without the page.
-    const ink = paintBoxJob(ctx, box, L, foot, coarse, !F && warpActive(s, box.w, box.h) ? null : page, tips);
+    // The same snapped corner for the page an Align off gradient is laid
+    // over (`paintBoxOnPage`'s upright route lays the bitmap there); a
+    // mirrored one is mirrored about the box's own centre, so the snap runs
+    // the other way along a mirrored axis.
+    const snap = (v, o, flip) => {
+      const d = Math.round(v - o) + o - v;
+      return v + (flip ? -d : d);
+    };
+    const on = sheet?.snap ? { ...sheet, at: { x: snap(box.x, foot.ox, s.flipH), y: snap(box.y, foot.oy, s.flipV) } } : sheet;
+    const ink = paintBoxJob(ctx, box, L, foot, coarse, !F && warpActive(s, box.w, box.h) ? null : page, tips, on);
     return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, phase: phased ? { x: fx, y: fy } : null, ink };
   }
   paintShadows(ctx, box, L, SS, foot);
@@ -1468,7 +1486,7 @@ export async function renderPageCanvas(p, scale = 1) {
   for (const box of p.boxes ?? []) {
     ctx.save();
     ctx.globalAlpha = box.style.opacity ?? 1;
-    paintBoxOnPage(ctx, box, p, tips, art);
+    paintBoxOnPage(ctx, box, p, tips, art, { w: W, h: H });
     ctx.restore();
   }
   return canvas;
@@ -1484,7 +1502,8 @@ export async function renderPageCanvas(p, scale = 1) {
 // with, the flat export's (`renderPageCanvas`); each route below hands it on
 // in the frame that route paints in. Null for the PSD's layers
 // (`renderBoxLayer`): Photoshop blends those from their `blendMode`.
-function paintBoxOnPage(ctx, box, p, tips, art = null) {
+// `sheet` is the page as the route knows it (`paintBoxJob`), `{ w, h }`.
+function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null) {
   const s = box.style;
   const rot = s.rotation || 0;
   const opaque = (s.opacity ?? 1) >= 0.999;
@@ -1529,7 +1548,7 @@ function paintBoxOnPage(ctx, box, p, tips, art = null) {
       try {
         // At the angle, straight into the page: the crop is the page under
         // the turned surface in the page's device pixels.
-        paintBoxJob(ctx, box, L, foot, false, art, tips);
+        paintBoxJob(ctx, box, L, foot, false, art, tips, sheet);
         return;
       } catch {
         // A surface the engine will not paint (a box across a huge page at a
@@ -1563,7 +1582,9 @@ function paintBoxOnPage(ctx, box, p, tips, art = null) {
     // is the page carried into that frame (`boxToPage`); an upright unmirrored
     // one is laid at the whole-pixel corner below (`snap`).
     const under = art ? { ...art, snap: rot === 0 && !flipped } : null;
-    const { canvas: bc, ox, oy, cw, ch } = renderBox(box, p, tips, under);
+    // An upright bitmap is laid at a whole-pixel corner below: the page an
+    // Align off gradient is laid over is placed from the same corner.
+    const { canvas: bc, ox, oy, cw, ch } = renderBox(box, p, tips, under, sheet && rot === 0 ? { ...sheet, snap: true } : sheet);
     if (rot === 0) {
       // Integer-snap the bitmap origin so a sub-pixel box position doesn't
       // force a bilinear resample of the whole text block (the primary blur).
@@ -1609,8 +1630,11 @@ function paintBoxOnPage(ctx, box, p, tips, art = null) {
 // `scale` supersamples to match a scaled document; returned bounds are in the
 // scaled (device) pixel space. `dx`/`dy` move the box by that many page px
 // before it is painted: a longstrip neighbour's box, painted into this page's
-// document from its own page's space (psd.js).
-export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, dy = 0) {
+// document from its own page's space (psd.js). `sheet` is the page an Align
+// off gradient is laid over, `{ w, h }` page px: the document, unless the
+// caller says otherwise (a neighbour's own page, psd.js `pageTextLayers`,
+// which hands the same size to its live layer).
+export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, dy = 0, sheet = { w: W, h: H }) {
   const SW = Math.round(W * scale);
   const SH = Math.round(H * scale);
   const cnv = scratch || document.createElement('canvas');
@@ -1624,8 +1648,9 @@ export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, d
   ctx.imageSmoothingQuality = 'high';
   // Full opacity; the layer opacity is the consumer's. No page art: the
   // layer's pixels are un-blended and Photoshop blends them from the layer's
-  // `blendMode`, so a backdrop here would blend twice.
-  paintBoxOnPage(ctx, box, p, tips);
+  // `blendMode`, so a backdrop here would blend twice. An Align off gradient
+  // is laid over `sheet`.
+  paintBoxOnPage(ctx, box, p, tips, null, sheet);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   const full = ctx.getImageData(0, 0, SW, SH);
   const d = full.data;
@@ -1879,10 +1904,12 @@ export async function renderStripSliceCanvas(pages, tops, y0, y1, scale = 1, che
     const w = p?.w || W;
     const x = Math.round((W - w) / 2);
     const y = top - y0;
+    // The box's own page, for an Align off gradient.
+    const sheet = pageGradients(box.style) ? await pageSpace(p) : null;
     ctx.save();
     ctx.translate(x, y);
     ctx.globalAlpha = box.style.opacity ?? 1;
-    paintBoxOnPage(ctx, box, p, tips, arts.get(p) ?? null);
+    paintBoxOnPage(ctx, box, p, tips, arts.get(p) ?? null, sheet);
     ctx.restore();
   }
   return canvas;

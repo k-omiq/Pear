@@ -75,7 +75,7 @@
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
-  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
+  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
@@ -702,6 +702,11 @@
     if (!image) return null;
     return { image, W: pg.w || image.naturalWidth, H: pg.h || image.naturalHeight, src: artSrc, key: box.id };
   }
+  // The page a gradient with Align with Layer off is laid over, once the
+  // page's size is known (`pageSheet`), and what of the box's place on it
+  // the picture is painted from: a move, a turn or a mirror repaints it live.
+  const gradientSheet = $derived(engineWanted ? pageSheet(box, pg, blendsPage ? artImage(artSrc) : null) : null);
+  const pageGradKey = $derived(pageGradientKey(box, gradientSheet));
   const patternTileKey = $derived.by(() => {
     const p = s.pattern;
     if (!p?.on) return '';
@@ -727,6 +732,7 @@
             tiles: patternTileKey,
             light: lightKey,
             under: underKey,
+            page: pageGradKey,
           })
         : PICTURE_OFF
       : '',
@@ -764,7 +770,7 @@
     const page = pageCorner(pageFrameEl);
     const dpr = displayScale();
     const corner = page && !s.rotation && !mirror ? { x: (page.x + box.x * z) * dpr, y: (page.y + box.y * z) * dpr } : null;
-    const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner, pageUnder());
+    const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner, pageUnder(), gradientSheet);
     // Lower than asked for under the drag's budget: to be painted again when
     // the drag settles (`settleResize`), or the keys do (`settleKeys`).
     dragSoft = live && g.ss < pictureRes;
@@ -835,7 +841,7 @@
       // every glyph and band. The bent letters are painted once, when the
       // drag ends (`end` forgets what was drawn).
       warpTex = engineShown
-        ? pictureTexture(box, pg, warpTips, pictureRes, undefined, true)
+        ? pictureTexture(box, pg, warpTips, pictureRes, undefined, true, null, null, gradientSheet)
         : renderBoxTexture(box, pg, warpTips);
       warpDragging = true;
     },

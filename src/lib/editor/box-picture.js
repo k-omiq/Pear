@@ -19,7 +19,7 @@
 // tested without one.
 import { renderBoxTexture, warpTexture } from '../exporter.js';
 import { glyphPainter } from '../text-engine/index.js';
-import { usesBackdrop } from '../text-paint.js';
+import { pageGradients, usesBackdrop } from '../text-paint.js';
 
 // The most pixels one box's canvas holds: 8 megapixels, 32 MB of RGBA.
 //
@@ -56,10 +56,14 @@ export const PICTURE_MAX_PX = 8 * 1024 * 1024;
 //
 // `under` is the page art the box is shown over, for a box that blends with
 // the page (`backdrop.js`, `usesBackdrop`), or null.
-export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, at = null, under = null) {
+//
+// `sheet` is the page the box sits on, `{ w, h }` (`pageSheet`), for a
+// gradient with Align with Layer off; null paints it as Align on (an SFX card,
+// a page not measured yet).
+export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, at = null, under = null, sheet = null) {
   // The editor's smear is the coarse one (`paintBoxJob`): this picture is
   // painted again at every edit.
-  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true, at, under);
+  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true, at, under, sheet);
 }
 
 // A turned box is painted finer than the screen. Its turn is CSS's, so the
@@ -177,8 +181,8 @@ function show(el, r, maxPx, release, unit = 1) {
  * `under` is the page art for a box that blends with the page
  * (`pictureTexture`).
  */
-export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null) {
-  const tex = pictureTexture(box, p, tips, scale, maxPx, false, corner, under);
+export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null, sheet = null) {
+  const tex = pictureTexture(box, p, tips, scale, maxPx, false, corner, under, sheet);
   const ss = tex.ss;
   const phase = tex.phase ?? null;
   const whole = ss === scale && Math.abs(unit - Math.round(unit)) < 1e-9 ? Math.round(unit) : 1;
@@ -274,6 +278,32 @@ export function pageUnderKey(box, pg, src, ready) {
   return `${src ?? '-'}|${ready ? 1 : 0}|${box.x},${box.y}|${s.rotation || 0}|${s.flipH ? 1 : 0}${s.flipV ? 1 : 0}|${pg?.w ?? 0}x${pg?.h ?? 0}`;
 }
 
+/**
+ * The page a box sits on as the editor knows it, `{ w, h }` page px, for a
+ * gradient with Align with Layer off (`pictureTexture`'s `sheet`): the
+ * page's measured size, or the size of its art when that is in hand
+ * (`image`). Null before either is known: the gradient then paints as Align
+ * on until the page is measured. Null too for a box with no such gradient.
+ */
+export function pageSheet(box, pg, image = null) {
+  if (!pageGradients(box?.style)) return null;
+  const w = pg?.w > 0 ? pg.w : image?.naturalWidth;
+  const h = pg?.h > 0 ? pg.h : image?.naturalHeight;
+  return w > 0 && h > 0 ? { w, h } : null;
+}
+
+/**
+ * The part of a picture's key (`pictureKey`'s `page`) a box with a gradient
+ * laid over the page (Align with Layer off) is painted from besides its
+ * style: where it stands, its turn and its mirror (which `pictureKey` leaves
+ * to CSS for every other box) and the page's size. Empty for any other box.
+ */
+export function pageGradientKey(box, sheet) {
+  const s = box?.style;
+  if (!sheet || !pageGradients(s)) return '';
+  return `${box.x},${box.y}|${s.rotation || 0}|${s.flipH ? 1 : 0}${s.flipV ? 1 : 0}|${sheet.w}x${sheet.h}`;
+}
+
 // What a repaint key says for a box that is to hold no pixels: on a hidden
 // page, or too far from the viewport to be seen.
 export const PICTURE_OFF = 'e|off';
@@ -291,12 +321,15 @@ export const PICTURE_OFF = 'e|off';
  * Except for a box that blends with the page (`usesBackdrop`): its picture
  * is of the page under it too, so `under` names that page art and where the
  * box stands on it, turned and mirrored (TextBox.svelte's `underKey`), and a
- * move, a turn or another page art repaints it.
+ * move, a turn or another page art repaints it. Likewise a box with a
+ * gradient laid over the page (Align with Layer off): `page`
+ * (`pageGradientKey`) says where it stands, turned and mirrored, and on how
+ * big a page, and a move repaints it as it goes.
  *
  * The ink block is not stringified here - it is the heaviest part of a style
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
-export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '' }) {
+export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '' }) {
   const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
@@ -305,6 +338,9 @@ export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, f
     // The chapter's Global Light, for a box with a shadow that follows it.
     (light ? `|L${light}` : '') +
     // The page art under a box that blends with it, and where it stands.
-    (under ? `|B${under}` : '')
+    (under ? `|B${under}` : '') +
+    // A gradient laid over the page (Align with Layer off): where the box
+    // stands on it, turned and mirrored (`pageGradientKey`).
+    (page ? `|P${page}` : '')
   );
 }

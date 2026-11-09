@@ -77,6 +77,13 @@ pub struct Gradient {
     pub reverse: bool,
     /// The centre moved by a share of the frame.
     pub offset: (f32, f32),
+    /// Photoshop's Align with Layer (PhotoCraft's `Gradient::align`): on,
+    /// the gradient is laid over the letters' frame in the box's own units;
+    /// off, over the page the box sits on, in the page's (the effects'
+    /// `Place::page`), so it neither turns with the box nor moves with it.
+    /// A glow's gradient runs along the glow and a Shape Burst by depth:
+    /// neither reads it.
+    pub align: bool,
     /// Gradient Type Noise: these colours in place of the stops.
     pub noise: Option<Ramp>,
 }
@@ -300,6 +307,7 @@ mod tests {
             noise: None,
             mids: Vec::new(),
             opacity_mids: Vec::new(),
+            align: true,
             dither: false,
         }
     }
@@ -405,6 +413,7 @@ mod tests {
             mids: vec![0.25],
             opacity: vec![(0.0, 1.0), (1.0, 0.0)],
             opacity_mids: vec![0.75],
+            align: true,
             ..bw()
         };
         let p = g.sample(0.25);
@@ -472,6 +481,7 @@ mod tests {
             mids: vec![0.25],
             opacity: vec![(0.0, 1.0), (1.0, 0.0)],
             opacity_mids: vec![0.5],
+            align: true,
             ..bw()
         };
         let before = g.clone();
@@ -489,6 +499,7 @@ mod tests {
         let mut s = Gradient {
             opacity: vec![(0.0, 1.0), (1.0, 0.0)],
             opacity_mids: vec![0.25],
+            align: true,
             ..bw()
         };
         s.interpolate(Method::Smooth, 0.0).unwrap();
