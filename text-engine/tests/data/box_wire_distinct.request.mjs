@@ -75,6 +75,8 @@ export const request = {
   height: 137,
   // A corner on the page past i32's sign, and one in front of it.
   grain: [-1234567, 89012],
+  // The page (v16): a turned, mirrored box's place on a page of its own size.
+  page: { toPage: [0.75, -0.625, -0.5, -0.875, 123.5, 456.25], w: 841.5, h: 1190.25 },
   shadows: [
     { color: '#102030', opacity: 0.3125, x: 1.5, y: -2.5, size: 3.25, grow: 0.75, spread: 0.125, noise: 0.4375, blend: 'multiply', knockout: true, exact: true, seed: 90210, contour: { preset: 'ring' } },
     { color: '#a0b0c0', opacity: 0.8125, x: -3.75, y: 4.25, size: 5.5, grow: 1.25, spread: 0.375, noise: 0.0625, blend: 'screen', knockout: false, exact: false, seed: 1357, contour: { preset: 'sawtooth-1' } },
@@ -113,7 +115,7 @@ export const request = {
     { kind: 'colorOverlay', color: '#0f1e2d', opacity: 0.90625, blend: 'hard-light' },
     { kind: 'gradientOverlay', opacity: 0.78125, blend: 'soft-light', gradient: stopsGradient('radial', 71.5, 1.375, [0.3125, -0.4375], { dither: true, method: 'classic', smoothness: 0 }) },
     { kind: 'patternOverlay', opacity: 0.53125, blend: 'lighten', fill: { kind: 'solid', color: '#456789' } },
-    { kind: 'stroke', size: 5.5, position: 'center', opacity: 0.4375, blend: 'difference', seed: 4242, paint: { kind: 'gradient', gradient: stopsGradient('angle', 12.5, 0.625, [-0.0625, 0.125], { method: 'perceptual', smoothness: 0.4375 }) } },
+    { kind: 'stroke', size: 5.5, position: 'center', opacity: 0.4375, blend: 'difference', seed: 4242, paint: { kind: 'gradient', gradient: stopsGradient('angle', 12.5, 0.625, [-0.0625, 0.125], { method: 'perceptual', smoothness: 0.4375, align: false }) } },
     { kind: 'satin', color: '#f0e0d0', opacity: 0.46875, blend: 'darken', angle: 47.5, distance: 9.5, size: 12.25, invert: true, contour: { preset: 'rolling-slope-descending' } },
     {
       kind: 'bevel',

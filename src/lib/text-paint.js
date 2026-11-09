@@ -1227,6 +1227,18 @@ export function boxEffects(style) {
   return capEffects(out);
 }
 
+// Whether the box paints a gradient with Align with Layer off (a Gradient
+// Overlay's or a gradient Stroke's `align: false`): one laid over the page,
+// so its picture depends on where the box stands on which page, turned and
+// mirrored. A Shape Burst runs from the letters' edge and reads no frame, so
+// its kept `align: false` (for when the style goes back) does not count.
+export function pageGradients(style) {
+  return boxEffects(style).some((fx) => {
+    const g = fx.kind === 'gradientOverlay' ? fx.gradient : fx.kind === 'stroke' && fx.paint?.kind === 'gradient' ? fx.paint.gradient : null;
+    return g?.align === false && g.style !== 'shapeburst';
+  });
+}
+
 // The Rust box decoder refuses a box past these (MAX_NOISE_GRADIENTS and
 // MAX_BEVELS in text-engine/src/paint/boxjob.rs), and the whole box then fails
 // to paint. Keep the effects the engine is sent inside them; the extras, last

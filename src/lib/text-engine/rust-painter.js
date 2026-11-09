@@ -161,6 +161,10 @@ export function createRustGlyphPainter(rust, options = {}) {
       width,
       height,
       grain: grainOrigin(spec.toPage, m, x0, y0),
+      // The page under the box, for a gradient with Align with Layer off:
+      // the layout onto it and its size (`paintBoxJob`'s `sheet`). The
+      // engine carries it onto this surface with the job's own matrix.
+      page: spec.page ?? null,
       shadows: spec.shadows,
       blur: spec.blur,
       taps: spec.taps,

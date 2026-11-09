@@ -188,11 +188,11 @@ describe('Channels and Blend If', () => {
   it('go on the wire after the blending flags (v10): a mask of channels left out, then the 32 range bytes', () => {
     const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
     const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
-    // Magic, version, size, the grain's corner (v15), no shadows, blur, no
-    // taps, no clip, mode, fill.
-    const flagsAt = 4 * 4 + 2 * 4 + 4 + 8 + 4 + 4 + 4 + 8;
+    // Magic, version, size, the grain's corner (v15), no page (v16), no
+    // shadows, blur, no taps, no clip, mode, fill.
+    const flagsAt = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 8;
     const plainBytes = encodeBox({ ...job, width: 4, height: 4 }).slice();
-    expect(BOX_WIRE_VERSION).toBe(15);
+    expect(BOX_WIRE_VERSION).toBe(16);
     expect(dv(plainBytes).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
     expect([0, 4, 8].map((k) => dv(plainBytes).getUint32(flagsAt + k, true))).toEqual([0, 0, 0]);
     // Transparency Shapes Layer off is blending flag 2 (v13), with interior 1.

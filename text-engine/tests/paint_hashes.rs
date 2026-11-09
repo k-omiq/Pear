@@ -150,6 +150,7 @@ fn grad(style: Style) -> Gradient {
         offset: (0.05, -0.05),
         mids: Vec::new(),
         opacity_mids: Vec::new(),
+        align: true,
         dither: false,
         noise: None,
     }
@@ -159,6 +160,7 @@ fn noise_grad() -> Gradient {
     Gradient {
         mids: Vec::new(),
         opacity_mids: Vec::new(),
+        align: true,
         dither: false,
         noise: Some(Ramp::new(Noise {
             seed: 9,
