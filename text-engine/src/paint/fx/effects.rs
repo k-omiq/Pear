@@ -32,7 +32,7 @@ use super::contour::{Lut, Table};
 use super::gradient::{self, Frame, Gradient};
 pub use super::map::Technique;
 use super::map::{self, Map, Soft};
-use super::noise;
+use super::{noise, spread_split};
 use crate::paint::budget::{self, Buffer};
 use crate::paint::MAX_PIXELS;
 use crate::Error;
@@ -245,20 +245,28 @@ impl Effect {
 }
 
 /// What a glow or an inner shadow asks of its map, whose corner is device
-/// pixel `origin` (where its Noise is hashed from).
+/// pixel `origin` (where its Noise is hashed from). `size` is job units and
+/// `scale` device pixels to a job unit: the Spread or Choke takes its whole
+/// pixels of the size in job units first, as a drop shadow's does
+/// (`boxjob::lay_styled`), so the effect looks the same at every zoom and in
+/// the export (review F24).
 #[allow(clippy::too_many_arguments)]
 fn soft(
     size: f64,
     spread: f64,
+    scale: f64,
     range: f64,
     noise: f64,
     contour: Option<Lut>,
     seed: u32,
     origin: (i32, i32),
 ) -> Soft {
+    let (grow, rest) = spread_split(size, spread);
     Soft {
-        size: size as f32,
+        size: (size * scale) as f32,
         spread: spread as f32,
+        grow: (grow * scale) as f32,
+        blur: (rest * scale) as f32,
         contour,
         range: range as f32,
         noise: noise as f32,
@@ -281,13 +289,7 @@ pub(crate) fn outer_glow(
     origin: (i32, i32),
 ) -> Result<Map, Error> {
     let s = soft(
-        g.size * scale,
-        g.spread,
-        g.range,
-        g.noise,
-        g.contour,
-        g.seed,
-        origin,
+        g.size, g.spread, scale, g.range, g.noise, g.contour, g.seed, origin,
     );
     let mut m = map::glow(shape, g.technique, false, false, &s)?;
     if let Some(fill) = fill {
@@ -478,14 +480,13 @@ fn brush_in<'a>(
 
 /// Each pixel's depth in a shape from `dist`, its coverage-seeded distance
 /// in from the shape's edge ([`map::chamfer_inside`], negative outside), as
-/// a share of the deepest one and half a pixel: Shape Burst's run. Seeded by
-/// coverage, a partly covered edge pixel lies its coverage in, so the
-/// letters' anti-aliased edge takes the edge stop; the half pixel keeps a 1
-/// or 2 px stem, all of it deepest, from taking the far stop alone. With the
-/// exact distance every edge pixel read 0.5 whatever its coverage, and a
-/// thin stem painted all in the far stop (review F27).
+/// a share of the deepest one: Shape Burst's run, 0 at the edge and 1 at
+/// the deepest point (`gradient.rs`). Seeded by coverage, a partly covered
+/// edge pixel lies its coverage in, so the letters' anti-aliased edge takes
+/// the edge stop; with the exact distance every edge pixel read 0.5
+/// whatever its coverage (review F27). PhotoCraft has no Shape Burst.
 fn depth_share(dist: &[f32]) -> Result<Buffer<f32>, Error> {
-    let deepest = dist.iter().copied().fold(0.0f32, f32::max) + 0.5;
+    let deepest = dist.iter().copied().fold(0.0f32, f32::max).max(1e-3);
     budget::exact(
         dist.len(),
         dist.iter().map(|d| (d.max(0.0) / deepest).min(1.0)),
@@ -1085,6 +1086,7 @@ fn bevel_maps(
             invert: t.invert,
             lum: &lum,
         }),
+        scale: scale as f32,
     };
     bevel::try_maps(shape, &s)
 }
@@ -1128,6 +1130,14 @@ pub(crate) fn lay_bevels(
     Ok(laid)
 }
 
+/// `v` rounded to a whole pixel, halves away from zero, after snapping it
+/// to a millionth: a leg that is half a pixel but for the float error of a
+/// cosine (sin 30 is 0.49999999999999994 in f64) rounds as the half it is
+/// (review F26).
+fn whole(v: f64) -> f64 {
+    ((v * 1e6).round() / 1e6).round()
+}
+
 /// A drop or inner shadow's throw `(x, y)`, job units, in device pixels
 /// and rounded to whole pixels as Photoshop does (PhotoCraft
 /// `crates/compose/src/effects/paint.rs` `offset`, which rounds each axis of
@@ -1135,30 +1145,41 @@ pub(crate) fn lay_bevels(
 /// shadow the same way at every zoom and in the export, then in device
 /// pixels after `carried` (a zoom, a turn or a mirror), so the shadow is
 /// laid without a resample. Rust's `round` takes halves away from zero, as
-/// PhotoCraft's does.
+/// PhotoCraft's does; each leg is snapped first (see [`whole`]), so a turn
+/// that leaves a leg at a half pixel rounds it the same way every time.
 pub(crate) fn whole_throw(x: f64, y: f64, carried: impl Fn(f64, f64) -> (f64, f64)) -> (f64, f64) {
-    let (dx, dy) = carried(x.round(), y.round());
-    (dx.round(), dy.round())
+    let (dx, dy) = carried(whole(x), whole(y));
+    (whole(dx), whole(dy))
 }
 
-/// A satin's throw in device pixels: `(-cos a, sin a) * distance` carried by
-/// `carried`, at least a pixel long (Photoshop draws Distance 0 as 1 px, an
-/// edge band of 2 / size, measured by PhotoCraft in Photoshop 27.11), and
-/// rounded to whole pixels as Photoshop does. The floor applies in job units
-/// first, so a box looks the same at every zoom, then in device pixels.
+/// A satin's throw in device pixels: `(-cos a, sin a) * distance`, at least
+/// a pixel long (Photoshop draws Distance 0 as 1 px, an edge band of 2 /
+/// size, measured by PhotoCraft in Photoshop 27.11), rounded to whole
+/// pixels as Photoshop does. As [`whole_throw`], the rounding applies in
+/// job units first, so the editor at any zoom throws what the export does
+/// (review F25), then in device pixels after `carried`; each leg is snapped
+/// before it rounds (review F26). The floor applies in job units, then
+/// again in device pixels, where a zoom out could round the throw away.
 /// Ported from PhotoCraft `crates/compose/src/effects/bevel.rs`
 /// `satin_distance` and `effects/paint.rs` `offset`.
 pub(crate) fn satin_throw(s: &Satin, carried: impl Fn(f64, f64) -> (f64, f64)) -> (f64, f64) {
     let a = s.angle.to_radians();
-    let (ux, uy) = carried(-a.cos(), a.sin());
+    // At least 1 job unit long, a leg of it at least 1/sqrt 2: it never
+    // rounds to nothing.
     let d = s.distance.max(1.0);
-    let (mut dx, mut dy) = (ux * d, uy * d);
-    let len = dx.hypot(dy);
-    let unit = ux.hypot(uy);
-    if len < 1.0 && unit > 0.0 && unit.is_finite() {
-        (dx, dy) = (ux / unit, uy / unit);
+    let (jx, jy) = (whole(-a.cos() * d), whole(a.sin() * d));
+    let (dx, dy) = carried(jx, jy);
+    let (wx, wy) = (whole(dx), whole(dy));
+    if wx != 0.0 || wy != 0.0 {
+        return (wx, wy);
     }
-    (dx.round(), dy.round())
+    // Rounded away: a device pixel along the throw.
+    let len = dx.hypot(dy);
+    if len > 0.0 && len.is_finite() {
+        (whole(dx / len), whole(dy / len))
+    } else {
+        (0.0, 0.0)
+    }
 }
 
 /// The fill raster `r` with the interior effects laid on it at Fill Opacity
@@ -1383,13 +1404,7 @@ fn interior_at(
     for e in shown() {
         if let Effect::InnerGlow(g) = e {
             let s = soft(
-                g.size * scale,
-                g.spread,
-                g.range,
-                g.noise,
-                g.contour,
-                g.seed,
-                dev,
+                g.size, g.spread, scale, g.range, g.noise, g.contour, g.seed, dev,
             );
             let m = map::glow(&shape, g.technique, true, g.center, &s)?;
             let m = map::relative_to(&m, &shape)?;
@@ -1407,13 +1422,7 @@ fn interior_at(
         if let Effect::InnerShadow(sh) = e {
             let (dx, dy) = whole_throw(sh.x, sh.y, &carried);
             let s = soft(
-                sh.size * scale,
-                sh.choke,
-                1.0,
-                sh.noise,
-                sh.contour,
-                sh.seed,
-                dev,
+                sh.size, sh.choke, scale, 1.0, sh.noise, sh.contour, sh.seed, dev,
             );
             let m = map::inner_shadow(&shape, dx as f32, dy as f32, &s)?;
             let m = map::relative_to(&m, &shape)?;
@@ -1714,6 +1723,42 @@ mod tests {
         // Small on screen it is still a device pixel long.
         let small = |x: f64, y: f64| (0.25 * x, 0.25 * y);
         assert_eq!(satin_throw(&satin(0.0, 0.0, false), small), (-1.0, 0.0));
+        assert_eq!(satin_throw(&satin(45.0, 1.0, false), small), (-1.0, 1.0));
+    }
+
+    /// Review F25: the default Satin (angle 19, distance 11) throws
+    /// (-10.40, 3.58) job units. Rounded in job units first it is (-10, 4)
+    /// in the export and (-20, 8) device px, the same, in the editor at 2;
+    /// rounded only after the zoom it was (-21, 7), (-10.5, 3.5) job units.
+    #[test]
+    fn a_satin_throw_is_rounded_in_job_units_then_in_device_pixels() {
+        let st = satin(19.0, 11.0, false);
+        let same = |x: f64, y: f64| (x, y);
+        let twice = |x: f64, y: f64| (2.0 * x, 2.0 * y);
+        assert_eq!(satin_throw(&st, same), (-10.0, 4.0));
+        assert_eq!(satin_throw(&st, twice), (-20.0, 8.0));
+        // A zoom that makes half pixels of it rounds again in device pixels.
+        let half_more = |x: f64, y: f64| (1.5 * x, 1.5 * y);
+        assert_eq!(satin_throw(&st, half_more), (-15.0, 6.0));
+    }
+
+    /// Review F26: sin 30 is 0.49999999999999994 and -cos 120 x 11 is
+    /// 5.499999999999998 in f64; snapped, the half pixel rounds away from
+    /// zero as it does at every other angle.
+    #[test]
+    fn a_satins_half_pixel_leg_rounds_away_from_zero() {
+        let same = |x: f64, y: f64| (x, y);
+        assert_eq!(satin_throw(&satin(30.0, 1.0, false), same), (-1.0, 1.0));
+        assert_eq!(satin_throw(&satin(120.0, 11.0, false), same), (6.0, 10.0));
+        assert_eq!(satin_throw(&satin(150.0, 1.0, false), same), (1.0, 1.0));
+        // -30 and 210: the same half, the other way.
+        assert_eq!(satin_throw(&satin(-30.0, 1.0, false), same), (-1.0, -1.0));
+        assert_eq!(satin_throw(&satin(210.0, 1.0, false), same), (1.0, -1.0));
+        // A shadow thrown whole by a 30 degree turn has its half leg too.
+        let (s30, c30) = 30f64.to_radians().sin_cos();
+        assert!(s30 < 0.5);
+        let turn = move |x: f64, y: f64| (c30 * x - s30 * y, s30 * x + c30 * y);
+        assert_eq!(whole_throw(1.0, 0.0, turn), (1.0, 1.0));
     }
 
     #[test]
@@ -1877,12 +1922,10 @@ mod tests {
             let edges = [(10, 20), (29, 20), (20, 10), (20, 29)].map(|(x, y)| at(&out, x, y)[0]);
             let middle = at(&out, 19, 19)[0];
             assert!(edges.iter().all(|&e| e == edges[0]), "{edges:?}");
-            // The edge pixel half a pixel in, the middle 9.5, both of 10
-            // (the deepest and half a pixel): 13 and 242.
             if reverse {
-                assert!(edges[0] > 235 && middle < 20, "{edges:?} {middle}");
+                assert!(edges[0] > 235 && middle < 5, "{edges:?} {middle}");
             } else {
-                assert!(edges[0] < 20 && middle > 235, "{edges:?} {middle}");
+                assert!(edges[0] < 20 && middle > 250, "{edges:?} {middle}");
             }
             // Half way in, about half way along.
             let half = at(&out, 15, 19)[0];
@@ -1890,11 +1933,10 @@ mod tests {
         }
     }
 
-    /// Review F27: a Shape Burst overlay's depth is seeded by coverage and
-    /// shared over the deepest and half a pixel. A 1 px stem once painted
-    /// all in the far stop (255); it takes the middle of the ramp. A 25 %
-    /// edge column read the same as a whole one (85 on a 4 px stem); it
-    /// takes the edge stop.
+    /// Review F27: a Shape Burst overlay's depth is seeded by coverage. A
+    /// 25 % edge column once read the same as a whole one, half a pixel in
+    /// (51 on this 6 px stem); it takes the edge stop. The deepest pixel
+    /// still takes the far stop.
     #[test]
     fn a_shape_burst_overlay_shows_the_edge_stop_on_thin_stems() {
         let _scope = budget::Scope::new();
@@ -1914,20 +1956,20 @@ mod tests {
                 .flat_map(|_| alphas.iter().flat_map(|&a| [255, 0, 0, a]))
                 .collect(),
         };
-        // 1 px: every pixel half a pixel in, of 0.5 + 0.5.
+        // 1 px: all of it deepest, the far stop.
         let (out, _) = inside(&stem(&[255]), &[o()]);
         let mid = at(&out, 10, 20);
-        assert!((124..=131).contains(&mid[0]), "{mid:?}");
-        assert_eq!(mid[3], 255);
-        // 25 %, whole, whole, 25 %: the edge column a quarter pixel in, so
-        // nothing past the edge (the edge stop); the whole ones 0.75 in, of
-        // 0.75 + 0.5 (153).
-        let (out, _) = inside(&stem(&[64, 255, 255, 64]), &[o()]);
-        let (edge, next) = (at(&out, 10, 20), at(&out, 11, 20));
-        assert!(edge[0] < 5, "{edge:?}");
-        assert_eq!(edge[3], 64);
-        assert!((148..=158).contains(&next[0]), "{next:?}");
-        assert_eq!(at(&out, 13, 20)[0], edge[0]);
+        assert_eq!((mid[0], mid[3]), (255, 255));
+        // 25 %, four whole, 25 %: the edge column a quarter pixel in, so
+        // nothing past the edge (the edge stop); the next 0.75 in and the
+        // middle two 1.75, the deepest: 0.75 / 1.75 (109) and 255.
+        let (out, _) = inside(&stem(&[64, 255, 255, 255, 255, 64]), &[o()]);
+        let row: Vec<[u8; 4]> = (10..16).map(|x| at(&out, x, 20)).collect();
+        assert!(row[0][0] < 5, "{row:?}");
+        assert_eq!(row[0][3], 64);
+        assert!((104..=114).contains(&row[1][0]), "{row:?}");
+        assert!(row[2][0] > 250 && row[3][0] > 250, "{row:?}");
+        assert_eq!((row[5][0], row[4][0]), (row[0][0], row[1][0]));
     }
 
     #[test]

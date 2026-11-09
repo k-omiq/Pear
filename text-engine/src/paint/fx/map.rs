@@ -17,7 +17,7 @@
 
 use super::super::budget::{self, Buffer};
 use super::contour::Lut;
-use super::{distance, noise, spread_split, tent};
+use super::{distance, noise, tent};
 use crate::Error;
 
 /// A pixel with less coverage than this is outside the shape.
@@ -472,6 +472,12 @@ pub(crate) struct Soft {
     pub size: f32,
     /// Spread or Choke, 0 to 1.
     pub spread: f32,
+    /// The Size split by the Spread or Choke (`fx::spread_split`) into what
+    /// grows the matte and what blurs it, device pixels. Split in job units
+    /// and then scaled, so the grow's whole pixels are whole job units and
+    /// the effect looks the same at every zoom (review F24).
+    pub grow: f32,
+    pub blur: f32,
     pub contour: Option<Lut>,
     /// Range, 0 to 1 (a glow's; a shadow has none, 1).
     pub range: f32,
@@ -499,9 +505,8 @@ fn keep_to(m: &mut Map, shape: &Map) {
 /// contour and noise, and kept to the shape.
 pub(crate) fn inner_shadow(shape: &Map, dx: f32, dy: f32, s: &Soft) -> Result<Map, Error> {
     let mut m = inverse(shape)?.shifted(dx, dy, 1.0)?;
-    let (r, bw) = spread_split(f64::from(s.size), f64::from(s.spread));
-    m = dilate(&m, r as f32)?;
-    blur(&mut m, bw as f32)?;
+    m = dilate(&m, s.grow)?;
+    blur(&mut m, s.blur)?;
     let mut m = match &s.contour {
         Some(l) => m.map(|v| l.at(v)),
         None => m,
@@ -595,13 +600,12 @@ pub(crate) fn glow(
             }
         }
         Technique::Softer => {
-            let (r, bw) = spread_split(f64::from(s.size), f64::from(s.spread));
             let mut m = if inner {
-                dilate(&inverse(shape)?, r as f32)?
+                dilate(&inverse(shape)?, s.grow)?
             } else {
-                dilate(shape, r as f32)?
+                dilate(shape, s.grow)?
             };
-            blur(&mut m, bw as f32)?;
+            blur(&mut m, s.blur)?;
             m
         }
     };
@@ -651,6 +655,8 @@ mod tests {
         Soft {
             size,
             spread: 0.0,
+            grow: 0.0,
+            blur: size,
             contour: None,
             range: 0.5,
             noise: 0.0,
@@ -723,6 +729,19 @@ mod tests {
             "{}",
             g.v[30 * 60 + 30]
         );
+        // A contour that starts at 0 (Cone) is read as it always was: the
+        // Linear glow's map through the curve, its faint tail included.
+        let cone = Lut::new(&Curve::Preset(1));
+        for technique in [Technique::Softer, Technique::Precise] {
+            let mut s = soft(8.0);
+            s.range = 1.0;
+            let plain = glow(&shape, technique, false, false, &s).unwrap();
+            s.contour = Some(cone);
+            let curved = glow(&shape, technique, false, false, &s).unwrap();
+            for (c, p) in curved.v.iter().zip(plain.v.iter()) {
+                assert_eq!(*c, cone.at(*p));
+            }
+        }
     }
 
     /// Review F22: the grain is hashed from device pixels, so the same

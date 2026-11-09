@@ -172,6 +172,9 @@ pub(crate) struct Shading<'a> {
     /// halved a real Linear bevel, and what Range does is still open).
     pub contour: Option<&'a Table>,
     pub texture: Option<Texture<'a>>,
+    /// Device pixels to a job unit: the texture's slope is measured per job
+    /// unit, so its relief is the same at every zoom (review F23).
+    pub scale: f32,
 }
 
 /// Chiselled height from the inside / outside distances (PhotoCraft
@@ -279,14 +282,21 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), 
     }
     // Texture element: the pattern's luminance as extra height, scaled so a
     // full-contrast step at 100 % depth slopes like the bevel at its depth
-    // (unmeasured by PhotoCraft).
+    // (unmeasured by PhotoCraft). The pattern is laid in job units, so a
+    // step of it spans `scale` device pixels: its slope is taken per job
+    // unit, or a zoom of 2 would halve the relief (review F23).
     if let Some(t) = &s.texture {
         let unit = if s.depth.abs() > 1e-6 {
             (g.depth / s.depth).abs().max(1e-3)
         } else {
             g.width.max(1.0)
         };
-        let k = t.depth / unit;
+        let per_unit = if s.scale.is_finite() && s.scale > 0.0 {
+            s.scale
+        } else {
+            1.0
+        };
+        let k = t.depth * per_unit / unit;
         for y in 0..h.h {
             for x in 0..h.w {
                 let l = (t.lum)(x, y);
@@ -466,6 +476,7 @@ mod tests {
             gloss: None,
             contour: None,
             texture: None,
+            scale: 1.0,
         }
     }
 
