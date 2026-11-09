@@ -20,6 +20,7 @@ use mt_text::paint::fx::effects::{
     PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
+use mt_text::paint::fx::gradient_bake::Method;
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::{
     decode_box, Align, Band, Clip, ClipMode, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
@@ -48,14 +49,35 @@ fn stop(pos: f32, c: u32) -> (f32, [f32; 3]) {
 fn stops_gradient(style: Style, angle: f32, scale: f32, offset: (f32, f32)) -> Gradient {
     Gradient {
         stops: vec![stop(0.0625, 0xaa0011), stop(0.5, 0x22bb33), stop(0.9375, 0x4455cc)],
-        opacity: vec![(0.0625, 1.0), (0.5, 0.625), (0.9375, 0.375)],
+        opacity: vec![(0.125, 1.0), (0.4375, 0.625), (0.75, 0.375), (0.875, 0.1875)],
         style,
         angle,
         scale,
         reverse: false,
         offset,
+        // v13: each midpoint is sent for the segment the stop ends.
+        mids: vec![0.3125, 0.8125],
+        opacity_mids: vec![0.6875, 0.5, 0.1875],
+        dither: false,
         noise: None,
     }
+}
+
+/// [`stops_gradient`] as the overlay sends it (v13): Dither on, Classic at
+/// 0 %, so the stops and midpoints come back as they are.
+fn overlay_gradient() -> Gradient {
+    Gradient {
+        dither: true,
+        ..stops_gradient(Style::Radial, 71.5, 1.375, (0.3125, -0.4375))
+    }
+}
+
+/// [`stops_gradient`] as the stroke sends it (v13): Perceptual at 43.75 %,
+/// which the reader bakes into the stops.
+fn stroke_gradient() -> Gradient {
+    let mut g = stops_gradient(Style::Angle, 12.5, 0.625, (-0.0625, 0.125));
+    g.interpolate(Method::Perceptual, 0.4375).unwrap();
+    g
 }
 
 fn noise_gradient() -> Gradient {
@@ -67,6 +89,9 @@ fn noise_gradient() -> Gradient {
         scale: 0.875,
         reverse: true,
         offset: (0.0625, -0.1875),
+        mids: Vec::new(),
+        opacity_mids: Vec::new(),
+        dither: false,
         noise: Some(Ramp::new(Noise {
             seed: 31415,
             roughness: 0.3125,
@@ -86,7 +111,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 12, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 13, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(
         r.shadows,
@@ -228,7 +253,7 @@ fn every_field_of_every_effect_comes_back_as_itself() {
         Effect::GradientOverlay(PaintOverlay {
             opacity: 0.78125,
             blend: Blend::SoftLight,
-            paint: Paint::Gradient(stops_gradient(Style::Radial, 71.5, 1.375, (0.3125, -0.4375))),
+            paint: Paint::Gradient(overlay_gradient()),
         }),
         Effect::PatternOverlay(PaintOverlay {
             opacity: 0.53125,
@@ -240,7 +265,7 @@ fn every_field_of_every_effect_comes_back_as_itself() {
             position: Position::Center,
             opacity: 0.4375,
             blend: Blend::Difference,
-            paint: Paint::Gradient(stops_gradient(Style::Angle, 12.5, 0.625, (-0.0625, 0.125))),
+            paint: Paint::Gradient(stroke_gradient()),
             seed: 4242,
         }),
         Effect::Satin(Satin {

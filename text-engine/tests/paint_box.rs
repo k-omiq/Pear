@@ -673,6 +673,12 @@ fn gradient_record(b: &mut Vec<u8>) {
     f(b, 1.0);
     f(b, 1.0);
     f(b, 0.0);
+    // v13: no midpoints of either kind, no Dither, Classic at 0 %.
+    u(b, 0);
+    u(b, 0);
+    u(b, 0);
+    u(b, 0);
+    f(b, 0.0);
     u(b, 0); // solid
 }
 
@@ -682,8 +688,9 @@ fn gradient_record(b: &mut Vec<u8>) {
 fn noise_gradient_record(b: &mut Vec<u8>) -> usize {
     gradient_record(b);
     b.truncate(b.len() - 4);
-    // style, angle, scale, reverse, offset, two colour stops, two opacity.
-    let style_at = b.len() - (4 + 8 + 8 + 4 + 16 + 4 + 2 * 12 + 4 + 2 * 16);
+    // style, angle, scale, reverse, offset, two colour stops, two opacity,
+    // the midpoints, Dither, the Method and Smoothness.
+    let style_at = b.len() - (4 + 8 + 8 + 4 + 16 + 4 + 2 * 12 + 4 + 2 * 16 + 24);
     b[style_at..style_at + 4].copy_from_slice(&5u32.to_le_bytes());
     u(b, 1);
     let at = b.len();
@@ -700,6 +707,9 @@ fn noise_gradient_record(b: &mut Vec<u8>) -> usize {
 fn noise_gradient() -> Gradient {
     Gradient {
         style: Style::ShapeBurst,
+        mids: Vec::new(),
+        opacity_mids: Vec::new(),
+        dither: false,
         noise: Some(Ramp::new(Noise {
             seed: 21,
             roughness: 0.4,
@@ -722,6 +732,9 @@ fn gradient() -> Gradient {
         scale: 0.5,
         reverse: true,
         offset: (0.1, 0.0),
+        mids: Vec::new(),
+        opacity_mids: Vec::new(),
+        dither: false,
         noise: None,
     }
 }
@@ -1106,7 +1119,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 12));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 13));
 }
 
 #[test]
@@ -1193,9 +1206,16 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     // A gradient style that is not one, and a stop past the end.
     assert_eq!(with_u(effects_at + 152, 6), Some(Error::BadSpec));
     assert_eq!(with_f(effects_at + 196, 1.5), Some(Error::BadSpec));
-    // A gradient type that is not one: the inner glow's, after its two
-    // colour stops and two opacity stops.
+    // v13, after the inner glow's two colour stops and two opacity stops: a
+    // midpoint count that is neither none nor one per segment, of either
+    // kind; a Dither flag and a Method that are not ones; Smoothness past 1.
     assert_eq!(with_u(effects_at + 152 + 104, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 152 + 108, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 152 + 112, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 152 + 116, 4), Some(Error::BadSpec));
+    assert_eq!(with_f(effects_at + 152 + 120, 1.5), Some(Error::BadSpec));
+    // A gradient type that is not one, after them.
+    assert_eq!(with_u(effects_at + 152 + 128, 2), Some(Error::BadSpec));
     // A noise record's Roughness past 1, a model that is not one, a limit
     // whose min is past its max, and flags that are not ones.
     assert_eq!(with_f(noise_at + 4, 1.5), Some(Error::BadSpec));

@@ -39,6 +39,9 @@ fn black_to_white(angle: f32, style: gradient::Style) -> Gradient {
         scale: 1.0,
         reverse: false,
         offset: (0.0, 0.0),
+        mids: Vec::new(),
+        opacity_mids: Vec::new(),
+        dither: false,
         noise: None,
     }
 }
