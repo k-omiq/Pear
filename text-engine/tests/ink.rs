@@ -831,6 +831,9 @@ fn every_effect_and_blending_option_paints_on_ink_alone() {
         scale: 1.0,
         reverse: false,
         offset: (0.0, 0.0),
+        mids: Vec::new(),
+        opacity_mids: Vec::new(),
+        dither: false,
         noise: None,
     };
     let r = with(
