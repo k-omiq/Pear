@@ -139,13 +139,15 @@ describe('the ink rectangle the painter hands back', () => {
   });
 
   it('is null where the canvas painted part of the box (hand-drawn ink it does not paint)', () => {
-    // Round ink is the engine's (phase 8a); roughened ink is still the
-    // canvas's, laid over the engine's glyphs.
+    // Ink is the engine's (phases 8a to 8c, roughened ink too); on an engine
+    // that paints no ink, the canvas lays it over the engine's glyphs.
     const ink = { on: true, strokes: [{ tool: 'brush', color: '#000000', size: 4, opacity: 1, pts: [[0, 0], [40, 40]] }] };
     const st = style({ ink, roughen: { on: true, amount: 6, detail: 0.07, seed: 7 } });
-    const tex = renderBoxTexture(box(st), undefined, undefined, 1);
+    expect(renderBoxTexture(box(st), undefined, undefined, 1).ink).toBeTruthy();
+    setGlyphPainter({ ...painter, ink: false });
+    const tex = renderBoxTexture(box(style({ ink })), undefined, undefined, 1);
+    setGlyphPainter(painter);
     expect(tex.ink ?? null).toBe(null);
-    expect(renderBoxTexture(box(style({ ink })), undefined, undefined, 1).ink).toBeTruthy();
   });
 });
 
