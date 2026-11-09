@@ -85,7 +85,7 @@ fn band(letters: &Map) -> Map {
     };
     let (out, inn) = (st(3.0, Position::Outside), st(2.0, Position::Inside));
     let din = map::chamfer_inside(letters).unwrap();
-    stroke_band(letters, &[(0, &out), (1, &inn)], 1.0, Some(&din))
+    stroke_band(letters, &[(0, &out), (1, &inn)], 1.0, Some(&din), &Keys::none())
         .unwrap()
         .unwrap()
 }

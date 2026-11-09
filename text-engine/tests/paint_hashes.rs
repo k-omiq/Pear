@@ -36,9 +36,10 @@ use mt_text::paint::fx::effects::{
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
+use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
-    paint_box, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects, Fill, Job, Pt,
-    Raster, Request, Rgba, Run, Shadow, Tap,
+    paint_box, paint_box_kept, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
+    Fill, Job, Pt, Raster, Request, Rgba, Run, Shadow, Tap,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -638,4 +639,335 @@ fn coarse_check(now: &[(String, String)]) {
 #[test]
 fn the_sheet_has_a_distinct_picture_in_every_row() {
     coarse_check(&painted());
+}
+
+/// The key of a box's glyph job, as `decode_box_kept` makes it from the
+/// job's bytes: here from the job as it is decoded, which says as much.
+fn job_key(b: &BoxRequest) -> Key {
+    let r = &b.request;
+    assert!(r.ink.is_none());
+    let mut h = Hasher::new("test job")
+        .debug(&r.job)
+        .debug(&r.transform.0)
+        .debug(&(r.face.font, r.face.size.to_bits(), r.face.synth, r.face.chain))
+        .debug(&r.bold_draw)
+        .debug(&r.weight)
+        .u64(r.tiles.len() as u64);
+    for t in &r.tiles {
+        h = h.debug(&(t.width, t.height)).debug(&t.texels);
+    }
+    h.finish().unwrap()
+}
+
+fn kept_paint(engine: &mut Engine, b: &mut BoxRequest) -> Option<Raster> {
+    let key = job_key(b);
+    paint_box_kept(engine, b, key).unwrap()
+}
+
+/// Every row of the sheet, painted with nothing kept.
+fn fresh(engine: &mut Engine, font: FontId) -> Vec<Option<Raster>> {
+    sheet()
+        .into_iter()
+        .map(|(_, change)| {
+            let mut b = base(font);
+            change(&mut b);
+            paint_box(engine, &mut b).unwrap()
+        })
+        .collect()
+}
+
+/// A paint that keeps its pieces for the next gives the bytes of one that
+/// keeps nothing: with the store cold, with it warm (the same job again),
+/// after other jobs, and with a store too small to hold what a paint puts
+/// in it, so that pieces go while they are being made.
+#[test]
+fn a_kept_paint_is_the_fresh_one_to_the_byte() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let want = fresh(&mut engine, font);
+    let rows = sheet();
+    for ceiling in [kept::KEPT_BYTES, 600_000, 150_000, 0] {
+        kept::set_ceiling(ceiling);
+        // Cold, then warm, each row.
+        for ((name, change), want) in rows.iter().zip(&want) {
+            for pass in ["cold", "warm"] {
+                let mut b = base(font);
+                change(&mut b);
+                assert!(
+                    kept_paint(&mut engine, &mut b) == *want,
+                    "{name}, {pass}, a store of {ceiling}"
+                );
+            }
+        }
+        // Again, the last first: every row after every other.
+        for ((name, change), want) in rows.iter().zip(&want).rev() {
+            let mut b = base(font);
+            change(&mut b);
+            assert!(
+                kept_paint(&mut engine, &mut b) == *want,
+                "{name}, again, a store of {ceiling}"
+            );
+        }
+        assert!(kept::bytes() <= ceiling);
+    }
+    kept::set_ceiling(kept::KEPT_BYTES);
+}
+
+/// A box with one of each effect, for a setting of each to be moved.
+fn loaded(font: FontId) -> BoxRequest {
+    let mut b = base(font);
+    b.shadows = vec![Shadow {
+        size: 4.0,
+        ..shadow(5.0, 6.0)
+    }];
+    b.effects = vec![
+        Effect::OuterGlow(glow(BLUE, Technique::Softer, 6.0)),
+        Effect::InnerGlow(glow(WHITE, Technique::Softer, 4.0)),
+        Effect::InnerShadow(InnerShadow {
+            color: BLACK,
+            opacity: 0.75,
+            x: 2.0,
+            y: 3.0,
+            size: 3.0,
+            choke: 0.0,
+            noise: 0.0,
+            seed: 1,
+            contour: None,
+            blend: Blend::Multiply,
+        }),
+        Effect::ColorOverlay(overlay(BLUE, Blend::Normal, 0.4)),
+        Effect::GradientOverlay(PaintOverlay {
+            paint: Paint::Gradient(grad(Style::Linear)),
+            blend: Blend::Overlay,
+            opacity: 0.8,
+        }),
+        Effect::Satin(Satin {
+            color: BLACK,
+            opacity: 0.5,
+            angle: 19.0,
+            distance: 4.0,
+            size: 5.0,
+            invert: true,
+            contour: None,
+            blend: Blend::Multiply,
+        }),
+        stroke(3.0, Position::Outside, Paint::Color(BLACK)),
+        stroke(2.0, Position::Inside, Paint::Color(WHITE)),
+        Effect::Bevel(bevel(BevelStyle::Inner, BevelTechnique::Smooth)),
+        Effect::Bevel(bevel(BevelStyle::Outer, BevelTechnique::Smooth)),
+    ];
+    b
+}
+
+/// One setting moved, paint after paint, as a slider is dragged: each paint
+/// starts from what the one before kept (the letters, the shadows under
+/// them, the other effects' maps, the fill as far as the effect being
+/// moved), and gives the bytes of a paint that keeps nothing. Every effect
+/// has its turn, then the settings of the box itself.
+#[test]
+fn a_setting_moved_paint_after_paint_gives_the_fresh_bytes() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    type Move = Box<dyn Fn(&mut BoxRequest, f64)>;
+    let fx = |i: usize, change: fn(&mut Effect, f64)| -> Move {
+        Box::new(move |b, t| change(&mut b.effects[i], t))
+    };
+    let moves: Vec<(&str, Move)> = vec![
+        ("shadow throw", Box::new(|b, t| b.shadows[0].x = 2.0 + t)),
+        ("shadow size", Box::new(|b, t| b.shadows[0].size = 2.0 + t)),
+        ("shadow opacity", Box::new(|b, t| b.shadows[0].opacity = 0.2 + t / 10.0)),
+        (
+            "outer glow size",
+            fx(0, |e, t| {
+                if let Effect::OuterGlow(g) = e {
+                    g.size = 3.0 + t
+                }
+            }),
+        ),
+        (
+            "inner glow opacity",
+            fx(1, |e, t| {
+                if let Effect::InnerGlow(g) = e {
+                    g.opacity = 0.3 + t / 10.0
+                }
+            }),
+        ),
+        (
+            "inner glow size",
+            fx(1, |e, t| {
+                if let Effect::InnerGlow(g) = e {
+                    g.size = 2.0 + t
+                }
+            }),
+        ),
+        (
+            "inner shadow throw",
+            fx(2, |e, t| {
+                if let Effect::InnerShadow(s) = e {
+                    s.x = t - 2.0
+                }
+            }),
+        ),
+        (
+            "colour overlay opacity",
+            fx(3, |e, t| {
+                if let Effect::ColorOverlay(o) = e {
+                    o.opacity = 0.1 + t / 10.0
+                }
+            }),
+        ),
+        (
+            "gradient overlay opacity",
+            fx(4, |e, t| {
+                if let Effect::GradientOverlay(o) = e {
+                    o.opacity = 0.2 + t / 10.0
+                }
+            }),
+        ),
+        (
+            "satin distance",
+            fx(5, |e, t| {
+                if let Effect::Satin(s) = e {
+                    s.distance = 1.0 + t
+                }
+            }),
+        ),
+        (
+            "outside stroke opacity",
+            fx(6, |e, t| {
+                if let Effect::Stroke(s) = e {
+                    s.opacity = 0.3 + t / 10.0
+                }
+            }),
+        ),
+        (
+            "inside stroke size",
+            fx(7, |e, t| {
+                if let Effect::Stroke(s) = e {
+                    s.size = 1.0 + t / 2.0
+                }
+            }),
+        ),
+        (
+            "inner bevel depth",
+            fx(8, |e, t| {
+                if let Effect::Bevel(v) = e {
+                    v.depth = 0.5 + t / 4.0
+                }
+            }),
+        ),
+        (
+            "outer bevel size",
+            fx(9, |e, t| {
+                if let Effect::Bevel(v) = e {
+                    v.size = 2.0 + t
+                }
+            }),
+        ),
+        (
+            "two shadows alike",
+            Box::new(|b, t| {
+                let first = b.shadows[0];
+                b.shadows.push(Shadow {
+                    x: 9.0 + t,
+                    ..first
+                })
+            }),
+        ),
+        (
+            "a shadow and no glow",
+            Box::new(|b, t| {
+                b.effects.remove(0);
+                b.shadows[0].y = t
+            }),
+        ),
+        (
+            "a glow and no shadow",
+            Box::new(|b, t| {
+                b.shadows.clear();
+                if let Effect::OuterGlow(g) = &mut b.effects[0] {
+                    g.opacity = 0.2 + t / 10.0
+                }
+            }),
+        ),
+        (
+            "a shadow's colour",
+            Box::new(|b, t| b.shadows[0].color = Rgba([t as u8 * 40, 0, 0, 255])),
+        ),
+        (
+            "a shadow over a page",
+            Box::new(|b, t| {
+                b.backdrop = Some(page());
+                b.blend = Blend::Multiply;
+                b.shadows[0].x = t
+            }),
+        ),
+        (
+            "the page under the box",
+            Box::new(|b, t| {
+                let mut p = page();
+                p.iter_mut().step_by(7).for_each(|v| *v = v.wrapping_add(t as u8 * 9));
+                b.backdrop = Some(p);
+                b.blend = Blend::Screen;
+                // A shadow that reads the page: in a mode, in a colour.
+                b.shadows[0].blend = Blend::Screen;
+                b.shadows[0].color = BLUE
+            }),
+        ),
+        ("fill opacity", Box::new(|b, t| b.fill_opacity = 1.0 - t / 8.0)),
+        (
+            "fill opacity, grouped",
+            Box::new(|b, t| {
+                b.blending.interior = true;
+                b.fill_opacity = 1.0 - t / 8.0
+            }),
+        ),
+        ("grain", Box::new(|b, t| b.grain = (t as i32, 3))),
+        ("an effect off", Box::new(|b, t| drop(b.effects.remove(t as usize)))),
+        ("the letters", Box::new(|b, t| b.request.job.runs[0].x = 30.0 + t)),
+        ("the turn", Box::new(|b, t| b.request.transform = turn(t * 7.0))),
+    ];
+    kept::set_ceiling(kept::KEPT_BYTES);
+    for (name, change) in &moves {
+        // There and back: the way back meets states kept on the way there.
+        for t in [0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 2.0, 2.0, 0.0] {
+            let mut b = loaded(font);
+            change(&mut b, t);
+            let want = paint_box(&mut engine, &mut b).unwrap();
+            let mut b = loaded(font);
+            change(&mut b, t);
+            assert!(kept_paint(&mut engine, &mut b) == want, "{name} at {t}");
+        }
+    }
+    assert!(kept::bytes() > 0, "nothing was kept");
+}
+
+/// What was painted with one font is not read back for another under the
+/// same handle, nor under another rule.
+#[test]
+fn a_kept_paint_is_of_the_engines_fonts_and_rules() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let mut b = loaded(font);
+    let first = kept_paint(&mut engine, &mut b);
+    // Another font takes the handle.
+    assert!(engine.remove_font(font));
+    let path = format!(
+        "{}/../src/test/fonts/Bangers-Regular.ttf",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let other = engine
+        .add_font_bytes(std::fs::read(path).unwrap(), 0)
+        .unwrap();
+    assert_eq!(other, font);
+    let mut b = loaded(font);
+    let want = paint_box(&mut engine, &mut b).unwrap();
+    assert!(want != first, "the two fonts paint alike");
+    let mut b = loaded(font);
+    assert!(kept_paint(&mut engine, &mut b) == want);
+    // A second engine with the first font under the same handle.
+    let mut second = Engine::new();
+    assert_eq!(load(&mut second), font);
+    let mut b = loaded(font);
+    assert!(kept_paint(&mut second, &mut b) == first);
 }
