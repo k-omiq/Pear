@@ -326,6 +326,49 @@ describe('normalizer numeric sanity', () => {
   }
 });
 
+// F53: a read-only field sent back as every target box stores it is no edit.
+describe('validateStylePatch with the stored styles', () => {
+  const picked = { kind: 'picked', src: '0123456789abcdef0123456789abcdef.png', cell: [8, 0, 0, 8] };
+  const withPick = normalizeStyle({ ...defaultStyle(), strokeEffects: [newStrokeEffect(), { ...newStrokeEffect(), fill: 'pattern', pattern: picked }] });
+  const plainStroke = normalizeStyle({ ...defaultStyle(), strokeEffects: [newStrokeEffect()] });
+  const echo = (st) => JSON.parse(JSON.stringify(st.strokeEffects));
+
+  it('passes a stored list echoed whole, and one with an item added or removed', () => {
+    const list = echo(withPick);
+    expect(list[1].pattern).toMatchObject(picked);
+    expect(validateStylePatch({ strokeEffects: list })).not.toEqual([]); // no stored styles: refused as before
+    expect(validateStylePatch({ strokeEffects: list }, withPick)).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: [...list, newStrokeEffect()] }, withPick)).toEqual([]);
+    // The first removed: the picked item is at index 0 now, stored at 1.
+    expect(validateStylePatch({ strokeEffects: [list[1]] }, withPick)).toEqual([]);
+  });
+
+  it('passes an index patch only against the item at that index', () => {
+    const list = echo(withPick);
+    expect(validateStylePatch({ strokeEffects: { 1: { pattern: list[1].pattern } } }, withPick)).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: { 0: { pattern: list[1].pattern } } }, withPick).map((e) => e.path)).toEqual(['strokeEffects[0].pattern.kind', 'strokeEffects[0].pattern.src', 'strokeEffects[0].pattern.cell']);
+  });
+
+  it('refuses a tile that is not stored, or not on every target', () => {
+    const list = echo(withPick);
+    const other = structuredClone(list);
+    other[1].pattern.src = 'ffffffffffffffffffffffffffffffff.png';
+    expect(validateStylePatch({ strokeEffects: other }, withPick)[0]).toMatchObject({ path: 'strokeEffects[1].pattern.src', error: 'set through Pick from page' });
+    expect(validateStylePatch({ strokeEffects: list }, [withPick, plainStroke]).map((e) => e.path)).toEqual(['strokeEffects[1].pattern.kind', 'strokeEffects[1].pattern.src', 'strokeEffects[1].pattern.cell']);
+    expect(validateStylePatch({ strokeEffects: list }, [withPick, withPick])).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: list }, [])).not.toEqual([]);
+  });
+
+  it('passes any other read-only payload echoed as stored', () => {
+    const pts = [];
+    for (let y = 0; y <= 2; y++) for (let x = 0; x <= 2; x++) pts.push([x * 10, y * 10]);
+    const st = normalizeStyle({ ...defaultStyle(), warp: { on: true, cols: 2, rows: 2, pts } });
+    expect(st.warp.pts).toHaveLength(9);
+    expect(validateStylePatch({ warp: { pts: st.warp.pts } }, st)).toEqual([]);
+    expect(validateStylePatch({ warp: { pts: [...st.warp.pts].reverse() } }, st)).not.toEqual([]);
+  });
+});
+
 describe('styleSchemaText', () => {
   // The budget grew from 5200 when the path anchors and the mask shapes
   // became writable: about 900 characters for two whole new item schemas,

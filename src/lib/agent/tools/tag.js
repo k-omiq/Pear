@@ -42,7 +42,8 @@ defineTool({
         if (typeof style !== 'object' || Array.isArray(style)) throw new ToolError('style must be a style patch object or null');
         const bad = Object.keys(style).find((k) => !TAG_STYLE_KEYS.includes(k));
         if (bad) throw new ToolError(`style.${bad}: not a tag key`, `a tag holds lettering only. Close: ${nearest(bad, TAG_STYLE_KEYS).join(', ')}. Size is its own field.`);
-        const e = validateStylePatch(style)[0];
+        // A read-only field passes when it is sent back as the tag holds it.
+        const e = validateStylePatch(style, findTag(n)?.style ?? null)[0];
         if (e) throw new ToolError(`style.${e.path}: ${e.error}`, e.hint);
         if (Object.values(style).some((v) => typeof v === 'string' && /^[+\-*]\d/.test(v.trim()))) throw new ToolError('a tag takes plain values, not relative ones');
         if (typeof style.font === 'string') {

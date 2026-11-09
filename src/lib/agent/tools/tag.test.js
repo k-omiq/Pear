@@ -8,6 +8,7 @@ const { bindTags, unbindTags, findTag } = await import('../../tags.svelte.js');
 const { bindGuide, unbindGuide } = await import('../../guide.svelte.js');
 const { callTool } = await import('../registry.js');
 const { callContext, revertRun, __resetRun } = await import('../run.svelte.js');
+const { newStrokeEffect } = await import('../../data.js');
 await import('./tag.js');
 
 const call = (args) => callTool('tag', args, callContext('mcp'));
@@ -48,6 +49,18 @@ describe('tag', () => {
     expect('kind' in findTag('angry')).toBe(false);
     expect((await call({ name: 'angry', kind: 'yelling' })).error).toMatch(/not a kind of text/);
     expect((await call({ name: 'speech', kind: 'shout' })).error).toMatch(/a kind itself/);
+  });
+
+  // F53: the tag's own picked pattern, sent back with an item added.
+  it('takes back a stroke effect list holding the tag\'s own picked tile', async () => {
+    const pat = { ...newStrokeEffect().pattern, kind: 'picked', src: '0123456789abcdef0123456789abcdef.png', cell: [8, 0, 0, 8] };
+    const list = [{ ...newStrokeEffect(), fill: 'pattern', pattern: pat }];
+    bindTags({ list: [{ name: 'speech', style: { strokeEffects: list }, size: 18 }] }, saved);
+    const r = await call({ name: 'speech', style: { strokeEffects: [...list, { size: 2 }] } });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(findTag('speech').style.strokeEffects[0].pattern.src).toBe(pat.src);
+    const other = [{ ...list[0], pattern: { ...pat, src: 'ffffffffffffffffffffffffffffffff.png' } }];
+    expect((await call({ name: 'speech', style: { strokeEffects: other } })).ok).toBe(false);
   });
 
   it('adds a new tag, and clears a size with null', async () => {

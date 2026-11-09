@@ -11,7 +11,7 @@ const { callTool } = await import('../registry.js');
 const { bindTags, unbindTags } = await import('../../tags.svelte.js');
 const { bindGuide, unbindGuide } = await import('../../guide.svelte.js');
 const { presets } = await import('../../presets.svelte.js');
-const { defaultStyle } = await import('../../data.js');
+const { defaultStyle, normalizeStyle, newStrokeEffect } = await import('../../data.js');
 const { warpPresetPts } = await import('../../warp-presets.js');
 const { WARP_DEFAULT_AMOUNT } = await import('./edit.js');
 await import('./place.js');
@@ -190,6 +190,44 @@ describe('edit', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/chapter changed/);
     expect(pageById(1).boxes[0].style.italic).toBe(false);
+  });
+});
+
+// F53: a stored stroke effect list holding a picked pattern can be sent back
+// whole, with an item added or removed; its tile cannot be changed or put on
+// a box that does not hold it.
+describe('edit: a read-only field echoed as stored', () => {
+  const picked = { kind: 'picked', src: '0123456789abcdef0123456789abcdef.png', cell: [8, 0, 0, 8] };
+  const pickStroke = () => ({ ...newStrokeEffect(), fill: 'pattern', pattern: { ...newStrokeEffect().pattern, ...picked } });
+  beforeEach(() => {
+    pageById(1).boxes[0].style = normalizeStyle({ ...pageById(1).boxes[0].style, strokeEffects: [pickStroke()] });
+    pageById(1).boxes[1].style = normalizeStyle({ ...pageById(1).boxes[1].style, strokeEffects: [newStrokeEffect()] });
+  });
+
+  it('adds an item to the stored list sent back whole, the picked tile kept', async () => {
+    const list = copy(pageById(1).boxes[0].style.strokeEffects);
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { strokeEffects: [...list, { size: 2 }] } } }] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const got = pageById(1).boxes[0].style.strokeEffects;
+    expect(got).toHaveLength(2);
+    expect(got[0].pattern).toMatchObject(picked);
+  });
+
+  it('refuses the same list on a box that does not hold the tile, in one op over both', async () => {
+    const start = copy(app.pages.map((p) => p.boxes));
+    const list = copy(pageById(1).boxes[0].style.strokeEffects);
+    const r = await call({ ops: [{ where: { ids: ['a', 'b'] }, set: { style: { strokeEffects: list } } }] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/strokeEffects\[0\]\.pattern\.kind: expected one of/);
+    expect(copy(app.pages.map((p) => p.boxes))).toEqual(start);
+  });
+
+  it('refuses a tile the box does not hold', async () => {
+    const list = copy(pageById(1).boxes[0].style.strokeEffects);
+    list[0].pattern.src = 'ffffffffffffffffffffffffffffffff.png';
+    const r = await call({ ops: [{ where: { ids: ['a'] }, set: { style: { strokeEffects: list } } }] });
+    expect(r.ok).toBe(false);
+    expect(pageById(1).boxes[0].style.strokeEffects[0].pattern.src).toBe(picked.src);
   });
 });
 
