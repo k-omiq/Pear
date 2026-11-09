@@ -447,13 +447,13 @@ describe('the footprint of a bent inked box', () => {
 //   about 9.6 is the tangent: read through the mesh itself, 6.1 is left. That
 //   rest is the same for a ribbon of a smooth strip (5.0), so it is not the
 //   bars; it halves on a ribbon half as wide (2.9 at 12), and grows with the
-//   scale (1.2, 4.3, 6.1 at 1, 2, 2.74), so it is in the ribbon's geometry
-//   across its width: its slices are cut on straight chords between their
-//   bent corners, where the bumpy mesh curves the line across a 24 px ribbon
-//   by about a page pixel, and the pixels between chord and curve are read
-//   by the neighbouring slice's frame. (Measured with the slices read
-//   through the mesh, 2026-11-09; what is left is consistent with the chords,
-//   not proved to be them.)
+//   scale (1.2, 4.3, 6.1 at 1, 2, 2.74), so it looks to be in the ribbon's
+//   geometry across its width. That is consistent with the slices being cut
+//   on straight chords between their bent corners, where the bumpy mesh
+//   curves the line across a 24 px ribbon by about a page pixel and the
+//   pixels between chord and curve are read by the neighbouring slice's
+//   frame; consistent, not proved. (Measured with the slices read through
+//   the mesh, 2026-11-09.)
 // - Grain is not bent (the user's rule): the canvas sheared and stretched its
 //   cells with the texture, so no cell lines up under any mesh, the
 //   parallelogram included (mean 40 to 48 everywhere, its floor too).

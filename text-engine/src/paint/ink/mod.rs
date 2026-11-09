@@ -2118,16 +2118,20 @@ mod bend_tests {
     /// hundred strokes, of round dabs and of a noisy 32 x 32 tip) was laid
     /// at 2.74, flat, roughened, meshed and both, and how long each took
     /// against the flat round ink of the same run (`--nocapture` prints
-    /// them; times are a quiet machine's, ratios hold better than ms). A
+    /// them). Each time is the median of three after a warm-up laying: one
+    /// laying alone swung the flat base by a quarter between runs where the
+    /// other cases held within 2 %, and the ratios with it. The ms still move
+    /// with how busy the machine is; the ratios of medians hold. A
     /// bent stamp's outline is let go once it is laid, and found again for
     /// the next pass, so the bent peak is the flat one and a stamp's
     /// outline more.
     ///
-    /// Where the time goes (one run, 2026-11-09): round dabs meshed and
-    /// roughened take 3.5x the flat; the pass that bends every stamp to find
-    /// the layer's rectangle is 37 % of that, and the paint pass bends each
-    /// again. A roughened tip takes 5.4x, most of it the roughening read
-    /// inside every tip pixel (`p + d(p)`); its bounds pass is 13 %. Keeping
+    /// Where the time goes (2026-11-09, medians; two runs agreed within
+    /// 3 %): round dabs meshed and roughened take 4.6x the flat; the pass
+    /// that bends every stamp to find the layer's rectangle is 37 % of that,
+    /// and the paint pass bends each again. A roughened tip takes 7.1x, most
+    /// of it the roughening read inside every tip pixel (`p + d(p)`); its
+    /// bounds pass is 13 %. Keeping
     /// the first pass's outlines for the second would save that share, but
     /// the layer is sized before any stroke is laid, so every stroke's
     /// outlines would be held at once: more memory for a third of the time,
@@ -2145,31 +2149,42 @@ mod bend_tests {
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
             .collect();
         tips::with_cache(|c| c.put("bench-noise|32x32", 32, 32, (32, 32), &noise)).unwrap();
-        let mut first = None;
+        let lay = |tip: bool, mesh: bool, roughen: bool| {
+            let strokes = heavy()
+                .into_iter()
+                .map(|k| Stroke {
+                    tip: tip.then_some(0),
+                    ..k
+                })
+                .collect();
+            let mut ink = Ink::new(Pt::new(20.0, 30.0), strokes);
+            ink.name_tips(if tip {
+                vec!["bench-noise|32x32".to_owned()]
+            } else {
+                Vec::new()
+            });
+            let _scope = budget::Scope::new();
+            let start = std::time::Instant::now();
+            ink.prepare(&t, &job(mesh, roughen), surface, 3.0, &Exact)
+                .unwrap();
+            let took = start.elapsed().as_secs_f64();
+            assert!(ink.layer.is_some());
+            (took, budget::peak_for_test())
+        };
+        // The median of three, after one laying thrown away (the first pays
+        // for the caches and the allocator warming up).
+        let median = |tip, mesh, roughen| {
+            let mut runs: Vec<(f64, usize)> = (0..3).map(|_| lay(tip, mesh, roughen)).collect();
+            runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            runs[1]
+        };
+        lay(false, false, false);
+        let mut base = None;
         for tip in [false, true] {
             let mut flat_peak = 0;
             for (mesh, roughen) in [(false, false), (false, true), (true, false), (true, true)] {
-                let strokes = heavy()
-                    .into_iter()
-                    .map(|k| Stroke {
-                        tip: tip.then_some(0),
-                        ..k
-                    })
-                    .collect();
-                let mut ink = Ink::new(Pt::new(20.0, 30.0), strokes);
-                ink.name_tips(if tip {
-                    vec!["bench-noise|32x32".to_owned()]
-                } else {
-                    Vec::new()
-                });
-                let _scope = budget::Scope::new();
-                let start = std::time::Instant::now();
-                ink.prepare(&t, &job(mesh, roughen), surface, 3.0, &Exact)
-                    .unwrap();
-                let took = start.elapsed().as_secs_f64();
-                assert!(ink.layer.is_some());
-                let peak = budget::peak_for_test();
-                let base = *first.get_or_insert(took);
+                let (took, peak) = median(tip, mesh, roughen);
+                let base = *base.get_or_insert(took);
                 println!(
                     "heavy ink, tip {tip}, mesh {mesh}, roughen {roughen}: peak {peak} bytes, {:.0} ms, {:.2}x the flat round",
                     took * 1e3,
