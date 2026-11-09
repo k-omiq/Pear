@@ -1341,7 +1341,7 @@ fn a_box_has_every_shadow_its_style_has() {
     // A count the bytes cannot hold is still refused before anything is
     // allocated.
     let mut b = shadowed(font, 17);
-    b[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    b[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
     assert_eq!(decode_box(&b).map(|_| ()).err(), Some(Error::BadSpec));
 }
 
