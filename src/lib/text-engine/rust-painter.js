@@ -7,8 +7,8 @@
 // The engine turns a job into pixels (text-engine/js/paint.mjs); this file's
 // whole work is to hand it what only the page has - the canvas's transform and
 // the pattern tiles - and to put the pixels it gives back onto the canvas.
-import { drawsPatternTiles, drawsScreens, paintBox as paintBoxJob, paintJob, paintsBoxes, paintsInk, patternTile } from '../../../text-engine/js/paint.mjs';
-import { canvasPatternKind, patternTileCanvas, patternTilePx, TILE_SS } from '../text-paint.js';
+import { drawsPatternTiles, drawsScreens, forgetInkTips, hasInkTip, paintBox as paintBoxJob, paintJob, paintsBoxes, paintsInk, patternTile, putInkTip } from '../../../text-engine/js/paint.mjs';
+import { canvasPatternKind, patternTileCanvas, patternTilePx, tipCoverage, TILE_SS } from '../text-paint.js';
 import { pickedTile } from '../pattern-tiles.svelte.js';
 
 // A synthesised bold is drawn the way it is measured (text-engine/RULES.md):
@@ -25,6 +25,20 @@ import { pickedTile } from '../pattern-tiles.svelte.js';
 // painter. rust-painter-limit.test.js reads the Rust source and holds the two
 // together.
 export const MAX_RASTER_SIDE = 16384;
+
+// Which put of an engine's tips a library wrapper's pixels went in with
+// (`tip.rust`): one token per engine, new each time its tips are let go. A
+// wrapper of a brush loaded again (an import over it, a chapter reopened) is
+// a new wrapper, unmarked, and is put again over the old key.
+const tipEpochs = new WeakMap();
+const tipEpoch = (rust) => {
+  let e = tipEpochs.get(rust);
+  if (!e) {
+    e = {};
+    tipEpochs.set(rust, e);
+  }
+  return e;
+};
 
 /**
  * @param {object} rust the engine `createRustTextEngine` made; it holds the faces a job names
@@ -103,6 +117,22 @@ export function createRustGlyphPainter(rust, options = {}) {
   // it - scaled, turned or mirrored. Nothing is resampled on the way: the
   // letters, the shadow's throw and the mask are all stated in the job's
   // units and carried by the transform, and the pixels land one to one.
+  // The ink's tips into the engine before the job that names them: each
+  // wrapper's coverage read once (`tipCoverage`) and put, and asked after
+  // again for every job, which names it for that job, so the engine keeps it
+  // until the job is painted and puts it back if it let go of it since. A tip
+  // the engine refuses is not marked: its strokes paint round.
+  function sendTips(ink) {
+    const epoch = tipEpoch(rust);
+    (ink?.keys ?? []).forEach((key, i) => {
+      const tip = ink.tips?.[i];
+      if (!tip) return;
+      if (tip.rust === epoch && hasInkTip(rust.low, key)) return;
+      const cov = tipCoverage(tip);
+      if (cov && putInkTip(rust.low, key, cov)) tip.rust = epoch;
+    });
+  }
+
   function paintBox(ctx, spec) {
     const m = ctx.getTransform();
     const r = spec.rect;
@@ -125,6 +155,7 @@ export function createRustGlyphPainter(rust, options = {}) {
     const width = Math.ceil(x1 - EPS) - x0;
     const height = Math.ceil(y1 - EPS) - y0;
     if (!(width > 0 && height > 0)) return null;
+    if (spec.ink) sendTips(spec.ink);
     const raster = paintBoxJob(rust.low, {
       ...request(spec.job, [m.a, m.b, m.c, m.d, m.e - x0, m.f - y0]),
       width,
@@ -141,8 +172,8 @@ export function createRustGlyphPainter(rust, options = {}) {
       blendIf: spec.blendIf ?? null,
       effects: spec.effects ?? [],
       // The box's brush ink (`inkSpec`, exporter.js), painted with the
-      // letters: round dabs only (`ink`).
-      ink: spec.ink ?? null,
+      // letters, and the keys of the tips it stamps with, sent above.
+      ink: spec.ink ? { ox: spec.ink.ox, oy: spec.ink.oy, strokes: spec.ink.strokes, keys: spec.ink.keys, refs: spec.ink.refs } : null,
       // The page under the surface: given, or asked for now the surface is
       // known (`backdrop.js`), with the matrix that carries the job onto it.
       // Null paints without the page.
@@ -202,10 +233,16 @@ export function createRustGlyphPainter(rust, options = {}) {
   // it does when the wasm it was handed has that call.
   // `screen` says a pattern is painted per pixel from its kind and controls
   // (`screenInJob`), which this wasm does when it has the call.
-  // `ink` says a box's brush ink of round dabs is painted in its box job
-  // (`boxInJob`), as letters are: a wasm of box wire v12 and on.
+  // `ink` says a box's brush ink, round dabs and imported tips, is painted in
+  // its box job (`boxInJob`), as letters are: a wasm of box wire v12 with
+  // the tip cache. `forgetTips` lets go of the engine's tips
+  // (`forgetPainterTips`, index.js), when the library closes its own.
   const box = paintsBoxes(rust.low);
   const screen = drawsScreens(rust.low);
   const ink = box && paintsInk(rust.low);
-  return { id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen, ink };
+  const forgetTips = () => {
+    forgetInkTips(rust.low);
+    tipEpochs.delete(rust);
+  };
+  return { id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen, ink, forgetTips };
 }

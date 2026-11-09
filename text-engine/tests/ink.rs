@@ -4,6 +4,7 @@
 //! shadow is thrown from it, Fill Opacity fades it and No Fill keeps it.
 #![cfg(feature = "paint")]
 
+use mt_text::paint::ink::tips::with_cache;
 use mt_text::paint::ink::{stroke_stamps, Flip, Ink, Stamp, Stroke, Taper, TipOrder};
 use mt_text::paint::{
     decode_box, paint_box, Affine, Align, Band, BoxRequest, Effects, Fill, Job, Pt, Raster,
@@ -467,6 +468,37 @@ fn a_box_job_reads_its_ink() {
     u(&mut none, job.len() as u32);
     none.extend_from_slice(&job);
     assert!(decode_box(&none).unwrap().request.ink.is_none());
+}
+
+#[test]
+fn a_box_job_names_its_tips_by_key_and_paints_round_where_one_is_not_held() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let (bytes, ink_at, at) = wire(font, "", 0);
+    // The tip table of one key, and the stroke stamping with it.
+    let key = b"square|8x8";
+    let mut b = bytes[..ink_at + 20].to_vec();
+    u(&mut b, 1);
+    u(&mut b, key.len() as u32);
+    b.extend_from_slice(key);
+    let shift = b.len() - (ink_at + 24);
+    b.extend_from_slice(&bytes[ink_at + 24..]);
+    let tip_at = at + shift + AT_TIP;
+    b[tip_at..tip_at + 4].copy_from_slice(&0u32.to_le_bytes());
+    // Not held: the stroke paints round, as the same stroke with no tip.
+    let r = decode_box(&b).unwrap();
+    assert_eq!(r.request.ink.as_ref().unwrap().strokes[0].tip, Some(0));
+    let round = paint(&mut e, &mut decode_box(&bytes).unwrap());
+    assert_eq!(paint(&mut e, &mut decode_box(&b).unwrap()), round);
+    // Held: an 8 x 8 square of full coverage. A square tip reaches the
+    // corners the round dab does not.
+    with_cache(|c| c.put("square|8x8", 8, 8, (8, 8), &[255; 64])).unwrap();
+    let square = paint(&mut e, &mut decode_box(&b).unwrap());
+    assert_ne!(square, round);
+    // The stroke runs (30, 50) to (130, 50), 10 wide: past its end by 4 and
+    // 5 off its line: the square's corner, not the disc's.
+    assert_eq!(px(&round, 134, 45)[3], 0);
+    assert_eq!(px(&square, 134, 45), [255, 0, 0, 255]);
 }
 
 #[test]

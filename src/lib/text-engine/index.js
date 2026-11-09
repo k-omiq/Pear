@@ -43,6 +43,14 @@ export function setGlyphPainter(p) {
   painter = p;
 }
 
+// Lets go of whatever copies of brush tips the painter keeps of its own (the
+// Rust engine's tip cache, rust-painter.js), at the moment the brush library
+// closes its decoded tips (`forgetBrushTips`): the library calls this rather
+// than reaching for a painter. A painter that keeps none has nothing to do.
+export function forgetPainterTips() {
+  painter?.forgetTips?.();
+}
+
 // Whether ONE engine both measures and paints: the painter says which engine
 // it paints with (`engine`, the Rust painter's), and that engine is the one
 // installed for measuring. Then a line's measured ink is exactly the ink that

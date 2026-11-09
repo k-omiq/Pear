@@ -125,6 +125,8 @@ pub extern "C" fn mt_paint_box(byte_len: usize) -> i32 {
             let mut request = paint::decode_box(s.job.get(..byte_len).ok_or(Error::BadSpec)?)?;
             with_engine(|engine| paint::paint_box(engine, &mut request))
         })();
+        // The tips this job named may go again.
+        paint::ink::tips::with_cache(|c| c.end_job());
         match painted {
             Ok(Some(raster)) => {
                 *s.result = [
@@ -140,6 +142,73 @@ pub extern "C" fn mt_paint_box(byte_len: usize) -> i32 {
             Err(e) => Status::from(e) as i32,
         }
     })
+}
+
+/// Puts one imported brush tip in the engine's tip cache
+/// (`paint::ink::tips`), under the key a box job's ink names it by. The job
+/// buffer (`mt_paint_job_reserve`) holds the key, `key_len` bytes of UTF-8,
+/// and then the tip's coverage, `width * height` bytes row by row: the grey
+/// times the alpha, eight bits, after the canvas's cap to 2048. `natural_w`
+/// and `natural_h` are the tip's own size, which the stamp's shape is made
+/// from.
+///
+/// Returns 0, or a negative [`Status`]: a key or tip past the limits (a side
+/// past 4096, more than 16 MP), more than the buffer holds, or no room the
+/// cache can make without letting go of a tip this job has named. A key
+/// already held is replaced.
+#[no_mangle]
+pub extern "C" fn mt_ink_tip_put(
+    key_len: usize,
+    width: u32,
+    height: u32,
+    natural_w: u32,
+    natural_h: u32,
+) -> i32 {
+    with(|s| {
+        let put = (|| -> Result<(), Error> {
+            let (w, h) = (width as usize, height as usize);
+            let n = w.checked_mul(h).ok_or(Error::BadSpec)?;
+            let end = key_len.checked_add(n).ok_or(Error::BadSpec)?;
+            let bytes = s.job.get(..end).ok_or(Error::BadSpec)?;
+            let key = core::str::from_utf8(&bytes[..key_len]).map_err(|_| Error::BadText)?;
+            paint::ink::tips::with_cache(|c| {
+                c.put(key, w, h, (natural_w, natural_h), &bytes[key_len..])
+            })
+        })();
+        match put {
+            Ok(()) => 0,
+            Err(e) => Status::from(e) as i32,
+        }
+    })
+}
+
+/// 1 when the engine holds the tip whose key is the first `key_len` bytes
+/// of the job buffer, 0 when it does not. A tip held is named for the next
+/// box job: the cache does not let it go before that job is painted.
+#[no_mangle]
+pub extern "C" fn mt_ink_tip_has(key_len: usize) -> u32 {
+    with(|s| {
+        let Some(key) = s
+            .job
+            .get(..key_len)
+            .and_then(|b| core::str::from_utf8(b).ok())
+        else {
+            return 0;
+        };
+        u32::from(paint::ink::tips::with_cache(|c| c.has(key)))
+    })
+}
+
+/// Lets go of every tip the engine holds.
+#[no_mangle]
+pub extern "C" fn mt_ink_tips_forget() {
+    paint::ink::tips::with_cache(|c| c.forget());
+}
+
+/// What the engine's tips hold, in bytes, their levels included.
+#[no_mangle]
+pub extern "C" fn mt_ink_tips_bytes() -> u32 {
+    paint::ink::tips::with_cache(|c| c.bytes()) as u32
 }
 
 /// The version of the box job wire form this build reads.

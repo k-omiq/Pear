@@ -4,7 +4,8 @@ import { resolve } from 'node:path';
 import { createCanvas } from '@napi-rs/canvas';
 import { rustEngine } from '../test/rust-engine.js';
 import { renderBoxTexture, renderBoxLayer, boxInJob } from './exporter.js';
-import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
+import { textEngine, setTextEngine, glyphPainter, setGlyphPainter, forgetPainterTips } from './text-engine/index.js';
+import { inkTipBytes, putInkTip, hasInkTip } from '../../text-engine/js/paint.mjs';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
@@ -33,10 +34,11 @@ const oldDocument = globalThis.document;
 const before = { engine: textEngine(), painter: glyphPainter(), typeset: typesetEnabled() };
 let whole;
 let canvasInk;
+let rust;
 
 beforeAll(async () => {
   globalThis.document = { createElement: () => createCanvas(300, 150) };
-  const rust = await rustEngine();
+  rust = await rustEngine();
   setTextEngine(rust);
   whole = createRustGlyphPainter(rust);
   canvasInk = { ...whole, ink: false };
@@ -69,9 +71,9 @@ function wave(n = 24, extra = () => []) {
 const zigzag = [[30, 30, 1], [90, 100, 1], [150, 30, 1], [210, 100, 1]];
 const ink = (...strokes) => ({ on: true, strokes: strokes.map((k, i) => ({ id: `s${i}`, size: 14, color: '#111111', pts: wave(), ...k })) });
 
-function texture(box, painter, scale) {
+function texture(box, painter, scale, tips = null) {
   setGlyphPainter(painter);
-  const r = renderBoxTexture(box, pageOf(box), null, scale);
+  const r = renderBoxTexture(box, pageOf(box), tips, scale);
   setGlyphPainter(whole);
   return { ...r, img: r.canvas.getContext('2d').getImageData(0, 0, r.canvas.width, r.canvas.height) };
 }
@@ -126,14 +128,15 @@ const inkOf = (img) => {
 };
 
 describe('the gate', () => {
-  it('lets a box of round ink into the job where the painter paints ink, and nothing else', () => {
+  it('lets a box of ink into the job where the painter paints ink, and nothing else', () => {
     const round = ink({});
     expect(whole.ink).toBe(true);
     expect(boxInJob(boxOf({ ink: round }))).toBe(true);
     expect(boxInJob(boxOf({ ink: round }, ''))).toBe(true);
-    // An imported tip, a tip cycle, a mesh and a roughening are the canvas's.
-    expect(boxInJob(boxOf({ ink: ink({ brush: 'tip-1' }) }))).toBe(false);
-    expect(boxInJob(boxOf({ ink: ink({ tips: ['a', 'b'] }) }))).toBe(false);
+    // An imported tip and a tip cycle are the engine's (phase 8b); a mesh
+    // and a roughening are the canvas's (8c).
+    expect(boxInJob(boxOf({ ink: ink({ brush: 'tip-1' }) }))).toBe(true);
+    expect(boxInJob(boxOf({ ink: ink({ tips: ['a', 'b'] }) }))).toBe(true);
     expect(boxInJob(boxOf({ ink: round, roughen: { on: true, amount: 4, detail: 0.1, seed: 2 } }))).toBe(false);
     const box = boxOf({ ink: round });
     box.style.warp = { on: true, cols: 1, rows: 1, pts: [[0, 0], [260, 10], [0, 130], [260, 130]] };
@@ -306,5 +309,246 @@ describe('the effects reach the ink', () => {
     const a = plain({}, '');
     expect(inkOf(a.img)).toBeGreaterThan(255 * 2000);
     expect(against(a.img, plain({}, '').img).worst).toBe(0);
+  });
+});
+
+// ===========================================================================
+// Imported tips (layer styles phase 8b)
+// ===========================================================================
+// A stroke drawn with an imported tip goes into the box job too: the page
+// reads each tip's coverage once and puts it in the engine (`tipCoverage`,
+// `putInkTip`), and the engine stamps it (text-engine/src/paint/ink/tips.rs).
+// The tips here are made on @napi-rs/canvas as the library hands them on:
+// `{ id, width, height, image }`, grey ink at 255 on opaque black.
+
+// A seeded stream, for the noisy tip.
+function rng(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t = (t + 0x6d2b79f5) >>> 0;
+    let r = Math.imul(t ^ (t >>> 15), t | 1);
+    r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function tipOf(id, w, h, draw) {
+  const image = createCanvas(w, h);
+  const ctx = image.getContext('2d');
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, w, h);
+  draw(ctx, w, h);
+  return { id, width: w, height: h, image };
+}
+
+function makeTips() {
+  // A soft disc: full in the middle, clear at the rim.
+  const disc = tipOf('disc', 128, 128, (ctx, w) => {
+    const g = ctx.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.4, '#ffffff');
+    g.addColorStop(1, '#000000');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, w);
+  });
+  // A tall strip, soft at its sides.
+  const strip = tipOf('strip', 48, 200, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, '#000000');
+    g.addColorStop(0.3, '#ffffff');
+    g.addColorStop(0.7, '#ffffff');
+    g.addColorStop(1, '#000000');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 8, w, h - 16);
+  });
+  // Grain in a disc: every pixel its own grey.
+  const noise = tipOf('noise', 96, 96, (ctx, w, h) => {
+    const img = ctx.getImageData(0, 0, w, h);
+    const r = rng(7);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const d = Math.hypot(x + 0.5 - w / 2, y + 0.5 - h / 2) / (w / 2);
+        const v = d < 1 ? Math.round(255 * r() * Math.min(1, (1 - d) * 3)) : 0;
+        const i = (y * w + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  });
+  // Bars across, for a ribbon: the tip comes round every pass of its height.
+  const bars = tipOf('bars', 64, 160, (ctx, w, h) => {
+    ctx.fillStyle = '#ffffff';
+    for (let y = 0; y < h; y += 40) ctx.fillRect(0, y, w, 22);
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(16, 0, 8, h);
+  });
+  // Bigger than a tint is made at (2048): capped before it goes in.
+  const big = tipOf('big', 2400, 600, (ctx, w, h) => {
+    const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, h / 2);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(1, '#000000');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  return new Map([disc, strip, noise, bars, big].map((t) => [t.id, t]));
+}
+
+// Each case: the style, then the most the two pictures may differ by, mean
+// and worst, of 255, set from the first measured run as the round cases
+// were (the largest over the scales, with and without letters, a third more
+// for the mean). The total is held within 3 % either way.
+//
+// Past what the round dab's edge costs (above), a tip is read by the canvas
+// through Skia's 'high' sampling and its own halvings, and by the engine
+// bilinear from 2 x 2 box halvings: a smooth tip is within a level or two
+// (worst 10 to 25), a noisy one a little more, as every grain is read a
+// little differently. Darken keeps the densest of many such reads, and
+// Skia's sharper read reaches denser grains: the canvas's ink is up to 2 %
+// more. A ribbon's slices meet seamless in the engine (`Pen::image`); the
+// canvas's meet nearly so, so where they fan out round a bend a pixel is
+// in one picture and not the other (worst 255, mean a few levels).
+// Anti-aliasing None and an outline cut at a threshold, as for round ink.
+const TIPPED = {
+  'a soft disc tip': [{ ink: ink({ brush: 'disc', size: 26 }) }, 1.1, 13],
+  'a tall strip, following the line': [{ ink: ink({ brush: 'strip', size: 28, followDir: true }) }, 0.2, 28],
+  'a tall strip, flat and turned': [{ ink: ink({ brush: 'strip', size: 30, flatness: 0.5, angle: 35 }) }, 0.4, 17],
+  'a noisy tip, flipped and jittered': [{ ink: ink({ brush: 'noise', size: 30, spacing: 25, flipX: 'random', flipY: 'on', angleJitter: 50 }) }, 2.8, 30],
+  'a noisy tip, translucent': [{ ink: ink({ brush: 'noise', size: 30, spacing: 20, opacity: 0.6, color: '#2563eb' }) }, 3, 30],
+  'a disc tip faded by its dynamics': [{ ink: ink({ brush: 'disc', size: 26, pts: wave(24, (t) => [0.2 + 0.8 * t, 1]) }) }, 0.3, 6],
+  'a disc tip, no anti-aliasing': [{ ink: ink({ brush: 'disc', size: 26, antialias: 0 }) }, 4.8, 256],
+  'a noisy tip with grain': [{ ink: ink({ brush: 'noise', size: 30, texture: { on: true, density: 0.6, scale: 300 } }) }, 3, 30],
+  'a ribbon of bars, wrapping': [{ ink: ink({ brush: 'bars', size: 24, ribbon: true }) }, 7.2, 256],
+  'a ribbon of bars, translucent and flipped': [{ ink: ink({ brush: 'bars', size: 24, ribbon: true, opacity: 0.7, flipX: 'on' }) }, 9.6, 199],
+  'a tip cycle, repeat': [{ ink: ink({ brush: 'disc', tips: ['disc', 'strip', 'noise'], tipOrder: 'repeat', size: 28, spacing: 30 }) }, 1.5, 23],
+  'a tip cycle, reverse': [{ ink: ink({ brush: 'disc', tips: ['disc', 'strip', 'noise'], tipOrder: 'reverse', size: 28, spacing: 30 }) }, 1.7, 35],
+  'a tip cycle, once': [{ ink: ink({ brush: 'disc', tips: ['disc', 'strip', 'noise'], tipOrder: 'once', size: 28, spacing: 30 }) }, 3, 29],
+  'a tip cycle, random': [{ ink: ink({ brush: 'disc', tips: ['disc', 'strip', 'noise'], tipOrder: 'random', size: 28, spacing: 30 }) }, 1.5, 32],
+  'darken tips': [{ ink: ink({ brush: 'noise', size: 30, spacing: 15, darkenTips: true }) }, 7.7, 60],
+  'darken tips, translucent, in a cycle': [{ ink: ink({ brush: 'disc', tips: ['disc', 'noise'], size: 30, spacing: 15, darkenTips: true, opacity: 0.7, color: '#16a34a' }) }, 1.9, 42],
+  'a tip bigger than a tint': [{ ink: ink({ brush: 'big', size: 60, spacing: 8 }) }, 1.3, 7],
+  'a tip not in hand paints round': [{ ink: ink({ brush: 'nope' }) }, 3.3, 92],
+  "a cycle entry not in hand is the stroke's own tip": [{ ink: ink({ brush: 'strip', tips: ['strip', 'nope', 'disc'], size: 28, spacing: 30 }) }, 0.7, 18],
+  'a tip in an outline': [{ ink: ink({ brush: 'noise', size: 26, color: '#000000' }), strokes: [{ color: '#fde047', width: 4, opacity: 1 }] }, 3.5, 256],
+};
+
+describe('imported tips: the engine paints the ink the canvas painted', () => {
+  let tips;
+  beforeAll(() => {
+    tips = makeTips();
+  });
+  for (const [name, [over, mean, worst]] of Object.entries(TIPPED)) {
+    it(name, () => {
+      for (const scale of SCALES) {
+        for (const text of ['INK', '']) {
+          const box = boxOf(over, text);
+          // The engine's picture against the canvas's, not the canvas's twice.
+          expect(boxInJob(box), 'in the box job').toBe(true);
+          const a = texture(box, whole, scale, tips);
+          const b = texture(box, canvasInk, scale, tips);
+          expect([a.ox, a.oy, a.cw, a.ch]).toEqual([b.ox, b.oy, b.cw, b.ch]);
+          const d = against(a.img, b.img);
+          if (MEASURE) console.log(`MEASURE tip ${name} | ${scale} | ${text || 'empty'} | mean ${d.mean.toFixed(3)} worst ${d.worst.toFixed(1)} ink ${d.ink.toFixed(4)} n ${d.n}`);
+          if (scale === 2 && text === 'INK') {
+            png(`tip-${fileOf(name)}.js.png`, b.img);
+            png(`tip-${fileOf(name)}.rust.png`, a.img);
+          }
+          const at = `scale ${scale}, ${text ? 'over letters' : 'alone'}`;
+          expect(d.n, at).toBeGreaterThan(1000);
+          expect(d.mean, `${at}: mean`).toBeLessThan(mean);
+          expect(d.worst, `${at}: worst`).toBeLessThan(worst);
+          expect(d.ink, `${at}: ink`).toBeGreaterThan(0.97);
+          expect(d.ink, `${at}: ink`).toBeLessThan(1.03);
+        }
+      }
+    });
+  }
+
+  it('a tip not in hand paints the round dab, byte for byte', () => {
+    const box = boxOf({ ink: ink({ brush: 'nope' }) });
+    const round = boxOf({ ink: ink({}) });
+    expect(against(texture(box, whole, 2, tips).img, texture(round, whole, 2, tips).img).worst).toBe(0);
+  });
+
+  it('a turned box of tipped ink lands where the turned bitmap landed', () => {
+    for (const scale of [1, 2]) {
+      const box = boxOf({ rotation: 21, ink: ink({ brush: 'noise', size: 28, spacing: 20 }) });
+      setGlyphPainter(whole);
+      const p = pageOf(box);
+      const a = renderBoxLayer(box, p.w, p.h, null, p, scale, tips);
+      setGlyphPainter(canvasInk);
+      const b = renderBoxLayer(box, p.w, p.h, null, p, scale, tips);
+      setGlyphPainter(whole);
+      for (const k of ['left', 'top', 'right', 'bottom']) expect(Math.abs(a[k] - b[k]), `${k} at ${scale}`).toBeLessThanOrEqual(3 * scale);
+      const onPage = (l) => {
+        const c = createCanvas(600 * scale, 400 * scale);
+        c.getContext('2d').putImageData(l.imageData, l.left, l.top);
+        return c.getContext('2d').getImageData(0, 0, 600 * scale, 400 * scale);
+      };
+      const d = against(onPage(a), onPage(b));
+      if (MEASURE) console.log(`MEASURE tip turned | ${scale} | mean ${d.mean.toFixed(3)} worst ${d.worst.toFixed(1)} ink ${d.ink.toFixed(4)}`);
+      if (scale === 2) {
+        png('tip-turned.js.png', b.imageData);
+        png('tip-turned.rust.png', a.imageData);
+      }
+      expect(d.ink, `ink at ${scale}`).toBeGreaterThan(0.97);
+      expect(d.ink, `ink at ${scale}`).toBeLessThan(1.03);
+      expect(d.mean, `mean at ${scale}`).toBeLessThan(13.5);
+    }
+  });
+
+  it('puts a tip once, keeps it while its wrapper is the one put, and lets it go on forget', () => {
+    forgetPainterTips();
+    expect(inkTipBytes(rust.low)).toBe(0);
+    const own = makeTips();
+    const disc = own.get('disc');
+    const box = boxOf({ ink: ink({ brush: 'disc', size: 26 }) }, '');
+    const first = texture(box, whole, 2, own).img;
+    expect(disc.rust).toBeTruthy();
+    expect(inkTipBytes(rust.low)).toBeGreaterThan(128 * 128);
+    // The wrapper's pixels drawn over: the engine still holds what was put,
+    // and paints it, until the wrapper is no longer the one marked.
+    const ctx = disc.image.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 128, 128);
+    expect(against(texture(box, whole, 2, own).img, first).worst).toBe(0);
+    disc.rust = undefined;
+    expect(against(texture(box, whole, 2, own).img, first).worst).toBeGreaterThan(50);
+    // The library letting go of its tips lets go of the engine's.
+    forgetPainterTips();
+    expect(inkTipBytes(rust.low)).toBe(0);
+    expect(hasInkTip(rust.low, 'disc|128x128')).toBe(false);
+    // And the next paint puts it again.
+    texture(box, whole, 2, own);
+    expect(hasInkTip(rust.low, 'disc|128x128')).toBe(true);
+  });
+});
+
+describe("the engine's tips", () => {
+  it('never take wasm memory past their ceiling, however many are put', () => {
+    const CEILING = 64 * 1024 * 1024;
+    forgetPainterTips();
+    const memory = () => rust.low.exports.memory.buffer.byteLength;
+    const side = 2048;
+    const data = new Uint8Array(side * side).fill(200);
+    const tip = { width: side, height: side, natural: [side, side], data };
+    // A few in first, so the job buffer and the allocator have their size.
+    for (let i = 0; i < 4; i++) expect(putInkTip(rust.low, `warm-${i}`, tip)).toBe(true);
+    const before = memory();
+    for (let i = 0; i < 60; i++) {
+      // A box job between puts, as the page sends them (this one refused:
+      // no bytes): each job's tips may go once it is painted.
+      expect(putInkTip(rust.low, `many-${i}`, tip)).toBe(true);
+      rust.low.exports.mt_paint_box(0);
+      expect(inkTipBytes(rust.low)).toBeLessThanOrEqual(CEILING);
+    }
+    const grown = memory() - before;
+    if (MEASURE) console.log(`MEASURE tip memory | before ${before} after ${memory()} grown ${grown} held ${inkTipBytes(rust.low)}`);
+    // What the cache can hold past what the first four took: not sixty
+    // tips' worth (336 MB).
+    expect(grown).toBeLessThan(CEILING);
+    forgetPainterTips();
+    expect(inkTipBytes(rust.low)).toBe(0);
   });
 });

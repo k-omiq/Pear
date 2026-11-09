@@ -43,6 +43,7 @@
 // miss re-reads a file that is already in the OS page cache.
 import { fsx } from './fsx.js';
 import { defaultBrushSettings, dynCurve, DYN_SOURCES, FLIP_MODES, BLEND_MODES, aaLevel, normalizeTexture } from './brush.js';
+import { forgetPainterTips } from './text-engine/index.js';
 
 // The version stamped into library.json. Bumped when the entry shape changes in
 // a way `sanitiseEntry` cannot absorb, which it has not yet had to be.
@@ -575,6 +576,9 @@ export function forgetBrushTips() {
   const slots = [...tipCache.values()];
   tipCache.clear();
   tipPx = 0;
+  // And the painter's own copies (the Rust engine's tip cache): every tip
+  // put there came from a wrapper closed here.
+  forgetPainterTips();
   for (const s of slots) {
     s.promise?.then?.(
       (t) => t?.image?.close?.(),
