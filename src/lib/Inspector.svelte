@@ -62,6 +62,7 @@
     newGradientOverlay,
     newStrokeEffect,
     FX_GRADIENT_STYLES,
+    FX_GRADIENT_METHODS,
     NOISE_MODELS,
     STROKE_POSITIONS,
     GRADIENT_MIN_STOPS,
@@ -92,6 +93,7 @@
   import { patternTiles, restorePickedTile } from './pattern-tiles.svelte.js';
   import { patternPick, startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
+  import FxGradientEditor from './FxGradientEditor.svelte';
   import BlendRangeSlider from './BlendRangeSlider.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
   // Which tab is open is session state shared with the keyboard - see
@@ -980,33 +982,8 @@
     box.style.strokeEffects.splice(i, 1);
     touch();
   }
-  // An effect gradient's stops: added in the widest gap, removed down to two,
-  // kept in order.
-  function addFxStop(g) {
-    const st = g.stops;
-    let at = 0;
-    let gap = -1;
-    for (let i = 0; i + 1 < st.length; i++) {
-      if (st[i + 1].pos - st[i].pos > gap) {
-        gap = st[i + 1].pos - st[i].pos;
-        at = i;
-      }
-    }
-    const pos = st.length > 1 ? (st[at].pos + st[at + 1].pos) / 2 : 0.5;
-    st.splice(at + 1, 0, { color: st[at]?.color ?? '#000000', pos, opacity: 1 });
-    touch();
-  }
-  function removeFxStop(g, i) {
-    if (g.stops.length <= GRADIENT_MIN_STOPS) return;
-    g.stops.splice(i, 1);
-    touch();
-  }
-  function sortFxStops(g) {
-    g.stops.sort((a, b) => a.pos - b.pos);
-    touch();
-  }
-  // The ramp as CSS, for the strip over an effect gradient's stops.
-  const fxRamp = (g) => `linear-gradient(90deg, ${g.stops.map((st) => `color-mix(in srgb, ${st.color} ${pct(st.opacity)}%, transparent) ${pct(st.pos)}%`).join(', ')})`;
+  // Photoshop's Interpolation Method names, as its Gradient Editor has them.
+  const FX_METHOD_LABELS = { classic: 'Classic', perceptual: 'Perceptual', linear: 'Linear', smooth: 'Smooth' };
   const FX_STYLE_LABELS = { linear: 'Linear', radial: 'Radial', angle: 'Angle', reflected: 'Reflected', diamond: 'Diamond', shapeburst: 'Shape Burst' };
   // A noise gradient's colour models and their channels, as Photoshop's
   // Gradient Editor names them.
@@ -1678,20 +1655,23 @@
     </div>
     <button type="button" class="add-btn" title="A new random seed: a new ramp from the same settings" aria-label="{title} randomize" onclick={() => randomizeNoise(n)}>Randomize</button>
   {:else}
-    <div class="fx-ramp" style="background:{fxRamp(g)}" aria-hidden="true"></div>
-    <div class="insp-list k-fxstop">
-      {#each g.stops as st, i (st)}
-        <div class="insp-row">
-          {@render swatchCell(st, 'color', `${title} stop ${i + 1} colour`)}
-          <input type="number" min="0" max="100" step="1" value={pct(st.pos)} aria-label="{title} stop {i + 1} position" title="Position along the gradient, %" oninput={(e) => setAlpha(st, 'pos', e.target.value)} onchange={() => sortFxStops(g)} />
-          <input type="number" min="0" max="100" step="1" value={pct(st.opacity)} aria-label="{title} stop {i + 1} opacity" title="Opacity of this stop, %" oninput={(e) => setAlpha(st, 'opacity', e.target.value)} />
-          {@render rmBtn(`${title.toLowerCase()} stop ${i + 1}`, () => removeFxStop(g, i), g.stops.length > GRADIENT_MIN_STOPS)}
-        </div>
-      {/each}
+    <!-- Photoshop's Gradient Editor: opacity stops above the ramp, colour
+         stops under it, a midpoint diamond between each two. -->
+    <FxGradientEditor {g} {title} onchange={() => touch()} oncolour={setColour} />
+    <div class="sh-more" style="margin:0">
+      <label class="sh-num" title="Smoothness, %: 0 runs straight from stop to stop, 100 eases through them">
+        <span>Smoothness</span>
+        <input type="number" min="0" max="100" step="1" value={pct(g.smoothness ?? 0)} aria-label="{title} smoothness, percent" onchange={(e) => commitAlpha(g, 'smoothness', e)} />
+      </label>
+      <label class="sh-contour" title="Method: the colour space the stops blend in. Classic is how gradients blended before Photoshop 2022">
+        <span>Method</span>
+        <select value={g.method ?? 'classic'} aria-label="{title} interpolation method" onchange={(e) => { g.method = e.target.value; touch(); }}>
+          {#each FX_GRADIENT_METHODS as m (m)}
+            <option value={m}>{FX_METHOD_LABELS[m]}</option>
+          {/each}
+        </select>
+      </label>
     </div>
-    {#if g.stops.length < GRADIENT_MAX_STOPS}
-      {@render addBtn('Add stop', () => addFxStop(g))}
-    {/if}
   {/if}
   {#if placed}
     <div class="sh-more" style="margin:0">
@@ -1714,6 +1694,10 @@
       <label class="sh-check" title="Reverse: the ramp the other way">
         <input type="checkbox" checked={g.reverse} aria-label="{title} reversed" onchange={(e) => { g.reverse = e.target.checked; touch(); }} />
         <span>Reverse</span>
+      </label>
+      <label class="sh-check" title="Dither: a touch of noise so a long, gentle ramp does not band">
+        <input type="checkbox" checked={g.dither === true} aria-label="{title} dither" onchange={(e) => { g.dither = e.target.checked; touch(); }} />
+        <span>Dither</span>
       </label>
       <!-- Photoshop's Offset: moves the gradient's centre, % of the box. -->
       <label class="sh-num" title="Offset X: moves the gradient's centre sideways, % of the box">
