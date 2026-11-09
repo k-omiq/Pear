@@ -141,9 +141,10 @@ pub extern "C" fn mt_paint_box(byte_len: usize) -> i32 {
         *s.result = [0.0; 4];
         let painted = (|| -> Result<Option<Raster>, Error> {
             let _budget = paint::budget::Scope::new();
-            let mut request = paint::decode_box(s.job.get(..byte_len).ok_or(Error::BadSpec)?)?;
+            let (mut request, key) =
+                paint::decode_box_kept(s.job.get(..byte_len).ok_or(Error::BadSpec)?)?;
             drop_big_job(&mut s.job);
-            with_engine(|engine| paint::paint_box(engine, &mut request))
+            with_engine(|engine| paint::paint_box_kept(engine, &mut request, key))
         })();
         // The tips this job named may go again.
         paint::ink::tips::with_cache(|c| c.end_job());

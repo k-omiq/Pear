@@ -208,6 +208,13 @@ pub trait Rasterizer {
     /// The union of `parts`; only what lies inside `bx` is wanted.
     fn prepare(&self, parts: &[Part], bx: IBox) -> Result<Box<dyn Coverage>, Error>;
 
+    /// Whether this is the painter's own rasteriser ([`Exact`]): what a box
+    /// paint keeps for the next (`super::kept`) is its coverage, and no
+    /// other's.
+    fn is_exact(&self) -> bool {
+        false
+    }
+
     /// The coverage of one shape filled by the non-zero rule over `bx`,
     /// what [`Rasterizer::prepare`] of `Part::plain(polys)` renders, left in
     /// `scratch` ([`PlainScratch::rows`]). For a run of small shapes (the
@@ -518,6 +525,10 @@ struct Scratch {
 }
 
 impl Rasterizer for Exact {
+    fn is_exact(&self) -> bool {
+        true
+    }
+
     fn prepare(&self, parts: &[Part], bx: IBox) -> Result<Box<dyn Coverage>, Error> {
         let mut pieces = budget::Buffer::new();
         // Keep a one-pixel coverage halo even where the surface clips ink.
