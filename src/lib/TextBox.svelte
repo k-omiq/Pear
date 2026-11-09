@@ -75,7 +75,7 @@
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
-  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
+  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, pictureDragPx, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture } from './editor/box-picture.js';
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
@@ -84,6 +84,7 @@
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
   import { sfxLive } from './sfx-live.svelte.js';
+  import { editLive } from './edit-live.svelte.js';
   import { prefs } from './prefs.svelte.js';
   import LockChip from './LockChip.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
@@ -706,14 +707,24 @@
   // page's size is known (`pageSheet`), and what of the box's place on it
   // the picture is painted from: a move, a turn or a mirror repaints it live.
   const gradientSheet = $derived(engineWanted ? pageSheet(box, pg, blendsPage ? artImage(artSrc) : null) : null);
-  const pageGradKey = $derived(pageGradientKey(box, gradientSheet));
-  const patternTileKey = $derived.by(() => {
+  const pageGradLive = $derived(pageGradientKey(box, gradientSheet));
+  const patternTileLive = $derived.by(() => {
     const p = s.pattern;
     if (!p?.on) return '';
     const tile = p.kind === 'picked' ? `t${patternTiles.version}` : '';
     const at = p.anchor === 'page' ? `@${box.x},${box.y}` : '';
     return tile + at;
   });
+  // A box dragged by the pointer keeps both until it is let go (`placeHeld`,
+  // as `underHeld` does for the page under it): a picture that follows the
+  // box's place would be painted on every move of the drag, in full, and a
+  // box with layer effects then trails the pointer by a paint a frame. The
+  // last picture rides along and the box is painted once where it lands. A
+  // move from anywhere else (the arrow keys, the Inspector's X and Y, a
+  // tool) still repaints as it goes.
+  let placeHeld = $state(null);
+  const pageGradKey = $derived(placeHeld ? placeHeld.grad : pageGradLive);
+  const patternTileKey = $derived(placeHeld ? placeHeld.tiles : patternTileLive);
   const engineKey = $derived(
     engineWanted
       ? pictureOn
@@ -754,13 +765,19 @@
   let warpTips = null;
   let warpSeq = 0;
 
+  // What the last paint of this box's picture cost, ms a pixel painted (0
+  // until one is timed): the next live paint's budget (`pictureDragPx`).
+  let paintCost = 0;
   function paintWarp(el, tips) {
     if (!engineShown) {
       warpGeom = paintWarpedBox(el, box, pg, z, tips);
       return;
     }
     const live = resizing || sfxDragging;
-    const budget = live || keying ? PICTURE_DRAG_PX : PICTURE_MAX_PX;
+    // The drag budget is what the last paint of this box says fits a frame
+    // (`pictureDragPx`): a stack of layer effects has fewer pixels in the hand.
+    const shown = warpGeom ? warpGeom.cw * z * warpGeom.ch * z : 0;
+    const budget = live || keying ? pictureDragPx(paintCost, shown) : PICTURE_MAX_PX;
     // An IME's text is not the box's until the composition ends, so the box
     // is painted with it standing in for its own.
     const of = editing && composeText != null ? { ...box, text: composeText } : box;
@@ -770,7 +787,10 @@
     const page = pageCorner(pageFrameEl);
     const dpr = displayScale();
     const corner = page && !s.rotation && !mirror ? { x: (page.x + box.x * z) * dpr, y: (page.y + box.y * z) * dpr } : null;
+    const t0 = performance.now();
     const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner, pageUnder(), gradientSheet);
+    const painted = el.width * el.height;
+    if (painted > 0) paintCost = (performance.now() - t0) / painted;
     // Lower than asked for under the drag's budget: to be painted again when
     // the drag settles (`settleResize`), or the keys do (`settleKeys`).
     dragSoft = live && g.ss < pictureRes;
@@ -1003,8 +1023,11 @@
   // An SFX gesture on this box, from its press to its commit or cancel: the
   // picture is painted within the drag budget meanwhile, and once in full at
   // the end (`sfxDragging`, above).
+  // A control of a style panel held down on this box (`editLive`: a slider of
+  // the Inspector, the colour picker's square) is the same gesture: every
+  // frame rewrites the style.
   $effect(() => {
-    const on = sfxLive.on && selected && !!sfxCurve;
+    const on = selected && ((sfxLive.on && !!sfxCurve) || editLive.on);
     untrack(() => {
       if (on) {
         if (enginePaints) sfxDragging = true;
@@ -1511,6 +1534,7 @@
     const before = moveGeom(box);
     // A box that blends with the page keeps its picture until it is let go.
     if (blendsPage) underHeld = underLive;
+    placeHeld = { grad: pageGradLive, tiles: patternTileLive };
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
       const x = clamp(ox + (ev.clientX - sx) / zz, -box.w + 20, dims.w - 20);
@@ -1522,20 +1546,29 @@
     };
 
     const ac = new AbortController();
-    const end = (ev) => {
-      if (ev.pointerId !== pid) return;
+    const stop = () => {
       live.delete(ac);
       ac.abort();
       underHeld = null;
+      placeHeld = null;
 
       if (box.x !== before.x || box.y !== before.y) {
         record({ t: 'move', pageId, boxId: box.id, before, after: moveGeom(box) });
       }
     };
+    const end = (ev) => {
+      if (ev.pointerId === pid) stop();
+    };
     live.add(ac);
     document.addEventListener('pointermove', move, { signal: ac.signal });
     document.addEventListener('pointerup', end, { signal: ac.signal });
     document.addEventListener('pointercancel', end, { signal: ac.signal });
+    // The two endings no pointerup tells of, as a resize has them
+    // (`startTransform`): the window losing the focus, and the capture lost.
+    // Without them the box went on following the pointer, and the pictures
+    // held above stayed held until the next click.
+    window.addEventListener('blur', stop, { signal: ac.signal });
+    document.addEventListener('lostpointercapture', end, { signal: ac.signal });
   }
 
   function startTransform(e, dir) {
@@ -1565,6 +1598,8 @@
     // A box that blends with the page is turned on its last picture and
     // painted against the page once, when the handle is let go.
     if (isRot && blendsPage) underHeld = underLive;
+    // And one whose picture follows its turn on the page (`placeHeld`).
+    if (isRot) placeHeld = { grad: pageGradLive, tiles: patternTileLive };
 
     const fitBefore = isRot ? { y: box.y, h: box.h } : null;
     const cx = () => box.x + box.w / 2;
@@ -1643,6 +1678,7 @@
       ac.abort();
       if (transformEnd === finish) transformEnd = null;
       underHeld = null;
+      placeHeld = null;
       settleResize();
       sizingDrag = false;
       // Both gestures on this handle CHANGE THE STYLE - the rotation handle

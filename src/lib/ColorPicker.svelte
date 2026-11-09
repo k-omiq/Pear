@@ -1,4 +1,5 @@
 <script>
+  import { holdEditLive } from './edit-live.svelte.js';
   // ===== The colour picker =====
   //
   // A swatch button that opens a popover: a saturation/brightness square, a
@@ -308,6 +309,7 @@
     aria-label={label}
     style:left={unclipped ? `${floating.x}px` : undefined}
     style:top={unclipped ? `${floating.y}px` : undefined}
+    onpointerdowncapture={holdEditLive}
     onkeydown={(event) => {
       if (unclipped) overlay.dismissKey(event);
     }}

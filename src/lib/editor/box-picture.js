@@ -107,6 +107,31 @@ export function pictureScale(zoom, dpr, rotation = 0) {
 // this budget does not bring it inside a frame.
 export const PICTURE_DRAG_PX = 1024 * 1024;
 
+// THE DRAG BUDGET BY THE CLOCK. The megapixel above fits a frame for type
+// with an outline and a shadow, and for nothing heavier: each layer effect (a
+// glow, a bevel, satin, an overlay, a Photoshop stroke) is one more pass or
+// several over the same surface, and a box with nine of them was measured at
+// 64 ms for a QUARTER of a megapixel - 270 ms a megapixel, against 6 to 15.
+// No count of effects says what a paint costs (it depends on their sizes, the
+// machine, the build), but the last paint of the same box does. So a live
+// paint is given the pixels that fit `PICTURE_FRAME_MS` at what the last one
+// cost per pixel (`msPerPx`), never more than the megapixel, and never fewer
+// than a quarter of the picture's CSS pixels (`cssPx`: one texture pixel to
+// two CSS px a side, soft but plainly the same picture) or the floor below.
+// A paint that was never timed, or cost nothing, has the megapixel as before.
+//
+// It settles by itself: a paint has a fixed part and a part per pixel, so a
+// smaller paint costs a little more per pixel than a larger one, the next
+// budget comes out a little lower, and the series closes on the size whose
+// paint takes the frame.
+export const PICTURE_FRAME_MS = 20;
+export const PICTURE_DRAG_FLOOR_PX = 48 * 1024;
+export function pictureDragPx(msPerPx, cssPx = 0) {
+  if (!(msPerPx > 0)) return PICTURE_DRAG_PX;
+  const floor = Math.max(PICTURE_DRAG_FLOOR_PX, cssPx / 4);
+  return Math.round(Math.min(PICTURE_DRAG_PX, Math.max(floor, PICTURE_FRAME_MS / msPerPx)));
+}
+
 // The finished bitmap onto the editor's canvas, pixel for pixel, and the
 // footprint back. 'copy' rather than a clear and a draw: the canvas then holds
 // exactly the bytes the painter made, which is what lets a test say the editor
