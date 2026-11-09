@@ -217,6 +217,90 @@ impl MeshMap<'_> {
         }
     }
 
+    /// A box (job space, `x0, y0, x1, y1`) that holds where the map takes
+    /// every point of the box `bounds`, or `None` where none is found
+    /// without bending an outline: a horizon may cross it, or a number is
+    /// not one. Wider than the image by at most the rounding, and for the
+    /// surface of a grid by its bend over the box.
+    ///
+    /// - A homography clear of its horizon keeps lines straight, so it takes
+    ///   the box onto the quadrilateral of its corners' images.
+    /// - A cell's two triangles are two affine maps (outside the cell too),
+    ///   each one's image of the box the quadrilateral of its corners.
+    /// - The surface over the box is, cell by cell, a bicubic patch (and a
+    ///   straight one past the grid), which stays among its Bezier control
+    ///   points (`Lattice::reach`).
+    pub(crate) fn reach(
+        &self,
+        (x0, y0, x1, y1): (f64, f64, f64, f64),
+    ) -> Option<(f64, f64, f64, f64)> {
+        let m = self.mesh;
+        let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+        let mut out = (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        let mut add = |p: Pt| {
+            out = (
+                out.0.min(p.x),
+                out.1.min(p.y),
+                out.2.max(p.x),
+                out.3.max(p.y),
+            );
+        };
+        let slack = match &self.kind {
+            Kind::Projective(h) => {
+                let mut sign = 0.0;
+                for (x, y) in corners {
+                    let w = h[6] * (x - m.x) + h[7] * (y - m.y) + h[8];
+                    // Written so that a NaN is a horizon.
+                    if !(w.abs() > 1e-12 && (sign == 0.0 || w.signum() == sign)) {
+                        return None;
+                    }
+                    sign = w.signum();
+                    add(self.at(Pt::new(x, y)));
+                }
+                0.0
+            }
+            Kind::Affine { .. } => {
+                // `affine_point`'s two maps: one cell, so cell (0, 0).
+                let (p0, p1) = (m.grid(0, 0), m.grid(1, 1));
+                let (tl, tr, bl, br) = (m.pts[0], m.pts[1], m.pts[2], m.pts[3]);
+                let maps = [
+                    affine_from_triangle([p0, m.grid(1, 0), p1], [tl, tr, br]),
+                    affine_from_triangle([p0, p1, m.grid(0, 1)], [tl, br, bl]),
+                ];
+                for map in maps {
+                    for (x, y) in corners {
+                        let (x, y) = (x - m.x, y - m.y);
+                        let q = match map {
+                            Some(a) => {
+                                Pt::new(a[0] * x + a[2] * y + a[4], a[1] * x + a[3] * y + a[5])
+                            }
+                            None => Pt::new(x, y),
+                        };
+                        add(Pt::new(q.x + m.x, q.y + m.y));
+                    }
+                }
+                0.0
+            }
+            Kind::Smooth(lattice) => {
+                lattice.reach(m, (x0 - m.x, y0 - m.y, x1 - m.x, y1 - m.y), |p| {
+                    add(Pt::new(p.x + m.x, p.y + m.y));
+                })?;
+                0.0
+            }
+        };
+        let (a, b, c, d) = out;
+        let big = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
+        // The rounding of the corners' images, and of what is between them.
+        let pad = slack + 1e-7 * (big + 1.0);
+        let r = (a - pad, b - pad, c + pad, d + pad);
+        (r.0.is_finite() && r.1.is_finite() && r.2.is_finite() && r.3.is_finite()).then_some(r)
+    }
+
     /// The most the map lengthens a short piece of outline by: the largest
     /// stretch of its slope over the mesh's rectangle, read at every node,
     /// in the middle of every cell and of every cell's side, across a
@@ -722,6 +806,78 @@ fn axis(s: f64, n: usize) -> (usize, [f64; 4]) {
     }
 }
 
+/// The weights `axis` gives the four nodes of one stretch of an axis, as
+/// cubics in the coordinate `x` of that stretch, lowest power first: the
+/// cell's own `t` inside the grid, `s` before it and `s - n` past it.
+const CELL: [[f64; 4]; 4] = [
+    [0.0, -0.5, 1.0, -0.5],
+    [1.0, 0.0, -2.5, 1.5],
+    [0.0, 0.5, 2.0, -1.5],
+    [0.0, 0.0, -0.5, 0.5],
+];
+const BEFORE: [[f64; 4]; 4] = [
+    [0.0, -0.5, 0.0, 0.0],
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.5, 0.0, 0.0],
+    [0.0; 4],
+];
+const PAST: [[f64; 4]; 4] = [
+    [0.0; 4],
+    [0.0, -0.5, 0.0, 0.0],
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.5, 0.0, 0.0],
+];
+
+/// The cubic `c` (in `x`, lowest power first) over `x = a + d u`, `u` in
+/// 0..1, as its four Bezier coefficients.
+fn bezier(c: [f64; 4], a: f64, d: f64) -> [f64; 4] {
+    let q0 = c[0] + a * (c[1] + a * (c[2] + a * c[3]));
+    let q1 = d * (c[1] + a * (2.0 * c[2] + 3.0 * a * c[3]));
+    let q2 = d * d * (c[2] + 3.0 * a * c[3]);
+    let q3 = d * d * d * c[3];
+    [
+        q0,
+        q0 + q1 / 3.0,
+        q0 + (2.0 * q1 + q2) / 3.0,
+        q0 + q1 + q2 + q3,
+    ]
+}
+
+/// Most stretches of one axis a box is taken over by [`Lattice::reach`].
+const MAX_STRETCHES: usize = 8;
+
+/// The stretches of an axis of `n` cells that `s0..s1` (cell units) runs
+/// over: for each, the first of its four nodes (as `axis` counts them) and
+/// each node's weight as a Bezier cubic over the stretch's part of
+/// `s0..s1`. `None` past `MAX_STRETCHES`, or for a number that is not one.
+fn stretches(s0: f64, s1: f64, n: usize) -> Option<Vec<(usize, [[f64; 4]; 4])>> {
+    if !(s0.is_finite() && s1.is_finite() && s0 <= s1) {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut a = s0;
+    loop {
+        // The stretch `a` is in, where it ends, and its own coordinate.
+        let (first, weights, end, origin) = if a < 0.0 {
+            (0, &BEFORE, 0.0, 0.0)
+        } else if a >= n as f64 {
+            (n - 1, &PAST, f64::INFINITY, n as f64)
+        } else {
+            let k = a.floor();
+            (k as usize, &CELL, k + 1.0, k)
+        };
+        let b = s1.min(end);
+        if out.len() == MAX_STRETCHES {
+            return None;
+        }
+        out.push((first, weights.map(|w| bezier(w, a - origin, b - a))));
+        if b >= s1 {
+            return Some(out);
+        }
+        a = b;
+    }
+}
+
 /// A grid's control points with one more node on every side (`node_at`),
 /// so that a point of the surface is sixteen nodes read in place, and how
 /// sharply the surface can bend.
@@ -777,6 +933,42 @@ impl Lattice {
         let (ku, kv) = (f64::from(m.cols) / m.w, f64::from(m.rows) / m.h);
         let curve = (3.75 * du * ku * ku).max(3.75 * dv * kv * kv) + 2.25 * mixed * ku * kv;
         Ok(Self { nodes, curve })
+    }
+
+    /// Calls `add` with points whose box holds where the surface takes
+    /// every point of the box `(x0, y0, x1, y1)` (the mesh's coordinates):
+    /// over each stretch of each axis the surface is the tensor of the two
+    /// axes' weights, cubics, so it is a Bezier patch, inside the box of its
+    /// sixteen control points. `None` for a box over too many cells.
+    fn reach(
+        &self,
+        m: &Mesh,
+        (x0, y0, x1, y1): (f64, f64, f64, f64),
+        mut add: impl FnMut(Pt),
+    ) -> Option<()> {
+        let (cols, rows) = (m.cols as usize, m.rows as usize);
+        let units = |v: f64, n: u32, size: f64| (v * f64::from(n)) / size;
+        let across = stretches(units(x0, m.cols, m.w), units(x1, m.cols, m.w), cols)?;
+        let down = stretches(units(y0, m.rows, m.h), units(y1, m.rows, m.h), rows)?;
+        let stride = cols + 3;
+        for (i, wu) in &across {
+            for (j, wv) in &down {
+                for p in 0..4 {
+                    for q in 0..4 {
+                        let mut c = Pt::default();
+                        for (b, wv) in wv.iter().enumerate() {
+                            let row = &self.nodes[(j + b) * stride + i..(j + b) * stride + i + 4];
+                            for (a, wu) in wu.iter().enumerate() {
+                                let k = wu[p] * wv[q];
+                                c = Pt::new(c.x + k * row[a].x, c.y + k * row[a].y);
+                            }
+                        }
+                        add(c);
+                    }
+                }
+            }
+        }
+        Some(())
     }
 
     /// Where `(x, y)` goes under the surface (`smoothPoint`): the spline
@@ -970,6 +1162,70 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn what_a_box_reaches_holds_where_the_map_takes_each_of_its_points() {
+        let _scope = budget::Scope::new();
+        let mut meshes = fixture_meshes();
+        // One cell of each kind: a parallelogram, a quadrilateral, one
+        // turned over, one that is not convex.
+        for q in [
+            [(0.0, 0.0), (210.0, 25.0), (-30.0, 110.0), (180.0, 135.0)],
+            [(10.0, -5.0), (190.0, 15.0), (-20.0, 120.0), (230.0, 140.0)],
+            [(200.0, 0.0), (20.0, 10.0), (190.0, 120.0), (10.0, 130.0)],
+            [(0.0, 0.0), (200.0, 0.0), (120.0, 60.0), (200.0, 120.0)],
+        ] {
+            meshes.push(Mesh {
+                cols: 1,
+                rows: 1,
+                pts: q.iter().map(|&(x, y)| Pt::new(x, y)).collect(),
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 120.0,
+            });
+        }
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut checked = 0;
+        for mesh in &meshes {
+            let Some(map) = mesh.map().unwrap() else {
+                continue;
+            };
+            for _ in 0..300 {
+                // Boxes of many sizes, inside the rectangle and past it.
+                let (x, y) = (
+                    next() * mesh.w * 1.6 - 0.3 * mesh.w,
+                    next() * mesh.h * 1.6 - 0.3 * mesh.h,
+                );
+                let (w, h) = (next().powi(3) * mesh.w * 0.6, next().powi(3) * mesh.h * 0.6);
+                let Some((a, b, c, d)) = map.reach((x, y, x + w, y + h)) else {
+                    continue;
+                };
+                for k in 0..=12 {
+                    for l in 0..=12 {
+                        let p = map.at(Pt::new(
+                            x + w * f64::from(k) / 12.0,
+                            y + h * f64::from(l) / 12.0,
+                        ));
+                        assert!(
+                            p.x >= a && p.x <= c && p.y >= b && p.y <= d,
+                            "{p:?} outside {:?} for the box {:?}",
+                            (a, b, c, d),
+                            (x, y, w, h)
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 1000, "{checked}");
     }
 
     #[test]

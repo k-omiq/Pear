@@ -207,6 +207,70 @@ pub trait Coverage {
 pub trait Rasterizer {
     /// The union of `parts`; only what lies inside `bx` is wanted.
     fn prepare(&self, parts: &[Part], bx: IBox) -> Result<Box<dyn Coverage>, Error>;
+
+    /// The coverage of one shape filled by the non-zero rule over `bx`,
+    /// what [`Rasterizer::prepare`] of `Part::plain(polys)` renders, left in
+    /// `scratch` ([`PlainScratch::rows`]). For a run of small shapes (the
+    /// dabs of a brush stroke), with `scratch` kept from one to the next.
+    fn plain(&self, polys: &Polys, bx: IBox, scratch: &mut PlainScratch) -> Result<(), Error> {
+        let PlainScratch {
+            cov, spans, rows, ..
+        } = scratch;
+        rows.clear();
+        let mut coverage = self.prepare(&[Part::plain(polys.clone())], bx)?;
+        let stride = bx.width() + 2;
+        let all = bx.height();
+        cov.clear();
+        budget::resize(cov, stride * all, 0.0)?;
+        spans.clear();
+        budget::resize(spans, all, (0, 0))?;
+        let mut y = bx.y0;
+        while y < bx.y1 {
+            let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
+            let (r0, r1) = ((y - bx.y0) as usize, (y_end - bx.y0) as usize);
+            coverage.render(
+                y,
+                y_end,
+                &mut cov[r0 * stride..r1 * stride],
+                stride,
+                &mut spans[r0..r1],
+            )?;
+            y = y_end;
+        }
+        for (r, &(lo, hi)) in spans.iter().enumerate() {
+            let hi = hi.min(bx.width() as u32);
+            if lo < hi {
+                let at = (r * stride) as u32 + lo;
+                budget::push(rows, (bx.y0 + r as i32, lo, at, hi - lo))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What [`Rasterizer::plain`] keeps from one shape to the next, and the
+/// coverage it left.
+#[derive(Default)]
+pub struct PlainScratch {
+    /// [`Exact`]'s one piece, its edges' buffers reused.
+    piece: Option<Piece>,
+    sums: Option<Scratch>,
+    cov: budget::Buffer<f32>,
+    spans: budget::Buffer<(u32, u32)>,
+    /// Each row with any coverage: its device row, the column its values
+    /// start at (from the box's left), and where they are in `cov`.
+    rows: budget::Buffer<(i32, u32, u32, u32)>,
+}
+
+impl PlainScratch {
+    /// The coverage the last [`Rasterizer::plain`] left: each device row
+    /// that has any (top to bottom) as its row, the column its values start
+    /// at (counted from the box's `x0`), and where they are in the values
+    /// and how many, none past the box.
+    #[allow(clippy::type_complexity)]
+    pub fn rows(&self) -> (&[(i32, u32, u32, u32)], &[f32]) {
+        (&self.rows, &self.cov)
+    }
 }
 
 /// Exact-area coverage by signed-area accumulation.
@@ -224,19 +288,30 @@ struct Edge {
 }
 
 /// The edges of one shape, sorted into the strips they cross.
+#[derive(Default)]
 struct Edges {
     edges: budget::Buffer<Edge>,
     /// `bucket[k]..bucket[k + 1]` indexes `order` for the box's `k`th strip.
     bucket: budget::Buffer<u32>,
     order: budget::Buffer<u32>,
+    /// Where the next edge of each strip goes while `order` is filled.
+    fill: budget::Buffer<u32>,
 }
 
 impl Edges {
     fn new(polys: &Polys, bx: IBox) -> Result<Self, Error> {
+        let mut e = Self::default();
+        e.refill(polys, bx)?;
+        Ok(e)
+    }
+
+    /// The edges of `polys` over `bx`, in the buffers these had.
+    fn refill(&mut self, polys: &Polys, bx: IBox) -> Result<(), Error> {
         let (ox, oy) = (f64::from(bx.x0), f64::from(bx.y0));
         let height = bx.height() as f64;
-        let mut edges = budget::Buffer::new();
-        budget::reserve(&mut edges, polys.pts.len())?;
+        let edges = &mut self.edges;
+        edges.clear();
+        budget::reserve(edges, polys.pts.len())?;
         for c in polys.contours() {
             for i in 0..c.len() {
                 let (p, q) = (c[i], c[(i + 1) % c.len()]);
@@ -254,7 +329,7 @@ impl Edges {
                 if e.y1 <= 0.0 || e.y0 >= height {
                     continue;
                 }
-                budget::push(&mut edges, e)?;
+                budget::push(edges, e)?;
             }
         }
         // Counting sort of the edges into the strips they cross.
@@ -270,8 +345,10 @@ impl Edges {
             let b = (strip_of(bx.y0 + bottom) - first_strip) as usize;
             (a, b)
         };
-        let mut bucket = budget::filled(strips + 1, 0u32)?;
-        for e in &edges {
+        let bucket = &mut self.bucket;
+        bucket.clear();
+        budget::resize(bucket, strips + 1, 0u32)?;
+        for e in edges.iter() {
             let (a, b) = strip_range(e);
             for k in a..=b {
                 bucket[k + 1] = bucket[k + 1].checked_add(1).ok_or(Error::BadSpec)?;
@@ -280,9 +357,13 @@ impl Edges {
         for k in 0..strips {
             bucket[k + 1] = bucket[k + 1].checked_add(bucket[k]).ok_or(Error::BadSpec)?;
         }
-        let mut fill = budget::filled(bucket.len(), 0u32)?;
-        fill.copy_from_slice(&bucket);
-        let mut order = budget::filled(bucket[strips] as usize, 0u32)?;
+        let fill = &mut self.fill;
+        fill.clear();
+        budget::resize(fill, bucket.len(), 0u32)?;
+        fill.copy_from_slice(bucket);
+        let order = &mut self.order;
+        order.clear();
+        budget::resize(order, bucket[strips] as usize, 0u32)?;
         for (i, e) in edges.iter().enumerate() {
             let (a, b) = strip_range(e);
             for k in a..=b {
@@ -290,11 +371,7 @@ impl Edges {
                 fill[k] += 1;
             }
         }
-        Ok(Self {
-            edges,
-            bucket,
-            order,
-        })
+        Ok(())
     }
 
     /// Adds, to every pixel of rows `row_lo..row_hi` (counted from the box's
@@ -434,6 +511,7 @@ struct ExactCoverage {
 }
 
 /// The two running sums of a piece being rasterised, and their spans.
+#[derive(Default)]
 struct Scratch {
     sums: [budget::Buffer<f32>; 2],
     spans: [budget::Buffer<(u32, u32)>; 2],
@@ -468,14 +546,96 @@ impl Rasterizer for Exact {
         Ok(budget::boxed(ExactCoverage {
             pieces,
             bx,
-            scratch: Scratch {
-                sums: [budget::Buffer::new(), budget::Buffer::new()],
-                spans: [budget::Buffer::new(), budget::Buffer::new()],
-            },
+            scratch: Scratch::default(),
             cov: budget::Buffer::new(),
             rows: budget::Buffer::new(),
             slope: [budget::Buffer::new(), budget::Buffer::new()],
         })?)
+    }
+
+    /// [`ExactCoverage::render`] of one plain part, without what only a
+    /// union of parts needs (the slopes, and the rows above and below each
+    /// strip they are read from), and in buffers kept between shapes. The
+    /// values are the ones `render` writes: one part's coverage over an
+    /// empty row, nothing at or below `COVERAGE_EPSILON`, at most 1.
+    fn plain(&self, polys: &Polys, bx: IBox, scratch: &mut PlainScratch) -> Result<(), Error> {
+        let PlainScratch {
+            piece,
+            sums,
+            cov,
+            spans,
+            rows,
+        } = scratch;
+        rows.clear();
+        let halo = IBox {
+            x0: bx.x0 - 1,
+            y0: bx.y0 - 1,
+            x1: bx.x1 + 1,
+            y1: bx.y1 + 1,
+        };
+        let Some(pbx) = pixel_box(polys).map(|p| p.intersect(&halo)) else {
+            return Ok(());
+        };
+        if pbx.is_empty() {
+            return Ok(());
+        }
+        let piece = piece.get_or_insert_with(|| Piece {
+            bx: pbx,
+            right: Edges::default(),
+            left: None,
+            ring: false,
+        });
+        piece.bx = pbx;
+        piece.right.refill(polys, pbx)?;
+        let sums = sums.get_or_insert_with(Scratch::default);
+        // The piece's rows inside the box, strip by strip, one after the
+        // other in `cov`.
+        let (first, last) = (bx.y0.max(pbx.y0), bx.y1.min(pbx.y1));
+        if first >= last {
+            return Ok(());
+        }
+        let cs = pbx.width() + 2;
+        let all = (last - first) as usize;
+        // Only what `cover` writes is read: no need to clear it.
+        if cov.len() < cs * all {
+            budget::resize(cov, cs * all, 0.0)?;
+        }
+        if spans.len() < all {
+            budget::resize(spans, all, (0, 0))?;
+        }
+        let mut y = first;
+        while y < last {
+            let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(last);
+            let (r0, r1) = ((y - first) as usize, (y_end - first) as usize);
+            let row_lo = (y - pbx.y0) as usize;
+            piece.cover::<true>(
+                row_lo,
+                row_lo + (r1 - r0),
+                sums,
+                &mut cov[r0 * cs..r1 * cs],
+                &mut spans[r0..r1],
+            )?;
+            y = y_end;
+        }
+        let dx = pbx.x0 - bx.x0;
+        let width = bx.width() as i32;
+        for (r, &(lo, hi)) in spans[..all].iter().enumerate() {
+            let start = (lo as i32).max(-dx);
+            let end = (hi as i32).min(width - dx).max(0);
+            if start < end {
+                let at = (r * cs + 1) as u32 + start as u32;
+                budget::push(
+                    rows,
+                    (
+                        first + r as i32,
+                        (dx + start) as u32,
+                        at,
+                        (end - start) as u32,
+                    ),
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -488,7 +648,9 @@ impl Piece {
     /// The piece's coverage of its rows `row_lo..row_hi`, which lie in one
     /// strip. `dest` holds `width + 2` zeroed values a row, the pixel of
     /// column `x` at `x + 1`; `spans` gets the columns that can be non-zero.
-    fn cover(
+    /// `PLAIN`, for a plain part rendered alone ([`Exact::plain`]): coverage
+    /// at or below `COVERAGE_EPSILON` is none, as `render` takes it.
+    fn cover<const PLAIN: bool>(
         &self,
         row_lo: usize,
         row_hi: usize,
@@ -530,7 +692,12 @@ impl Piece {
                 let mut acc = 0.0f32;
                 for (cell, &v) in line.iter_mut().zip(right) {
                     acc += v;
-                    *cell = acc.abs().min(1.0);
+                    let c = acc.abs().min(1.0);
+                    *cell = if PLAIN && c <= COVERAGE_EPSILON {
+                        0.0
+                    } else {
+                        c
+                    };
                 }
                 continue;
             }
@@ -601,7 +768,7 @@ impl Coverage for ExactCoverage {
             cov_rows.clear();
             budget::resize(cov_rows, prows + 2, (0, 0))?;
             if row_lo > 0 {
-                piece.cover(
+                piece.cover::<false>(
                     row_lo - 1,
                     row_lo,
                     scratch,
@@ -609,7 +776,7 @@ impl Coverage for ExactCoverage {
                     &mut cov_rows[..1],
                 )?;
             }
-            piece.cover(
+            piece.cover::<false>(
                 row_lo,
                 row_hi,
                 scratch,
@@ -617,7 +784,7 @@ impl Coverage for ExactCoverage {
                 &mut cov_rows[1..prows + 1],
             )?;
             if row_hi < piece.bx.height() {
-                piece.cover(
+                piece.cover::<false>(
                     row_hi,
                     row_hi + 1,
                     scratch,
@@ -765,6 +932,81 @@ mod tests {
 
     fn bx(x0: i32, y0: i32, x1: i32, y1: i32) -> IBox {
         IBox { x0, y0, x1, y1 }
+    }
+
+    /// [`Exact`] with the trait's own `plain`, from `prepare`.
+    struct ByParts;
+    impl Rasterizer for ByParts {
+        fn prepare(&self, parts: &[Part], bx: IBox) -> Result<Box<dyn Coverage>, Error> {
+            Exact.prepare(parts, bx)
+        }
+    }
+
+    fn plain_rows(
+        r: &dyn Rasterizer,
+        polys: &Polys,
+        bx: IBox,
+        sc: &mut PlainScratch,
+    ) -> Vec<(i32, u32, Vec<u32>)> {
+        r.plain(polys, bx, sc).unwrap();
+        let (rows, values) = sc.rows();
+        rows.iter()
+            .map(|&(y, x, at, len)| {
+                let v = &values[at as usize..(at + len) as usize];
+                (y, x, v.iter().map(|c| c.to_bits()).collect())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_plain_shape_is_what_prepare_renders_of_it() {
+        let _scope = budget::Scope::new();
+        let (mut a, mut b) = (PlainScratch::default(), PlainScratch::default());
+        let mut seen = 0;
+        for k in 0..60 {
+            let f = f64::from(k);
+            // A star, round, thin or wide, over strips, sometimes past the box.
+            let mut p = Polys::default();
+            let n = 5 + k % 7;
+            for i in 0..2 * n {
+                let t = std::f64::consts::PI * f64::from(i) / f64::from(n) + f * 0.37;
+                let r = if i % 2 == 0 {
+                    6.0 + f * 1.3
+                } else {
+                    2.0 + (f * 0.71) % 9.0
+                };
+                p.push(Pt::new(
+                    30.0 + (f * 3.3) % 20.0 + r * t.cos(),
+                    28.0 + (f * 2.9) % 41.0 + r * 0.6 * t.sin(),
+                ));
+            }
+            p.close();
+            let bx = if k % 3 == 0 {
+                bx(25, 20, 60, 70)
+            } else {
+                bx(0, 0, 90, 90)
+            };
+            let (ra, rb) = (
+                plain_rows(&Exact, &p, bx, &mut a),
+                plain_rows(&ByParts, &p, bx, &mut b),
+            );
+            // The trait's rows may carry zeros at their ends where a span is
+            // wider than what it covers; the values are the same.
+            let flat = |rows: &[(i32, u32, Vec<u32>)]| {
+                let mut m = std::collections::BTreeMap::new();
+                for (y, x, v) in rows {
+                    for (i, c) in v.iter().enumerate() {
+                        if f32::from_bits(*c) != 0.0 {
+                            m.insert((*y, *x + i as u32), *c);
+                        }
+                    }
+                }
+                m
+            };
+            assert_eq!(flat(&ra), flat(&rb), "shape {k}");
+            seen += flat(&ra).len();
+        }
+        assert!(seen > 10_000, "{seen}");
     }
 
     #[test]
