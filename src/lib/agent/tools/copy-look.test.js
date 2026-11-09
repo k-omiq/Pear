@@ -27,6 +27,11 @@ vi.mock('../../library.svelte.js', async (orig) => ({
   readChapterRecord: async () => record,
 }));
 
+// The picked tiles a look names are copied from the source chapter's folder.
+let tilesLost = [];
+const copyPickedTiles = vi.fn(async () => tilesLost);
+vi.mock('../../pattern-tiles.svelte.js', async (orig) => ({ ...(await orig()), copyPickedTiles: (...a) => copyPickedTiles(...a) }));
+
 const { app, loadProjectPages, pageById, settleEdits } = await import('../../store.svelte.js');
 const { initHistory, resetHistory, undo } = await import('../../editor/history.svelte.js');
 const { callContext, __resetRun } = await import('../run.svelte.js');
@@ -107,6 +112,40 @@ describe('copy_look', () => {
     expect(n.style.font).toBe('Comic Neue');
     undo();
     expect(pageById(1).boxes[0].style.font).toBe('Comic Neue');
+  });
+
+  // F53: the look is read from the store, so its own picked tile copies across.
+  describe('a look with a picked pattern', () => {
+    const picked = { kind: 'picked', src: '0123456789abcdef0123456789abcdef.png', cell: [8, 0, 0, 8] };
+    const strokeEffects = [{ ...newStrokeEffect(), fill: 'pattern', pattern: { ...newStrokeEffect().pattern, ...picked } }];
+    beforeEach(() => {
+      copyPickedTiles.mockClear();
+      tilesLost = [];
+      record.pages[0].lines.push({ n: 5, en: 'Now', tags: ['narration'] });
+      record.pages[0].boxes.push({ id: 'p1', lineN: 5, style: { ...defaultStyle(), font: 'Arial', strokeEffects } });
+    });
+    afterEach(() => {
+      record.pages[0].lines.pop();
+      record.pages[0].boxes.pop();
+    });
+
+    it('copies the stroke effect and its tile file', async () => {
+      const r = await call({ from: '14', apply: true, tags: ['narration'] });
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(r.result.skipped ?? []).toEqual([]);
+      const n = pageById(1).boxes[1];
+      expect(n.style.strokeEffects).toHaveLength(1);
+      expect(n.style.strokeEffects[0].pattern).toMatchObject(picked);
+      expect(copyPickedTiles).toHaveBeenCalledTimes(1);
+      expect(copyPickedTiles.mock.calls[0][0]).toEqual([picked.src]);
+    });
+
+    it('says when the tile could not be copied', async () => {
+      tilesLost = [picked.src];
+      const r = await call({ from: '14', apply: true, tags: ['narration'] });
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(r.result.skipped).toEqual([expect.objectContaining({ key: 'pattern', value: picked.src })]);
+    });
   });
 
   it('refuses this chapter and an unknown one', async () => {

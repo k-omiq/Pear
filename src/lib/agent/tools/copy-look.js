@@ -12,6 +12,7 @@ import { validateStylePatch } from '../style-schema.js';
 import { applyStylePatch } from '../../style-patch.js';
 import { app, allFonts, cloneStyle, editBoxes, isTranslateMode } from '../../store.svelte.js';
 import { projectById, chapterById, readChapterRecord } from '../../library.svelte.js';
+import { copyPickedTiles } from '../../pattern-tiles.svelte.js';
 import { lineTags, knownTags } from '../../tags.svelte.js';
 import { normalizeAuto, defaultStyle } from '../../data.js';
 import { parseChapterKey, chapterKey } from '../windows.js';
@@ -83,6 +84,17 @@ export function looksOf(pages) {
   });
 }
 
+// The picked pattern tiles a patch names (a stroke effect's, the pattern
+// overlay's, the bevel texture's): files in the source chapter's patterns/.
+function pickedTilesOf(node, out = new Set()) {
+  if (Array.isArray(node)) for (const v of node) pickedTilesOf(v, out);
+  else if (node && typeof node === 'object') {
+    if (node.kind === 'picked' && typeof node.src === 'string' && node.src) out.add(node.src);
+    for (const v of Object.values(node)) pickedTilesOf(v, out);
+  }
+  return out;
+}
+
 // The chapter `from` names: a key ("projectId/chapterId"), or a chapter
 // number in this chapter's series ("14").
 function sourceOf(from) {
@@ -118,7 +130,10 @@ function patchFor(style, skipped, tag) {
       out.font = hit;
       continue;
     }
-    if (validateStylePatch({ [k]: v }).length) skipped.push({ tag, key: k, why: 'not a value this app takes' });
+    // The look is read from the source chapter's saved boxes, not sent by the
+    // agent: a read-only field it holds (a picked pattern's tile) is its own
+    // and copies across (F53).
+    if (validateStylePatch({ [k]: v }, style).length) skipped.push({ tag, key: k, why: 'not a value this app takes' });
     else out[k] = v;
   }
   return out;
@@ -169,6 +184,15 @@ defineTool({
       const matches = selectBoxes({ pages: 'all', tag: l.tag }).matches;
       if (!matches.length) continue;
       plan.push({ ...l, patch: patchFor(l.style, skipped, l.tag), matches });
+    }
+    // A picked tile is a file in the source chapter's folder: copied into
+    // this one before the boxes name it.
+    const tiles = new Set();
+    for (const t of plan) pickedTilesOf(t.patch, tiles);
+    if (tiles.size) {
+      const lost = await copyPickedTiles([...tiles], chapterById(src.projectId, src.chapterId)?.dir);
+      for (const name of lost) skipped.push({ key: 'pattern', value: name, why: 'its picked tile could not be copied here; the box shows the default pattern' });
+      if (!ctx.stillPinned()) throw new ToolError('the chapter changed in the app, so nothing was changed');
     }
     const pages = [...new Set(plan.flatMap((t) => t.matches.map((m) => m.page)))];
     const applied = [];

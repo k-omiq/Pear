@@ -459,14 +459,33 @@ function editDistance(a, b) {
  * dropped by normalizeStyle without a word. Arrays replace the list; index
  * objects patch items. Relative operands are checked here; the applying tool
  * checks results against the current style.
+ *
+ * `stored` (optional): the style, or a list of styles, the patch lands on
+ * (every target box's). A field then also passes when it is sent back as it
+ * is stored on every one of them (F53): a picked pattern's `kind`, `src` and
+ * `cell` echoed from the box tool are no edit, though the agent cannot set
+ * them itself. In a list given whole an
+ * item may sit at another index than it is stored at (one was added or
+ * removed before it), so there it matches the same field of any stored item
+ * of that list; an index patch matches the item at its own index.
  */
-export function validateStylePatch(patch) {
+export function validateStylePatch(patch, stored = null) {
   const errors = [];
   const fail = (path, error, hint) => errors.push({ path: path || '$', error, ...(hint ? { hint } : {}) });
+  // Per target style, the stored values the value at hand may echo (null:
+  // nothing stored was given).
+  const root = stored == null ? null : (Array.isArray(stored) ? stored : [stored]).map((st) => [st]);
+  const down = (ctx, key) => ctx && ctx.map((vs) => vs.map((v) => (isObject(v) || Array.isArray(v) ? v[key] : undefined)).filter((v) => v !== undefined));
+  const itemsOf = (ctx) => ctx && ctx.map((vs) => vs.flatMap((v) => (Array.isArray(v) ? v : [])));
+  const echoes = (ctx, value) => {
+    if (!ctx?.length) return false;
+    const j = JSON.stringify(value);
+    return ctx.every((vs) => vs.some((v) => JSON.stringify(v) === j));
+  };
 
   // `required` is the object's list when the value is an item of a list
   // given whole, else null.
-  function fields(value, schema, path, required = null) {
+  function fields(value, schema, path, required = null, ctx = null) {
     if (!isObject(value)) return fail(path, 'expected an object');
     for (const key of required ?? []) if (!Object.hasOwn(value, key)) fail(at(path, key), 'required in a new item');
     for (const key of Object.keys(value)) {
@@ -477,13 +496,21 @@ export function validateStylePatch(patch) {
           .slice(0, 3).map(([k]) => k);
         fail(at(path, key), 'unknown key', `nearest keys: ${nearest.join(', ')}`);
       } else {
-        check(value[key], schema[key], at(path, key));
+        check(value[key], schema[key], at(path, key), false, down(ctx, key));
       }
     }
   }
 
   // `whole`: the value is an item of a list given whole (see `required`).
-  function check(value, entry, path, whole = false) {
+  // `ctx`: the stored values this one may echo (see `stored`). A value every
+  // target already holds is no edit, whatever the agent could not set itself
+  // (a read-only tile, the `picked` kind that goes with it): its errors go.
+  function check(value, entry, path, whole = false, ctx = null) {
+    const n = errors.length;
+    checkEntry(value, entry, path, whole, ctx);
+    if (errors.length > n && echoes(ctx, value)) errors.length = n;
+  }
+  function checkEntry(value, entry, path, whole, ctx) {
     if (entry.readOnly) {
       // The unset value sent back whole (a stored list echoed) is no edit.
       if (Object.hasOwn(entry, 'same') && JSON.stringify(value) === JSON.stringify(entry.same)) return;
@@ -520,27 +547,28 @@ export function validateStylePatch(patch) {
         if (typeof value !== 'string' || !HEX.test(value)) fail(path, 'expected hex colour: #rgb, #rgba, #rrggbb or #rrggbbaa');
         return;
       case 'object':
-        return fields(value, entry.fields, path, whole ? entry.required : null);
+        return fields(value, entry.fields, path, whole ? entry.required : null, ctx);
       case 'union': {
         if (!isObject(value)) return fail(path, 'expected an object');
         const kinds = Object.keys(entry.variants);
         const kind = value[entry.key];
         if (!Object.hasOwn(value, entry.key)) return fail(at(path, entry.key), `expected one of: ${kinds.join(', ')}`, `every item names its ${entry.key}, also in an index patch`);
         if (!kinds.includes(kind)) return fail(at(path, entry.key), `expected one of: ${kinds.join(', ')}`);
-        return check(value, entry.variants[kind], path, whole);
+        return check(value, entry.variants[kind], path, whole, ctx);
       }
       case 'array':
         if (Array.isArray(value)) {
           if (entry.minItems !== undefined && value.length < entry.minItems) fail(path, `expected at least ${entry.minItems} items`);
           if (entry.maxItems !== undefined && value.length > entry.maxItems) fail(path, `expected at most ${entry.maxItems} items`);
-          for (let i = 0; i < value.length; i++) check(value[i], entry.items, `${path}[${i}]`, true);
+          const items = itemsOf(ctx);
+          for (let i = 0; i < value.length; i++) check(value[i], entry.items, `${path}[${i}]`, true, items);
         } else if (isObject(value)) {
           for (const key of Object.keys(value)) {
             const index = Number(key);
             const itemPath = `${path}[${key}]`;
             if (!INDEX.test(key) || !Number.isSafeInteger(index)) fail(itemPath, 'expected a non-negative integer index');
             else if (entry.maxItems !== undefined && index >= entry.maxItems) fail(itemPath, `index must be below ${entry.maxItems}`);
-            else check(value[key], entry.items, itemPath);
+            else check(value[key], entry.items, itemPath, false, down(ctx, key));
           }
         } else fail(path, 'expected an array or an object of item indexes');
         return;
@@ -574,7 +602,7 @@ export function validateStylePatch(patch) {
   // No JSON input can recurse beyond the finite schema. Catch unreadable JS
   // objects too (throwing getters, revoked proxies), without inspecting them.
   try {
-    fields(patch, STYLE_SCHEMA, '');
+    fields(patch, STYLE_SCHEMA, '', null, root);
     if (!errors.length) order(patch);
   } catch {
     fail('', 'invalid or unreadable patch');

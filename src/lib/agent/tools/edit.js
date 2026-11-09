@@ -233,7 +233,9 @@ function compile(op, i) {
     }
     if ('style' in s) {
       if (!object(s.style)) fail(i, 'set.style', 'expected a style patch object');
-      const errors = validateStylePatch(s.style);
+      // A read-only field (a picked pattern's tile) passes when it is sent
+      // back as every matched box already holds it.
+      const errors = validateStylePatch(s.style, matches.map((m) => m.box.style));
       if (errors.length) {
         const e = errors[0];
         fail(i, `set.style${e.path && e.path !== '$' ? '.' + e.path : ''}`, e.error, [e.hint, errors.length > 1 ? `${errors.length - 1} more problem(s) in this patch` : null].filter(Boolean).join('; ') || undefined);

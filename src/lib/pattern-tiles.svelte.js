@@ -167,6 +167,33 @@ export async function savePickedTile(tile, dir = openChapterDir()) {
   return name;
 }
 
+/**
+ * Copies the picked tiles `names` from another chapter's folder (`fromDir`)
+ * into the open chapter's where it does not have them yet: a look copied
+ * from that chapter (copy_look) names them. Resolves to the names that could
+ * not be copied; a box naming one shows the default pattern, as a missing
+ * file does.
+ */
+export async function copyPickedTiles(names, fromDir, dir = openChapterDir()) {
+  const lost = [];
+  for (const name of new Set(names)) {
+    try {
+      if (!PATTERN_SRC.test(name) || !fromDir || !dir) throw new Error('no folder');
+      const folder = await fsx.join(dir, PATTERNS_DIR);
+      const path = await fsx.join(folder, name);
+      if (!(await fsx.exists(path))) {
+        const bytes = await fsx.readFile(await fsx.join(fromDir, PATTERNS_DIR, name));
+        await fsx.mkdir(folder);
+        await fsx.writeFileAtomic(path, bytes);
+      }
+      missing.delete(name);
+    } catch {
+      lost.push(name);
+    }
+  }
+  return lost;
+}
+
 // ---------- a picked tile in a preset ----------
 //
 // Presets are global and a chapter folder is not, so a preset whose pattern
