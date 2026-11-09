@@ -435,9 +435,20 @@ fn a_roughened_stroke_is_moved_and_paints_the_same_twice() {
     let mut e = Engine::new();
     let font = load(&mut e);
     put("disc|64x64", 64, 64, &disc(64));
+    put("solid|16x64", 16, 64, &SOLID);
     let base = Affine([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
     for (k, keys) in [
         (wave(14.0), vec![]),
+        // A ribbon's slices, each cut on chords whose ends the field moves:
+        // all of the band still inked (no slice lost).
+        (
+            Stroke {
+                tip: Some(0),
+                ribbon: true,
+                ..wave(22.0)
+            },
+            vec!["solid|16x64"],
+        ),
         (
             Stroke {
                 hardness: 30.0,
@@ -489,8 +500,9 @@ fn a_roughened_stroke_is_moved_and_paints_the_same_twice() {
 const SOLID: [u8; 16 * 64] = [255; 16 * 64];
 
 /// Pixels inside a band that are not inked through: under 230, with ink at
-/// or over 250 within two pixels on both sides, across or along.
-fn holes(r: &Raster) -> usize {
+/// or over 250 within two pixels on both sides, across or along; only those
+/// inside the device rectangle `keep` (x0, y0, x1, y1).
+fn holes(r: &Raster, keep: (f64, f64, f64, f64)) -> usize {
     let (w, h) = (r.width as i32, r.height as i32);
     let a = |x: i32, y: i32| -> u8 {
         if x < 0 || y < 0 || x >= w || y >= h {
@@ -501,7 +513,8 @@ fn holes(r: &Raster) -> usize {
     let mut n = 0;
     for y in 0..h {
         for x in 0..w {
-            if a(x, y) >= 230 {
+            let (dx, dy) = (f64::from(x + r.x), f64::from(y + r.y));
+            if a(x, y) >= 230 || dx < keep.0 || dy < keep.1 || dx >= keep.2 || dy >= keep.3 {
                 continue;
             }
             let both = |dx: i32, dy: i32| {
@@ -518,49 +531,55 @@ fn holes(r: &Raster) -> usize {
 
 #[test]
 fn a_ribbon_bent_by_a_mesh_has_no_seam_between_its_slices() {
+    // Straight ribbons, whose slices meet edge to edge when flat (a curved
+    // path fans its slices out on the outside of every turn, flat or bent,
+    // which is the canvas's own look and not a seam): across, down and
+    // aslant the bumpy mesh, and roughened too. Away from the ends: the
+    // first and the last slice are half a step long (`strokeStamps`), and
+    // leave a quarter step open next to their neighbour, flat or bent.
     let mut e = Engine::new();
     let font = load(&mut e);
     put("solid|16x64", 16, 64, &SOLID);
+    let lines: [[[f64; 5]; 2]; 3] = [
+        [[10.0, 60.0, 1.0, 1.0, 1.0], [190.0, 60.0, 1.0, 1.0, 1.0]],
+        [[90.0, 5.0, 1.0, 1.0, 1.0], [90.0, 115.0, 1.0, 1.0, 1.0]],
+        [[10.0, 10.0, 1.0, 1.0, 1.0], [190.0, 110.0, 1.0, 1.0, 1.0]],
+    ];
     for scale in [2.0, 2.74] {
         let base = Affine::scale(scale, scale);
-        let k = Stroke {
-            tip: Some(0),
-            ribbon: true,
-            ..wave(22.0)
-        };
-        let flat = paint_box(
-            &mut e,
-            &mut inked(font, k.clone(), &["solid|16x64"], base, None, None),
-        )
-        .unwrap()
-        .unwrap();
-        let bent = paint_box(
-            &mut e,
-            &mut inked(font, k.clone(), &["solid|16x64"], base, Some(bumpy()), None),
-        )
-        .unwrap()
-        .unwrap();
-        let both = paint_box(
-            &mut e,
-            &mut inked(
-                font,
-                k,
-                &["solid|16x64"],
-                base,
-                Some(bumpy()),
-                Some(rough()),
-            ),
-        )
-        .unwrap()
-        .unwrap();
-        let (hf, hb, hr) = (holes(&flat), holes(&bent), holes(&both));
-        if std::env::var_os("PRINT_SEAMS").is_some() {
-            println!("seams at {scale}: flat {hf}, bent {hb}, bent and roughened {hr}");
+        for pts in lines {
+            let k = Stroke {
+                tip: Some(0),
+                ribbon: true,
+                pts: pts.to_vec(),
+                ..wave(22.0)
+            };
+            let mut paint = |mesh: Option<Mesh>, roughen: Option<Roughen>| {
+                paint_box(&mut e, &mut inked(font, k.clone(), &["solid|16x64"], base, mesh, roughen))
+                    .unwrap()
+                    .unwrap()
+            };
+            // The middle of the line, page px, as a device rectangle.
+            let (x0, y0) = (20.0 + pts[0][0], 30.0 + pts[0][1]);
+            let (x1, y1) = (20.0 + pts[1][0], 30.0 + pts[1][1]);
+            let (cx, cy) = (x0 + (x1 - x0) * 0.15, y0 + (y1 - y0) * 0.15);
+            let (ex, ey) = (x0 + (x1 - x0) * 0.85, y0 + (y1 - y0) * 0.85);
+            let keep = if (x1 - x0).abs() < 1.0 {
+                (0.0, cy * scale, 1e9, ey * scale)
+            } else {
+                (cx * scale, 0.0, ex * scale, 1e9)
+            };
+            let (hf, hb, hr) = (
+                holes(&paint(None, None), keep),
+                holes(&paint(Some(bumpy()), None), keep),
+                holes(&paint(Some(bumpy()), Some(rough())), keep),
+            );
+            if std::env::var_os("PRINT_SEAMS").is_some() {
+                println!("seams at {scale}: flat {hf}, bent {hb}, bent and roughened {hr}");
+            }
+            assert_eq!(hf, 0, "a straight flat ribbon has no seam");
+            assert!(hb <= 2, "bent: {hb} at {scale}, {pts:?}");
+            assert!(hr <= 2, "bent and roughened: {hr} at {scale}, {pts:?}");
         }
-        assert!(hb <= hf + 2, "bent: {hb} against flat {hf} at {scale}");
-        assert!(
-            hr <= hf + 2,
-            "bent and roughened: {hr} against flat {hf} at {scale}"
-        );
     }
 }
