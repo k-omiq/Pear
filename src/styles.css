@@ -240,6 +240,20 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
     max(var(--stage-pad), var(--chrome-top))
     var(--stage-pad)
     max(var(--stage-pad), var(--dock-reach));
+  /* The stage alone sizes the scroll: the page and its padding. What stands
+     past it must not. A hand-pan is a translate on the page frame, and a box's
+     picture (its shadow, its glow) reaches past the page; either one, hanging
+     over the right or the bottom edge, grew the scroll area and raised a
+     scrollbar. The scrollbar changed the viewport, a Fit re-fitted and dropped
+     the pan, the overflow went, the scrollbar went, and round again on every
+     move of the drag: the page flashed and snapped back, or sat low and right
+     with a scroll that ended under the dock. The stage always covers the
+     viewport, so the clip hides nothing that scrolling could have shown
+     properly; the hand reaches the rest. It also holds through a pinch
+     (`pinchTo` in Canvas.svelte), whose scaled page must not move the
+     centring its transform was worked out against. `hidden` first for a
+     WebKit without `clip`. */
+  overflow:hidden; overflow:clip;
 }
 .page-frame{
   position:relative; background:var(--paper); box-shadow:var(--edge);
@@ -252,12 +266,6 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
    frame is the biggest element on screen and a standing layer costs compositor
    memory. */
 .page-frame.panning{ will-change: translate; }
-/* A pinch scales the page as one picture (`pinchTo` in Canvas.svelte), and
-   the page grown past the stage must not grow the scroll or raise a scrollbar
-   under the gesture: that would move the centring the transform was worked out
-   against. The stage spans the viewport, so the clip shows the same pixels.
-   `hidden` first for a WebKit without `clip`. */
-.stage.zooming{ overflow:hidden; overflow:clip; }
 .page-frame.zooming, .strip.zooming{ will-change: transform; }
 /* A paged chapter keeps its neighbouring pages mounted so a turn is a
    visibility change rather than a teardown and a rebuild - see `mountedPages` in
