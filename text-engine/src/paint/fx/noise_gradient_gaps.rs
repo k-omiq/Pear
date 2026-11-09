@@ -84,6 +84,9 @@ fn a_full_hue_range_bakes_the_wrapped_walk() {
 /// F59: mid-ramp samples, natively pinned. The two ends are pinned by
 /// `the_ends_match_what_the_wasm_engine_paints`; the walk's easing and the
 /// HSB conversion show only between the ends. 0 to 255 per channel.
+/// src/lib/text-engine/rust-painter.engine.test.js paints the same samples
+/// through the wasm build (an Angle gradient's centre moved off one letter
+/// pixel) and expects these colours, so the two builds agree mid-ramp.
 #[test]
 fn mid_ramp_samples_are_pinned() {
     let lab = Noise {

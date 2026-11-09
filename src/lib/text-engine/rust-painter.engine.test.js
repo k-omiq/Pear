@@ -398,6 +398,58 @@ describe('the Rust engine behind the glyph-painter seam', () => {
     expect([burst.x0, burst.y0, burst.x1, burst.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
   });
 
+  // F59: mid-ramp, where the walk's easing and the HSB and Lab conversions
+  // show, the wasm build paints the colours `mid_ramp_samples_are_pinned`
+  // pins natively (text-engine/src/paint/fx/noise_gradient_gaps.rs), so the
+  // two builds are the same between the ends too. An Angle gradient reads
+  // t = 0.25 straight below its centre, 0.5 straight left of it and 0.75
+  // straight above (Gradient::t in fx/gradient.rs), so a centre moved (by the
+  // offset) to 30 device px off one solid letter pixel paints it that sample.
+  it('paints a noise gradient mid-ramp the colours the native build pins', () => {
+    const painter = createRustGlyphPainter(rust);
+    const paint = (effects) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects });
+      return ctx.getImageData(0, 0, 400, 200).data;
+    };
+    // The overlay's frame is the letters' covered pixels (`job_frame` in
+    // fx/effects.rs: coverage over half a level), device px here.
+    const plain = paint([]);
+    let [f0, f1, f2, f3] = [400, 200, -1, -1];
+    let solid = null;
+    for (let y = 0; y < 200; y++) {
+      for (let x = 0; x < 400; x++) {
+        const a = plain[(y * 400 + x) * 4 + 3];
+        if (!a) continue;
+        [f0, f1, f2, f3] = [Math.min(f0, x), Math.min(f1, y), Math.max(f2, x + 1), Math.max(f3, y + 1)];
+        if (a === 255 && !solid && x > 40 && y > 40) solid = [x, y];
+      }
+    }
+    expect(solid).not.toBe(null);
+    const [sx, sy] = solid;
+    const [w, h] = [f2 - f0, f3 - f1];
+    // The offset that puts the centre at device point (cx, cy): the centre is
+    // the frame's middle moved by a share of its size.
+    const offset = (cx, cy) => [(cx - f0 - w / 2) / w, (cy - f1 - h / 2) / h];
+    const centres = [[sx + 0.5, sy + 0.5 - 30], [sx + 0.5 + 30, sy + 0.5], [sx + 0.5, sy + 0.5 + 30]];
+    const at = (noise) => centres.map(([cx, cy]) => {
+      const g = {
+        style: 'angle', angle: 0, scale: 1, reverse: false, offset: offset(cx, cy),
+        stops: [{ color: '#000000', pos: 0, opacity: 1 }, { color: '#ffffff', pos: 1, opacity: 1 }],
+        type: 'noise', noise: { seed: 7, roughness: 0.5, min: [0, 0, 0], max: [1, 1, 1], restrict: false, transparency: false, ...noise },
+      };
+      const px = paint([{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient: g }]);
+      const i = (sy * 400 + sx) * 4;
+      return [...px.subarray(i, i + 4)];
+    });
+    expect(at({ model: 'rgb' })).toEqual([[60, 47, 188, 255], [68, 167, 169, 255], [75, 198, 208, 255]]);
+    expect(at({ model: 'lab', restrict: true })).toEqual([[0, 75, 0, 255], [119, 29, 0, 255], [163, 0, 0, 255]]);
+    expect(at({ model: 'hsb' })).toEqual([[173, 188, 153, 255], [169, 120, 59, 255], [47, 83, 208, 255]]);
+    expect(at({ model: 'hsb', min: [0, 0.5, 0.5], max: [1, 1, 1] })).toEqual([[166, 222, 90, 255], [212, 134, 37, 255], [26, 72, 232, 255]]);
+  });
+
   it('paints a box with as many shadows as its style has', () => {
     // The app counts no shadows, and the canvas passes paint every one: the
     // box job once refused a 17th, and the box was not painted at all.
