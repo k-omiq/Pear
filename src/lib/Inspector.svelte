@@ -760,8 +760,6 @@
   const inkGap = $derived(rustBoxes && box ? inkJobGap(box) : null);
   const INK_GAP_WHY = {
     engine: 'this build of the Rust engine paints no brush ink in the box',
-    mesh: 'the Rust engine cannot yet bend brush ink with a mesh',
-    roughen: 'the Rust engine cannot yet roughen brush ink',
   };
   // Blend If's channel menu (Gray, Red, Green, Blue), as Photoshop's dialog
   // shows one channel's two sliders at a time.

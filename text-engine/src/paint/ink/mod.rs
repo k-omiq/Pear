@@ -48,8 +48,10 @@ use super::budget;
 use super::fx::distance;
 use super::geom::{Affine, IBox, Polys, Pt};
 use super::job::{Job, Request, Rgba};
-use super::raster::{strip_of, Part, Rasterizer, STRIP_ROWS};
-use super::{Raster, MAX_PIXELS, MAX_SIDE};
+use super::raster::{pixel_box, strip_of, Part, Rasterizer, STRIP_ROWS};
+use super::roughen::{RoughMap, Roughen};
+use super::warp::{self, Mesh};
+use super::{magnified, Bends, Raster, MAX_PIXELS, MAX_SIDE};
 use crate::Error;
 use pixels::clamped;
 use stamps::js_round;
@@ -205,9 +207,19 @@ pub struct Ink {
     /// The box job's rim pass: the outlines round the ink with the ink cut
     /// out of them, and not the ink (`join`).
     pub(crate) rims: bool,
-    /// The ink laid under one transform (`prepare`), and that transform.
+    /// The ink laid under one transform and one set of bends (`prepare`),
+    /// and what it was laid for.
     layer: Option<InkLayer>,
-    prepared_for: Option<Affine>,
+    prepared_for: Option<Laying>,
+}
+
+/// What a laid ink layer is laid for: the transform, and the job's mesh and
+/// roughening, which bend it. A pass of the box job with any other is laid
+/// again (`join`).
+type Laying = (Affine, Option<Mesh>, Option<Roughen>);
+
+fn laying(transform: &Affine, job: &Job) -> Laying {
+    (*transform, job.mesh.clone(), job.roughen)
 }
 
 impl Ink {
@@ -236,23 +248,29 @@ impl Ink {
     /// box job that follows. `reach` is how far, in job units, an outline or
     /// a silhouette can be grown round it (the widest band's half and the
     /// most a shadow grows it).
+    /// The ink is bent by the job's mesh and roughened by its field, as the
+    /// letters are (`Bends`).
     pub(crate) fn prepare(
         &mut self,
         transform: &Affine,
+        job: &Job,
         surface: IBox,
         reach: f64,
         rasterizer: &dyn Rasterizer,
     ) -> Result<(), Error> {
-        self.layer = InkLayer::build(
-            self.origin,
-            &self.strokes,
-            &self.resolved,
-            transform,
-            Some(surface),
-            reach,
-            rasterizer,
-        )?;
-        self.prepared_for = Some(*transform);
+        self.layer = with_bends(job, transform, |bend| {
+            InkLayer::build(
+                self.origin,
+                &self.strokes,
+                &self.resolved,
+                transform,
+                Some(surface),
+                reach,
+                bend,
+                rasterizer,
+            )
+        })?;
+        self.prepared_for = Some(laying(transform, job));
         Ok(())
     }
 
@@ -365,6 +383,144 @@ fn wants_water_edge(k: &Stroke) -> bool {
 
 /// How flat a round dab's polygon may be from its circle, device px.
 const DAB_TOLERANCE: f64 = 0.02;
+
+/// What bends a box's ink: the box's roughening and mesh, the letters' own
+/// map (`Bends`), and how close to the bent outline a bent stamp's polygon
+/// stays, job units.
+#[derive(Clone, Copy)]
+pub(crate) struct Bend<'a> {
+    bends: Bends<'a>,
+    tol: f64,
+}
+
+/// `f` with the bends `job` states, or `None` where nothing bends (no mesh,
+/// one that moves nothing, no roughening): the ink is then laid as it always
+/// was, to the byte. The tolerance is the letters' rule (`paint_letters`):
+/// a device distance, finer by as much as the mesh enlarges.
+fn with_bends<R>(
+    job: &Job,
+    transform: &Affine,
+    f: impl FnOnce(Option<Bend<'_>>) -> Result<R, Error>,
+) -> Result<R, Error> {
+    let mesh = match &job.mesh {
+        Some(m) => m.map()?,
+        None => None,
+    };
+    let rough = match &job.roughen {
+        Some(r) => r.map()?,
+        None => None,
+    };
+    let bends = Bends {
+        rough: rough.as_ref(),
+        mesh: mesh.as_ref(),
+    };
+    if bends.is_empty() {
+        return f(None);
+    }
+    let tol = DAB_TOLERANCE / (transform.max_scale() * magnified(mesh.as_ref()));
+    f(Some(Bend { bends, tol }))
+}
+
+/// How far a bent ribbon slice's polygon reaches past the chords its top and
+/// foot are cut on, device px: more than a pixel's half-diagonal, so a pixel
+/// whose centre is inside is covered by the slice's sides alone.
+const CHORD_REACH: f64 = 1.5;
+
+/// A line a bent ribbon slice is cut on: the chord between where the two
+/// ends of its top (or foot) go, in device px, and its normal toward the
+/// slice. The slice before or after it is cut on the same chord from the
+/// same two ends, so the two tile the band.
+#[derive(Clone, Copy)]
+struct Chord {
+    a: Pt,
+    n: Pt,
+}
+
+impl Chord {
+    /// The chord from `a` to `b`, whose inside is the side `inside` is on.
+    fn new(a: Pt, b: Pt, inside: Pt) -> Option<Self> {
+        let d = b.minus(a);
+        let len = d.len();
+        if len.is_nan() || len <= 0.0 {
+            return None;
+        }
+        let n = Pt::new(-d.y / len, d.x / len);
+        let n = if n.dot(inside.minus(a)) < 0.0 {
+            n.scale(-1.0)
+        } else {
+            n
+        };
+        Some(Self { a, n })
+    }
+
+    /// How far inside the chord `p` is, device px.
+    fn inside(&self, p: Pt) -> f64 {
+        self.n.dot(p.minus(self.a))
+    }
+
+    /// `p` moved off the chord, away from the slice, by `CHORD_REACH`.
+    fn out(&self, p: Pt) -> Pt {
+        p.minus(self.n.scale(CHORD_REACH))
+    }
+}
+
+/// A stamp carried through the box's bends: its shape is bent exactly, and
+/// what is inside it is read back from a device pixel through the mesh's
+/// tangent over the stamp (the user's rule: the tip carried by the local
+/// tangent) and the roughening's first-order inverse, `p + d(p)`, the very
+/// lookup the pixel pass made, so a roughened tip crumples as the letters do.
+struct Carried {
+    /// The stamp's own frame into job space: moved, turned, flipped,
+    /// squashed, then off the box's corner.
+    j: Affine,
+    /// The transform after the mesh's tangent over the stamp.
+    ta: Affine,
+    /// Device px back to before the mesh: `ta`'s inverse.
+    unmesh: Affine,
+    /// Device px back to job space after the mesh: the transform's inverse;
+    /// and the tangent's inverse, for a round dab read through the mesh
+    /// itself (`Pen::back_exact`).
+    unbase: Affine,
+    untangent: Affine,
+    /// Job space back into the stamp's frame: `j`'s inverse.
+    unframe: Affine,
+    /// Device px a stamp unit is worth here: `ta`'s scale.
+    scale: f64,
+}
+
+/// How what is inside a stamp's bent outline is read.
+enum Read<'t> {
+    /// A hard round dab: all of it.
+    Hard,
+    /// A soft round dab: the ramp from `r0` to the rim `r`.
+    Soft { c: Carried, r: f64, r0: f64 },
+    /// A tip: `level`'s `src` (level px) drawn into `dst` (the stamp's
+    /// frame), as `image` draws it.
+    Tip {
+        c: Carried,
+        level: &'t tips::Level,
+        src: (f64, f64, f64, f64),
+        dst: (f64, f64, f64, f64),
+    },
+    /// A ribbon's slice: cut on `top` and `foot`, and its parts down its
+    /// length (`slice_tip`): where each starts in the slice's frame, its
+    /// height there, and its rows of the level.
+    Slice {
+        c: Carried,
+        level: &'t tips::Level,
+        top: Chord,
+        foot: Chord,
+        size: f64,
+        lw: f64,
+        parts: Vec<(f64, f64, f64, f64)>,
+    },
+}
+
+/// A stamp bent: its outline in device px, and how its inside is read.
+struct Shape<'t> {
+    polys: Polys,
+    read: Read<'t>,
+}
 /// How far past its top and foot a ribbon's slice takes a pixel's centre,
 /// in the slice's own units (`Pen::image`).
 const SEAM: f64 = 1e-7;
@@ -505,14 +661,405 @@ struct Pen<'a> {
     smooth: bool,
     rect: IBox,
     rasterizer: &'a dyn Rasterizer,
+    /// The box's bends, where it has any, with the transform without the
+    /// box's corner (`base`) and that corner (`origin`): `t` is the two.
+    bend: Option<Bend<'a>>,
+    base: &'a Affine,
+    origin: Pt,
 }
 
-impl Pen<'_> {
+impl<'a> Pen<'a> {
     fn press(&self, s: &Stamp, sc: &mut Scratch, each: &mut Each) -> Result<(), Error> {
+        if let Some(bend) = &self.bend {
+            return match self.shape(s, bend)? {
+                Some(shape) => self.press_bent(shape, bend, sc, each),
+                None => Ok(()),
+            };
+        }
         match self.tips.press(s) {
             Press::Round => self.dab(s, sc, each),
             Press::Tip(tip) => self.stamp_tip(s, tip, sc, each),
             Press::Slice(tip) => self.slice_tip(s, tip, sc, each),
+        }
+    }
+
+    /// The device pixels a bent stamp can reach, or `None` for one that
+    /// draws nothing.
+    fn bent_box(&self, s: &Stamp, bend: &Bend) -> Result<Option<IBox>, Error> {
+        Ok(self.shape(s, bend)?.and_then(|sh| pixel_box(&sh.polys)))
+    }
+
+    /// The stamp's frame and the mesh's tangent over it, where both can be
+    /// turned back; `None` for a stamp the mesh crushes to nothing (no slope
+    /// to read: a fold, a horizon), which is not drawn. `rect` is the
+    /// stamp's shape in its own frame.
+    fn carry(
+        &self,
+        s: &Stamp,
+        flat: Option<f64>,
+        (x0, y0, x1, y1): (f64, f64, f64, f64),
+        bend: &Bend,
+    ) -> Option<Carried> {
+        let j = Affine::translate(self.origin.x, self.origin.y).after(&frame(
+            &Affine::IDENTITY,
+            s,
+            flat,
+        ));
+        let a = match bend.bends.mesh {
+            None => Affine::IDENTITY,
+            Some(m) => {
+                // Over the stamp where the roughening has put it.
+                let (mut ax, mut ay, mut bx, mut by) = (
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                );
+                for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                    let p = j.apply(Pt::new(x, y));
+                    ax = ax.min(p.x);
+                    bx = bx.max(p.x);
+                    ay = ay.min(p.y);
+                    by = by.max(p.y);
+                }
+                let c = j.apply(Pt::new((x0 + x1) / 2.0, (y0 + y1) / 2.0));
+                let d = bend
+                    .bends
+                    .rough
+                    .map_or(Pt::new(0.0, 0.0), |r| r.at(c).minus(c));
+                m.tangent_exact((ax + d.x, ay + d.y, bx + d.x, by + d.y))
+                    .ok()?
+            }
+        };
+        let ta = self.base.after(&a);
+        let unmesh = ta.invert()?;
+        let unframe = j.invert()?;
+        Some(Carried {
+            j,
+            ta,
+            unmesh,
+            unbase: self.base.invert()?,
+            untangent: a.invert()?,
+            unframe,
+            scale: ta.det().abs().sqrt(),
+        })
+    }
+
+    /// Where the device pixel `(x, y)`'s centre is in the stamp's frame:
+    /// back through the transform and the mesh's tangent, the roughening's
+    /// first-order inverse, and the stamp's frame.
+    fn back(c: &Carried, rough: Option<&RoughMap>, x: i32, y: i32) -> Pt {
+        let p = c
+            .unmesh
+            .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+        let p = rough.map_or(p, |r| r.back(p));
+        c.unframe.apply(p)
+    }
+
+    /// [`Pen::back`] through the mesh itself, for a round dab, which the
+    /// user's rule has exact: where the tangent puts the pixel before the
+    /// mesh, moved by the tangent's inverse of how far the mesh takes that
+    /// point from the pixel (one step of Newton's method, from the tangent),
+    /// then back through the roughening and the dab's frame. A round dab's
+    /// soft ramp is then the bent dab's own, where the tangent alone left
+    /// its fall-off up to a device pixel off the outline on a mesh that
+    /// stretches by half again (`ink-bend.engine.test.js`).
+    fn back_exact(c: &Carried, bend: &Bend, x: i32, y: i32) -> Pt {
+        let at = c
+            .unbase
+            .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+        let mut p = c.untangent.apply(at);
+        if let Some(m) = bend.bends.mesh {
+            let off = at.minus(m.at(p));
+            let lin = c
+                .untangent
+                .apply(off)
+                .minus(c.untangent.apply(Pt::new(0.0, 0.0)));
+            let next = p.plus(lin);
+            if next.x.is_finite() && next.y.is_finite() {
+                p = next;
+            }
+        }
+        let p = bend.bends.rough.map_or(p, |r| r.back(p));
+        c.unframe.apply(p)
+    }
+
+    /// The closed outline `pts` (the stamp's frame) through `j`, the bends
+    /// (cut as the letters are, within the bend's tolerance) and the
+    /// transform. `BadSpec` where the bends send it nowhere.
+    fn bent(&self, bend: &Bend, j: &Affine, pts: impl Iterator<Item = Pt>) -> Result<Polys, Error> {
+        let mut polys = Polys::default();
+        for p in pts {
+            polys.push(j.apply(p));
+        }
+        polys.close();
+        let Some(bounds) = polys.bounds() else {
+            return Ok(polys);
+        };
+        let Some(cut) = bend.bends.cut(bounds, bend.tol) else {
+            return Ok(polys.map(self.base));
+        };
+        Ok(warp::bend(&polys, |p| bend.bends.at(p), cut, bend.tol)?.map(self.base))
+    }
+
+    /// A stamp bent (`Carried`): the round dab, a tip or a ribbon's slice,
+    /// as `press` lays each unbent.
+    fn shape(&self, s: &Stamp, bend: &Bend) -> Result<Option<Shape<'a>>, Error> {
+        let k = self.k;
+        match self.tips.press(s) {
+            Press::Round => {
+                let r = s.size / 2.0;
+                if r.is_nan() || r <= 0.0 {
+                    return Ok(None);
+                }
+                let flat = Some(s.flat.unwrap_or(k.flatness));
+                let Some(c) = self.carry(s, flat, (-r, -r, r, r), bend) else {
+                    return Ok(None);
+                };
+                // The circle as `dab` cuts it, at its size on the device.
+                let device = r * c.ta.after(&c.j).max_scale();
+                let step = if DAB_TOLERANCE < device {
+                    2.0 * (1.0 - DAB_TOLERANCE / device).acos()
+                } else {
+                    core::f64::consts::FRAC_PI_2
+                };
+                let n = (core::f64::consts::TAU / step).ceil().clamp(8.0, 4096.0) as usize;
+                let a = core::f64::consts::TAU / n as f64;
+                let wide = r * (a / a.sin()).sqrt();
+                let polys = self.bent(
+                    bend,
+                    &c.j,
+                    (0..n).map(|i| {
+                        let (sin, cos) = (a * i as f64).sin_cos();
+                        Pt::new(wide * cos, wide * sin)
+                    }),
+                )?;
+                let read = if k.hardness < 100.0 {
+                    Read::Soft {
+                        c,
+                        r,
+                        r0: r * (k.hardness / 100.0),
+                    }
+                } else {
+                    Read::Hard
+                };
+                Ok(Some(Shape { polys, read }))
+            }
+            Press::Tip(tip) => {
+                let (nw, nh) = tip.natural;
+                let f = s.size / nw.max(nh);
+                let (dw, dh) = (nw * f, nh * f);
+                if !(dw > 0.0 && dh > 0.0) {
+                    return Ok(None);
+                }
+                let flat = Some(s.flat.unwrap_or(k.flatness));
+                let (hw, hh) = (dw / 2.0, dh / 2.0);
+                let Some(c) = self.carry(s, flat, (-hw, -hh, hw, hh), bend) else {
+                    return Ok(None);
+                };
+                let level = tip.pick(s.size * c.scale);
+                let polys = self.bent(
+                    bend,
+                    &c.j,
+                    [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+                        .into_iter()
+                        .map(|(x, y)| Pt::new(x, y)),
+                )?;
+                let src = (0.0, 0.0, level.width as f64, level.height as f64);
+                Ok(Some(Shape {
+                    polys,
+                    read: Read::Tip {
+                        c,
+                        level,
+                        src,
+                        dst: (-hw, -hh, dw, dh),
+                    },
+                }))
+            }
+            Press::Slice(tip) => self.slice_shape(s, tip, bend),
+        }
+    }
+
+    /// A ribbon's slice bent. Its sides are bent as any outline is; its top
+    /// and foot are the chords between where their ends go, which the slices
+    /// either side of it compute from the same ends, so a pixel is in one
+    /// slice or the next (`Chord`), and the tip inside is read through the
+    /// slice's own tangent.
+    fn slice_shape(
+        &self,
+        s: &Stamp,
+        tip: &'a Tip,
+        bend: &Bend,
+    ) -> Result<Option<Shape<'a>>, Error> {
+        let Some((d, len)) = s.ribbon else {
+            return Ok(None);
+        };
+        let (nw, nh) = tip.natural;
+        let f = s.size / nw;
+        let period = nh * f;
+        if !(f > 0.0 && period > 0.0) {
+            return Ok(None);
+        }
+        let (hw, hl) = (s.size / 2.0, len / 2.0);
+        let Some(c) = self.carry(s, None, (-hw, -hl, hw, hl), bend) else {
+            return Ok(None);
+        };
+        let level = tip.pick(s.size.max(len) * c.scale);
+        let k = level.height as f64 / nh;
+        let lw = level.width as f64;
+        // The parts down the slice, as `slice_tip` draws them.
+        let mut parts = Vec::new();
+        let mut v0 = ((d - len / 2.0) % period + period) % period / f;
+        let mut left = len / f;
+        let mut y = -len / 2.0;
+        while left > 1e-6 {
+            let take = left.min(nh - v0);
+            if take.is_nan() || take <= 0.0 {
+                v0 = 0.0;
+                continue;
+            }
+            let dh = take * f;
+            parts.push((y, dh, v0 * k, take * k));
+            y += dh;
+            left -= take;
+            v0 = 0.0;
+        }
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        let job = |x: f64, y: f64| c.j.apply(Pt::new(x, y));
+        let (lt, lf, rf, rt) = (job(-hw, -hl), job(-hw, hl), job(hw, hl), job(hw, -hl));
+        let dev = |p: Pt| self.base.apply(bend.bends.at(p));
+        // Each chord's inside is toward the other's middle: the slice's own
+        // middle may be carried off the strip between them (a roughening
+        // moves it by its own field, the chords by their ends').
+        let (dlt, drt, dlf, drf) = (dev(lt), dev(rt), dev(lf), dev(rf));
+        let mid = |a: Pt, b: Pt| a.plus(b).scale(0.5);
+        let (Some(top), Some(foot)) = (
+            Chord::new(dlt, drt, mid(dlf, drf)),
+            Chord::new(dlf, drf, mid(dlt, drt)),
+        ) else {
+            return Ok(None);
+        };
+        let x0 = lt.x.min(lf.x).min(rf.x).min(rt.x);
+        let y0 = lt.y.min(lf.y).min(rf.y).min(rt.y);
+        let x1 = lt.x.max(lf.x).max(rf.x).max(rt.x);
+        let y1 = lt.y.max(lf.y).max(rf.y).max(rt.y);
+        let Some(cut) = bend.bends.cut((x0, y0, x1, y1), bend.tol) else {
+            return Ok(None);
+        };
+        // A side: from where its top end goes to where its foot end goes.
+        let side = |a: Pt, b: Pt| {
+            let mut out = Polys::default();
+            out.push(bend.bends.at(a));
+            warp::bend_line(&mut out, |p| bend.bends.at(p), (a, b), cut, bend.tol);
+            out
+        };
+        let (left_side, right_side) = (side(lt, lf), side(rf, rt));
+        let mut polys = Polys::default();
+        polys.push(top.out(dlt));
+        for p in left_side.pts.iter() {
+            polys.push(self.base.apply(*p));
+        }
+        polys.push(foot.out(dlf));
+        polys.push(foot.out(drf));
+        for p in right_side.pts.iter() {
+            polys.push(self.base.apply(*p));
+        }
+        polys.push(top.out(drt));
+        polys.close();
+        if !warp::sound(&polys) {
+            return Err(Error::BadSpec);
+        }
+        Ok(Some(Shape {
+            polys,
+            read: Read::Slice {
+                c,
+                level,
+                top,
+                foot,
+                size: s.size,
+                lw,
+                parts,
+            },
+        }))
+    }
+
+    /// A bent stamp laid: its outline's coverage, and inside it its read.
+    fn press_bent(
+        &self,
+        shape: Shape,
+        bend: &Bend,
+        sc: &mut Scratch,
+        each: &mut Each,
+    ) -> Result<(), Error> {
+        let rough = bend.bends.rough;
+        let smooth = self.smooth;
+        let Shape { polys, read } = shape;
+        match read {
+            Read::Hard => cover(polys, self.rect, self.rasterizer, sc, |i, _, _, c| {
+                each(i, c, 1.0, 1.0);
+            }),
+            Read::Soft { c: carried, r, r0 } => {
+                cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
+                    let q = Self::back_exact(&carried, bend, x, y);
+                    let d = q.x.hypot(q.y);
+                    let tg = if r > r0 {
+                        ((d - r0) / (r - r0)).clamp(0.0, 1.0)
+                    } else if d < r {
+                        0.0
+                    } else {
+                        1.0
+                    };
+                    let g = (1.0 - tg) as f32;
+                    each(i, c, g, g);
+                })
+            }
+            Read::Tip {
+                c: carried,
+                level,
+                src: (sx, sy, sw, sh),
+                dst: (dx, dy, dw, dh),
+            } => {
+                let (kx, ky) = (sw / dw, sh / dh);
+                cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
+                    let q = Self::back(&carried, rough, x, y);
+                    let g = level.sample(sx + (q.x - dx) * kx, sy + (q.y - dy) * ky, smooth);
+                    if g > 0.0 {
+                        each(i, c, g, 1.0);
+                    }
+                })
+            }
+            Read::Slice {
+                c: carried,
+                level,
+                top,
+                foot,
+                size,
+                lw,
+                parts,
+            } => {
+                let kx = lw / size;
+                cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
+                    let p = Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    // A hair either way, as `image` keeps it.
+                    if !(top.inside(p) >= -SEAM && foot.inside(p) > -SEAM) {
+                        return;
+                    }
+                    let q = Self::back(&carried, rough, x, y);
+                    let last = parts.len() - 1;
+                    let at = parts
+                        .iter()
+                        .position(|&(py, dh, ..)| q.y < py + dh)
+                        .unwrap_or(last);
+                    let (py, dh, sy, sh) = parts[at];
+                    let g =
+                        level.sample((q.x + size / 2.0) * kx, sy + (q.y - py) * (sh / dh), smooth);
+                    if g > 0.0 {
+                        each(i, c, g, 1.0);
+                    }
+                })
+            }
         }
     }
 
@@ -753,6 +1300,7 @@ fn paint_stroke(
     tips: Tips,
     stamps: &[Stamp],
     (t, scale): (&Affine, f64),
+    (base, origin, bend): (&Affine, Pt, Option<Bend>),
     rect: IBox,
     (water_r, water_blur): (f64, f64),
     rasterizer: &dyn Rasterizer,
@@ -781,6 +1329,9 @@ fn paint_stroke(
         smooth: aa > 0,
         rect,
         rasterizer,
+        bend,
+        base,
+        origin,
     };
     let mut sc = Scratch::default();
     // A ground read back as the mask, eight bits a dab: the stroke's colour
@@ -925,6 +1476,13 @@ impl InkLayer {
     /// `drawInk`'s strokes under `transform * translate(origin)`, cut to
     /// `surface` (or refused past the painter's guards without one), with
     /// room `reach` job units round them for what is grown from them.
+    ///
+    /// With `bend`, every stamp is bent (`Pen::shape`), and a stroke's
+    /// rectangle and the layer's are found from the bent stamps: each
+    /// stroke's own, grown by what its passes reach (the water edge), and
+    /// each grown by `reach` for the layer, so an outline round bent ink is
+    /// not cut where the mesh carried the ink.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         origin: Pt,
         strokes: &[Stroke],
@@ -932,6 +1490,7 @@ impl InkLayer {
         transform: &Affine,
         surface: Option<IBox>,
         reach: f64,
+        bend: Option<Bend>,
         rasterizer: &dyn Rasterizer,
     ) -> Result<Option<Self>, Error> {
         let t = transform.after(&Affine::translate(origin.x, origin.y));
@@ -948,6 +1507,9 @@ impl InkLayer {
         });
         let mut laid = Vec::new();
         let mut all: Option<(f64, f64, f64, f64)> = None;
+        let margin = (reach.max(0.0) * scale).ceil().min(1e6) + 2.0;
+        // With bends, the layer: each bent stroke's pixels grown by `margin`.
+        let mut grown: Option<IBox> = None;
         for k in strokes {
             let stamps = stroke_stamps(k);
             let Some(b) = stroke_bounds(k, &stamps) else {
@@ -967,7 +1529,52 @@ impl InkLayer {
             } else {
                 0.0
             };
-            if let Some(rect) = bounds_rect(b, &t, clip, r + bl + 2.0) {
+            let rect = match &bend {
+                None => bounds_rect(b, &t, clip, r + bl + 2.0),
+                Some(bend) => {
+                    // Every stamp bent once to find where the stroke lands;
+                    // bent again when it is laid, so no stroke's outlines
+                    // are held while the next is found.
+                    let pen = Pen {
+                        k,
+                        tips: Tips::of(k, tips),
+                        t: &t,
+                        scale,
+                        smooth: k.antialias > 0,
+                        rect: clip,
+                        rasterizer,
+                        bend: Some(*bend),
+                        base: transform,
+                        origin,
+                    };
+                    let mut core: Option<IBox> = None;
+                    for s in &stamps {
+                        if let Some(b) = pen.bent_box(s, bend)? {
+                            core = Some(core.map_or(b, |c| c.union(&b)));
+                        }
+                        budget::check()?;
+                    }
+                    core.and_then(|c| {
+                        let around = |by: f64| {
+                            let by = by.ceil().min(1e6) as i32;
+                            IBox {
+                                x0: c.x0.saturating_sub(by),
+                                y0: c.y0.saturating_sub(by),
+                                x1: c.x1.saturating_add(by),
+                                y1: c.y1.saturating_add(by),
+                            }
+                            .intersect(&clip)
+                        };
+                        let g = around(margin);
+                        if !g.is_empty() {
+                            grown = Some(grown.map_or(g, |a| a.union(&g)));
+                        }
+                        let rect = around(r + bl + 2.0);
+                        (!rect.is_empty()).then_some(rect)
+                    })
+                }
+            };
+            if let Some(rect) = rect {
                 laid.push((k, stamps, rect, (r, bl)));
             }
             budget::check()?;
@@ -975,8 +1582,10 @@ impl InkLayer {
         let Some(all) = all else {
             return Ok(None);
         };
-        let margin = (reach.max(0.0) * scale).ceil().min(1e6) + 2.0;
-        let mut bx = bounds_rect(all, &t, clip, margin);
+        let mut bx = match &bend {
+            None => bounds_rect(all, &t, clip, margin),
+            Some(_) => grown,
+        };
         for (_, _, rect, _) in &laid {
             bx = Some(bx.map_or(*rect, |b| b.union(rect)));
         }
@@ -994,6 +1603,7 @@ impl InkLayer {
                 Tips::of(k, tips),
                 stamps,
                 (&t, scale),
+                (transform, origin, bend),
                 *rect,
                 *water,
                 rasterizer,
@@ -1119,19 +1729,22 @@ pub(crate) fn join(
 ) -> Result<Option<Raster>, Error> {
     let job = &request.job;
     let transient;
-    let layer = if ink.prepared_for == Some(request.transform) {
+    let layer = if ink.prepared_for.as_ref() == Some(&laying(&request.transform, job)) {
         ink.layer.as_ref()
     } else {
         let reach = outer_band(job) + job.effects.grow.max(0.0);
-        transient = InkLayer::build(
-            ink.origin,
-            &ink.strokes,
-            &ink.resolved,
-            &request.transform,
-            None,
-            reach,
-            rasterizer,
-        )?;
+        transient = with_bends(job, &request.transform, |bend| {
+            InkLayer::build(
+                ink.origin,
+                &ink.strokes,
+                &ink.resolved,
+                &request.transform,
+                None,
+                reach,
+                bend,
+                rasterizer,
+            )
+        })?;
         transient.as_ref()
     };
     let Some(layer) = layer else {
@@ -1430,5 +2043,162 @@ impl<'a> Reader<'a> {
             cycle,
             pts,
         })
+    }
+}
+
+#[cfg(test)]
+mod bend_tests {
+    use super::super::raster::Exact;
+    use super::*;
+
+    fn heavy() -> Vec<Stroke> {
+        (0..100)
+            .map(|n| Stroke {
+                size: 14.0,
+                seed: f64::from(n),
+                pts: (0..24)
+                    .map(|i| {
+                        let t = f64::from(i) / 23.0;
+                        [
+                            10.0 + t * 170.0,
+                            20.0 + f64::from(n) * 0.9 + (t * core::f64::consts::TAU).sin() * 15.0,
+                            1.0,
+                            1.0,
+                            1.0,
+                        ]
+                    })
+                    .collect(),
+                ..Stroke::default()
+            })
+            .collect()
+    }
+
+    fn job(mesh: bool, roughen: bool) -> Job {
+        let mut pts = Vec::new();
+        for j in 0..=3u32 {
+            for i in 0..=3u32 {
+                pts.push(Pt::new(
+                    200.0 * f64::from(i) / 3.0,
+                    120.0 * f64::from(j) / 3.0,
+                ));
+            }
+        }
+        pts[5] = Pt::new(pts[5].x - 12.0, pts[5].y - 18.0);
+        pts[10] = Pt::new(pts[10].x - 20.0, pts[10].y - 12.0);
+        Job {
+            mesh: mesh.then_some(Mesh {
+                cols: 3,
+                rows: 3,
+                pts,
+                x: 20.0,
+                y: 30.0,
+                w: 200.0,
+                h: 120.0,
+            }),
+            roughen: roughen.then_some(Roughen {
+                amount: 6.0,
+                detail: 0.07,
+                seed: 7.0,
+                origin: Pt::new(20.0, 30.0),
+                grit: 0.0,
+            }),
+            curved: false,
+            align: super::super::Align::Left,
+            letter_spacing: 0.0,
+            bands: Vec::new(),
+            silhouette: None,
+            no_fill: false,
+            fill: None,
+            effects: super::super::Effects::default(),
+            runs: Vec::new(),
+        }
+    }
+
+    /// The most the painter's budget held while the ink of a heavy box (a
+    /// hundred strokes, of round dabs and of a noisy 32 x 32 tip) was laid
+    /// at 2.74, flat, roughened, meshed and both, and how long each took
+    /// against the flat round ink of the same run (`--nocapture` prints
+    /// them). Each time is the median of three after a warm-up laying: one
+    /// laying alone swung the flat base by a quarter between runs where the
+    /// other cases held within 2 %, and the ratios with it. The ms still move
+    /// with how busy the machine is; the ratios of medians hold. A
+    /// bent stamp's outline is let go once it is laid, and found again for
+    /// the next pass, so the bent peak is the flat one and a stamp's
+    /// outline more.
+    ///
+    /// Where the time goes (2026-11-09, medians; two runs agreed within
+    /// 3 %): round dabs meshed and roughened take 4.6x the flat; the pass
+    /// that bends every stamp to find the layer's rectangle is 37 % of that,
+    /// and the paint pass bends each again. A roughened tip takes 7.1x, most
+    /// of it the roughening read inside every tip pixel (`p + d(p)`); its
+    /// bounds pass is 13 %. Keeping
+    /// the first pass's outlines for the second would save that share, but
+    /// the layer is sized before any stroke is laid, so every stroke's
+    /// outlines would be held at once: more memory for a third of the time,
+    /// not taken.
+    #[test]
+    fn a_heavy_box_of_bent_ink_holds_no_more_than_the_flat_one_and_a_stamp() {
+        let t = Affine::scale(2.74, 2.74);
+        let surface = IBox {
+            x0: 0,
+            y0: 0,
+            x1: 800,
+            y1: 600,
+        };
+        let noise: Vec<u8> = (0u32..32 * 32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        tips::with_cache(|c| c.put("bench-noise|32x32", 32, 32, (32, 32), &noise)).unwrap();
+        let lay = |tip: bool, mesh: bool, roughen: bool| {
+            let strokes = heavy()
+                .into_iter()
+                .map(|k| Stroke {
+                    tip: tip.then_some(0),
+                    ..k
+                })
+                .collect();
+            let mut ink = Ink::new(Pt::new(20.0, 30.0), strokes);
+            ink.name_tips(if tip {
+                vec!["bench-noise|32x32".to_owned()]
+            } else {
+                Vec::new()
+            });
+            let _scope = budget::Scope::new();
+            let start = std::time::Instant::now();
+            ink.prepare(&t, &job(mesh, roughen), surface, 3.0, &Exact)
+                .unwrap();
+            let took = start.elapsed().as_secs_f64();
+            assert!(ink.layer.is_some());
+            (took, budget::peak_for_test())
+        };
+        // The median of three, after one laying thrown away (the first pays
+        // for the caches and the allocator warming up).
+        let median = |tip, mesh, roughen| {
+            let mut runs: Vec<(f64, usize)> = (0..3).map(|_| lay(tip, mesh, roughen)).collect();
+            runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            runs[1]
+        };
+        lay(false, false, false);
+        let mut base = None;
+        for tip in [false, true] {
+            let mut flat_peak = 0;
+            for (mesh, roughen) in [(false, false), (false, true), (true, false), (true, true)] {
+                let (took, peak) = median(tip, mesh, roughen);
+                let base = *base.get_or_insert(took);
+                println!(
+                    "heavy ink, tip {tip}, mesh {mesh}, roughen {roughen}: peak {peak} bytes, {:.0} ms, {:.2}x the flat round",
+                    took * 1e3,
+                    took / base
+                );
+                if !mesh && !roughen {
+                    flat_peak = peak;
+                } else {
+                    assert!(
+                        peak < flat_peak + (1 << 20),
+                        "tip {tip}: {peak} against {flat_peak}"
+                    );
+                }
+            }
+        }
     }
 }
