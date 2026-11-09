@@ -3,7 +3,7 @@ import {
   WARP_MIN_GRID, WARP_MAX_GRID, SFX_MAX_GROUPS, SFX_DIRS, SFX_CAPTION_SIDES, STROKE_ORDERS, STROKE_JOINS,
   LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, SATIN_DISTANCE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
   STROKE_POSITIONS, STROKE_FILLS, BEVEL_STYLES, BEVEL_TECHNIQUES, BEVEL_DIRECTIONS, BEVEL_DEPTH_MAX,
-  BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX, KNOCKOUT_MODES,
+  BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX, KNOCKOUT_MODES, FX_INSTANCES_MAX,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -20,6 +20,10 @@ const listed = (name, desc, values) => ({ ...choice(desc, values), list: name })
 // that exists may still give any part of it.
 const object = (desc, fields, required) => ({ type: 'object', desc, fields, ...(required ? { required } : {}) });
 const array = (desc, items, limits = {}) => ({ type: 'array', desc, items, ...limits });
+// A Photoshop effect that comes more than once: at most FX_INSTANCES_MAX,
+// each with its own switch in the list.
+const instanceOn = () => ({ ...boolean('false=off, kept'), optional: true });
+const instances = (desc, item) => array(desc, item, { maxItems: FX_INSTANCES_MAX });
 // A list item that is one of several shapes, told apart by one field (`key`),
 // which every item names, also when an index patch changes one: the validator
 // cannot see which kind the stored item is. Each variant is an `object`; the
@@ -178,7 +182,8 @@ export const STYLE_SCHEMA = {
     width: number('band px; 0=remove', 0),
     opacity: alpha('band alpha'),
   })),
-  shadows: array('drop shadows, top first (Photoshop Drop Shadow)', object('shadow', {
+  shadows: instances('drop shadows, top first (Photoshop Drop Shadow)', object('shadow', {
+    on: instanceOn(),
     x: number('x offset px'),
     y: number('y offset px'),
     size: number('soft edge reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),
@@ -191,7 +196,8 @@ export const STYLE_SCHEMA = {
     knockout: boolean('letters knock the shadow out (Rust)'),
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
   })),
-  gradientOverlays: array('gradients over the fill, top first (Photoshop Gradient Overlay; Rust)', object('gradient overlay', {
+  gradientOverlays: instances('gradients over the fill, top first (Photoshop Gradient Overlay; Rust)', object('gradient overlay', {
+    on: instanceOn(),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     opacity: alpha('overlay alpha'),
     gradient: fxGradient('over the letters'),
@@ -201,7 +207,8 @@ export const STYLE_SCHEMA = {
     ...glowFields('spread', 'choke: share of size that is solid'),
     source: choice('glow from the edge or the centre', ['edge', 'center']),
   }),
-  innerShadows: array('shadows inside the letters, top first (Photoshop Inner Shadow; Rust)', object('inner shadow', {
+  innerShadows: instances('shadows inside the letters, top first (Photoshop Inner Shadow; Rust)', object('inner shadow', {
+    on: instanceOn(),
     x: number('x offset px'),
     y: number('y offset px'),
     size: number('soft edge reach px', 0, SHADOW_SIZE_MAX),
@@ -213,7 +220,8 @@ export const STYLE_SCHEMA = {
     contour: contourField(),
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
   })),
-  colorOverlays: array('flat colours over the fill, top first (Photoshop Color Overlay; Rust)', object('colour overlay', {
+  colorOverlays: instances('flat colours over the fill, top first (Photoshop Color Overlay; Rust)', object('colour overlay', {
+    on: instanceOn(),
     color: color('overlay colour'),
     opacity: alpha('overlay alpha'),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
@@ -263,7 +271,8 @@ export const STYLE_SCHEMA = {
       link: boolean('moves with the box'),
     }),
   }),
-  strokeEffects: array('Photoshop Stroke effects, top first, apart from strokes (Rust)', object('stroke effect', {
+  strokeEffects: instances('Photoshop Stroke effects, top first, apart from strokes (Rust)', object('stroke effect', {
+    on: instanceOn(),
     size: number('px', 0, SHADOW_SIZE_MAX),
     position: choice('on the letters edge', STROKE_POSITIONS),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
@@ -278,6 +287,9 @@ export const STYLE_SCHEMA = {
   blending: object('Photoshop advanced blending', {
     interior: boolean('Fill also fades overlays, satin, inner glow (Rust)'),
     knockout: choice('stored and in the PSD, not painted', KNOCKOUT_MODES),
+    blendClipped: { ...boolean('default true; stored+PSD'), optional: true },
+    transparencyShapes: { ...boolean('default true; false: special-eight fill blends its alpha (Rust)'), optional: true },
+    vectorMaskHidesEffects: { ...boolean('default false; stored'), optional: true },
     channels: object('false keeps the page art channel (Rust)', { r: boolean('R'), g: boolean('G'), b: boolean('B') }),
     blendIf: object('Blend If (Rust)', Object.fromEntries(['gray', 'red', 'green', 'blue'].map((c) => [c, blendIfPair()]))),
   }),
