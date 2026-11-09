@@ -146,9 +146,10 @@ export async function pageSpace(p) {
   if (probe) {
     try {
       const img = await loadImage(probe);
-      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-        return { w: img.naturalWidth, h: img.naturalHeight };
-      }
+      const { naturalWidth: w, naturalHeight: h } = img;
+      // Only its size was wanted: the decoded picture goes back now.
+      img.removeAttribute?.('src');
+      if (w > 0 && h > 0) return { w, h };
     } catch {
       /* fall through to the defaults */
     }
@@ -1488,6 +1489,9 @@ export async function renderPageCanvas(p, scale = 1) {
     paintBoxOnPage(ctx, box, p, tips, art, { w: W, h: H });
     ctx.restore();
   }
+  // The page is drawn and every blend has read it: its decoded picture goes
+  // back now, not when the collector next runs (a batch decodes one a page).
+  art?.image.removeAttribute?.('src');
   return canvas;
 }
 
@@ -1649,17 +1653,29 @@ export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, d
   // layer's pixels are un-blended and Photoshop blends them from the layer's
   // `blendMode`, so a backdrop here would blend twice. An Align off gradient
   // is laid over `sheet`.
-  paintBoxOnPage(ctx, box, p, tips, null, sheet);
+  const drawn = watchDraws(ctx);
+  try {
+    paintBoxOnPage(ctx, box, p, tips, null, sheet);
+  } finally {
+    drawn.stop();
+  }
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  const full = ctx.getImageData(0, 0, SW, SH);
+  // Read back only what the paint can have touched (`watchDraws`): the canvas
+  // was cleared, so every pixel outside it is transparent and the scan below
+  // finds the same bounds it finds over the whole page. A page-size read per
+  // box was most of a PSD export's memory and time.
+  const area = drawn.area(SW, SH);
+  if (!area) return null; // nothing drawn
+  const full = ctx.getImageData(area.x, area.y, area.w, area.h);
   const d = full.data;
-  let minX = SW,
-    minY = SH,
+  const AW = area.w;
+  let minX = AW,
+    minY = area.h,
     maxX = -1,
     maxY = -1;
-  for (let y = 0; y < SH; y++) {
-    for (let x = 0; x < SW; x++) {
-      if (d[(y * SW + x) * 4 + 3] !== 0) {
+  for (let y = 0; y < area.h; y++) {
+    for (let x = 0; x < AW; x++) {
+      if (d[(y * AW + x) * 4 + 3] !== 0) {
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
@@ -1673,14 +1689,104 @@ export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, d
   const out = document.createElement('canvas');
   out.width = w;
   out.height = h;
-  out.getContext('2d').putImageData(full, -minX, -minY);
+  const octx = out.getContext('2d');
+  octx.putImageData(full, -minX, -minY);
+  const imageData = octx.getImageData(0, 0, w, h);
+  out.width = 0;
+  out.height = 0;
+  minX += area.x;
+  minY += area.y;
   return {
-    imageData: out.getContext('2d').getImageData(0, 0, w, h),
+    imageData,
     left: minX,
     top: minY,
     right: minX + w,
     bottom: minY + h,
     opacity: box.style.opacity ?? 1,
+  };
+}
+
+// What a paint into `ctx` can have touched, in device pixels, watched while it
+// runs: `area(W, H)` is that rectangle on a W x H canvas, the whole canvas when
+// the paint did something this cannot place, or null when it drew nothing.
+// Placed are a `drawImage` and a `putImageData` with no shadow and no filter
+// (their rectangles, through the transform for a `drawImage`, a pixel wider
+// all round); anything else that draws (a fill, a stroke, text, a shadow or a
+// filter that spreads) makes the area the whole canvas. A clip, an alpha or a
+// composite mode only ever leaves less ink inside the same rectangles.
+// Watched on the context object itself, and given back by `stop`.
+const DRAW_CALLS = ['fill', 'stroke', 'fillRect', 'strokeRect', 'fillText', 'strokeText', 'drawFocusIfNeeded'];
+export function watchDraws(ctx) {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  let whole = typeof ctx.getTransform !== 'function';
+  const add = (xs, ys) => {
+    for (const v of xs) {
+      if (!Number.isFinite(v)) whole = true;
+      if (v < x0) x0 = v;
+      if (v > x1) x1 = v;
+    }
+    for (const v of ys) {
+      if (!Number.isFinite(v)) whole = true;
+      if (v < y0) y0 = v;
+      if (v > y1) y1 = v;
+    }
+  };
+  // A shadow or a filter puts ink outside the rectangle drawn.
+  const spreads = () =>
+    (ctx.filter && ctx.filter !== 'none') ||
+    ((ctx.shadowBlur || ctx.shadowOffsetX || ctx.shadowOffsetY) && !/^(transparent|rgba\(0, 0, 0, 0\))$/.test(String(ctx.shadowColor)));
+  const own = {};
+  const watch = (name, place) => {
+    const real = ctx[name];
+    if (typeof real !== 'function') return;
+    own[name] = Object.prototype.hasOwnProperty.call(ctx, name) ? real : undefined;
+    ctx[name] = function (...args) {
+      if (!whole) {
+        if (!place || spreads()) whole = true;
+        else place(args);
+      }
+      return real.apply(this, args);
+    };
+  };
+  watch('drawImage', (a) => {
+    const img = a[0];
+    let dx, dy, dw, dh;
+    if (a.length >= 9) [dx, dy, dw, dh] = [a[5], a[6], a[7], a[8]];
+    else if (a.length >= 5) [dx, dy, dw, dh] = [a[1], a[2], a[3], a[4]];
+    else [dx, dy, dw, dh] = [a[1], a[2], img?.naturalWidth || img?.width, img?.naturalHeight || img?.height];
+    const m = ctx.getTransform();
+    const xs = [];
+    const ys = [];
+    for (const [u, v] of [[dx, dy], [dx + dw, dy], [dx, dy + dh], [dx + dw, dy + dh]]) {
+      xs.push(m.a * u + m.c * v + m.e);
+      ys.push(m.b * u + m.d * v + m.f);
+    }
+    add(xs, ys);
+  });
+  watch('putImageData', (a) => {
+    const [img, dx, dy] = a;
+    add([dx, dx + (img?.width ?? Infinity)], [dy, dy + (img?.height ?? Infinity)]);
+  });
+  for (const name of DRAW_CALLS) watch(name, null);
+  return {
+    stop() {
+      for (const [name, real] of Object.entries(own)) {
+        if (real === undefined) delete ctx[name];
+        else ctx[name] = real;
+      }
+    },
+    area(W, H) {
+      if (whole) return { x: 0, y: 0, w: W, h: H };
+      if (!(x1 >= x0 && y1 >= y0)) return null;
+      const x = Math.max(0, Math.floor(x0) - 1);
+      const y = Math.max(0, Math.floor(y0) - 1);
+      const w = Math.min(W, Math.ceil(x1) + 1) - x;
+      const h = Math.min(H, Math.ceil(y1) + 1) - y;
+      return w > 0 && h > 0 ? { x, y, w, h } : null;
+    },
   };
 }
 
@@ -2021,7 +2127,12 @@ function downloadBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+// A rendered item's bytes. A PSD comes as the bytes ag-psd wrote (see
+// `exportImages`): handed on as they are, with no Blob copy and no second
+// copy read back out of it.
 async function blobBytes(blob) {
+  if (blob instanceof ArrayBuffer) return new Uint8Array(blob);
+  if (blob instanceof Uint8Array) return blob;
   return new Uint8Array(await blob.arrayBuffer());
 }
 
@@ -2328,7 +2439,10 @@ export async function exportImages(fmt, scope) {
             // ag-psd isn't pulled into the raster-export path.
             const { buildPagePsd } = await import('./psd.js');
             const bytes = await buildPagePsd(p, { chapter, column: longstrip ? column : null });
-            return new Blob([bytes], { type: MIME.PSD });
+            // Written straight from these bytes under Tauri (`blobBytes`):
+            // a Blob of them is a second copy of a file that can run to
+            // hundreds of megabytes, and reading it back is a third.
+            return isTauri() ? bytes : new Blob([bytes], { type: MIME.PSD });
           }
           if (longstrip && RASTER.has(fmt)) {
             return await renderStripPageBlob(p, fmt, column, () => chapterHeld(chapter, written));

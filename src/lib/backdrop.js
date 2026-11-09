@@ -72,8 +72,20 @@ export function boxToPage(box, L, at = null) {
 
 // The last crop of a box the editor painted, by the box: a slider drag
 // repaints with the same rectangle and matrix, and pays the engine only.
+// Eight boxes, and no more than `HELD_MAX_BYTES` of crops between them: a
+// crop can be 64 MB (`BACKDROP_MAX_PX`), and eight of those held for a slider
+// that is dragging one is half a gigabyte for nothing. The newest crop is kept
+// whatever its size; it is the one the drag repaints.
 const MAX_HELD = 8;
+export const HELD_MAX_BYTES = 64 * 1024 * 1024;
 const held = new Map();
+let heldBytes = 0;
+function forget(k) {
+  const e = held.get(k);
+  if (!e) return;
+  heldBytes -= e.data.length;
+  held.delete(k);
+}
 
 /**
  * The page art under a box's surface, or null (no art, a matrix that is not
@@ -126,16 +138,20 @@ export function backdropPixels(under, A, rect) {
   cnv.width = 0;
   cnv.height = 0;
   if (data && under.key) {
-    held.delete(under.key);
+    forget(under.key);
     held.set(under.key, { key, data });
-    while (held.size > MAX_HELD) held.delete(held.keys().next().value);
+    heldBytes += data.length;
+    while (held.size > 1 && (held.size > MAX_HELD || heldBytes > HELD_MAX_BYTES)) forget(held.keys().next().value);
   }
   return data;
 }
 
 /** How many crops are held (tests). */
 export const backdropsHeld = () => held.size;
+/** How many bytes the held crops are (tests). */
+export const backdropBytesHeld = () => heldBytes;
 /** Forget every held crop. */
 export function forgetBackdrops() {
   held.clear();
+  heldBytes = 0;
 }

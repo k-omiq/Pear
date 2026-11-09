@@ -955,6 +955,21 @@ describe('chapter snapshots', () => {
   });
 });
 
+describe('the chapter text the outside-change check compares with', () => {
+  it('is held for the open chapter only', async () => {
+    const { _chapterTextsHeld } = await import('./library.svelte.js');
+    const p = await createProject('Held texts');
+    const a = await createChapter({ projectId: p.id, number: 1, title: '', files: [fakeFile('page.png', 1)] });
+    const b = await createChapter({ projectId: p.id, number: 2, title: '', files: [fakeFile('page.png', 1)] });
+    await openChapter(p.id, a.id);
+    expect(_chapterTextsHeld()).toEqual([a.dir]);
+    closeChapter();
+    await openChapter(p.id, b.id);
+    expect(_chapterTextsHeld()).toEqual([b.dir]);
+    closeChapter();
+  });
+});
+
 const { tags, createTag, findTag, rememberTagSize, tagSize } = await import('./tags.svelte.js');
 
 describe('tag registry per project', () => {

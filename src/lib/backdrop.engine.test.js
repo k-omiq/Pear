@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createCanvas, Image } from '@napi-rs/canvas';
 import { rustEngine } from '../test/rust-engine.js';
-import { renderBox, renderBoxTexture, renderPageCanvas, renderBoxLayer } from './exporter.js';
+import { renderBox, renderBoxTexture, renderPageCanvas, renderBoxLayer, watchDraws } from './exporter.js';
+import { wireBytes } from '../../text-engine/js/paint.mjs';
 import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { backdropPixels, boxToPage, forgetBackdrops, BACKDROP_MAX_PX } from './backdrop.js';
+import { backdropPixels, boxToPage, forgetBackdrops, BACKDROP_MAX_PX, HELD_MAX_BYTES, backdropBytesHeld, backdropsHeld } from './backdrop.js';
 
 // ===========================================================================
 // The page backdrop, painted (LAYER_STYLES_PLAN.md phase 6a)
@@ -162,6 +163,31 @@ describe('a box over the page art', () => {
     expect(backdropPixels({ image, W, H, src: 's', key }, [1, 0, 0, 1, 6, 5], rect)).not.toBe(a);
   });
 
+  it('holds no more than HELD_MAX_BYTES of crops, and always the newest', () => {
+    const image = flatArt('#336699');
+    // Five boxes of 16 MiB crops each: eight would fit the count, not the bytes.
+    const side = 2048;
+    const rect = { x0: 0, y0: 0, width: side, height: side, m: [1, 0, 0, 1, 0, 0] };
+    const keys = [{}, {}, {}, {}, {}];
+    const crops = keys.map((key) => backdropPixels({ image, W, H, src: 's', key }, [1, 0, 0, 1, 0, 0], rect));
+    expect(backdropBytesHeld()).toBeLessThanOrEqual(HELD_MAX_BYTES);
+    expect(backdropsHeld()).toBe(HELD_MAX_BYTES / (side * side * 4));
+    // The newest is held: its repaint is the cached crop. The oldest went.
+    expect(backdropPixels({ image, W, H, src: 's', key: keys[4] }, [1, 0, 0, 1, 0, 0], rect) === crops[4]).toBe(true);
+    expect(backdropPixels({ image, W, H, src: 's', key: keys[0] }, [1, 0, 0, 1, 0, 0], rect) === crops[0]).toBe(false);
+    forgetBackdrops();
+    expect(backdropBytesHeld()).toBe(0);
+  });
+
+  it('is not kept in the wire buffer once the engine has it', () => {
+    // A surface of about 1300 x 700 device px: a backdrop past the buffer's keep.
+    const box = boxOf({ blendMode: 'multiply' }, { x: 0, y: 0, w: 600, h: 300 });
+    const under = { image: flatArt('#8080c0'), W, H, src: 'big' };
+    renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, null, under);
+    expect(asked.at(-1).bytes.length).toBeGreaterThan(1 << 20);
+    expect(wireBytes()).toBeLessThanOrEqual(1 << 20);
+  });
+
   it('with Blend Interior Effects as Group fades a colour overlay with the fill', () => {
     const ov = [{ color: '#0000ff', opacity: 1, blend: 'normal' }];
     const tex = (blending) => {
@@ -275,6 +301,51 @@ describe('Blend If and Channels over the page art', () => {
     let shown = 0;
     for (let i = 0; i < d.length; i += 4) if (d[i] === 255 && d[i + 1] === 0 && d[i + 3] === 255) shown++;
     expect(shown).toBeGreaterThan(200);
+  });
+});
+
+describe('a PSD layer\'s read back', () => {
+  it('reads only the area the paint drew, and finds the same pixels a whole-page read does', () => {
+    const box = boxOf({ color: '#ff0000', shadows: [{ x: 6, y: 5, size: 3, color: '#000000', opacity: 0.8 }] });
+    const p = pageOf([box]);
+    const scratch = createCanvas(W, H);
+    const ctx = scratch.getContext('2d');
+    const read = [];
+    const real = ctx.getImageData.bind(ctx);
+    ctx.getImageData = (x, y, w, h) => (read.push([x, y, w, h]), real(x, y, w, h));
+    const layer = renderBoxLayer(box, W, H, scratch, p);
+    delete ctx.getImageData;
+    expect(read[0][2] * read[0][3]).toBeLessThan(W * H / 2);
+    // The scratch still holds the paint: scan all of it as the old read did.
+    const d = real(0, 0, W, H).data;
+    let [x0, y0, x1, y1] = [W, H, -1, -1];
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (d[(y * W + x) * 4 + 3]) [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
+    expect([layer.left, layer.top, layer.right, layer.bottom]).toEqual([x0, y0, x1 + 1, y1 + 1]);
+    const crop = createCanvas(x1 - x0 + 1, y1 - y0 + 1).getContext('2d');
+    crop.putImageData(real(0, 0, W, H), -x0, -y0);
+    expect(Buffer.from(layer.imageData.data).equals(Buffer.from(crop.getImageData(0, 0, x1 - x0 + 1, y1 - y0 + 1).data))).toBe(true);
+  });
+
+  it('watches drawImage and putImageData, and takes the whole canvas for anything else', () => {
+    const ctx = createCanvas(200, 100).getContext('2d');
+    const img = createCanvas(10, 10);
+    let w = watchDraws(ctx);
+    expect(w.area(200, 100)).toBe(null);
+    ctx.setTransform(2, 0, 0, 2, 20.5, 4);
+    ctx.drawImage(img, 3, 1);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.putImageData(ctx.createImageData(5, 5), 150, 90);
+    w.stop();
+    // drawImage: x 26.5..46.5, y 6..26; putImageData: 150..155, 90..95; a pixel more all round.
+    expect(w.area(200, 100)).toEqual({ x: 25, y: 5, w: 156 - 25, h: 96 - 5 });
+    expect(Object.prototype.hasOwnProperty.call(ctx, 'drawImage')).toBe(false);
+    for (const draw of [(c) => c.fillRect(0, 0, 1, 1), (c) => c.fillText('a', 5, 5), (c) => { c.shadowColor = '#000'; c.shadowBlur = 4; c.drawImage(img, 0, 0); }]) {
+      ctx.shadowBlur = 0;
+      w = watchDraws(ctx);
+      draw(ctx);
+      w.stop();
+      expect(w.area(200, 100)).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    }
   });
 });
 

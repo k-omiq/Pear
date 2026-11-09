@@ -36,6 +36,24 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     STATE.with(|s| f(&mut s.borrow_mut()))
 }
 
+/// A job buffer larger than this is let go once its job is decoded
+/// (`drop_big_job`). A job is a few kilobytes of text and records; one that
+/// carries a backdrop or a big picked tile can be tens of megabytes, and the
+/// decoded job holds its own copy of those. Kept, the buffer would be a second
+/// copy for the whole paint, and the paint's own buffers would have to be
+/// found past it: wasm memory never shrinks, so that is the module's size
+/// for the rest of the session.
+pub const JOB_KEEP_BYTES: usize = 1 << 20;
+
+/// Lets the job buffer go when it is past [`JOB_KEEP_BYTES`]. Called once the
+/// job is decoded: nothing reads the wire form after that, and the next job
+/// reserves its own.
+fn drop_big_job(job: &mut Vec<u8>) {
+    if job.capacity() > JOB_KEEP_BYTES {
+        *job = Vec::new();
+    }
+}
+
 /// Largest job accepted, in bytes. A guard like the surface's: a job is its
 /// text and its pattern tiles, and the largest the app can write is a few
 /// megabytes.
@@ -77,6 +95,7 @@ pub extern "C" fn mt_paint_job(byte_len: usize) -> i32 {
         let painted = (|| -> Result<Option<Raster>, Error> {
             let _budget = paint::budget::Scope::new();
             let request = paint::decode(s.job.get(..byte_len).ok_or(Error::BadSpec)?)?;
+            drop_big_job(&mut s.job);
             #[cfg(any(
                 feature = "raster-tiny-skia",
                 feature = "raster-zeno",
@@ -123,6 +142,7 @@ pub extern "C" fn mt_paint_box(byte_len: usize) -> i32 {
         let painted = (|| -> Result<Option<Raster>, Error> {
             let _budget = paint::budget::Scope::new();
             let mut request = paint::decode_box(s.job.get(..byte_len).ok_or(Error::BadSpec)?)?;
+            drop_big_job(&mut s.job);
             with_engine(|engine| paint::paint_box(engine, &mut request))
         })();
         // The tips this job named may go again.
@@ -275,6 +295,7 @@ pub extern "C" fn mt_paint_pattern_swatch(byte_len: usize) -> i32 {
             let _budget = paint::budget::Scope::new();
             let (w, h, fill, tiles) =
                 paint::decode_swatch(s.job.get(..byte_len).ok_or(Error::BadSpec)?)?;
+            drop_big_job(&mut s.job);
             let pixels = paint::pattern_swatch(w, h, fill.as_ref(), &tiles)?;
             Ok((w, h, pixels))
         })();
@@ -326,4 +347,27 @@ pub extern "C" fn mt_paint_rasterizer(id: u32) -> i32 {
     }
     with(|s| s.rasterizer = id);
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_big_job_buffer_goes_once_decoded_and_a_small_one_stays() {
+        let mut small = Vec::with_capacity(JOB_KEEP_BYTES);
+        small.resize(64, 7);
+        drop_big_job(&mut small);
+        assert_eq!((small.len(), small.capacity() >= JOB_KEEP_BYTES), (64, true));
+        let mut big = vec![0u8; JOB_KEEP_BYTES + 1];
+        drop_big_job(&mut big);
+        assert_eq!(big.capacity(), 0);
+        // The next reserve grows a fresh buffer: the pointer is good again.
+        assert!(!mt_paint_job_reserve(JOB_KEEP_BYTES * 2).is_null());
+        with(|s| {
+            drop_big_job(&mut s.job);
+            assert_eq!(s.job.capacity(), 0);
+        });
+        assert!(!mt_paint_job_reserve(16).is_null());
+    }
 }

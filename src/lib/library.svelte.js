@@ -82,6 +82,10 @@ const diskText = new Map();
 export function _noteChapterRead(chapterDir, text) {
   diskText.set(chapterDir, text);
 }
+// The chapter directories whose text is held (tests).
+export function _chapterTextsHeld() {
+  return [...diskText.keys()];
+}
 const SNAPSHOT_INTERVAL_MS = 10 * 60 * 1000;
 const sourceUndos = new Map();
 
@@ -2303,6 +2307,11 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   const chapterText = await fsx.readTextFile(path);
   if (!mine()) return;
   const record = JSON.parse(chapterText);
+  // Only the open chapter's text is wanted (one chapter a window): the texts
+  // of the chapters opened before it would sit here for the rest of the
+  // session, a whole chapter.json each. A save of the last one still landing
+  // puts its own back, and the next open lets it go.
+  for (const dir of diskText.keys()) if (dir !== c.dir) diskText.delete(dir);
   diskText.set(c.dir, chapterText);
   // Preserve exactly what was read, before open repairs or normalises it.
   // An unavailable snapshot shelf must never cost the user an otherwise valid
