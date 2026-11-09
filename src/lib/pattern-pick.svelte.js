@@ -32,6 +32,10 @@ export const patternPick = $state({
   active: false,
   pageId: null,
   boxId: null,
+  // Which of the box's patterns the tile goes to, a path into its style:
+  // 'pattern' (the fill's), 'patternOverlay.pattern', 'bevel.texture.pattern'
+  // or 'strokeEffects.<i>.pattern' (`stylePatterns` in data.js).
+  target: 'pattern',
   // Read the raw page instead of the cleaned one.
   raw: false,
   busy: false,
@@ -43,11 +47,22 @@ export function canPickPattern() {
   return p?.screen === true && extractsTiles(p.engine?.low);
 }
 
-export function startPatternPick(pageId, boxId) {
+export function startPatternPick(pageId, boxId, target = 'pattern') {
   if (patternPick.busy) return;
   patternPick.active = true;
   patternPick.pageId = pageId;
   patternPick.boxId = boxId;
+  patternPick.target = PICK_TARGET.test(target) ? target : 'pattern';
+}
+
+// The pattern paths a pick may write to.
+const PICK_TARGET = /^(pattern|patternOverlay\.pattern|bevel\.texture\.pattern|strokeEffects\.\d+\.pattern)$/;
+
+/** The pattern at `target` in `style` (see `patternPick.target`), or null. */
+export function patternAtPath(style, target) {
+  if (!PICK_TARGET.test(target ?? '')) return null;
+  const p = target.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), style);
+  return p && typeof p === 'object' ? p : null;
 }
 
 export function cancelPatternPick() {
@@ -102,6 +117,7 @@ async function readCrop(src, r) {
  */
 export async function finishPatternPick(pageId, rect) {
   const boxId = patternPick.boxId;
+  const target = patternPick.target;
   const raw = patternPick.raw;
   patternPick.active = false;
   const pg = pageById(pageId);
@@ -127,8 +143,10 @@ export async function finishPatternPick(pageId, rect) {
     if (seq !== chapterOpenSeq()) return;
     const box = pageById(pageId)?.boxes.find((b) => b.id === boxId);
     if (!box) return;
+    const p = patternAtPath(box.style, target);
+    // The effect it was for was removed while the tile was read.
+    if (!p) return;
     const before = cloneStyle(box.style);
-    const p = box.style.pattern;
     // The tone at the page's own size and lie: the geometry controls start
     // over, the colours and opacities stay the box's.
     Object.assign(p, {

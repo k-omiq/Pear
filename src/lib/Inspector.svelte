@@ -37,6 +37,8 @@
     PATTERN_KINDS,
     CANVAS_PATTERN_KINDS,
     SEEDED_PATTERN_KINDS,
+    PATTERN_SCALE_MIN,
+    PATTERN_SCALE_MAX,
     GRADIENT_MAX_STOPS,
     defaultPathPts,
     WARP_MIN_GRID,
@@ -53,6 +55,7 @@
     ITALIC_ANGLE_DEF,
     CONTOUR_PRESETS,
     CONTOUR_LABELS,
+    normalizeContour,
     SHADOW_SIZE_MAX,
     SHADOW_DISTANCE_MAX,
     SATIN_DISTANCE_MAX,
@@ -94,6 +97,8 @@
   import { patternPick, startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
   import BlendRangeSlider from './BlendRangeSlider.svelte';
+  import ContourEditor from './ContourEditor.svelte';
+  import { contourPoints } from './contour-curve.js';
   import { brushArmed } from './brush-tool.svelte.js';
   // Which tab is open is session state shared with the keyboard - see
   // inspector-tabs.svelte.js. The panel is one of two writers, not the owner.
@@ -791,10 +796,16 @@
   }
   // Pattern from page: the next drag on the page is read (pattern-pick.svelte.js),
   // which records its own style step, so the panel's pending one lands first.
-  function pickFromPage() {
+  function pickFromPage(target = 'pattern') {
     if (!box) return;
     settle();
-    startPatternPick(page().id, box.id);
+    startPatternPick(page().id, box.id, target);
+  }
+  // An effect's pattern takes the tile the fill already took from the page,
+  // at the page's own size and lie, as a pick does.
+  function usePickedTile(p, from) {
+    Object.assign(p, { kind: 'picked', src: from.src, cell: [...from.cell], mode: from.mode, scale: 1, angle: 0, aspect: 1, density: 0.5, ox: 0, oy: 0 });
+    touch();
   }
 
   // ---- strokes ----
@@ -905,6 +916,27 @@
   }
   function setShadowContour(sh, preset) {
     sh.contour = { preset, aa: sh.contour?.aa === true };
+    touch();
+  }
+  // ---- custom contours (ContourEditor) ----
+  // The one contour editor open, by its title; a press on the panel arms
+  // the step, so a drag in the editor is one undo step and a field edit
+  // another.
+  let contourOpen = $state(null);
+  // A contour picked from its menu. Custom starts from the curve it was
+  // and opens the editor on it.
+  function pickContour(owner, key, value, id) {
+    const was = owner[key];
+    if (value === 'custom') {
+      if (was?.preset !== 'custom') owner[key] = normalizeContour({ preset: 'custom', aa: was?.aa === true, pts: contourPoints(was) });
+      contourOpen = id;
+    } else {
+      owner[key] = { preset: value, aa: was?.aa === true };
+    }
+    touch();
+  }
+  function setContour(owner, key, next) {
+    owner[key] = next;
     touch();
   }
 
@@ -1204,19 +1236,19 @@
         </label>
         <label class="sh-contour" title="Contour: how the soft edge falls off">
           <span>Contour</span>
-          <select value={sh.contour?.preset ?? 'linear'} aria-label="{name} {i + 1} contour" onchange={(e) => setShadowContour(sh, e.target.value)}>
+          <select value={sh.contour?.preset ?? 'linear'} aria-label="{name} {i + 1} contour" onchange={(e) => pickContour(sh, 'contour', e.target.value, `${name} ${i + 1} contour`)}>
             {#each CONTOUR_PRESETS as id (id)}
               <option value={id}>{CONTOUR_LABELS[id]}</option>
             {/each}
-            {#if sh.contour?.preset === 'custom'}
-              <option value="custom">{CONTOUR_LABELS.custom}</option>
-            {/if}
+            <option value="custom">{CONTOUR_LABELS.custom}</option>
           </select>
+          {@render contourEditBtn(`${name} ${i + 1} contour`, false)}
         </label>
         <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
           <input type="checkbox" checked={sh.contour?.aa === true} aria-label="{name} {i + 1} contour anti-aliased" onchange={(e) => { sh.contour = { ...sh.contour, aa: e.target.checked }; touch(); }} />
           <span>Anti-aliased</span>
         </label>
+        {@render contourPanel(sh, 'contour', `${name} ${i + 1} contour`)}
         <label class="sh-check" title="Use Global Light: the angle is the chapter's, shared by every shadow that uses it">
           <input type="checkbox" checked={sh.useGlobalLight} aria-label="{name} {i + 1} uses the global light" onchange={(e) => setShadowGlobal(sh, e.target.checked)} />
           <span>Global light</span>
@@ -1325,19 +1357,19 @@
       </label>
       <label class="sh-contour" title="Contour: how the glow falls off">
         <span>Contour</span>
-        <select value={g.contour?.preset ?? 'linear'} disabled={!g.on} aria-label="{title} contour" onchange={(e) => setShadowContour(g, e.target.value)}>
+        <select value={g.contour?.preset ?? 'linear'} disabled={!g.on} aria-label="{title} contour" onchange={(e) => pickContour(g, 'contour', e.target.value, `${title} contour`)}>
           {#each CONTOUR_PRESETS as id (id)}
             <option value={id}>{CONTOUR_LABELS[id]}</option>
           {/each}
-          {#if g.contour?.preset === 'custom'}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          {/if}
+          <option value="custom">{CONTOUR_LABELS.custom}</option>
         </select>
+        {@render contourEditBtn(`${title} contour`, !g.on)}
       </label>
       <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
         <input type="checkbox" checked={g.contour?.aa === true} disabled={!g.on} aria-label="{title} contour anti-aliased" onchange={(e) => { g.contour = { ...g.contour, aa: e.target.checked }; touch(); }} />
         <span>Anti-aliased</span>
       </label>
+      {@render contourPanel(g, 'contour', `${title} contour`)}
     </div>
     <!-- Quality > Jitter: scatters each pixel's colour along the gradient, so
          only a gradient glow has it (Photoshop greys it out on a colour). -->
@@ -1414,19 +1446,19 @@
     <div class="sh-more" style="margin:0">
       <label class="sh-contour" title="Contour: Satin reads it from its far end, as Photoshop does">
         <span>Contour</span>
-        <select value={sa.contour?.preset ?? 'linear'} disabled={!sa.on} aria-label="Satin contour" onchange={(e) => setShadowContour(sa, e.target.value)}>
+        <select value={sa.contour?.preset ?? 'linear'} disabled={!sa.on} aria-label="Satin contour" onchange={(e) => pickContour(sa, 'contour', e.target.value, 'Satin contour')}>
           {#each CONTOUR_PRESETS as id (id)}
             <option value={id}>{CONTOUR_LABELS[id]}</option>
           {/each}
-          {#if sa.contour?.preset === 'custom'}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          {/if}
+          <option value="custom">{CONTOUR_LABELS.custom}</option>
         </select>
+        {@render contourEditBtn('Satin contour', !sa.on)}
       </label>
       <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
         <input type="checkbox" checked={sa.contour?.aa === true} disabled={!sa.on} aria-label="Satin contour anti-aliased" onchange={(e) => { sa.contour = { ...sa.contour, aa: e.target.checked }; touch(); }} />
         <span>Anti-aliased</span>
       </label>
+      {@render contourPanel(sa, 'contour', 'Satin contour')}
       <label class="sh-check" title="Invert: lay the inverse of the gap between the copies">
         <input type="checkbox" checked={sa.invert} disabled={!sa.on} aria-label="Satin invert" onchange={(e) => { sa.invert = e.target.checked; touch(); }} />
         <span>Invert</span>
@@ -1530,19 +1562,19 @@
     <div class="sh-more" style="margin:0">
       <label class="sh-contour" title="Gloss Contour: reshapes the shading">
         <span>Gloss</span>
-        <select value={bv.gloss?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel gloss contour" onchange={(e) => { bv.gloss = { preset: e.target.value, aa: bv.gloss?.aa === true }; touch(); }}>
+        <select value={bv.gloss?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel gloss contour" onchange={(e) => pickContour(bv, 'gloss', e.target.value, 'Bevel gloss contour')}>
           {#each CONTOUR_PRESETS as id (id)}
             <option value={id}>{CONTOUR_LABELS[id]}</option>
           {/each}
-          {#if bv.gloss?.preset === 'custom'}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          {/if}
+          <option value="custom">{CONTOUR_LABELS.custom}</option>
         </select>
+        {@render contourEditBtn('Bevel gloss contour', !bv.on)}
       </label>
       <label class="sh-check" title="Anti-aliased gloss: carried to Photoshop; the engine does not paint it">
         <input type="checkbox" checked={bv.gloss?.aa === true} disabled={!bv.on} aria-label="Bevel gloss anti-aliased" onchange={(e) => { bv.gloss = { ...bv.gloss, aa: e.target.checked }; touch(); }} />
         <span>Anti-aliased</span>
       </label>
+      {@render contourPanel(bv, 'gloss', 'Bevel gloss contour')}
     </div>
     {#each [['highlight', 'Highlight'], ['shadow', 'Shadow']] as [key, label] (key)}
       {@const sh = bv[key]}
@@ -1575,19 +1607,19 @@
       <div class="sh-more" style="margin:0">
         <label class="sh-contour" title="Contour: reshapes the bevel's slope">
           <span>Contour</span>
-          <select value={bv.contour.curve?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel contour curve" onchange={(e) => { bv.contour.curve = { preset: e.target.value, aa: bv.contour.curve?.aa === true }; touch(); }}>
+          <select value={bv.contour.curve?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel contour curve" onchange={(e) => pickContour(bv.contour, 'curve', e.target.value, 'Bevel contour curve')}>
             {#each CONTOUR_PRESETS as id (id)}
               <option value={id}>{CONTOUR_LABELS[id]}</option>
             {/each}
-            {#if bv.contour.curve?.preset === 'custom'}
-              <option value="custom">{CONTOUR_LABELS.custom}</option>
-            {/if}
+            <option value="custom">{CONTOUR_LABELS.custom}</option>
           </select>
+          {@render contourEditBtn('Bevel contour curve', !bv.on)}
         </label>
         <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
           <input type="checkbox" checked={bv.contour.curve?.aa === true} disabled={!bv.on} aria-label="Bevel contour anti-aliased" onchange={(e) => { bv.contour.curve = { ...bv.contour.curve, aa: e.target.checked }; touch(); }} />
           <span>Anti-aliased</span>
         </label>
+        {@render contourPanel(bv.contour, 'curve', 'Bevel contour curve')}
         <label class="sh-num" title="Range, %: kept and written to Photoshop; the engine does not paint it yet">
           <span>Range (not painted yet)</span>
           <input type="number" min="0" max="100" step="1" value={pct(bv.contour.range)} disabled={!bv.on} aria-label="Bevel contour range, percent" onchange={(e) => commitAlpha(bv.contour, 'range', e)} />
@@ -1611,7 +1643,7 @@
     </div>
     {#if bv.texture.on}
       <div class="fx-block">
-        {@render fxPatternControls(bv.texture.pattern, 'Bevel texture')}
+        {@render fxPatternControls(bv.texture.pattern, 'Bevel texture', 'bevel.texture.pattern')}
         <div class="sh-more" style="margin:0">
           <label class="sh-num" title="Scale, %: over the pattern's own">
             <span>Scale</span>
@@ -1736,21 +1768,35 @@
   {/if}
 {/snippet}
 
+<!-- A contour menu's Edit button, and the editor it opens under the row
+     (ContourEditor): a custom curve drawn point by point. -->
+{#snippet contourEditBtn(id, off)}
+  <button type="button" class="ce-open" class:on={contourOpen === id} disabled={off} aria-label="{id}: edit the curve" aria-expanded={contourOpen === id} title="Edit the curve" onclick={() => (contourOpen = contourOpen === id ? null : id)}>Edit</button>
+{/snippet}
+{#snippet contourPanel(owner, key, id)}
+  {#if contourOpen === id}
+    <div class="ce-span">
+      <ContourEditor contour={owner[key]} title={id[0].toUpperCase() + id.slice(1)} onchange={(c) => setContour(owner, key, c)} onclose={() => (contourOpen = null)} />
+    </div>
+  {/if}
+{/snippet}
+
 <!-- An effect's pattern: the fill's patterns, its two colours, its size and
      its turn. The finer controls stay the fill's own. -->
-{#snippet fxPatternControls(p, title)}
+{#snippet fxPatternControls(p, title, path)}
+  {@const pickable = rustPatterns && !!p.src && p.cell?.length > 0}
   <div class="sh-more" style="margin:0">
     <label class="sh-contour" title="Pattern">
       <span>Pattern</span>
       <select value={p.kind} aria-label="{title} kind" onchange={(e) => { p.kind = e.target.value; touch(); }}>
-        {#each PATTERN_KINDS.filter((k) => k !== 'picked') as k (k)}
+        {#each pickable ? [...PATTERN_KINDS, 'picked'] : PATTERN_KINDS as k (k)}
           <option value={k}>{patLabel(k)}</option>
         {/each}
       </select>
     </label>
-    <label class="sh-num" title="Scale: the tile against the font size, %">
+    <label class="sh-num" title="Scale: the tile against the font size, % (Photoshop's 1 to 1000)">
       <span>Scale</span>
-      <input type="number" min="25" max="400" step="5" value={pct(p.scale)} aria-label="{title} scale, percent" onchange={(e) => { const v = clamp(+e.target.value || 100, 25, 400); p.scale = v / 100; e.target.value = String(v); touch(); }} />
+      <input type="number" min={PATTERN_SCALE_MIN * 100} max={PATTERN_SCALE_MAX * 100} step="1" value={pct(p.scale)} aria-label="{title} scale, percent" onchange={(e) => { const v = clamp(Math.round(+e.target.value) || 100, PATTERN_SCALE_MIN * 100, PATTERN_SCALE_MAX * 100); p.scale = v / 100; e.target.value = String(v); touch(); }} />
     </label>
     <label class="sh-num" title="Turns the pattern, degrees">
       <span>Angle</span>
@@ -1768,7 +1814,32 @@
       <button type="button" class:on={p.anchor !== 'page'} aria-pressed={p.anchor !== 'page'} title="Each box starts its own tiles" onclick={() => { p.anchor = 'box'; touch(); }}>Box</button>
       <button type="button" class:on={p.anchor === 'page'} aria-pressed={p.anchor === 'page'} title="Tiles line up across boxes, from the page's corner (Link with Layer off)" onclick={() => { p.anchor = 'page'; touch(); }}>Page</button>
     </span>
+    <!-- Photoshop's Snap to Origin: the tiles start on the box's corner, or
+         the page's with Page on; the offset (Phase) goes back to 0. -->
+    <button type="button" class="add-btn" title="Start the tiles on the {p.anchor === 'page' ? "page's" : "box's"} corner (Snap to Origin)" aria-label="{title} snap to origin" disabled={!p.ox && !p.oy} onclick={() => { p.ox = 0; p.oy = 0; touch(); }}>Snap to origin</button>
   </div>
+  {#if rustPatterns && path}
+    <div class="pat-pick">
+      <button
+        type="button"
+        class="add-btn"
+        class:on={patternPick.active && patternPick.target === path}
+        disabled={patternPick.busy || !canPickPattern()}
+        title="Drag over a tone on the page; it becomes this effect's pattern"
+        aria-label="{title} pick from page"
+        onclick={() => pickFromPage(path)}
+      >{patternPick.busy ? 'Reading…' : patternPick.active && patternPick.target === path ? 'Drag on the page…' : 'Pick from page'}</button>
+      {#if !pickable && box?.style.pattern?.src && box.style.pattern.cell?.length}
+        <button type="button" class="add-btn" title="Use the tone the fill took from the page" aria-label="{title} use the fill's tone" onclick={() => usePickedTile(p, box.style.pattern)}>Use the fill's tone</button>
+      {/if}
+    </div>
+    {#if p.kind === 'picked'}
+      <div class="seg">
+        <button type="button" class:on={p.mode === 'tone'} aria-pressed={p.mode === 'tone'} title="Recolour the tone with the two colours below" onclick={() => { p.mode = 'tone'; touch(); }}>Tone</button>
+        <button type="button" class:on={p.mode === 'image'} aria-pressed={p.mode === 'image'} title="Keep the page's own greys" onclick={() => { p.mode = 'image'; touch(); }}>Image</button>
+      </div>
+    {/if}
+  {/if}
   <div class="insp-row fx-pat-colours">
     {@render swatchCell(p, 'fg', `${title} ink`)}
     <span class="lbl">Ink</span>
@@ -1824,7 +1895,7 @@
     {#if k.fill === 'gradient'}
       {@render fxGradientControls(k.gradient, `${name} gradient`)}
     {:else if k.fill === 'pattern'}
-      {@render fxPatternControls(k.pattern, `${name} pattern`)}
+      {@render fxPatternControls(k.pattern, `${name} pattern`, `strokeEffects.${i}.pattern`)}
     {:else}
       {@render colorField(k, 'color', `${name} colour`)}
     {/if}
@@ -2223,7 +2294,7 @@
                 </select>
                 <input type="number" min="0" max="100" step="1" value={pct(po.opacity)} aria-label="Pattern overlay opacity" title="Opacity, %" oninput={(e) => setAlpha(po, 'opacity', e.target.value)} />
               </div>
-              {@render fxPatternControls(po.pattern, 'Pattern overlay')}
+              {@render fxPatternControls(po.pattern, 'Pattern overlay', 'patternOverlay.pattern')}
               {#if !rustBoxes}
                 <p class="nofill-note">The pattern overlay needs the Rust text engine (Settings).</p>
               {/if}
@@ -2452,7 +2523,7 @@
                   class:on={patternPick.active}
                   disabled={patternPick.busy || !canPickPattern()}
                   title="Drag over a tone on the page; it becomes this box's pattern"
-                  onclick={pickFromPage}
+                  onclick={() => pickFromPage()}
                 >{patternPick.busy ? 'Reading…' : patternPick.active ? 'Drag on the page…' : 'Pick from page'}</button>
               </div>
               <div class="switch-row">
@@ -2477,11 +2548,11 @@
           {/if}
           <div class="grp">
             <span class="lbl">Scale · {Number(s.pattern.scale).toFixed(2)}×</span>
-            <!-- 0.25..4 is what normalizeStyle clamps to; a wider field here
-                 just let the panel show a number the model would not keep. -->
+            <!-- The slider spans the usual 0.25..4; the field takes all that
+                 normalizePattern keeps (PATTERN_SCALE_MIN..MAX, 1-1000 %). -->
             <div class="slider-row">
               <input type="range" min="0.25" max="4" step="0.05" value={s.pattern.scale} aria-label="Pattern scale" oninput={(e) => setNum(s.pattern, 'scale', e.target.value, 0.25, 4)} />
-              <input class="num-s" type="number" min="0.25" max="4" step="0.05" value={s.pattern.scale} title="Tile size, relative to the font size" aria-label="Pattern scale, multiple" oninput={(e) => setNum(s.pattern, 'scale', e.target.value, 0.25, 4)} />
+              <input class="num-s" type="number" min={PATTERN_SCALE_MIN} max={PATTERN_SCALE_MAX} step="0.05" value={s.pattern.scale} title="Tile size, relative to the font size" aria-label="Pattern scale, multiple" oninput={(e) => setNum(s.pattern, 'scale', e.target.value, PATTERN_SCALE_MIN, PATTERN_SCALE_MAX)} />
             </div>
           </div>
           <div class="row2">
@@ -3566,6 +3637,18 @@
     margin: -2px 0 6px 30px;
     font-size: 12px;
     color: var(--t2);
+  }
+  /* A contour's Edit button and its editor, across the row. */
+  .ce-open {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    font-size: 11px;
+  }
+  .ce-open.on {
+    color: var(--accent);
+  }
+  .ce-span {
+    grid-column: 1 / -1;
   }
   .sh-more label {
     display: flex;
