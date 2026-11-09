@@ -111,8 +111,9 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 14, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 15, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
+    assert_eq!(r.grain, (-1_234_567, 89_012));
     assert_eq!(
         r.shadows,
         vec![

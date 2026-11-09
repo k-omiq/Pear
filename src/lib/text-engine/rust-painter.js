@@ -160,6 +160,7 @@ export function createRustGlyphPainter(rust, options = {}) {
       ...request(spec.job, [m.a, m.b, m.c, m.d, m.e - x0, m.f - y0]),
       width,
       height,
+      grain: grainOrigin(spec.toPage, m, x0, y0),
       shadows: spec.shadows,
       blur: spec.blur,
       taps: spec.taps,
@@ -185,6 +186,29 @@ export function createRustGlyphPainter(rust, options = {}) {
     if (!raster) return null;
     blit(ctx, raster, x0 + raster.x, y0 + raster.y);
     return { x: x0 + raster.x, y: y0 + raster.y, w: raster.width, h: raster.height };
+  }
+
+  // Where the surface's corner (x0, y0), canvas device px, is on the page, in
+  // device px of the page (its page px times the canvas's device px to one):
+  // the engine hashes each grain from a surface pixel plus it (box wire v15).
+  // `A` is the layout onto the page (`boxToPage`), `m` the canvas matrix from
+  // the layout. Rounded to whole pixels: a surface cut a whole pixel wider
+  // moves its corner a whole pixel, and its grain stays on the page. With no
+  // page matrix the canvas's own corner is the anchor.
+  function grainOrigin(A, m, x0, y0) {
+    const det = m.a * m.d - m.b * m.c;
+    const detA = Array.isArray(A) ? A[0] * A[3] - A[1] * A[2] : 0;
+    if (!det || !detA || !Number.isFinite(det) || !Number.isFinite(detA)) return [x0, y0];
+    // The corner in the layout's units, then on the page.
+    const ux = x0 - m.e;
+    const uy = y0 - m.f;
+    const jx = (m.d * ux - m.c * uy) / det;
+    const jy = (-m.b * ux + m.a * uy) / det;
+    const px = A[0] * jx + A[2] * jy + A[4];
+    const py = A[1] * jx + A[3] * jy + A[5];
+    const k = Math.sqrt(Math.abs(det / detA));
+    // A hair over the half rounds up whichever way the float error falls.
+    return [Math.round(px * k + 1e-9), Math.round(py * k + 1e-9)];
   }
 
   // The engine's pixels onto the canvas at device pixel (x, y).

@@ -98,6 +98,7 @@
   import { clearSfx } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { glyphPainter } from './text-engine/index.js';
+  import { inkJobGap } from './exporter.js';
   import { patternCard } from './pattern-cards.js';
   import { patternTiles, restorePickedTile } from './pattern-tiles.svelte.js';
   import { patternPick, startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
@@ -752,6 +753,16 @@
   // The engine paints whole boxes: Fill Opacity, and a shadow's Spread,
   // Contour, Noise and knockout (the browser engine paints none of them).
   const rustBoxes = $derived(engineSwitch.painting && glyphPainter().box === true);
+  // The ink note: a box whose brush ink the engine's box job cannot take yet
+  // (`inkJobGap`) is painted by the canvas, with none of its layer effects,
+  // Fill Opacity, blend mode, Channels or Blend If. The controls stay (the
+  // values are kept, and a PSD carries them); the note says they do not show.
+  const inkGap = $derived(rustBoxes && box ? inkJobGap(box) : null);
+  const INK_GAP_WHY = {
+    engine: 'this build of the Rust engine paints no brush ink in the box',
+    mesh: 'the Rust engine cannot yet bend brush ink with a mesh',
+    roughen: 'the Rust engine cannot yet roughen brush ink',
+  };
   // Blend If's channel menu (Gray, Red, Green, Blue), as Photoshop's dialog
   // shows one channel's two sliders at a time.
   let blendIfChannel = $state('gray');
@@ -1232,6 +1243,14 @@
 
 <!-- A heading inside a tab. Not a button any more - there is nothing left to
      collapse, because the tab already did the collapsing. -->
+<!-- The ink note (`inkGap`): this box's layer effects, Fill Opacity, blend
+     mode, Channels and Blend If are not painted, and why. -->
+{#snippet inkGapNote()}
+  {#if inkGap}
+    <p class="nofill-note ink-gap-note" role="note">Not painted on this box: layer effects, Fill opacity, blend mode, Channels and Blend If. The values are kept, but {INK_GAP_WHY[inkGap]}.</p>
+  {/if}
+{/snippet}
+
 {#snippet shadowRows(list, inner)}
   {@const name = inner ? 'Inner shadow' : 'Shadow'}
   <div class="insp-list k-shadow">
@@ -2247,6 +2266,7 @@
     <!-- ===== Fill ===== -->
     {#if tab === 'fill'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-fill" aria-labelledby="insp-tab-fill">
+        {@render inkGapNote()}
         <div class="grp">
           <span class="lbl">Fill</span>
           <div class="seg">
@@ -2734,6 +2754,7 @@
     <!-- ===== Effects ===== -->
     {#if tab === 'effects'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-effects" aria-labelledby="insp-tab-effects">
+        {@render inkGapNote()}
         <div class="sub-tabs" role="tablist" aria-label="Effects options">
           {#each EFFECTS_TABS as [id, label] (id)}
             <button

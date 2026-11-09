@@ -36,7 +36,10 @@ pub fn unit(x: i32, y: i32, seed: u32) -> f32 {
 /// licence (see `THIRD_PARTY.md`). Changed: 8-bit mattes, a seed per effect.
 ///
 /// `alpha` is `width * height` values row by row; only `bx`, `(x0, y0, x1,
-/// y1)`, is touched.
+/// y1)`, is touched. Its corner is device pixel `origin`, anchored to the
+/// page, which a pixel's number is hashed from as PhotoCraft's adds the
+/// map's origin: the same page pixel keeps its grain however the surface
+/// round the box is cut.
 pub fn grain(
     alpha: &mut [u8],
     width: usize,
@@ -44,6 +47,7 @@ pub fn grain(
     bx: (i32, i32, i32, i32),
     amount: f32,
     seed: u32,
+    origin: (i32, i32),
 ) {
     if amount.is_nan() || amount <= 0.0 || width == 0 || height == 0 {
         return;
@@ -59,7 +63,7 @@ pub fn grain(
             if *a == 0 {
                 continue;
             }
-            let n = unit(x, y, seed);
+            let n = unit(origin.0.wrapping_add(x), origin.1.wrapping_add(y), seed);
             let v = f32::from(*a) * (1.0 + (n - 0.5) * 2.0 * amount);
             *a = (v + 0.5).clamp(0.0, 255.0) as u8;
         }
@@ -95,14 +99,31 @@ mod tests {
             .map(|i| if i % w < 8 { 200 } else { 0 })
             .collect();
         let before = a.clone();
-        grain(&mut a, w, h, (0, 0, 16, 16), 0.0, 1);
+        grain(&mut a, w, h, (0, 0, 16, 16), 0.0, 1, (0, 0));
         assert_eq!(a, before);
-        grain(&mut a, w, h, (0, 0, 16, 16), 1.0, 1);
+        grain(&mut a, w, h, (0, 0, 16, 16), 1.0, 1, (0, 0));
         assert_ne!(a, before);
         // Nothing appears where the matte had nothing.
         for (i, v) in a.iter().enumerate() {
             if before[i] == 0 {
                 assert_eq!(*v, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_grain_is_hashed_from_the_surface_corner_on() {
+        // A matte cut out of a larger one, its corner (5, 3) further on,
+        // grains as that part of the larger one does.
+        let (w, h) = (16, 12);
+        let mut big: Vec<u8> = vec![180; w * h];
+        grain(&mut big, w, h, (0, 0, 16, 12), 0.6, 9, (100, 40));
+        let (cw, ch) = (8, 6);
+        let mut part = vec![180u8; cw * ch];
+        grain(&mut part, cw, ch, (0, 0, 8, 6), 0.6, 9, (105, 43));
+        for y in 0..ch {
+            for x in 0..cw {
+                assert_eq!(part[y * cw + x], big[(y + 3) * w + x + 5], "{x} {y}");
             }
         }
     }

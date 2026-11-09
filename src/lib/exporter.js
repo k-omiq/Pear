@@ -965,9 +965,24 @@ function boxPlan(box, p, flat = false) {
 // under the browser engine.
 export function boxInJob(box) {
   if (!engineDraws() || glyphPainter().box !== true) return false;
+  return inkJobGap(box) === null;
+}
+
+// Why a box's brush ink keeps the box out of the job (`boxInJob`) where the
+// painter paints whole boxes, or null where it does not: 'engine' (a wasm
+// without the tip cache, which paints no ink), 'mesh' (a mesh that moves
+// something) or 'roughen'. Imported tips and tip cycles are painted (8b).
+// Such a box is painted by the canvas, which paints none of its layer
+// effects, Fill Opacity, blend mode, Channels or Blend If: the Inspector says
+// so (its ink note) rather than showing them as live. The question is asked of a
+// painter that paints whole boxes (`glyphPainter().box`), as `boxInJob` asks.
+export function inkJobGap(box) {
   const s = box.style;
-  if (!inkActive(s.ink)) return true;
-  return glyphPainter().ink === true && !warpActive(s, box.w, box.h) && s.roughen?.on !== true;
+  if (!inkActive(s.ink)) return null;
+  if (glyphPainter().ink !== true) return 'engine';
+  if (warpActive(s, box.w, box.h)) return 'mesh';
+  if (s.roughen?.on === true) return 'roughen';
+  return null;
 }
 
 // The box's brush ink as the painter takes it (`encodeBox`'s `ink`): the
@@ -1032,6 +1047,10 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = nul
     blendIf: s.blending?.blendIf ?? null,
     // The page art under the surface, read once the painter knows it.
     backdrop: page ? (rect) => backdropPixels(page, A, rect) : null,
+    // The layout onto the page, page px: the painter anchors the box's grain
+    // (Noise, Dissolve, Jitter) to the page with it (`grainOrigin`), so how
+    // much room the surface takes round the box does not move it.
+    toPage: A ?? boxToPage(box, L, under?.at ?? null),
     blur: s.blur > 0 ? s.blur : 0,
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
     // The mask's shapes are the box's own, so the box's corner goes with them.
