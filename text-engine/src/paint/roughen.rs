@@ -133,12 +133,13 @@ impl Noise {
         Ok(noise)
     }
 
-    /// Gradient noise at `(vx, vy)` on one channel: the specification's
-    /// `noise2`. The arithmetic is written in the order the JS writes it,
-    /// and nothing is fused, so the two give the same bits.
-    fn noise2(&self, channel: usize, vx: f64, vy: f64) -> f64 {
+    /// Gradient noise at `(vx, vy)` on both channels: the specification's
+    /// `noise2`, once for R and once for G, which share the lattice cell and
+    /// where the point is in it. The arithmetic is written in the order the
+    /// JS writes it, and nothing is fused, so the two give the same bits.
+    #[inline]
+    fn noise2(&self, vx: f64, vy: f64) -> [f64; 2] {
         let lat = &self.lattice;
-        let g = &self.grad[channel];
 
         let t = vx + PERLIN_N;
         let ix = t.floor();
@@ -164,28 +165,34 @@ impl Noise {
         let sx = rx0 * rx0 * (3.0 - 2.0 * rx0);
         let sy = ry0 * ry0 * (3.0 - 2.0 * ry0);
 
-        let u = rx0 * g[b00 * 2] + ry0 * g[b00 * 2 + 1];
-        let v = rx1 * g[b10 * 2] + ry0 * g[b10 * 2 + 1];
-        let a = u + sx * (v - u);
-        let u = rx0 * g[b01 * 2] + ry1 * g[b01 * 2 + 1];
-        let v = rx1 * g[b11 * 2] + ry1 * g[b11 * 2 + 1];
-        let b = u + sx * (v - u);
-        a + sy * (b - a)
+        self.grad.each_ref().map(|g| {
+            let u = rx0 * g[b00 * 2] + ry0 * g[b00 * 2 + 1];
+            let v = rx1 * g[b10 * 2] + ry0 * g[b10 * 2 + 1];
+            let a = u + sx * (v - u);
+            let u = rx0 * g[b01 * 2] + ry1 * g[b01 * 2 + 1];
+            let v = rx1 * g[b11 * 2] + ry1 * g[b11 * 2 + 1];
+            let b = u + sx * (v - u);
+            a + sy * (b - a)
+        })
     }
 
     /// The fractal sum at a point already multiplied by the base frequency,
-    /// as the colour channel it is in the filter: `(sum + 1) / 2`, in 0..1.
-    fn turbulence(&self, channel: usize, vx0: f64, vy0: f64) -> f64 {
+    /// on both channels, as the colour channels they are in the filter:
+    /// `(sum + 1) / 2`, in 0..1.
+    #[inline]
+    fn turbulence(&self, vx0: f64, vy0: f64) -> [f64; 2] {
         let (mut vx, mut vy) = (vx0, vy0);
-        let mut sum = 0.0;
+        let mut sum = [0.0; 2];
         let mut ratio = 1.0;
         for _ in 0..OCTAVES {
-            sum += self.noise2(channel, vx, vy) / ratio;
+            let n = self.noise2(vx, vy);
+            sum[0] += n[0] / ratio;
+            sum[1] += n[1] / ratio;
             vx *= 2.0;
             vy *= 2.0;
             ratio *= 2.0;
         }
-        ((sum + 1.0) / 2.0).clamp(0.0, 1.0)
+        sum.map(|s| ((s + 1.0) / 2.0).clamp(0.0, 1.0))
     }
 }
 
@@ -264,11 +271,8 @@ impl RoughMap {
     fn offset(&self, p: Pt) -> Pt {
         let (x, y) = (p.x - self.origin.x + PHASE, p.y - self.origin.y + PHASE);
         let field = |noise: &Noise, span: f64, detail: f64| {
-            let (vx, vy) = (x * detail, y * detail);
-            Pt::new(
-                span * (noise.turbulence(0, vx, vy) - 0.5),
-                span * (noise.turbulence(1, vx, vy) - 0.5),
-            )
+            let [r, g] = noise.turbulence(x * detail, y * detail);
+            Pt::new(span * (r - 0.5), span * (g - 0.5))
         };
         let mut d = Pt::new(0.0, 0.0);
         if let Some(noise) = &self.noise {
@@ -291,6 +295,18 @@ impl RoughMap {
     /// read through it from inside its bent outline (`ink.rs`).
     pub(crate) fn back(&self, p: Pt) -> Pt {
         p.plus(self.offset(p))
+    }
+
+    /// The most [`RoughMap::at`] moves a point along either axis: half of
+    /// each field's span, the channel being in 0..1.
+    pub(crate) fn reach(&self) -> f64 {
+        let crumple = if self.noise.is_some() {
+            self.amount.abs()
+        } else {
+            0.0
+        };
+        let grit = self.grit.as_ref().map_or(0.0, |(_, span)| span.abs());
+        (crumple + grit) / 2.0
     }
 
     /// How an outline is cut for this map. Inside one cell of the finest
@@ -336,11 +352,7 @@ mod tests {
             if noise.as_ref().map(|n| n.0.to_bits()) != Some(seed.to_bits()) {
                 noise = Some((seed, Noise::new(seed).unwrap()));
             }
-            let got = noise
-                .as_ref()
-                .unwrap()
-                .1
-                .turbulence(channel, x * freq, y * freq);
+            let got = noise.as_ref().unwrap().1.turbulence(x * freq, y * freq)[channel];
             assert_eq!(got.to_bits(), want.to_bits(), "{line}: got {got}");
             seen += 1;
         }

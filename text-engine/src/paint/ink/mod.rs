@@ -48,7 +48,7 @@ use super::budget;
 use super::fx::distance;
 use super::geom::{Affine, IBox, Polys, Pt};
 use super::job::{Job, Request, Rgba};
-use super::raster::{pixel_box, strip_of, Part, Rasterizer, STRIP_ROWS};
+use super::raster::{pixel_box, PlainScratch, Rasterizer};
 use super::roughen::{RoughMap, Roughen};
 use super::warp::{self, Mesh};
 use super::{magnified, Bends, Raster, MAX_PIXELS, MAX_SIDE};
@@ -376,6 +376,26 @@ fn bounds_rect(
     (!r.is_empty()).then_some(r)
 }
 
+/// The box round the rectangle `(x0, y0, x1, y1)` carried by `t`.
+fn corners_box(t: &Affine, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let mut out = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+        let p = t.apply(Pt::new(x, y));
+        out = (
+            out.0.min(p.x),
+            out.1.min(p.y),
+            out.2.max(p.x),
+            out.3.max(p.y),
+        );
+    }
+    out
+}
+
 /// `wantsWaterEdge`.
 fn wants_water_edge(k: &Stroke) -> bool {
     k.water_edge && k.water_edge_power > 0.0 && k.water_edge_width > 0.0
@@ -576,8 +596,77 @@ impl<'a> Tips<'a> {
 /// The rasteriser's scratch, kept over a stroke's stamps.
 #[derive(Default)]
 struct Scratch {
-    cov: Vec<f32>,
-    spans: Vec<(u32, u32)>,
+    raster: PlainScratch,
+    /// The outline of the stamp being laid.
+    polys: Polys,
+    /// A round dab's corners on the unit circle, for the last count asked.
+    circle: Vec<(f64, f64)>,
+    rough: RoughCache,
+}
+
+/// Which way back a [`RoughCache`] holds: [`Pen::back`]'s or
+/// [`Pen::back_exact`]'s.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Way {
+    #[default]
+    Tangent,
+    Exact,
+}
+
+/// Device pixels read back through the roughening, `p + d(p)`, where that
+/// is the same for every stamp: with no mesh each stamp's tangent is the
+/// identity (`Pen::carry`), so its way back to job space before the field
+/// is worked out the same way for every stamp, and a pixel that many dabs
+/// cover reads the field once. Direct-mapped over a window of
+/// `1 << ROUGH_BITS` pixels a side, which a run of overlapping dabs stays in.
+#[derive(Default)]
+struct RoughCache {
+    way: Way,
+    keys: budget::Buffer<(i32, i32)>,
+    vals: budget::Buffer<Pt>,
+}
+
+const ROUGH_BITS: u32 = 7;
+
+impl RoughCache {
+    /// Ready to hold `way`'s reads: emptied where it held the other's.
+    fn ready(&mut self, way: Way) -> Result<(), Error> {
+        let n = 1usize << (2 * ROUGH_BITS);
+        if self.keys.len() != n {
+            self.keys.clear();
+            budget::resize(&mut self.keys, n, (i32::MIN, i32::MIN))?;
+            self.vals.clear();
+            budget::resize(&mut self.vals, n, Pt::new(0.0, 0.0))?;
+        } else if self.way != way {
+            self.keys.fill((i32::MIN, i32::MIN));
+        }
+        self.way = way;
+        Ok(())
+    }
+
+    /// The read of pixel `(x, y)`: `f`'s, the first time it is asked.
+    #[inline]
+    fn read(&mut self, x: i32, y: i32, f: impl FnOnce() -> Pt) -> Pt {
+        let mask = (1i32 << ROUGH_BITS) - 1;
+        let i = ((y & mask) << ROUGH_BITS | (x & mask)) as usize;
+        if self.keys[i] != (x, y) {
+            self.keys[i] = (x, y);
+            self.vals[i] = f();
+        }
+        self.vals[i]
+    }
+}
+
+impl Scratch {
+    /// `(sin, cos)` of each of the `n` corners `a` apart, as `dab` turns
+    /// them: worked out once for a run of dabs of one size.
+    fn circle(&mut self, n: usize, a: f64) -> &[(f64, f64)] {
+        if self.circle.len() != n {
+            self.circle.clear();
+            self.circle.extend((0..n).map(|i| (a * i as f64).sin_cos()));
+        }
+        &self.circle
+    }
 }
 
 /// Called for each pixel a stamp reaches, with its index in the stroke's
@@ -585,52 +674,54 @@ struct Scratch {
 /// strength there (the soft dab's ramp, the tip's coverage) and how much of
 /// the colour it carries there (the ramp again for a soft dab, whose
 /// gradient runs to clear black; all of it for a tip, tinted flat).
-type Each<'e> = dyn FnMut(usize, f32, f32, f32) + 'e;
+trait Each: FnMut(usize, f32, f32, f32) {}
+impl<F: FnMut(usize, f32, f32, f32)> Each for F {}
 
 /// The coverage of `polys` over `rect`: `each` with each pixel's index in
 /// `rect`, its device position and its coverage.
 fn cover(
-    polys: Polys,
+    polys: &Polys,
     rect: IBox,
     rasterizer: &dyn Rasterizer,
-    sc: &mut Scratch,
+    raster: &mut PlainScratch,
     mut each: impl FnMut(usize, i32, i32, f32),
 ) -> Result<(), Error> {
     budget::check()?;
-    let Some(bx) = super::raster::pixel_box(&polys).map(|b| b.intersect(&rect)) else {
+    let Some(bx) = super::raster::pixel_box(polys).map(|b| b.intersect(&rect)) else {
         return Ok(());
     };
     if bx.is_empty() {
         return Ok(());
     }
-    let mut coverage = rasterizer.prepare(&[Part::plain(polys)], bx)?;
-    let stride = bx.width() + 2;
-    let rw = rect.width();
-    let mut y = bx.y0;
-    while y < bx.y1 {
-        let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
-        let rows = (y_end - y) as usize;
-        sc.cov.clear();
-        sc.cov.resize(stride * rows, 0.0);
-        sc.spans.clear();
-        sc.spans.resize(rows, (0, 0));
-        coverage.render(y, y_end, &mut sc.cov, stride, &mut sc.spans)?;
-        for (row, &(lo, hi)) in sc.spans.iter().enumerate() {
-            let dy = y + row as i32;
-            let hi = (hi as usize).min(bx.width());
-            for x in lo as usize..hi {
-                let c = sc.cov[row * stride + x];
-                if c <= 0.0 {
-                    continue;
-                }
-                let dx = bx.x0 + x as i32;
-                let i = (dy - rect.y0) as usize * rw + (dx - rect.x0) as usize;
-                each(i, dx, dy, c.min(1.0));
-            }
-        }
-        y = y_end;
-    }
+    rasterizer.plain(polys, bx, raster)?;
+    let (rows, values) = raster.rows();
+    lay(rows, values, bx.x0, rect, &mut each);
     Ok(())
+}
+
+/// [`cover`]'s rows laid: apart, so that the coverage is a slice of its
+/// own while `each` writes, which keeps a heavy `each` (a tip read)
+/// compiled as tight as one over a buffer of its own.
+#[inline(never)]
+fn lay(
+    rows: &[(i32, u32, u32, u32)],
+    values: &[f32],
+    x0: i32,
+    rect: IBox,
+    each: &mut impl FnMut(usize, i32, i32, f32),
+) {
+    let rw = rect.width();
+    for &(dy, lo, at, len) in rows {
+        let row = (dy - rect.y0) as usize * rw;
+        let x0 = x0 + lo as i32;
+        for (k, &c) in values[at as usize..(at + len) as usize].iter().enumerate() {
+            if c <= 0.0 {
+                continue;
+            }
+            let dx = x0 + k as i32;
+            each(row + (dx - rect.x0) as usize, dx, dy, c.min(1.0));
+        }
+    }
 }
 
 /// A stamp's own frame under `t`: moved to it, turned, flipped, and
@@ -669,7 +760,7 @@ struct Pen<'a> {
 }
 
 impl<'a> Pen<'a> {
-    fn press(&self, s: &Stamp, sc: &mut Scratch, each: &mut Each) -> Result<(), Error> {
+    fn press(&self, s: &Stamp, sc: &mut Scratch, each: &mut impl Each) -> Result<(), Error> {
         if let Some(bend) = &self.bend {
             return match self.shape(s, bend)? {
                 Some(shape) => self.press_bent(shape, bend, sc, each),
@@ -684,9 +775,63 @@ impl<'a> Pen<'a> {
     }
 
     /// The device pixels a bent stamp can reach, or `None` for one that
-    /// draws nothing.
-    fn bent_box(&self, s: &Stamp, bend: &Bend) -> Result<Option<IBox>, Error> {
+    /// draws nothing. With `loose`, a box round them found without bending
+    /// its outline where the bends give one (`Bends::reach`), else the bent
+    /// outline's own.
+    fn bent_box(&self, s: &Stamp, bend: &Bend, loose: bool) -> Result<Option<IBox>, Error> {
+        if let Some(b) = loose.then(|| self.reach(s, bend)).flatten() {
+            return Ok(Some(b));
+        }
         Ok(self.shape(s, bend)?.and_then(|sh| pixel_box(&sh.polys)))
+    }
+
+    /// [`Pen::bent_box`] from the stamp's rectangle in its own frame (what
+    /// `shape` bends, and where its outline stays) through the bends' box
+    /// and the transform, a pixel wider for the rounding; `None` where that
+    /// is not to be had.
+    fn reach(&self, s: &Stamp, bend: &Bend) -> Option<IBox> {
+        let k = self.k;
+        let (flat, half, pad) = match self.tips.press(s) {
+            Press::Round => {
+                // The polygon's corners are on a circle at most this much
+                // wider than the dab (eight corners or more: `shape`).
+                let r = s.size / 2.0 * 1.06;
+                (Some(s.flat.unwrap_or(k.flatness)), (r, r), 1.0)
+            }
+            Press::Tip(tip) => {
+                let (nw, nh) = tip.natural;
+                let f = s.size / nw.max(nh);
+                (
+                    Some(s.flat.unwrap_or(k.flatness)),
+                    (nw * f / 2.0, nh * f / 2.0),
+                    1.0,
+                )
+            }
+            // The top and foot are taken out past their chords.
+            Press::Slice(_) => (None, (s.size / 2.0, s.ribbon?.1 / 2.0), 1.0 + CHORD_REACH),
+        };
+        let (hw, hh) = half;
+        if !(hw > 0.0 && hh > 0.0) {
+            return None;
+        }
+        let j = Affine::translate(self.origin.x, self.origin.y).after(&frame(
+            &Affine::IDENTITY,
+            s,
+            flat,
+        ));
+        let job = corners_box(&j, (-hw, -hh, hw, hh));
+        let device = corners_box(self.base, bend.bends.reach(job)?);
+        let (x0, y0, x1, y1) = device;
+        let limit = 1e9;
+        if !(x0 > -limit && y0 > -limit && x1 < limit && y1 < limit) {
+            return None;
+        }
+        Some(IBox {
+            x0: (x0 - pad).floor() as i32,
+            y0: (y0 - pad).floor() as i32,
+            x1: (x1 + pad).ceil() as i32,
+            y1: (y1 + pad).ceil() as i32,
+        })
     }
 
     /// The stamp's frame and the mesh's tangent over it, where both can be
@@ -748,11 +893,25 @@ impl<'a> Pen<'a> {
     /// Where the device pixel `(x, y)`'s centre is in the stamp's frame:
     /// back through the transform and the mesh's tangent, the roughening's
     /// first-order inverse, and the stamp's frame.
-    fn back(c: &Carried, rough: Option<&RoughMap>, x: i32, y: i32) -> Pt {
-        let p = c
-            .unmesh
-            .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
-        let p = rough.map_or(p, |r| r.back(p));
+    /// `cache`, where it is given, holds the reads before the stamp's own
+    /// frame (`RoughCache`).
+    fn back(
+        c: &Carried,
+        rough: Option<&RoughMap>,
+        cache: Option<&mut RoughCache>,
+        x: i32,
+        y: i32,
+    ) -> Pt {
+        let read = || {
+            let p = c
+                .unmesh
+                .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+            rough.map_or(p, |r| r.back(p))
+        };
+        let p = match cache {
+            Some(cache) => cache.read(x, y, read),
+            None => read(),
+        };
         c.unframe.apply(p)
     }
 
@@ -764,23 +923,29 @@ impl<'a> Pen<'a> {
     /// soft ramp is then the bent dab's own, where the tangent alone left
     /// its fall-off up to a device pixel off the outline on a mesh that
     /// stretches by half again (`ink-bend.engine.test.js`).
-    fn back_exact(c: &Carried, bend: &Bend, x: i32, y: i32) -> Pt {
-        let at = c
-            .unbase
-            .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
-        let mut p = c.untangent.apply(at);
-        if let Some(m) = bend.bends.mesh {
-            let off = at.minus(m.at(p));
-            let lin = c
-                .untangent
-                .apply(off)
-                .minus(c.untangent.apply(Pt::new(0.0, 0.0)));
-            let next = p.plus(lin);
-            if next.x.is_finite() && next.y.is_finite() {
-                p = next;
+    fn back_exact(c: &Carried, bend: &Bend, cache: Option<&mut RoughCache>, x: i32, y: i32) -> Pt {
+        let read = || {
+            let at = c
+                .unbase
+                .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+            let mut p = c.untangent.apply(at);
+            if let Some(m) = bend.bends.mesh {
+                let off = at.minus(m.at(p));
+                let lin = c
+                    .untangent
+                    .apply(off)
+                    .minus(c.untangent.apply(Pt::new(0.0, 0.0)));
+                let next = p.plus(lin);
+                if next.x.is_finite() && next.y.is_finite() {
+                    p = next;
+                }
             }
-        }
-        let p = bend.bends.rough.map_or(p, |r| r.back(p));
+            bend.bends.rough.map_or(p, |r| r.back(p))
+        };
+        let p = match cache {
+            Some(cache) => cache.read(x, y, read),
+            None => read(),
+        };
         c.unframe.apply(p)
     }
 
@@ -986,23 +1151,49 @@ impl<'a> Pen<'a> {
     }
 
     /// A bent stamp laid: its outline's coverage, and inside it its read.
+    // `press_bent`, `dab`, `image`, `stamp_tip` and `slice_tip` stay
+    // functions of their own (measured in WebKit, 2026-11-09): each is
+    // laid for three ways of laying a stroke (`paint_stroke`), and grown
+    // into one another they compile worse, a tip read the most.
+    #[inline(never)]
     fn press_bent(
         &self,
         shape: Shape,
         bend: &Bend,
         sc: &mut Scratch,
-        each: &mut Each,
+        each: &mut impl Each,
     ) -> Result<(), Error> {
         let rough = bend.bends.rough;
         let smooth = self.smooth;
         let Shape { polys, read } = shape;
+        // The field's reads, shared by the stamps, where they are the same
+        // for every stamp: roughened, and no mesh.
+        let shared = rough.is_some() && bend.bends.mesh.is_none();
+        let way = match read {
+            Read::Soft { .. } => Way::Exact,
+            _ => Way::Tangent,
+        };
+        if shared && !matches!(read, Read::Hard) {
+            sc.rough.ready(way)?;
+        }
+        let cache = &mut sc.rough;
         match read {
-            Read::Hard => cover(polys, self.rect, self.rasterizer, sc, |i, _, _, c| {
-                each(i, c, 1.0, 1.0);
-            }),
-            Read::Soft { c: carried, r, r0 } => {
-                cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
-                    let q = Self::back_exact(&carried, bend, x, y);
+            Read::Hard => cover(
+                &polys,
+                self.rect,
+                self.rasterizer,
+                &mut sc.raster,
+                |i, _, _, c| {
+                    each(i, c, 1.0, 1.0);
+                },
+            ),
+            Read::Soft { c: carried, r, r0 } => cover(
+                &polys,
+                self.rect,
+                self.rasterizer,
+                &mut sc.raster,
+                |i, x, y, c| {
+                    let q = Self::back_exact(&carried, bend, shared.then_some(&mut *cache), x, y);
                     let d = q.x.hypot(q.y);
                     let tg = if r > r0 {
                         ((d - r0) / (r - r0)).clamp(0.0, 1.0)
@@ -1013,8 +1204,8 @@ impl<'a> Pen<'a> {
                     };
                     let g = (1.0 - tg) as f32;
                     each(i, c, g, g);
-                })
-            }
+                },
+            ),
             Read::Tip {
                 c: carried,
                 level,
@@ -1022,13 +1213,19 @@ impl<'a> Pen<'a> {
                 dst: (dx, dy, dw, dh),
             } => {
                 let (kx, ky) = (sw / dw, sh / dh);
-                cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
-                    let q = Self::back(&carried, rough, x, y);
-                    let g = level.sample(sx + (q.x - dx) * kx, sy + (q.y - dy) * ky, smooth);
-                    if g > 0.0 {
-                        each(i, c, g, 1.0);
-                    }
-                })
+                cover(
+                    &polys,
+                    self.rect,
+                    self.rasterizer,
+                    &mut sc.raster,
+                    |i, x, y, c| {
+                        let q = Self::back(&carried, rough, shared.then_some(&mut *cache), x, y);
+                        let g = level.sample(sx + (q.x - dx) * kx, sy + (q.y - dy) * ky, smooth);
+                        if g > 0.0 {
+                            each(i, c, g, 1.0);
+                        }
+                    },
+                )
             }
             Read::Slice {
                 c: carried,
@@ -1040,25 +1237,34 @@ impl<'a> Pen<'a> {
                 parts,
             } => {
                 let kx = lw / size;
-                cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
-                    let p = Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
-                    // A hair either way, as `image` keeps it.
-                    if !(top.inside(p) >= -SEAM && foot.inside(p) > -SEAM) {
-                        return;
-                    }
-                    let q = Self::back(&carried, rough, x, y);
-                    let last = parts.len() - 1;
-                    let at = parts
-                        .iter()
-                        .position(|&(py, dh, ..)| q.y < py + dh)
-                        .unwrap_or(last);
-                    let (py, dh, sy, sh) = parts[at];
-                    let g =
-                        level.sample((q.x + size / 2.0) * kx, sy + (q.y - py) * (sh / dh), smooth);
-                    if g > 0.0 {
-                        each(i, c, g, 1.0);
-                    }
-                })
+                cover(
+                    &polys,
+                    self.rect,
+                    self.rasterizer,
+                    &mut sc.raster,
+                    |i, x, y, c| {
+                        let p = Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                        // A hair either way, as `image` keeps it.
+                        if !(top.inside(p) >= -SEAM && foot.inside(p) > -SEAM) {
+                            return;
+                        }
+                        let q = Self::back(&carried, rough, shared.then_some(&mut *cache), x, y);
+                        let last = parts.len() - 1;
+                        let at = parts
+                            .iter()
+                            .position(|&(py, dh, ..)| q.y < py + dh)
+                            .unwrap_or(last);
+                        let (py, dh, sy, sh) = parts[at];
+                        let g = level.sample(
+                            (q.x + size / 2.0) * kx,
+                            sy + (q.y - py) * (sh / dh),
+                            smooth,
+                        );
+                        if g > 0.0 {
+                            each(i, c, g, 1.0);
+                        }
+                    },
+                )
             }
         }
     }
@@ -1068,7 +1274,8 @@ impl<'a> Pen<'a> {
     /// the radius to clear at the rim, interpolated before it is
     /// premultiplied: at ramp alpha `g` the colour is `g` of the way from
     /// black.
-    fn dab(&self, s: &Stamp, sc: &mut Scratch, each: &mut Each) -> Result<(), Error> {
+    #[inline(never)]
+    fn dab(&self, s: &Stamp, sc: &mut Scratch, each: &mut impl Each) -> Result<(), Error> {
         let k = self.k;
         let r = s.size / 2.0;
         if r.is_nan() || r <= 0.0 {
@@ -1086,9 +1293,9 @@ impl<'a> Pen<'a> {
         let n = (core::f64::consts::TAU / step).ceil().clamp(8.0, 4096.0) as usize;
         let a = core::f64::consts::TAU / n as f64;
         let wide = r * (a / a.sin()).sqrt();
-        let mut polys = Polys::default();
-        for i in 0..n {
-            let (sin, cos) = (a * i as f64).sin_cos();
+        let mut polys = std::mem::take(&mut sc.polys);
+        polys.clear();
+        for &(sin, cos) in sc.circle(n, a) {
             polys.push(m.apply(Pt::new(wide * cos, wide * sin)));
         }
         polys.close();
@@ -1113,10 +1320,18 @@ impl<'a> Pen<'a> {
             };
             (1.0 - tg) as f32
         };
-        cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
-            let g = ramp(x, y);
-            each(i, c, g, g);
-        })
+        let done = cover(
+            &polys,
+            self.rect,
+            self.rasterizer,
+            &mut sc.raster,
+            |i, x, y, c| {
+                let g = ramp(x, y);
+                each(i, c, g, g);
+            },
+        );
+        sc.polys = polys;
+        done
     }
 
     /// `drawImage` of the level's `src` rectangle (level px: x, y, width,
@@ -1132,6 +1347,7 @@ impl<'a> Pen<'a> {
     /// would leave it short: a seam across the band at every slice, where
     /// the canvas lays its slices close to seamless.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn image(
         &self,
         level: &tips::Level,
@@ -1140,7 +1356,7 @@ impl<'a> Pen<'a> {
         m: &Affine,
         cut: bool,
         sc: &mut Scratch,
-        each: &mut Each,
+        each: &mut impl Each,
     ) -> Result<(), Error> {
         let (dx, dy, dw, dh) = dst;
         let Some(inv) = m.invert() else {
@@ -1167,31 +1383,38 @@ impl<'a> Pen<'a> {
         let (sx, sy, sw, sh) = src;
         let (kx, ky) = (sw / dw, sh / dh);
         let smooth = self.smooth;
-        cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
-            let q = inv.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
-            // A hair either way: two slices state the line they meet on each
-            // from its own centre, and a pixel's centre on that line must
-            // not fall between them.
-            if cut && !(q.y >= dy - SEAM && q.y < dy + dh + SEAM) {
-                return;
-            }
-            let g = level.sample(sx + (q.x - dx) * kx, sy + (q.y - dy) * ky, smooth);
-            if g > 0.0 {
-                each(i, c, g, 1.0);
-            }
-        })
+        cover(
+            &polys,
+            self.rect,
+            self.rasterizer,
+            &mut sc.raster,
+            |i, x, y, c| {
+                let q = inv.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+                // A hair either way: two slices state the line they meet on each
+                // from its own centre, and a pixel's centre on that line must
+                // not fall between them.
+                if cut && !(q.y >= dy - SEAM && q.y < dy + dh + SEAM) {
+                    return;
+                }
+                let g = level.sample(sx + (q.x - dx) * kx, sy + (q.y - dy) * ky, smooth);
+                if g > 0.0 {
+                    each(i, c, g, 1.0);
+                }
+            },
+        )
     }
 
     /// `stampTip`: one stamp of an imported tip. Its longest side is the
     /// stamp's size, and the flatness squashes its own y as it squashes the
     /// round dab's; read from the smallest level still as big as the stamp
     /// is on the device.
+    #[inline(never)]
     fn stamp_tip(
         &self,
         s: &Stamp,
         tip: &Tip,
         sc: &mut Scratch,
-        each: &mut Each,
+        each: &mut impl Each,
     ) -> Result<(), Error> {
         let (nw, nh) = tip.natural;
         let f = s.size / nw.max(nh);
@@ -1218,12 +1441,13 @@ impl<'a> Pen<'a> {
     /// scale, again from the top once it is used up: the rows of the tip
     /// for the stretch of path the slice covers, in two parts where that
     /// stretch runs past the tip's foot.
+    #[inline(never)]
     fn slice_tip(
         &self,
         s: &Stamp,
         tip: &Tip,
         sc: &mut Scratch,
-        each: &mut Each,
+        each: &mut impl Each,
     ) -> Result<(), Error> {
         let Some((d, len)) = s.ribbon else {
             return Ok(());
@@ -1304,6 +1528,7 @@ fn paint_stroke(
     rect: IBox,
     (water_r, water_blur): (f64, f64),
     rasterizer: &dyn Rasterizer,
+    sc: &mut Scratch,
     block: &mut [f32],
     bx: IBox,
 ) -> Result<(), Error> {
@@ -1333,7 +1558,6 @@ fn paint_stroke(
         base,
         origin,
     };
-    let mut sc = Scratch::default();
     // A ground read back as the mask, eight bits a dab: the stroke's colour
     // at that alpha.
     let mask = |grey: Vec<u8>| {
@@ -1358,7 +1582,7 @@ fn paint_stroke(
                 continue;
             }
             let o = o as f32;
-            pen.press(s, &mut sc, &mut |i, c, g, shade| {
+            pen.press(s, sc, &mut |i, c, g, shade| {
                 let v = clamped(f64::from(shade * g * c * o) * 255.0);
                 if v > grey[i] {
                     grey[i] = v;
@@ -1373,7 +1597,7 @@ fn paint_stroke(
         // a dab, read back as the mask.
         let mut grey = vec![0u8; n];
         for s in stamps {
-            pen.press(s, &mut sc, &mut |i, c, g, _| {
+            pen.press(s, sc, &mut |i, c, g, _| {
                 let d = f64::from(grey[i]) / 255.0;
                 let v = d + f64::from(c) * (d.max(f64::from(g)) - d);
                 grey[i] = clamped(v * 255.0);
@@ -1384,7 +1608,7 @@ fn paint_stroke(
         let mut px = vec![0.0f32; n * 4];
         for s in stamps {
             let ga = if layered { 1.0 } else { s.alpha as f32 };
-            pen.press(s, &mut sc, &mut |i, c, g, shade| {
+            pen.press(s, sc, &mut |i, c, g, shade| {
                 let a = g * c * ga;
                 let pc = shade * a;
                 over(
@@ -1547,9 +1771,16 @@ impl InkLayer {
                         base: transform,
                         origin,
                     };
+                    // A stroke's rectangle and the layer may be wider than
+                    // the ink and lay the same pixels: nothing reads past
+                    // what it reaches of the ink but the watercolour edge,
+                    // whose blur weighs what it reaches of the rectangle's
+                    // edge by how much of it is inside (`blur_plane`). Its
+                    // stroke keeps the rectangle its bent outlines give.
+                    let loose = !water;
                     let mut core: Option<IBox> = None;
                     for s in &stamps {
-                        if let Some(b) = pen.bent_box(s, bend)? {
+                        if let Some(b) = pen.bent_box(s, bend, loose)? {
                             core = Some(core.map_or(b, |c| c.union(&b)));
                         }
                         budget::check()?;
@@ -1597,6 +1828,7 @@ impl InkLayer {
             return Err(Error::BadSpec);
         }
         let mut content = budget::filled(w * h * 4, 0.0f32)?;
+        let mut sc = Scratch::default();
         for (k, stamps, rect, water) in &laid {
             paint_stroke(
                 k,
@@ -1607,6 +1839,7 @@ impl InkLayer {
                 *rect,
                 *water,
                 rasterizer,
+                &mut sc,
                 &mut content,
                 bx,
             )?;
@@ -2126,16 +2359,17 @@ mod bend_tests {
     /// the next pass, so the bent peak is the flat one and a stamp's
     /// outline more.
     ///
-    /// Where the time goes (2026-11-09, medians; two runs agreed within
-    /// 3 %): round dabs meshed and roughened take 4.6x the flat; the pass
-    /// that bends every stamp to find the layer's rectangle is 37 % of that,
-    /// and the paint pass bends each again. A roughened tip takes 7.1x, most
-    /// of it the roughening read inside every tip pixel (`p + d(p)`); its
-    /// bounds pass is 13 %. Keeping
-    /// the first pass's outlines for the second would save that share, but
-    /// the layer is sized before any stroke is laid, so every stroke's
-    /// outlines would be held at once: more memory for a third of the time,
-    /// not taken.
+    /// Where the time went (2026-11-09, before the speed-ups): round dabs
+    /// meshed and roughened took 4.6x the flat; a pass that bent every stamp
+    /// to find the layer's rectangle was 37 % of that, and the paint pass
+    /// bent each again. A roughened tip took 7.1x, most of it the
+    /// roughening read inside every tip pixel (`p + d(p)`). Since: a
+    /// stamp's pixels are found from the bends' box round its rectangle
+    /// (`Pen::reach`), not its bent outline; the field's reads are shared
+    /// by the dabs over a pixel where no mesh makes them differ
+    /// (`RoughCache`); the two channels share their noise; and a dab's
+    /// coverage skips what only a union of parts needs
+    /// (`Rasterizer::plain`).
     #[test]
     fn a_heavy_box_of_bent_ink_holds_no_more_than_the_flat_one_and_a_stamp() {
         let t = Affine::scale(2.74, 2.74);
