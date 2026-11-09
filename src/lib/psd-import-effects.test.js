@@ -115,6 +115,15 @@ describe('a PSD layer style comes back through a foreign import', () => {
     expectSame(after.blending, before.blending);
   });
 
+  it('a switched-off shadow or overlay comes back switched off, not dropped', async () => {
+    const { after } = await throughPsd({
+      shadows: [{ on: false, x: 3, y: 3, size: 4, color: '#000000', opacity: 0.5 }, { x: -2, y: 2, size: 1, color: '#ff0000', opacity: 1 }],
+      colorOverlays: [{ on: false, color: '#00ff00', opacity: 1, blend: 'normal' }],
+    });
+    expect(after.shadows.map((sh) => sh.on !== false)).toEqual([false, true]);
+    expect(after.colorOverlays.map((o) => [o.on !== false, o.color])).toEqual([[false, '#00ff00']]);
+  });
+
   it('a layer with no effects comes back with none, not the defaults', async () => {
     const { after } = await throughPsd({ strokes: [], shadows: [] });
     expect(after.strokes).toEqual([]);
@@ -136,7 +145,8 @@ describe('a Photoshop file', () => {
     });
     expect(style.strokes).toEqual([]);
     expect(style.strokeEffects.map((k) => [k.position, k.size])).toEqual([['outside', 3], ['inside', 1]]);
-    expect(style.shadows).toEqual([]);
+    // An unticked shadow comes in switched off, not dropped (`instanceOn`).
+    expect(style.shadows.map((sh) => [sh.on, sh.size])).toEqual([[false, 5]]);
     // With no Overprint flag (an older writer), an Outside colour stroke is an outline.
     expect(styleFromPsdLayer({ effects: { stroke: [stroke({ overprint: undefined })] } }).strokes).toEqual([{ color: '#000000', width: 3, opacity: 1 }]);
   });

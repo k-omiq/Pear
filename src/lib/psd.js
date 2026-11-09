@@ -1829,7 +1829,12 @@ const blendFromPsd = (m) => (typeof m === 'string' && m ? m.trim().replace(/\s+/
 // A whole percent, as the file keeps a layer's opacities (one byte).
 const pct2 = (v) => Math.round(Math.min(1, Math.max(0, psdNum(v, 1))) * 100) / 100;
 const exact = (v) => Math.round(v * 1e6) / 1e6 || 0;
-const fxOn = (e) => !!e && e.present !== false && e.enabled !== false;
+// An effect the file has (`present`), and whether it is ticked (`enabled`).
+const psdFxThere = (e) => !!e && e.present !== false;
+const psdFxOn = (e) => psdFxThere(e) && e.enabled !== false;
+// One of a list (a shadow, an overlay) the file has unticked comes in
+// switched off (`instanceOn`), as the writer writes one (`fxOn`).
+const psdOff = (e) => (e.enabled === false ? { on: false } : null);
 
 // A contour (`ShpC`): a preset by Photoshop's name, else the curve's points.
 function contourFromPsd(c, aa) {
@@ -1942,7 +1947,7 @@ function shadowFromPsd(e, light) {
 function glowFromPsd(e, inner) {
   const gradient = !!e.gradient;
   return {
-    on: fxOn(e),
+    on: psdFxOn(e),
     blend: blendFromPsd(e.blendMode),
     opacity: psdNum(e.opacity, 0.75),
     noise: psdNum(e.noise, 0),
@@ -2023,13 +2028,14 @@ function blendingFromPsd(n) {
  */
 export function styleFromPsdLayer(n, light = {}) {
   const fx = n?.effects ?? {};
-  const list = (v) => (Array.isArray(v) ? v : v ? [v] : []).filter(fxOn);
+  const all = (v) => (Array.isArray(v) ? v : v ? [v] : []).filter(psdFxThere);
+  const list = (v) => all(v).filter(psdFxOn);
   const { outlines, strokes } = splitStrokes(list(fx.stroke));
   const style = {
     strokes: strokesFromEffects(outlines),
-    shadows: list(fx.dropShadow).map((e) => ({ ...shadowFromPsd(e, light), spread: psdUnits(e.choke) / 100, knockout: e.layerConceals === true })),
-    innerShadows: list(fx.innerShadow).map((e) => ({ ...shadowFromPsd(e, light), choke: psdUnits(e.choke) / 100 })),
-    colorOverlays: list(fx.solidFill).map((e) => ({ color: e.color ? rgbHex(e.color) : '#000000', opacity: psdNum(e.opacity, 1), blend: blendFromPsd(e.blendMode) })),
+    shadows: all(fx.dropShadow).map((e) => ({ ...psdOff(e), ...shadowFromPsd(e, light), spread: psdUnits(e.choke) / 100, knockout: e.layerConceals === true })),
+    innerShadows: all(fx.innerShadow).map((e) => ({ ...psdOff(e), ...shadowFromPsd(e, light), choke: psdUnits(e.choke) / 100 })),
+    colorOverlays: all(fx.solidFill).map((e) => ({ ...psdOff(e), color: e.color ? rgbHex(e.color) : '#000000', opacity: psdNum(e.opacity, 1), blend: blendFromPsd(e.blendMode) })),
     gradientOverlays: [],
     strokeEffects: strokes,
     outerGlow: fx.outerGlow ? glowFromPsd(fx.outerGlow, false) : { on: false },
@@ -2047,10 +2053,11 @@ export function styleFromPsdLayer(n, light = {}) {
   // (`textLayerFor`). Only an overlay that is all of that is the fill's; any
   // other, a foreign one with the same fields left out included, stays an
   // overlay.
-  const overlays = list(fx.gradientOverlay);
+  const overlays = all(fx.gradientOverlay);
   const last = overlays.at(-1);
   const fillMark =
     last &&
+    last.enabled !== false &&
     last.gradient?.name === FILL_GRADIENT_NAME &&
     last.gradient.type === 'solid' &&
     (last.type ?? 'linear') === 'linear' &&
@@ -2063,11 +2070,11 @@ export function styleFromPsdLayer(n, light = {}) {
     const stops = stopsFromPsd(last.gradient);
     if (stops && stops.length >= 2) style.gradient = { on: true, kind: 'linear', scope: 'box', angle: exact(90 - psdNum(last.angle, -90)), stops };
   }
-  style.gradientOverlays = overlays.map((e) => ({ blend: blendFromPsd(e.blendMode), opacity: psdNum(e.opacity, 1), gradient: fxGradientFromPsd(e.gradient, e) }));
+  style.gradientOverlays = overlays.map((e) => ({ ...psdOff(e), blend: blendFromPsd(e.blendMode), opacity: psdNum(e.opacity, 1), gradient: fxGradientFromPsd(e.gradient, e) }));
   const sa = fx.satin;
   if (sa) {
     style.satin = {
-      on: fxOn(sa),
+      on: psdFxOn(sa),
       blend: blendFromPsd(sa.blendMode),
       ...(sa.color ? { color: rgbHex(sa.color) } : null),
       opacity: psdNum(sa.opacity, 0.5),
@@ -2082,7 +2089,7 @@ export function styleFromPsdLayer(n, light = {}) {
   if (bv) {
     const global = bv.useGlobalLight === true;
     style.bevel = {
-      on: fxOn(bv),
+      on: psdFxOn(bv),
       style: BEVEL_STYLE_FROM_PSD[bv.style] ?? 'inner',
       technique: BEVEL_TECHNIQUE_FROM_PSD[bv.technique] ?? 'smooth',
       depth: psdNum(bv.strength, 1),
