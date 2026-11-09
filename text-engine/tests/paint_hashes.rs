@@ -14,6 +14,17 @@
 //! written on aarch64 macOS. A hash that differs on another target with no
 //! change to the engine is that, not a bug; bless on the target that
 //! matters, or look at the two rasters before trusting either.
+//!
+//! So the exact check fails only where the sheet was blessed (aarch64
+//! macOS, [`BLESSED_HERE`]) or when `STRICT_HASHES` is set:
+//!
+//!   STRICT_HASHES=1 cargo test --release --test paint_hashes
+//!
+//! On any other target a changed hash is printed as a warning (run with
+//! `--nocapture` to see it) and the test falls back to a coarser check that
+//! holds on every target: every row paints something, and no two rows paint
+//! the same pixels. A row added to or missing from the sheet fails
+//! everywhere: that is not the platform's maths.
 #![cfg(feature = "paint")]
 
 use mt_text::paint::fx::blend::Blend;
@@ -32,6 +43,14 @@ use mt_text::paint::{
 use mt_text::{Engine, Face, FontId};
 
 const SHEET: &str = include_str!("data/paint_hashes.txt");
+
+/// The target the sheet was blessed on, where its hashes are exact.
+const BLESSED_HERE: bool = cfg!(all(target_arch = "aarch64", target_os = "macos"));
+
+/// Whether a changed hash fails the test (see the header).
+fn strict() -> bool {
+    BLESSED_HERE || std::env::var_os("STRICT_HASHES").is_some()
+}
 
 const BLACK: Rgba = Rgba([0, 0, 0, 255]);
 const RED: Rgba = Rgba([255, 0, 0, 255]);
@@ -557,11 +576,14 @@ fn every_effect_paints_the_pixels_the_sheet_pins() {
         .filter(|l| !l.trim().is_empty())
         .map(|l| l.split_once(' ').expect("`name hash` lines"))
         .collect();
+    // `wrong`: what fails on every target; `changed`: hashes, which fail
+    // only where they are exact (`strict`).
     let mut wrong = Vec::new();
+    let mut changed = Vec::new();
     for (name, h) in &now {
         match pinned.iter().find(|(n, _)| n == name) {
             Some((_, want)) if want == h => {}
-            Some((_, want)) => wrong.push(format!("{name}: pixels changed ({want} -> {h})")),
+            Some((_, want)) => changed.push(format!("{name}: pixels changed ({want} -> {h})")),
             None => wrong.push(format!("{name}: not in the sheet ({h})")),
         }
     }
@@ -570,6 +592,18 @@ fn every_effect_paints_the_pixels_the_sheet_pins() {
             wrong.push(format!("{name}: in the sheet and no longer painted"));
         }
     }
+    if strict() {
+        wrong.append(&mut changed);
+    } else if !changed.is_empty() {
+        eprintln!(
+            "warning: paint_hashes: {} of {} hashes differ from the sheet blessed on aarch64 macOS; \
+             this target's float maths may differ (STRICT_HASHES=1 makes this fail):\n{}",
+            changed.len(),
+            now.len(),
+            changed.join("\n")
+        );
+        coarse_check(&now);
+    }
     assert!(
         wrong.is_empty(),
         "the sheet and the engine disagree (BLESS=1 to re-bless, on purpose):\n{}",
@@ -577,13 +611,11 @@ fn every_effect_paints_the_pixels_the_sheet_pins() {
     );
 }
 
-/// Every hash is of something drawn, and no two entries are alike: a sheet
-/// whose rows all paint the same would pin nothing.
-#[test]
-fn the_sheet_has_a_distinct_picture_in_every_row() {
-    let now = painted();
+/// What holds on every target, exact hashes or not: every row paints
+/// something, and no two rows paint the same pixels.
+fn coarse_check(now: &[(String, String)]) {
     let nothing = hash(None);
-    for (name, h) in &now {
+    for (name, h) in now {
         assert_ne!(*h, nothing, "{name} painted nothing");
     }
     for (i, (a, ha)) in now.iter().enumerate() {
@@ -591,4 +623,11 @@ fn the_sheet_has_a_distinct_picture_in_every_row() {
             assert_ne!(ha, hb, "{a} and {b} paint the same pixels");
         }
     }
+}
+
+/// Every hash is of something drawn, and no two entries are alike: a sheet
+/// whose rows all paint the same would pin nothing.
+#[test]
+fn the_sheet_has_a_distinct_picture_in_every_row() {
+    coarse_check(&painted());
 }
