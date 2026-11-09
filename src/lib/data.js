@@ -919,8 +919,9 @@ export function normalizeGlow(x, inner = false) {
     noise: Math.min(1, Math.max(0, num(x?.noise, 0))),
     color: hex(x?.color, d.color),
     fill: x?.fill === 'gradient' ? 'gradient' : 'color',
-    // A glow's gradient has no Dither, in Photoshop as here.
-    gradient: { ...normalizeFxGradient(x?.gradient, glowGradient(hex(x?.color, d.color))), dither: false },
+    // A glow's gradient has no Dither and no Align with Layer, in Photoshop
+    // as here: it runs along the glow.
+    gradient: (({ align, ...g }) => ({ ...g, dither: false }))(normalizeFxGradient(x?.gradient, glowGradient(hex(x?.color, d.color)))),
     technique: x?.technique === 'precise' ? 'precise' : 'softer',
     spread: Math.min(1, Math.max(0, num(x?.spread, 0))),
     size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, d.size))),
@@ -996,8 +997,13 @@ export function newOverlay() {
 //             Rust engine's random ramp from `noise` (the stops are kept for
 //             a switch back)
 //   noise     Photoshop's noise gradient (`normalizeNoiseGradient`)
-// Photoshop's Align with Layer is always on: the gradient spans the letters'
-// frame (a stroke's, the frame grown by the stroke). 'shapeburst' runs from
+//   align     Photoshop's Align with Layer, kept only when off (false): on,
+//             the gradient spans the letters' frame (a stroke's, the frame
+//             grown by the stroke) and turns with the box; off, it spans the
+//             whole page the box sits on and stays put on it when the box
+//             moves, turns or mirrors. Off is the page's own size; in the
+//             editor, before the page is measured, it paints as on. A glow
+//             has none. 'shapeburst' runs from
 // the painted shape's edge (the letters', or a stroke's outer edge) in to its
 // deepest point; Angle and the offset do not move it. A glow's gradient runs
 // along the glow whatever its style.
@@ -1101,6 +1107,8 @@ export function normalizeFxGradient(x, d = fxGradientDefault()) {
     smoothness: Math.min(1, Math.max(0, num(src.smoothness, 0))),
     method: FX_GRADIENT_METHODS.includes(src.method) ? src.method : 'classic',
     dither: src.dither === true,
+    // Kept only when off: a gradient from before it loads as it was.
+    ...(src.align === false ? { align: false } : null),
     type: src.type === 'noise' ? 'noise' : 'solid',
     noise: normalizeNoiseGradient(src.noise ?? d.noise),
   };
