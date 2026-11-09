@@ -77,7 +77,7 @@ pub fn compose(layers: &mut [Layer<'_>], surface: IBox) -> Result<Vec<u8>, Error
                 let line = &mut colour[row * width * 4..(row + 1) * width * 4];
                 let cov_row = &cov[r * stride..(r + 1) * stride];
                 let cov_from = (xa - layer.bx.x0) as usize;
-                let pixels = line[from * 4..to * 4].chunks_exact_mut(4);
+                let pixels = line[from * 4..to * 4].as_chunks_mut::<4>().0.iter_mut();
                 let covers = &cov_row[cov_from..cov_from + (to - from)];
                 if layer.erase {
                     for (px, &c) in pixels.zip(covers) {
@@ -117,8 +117,8 @@ pub fn compose(layers: &mut [Layer<'_>], surface: IBox) -> Result<Vec<u8>, Error
             let at = ((y - surface.y0) as usize + row) * width * 4;
             let dst = &mut out[at + from * 4..at + to * 4];
             for (px, o) in line[from * 4..to * 4]
-                .chunks_exact_mut(4)
-                .zip(dst.chunks_exact_mut(4))
+                .as_chunks_mut::<4>().0.iter_mut()
+                .zip(dst.as_chunks_mut::<4>().0.iter_mut())
             {
                 store(px, o);
                 px.fill(0.0);

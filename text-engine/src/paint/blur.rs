@@ -55,16 +55,16 @@ impl Surface {
         let w = self.width;
         let (c0, c1) = (bx.x0 as usize, bx.x1 as usize);
         let row = |y: usize| &self.data[(y * w + c0) * 4..(y * w + c1) * 4];
-        let row_has = |y: usize| row(y).chunks_exact(4).any(|p| p[3] != 0);
+        let row_has = |y: usize| row(y).as_chunks::<4>().0.iter().any(|p| p[3] != 0);
         let (r0, r1) = (bx.y0 as usize, bx.y1 as usize);
         let y0 = (r0..r1).find(|&y| row_has(y))?;
         let y1 = (y0..r1).rev().find(|&y| row_has(y))? + 1;
         let (mut x0, mut x1) = (c1, c0);
         for y in y0..y1 {
             let row = row(y);
-            if let Some(a) = row.chunks_exact(4).position(|p| p[3] != 0) {
+            if let Some(a) = row.as_chunks::<4>().0.iter().position(|p| p[3] != 0) {
                 x0 = x0.min(c0 + a);
-                let b = row.chunks_exact(4).rposition(|p| p[3] != 0).unwrap_or(a);
+                let b = row.as_chunks::<4>().0.iter().rposition(|p| p[3] != 0).unwrap_or(a);
                 x1 = x1.max(c0 + b + 1);
             }
         }
@@ -118,8 +118,8 @@ impl Surface {
             let to = (dy as usize * self.width + bx.x0 as usize) * 4;
             let n = bx.width() * 4;
             let rows = pixels[from..from + n]
-                .chunks_exact(4)
-                .zip(self.data[to..to + n].chunks_exact_mut(4));
+                .as_chunks::<4>().0.iter()
+                .zip(self.data[to..to + n].as_chunks_mut::<4>().0.iter_mut());
             for (s, d) in rows {
                 let a = u32::from(s[3]);
                 if a == 0 {
@@ -142,8 +142,8 @@ impl Surface {
             let from = (y as usize * self.width + bx.x0 as usize) * 4;
             let n = bx.width() * 4;
             let pairs = self.data[from..from + n]
-                .chunks_exact(4)
-                .zip(out[row * n..(row + 1) * n].chunks_exact_mut(4));
+                .as_chunks::<4>().0.iter()
+                .zip(out[row * n..(row + 1) * n].as_chunks_mut::<4>().0.iter_mut());
             for (s, d) in pairs {
                 let a = u32::from(s[3]);
                 if a == 0 {
@@ -202,7 +202,7 @@ fn extended_box(sigma: f64) -> (usize, f32) {
 /// How far a gaussian of `sigma` reaches, in whole pixels: what the passes
 /// below can move ink by.
 pub(crate) fn blur_reach(sigma: f64) -> i32 {
-    if !(sigma > 0.0) {
+    if sigma.is_nan() || sigma <= 0.0 {
         return 0;
     }
     let reach = if sigma < BOX_FROM_SIGMA {
@@ -300,17 +300,17 @@ fn along<const N: usize>(pass: &Pass, padded: &[u16], pad: usize, out: &mut [u16
             // pixel `i` is `i - r ..= i + r`, kept as a running sum.
             let p = &padded[(pad - (r + 1)) * N..];
             let mut sum = [0u64; N];
-            for px in p[N..(2 * r + 1) * N].chunks_exact(N) {
+            for px in p[N..(2 * r + 1) * N].as_chunks::<N>().0 {
                 for c in 0..N {
                     sum[c] += u64::from(px[c]);
                 }
             }
             let pixels = out
-                .chunks_exact_mut(N)
-                .zip(p.chunks_exact(N))
-                .zip(p[N..].chunks_exact(N))
-                .zip(p[(2 * r + 1) * N..].chunks_exact(N))
-                .zip(p[(2 * r + 2) * N..].chunks_exact(N));
+                .as_chunks_mut::<N>().0.iter_mut()
+                .zip(p.as_chunks::<N>().0.iter())
+                .zip(p[N..].as_chunks::<N>().0.iter())
+                .zip(p[(2 * r + 1) * N..].as_chunks::<N>().0.iter())
+                .zip(p[(2 * r + 2) * N..].as_chunks::<N>().0.iter());
             for ((((o, before), leaves), enters), after) in pixels {
                 for c in 0..N {
                     let s = sum[c] + u64::from(enters[c]);
@@ -322,7 +322,7 @@ fn along<const N: usize>(pass: &Pass, padded: &[u16], pad: usize, out: &mut [u16
         Pass::Kernel(half) => {
             let r = half.len() - 1;
             let p = &padded[(pad - r) * N..];
-            for (i, o) in out.chunks_exact_mut(N).enumerate() {
+            for (i, o) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
                 for c in 0..N {
                     let mut v = u64::from(p[(i + r) * N + c]) * half[0];
                     for k in 1..=r {
@@ -422,7 +422,7 @@ fn blur_channels<const N: usize>(
         let line = pad * N..(pad + w) * N;
         for y in 0..h {
             let src = &s.data[corner(y)..corner(y) + w * 4];
-            for (v, p) in a[line.clone()].chunks_exact_mut(N).zip(src.chunks_exact(4)) {
+            for (v, p) in a[line.clone()].as_chunks_mut::<N>().0.iter_mut().zip(src.as_chunks::<4>().0.iter()) {
                 for c in 0..N {
                     v[c] = u16::from(p[first + c]) << FRAC;
                 }
@@ -453,9 +453,9 @@ fn blur_channels<const N: usize>(
         }
         for y in 0..h {
             let to = corner(y) + x0 * 4;
-            let values = a[(pad + y) * stride..(pad + y) * stride + used].chunks_exact(N);
+            let values = a[(pad + y) * stride..(pad + y) * stride + used].as_chunks::<N>().0.iter();
             for (p, v) in s.data[to..to + used / N * 4]
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>().0.iter_mut()
                 .zip(values)
             {
                 for c in 0..N {
@@ -471,7 +471,7 @@ fn blur_channels<const N: usize>(
 /// Blurs the surface by a gaussian of `sigma` pixels. Only the rows and
 /// columns the ink can reach are touched.
 pub(crate) fn gaussian(s: &mut Surface, sigma: f64) -> Result<(), Error> {
-    if !(sigma > 0.0) {
+    if sigma.is_nan() || sigma <= 0.0 {
         return Ok(());
     }
     let Some(ink) = s.ink() else {
@@ -486,7 +486,7 @@ pub(crate) fn gaussian(s: &mut Surface, sigma: f64) -> Result<(), Error> {
     blur_channels::<4>(s, bx, &passes, 0)?;
     for y in bx.y0 as usize..bx.y1 as usize {
         let from = (y * s.width + bx.x0 as usize) * 4;
-        for p in s.data[from..from + w * 4].chunks_exact_mut(4) {
+        for p in s.data[from..from + w * 4].as_chunks_mut::<4>().0 {
             // Rounding each channel on its own can leave a colour a level
             // above its alpha, which is no colour: premultiplied channels
             // never pass it.
@@ -518,7 +518,7 @@ pub(crate) fn tent_flat(s: &mut Surface, width: f64, rgb: [u8; 3]) -> Result<(),
     let mut a = budget::filled(w * h, 0f64)?;
     for y in 0..h {
         let from = ((y + bx.y0 as usize) * s.width + bx.x0 as usize) * 4;
-        for (x, p) in s.data[from..from + w * 4].chunks_exact(4).enumerate() {
+        for (x, p) in s.data[from..from + w * 4].as_chunks::<4>().0.iter().enumerate() {
             a[y * w + x] = f64::from(p[3]) / 255.0;
         }
     }
@@ -541,7 +541,7 @@ pub(crate) fn tent_flat(s: &mut Surface, width: f64, rgb: [u8; 3]) -> Result<(),
     }
     for y in 0..h {
         let from = ((y + bx.y0 as usize) * s.width + bx.x0 as usize) * 4;
-        for (x, p) in s.data[from..from + w * 4].chunks_exact_mut(4).enumerate() {
+        for (x, p) in s.data[from..from + w * 4].as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let al = (a[y * w + x] * 255.0 + 0.5).clamp(0.0, 255.0) as u32;
             for c in 0..3 {
                 p[c] = div255(u32::from(rgb[c]) * al) as u8;
@@ -741,8 +741,8 @@ pub(crate) fn over_moved_in(
         add_row(acc, layer, ink, y as i64, (x0, x1), &t);
         let to = (y * dst.width + x0) * 4;
         let pairs = dst.data[to..to + (x1 - x0) * 4]
-            .chunks_exact_mut(4)
-            .zip(acc[x0 * 4..x1 * 4].chunks_exact(4));
+            .as_chunks_mut::<4>().0.iter_mut()
+            .zip(acc[x0 * 4..x1 * 4].as_chunks::<4>().0.iter());
         for (d, s) in pairs {
             if s[3] <= 0.0 {
                 continue;
@@ -763,7 +763,7 @@ pub(crate) fn mask(s: &mut Surface, mask: &[u8], bx: IBox, keep_outside: bool) {
     for y in 0..h {
         let row = &mut s.data[y * w * 4..(y + 1) * w * 4];
         let inside = (y as i32) >= bx.y0 && (y as i32) < bx.y1;
-        for (x, p) in row.chunks_exact_mut(4).enumerate() {
+        for (x, p) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             if p[3] == 0 {
                 continue;
             }
@@ -797,7 +797,7 @@ mod tests {
     }
 
     fn alpha_sum(s: &Surface) -> u64 {
-        s.data.chunks_exact(4).map(|p| u64::from(p[3])).sum()
+        s.data.as_chunks::<4>().0.iter().map(|p| u64::from(p[3])).sum()
     }
 
     #[test]
@@ -825,7 +825,7 @@ mod tests {
             );
             assert!(spread <= blur_reach(sigma), "sigma {sigma} spread {spread}");
             // Colour stays under its alpha.
-            assert!(s.data.chunks_exact(4).all(|p| p[2] <= p[3] && p[0] == 0));
+            assert!(s.data.as_chunks::<4>().0.iter().all(|p| p[2] <= p[3] && p[0] == 0));
         }
     }
 
@@ -933,11 +933,11 @@ mod tests {
                 s.data[(y * 48 + x) * 4..(y * 48 + x) * 4 + 4].copy_from_slice(&px);
             }
         }
-        let before: u32 = s.data.chunks_exact(4).map(|p| u32::from(p[3])).sum();
+        let before: u32 = s.data.as_chunks::<4>().0.iter().map(|p| u32::from(p[3])).sum();
         tent_flat(&mut s, 6.0, rgb).unwrap();
-        let after: u32 = s.data.chunks_exact(4).map(|p| u32::from(p[3])).sum();
+        let after: u32 = s.data.as_chunks::<4>().0.iter().map(|p| u32::from(p[3])).sum();
         assert!(before.abs_diff(after) <= before / 100, "{before} {after}");
-        for p in s.data.chunks_exact(4) {
+        for p in s.data.as_chunks::<4>().0.iter() {
             for c in 0..3 {
                 assert_eq!(p[c], div255(u32::from(rgb[c]) * u32::from(p[3])) as u8);
             }

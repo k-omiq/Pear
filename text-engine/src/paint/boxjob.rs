@@ -1310,7 +1310,7 @@ fn layer_key(sh: &Shadow) -> (Rgba, f64, f64) {
 
 /// A matte's levels written into `layer` as one flat colour.
 fn set_flat(layer: &mut Surface, rgb: [u8; 3], alpha: &[u8]) {
-    for (p, &a) in layer.data.chunks_exact_mut(4).zip(alpha) {
+    for (p, &a) in layer.data.as_chunks_mut::<4>().0.iter_mut().zip(alpha) {
         let k = u32::from(a);
         for c in 0..3 {
             p[c] = ((u32::from(rgb[c]) * k + 127) / 255) as u8;
@@ -1353,7 +1353,7 @@ fn fill_matte(
 
 fn alpha_of(layer: &Surface) -> Result<budget::Buffer<u8>, Error> {
     let mut out = budget::filled(layer.width * layer.height, 0u8)?;
-    for (a, p) in out.iter_mut().zip(layer.data.chunks_exact(4)) {
+    for (a, p) in out.iter_mut().zip(layer.data.as_chunks::<4>().0.iter()) {
         *a = p[3];
     }
     Ok(out)
@@ -1457,7 +1457,7 @@ fn lay_styled(
     if let Some(letters) = &letters {
         // PhotoCraft's `knock_out_exterior`: the map times 1 - alpha * knock.
         let knock = (knock.min(1.0) * 255.0 + 0.5) as u32;
-        for (p, &a) in thrown.data.chunks_exact_mut(4).zip(letters.iter()) {
+        for (p, &a) in thrown.data.as_chunks_mut::<4>().0.iter_mut().zip(letters.iter()) {
             if a == 0 {
                 continue;
             }
@@ -1621,7 +1621,7 @@ fn paint_glyphs(
             if let Some(t) = this.as_mut() {
                 t.draw(&r);
             }
-            for p in r.data.chunks_exact_mut(4) {
+            for p in r.data.as_chunks_mut::<4>().0 {
                 p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
             }
             out.push(r);

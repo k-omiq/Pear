@@ -15,7 +15,7 @@ fn load(engine: &mut Engine, name: &str) -> FontId {
 /// Box of the pixels with any coverage: `(x0, y0, x1, y1)`, end exclusive.
 fn touched(rgba: &[u8], width: u32) -> Option<(u32, u32, u32, u32)> {
     let mut b: Option<(u32, u32, u32, u32)> = None;
-    for (i, px) in rgba.chunks_exact(4).enumerate() {
+    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
         if px[3] == 0 {
             continue;
         }
@@ -162,7 +162,7 @@ fn overlapping_strokes_of_neighbours_are_laid_down_once() {
     // A pen this wide makes the strokes of the two stems overlap.
     scene.stroke(24.0, half).unwrap();
     let rgba = scene.into_rgba().unwrap();
-    let max_alpha = rgba.chunks_exact(4).map(|p| p[3]).max().unwrap();
+    let max_alpha = rgba.as_chunks::<4>().0.iter().map(|p| p[3]).max().unwrap();
     assert!(max_alpha <= 129, "overlap doubled up: alpha {max_alpha}");
     assert!(max_alpha >= 127);
 }

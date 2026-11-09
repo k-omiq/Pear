@@ -1644,8 +1644,8 @@ fn interior_at(
     let mut data = budget::filled(n * 4, 0u8)?;
     let mut alpha = budget::filled(n, 0f32)?;
     for (i, (d, p)) in data
-        .chunks_exact_mut(4)
-        .zip(lay.data.chunks_exact(4))
+        .as_chunks_mut::<4>().0.iter_mut()
+        .zip(lay.data.as_chunks::<4>().0.iter())
         .enumerate()
     {
         let la = u32::from(p[3]);
@@ -2597,7 +2597,7 @@ mod tests {
         let (out, o) = inside(&square(20), &fx);
         // One chamfer for the strokes and the overlays.
         assert_eq!(map::INSIDE_DISTANCES.with(|c| c.get()), 1);
-        assert!(out.data.chunks_exact(4).any(|p| p[3] > 0));
+        assert!(out.data.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
         assert!(o.is_some());
     }
 }

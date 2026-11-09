@@ -823,7 +823,7 @@ pub fn swatch(w: u32, h: u32, fill: Option<&Fill>, tiles: &[Tile]) -> Result<Vec
     }
     let mut out = budget::filled(w as usize * h as usize * 4, 0u8)?;
     if let Some(shader) = fill.and_then(|f| Shader::new(f, &Affine::IDENTITY, tiles)) {
-        for (i, px) in out.chunks_exact_mut(4).enumerate() {
+        for (i, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let c = shader.at((i % w as usize) as i32, (i / w as usize) as i32);
             compose::store(&c, px);
         }
@@ -864,14 +864,14 @@ mod tests {
     }
     fn ink(bytes: &[u8]) -> f64 {
         bytes
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|p| 1.0 - p[0] as f64 / 255.0)
             .sum::<f64>()
             / (bytes.len() / 4) as f64
     }
     fn draw(shader: Shader<'_>) -> Vec<u8> {
         let mut out = vec![0; 96 * 96 * 4];
-        for (i, px) in out.chunks_exact_mut(4).enumerate() {
+        for (i, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             compose::store(&shader.at((i % 96) as i32, (i / 96) as i32), px);
         }
         out
@@ -1016,8 +1016,8 @@ mod tests {
                 let b = draw(Shader::new(&Fill::Screen(s), &frame, &[]).unwrap());
                 for channel in 0..4 {
                     let mut errors: Vec<u8> = a
-                        .chunks_exact(4)
-                        .zip(b.chunks_exact(4))
+                        .as_chunks::<4>().0.iter()
+                        .zip(b.as_chunks::<4>().0.iter())
                         .map(|(a, b)| a[channel].abs_diff(b[channel]))
                         .collect();
                     let mean = errors.iter().map(|v| *v as f64).sum::<f64>() / errors.len() as f64;
@@ -1091,10 +1091,10 @@ mod tests {
                 s.density = d;
                 let p = pixels(&s);
                 if d == 0.0 {
-                    assert!(p.chunks_exact(4).all(|p| p == [255; 4]));
+                    assert!(p.as_chunks::<4>().0.iter().all(|p| *p == [255; 4]));
                 }
                 if d == 1.0 {
-                    assert!(p.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+                    assert!(p.as_chunks::<4>().0.iter().all(|p| *p == [0, 0, 0, 255]));
                 }
                 assert!(
                     p.iter().zip(&previous).all(|(a, b)| a <= b),
@@ -1127,8 +1127,8 @@ mod tests {
         s.fade = None;
         s.bg = Rgba([0; 4]);
         let p = pixels(&s);
-        assert!(p.chunks_exact(4).any(|p| p[3] == 0));
-        assert!(p.chunks_exact(4).any(|p| p[3] == 255));
+        assert!(p.as_chunks::<4>().0.iter().any(|p| p[3] == 0));
+        assert!(p.as_chunks::<4>().0.iter().any(|p| p[3] == 255));
         s = screen(2, 0.1);
         assert!((ink(&pixels(&s)) - 0.5).abs() < 0.02);
     }
@@ -1141,7 +1141,7 @@ mod tests {
             println!("new kind {kind}: designed ink {share:.5}");
             assert!(share > 0.02 && share < 0.98, "kind {kind}: {share}");
             assert!(
-                designed.chunks_exact(4).any(|p| p[0] != designed[0]),
+                designed.as_chunks::<4>().0.iter().any(|p| p[0] != designed[0]),
                 "constant kind {kind}"
             );
             let mut previous = 0.0;
@@ -1154,10 +1154,10 @@ mod tests {
                     "kind {kind}, step {step}: {share} after {previous}"
                 );
                 if step == 0 {
-                    assert!(p.chunks_exact(4).all(|p| p == [255; 4]));
+                    assert!(p.as_chunks::<4>().0.iter().all(|p| *p == [255; 4]));
                 }
                 if step == 20 {
-                    assert!(p.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+                    assert!(p.as_chunks::<4>().0.iter().all(|p| *p == [0, 0, 0, 255]));
                 }
                 previous = share;
             }
@@ -1171,7 +1171,7 @@ mod tests {
         // cells side by side.
         let mut s = screen(31, 16.0);
         let p = pixels(&s);
-        for (i, px) in p.chunks_exact(4).enumerate() {
+        for (i, px) in p.as_chunks::<4>().0.iter().enumerate() {
             let (x, y) = (i % 96 / 2, i / 96 / 2);
             let want = if (x + y) % 2 == 0 { 0 } else { 255 };
             assert_eq!(px[0], want, "pixel {} {}", i % 96, i / 96);
@@ -1179,8 +1179,8 @@ mod tests {
         // One cell in 64 short of solid: every other pixel stays black.
         s.density = 62.6 / 64.0;
         let p = pixels(&s);
-        let white = p.chunks_exact(4).filter(|px| px[0] == 255).count();
-        let black = p.chunks_exact(4).filter(|px| px[0] == 0).count();
+        let white = p.as_chunks::<4>().0.iter().filter(|px| px[0] == 255).count();
+        let black = p.as_chunks::<4>().0.iter().filter(|px| px[0] == 0).count();
         assert_eq!(white + black, 96 * 96, "a grey pixel");
         assert_eq!(white, 96 * 96 / 64);
         // The dot kind at a low level: separate round dots on a lattice.
@@ -1290,7 +1290,7 @@ mod tests {
             s.density = density;
             let p = swatch(12, 4, Some(&Fill::Screen(s.clone())), &flat).unwrap();
             assert!(
-                p.chunks_exact(4).all(|p| p == [255; 4]),
+                p.as_chunks::<4>().0.iter().all(|p| *p == [255; 4]),
                 "flat at {density}"
             );
         }
@@ -1388,13 +1388,13 @@ mod tests {
         for mode in [0, 1] {
             s.mode = mode;
             let p = pixels(&s);
-            assert!(p.chunks_exact(4).all(|p| p == s.fallback.0));
+            assert!(p.as_chunks::<4>().0.iter().all(|p| *p == s.fallback.0));
             s.tile = 0;
             let empty = [Tile::from_rgba(0, 0, &[]).unwrap()];
             assert!(swatch(3, 3, Some(&Fill::Screen(s.clone())), &empty)
                 .unwrap()
-                .chunks_exact(4)
-                .all(|p| p == s.fallback.0));
+                .as_chunks::<4>().0.iter()
+                .all(|p| *p == s.fallback.0));
         }
         s.mode = 0;
         let mut b = swatch_wire(&s);

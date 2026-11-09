@@ -476,7 +476,7 @@ fn average_cell(
     // Manga crops are commonly grey. Checking once lets the inner loop read
     // and interpolate one colour instead of doing the same work three times.
     // This is exact even when the crop has arbitrary, ignored alpha values.
-    if rgba.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2]) {
+    if rgba.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]) {
         average_cell_with::<true>(w, h, rgba, a, b, side)
     } else {
         average_cell_with::<false>(w, h, rgba, a, b, side)
