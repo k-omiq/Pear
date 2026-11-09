@@ -1308,8 +1308,11 @@ fn lay_styled(
         distance::dilate(&mut matte, width, height, grow * scale)?;
         set_flat(&mut layer, rgb, &matte);
     }
-    blur::tent_flat(&mut layer, rest * scale, rgb)?;
+    // The tent's width for the zoom, so the edge lays as at zoom 1.
+    let tent = super::fx::tent_width(rest, scale);
+    blur::tent_flat(&mut layer, tent, rgb)?;
     let reach = (size_reach(sh.size) * scale)
+        .max(grow * scale + f64::from(super::fx::tent::reach(tent)))
         .ceil()
         .min(f64::from(i32::MAX)) as i32
         + 1;
@@ -1927,7 +1930,7 @@ fn paint(
                 layer.draw(&r.data, r.width as usize, r.x, r.y);
                 // A silhouette is one colour, so only its alpha needs the blur.
                 let [red, green, blue, _] = sh.color.0;
-                let width = sh.size * scale;
+                let width = super::fx::tent_width(sh.size, scale);
                 blur::tent_flat(layer, width, [red, green, blue])?;
                 // The ink is the raster's, and as far round it as the blur
                 // spread it.

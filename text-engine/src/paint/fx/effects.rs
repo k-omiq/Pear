@@ -267,7 +267,8 @@ fn soft(
         size: (size * scale) as f32,
         spread: spread as f32,
         grow: (grow * scale) as f32,
-        blur: (rest * scale) as f32,
+        // The tent's width for the zoom, so the edge lays as at zoom 1.
+        blur: super::tent_width(rest, scale) as f32,
         contour,
         range: range as f32,
         noise: noise as f32,
@@ -662,7 +663,7 @@ pub(crate) fn outer_reach(effects: &[Effect], scale: f64) -> i32 {
         .iter()
         .filter(|e| e.shows())
         .filter_map(|e| match e {
-            Effect::OuterGlow(g) => Some(g.size * scale),
+            Effect::OuterGlow(g) => Some(super::soft_room(g.size, g.spread, scale)),
             Effect::Stroke(s) => Some(s.widths().1 * scale),
             Effect::Bevel(b) => Some(f64::from(bevel_outward(b, scale))),
             _ => None,
@@ -1230,11 +1231,11 @@ fn interior_pad(effects: &[Effect], scale: f64) -> usize {
         pad = pad.max(match e {
             Effect::InnerGlow(g) => match g.technique {
                 Technique::Precise => 2.0,
-                Technique::Softer => g.size * scale + 2.0,
+                Technique::Softer => super::soft_room(g.size, g.spread, scale) + 2.0,
             },
-            Effect::InnerShadow(s) => s.size * scale + 2.0,
+            Effect::InnerShadow(s) => super::soft_room(s.size, s.choke, scale) + 2.0,
             Effect::Stroke(s) => s.widths().1 * scale + 2.0,
-            Effect::Satin(s) => s.size * scale + 2.0,
+            Effect::Satin(s) => super::soft_room(s.size, 0.0, scale) + 2.0,
             // The height's tent (or a chisel's ramp, a pixel past it) and
             // Soften's, inside the letters or out past them.
             Effect::Bevel(b) => {
@@ -1387,7 +1388,7 @@ fn interior_at(
                 &shape,
                 dx as f32,
                 dy as f32,
-                (st.size * scale) as f32,
+                super::tent_width(st.size, scale) as f32,
                 st.invert,
                 st.contour.as_ref(),
             )?;

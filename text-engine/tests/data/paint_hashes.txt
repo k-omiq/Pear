@@ -42,5 +42,5 @@ gradient_overlay_angle 13db36330ea8959b
 gradient_overlay_reflected 027b807bbc44b2b1
 gradient_overlay_diamond c599410579b73758
 gradient_overlay_shape_burst e919bc886174181f
-everything_at_zoom_2 852c36e1e752fdab
+everything_at_zoom_2 33e42177c52b491e
 everything_turned_30 ac6da1432cc1c34e
