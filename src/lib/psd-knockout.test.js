@@ -221,6 +221,21 @@ describe('the block walk', () => {
     expect(psdLayerRecords(handPsd([block('knko', [1, 0, 0, 0]), block('knko', [2, 0, 0, 0])])).records[0].knko.value).toBe(2);
   });
 
+  it('reading: a plain layer may carry lsct type 0, and the last lsct wins, as in ag-psd', () => {
+    const tree = () => ({ children: [{ name: 'a', knockout: true }] });
+    let psd = tree();
+    expect(readDeepKnockout(handPsd([block('lsct', u32(0)), block('knko', [2, 0, 0, 0])]), psd)).toBe(1);
+    expect(psd.children[0].knockoutDeep).toBe(true);
+    // A divider type first, then 0: ag-psd keeps the 0, a plain layer.
+    psd = tree();
+    expect(readDeepKnockout(handPsd([block('lsct', u32(3)), block('lsdk', u32(0)), block('knko', [2, 0, 0, 0])]), psd)).toBe(1);
+    // The other way round it is a divider, which this tree does not have.
+    psd = tree();
+    expect(readDeepKnockout(handPsd([block('lsdk', u32(0)), block('lsct', u32(3)), block('knko', [2, 0, 0, 0])]), psd)).toBe(0);
+    // A tree that says the layer has no knockout disagrees with the byte.
+    expect(readDeepKnockout(handPsd([block('knko', [2, 0, 0, 0])]), { children: [{ name: 'a' }] })).toBe(0);
+  });
+
   it('a layer info of length 0 is no records', () => {
     const u8 = handPsd(null);
     expect(psdLayerRecords(u8).records).toEqual([]);
