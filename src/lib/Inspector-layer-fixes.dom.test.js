@@ -7,10 +7,10 @@ import { tick } from 'svelte';
 // Distance 0 (F48), and Blend If sliders (F46, F47).
 import Inspector from './Inspector.svelte';
 import BlendRangeSlider from './BlendRangeSlider.svelte';
-import { app, loadProjectPages, page, setChapterLight } from './store.svelte.js';
+import { app, loadProjectPages, page, setChapterLight, settleEdits } from './store.svelte.js';
 import { setInspectorTab, setEffectsSubTab } from './inspector-tabs.svelte.js';
 import { initHistory, resetHistory, undo, redo } from './editor/history.svelte.js';
-import { defaultStyle, normalizeStyle, newShadow } from './data.js';
+import { defaultStyle, normalizeStyle, newShadow, newInnerShadow } from './data.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
 
 let restoreCanvas;
@@ -77,6 +77,60 @@ describe('F44 and F48: shadow angle', () => {
     const s0 = box().style.shadows[0];
     expect(Math.round(Math.hypot(s0.x, s0.y))).toBe(10);
     expect(Math.round((Math.atan2(s0.y, -s0.x) * 180) / Math.PI)).toBe(45);
+  });
+
+  // The kept angle is the style's own (`angle`), not the panel's: it is
+  // undone and redone with the distance and survives a save and a reload.
+  it('stores the angle at Distance 0 so undo, redo and a reload keep it', async () => {
+    const sh = { ...newShadow({ angle: 120 }), useGlobalLight: false };
+    const { view, box } = mounted({ shadows: [sh] }, 'effects', 'shadow');
+    await tick();
+    // Each edit its own undo step: armed by its keydown, closed after it.
+    const edit = async (label, value) => {
+      const el = view.getByLabelText(label);
+      await fireEvent.keyDown(el, { key: 'Enter' });
+      await fireEvent.change(el, { target: { value } });
+      settleEdits();
+    };
+    await edit('Shadow 1 angle', '45');
+    expect(box().style.shadows[0].angle).toBeUndefined(); // the offset says 45 itself
+    await edit('Shadow 1 distance', '0');
+    expect(box().style.shadows[0]).toMatchObject({ x: 0, y: 0, angle: 45 });
+    await edit('Shadow 1 distance', '10');
+    expect(box().style.shadows[0].angle).toBeUndefined();
+    undo();
+    await tick();
+    expect(box().style.shadows[0]).toMatchObject({ x: 0, y: 0, angle: 45 });
+    expect(view.getByLabelText('Shadow 1 angle').value).toBe('45');
+    // Saved and read back: the angle is in the file.
+    const saved = normalizeStyle(JSON.parse(JSON.stringify(box().style)));
+    expect(saved.shadows[0].angle).toBe(45);
+    redo();
+    await tick();
+    const s0 = box().style.shadows[0];
+    expect(Math.round((Math.atan2(s0.y, -s0.x) * 180) / Math.PI)).toBe(45);
+  });
+
+  it('keeps an inner shadow angle typed at Distance 0', async () => {
+    const sh = { ...newInnerShadow({ angle: 120 }), useGlobalLight: false, x: 0, y: 0 };
+    const { view, box } = mounted({ innerShadows: [sh] }, 'effects', 'shadow');
+    await tick();
+    await fireEvent.change(view.getByLabelText('Inner shadow 1 angle'), { target: { value: '-30' } });
+    expect(box().style.innerShadows[0]).toMatchObject({ x: 0, y: 0, angle: -30 });
+    expect(view.getByLabelText('Inner shadow 1 angle').value).toBe('-30');
+    await fireEvent.change(view.getByLabelText('Inner shadow 1 distance'), { target: { value: '8' } });
+    const s0 = box().style.innerShadows[0];
+    expect(Math.round((Math.atan2(s0.y, -s0.x) * 180) / Math.PI)).toBe(-30);
+  });
+
+  it('drops the kept angle when the shadow goes on the Global Light', async () => {
+    const sh = { ...newShadow({ angle: 120 }), useGlobalLight: false, x: 0, y: 0, angle: 45 };
+    const { view, box } = mounted({ shadows: [sh] }, 'effects', 'shadow');
+    await tick();
+    expect(box().style.shadows[0].angle).toBe(45);
+    await fireEvent.click(view.getByLabelText('Shadow 1 uses the global light'));
+    expect(box().style.shadows[0].useGlobalLight).toBe(true);
+    expect('angle' in box().style.shadows[0]).toBe(false);
   });
 });
 

@@ -39,6 +39,9 @@ const shared = (name, entry) => ({ ...entry, shape: name });
 // `same` is what a stored read-only field may be sent back as (an empty pick).
 const readOnly = (desc, same) => ({ type: 'any', readOnly: true, desc, ...(same === undefined ? {} : { same }) });
 const alpha = (desc) => number(desc, 0, 1);
+// A shadow's own angle off the light, kept where x/y cannot hold it (data.js
+// `storedShadowAngle`): at distance 0. x/y win when they disagree.
+const shadowAngleField = () => ({ ...number('own angle at distance 0', -180, 180), optional: true });
 const point = (desc) => array(desc, number('px'), { minItems: 2, maxItems: 2 });
 
 // Geometry the agent writes, all in box-local page px: the origin is the box's
@@ -190,6 +193,7 @@ export const STYLE_SCHEMA = {
     contour: contourField(),
     knockout: boolean('letters knock the shadow out (Rust)'),
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
+    angle: shadowAngleField(),
   })),
   gradientOverlays: array('gradients over the fill, top first (Photoshop Gradient Overlay; Rust)', object('gradient overlay', {
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
@@ -212,6 +216,7 @@ export const STYLE_SCHEMA = {
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     contour: contourField(),
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
+    angle: shadowAngleField(),
   })),
   colorOverlays: array('flat colours over the fill, top first (Photoshop Color Overlay; Rust)', object('colour overlay', {
     color: color('overlay colour'),

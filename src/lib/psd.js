@@ -22,7 +22,7 @@ import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/i
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
-import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES } from './data.js';
+import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
 import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
 import { warpActive } from './warp.js';
@@ -916,8 +916,10 @@ export function textLayerFor(p, box, rendered) {
     size: { units: 'Pixels', value: sh.size || 0 },
     distance: { units: 'Pixels', value: Math.hypot(sh.x || 0, sh.y || 0) },
     // On the Global Light the chapter's angle itself, not one read back off
-    // the rounded offset.
-    angle: turnAngle(sh.useGlobalLight ? globalLight().angle : (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI),
+    // the rounded offset. Off it, the shadow's kept angle where it has one
+    // (`shadowOwnAngle`: at Distance 0, or finer than the offset), as
+    // Photoshop's Angle (`lagl`) is its own beside the Distance.
+    angle: turnAngle(sh.useGlobalLight ? globalLight().angle : sh.angle != null ? (shadowOwnAngle(sh) ?? 0) : (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI),
     color: hexToRgb(sh.color),
     opacity: sh.opacity ?? 1,
     blendMode: psdBlend(sh.blend),
