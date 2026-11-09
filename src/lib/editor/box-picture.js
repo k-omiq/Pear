@@ -222,6 +222,80 @@ function showTexture(el, tex, box, scale, maxPx, unit) {
 }
 
 /**
+ * Whether `box` is one the paint worker may paint (`requestBoxPicture` may
+ * still say no, for what only the layout shows: a caption).
+ */
+export function pictureWorkerReady(box) {
+  const painter = glyphPainter();
+  if (!paintWorkerAllowed() || !painter?.worker?.alive?.() || typeof painter.capture !== 'function') return false;
+  return boxInJob(box) && !inkActive(box.style?.ink);
+}
+
+// HOW MANY BOXES ARE WITH THE WORKER AT ONCE. A request holds its box's
+// texture canvas and its job's bytes (with the page under it, up to 64 MB)
+// from the moment it is made until its answer is shown, and the one worker
+// paints them one after another: thirty boxes on screen after a zoom settles
+// would be thirty of each held at once. So at most `PICTURE_SLOTS` requests
+// are made at a time, across every box; a box past them waits as an intent
+// (`schedulePicture`: what to call, no canvas, no bytes) in a queue, first
+// come first served, and makes its request when a slot frees.
+export const PICTURE_SLOTS = 2;
+let slotsBusy = 0;
+// owner -> nothing: the boxes that hold a slot (one each at most).
+const slotOwners = new Set();
+// [{ owner, run }], in order.
+const slotQueue = [];
+
+/**
+ * Runs `run()` for `owner` (a box) when a slot is free. `run` returns a
+ * promise that settles when the slot's work is done (the answer shown or
+ * let go), or null when it did not need the slot after all (the box went
+ * elsewhere, or is no longer wanted). A box already waiting is replaced, in
+ * its place: only its newest intent is ever run. A box holding a slot waits
+ * for its own first.
+ */
+export function schedulePicture(owner, run) {
+  const at = slotQueue.findIndex((e) => e.owner === owner);
+  if (at >= 0) slotQueue[at] = { owner, run };
+  else slotQueue.push({ owner, run });
+  pumpPictures();
+}
+
+/** Takes `owner`'s waiting intent out of the queue, if it has one (the box destroyed, its picture no longer wanted). */
+export function unschedulePicture(owner) {
+  const at = slotQueue.findIndex((e) => e.owner === owner);
+  if (at >= 0) slotQueue.splice(at, 1);
+}
+
+function pumpPictures() {
+  while (slotsBusy < PICTURE_SLOTS) {
+    const at = slotQueue.findIndex((e) => !slotOwners.has(e.owner));
+    if (at < 0) return;
+    const [{ owner, run }] = slotQueue.splice(at, 1);
+    let done = null;
+    try {
+      done = run();
+    } catch {
+      done = null;
+    }
+    if (!done) continue;
+    slotsBusy++;
+    slotOwners.add(owner);
+    // Every way out of a slot frees it and lets the next one in.
+    Promise.resolve(done)
+      .catch(() => {})
+      .finally(() => {
+        slotsBusy--;
+        slotOwners.delete(owner);
+        pumpPictures();
+      });
+  }
+}
+
+/** For tests: the slots in use and the intents waiting. */
+export const _pictureSlots = () => ({ busy: slotsBusy, waiting: slotQueue.length });
+
+/**
  * `paintBoxPicture` with the engine's paint in the paint worker
  * (text-engine/paint-worker.js), so the main thread does not wait for it.
  * Everything up to the paint is done here and now, exactly as the
@@ -234,19 +308,19 @@ function showTexture(el, tex, box, scale, maxPx, unit) {
  * instance's), or anything else the capture saw that was not the one box job
  * (a caption, a canvas pass). Otherwise `{ promise, prepMs, apply, cancel }`:
  *
- *   promise  resolves `{ raster, ms }` from the worker, or `{ dead: true }`
- *            when it cannot paint (paint the box synchronously then); rejects
- *            where the engine refused the job, as `paintBoxPicture` throws.
+ *   promise  resolves `{ raster, ms }` from the worker, `{ dead: true }`
+ *            when it cannot paint (paint the box synchronously then), or
+ *            `{ closed: true }` when it was stopped on purpose (let go);
+ *            rejects where the engine refused the job.
  *   apply(el, result)  the pixels onto the texture through the painter's own
  *            blit, and the texture onto `el`: what `paintBoxPicture` returns.
  *   cancel() lets go of the texture, for a result nobody wants.
  *   prepMs   what the main thread spent on it, for the drag budget.
  */
 export function requestBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null, sheet = null) {
+  if (!pictureWorkerReady(box)) return null;
   const painter = glyphPainter();
-  const worker = painter?.worker;
-  if (!paintWorkerAllowed() || !worker?.alive?.() || typeof painter.capture !== 'function') return null;
-  if (!boxInJob(box) || inkActive(box.style?.ink)) return null;
+  const worker = painter.worker;
   const t0 = performance.now();
   let cap;
   try {
@@ -270,8 +344,13 @@ export function requestBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, u
     promise: worker.paint(job.bytes),
     prepMs,
     apply(el, result) {
-      painter.finishCaptured(job, result?.raster ?? null);
-      return showTexture(el, tex, box, scale, maxPx, unit);
+      try {
+        painter.finishCaptured(job, result?.raster ?? null);
+        return showTexture(el, tex, box, scale, maxPx, unit);
+      } finally {
+        // Shown (and let go by `show`), or not: the texture is nobody's now.
+        cancel();
+      }
     },
     cancel,
   };

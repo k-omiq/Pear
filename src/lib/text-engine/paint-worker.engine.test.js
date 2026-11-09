@@ -202,6 +202,56 @@ describe('the mirror going wrong', () => {
     }
   });
 
+  it('a paint that breaks the handler is answered dead, not left waiting, and so is every later one', async () => {
+    const h = createPaintHandler();
+    await h.handle({ op: 'init', module: await WebAssembly.compile(engineWasm()) });
+    // Not bytes at all: a TypeError inside the paint, not an engine refusal.
+    expect(await h.handle({ op: 'paint', id: 7, bytes: null })).toMatchObject({ type: 'dead', id: 7 });
+    expect(await h.handle({ op: 'paint', id: 8, bytes: new Uint8Array(8) })).toMatchObject({ type: 'dead', id: 8 });
+    // A message that is not one at all.
+    const h2 = createPaintHandler();
+    expect(await h2.handle(null)).toMatchObject({ type: 'dead' });
+  });
+
+  it('a job the engine refuses is answered failed, with the engine\'s words, and the worker goes on', async () => {
+    const h = createPaintHandler();
+    await h.handle({ op: 'init', module: await WebAssembly.compile(engineWasm()) });
+    const r = await h.handle({ op: 'paint', id: 3, bytes: new Uint8Array(16) });
+    expect(r).toMatchObject({ type: 'failed', id: 3 });
+    expect(r.message).toMatch(/malformed/);
+    expect(h.dead()).toBeNull();
+  });
+
+  it('no answer in time: the mirror gives the paint up as dead', async () => {
+    vi.useFakeTimers();
+    try {
+      const warn = vi.fn();
+      const m = createPaintMirror({ send() {}, onMessage() {}, close() {} }, { warn, timeoutMs: 1000 });
+      const p = m.paint(new Uint8Array(8));
+      vi.advanceTimersByTime(1001);
+      expect(await p).toEqual({ dead: true });
+      expect(m.alive()).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closed on purpose: paints on their way are answered closed, and no font is copied for it', async () => {
+    const sent = [];
+    const m = createPaintMirror({ send: (msg) => sent.push(msg.op), onMessage() {}, close() {} }, { warn: () => {} });
+    const p = m.paint(new Uint8Array(8));
+    m.close();
+    expect(await p).toEqual({ closed: true });
+    const low = { addFont: vi.fn(() => 5), addSiblingFace() {}, removeFont() {}, setRule() {}, chainNew() {}, chainPush() {}, chainFree() {} };
+    const add = low.addFont;
+    m.attach(low);
+    const bytes = new Uint8Array(4);
+    expect(low.addFont(bytes)).toBe(5);
+    expect(add).toHaveBeenCalledWith(bytes, 0);
+    expect(sent).toEqual(['paint']);
+  });
+
   it('no Worker here: the engine switch starts none', async () => {
     const { startPaintMirror } = await import('./paint-mirror.js');
     expect(typeof Worker).toBe('undefined');

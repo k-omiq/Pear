@@ -121,6 +121,20 @@ function need(n) {
 }
 
 // The engine has its copy of the job: a buffer grown past `WIRE_KEEP` goes.
+/**
+ * Lets go of the encoder's buffer where a job grew it past `WIRE_KEEP`: for
+ * a caller that keeps a copy of `encodeBox`'s bytes and sends them elsewhere
+ * (the app's paint worker), as `paintBox` does once the engine has its copy.
+ */
+export function releaseWire() {
+  dropBigWire()
+}
+
+/** What the engine's status `code` (a negative return of a paint) means. */
+export function paintStatusText(code) {
+  return STATUS[code] ?? `error ${code}`
+}
+
 function dropBigWire() {
   if (buf.byteLength <= WIRE_KEEP) return
   buf = new ArrayBuffer(WIRE_START)

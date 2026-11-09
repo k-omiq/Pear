@@ -25,8 +25,14 @@
 // The preference (`paintWorker`, prefs.svelte.js), mirrored here so this file
 // does not import the prefs (which import the engine switch, which imports this).
 let allowed = true;
+// The mirrors whose workers are running, so the preference turned off can
+// stop them: fonts then stop going into a second heap. Turned on again, a
+// worker starts with the next engine (the switch turned off and on, the next
+// launch): the instance running now holds fonts no new worker was told of.
+const live = new Set();
 export function setPaintWorkerAllowed(v) {
   allowed = !!v;
+  if (!allowed) for (const m of [...live]) m.close();
 }
 export function paintWorkerAllowed() {
   return allowed;
@@ -37,7 +43,10 @@ export function paintWorkerAllowed() {
  * The worker's transport is `workerTransport`; a test hands one that calls the
  * handler in-process.
  */
-export function createPaintMirror(transport, { warn = (m) => console.warn(m) } = {}) {
+// How long a paint may go unanswered before the worker is taken for hung.
+export const PAINT_TIMEOUT_MS = 15000;
+
+export function createPaintMirror(transport, { warn = (m) => console.warn(m), timeoutMs = PAINT_TIMEOUT_MS } = {}) {
   let dead = null;
   let nextId = 0;
   // paint id -> { resolve, reject }
@@ -46,11 +55,18 @@ export function createPaintMirror(transport, { warn = (m) => console.warn(m) } =
   // instance's own clean-up of what it made on the way), and not sent again.
   let inner = 0;
 
-  function die(reason, quiet = false) {
+  // `closed` is a deliberate stop (the engine switch, the preference): the
+  // paints on their way are answered `{ closed: true }`, which asks nothing
+  // of the caller but to let go; a death is `{ dead: true }`, paint it here.
+  function die(reason, closed = false) {
     if (dead) return;
     dead = reason;
-    if (!quiet) warn(`the paint worker is off for this session (${reason}); boxes are painted on the main thread`);
-    for (const p of pending.values()) p.resolve({ dead: true });
+    live.delete(api);
+    if (!closed) warn(`the paint worker is off for this session (${reason}); boxes are painted on the main thread`);
+    for (const p of pending.values()) {
+      clearTimeout(p.timer);
+      p.resolve(closed ? { closed: true } : { dead: true });
+    }
     pending.clear();
     try {
       transport.close();
@@ -67,6 +83,7 @@ export function createPaintMirror(transport, { warn = (m) => console.warn(m) } =
     const p = pending.get(reply?.id);
     if (!p) return;
     pending.delete(reply.id);
+    clearTimeout(p.timer);
     if (reply.type === 'painted') p.resolve({ raster: reply.raster, ms: reply.ms });
     else p.reject(new Error(reply.message || 'the paint worker failed'));
   });
@@ -95,7 +112,7 @@ export function createPaintMirror(transport, { warn = (m) => console.warn(m) } =
     return v;
   }
 
-  return {
+  const api = {
     /** Wraps the state-changing calls of `low`, the main instance. Once, before anything is added. */
     attach(low) {
       const o = {
@@ -108,6 +125,8 @@ export function createPaintMirror(transport, { warn = (m) => console.warn(m) } =
         chainFree: low.chainFree,
       };
       low.addFont = (data, faceIndex = 0) => {
+        // No worker to tell: no copy.
+        if (dead) return o.addFont(data, faceIndex);
         // A copy of the bytes as the main instance gets them, sent and given
         // up: the worker's instance takes its own copy of them in turn.
         const copy = data instanceof Uint8Array ? data.slice() : new Uint8Array(data).slice();
@@ -142,7 +161,8 @@ export function createPaintMirror(transport, { warn = (m) => console.warn(m) } =
     /**
      * Paints encoded box job bytes in the worker. Resolves `{ raster, ms }`
      * (`raster` null when the job draws nothing; `ms` the engine's time in
-     * the worker), or `{ dead: true }` when the worker cannot; rejects when the
+     * the worker), `{ dead: true }` when the worker cannot, or `{ closed: true }`
+     * when it was stopped on purpose; rejects when the
      * engine refused the job, as the synchronous paint would have thrown. The
      * bytes are given up (transferred).
      */
@@ -150,7 +170,13 @@ export function createPaintMirror(transport, { warn = (m) => console.warn(m) } =
       if (dead) return Promise.resolve({ dead: true });
       const id = ++nextId;
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        // No answer at all (a hang inside the worker's wasm): the worker is
+        // taken for gone, and this paint and every later one is the main
+        // thread's.
+        const timer = setTimeout(() => {
+          if (pending.has(id)) die(`no answer in ${Math.round(timeoutMs / 1000)} s`);
+        }, timeoutMs);
+        pending.set(id, { resolve, reject, timer });
         send({ op: 'paint', id, bytes }, [bytes.buffer]);
       });
     },
@@ -161,6 +187,8 @@ export function createPaintMirror(transport, { warn = (m) => console.warn(m) } =
     /** Marks it dead from outside (the worker's own error events). */
     _fail: (reason) => die(reason),
   };
+  live.add(api);
+  return api;
 }
 
 /**

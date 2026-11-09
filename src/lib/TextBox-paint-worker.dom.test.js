@@ -8,19 +8,36 @@ import { tick } from 'svelte';
 // its way waits, and only the newest is painted. The worker is a stand-in
 // here that answers when the case says so.
 const requests = [];
+// Requests made and not yet answered, and the most there ever were.
+const open = { now: 0, most: 0 };
 vi.mock('./editor/box-picture.js', async (original) => {
   const mod = await original();
   return {
     ...mod,
     paintBoxPicture: vi.fn(mod.paintBoxPicture),
+    pictureWorkerReady: vi.fn(() => true),
     requestBoxPicture: vi.fn((box) => {
       let answer;
-      const promise = new Promise((resolve) => (answer = resolve));
+      let fail;
+      const promise = new Promise((resolve, reject) => {
+        answer = resolve;
+        fail = reject;
+      });
+      open.now++;
+      open.most = Math.max(open.most, open.now);
       const req = {
+        id: box.id,
         color: box.style.color,
         promise,
         prepMs: 0,
-        answer: (res = { raster: null, ms: 1 }) => answer(res),
+        answer: (res = { raster: null, ms: 1 }) => {
+          open.now--;
+          answer(res);
+        },
+        fail: (err = new Error('refused')) => {
+          open.now--;
+          fail(err);
+        },
         apply: vi.fn(() => ({ ox: 0, oy: 0, cw: 10, ch: 10, ss: 1 })),
         cancel: vi.fn(),
       };
@@ -64,6 +81,8 @@ beforeEach(() => {
   _setDisplayScale(1);
   paintBoxPicture.mockClear();
   requests.length = 0;
+  open.now = 0;
+  open.most = 0;
 });
 afterEach(() => {
   cleanup();
@@ -74,12 +93,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mounted() {
-  const b = { id: 'b', lineN: null, text: 'WAIT', x: 100, y: 200, w: 240, h: 90, style: normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', size: 30, color: '#000000' }) };
-  loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [b] }]);
+const boxOf = (id, x = 100) => ({ id, lineN: null, text: 'WAIT', x, y: 200, w: 240, h: 90, style: normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', size: 30, color: '#000000' }) });
+async function mounted(ids = ['b']) {
+  loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: ids.map((id, i) => boxOf(id, 100 + i * 300)) }]);
   setZoom(1);
   const pg = page();
-  render(TextBox, { box: pg.boxes[0], pageFrameEl: document.createElement('div'), pg });
+  for (const b of pg.boxes) render(TextBox, { box: b, pageFrameEl: document.createElement('div'), pg });
   await tick();
   return pg.boxes[0];
 }
@@ -121,14 +140,42 @@ describe('the full paint in the paint worker', () => {
     expect(paintBoxPicture).not.toHaveBeenCalled();
   });
 
-  it('a worker that died has the picture painted here', async () => {
+  it('a worker that died has the picture painted here, once', async () => {
     await mounted();
     requests[0].answer({ dead: true });
     await settle();
     expect(requests[0].apply).not.toHaveBeenCalled();
     expect(requests[0].cancel).toHaveBeenCalledTimes(1);
-    // Painted again at once: asked of the worker again here, as the stand-in
-    // does not know it is dead (a real dead one says null, and it is painted here).
+    expect(paintBoxPicture).toHaveBeenCalledTimes(1);
+    expect(requests.length).toBe(1);
+  });
+
+  it('a paint the worker refused is painted here once, and the box stays a picture', async () => {
+    const said = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await mounted();
+      requests[0].fail();
+      await settle();
+      expect(requests[0].cancel).toHaveBeenCalled();
+      expect(paintBoxPicture).toHaveBeenCalledTimes(1);
+      expect(requests.length).toBe(1);
+      expect(said).not.toHaveBeenCalled();
+      expect(document.querySelector('canvas.warpl')).toBeTruthy();
+    } finally {
+      said.mockRestore();
+    }
+  });
+
+  it('four boxes at once: never more than two with the worker, and all four painted', async () => {
+    await mounted(['a', 'b', 'c', 'd']);
     expect(requests.length).toBe(2);
+    for (let i = 0; i < 4; i++) {
+      requests[i].answer();
+      await settle();
+    }
+    expect(requests.map((r) => r.id).sort()).toEqual(['a', 'b', 'c', 'd']);
+    expect(open.most).toBe(2);
+    for (const r of requests) expect(r.apply).toHaveBeenCalledTimes(1);
+    expect(paintBoxPicture).not.toHaveBeenCalled();
   });
 });

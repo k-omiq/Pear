@@ -75,7 +75,7 @@
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
-  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, pictureDragPx, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture, requestBoxPicture } from './editor/box-picture.js';
+  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, pictureDragPx, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture, requestBoxPicture, pictureWorkerReady, schedulePicture, unschedulePicture } from './editor/box-picture.js';
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
@@ -781,8 +781,10 @@
   // is painted with it standing in for its own.
   const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText } : box);
   // `key` is the picture key this paint is for: the effect's paints have one,
-  // and only those may go to the paint worker (`paintFull`).
-  function paintWarp(el, tips, key = null) {
+  // and only those may go to the paint worker (`paintFull`). `worker` false
+  // paints here whatever the box is: the fallback for a paint the worker did
+  // not make.
+  function paintWarp(el, tips, key = null, worker = true) {
     if (!engineShown) {
       warpGeom = paintWarpedBox(el, box, pg, z, tips);
       return;
@@ -793,9 +795,13 @@
     // ones stay here, inside a frame, and on screen in the frame they were
     // asked in. A box whose roughening still waits for the session's noise
     // phase is painted here too: the settle after it repaints it here.
-    if (key != null && !live && !keying && !(s.roughen?.on && !noiseSettled) && paintFull(el, tips, key)) return;
-    // A picture painted now is newer than any on its way from the worker.
-    fullSeq++;
+    if (key != null && worker && !live && !keying && !(s.roughen?.on && !noiseSettled) && pictureWorkerReady(paintedBox())) {
+      paintFull(el, tips, key);
+      return;
+    }
+    // A picture painted now is newer than any on its way from the worker,
+    // and than any waiting to be asked for.
+    dropFull();
     // The drag budget is what the last paint of this box says fits a frame
     // (`pictureDragPx`): a stack of layer effects has fewer pixels in the hand.
     const shown = warpGeom ? warpGeom.cw * z * warpGeom.ch * z : 0;
@@ -816,39 +822,55 @@
 
   // ---- the full paint, in the paint worker ----
   //
-  // One paint of this box in flight at a time (`fullBusy`). One asked for
-  // meanwhile waits (`fullNext`), and a later one takes its place: only the
-  // newest is ever painted. Every request and every paint made here takes a
-  // number (`fullSeq`), and a result is shown only if it is still the newest,
-  // the picture it was asked for is still the one wanted (`warpDrawn`), and
-  // the canvas is still this box's - otherwise it is let go. While it is on
-  // its way the picture already on screen stays.
+  // The request waits for one of the few slots every box shares
+  // (`schedulePicture`, box-picture.js) as an intent: no texture and no job
+  // bytes until its turn. One asked for while this box is waiting takes its
+  // place, and one asked for while this box's paint is with the worker waits
+  // for it: only the newest is ever painted. Every request and every paint
+  // made here takes a number (`fullSeq`), and a result is shown only if it is
+  // still the newest, the picture it was asked for is still the one wanted
+  // (`warpDrawn`), and the canvas is still this box's - otherwise it is let
+  // go. While it is on its way the picture already on screen stays.
+  //
+  // A paint the worker did not make - refused, or the worker gone - is made
+  // here once (`tryPaint` with the worker off); only that failing drops the
+  // box to its text (`paintFailedWith`). A worker stopped on purpose is let
+  // go, and painted here only while the engine still paints.
+  const fullOwner = {};
   let fullSeq = 0;
-  let fullBusy = false;
-  let fullNext = null;
-  // True when the paint is the worker's now (sent, or waiting its turn).
+  function dropFull() {
+    fullSeq++;
+    unschedulePicture(fullOwner);
+  }
+  const fullWanted = (el, key, seq) => seq === fullSeq && key === warpDrawn && warpLive === el && !warpDragging;
   function paintFull(el, tips, key) {
     const seq = ++fullSeq;
-    if (fullBusy) {
-      fullNext = { el, tips, key, seq };
-      return true;
-    }
-    return sendFull(el, tips, key, seq);
+    schedulePicture(fullOwner, () => sendFull(el, tips, key, seq));
   }
+  // The slot's work: a promise that settles when the answer is shown or let
+  // go, or null when the slot is not needed.
   function sendFull(el, tips, key, seq) {
+    if (!fullWanted(el, key, seq)) return null;
     const { page, corner } = paintPlace();
     const req = requestBoxPicture(paintedBox(), pg, pictureRes, tips, PICTURE_MAX_PX, pictureRes / z, corner, pageUnder(), gradientSheet);
-    if (!req) return false;
-    fullBusy = true;
-    const wanted = () => seq === fullSeq && key === warpDrawn && warpLive === el && !warpDragging;
-    req.promise.then(
+    if (!req) {
+      // Not one for the worker after all (a caption, the worker gone).
+      tryPaint(el, tips, key, false);
+      return null;
+    }
+    return req.promise.then(
       (res) => {
-        fullBusy = false;
-        if (!wanted()) req.cancel();
-        else if (res?.dead) {
-          // The worker is gone: this picture is painted here, now.
+        if (!fullWanted(el, key, seq)) req.cancel();
+        else if (res?.closed) {
+          // Stopped on purpose. The engine switch going off has taken the
+          // painter away already (`enginePaints`), and its key change
+          // repaints the box; the preference turned off leaves the painter,
+          // and this picture is painted here.
           req.cancel();
-          tryPaint(el, tips, key);
+          if (enginePaints) tryPaint(el, tips, key, false);
+        } else if (res?.dead) {
+          req.cancel();
+          tryPaint(el, tips, key, false);
         } else {
           try {
             const g = req.apply(el, res);
@@ -863,24 +885,12 @@
             paintFailedWith(el, key, err);
           }
         }
-        nextFull();
       },
-      (err) => {
-        fullBusy = false;
+      () => {
         req.cancel();
-        if (wanted()) paintFailedWith(el, key, err);
-        nextFull();
+        if (fullWanted(el, key, seq)) tryPaint(el, tips, key, false);
       },
     );
-    return true;
-  }
-  // The one that waited, if it is still the one wanted; painted here if the
-  // worker will not take it.
-  function nextFull() {
-    const n = fullNext;
-    fullNext = null;
-    if (!n || n.seq !== fullSeq || n.key !== warpDrawn || warpLive !== n.el || warpDragging) return;
-    if (!sendFull(n.el, n.tips, n.key, n.seq)) tryPaint(n.el, n.tips, n.key);
   }
 
   // The paint, for the effect: true when it painted. When it threw, the canvas
@@ -893,13 +903,13 @@
   // paint throws leaves the effect as it always has: nothing is released and
   // nothing is logged here that was not before.
   let failSaid = false;
-  function tryPaint(el, tips, key) {
+  function tryPaint(el, tips, key, worker = true) {
     if (!enginePaints) {
       paintWarp(el, tips);
       return true;
     }
     try {
-      paintWarp(el, tips, key);
+      paintWarp(el, tips, key, worker);
       failSaid = false;
       return true;
     } catch (err) {
@@ -913,7 +923,7 @@
     warpGeom = null;
     warpTips = null;
     warpSeq++;
-    fullSeq++;
+    dropFull();
     if (!failSaid) {
       failSaid = true;
       console.error(`the picture of box ${box.id} could not be painted; it is shown as its text${warped ? ', without its mesh' : ''}`, err);
@@ -994,6 +1004,7 @@
       warpGeom = null;
       warpTips = null;
       warpSeq++;
+      dropFull();
       return;
     }
     warpLive = el;
@@ -1026,6 +1037,7 @@
       warpGeom = null;
       warpTips = null;
       warpSeq++;
+      dropFull();
       return;
     }
     if (!tryPaint(el, warpTips, key)) return;
@@ -1064,6 +1076,8 @@
     warpDrawn = '';
     warpTips = null;
     warpSeq++;
+    // A paint waiting for the worker's slots goes with the box.
+    dropFull();
   });
 
   // ---- the transform gizmo ----
