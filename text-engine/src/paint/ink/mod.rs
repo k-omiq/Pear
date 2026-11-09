@@ -477,6 +477,11 @@ struct Carried {
     ta: Affine,
     /// Device px back to before the mesh: `ta`'s inverse.
     unmesh: Affine,
+    /// Device px back to job space after the mesh: the transform's inverse;
+    /// and the tangent's inverse, for a round dab read through the mesh
+    /// itself (`Pen::back_exact`).
+    unbase: Affine,
+    untangent: Affine,
     /// Job space back into the stamp's frame: `j`'s inverse.
     unframe: Affine,
     /// Device px a stamp unit is worth here: `ta`'s scale.
@@ -733,6 +738,8 @@ impl<'a> Pen<'a> {
             j,
             ta,
             unmesh,
+            unbase: self.base.invert()?,
+            untangent: a.invert()?,
             unframe,
             scale: ta.det().abs().sqrt(),
         })
@@ -746,6 +753,34 @@ impl<'a> Pen<'a> {
             .unmesh
             .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
         let p = rough.map_or(p, |r| r.back(p));
+        c.unframe.apply(p)
+    }
+
+    /// [`Pen::back`] through the mesh itself, for a round dab, which the
+    /// user's rule has exact: where the tangent puts the pixel before the
+    /// mesh, moved by the tangent's inverse of how far the mesh takes that
+    /// point from the pixel (one step of Newton's method, from the tangent),
+    /// then back through the roughening and the dab's frame. A round dab's
+    /// soft ramp is then the bent dab's own, where the tangent alone left
+    /// its fall-off up to a device pixel off the outline on a mesh that
+    /// stretches by half again (`ink-bend.engine.test.js`).
+    fn back_exact(c: &Carried, bend: &Bend, x: i32, y: i32) -> Pt {
+        let at = c
+            .unbase
+            .apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
+        let mut p = c.untangent.apply(at);
+        if let Some(m) = bend.bends.mesh {
+            let off = at.minus(m.at(p));
+            let lin = c
+                .untangent
+                .apply(off)
+                .minus(c.untangent.apply(Pt::new(0.0, 0.0)));
+            let next = p.plus(lin);
+            if next.x.is_finite() && next.y.is_finite() {
+                p = next;
+            }
+        }
+        let p = bend.bends.rough.map_or(p, |r| r.back(p));
         c.unframe.apply(p)
     }
 
@@ -967,7 +1002,7 @@ impl<'a> Pen<'a> {
             }),
             Read::Soft { c: carried, r, r0 } => {
                 cover(polys, self.rect, self.rasterizer, sc, |i, x, y, c| {
-                    let q = Self::back(&carried, rough, x, y);
+                    let q = Self::back_exact(&carried, bend, x, y);
                     let d = q.x.hypot(q.y);
                     let tg = if r > r0 {
                         ((d - r0) / (r - r0)).clamp(0.0, 1.0)
