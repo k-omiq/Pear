@@ -547,3 +547,70 @@ fn a_page_record_with_a_shape_burst_paints_by_depth_as_before() {
     };
     assert_eq!(run(false), run(true));
 }
+
+/// A glow's gradient runs along the glow and reads no frame, so flag bit 2
+/// (Align with Layer off) on its record is read and ignored: with the page
+/// known, an Inner Glow paints the same bytes either way, and so does an
+/// Outer Glow.
+#[test]
+fn a_glow_ignores_align_with_layer() {
+    let _scope = budget::Scope::new();
+    let c = cases()[0];
+    let tp = to_page(c.at, BOX, c.turn);
+    let t = transform(&c, &tp);
+    let page = Page {
+        to_page: tp,
+        w: PAGE.0,
+        h: PAGE.1,
+    };
+    let lt = letters(&c, &t, BOX);
+    let pl = place(t, Some(page));
+    let glow = |align: bool| Glow {
+        color: RED,
+        gradient: Some(grad(&c, align)),
+        opacity: 1.0,
+        blend: Blend::Normal,
+        technique: Technique::Precise,
+        size: 4.0,
+        spread: 0.0,
+        range: 1.0,
+        noise: 0.0,
+        contour: None,
+        center: false,
+        jitter: 0.0,
+        seed: 0,
+    };
+    let inner = |align: bool| {
+        let fx = [Effect::InnerGlow(glow(align))];
+        interior(&lt, &fx, 1.0, false, 1.0, |x, y| (x, y), &pl)
+            .unwrap()
+            .0
+            .data
+    };
+    // The outer glow is laid from the letters' map, with no `Place` at all:
+    // only the gradient's own flag could reach it.
+    let outer = |align: bool| {
+        let n = 40usize;
+        let mut shape = Map::new(n, n, 0.0);
+        for y in 15..25 {
+            for x in 15..25 {
+                shape.v[y * n + x] = 1.0;
+            }
+        }
+        let mut s = Surface::new(n, n).unwrap();
+        let region = IBox {
+            x0: 0,
+            y0: 0,
+            x1: n as i32,
+            y1: n as i32,
+        };
+        let fx = [Effect::OuterGlow(glow(align))];
+        lay_outer_glows(&mut s, &fx, &shape, None, 1.0, region, 1.0, None, (0, 0)).unwrap();
+        s.data.to_vec()
+    };
+    let (i, o) = (inner(true), outer(true));
+    // Each glow paints something.
+    assert!(i.chunks(4).any(|p| p[3] > 0) && o.chunks(4).any(|p| p[3] > 0));
+    assert!(inner(false) == i, "inner glow");
+    assert!(outer(false) == o, "outer glow");
+}

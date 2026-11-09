@@ -5,13 +5,15 @@ import { tick } from 'svelte';
 // Align with Layer, on the Gradient Overlay and on the gradient Stroke (the
 // Effects tab's shared gradient controls): unticked it stores `align: false`,
 // ticked it leaves the key out again, each an undo step; Shape Burst, which
-// reads no frame, has it greyed out; a glow's gradient has none.
+// reads no frame, has it greyed out showing the kept value, which applies
+// again when the style changes back; a glow's gradient has none.
 import Inspector from './Inspector.svelte';
 import { app, loadProjectPages, page, settleEdits } from './store.svelte.js';
 import { setInspectorTab, setEffectsSubTab } from './inspector-tabs.svelte.js';
 import { initHistory, resetHistory, undo, redo } from './editor/history.svelte.js';
 import { defaultStyle, normalizeStyle, newGradientOverlay, normalizeStrokeEffect } from './data.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
+import { pageGradients } from './text-paint.js';
 
 let restoreCanvas;
 beforeAll(() => {
@@ -79,6 +81,34 @@ describe('Align with Layer', () => {
     await toggle(view.getByLabelText('Photoshop stroke 1 gradient align with layer'));
     expect(g().align).toBe(false);
     undo();
+    expect('align' in g()).toBe(false);
+  });
+
+  it('keeps an off setting through Shape Burst, greyed, and back again', async () => {
+    const view = mounted({ gradientOverlays: [newGradientOverlay()] });
+    await tick();
+    const g = () => style().gradientOverlays[0].gradient;
+    const box = () => view.getByLabelText('Gradient overlay 1 align with layer');
+    const setStyle = async (v) => {
+      await fireEvent.change(view.getByLabelText('Gradient overlay 1 style'), { target: { value: v } });
+      settleEdits();
+      await tick();
+    };
+    await toggle(box());
+    expect(g().align).toBe(false);
+    expect(pageGradients(style())).toBe(true);
+    await setStyle('shapeburst');
+    // Shown as stored, greyed; Shape Burst reads no frame, so the box is not
+    // laid over the page (no page record, no repaint as it moves).
+    expect(box().disabled).toBe(true);
+    expect(box().checked).toBe(false);
+    expect(g().align).toBe(false);
+    expect(pageGradients(style())).toBe(false);
+    await setStyle('linear');
+    expect(box().disabled).toBe(false);
+    expect(box().checked).toBe(false);
+    expect(pageGradients(style())).toBe(true);
+    await toggle(box());
     expect('align' in g()).toBe(false);
   });
 

@@ -399,6 +399,10 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // only the number. v11 had two forms: 7858367 added shadow flag 4 (exact)
 // without a bump, so an early v11 wasm refuses every SFX copy's shadow.
 export const BOX_WIRE_VERSION = 16
+/** Largest page side, and largest job-to-page matrix entry, a page record
+ * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
+ * no page is sent and the box paints as Align with Layer on. */
+export const MAX_PAGE = 1048576
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
@@ -851,7 +855,7 @@ function clipShape(sh) {
  *   box sits on (v16): `toPage` the job's units onto the page, page px (a canvas matrix:
  *   the box's place, turn and mirror), and the page's size, page px. A gradient whose
  *   `align` is false (Align with Layer off) is laid over it; null lays such a gradient
- *   as one with Align on
+ *   as one with Align on, and so does a page past `MAX_PAGE` (a side or a matrix entry)
  * @param {{color: string, opacity: number, x: number, y: number, size: number, grow?: number,
  *   spread?: number, noise?: number, blend?: string, knockout?: boolean, exact?: boolean,
  *   seed?: number, contour?: {preset: string, aa?: boolean, pts?: number[][]}}[]} [request.shadows]
@@ -934,7 +938,8 @@ export function encodeBox(request) {
   for (const v of [grain?.[0], grain?.[1]]) u32(Number.isFinite(v) ? Math.round(v) | 0 : 0)
   // v16: the page, for the gradients with Align with Layer off.
   const pm = page?.toPage
-  const paged = Array.isArray(pm) && pm.length === 6 && pm.every(Number.isFinite) && pm[0] * pm[3] - pm[1] * pm[2] !== 0 && page.w > 0 && page.h > 0
+  const fits = (v) => Number.isFinite(v) && Math.abs(v) <= MAX_PAGE
+  const paged = Array.isArray(pm) && pm.length === 6 && pm.every(fits) && pm[0] * pm[3] - pm[1] * pm[2] !== 0 && page.w > 0 && page.h > 0 && fits(page.w) && fits(page.h)
   u32(paged ? 1 : 0)
   if (paged) {
     for (const v of pm) f64(v)

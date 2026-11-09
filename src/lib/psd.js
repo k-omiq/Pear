@@ -933,9 +933,10 @@ function borrowedRuns(s, content) {
 // pre-computed - so the decision is reachable from node without one.
 //
 // `doc` is set for a longstrip neighbour's box laid into another page's
-// document (`pageTextLayers`): `{ dx, dy, W, H }`, how far it was moved and
-// the document's size. Its Align off gradients were painted over its own
-// page, so they are placed against the document here.
+// document (`pageTextLayers`): `{ dx, dy, W, H, w, h }`, how far it was
+// moved, the document's size and its own page's (the size its pixels laid an
+// Align off gradient over). Those gradients are placed against the document
+// here.
 export function textLayerFor(p, box, rendered, doc = null) {
   const s = box.style;
   const raw = boxTextFor(p, box);
@@ -951,7 +952,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
   // neighbour's box was painted over its own page, moved into this
   // document: its gradient's centre and reach are carried over the same way
   // (no turn), and one past Photoshop's scale ships the pixels.
-  const own = doc && p?.w > 0 && p?.h > 0 ? { local: [doc.dx, doc.dy, doc.dx + p.w, doc.dy + p.h], page: [0, 0, doc.W, doc.H], centre: [0, 0] } : null;
+  const own = doc ? { local: [doc.dx, doc.dy, doc.dx + doc.w, doc.dy + doc.h], page: [0, 0, doc.W, doc.H], centre: [0, 0] } : null;
   const onPage = own ? new Map(placedGradients(s, true).map(({ g }) => [g, turnedGradientPlacement(g, 0, own)])) : null;
   const turnPixels = (!!placed && [...placed.values()].some((q) => !q.fits)) || (!!onPage && [...onPage.values()].some((q) => !q.fits));
 
@@ -1650,7 +1651,7 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   // Boxes with raster-only styling that paint nothing return null from textLayerFor
   // and are filtered out so ag-psd does not receive an image layer missing image data.
   const scratch = document.createElement('canvas');
-  const textLayers = pageTextLayers(p, entries, W, H, scratch, tips).map((e) => e.layer);
+  const textLayers = (await pageTextLayers(p, entries, W, H, scratch, tips)).map((e) => e.layer);
 
   // Base layers - Cleaned over Raw (bottom), both forced to the document's (=
   // the page's) size, which is a resample rather than a copy whenever the two
@@ -1763,10 +1764,17 @@ function pageLayerBoxes(p, column) {
 // nothing). A neighbour's box is a layer only where some of it lands on this
 // page, and its type layer is set where its pixels were drawn - moved by the
 // same offset, since everything else in it is stated from that origin.
-function pageTextLayers(p, entries, W, H, scratch, tips) {
+//
+// The page an Align off gradient is laid over is the document for a page's
+// own box, and for a neighbour's its own page, sized as the strip export
+// sizes it (`pageSpace`): one size, handed to both the pixels and the live
+// layer, so the two agree.
+async function pageTextLayers(p, entries, W, H, scratch, tips) {
   const out = [];
   for (const e of entries) {
-    const rendered = renderBoxLayer(e.box, W, H, scratch, e.owner, 1, tips, e.dx, e.dy);
+    const moved = e.owner !== p;
+    const sheet = moved ? await pageSpace(e.owner) : { w: W, h: H };
+    const rendered = renderBoxLayer(e.box, W, H, scratch, e.owner, 1, tips, e.dx, e.dy, sheet);
     if (e.owner !== p && !rendered) continue;
     // A turned box with an effect gradient: its letters alone, for the
     // frames the gradient is placed by (`gradientFrames`).
@@ -1776,9 +1784,9 @@ function pageTextLayers(p, entries, W, H, scratch, tips) {
       const frames = letters ? gradientFrames(letters, centre, Number(e.box.style.rotation) || 0) : null;
       if (frames) rendered.frames = frames;
     }
-    const layer = textLayerFor(e.owner, e.box, rendered, e.dx || e.dy ? { dx: e.dx, dy: e.dy, W, H } : null);
+    const layer = textLayerFor(e.owner, e.box, rendered, moved ? { dx: e.dx, dy: e.dy, W, H, w: sheet.w, h: sheet.h } : null);
     if (!layer) continue;
-    if (layer.text && (e.dx || e.dy)) {
+    if (layer.text && moved) {
       const t = layer.text.transform;
       layer.text.transform = [t[0], t[1], t[2], t[3], t[4] + e.dx, t[5] + e.dy];
     }
@@ -2561,7 +2569,7 @@ export async function psdSelfTest(p) {
       const entries = pageLayerBoxes(src, stripColumn(src));
       const selfTips = await settleBoxTips(entries.map((e) => e.box));
       await settlePickedTiles(entries.map((e) => e.box));
-      const layerBoxes = pageTextLayers(src, entries, W, H, scratch, selfTips);
+      const layerBoxes = await pageTextLayers(src, entries, W, H, scratch, selfTips);
       layerBoxes.forEach(({ rendered }, i) => {
         // A box that paints nothing (empty text) gets a layer with no pixels at
         // all, so there is nothing to compare and no failure to report.

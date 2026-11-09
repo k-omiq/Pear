@@ -1,12 +1,16 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createCanvas } from '@napi-rs/canvas';
+import { readPsd, initializeCanvas } from 'ag-psd';
 import { rustEngine } from '../test/rust-engine.js';
-import { renderBoxLayer } from './exporter.js';
+import { renderBoxLayer, renderPageCanvas, renderStripSliceCanvas } from './exporter.js';
+import { buildPagePsd } from './psd.js';
+import { app, loadProjectPages } from './store.svelte.js';
 import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { pictureTexture } from './editor/box-picture.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeGradientOverlay, normalizeStyle } from './data.js';
+import { MAX_PAGE } from '../../text-engine/js/paint.mjs';
 
 // Align with Layer off, end to end through the wasm: every route that paints
 // a box lays its page-wide gradient where the page has it. The reference is
@@ -31,15 +35,20 @@ import { defaultStyle, normalizeGradientOverlay, normalizeStyle } from './data.j
 
 const hadDocument = 'document' in globalThis;
 const oldDocument = globalThis.document;
-const before = { engine: textEngine(), painter: glyphPainter(), typeset: typesetEnabled() };
+const before = { engine: textEngine(), painter: glyphPainter(), typeset: typesetEnabled(), layout: app.projectLayout };
 
 beforeAll(async () => {
-  globalThis.document = { createElement: () => createCanvas(300, 150) };
+  globalThis.document = { createElement: () => createCanvas(300, 150), fonts: { ready: Promise.resolve() } };
+  initializeCanvas((w, h) => createCanvas(w, h));
   const rust = await rustEngine();
   setTextEngine(rust);
   setGlyphPainter(createRustGlyphPainter(rust));
   setTypesetEnabled(true);
   clearLayoutMemo();
+});
+afterEach(() => {
+  app.projectLayout = before.layout;
+  loadProjectPages([]);
 });
 afterAll(() => {
   setTextEngine(before.engine);
@@ -141,4 +150,103 @@ describe('a gradient with Align with Layer off', () => {
     // With Align on the ramp is centred on the letters, not on the page.
     expect(miss(exported(boxOf({}, true)))).toBeGreaterThan(40);
   });
+
+  // A long-strip page can be taller than 65536 px. The engine takes a page up
+  // to MAX_PAGE (2^20 px) a side, and the encoder sends none past it, so a
+  // box on a taller page paints as Align on instead of being refused. A
+  // Linear 90 degree ramp over the whole page height is one flat colour on a
+  // box at its top; with Align on it spans the letters.
+  it('takes a page up to MAX_PAGE tall and paints Align on past it', () => {
+    const tall = (align) => ({ ...boxOf({ gradientOverlays: [normalizeGradientOverlay({ gradient: { style: 'linear', angle: 90, scale: 1, align, stops: [{ color: '#000000', pos: 0 }, { color: '#ffffff', pos: 1 }] } })] }, align) });
+    const values = (box, h) => {
+      const t = pictureTexture(box, { ...pageOf(box), h }, null, 1, undefined, false, null, null, { w: W, h });
+      const im = t.canvas.getContext('2d').getImageData(0, 0, t.canvas.width, t.canvas.height);
+      const v = [];
+      for (let i = 0; i < im.data.length; i += 4) if (im.data[i + 3] === 255) v.push(im.data[i]);
+      expect(v.length).toBeGreaterThan(100);
+      return v;
+    };
+    const spread = (v) => Math.max(...v) - Math.min(...v);
+    const on = values(tall(true), MAX_PAGE + 1);
+    expect(spread(on)).toBeGreaterThan(100);
+    // Just under (at) the bound: laid over the page, one flat colour.
+    expect(spread(values(tall(false), MAX_PAGE))).toBeLessThanOrEqual(1);
+    expect(spread(values(tall(false), 70000))).toBeLessThanOrEqual(1);
+    // Just over: no page sent, painted as Align on, not refused.
+    expect(values(tall(false), MAX_PAGE + 1)).toEqual(on);
+  });
 });
+
+// Each export route hands the painter the page the box's Align off gradient
+// is laid over: the flat page export its page, the strip export each box's
+// own page, and a strip page's PSD a neighbour's box its own page (not the
+// document it lands in). The pixels read are the letters' interior, found
+// from the box's own layer (`exported`), so the page's white does not count.
+describe('every export route lays it over the box\'s own page', () => {
+  // The interior pixels of `box` on its page, page px, moved by (ox, oy).
+  const inside = (box, ox = 0, oy = 0) => exported(box).map((q) => ({ ...q, x: q.x + ox, y: q.y + oy }));
+  const read = (canvas, pts, ox = 0, oy = 0) => {
+    const ctx = canvas.getContext('2d');
+    return pts.map((q) => ({ x: q.x - ox, v: ctx.getImageData(Math.floor(q.x), Math.floor(q.y), 1, 1).data[0], px: q.px }));
+  };
+
+  it('the flat page export', async () => {
+    const box = boxOf();
+    const canvas = await renderPageCanvas(pageOf(box));
+    expect(miss(read(canvas, inside(box)))).toBeLessThanOrEqual(1);
+  });
+
+  it('the strip export, a box on either page', async () => {
+    const top = { ...boxOf(), id: 't' };
+    const low = { ...boxOf(), id: 'l', y: 25.6 };
+    const pages = [{ ...pageOf(top), id: 1 }, { ...pageOf(low), id: 2 }];
+    const canvas = await renderStripSliceCanvas(pages, [0, H], 0, 2 * H);
+    expect(miss(read(canvas, inside(top)))).toBeLessThanOrEqual(1);
+    expect(miss(read(canvas, inside(low, 0, H), 0, H))).toBeLessThanOrEqual(1);
+  });
+
+  it('a strip page\'s PSD, for the box of the page above that reaches into it', async () => {
+    // A Linear 90 degree ramp at 150 % over the owner page (200 x 100) is
+    // still climbing past its foot, where the box crosses into the page
+    // below (200 x 300); laid over that page's document it would be some
+    // other colour there.
+    const down = normalizeGradientOverlay({ gradient: { style: 'linear', angle: 90, scale: 1.5, align: false, stops: [{ color: '#000000', pos: 0 }, { color: '#ffffff', pos: 1 }] } });
+    const box = { ...boxOf({ gradientOverlays: [down] }), y: 60, h: 100 };
+    app.projectLayout = 'longstrip';
+    loadProjectPages([
+      { id: 1, w: W, h: H, lines: [], boxes: [box] },
+      { id: 2, w: W, h: 300, lines: [], boxes: [] },
+    ]);
+    // The whole box over its own page, on a canvas tall enough to hold it.
+    const whole = renderBoxLayer(box, W, 400, null, app.pages[0], 1, null, 0, 0, { w: W, h: H });
+    const overDoc = renderBoxLayer(box, W, 400, null, app.pages[0], 1, null, 0, 0, { w: W, h: 300 });
+    const psd = readPsd(await buildPagePsd(app.pages[1]), { useImageData: true, skipThumbnail: true });
+    const layer = (psd.children ?? []).find((c) => c.name === 'Text')?.children?.[0];
+    expect(layer?.imageData).toBeTruthy();
+    const at = (r, x, y) => {
+      const ix = x - r.left;
+      const iy = y - r.top;
+      if (ix < 0 || iy < 0 || ix >= r.imageData.width || iy >= r.imageData.height) return null;
+      const i = (iy * r.imageData.width + ix) * 4;
+      return r.imageData.data[i + 3] === 255 ? r.imageData.data[i] : null;
+    };
+    let n = 0;
+    let worst = 0;
+    let apart = 0;
+    for (let y = 0; y < layer.imageData.height; y++) {
+      for (let x = 0; x < layer.imageData.width; x++) {
+        const v = at(layer, layer.left + x, layer.top + y);
+        // The same pixel in the owner's space: the page below starts at 100.
+        const want = at(whole, layer.left + x, layer.top + y + H);
+        if (v == null || want == null) continue;
+        n++;
+        worst = Math.max(worst, Math.abs(v - want));
+        apart = Math.max(apart, Math.abs(want - (at(overDoc, layer.left + x, layer.top + y + H) ?? want)));
+      }
+    }
+    expect(n).toBeGreaterThan(100);
+    expect(apart).toBeGreaterThan(40);
+    expect(worst).toBeLessThanOrEqual(1);
+  });
+});
+

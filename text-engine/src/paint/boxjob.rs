@@ -74,6 +74,16 @@ pub const MAX_TAPS: usize = 512;
 /// units.
 pub const MAX_BLUR: f64 = 4096.0;
 pub const MAX_THROW: f64 = 65536.0;
+/// Largest page side, and largest entry of the job-to-page matrix, a page
+/// record (v16, Align with Layer off) may state, in page px: 2^20, 1048576.
+/// A long-strip page is one image, and tall ones run past 65536 px (a
+/// 200 x 70000 page is real), so `MAX_THROW` is too tight here. It is still
+/// a safe bound: these numbers only place a gradient (`Page::frame`, the
+/// ramp's `t`); nothing is allocated or looped over by them, and at 2^20 an
+/// f32 page coordinate is still good to 1/16 px. The JS encoder checks the
+/// same bound (`MAX_PAGE` in paint.mjs) and sends no page past it, so such a
+/// box paints as Align on rather than being refused.
+pub const MAX_PAGE: f64 = 1048576.0;
 /// Most stops an effect gradient takes, of each kind.
 pub const MAX_GRADIENT_STOPS: usize = 256;
 /// Largest Scale an effect gradient takes (1 is 100 %).
@@ -965,7 +975,9 @@ impl<'a> Reader<'a> {
 ///   shadow flags past 7, the satin flags past 3, the bevel flags past 63
 ///   (a texture's Invert with no texture), the noise flags past 3, a glow's
 ///   Centre or gradient flag, a gradient's flags past 3 or its method, a
-///   page record whose matrix does not invert or whose size is not above 0, a midpoint
+///   page record whose matrix does not invert, has an entry past
+///   `MAX_PAGE` from zero, or whose size is not above 0 or is past
+///   `MAX_PAGE`, a midpoint
 ///   count that is neither 0 nor one per segment, a contour corner flag, a backdrop flag, or a
 ///   Blend If flag past 1, or a Blend If range out of order (black low,
 ///   black high, white low, white high must not fall);
@@ -992,11 +1004,11 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         1 => {
             let mut m = [0.0; 6];
             for v in m.iter_mut() {
-                *v = r.within(MAX_THROW)?;
+                *v = r.within(MAX_PAGE)?;
             }
             let to_page = Affine(m);
             to_page.invert().ok_or(Error::BadSpec)?;
-            let (w, h) = (r.upto(MAX_THROW)?, r.upto(MAX_THROW)?);
+            let (w, h) = (r.upto(MAX_PAGE)?, r.upto(MAX_PAGE)?);
             if w <= 0.0 || h <= 0.0 {
                 return Err(Error::BadSpec);
             }

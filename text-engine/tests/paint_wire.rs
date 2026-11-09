@@ -24,7 +24,7 @@ use mt_text::paint::fx::gradient_bake::Method;
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::{
     decode_box, Affine, Align, Band, Clip, ClipMode, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
-    BOX_WIRE_VERSION,
+    BOX_WIRE_VERSION, MAX_PAGE,
 };
 
 const HEX: &str = include_str!("data/box_wire_distinct.hex");
@@ -343,6 +343,18 @@ fn a_damaged_page_record_is_refused() {
     for k in 0..8 {
         assert!(with_f(k, f64::NAN), "NaN at {k}");
         assert!(with_f(k, 1e9), "far at {k}");
+    }
+    // The bound is MAX_PAGE (2^20 px, so tall long-strip pages fit): every
+    // number may be MAX_PAGE (the matrix's -MAX_PAGE too), and the next f64
+    // past it is refused.
+    let over = f64::from_bits(MAX_PAGE.to_bits() + 1);
+    for k in 0..8 {
+        assert!(!with_f(k, MAX_PAGE), "MAX_PAGE at {k}");
+        assert!(with_f(k, over), "just past MAX_PAGE at {k}");
+    }
+    for k in 0..6 {
+        assert!(!with_f(k, -MAX_PAGE), "-MAX_PAGE at {k}");
+        assert!(with_f(k, -over), "just past -MAX_PAGE at {k}");
     }
     // A flat matrix: a, b, c, d all 0.
     let mut flat = good.clone();
