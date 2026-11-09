@@ -16,7 +16,7 @@
 // Files are never removed here. A tile no box uses any more can still be named
 // by an undo step or a preset, and it is a few kilobytes.
 import { fsx } from './fsx.js';
-import { PATTERN_SRC } from './data.js';
+import { PATTERN_SRC, stylePatterns } from './data.js';
 
 // The open chapter's folder and its open sequence, from library.svelte.js
 // (`bindPatternTiles`). Not imported: the painter imports this module, and
@@ -113,9 +113,12 @@ export function loadPickedTile(src, dir = openChapterDir()) {
  */
 export async function settlePickedTiles(boxes, dir = openChapterDir()) {
   const names = new Set();
+  // The fill's, and each effect's: a Pattern Overlay, a pattern stroke or a
+  // bevel Texture can paint a picked tile too (`stylePatterns`).
   for (const b of boxes ?? []) {
-    const pat = b?.style?.pattern;
-    if (pat?.on && pat.kind === 'picked' && pat.src) names.add(pat.src);
+    for (const pat of stylePatterns(b?.style)) {
+      if (pat.kind === 'picked' && pat.src && (pat.on || pat !== b.style.pattern)) names.add(pat.src);
+    }
   }
   await Promise.all([...names].map((n) => loadPickedTile(n, dir)));
 }
