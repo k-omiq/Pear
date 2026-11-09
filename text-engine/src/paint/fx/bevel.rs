@@ -28,6 +28,7 @@
 use super::contour::Table;
 use super::edges::bevel_dists;
 use super::map::{blur, Map, INSIDE_EPS};
+use crate::Error;
 
 /// Photoshop's bevel Style.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,15 +235,15 @@ pub(crate) fn chisel_h(paint: Reach, size: f32, din: f32, dout: f32, soft: bool)
 /// the bevel width. Chisel: linear ramps of the distance to the edge (size
 /// wide; emboss styles straddle the edge), slightly blurred for Chisel Soft
 /// emboss. Then the Contour, the Texture, and Soften over both.
-fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> (Map, Option<Map>) {
+fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), Error> {
     let size = if s.size.is_nan() {
         1.0
     } else {
         s.size.max(1.0)
     };
     let mut h = if s.technique == BevelTechnique::Smooth {
-        let mut h = shape.clone();
-        blur(&mut h, g.width);
+        let mut h = shape.try_clone()?;
+        blur(&mut h, g.width)?;
         h
     } else {
         let [din, dout] = bevel_dists(shape, size);
@@ -250,18 +251,13 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> (Map, Option<Map>) {
         let v = din
             .iter()
             .zip(&dout)
-            .map(|(&i, &o)| chisel_h(g.paint, size, i, o, soft))
-            .collect();
-        let mut h = Map {
-            w: shape.w,
-            h: shape.h,
-            v,
-        };
+            .map(|(&i, &o)| chisel_h(g.paint, size, i, o, soft));
+        let mut h = Map::collect(shape.w, shape.h, v)?;
         // Inner and outer Chisel Soft are not blurred in Photoshop (their
         // facets equal Chisel Hard's across a straight edge); emboss styles
         // keep the blur until measured.
         if soft && g.paint == Reach::Both {
-            blur(&mut h, g.chisel_soft);
+            blur(&mut h, g.chisel_soft)?;
         }
         h
     };
@@ -275,7 +271,7 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> (Map, Option<Map>) {
     let mut own = None;
     if let Some(t) = &s.texture {
         if g.paint != Reach::Inner {
-            own = Some(h.clone());
+            own = Some(h.try_clone()?);
         }
         let unit = if s.depth.abs() > 1e-6 {
             (g.depth / s.depth).abs().max(1e-3)
@@ -291,21 +287,21 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> (Map, Option<Map>) {
         }
     }
     if s.soften >= 1.0 {
-        blur(&mut h, s.soften);
+        blur(&mut h, s.soften)?;
         if let Some(o) = &mut own {
-            blur(o, s.soften);
+            blur(o, s.soften)?;
         }
     }
-    (h, own)
+    Ok((h, own))
 }
 
 /// A bevel's highlight and shadow maps over `shape`, and where they paint
 /// (PhotoCraft `bevel_maps`). Inner maps are the shape's coverage times the
 /// light (read them relative to the shape to lay them inside it); outer and
 /// emboss maps are laid as they are.
-pub(crate) fn maps(shape: &Map, s: &Shading<'_>) -> (Map, Map, Reach) {
+pub(crate) fn try_maps(shape: &Map, s: &Shading<'_>) -> Result<(Map, Map, Reach), Error> {
     let g = geom(s.style, s.technique, s.depth, s.up, s.size);
-    let (hmap, own) = height(shape, s, &g);
+    let (hmap, own) = height(shape, s, &g)?;
     let bevel = own.as_ref().unwrap_or(&hmap);
     let light = s.light;
     let se = light[2];
@@ -337,9 +333,9 @@ pub(crate) fn maps(shape: &Map, s: &Shading<'_>) -> (Map, Map, Reach) {
     let (hi_scale, sh_scale) = ((1.0 - se).max(1e-3), se.max(1e-3));
     // Region: inside (times the shape's alpha), or under the layer's edge
     // and outside.
-    let shade_into = |depth: f32, outside: bool| -> (Map, Map) {
+    let shade_into = |depth: f32, outside: bool| -> Result<(Map, Map), Error> {
         let (w, h) = (shape.w, shape.h);
-        let (mut hi, mut sh) = (Map::new(w, h, 0.0), Map::new(w, h, 0.0));
+        let (mut hi, mut sh) = (Map::filled(w, h, 0.0)?, Map::filled(w, h, 0.0)?);
         for y in 0..h as i64 {
             for x in 0..w as i64 {
                 let i = y as usize * w + x as usize;
@@ -368,10 +364,10 @@ pub(crate) fn maps(shape: &Map, s: &Shading<'_>) -> (Map, Map, Reach) {
                 }
             }
         }
-        (hi, sh)
+        Ok((hi, sh))
     };
     let (hi, sh) = match g.paint {
-        Reach::Inner | Reach::Outer => shade_into(g.depth, g.paint == Reach::Outer),
+        Reach::Inner | Reach::Outer => shade_into(g.depth, g.paint == Reach::Outer)?,
         Reach::Both => {
             // One map per colour over the whole bevel: the inside half where
             // the shape is (times its alpha), the outside half (pillow:
@@ -379,23 +375,25 @@ pub(crate) fn maps(shape: &Map, s: &Shading<'_>) -> (Map, Map, Reach) {
             // pixel of a pillow emboss takes the outside shading (Photoshop
             // oracle bevel-pillow-smooth), a 75 % one of an emboss mostly the
             // inside (layer_effects).
-            let (hi, sh) = shade_into(g.depth, false);
-            let (ho, so) = shade_into(if g.pillow { -g.depth } else { g.depth }, true);
-            let mix = |a: Map, b: Map| -> Map {
-                let v =
-                    a.v.iter()
-                        .zip(&b.v)
-                        .zip(&shape.v)
-                        .map(|((&x, &y), &s)| {
-                            (if s > INSIDE_EPS { x } else { 0.0 }) + y * (1.0 - s.min(1.0))
-                        })
-                        .collect();
-                Map { w: a.w, h: a.h, v }
+            let (hi, sh) = shade_into(g.depth, false)?;
+            let (ho, so) = shade_into(if g.pillow { -g.depth } else { g.depth }, true)?;
+            // Into the inside map: each value is read once, then written.
+            let mix = |mut a: Map, b: Map| -> Map {
+                for ((x, &y), &s) in a.v.iter_mut().zip(b.v.iter()).zip(shape.v.iter()) {
+                    *x = (if s > INSIDE_EPS { *x } else { 0.0 }) + y * (1.0 - s.min(1.0));
+                }
+                a
             };
             (mix(hi, ho), mix(sh, so))
         }
     };
-    (hi, sh, g.paint)
+    Ok((hi, sh, g.paint))
+}
+
+/// [`try_maps`], for the tests.
+#[cfg(test)]
+pub(crate) fn maps(shape: &Map, s: &Shading<'_>) -> (Map, Map, Reach) {
+    try_maps(shape, s).unwrap()
 }
 
 /// How far past the shape a bevel's maps can reach, device pixels: an

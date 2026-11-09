@@ -15,26 +15,68 @@
 //! against Photoshop's renders; the measurements are kept in the comments.
 //! Changed: one thread, a seed per effect, contours as 256-entry tables.
 
+use super::super::budget::{self, Buffer};
 use super::contour::Lut;
 use super::{distance, noise, spread_split, tent};
+use crate::Error;
 
 /// A pixel with less coverage than this is outside the shape.
 pub(crate) const INSIDE_EPS: f32 = 0.5 / 255.0;
 
-#[derive(Clone)]
+// How many inside distances this thread has worked out, for the tests that
+// a paint works each out once.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static INSIDE_DISTANCES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+fn count_inside_distance() {
+    INSIDE_DISTANCES.with(|c| c.set(c.get() + 1));
+}
+#[cfg(not(test))]
+fn count_inside_distance() {}
+
+/// Its values are charged to the painter's budget while it lives, so an
+/// effect over a frame the budget cannot hold is refused, not run.
 pub(crate) struct Map {
     pub w: usize,
     pub h: usize,
-    pub v: Vec<f32>,
+    pub v: Buffer<f32>,
 }
 
 impl Map {
-    pub(crate) fn new(w: usize, h: usize, fill: f32) -> Self {
-        Map {
+    /// `w * h` values of `fill`.
+    pub(crate) fn filled(w: usize, h: usize, fill: f32) -> Result<Self, Error> {
+        let n = w.checked_mul(h).ok_or(Error::BadSpec)?;
+        Ok(Map {
             w,
             h,
-            v: vec![fill; w * h],
-        }
+            v: budget::filled(n, fill)?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(w: usize, h: usize, fill: f32) -> Self {
+        Self::filled(w, h, fill).unwrap()
+    }
+
+    /// A map of the `w * h` values `v`, row by row.
+    pub(crate) fn collect(
+        w: usize,
+        h: usize,
+        v: impl IntoIterator<Item = f32>,
+    ) -> Result<Self, Error> {
+        let n = w.checked_mul(h).ok_or(Error::BadSpec)?;
+        Ok(Map {
+            w,
+            h,
+            v: budget::exact(n, v)?,
+        })
+    }
+
+    /// A copy, charged as its own.
+    pub(crate) fn try_clone(&self) -> Result<Self, Error> {
+        Self::collect(self.w, self.h, self.v.iter().copied())
     }
 
     /// The value at `(x, y)`, 0 off the map (PhotoCraft `Map::get`).
@@ -48,7 +90,7 @@ impl Map {
 
     /// Every value through `f`.
     pub(crate) fn map(mut self, f: impl Fn(f32) -> f32) -> Self {
-        for v in &mut self.v {
+        for v in self.v.iter_mut() {
             *v = f(*v);
         }
         self
@@ -56,8 +98,8 @@ impl Map {
 
     /// A copy moved by `(dx, dy)` (bilinear); what comes in from outside the
     /// map reads `outside`.
-    pub(crate) fn shifted(&self, dx: f32, dy: f32, outside: f32) -> Map {
-        let mut out = Map::new(self.w, self.h, 0.0);
+    pub(crate) fn shifted(&self, dx: f32, dy: f32, outside: f32) -> Result<Map, Error> {
+        let mut out = Map::filled(self.w, self.h, 0.0)?;
         let reach = |d: f32| {
             if d.is_finite() {
                 d.clamp(-1.0e9, 1.0e9)
@@ -84,54 +126,49 @@ impl Map {
                 out.v[y as usize * self.w + x as usize] = top * (1.0 - ay) + bot * ay;
             }
         }
-        out
+        Ok(out)
     }
 }
 
 /// Spread or Choke: the map grown by `r` pixels with the 5 x 5 chamfer,
 /// keeping its soft edge (as [`distance::dilate`]).
-pub(crate) fn dilate(m: &Map, r: f32) -> Map {
+pub(crate) fn dilate(m: &Map, r: f32) -> Result<Map, Error> {
     if r.is_nan() || r <= 0.0 {
-        return Map {
-            w: m.w,
-            h: m.h,
-            v: m.v.clone(),
-        };
+        return m.try_clone();
     }
-    let mut d: Vec<f32> =
-        m.v.iter()
-            .map(|&a| {
-                if a > INSIDE_EPS {
-                    1.0 - a.min(1.0)
-                } else {
-                    distance::FAR
-                }
-            })
-            .collect();
+    let mut d = budget::exact(
+        m.v.len(),
+        m.v.iter().map(|&a| {
+            if a > INSIDE_EPS {
+                1.0 - a.min(1.0)
+            } else {
+                distance::FAR
+            }
+        }),
+    )?;
     distance::chamfer(&mut d, m.w, m.h);
-    let v =
-        m.v.iter()
-            .zip(d)
-            .map(|(&a, d)| {
-                if a > INSIDE_EPS {
-                    (a + r).min(1.0)
-                } else {
-                    a.max((r + 0.5 - (d - 0.5)).clamp(0.0, 1.0))
-                }
-            })
-            .collect();
-    Map { w: m.w, h: m.h, v }
+    Map::collect(
+        m.w,
+        m.h,
+        m.v.iter().zip(d.iter()).map(|(&a, &d)| {
+            if a > INSIDE_EPS {
+                (a + r).min(1.0)
+            } else {
+                a.max((r + 0.5 - (d - 0.5)).clamp(0.0, 1.0))
+            }
+        }),
+    )
 }
 
 /// The soft edge of Size `w`: two box passes each way ([`tent`]).
-pub(crate) fn blur(m: &mut Map, w: f32) {
+pub(crate) fn blur(m: &mut Map, w: f32) -> Result<(), Error> {
     if tent::reach(f64::from(w)) == 0 || m.v.is_empty() {
-        return;
+        return Ok(());
     }
     let (mw, mh) = (m.w, m.h);
     let mut mid = Vec::new();
-    let mut src = vec![0f64; mw.max(mh)];
-    let mut dst = vec![0f64; mw.max(mh)];
+    let mut src = budget::filled(mw.max(mh), 0f64)?;
+    let mut dst = budget::filled(mw.max(mh), 0f64)?;
     for y in 0..mh {
         for x in 0..mw {
             src[x] = f64::from(m.v[y * mw + x]);
@@ -150,6 +187,7 @@ pub(crate) fn blur(m: &mut Map, w: f32) {
             m.v[y * mw + x] = dst[y] as f32;
         }
     }
+    Ok(())
 }
 
 /// Photoshop's Noise over a map: each covered pixel keeps `1 + (n - 0.5) * 2
@@ -240,9 +278,15 @@ fn dt1(f: &[f32], out: &mut [f32], v: &mut [usize], z: &mut [f32], near: &mut [u
     }
 }
 
-/// The exact Euclidean distance from every pixel to the nearest one where
-/// `inside` holds, and that pixel's index.
-pub(crate) fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec<usize>) {
+/// [`edt_nearest`] into `g` and `nearest`, with `gc` and `nc` (`w * h`
+/// each) as scratch.
+fn edt_into(
+    inside: &[bool],
+    (w, h): (usize, usize),
+    (gc, nc): (&mut [f32], &mut [usize]),
+    g: &mut [f32],
+    nearest: &mut [usize],
+) {
     const INF: f32 = 1e20;
     let n = w.max(h);
     let mut f = vec![0f32; n];
@@ -251,8 +295,6 @@ pub(crate) fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec
     let mut z = vec![0f32; n + 1];
     let mut near = vec![0usize; n];
     // Columns first, kept column by column.
-    let mut gc = vec![0f32; w * h];
-    let mut nc = vec![0usize; w * h];
     for x in 0..w {
         for y in 0..h {
             f[y] = if inside[y * w + x] { 0.0 } else { INF };
@@ -261,8 +303,6 @@ pub(crate) fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec
         gc[x * h..x * h + h].copy_from_slice(&o[..h]);
         nc[x * h..x * h + h].copy_from_slice(&near[..h]);
     }
-    let mut g = vec![0f32; w * h];
-    let mut nearest = vec![0usize; w * h];
     for y in 0..h {
         for x in 0..w {
             f[x] = gc[x * h + y];
@@ -274,33 +314,56 @@ pub(crate) fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec
             nearest[y * w + x] = nc[px * h + y] * w + px;
         }
     }
+}
+
+/// The exact Euclidean distance from every pixel to the nearest one where
+/// `inside` holds, and that pixel's index. Not charged to the budget: its
+/// caller (a bevel's, `effects::bevel_maps`) checks the budget holds it.
+pub(crate) fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec<usize>) {
+    let n = w * h;
+    let (mut gc, mut nc) = (vec![0f32; n], vec![0usize; n]);
+    let (mut g, mut nearest) = (vec![0f32; n], vec![0usize; n]);
+    edt_into(inside, (w, h), (&mut gc, &mut nc), &mut g, &mut nearest);
     (g, nearest)
+}
+
+/// [`edt_nearest`], charged to the budget.
+fn edt(inside: &[bool], w: usize, h: usize) -> Result<(Buffer<f32>, Buffer<usize>), Error> {
+    let n = w.checked_mul(h).ok_or(Error::BadSpec)?;
+    let mut g = budget::filled(n, 0f32)?;
+    let mut nearest = budget::filled(n, 0usize)?;
+    let mut gc = budget::filled(n, 0f32)?;
+    let mut nc = budget::filled(n, 0usize)?;
+    edt_into(inside, (w, h), (&mut gc, &mut nc), &mut g, &mut nearest);
+    Ok((g, nearest))
 }
 
 /// The distance from each pixel outside the shape to its edge, which lies
 /// inside the nearest covered pixel by that pixel's coverage, as Photoshop
 /// places it. Pixels inside read -0.5.
-pub(crate) fn dist_outside(s: &Map) -> Vec<f32> {
-    let inside: Vec<bool> = s.v.iter().map(|&a| a > INSIDE_EPS).collect();
-    let (d, near) = edt_nearest(&inside, s.w, s.h);
-    (0..s.v.len())
-        .map(|i| {
-            if inside[i] {
-                -0.5
-            } else {
-                d[i] - 0.5 + (1.0 - s.v[near[i]].min(1.0))
-            }
-        })
-        .collect()
+pub(crate) fn dist_outside(s: &Map) -> Result<Buffer<f32>, Error> {
+    let inside = budget::exact(s.v.len(), s.v.iter().map(|&a| a > INSIDE_EPS))?;
+    let (mut d, near) = edt(&inside, s.w, s.h)?;
+    for (i, d) in d.iter_mut().enumerate() {
+        *d = if inside[i] {
+            -0.5
+        } else {
+            *d - 0.5 + (1.0 - s.v[near[i]].min(1.0))
+        };
+    }
+    Ok(d)
 }
 
 /// The distance from each pixel inside the shape to its edge; -0.5 outside.
-pub(crate) fn dist_inside(s: &Map) -> Vec<f32> {
-    let outside: Vec<bool> = s.v.iter().map(|&a| a <= INSIDE_EPS).collect();
-    let (d, _) = edt_nearest(&outside, s.w, s.h);
-    (0..s.v.len())
-        .map(|i| if outside[i] { -0.5 } else { d[i] - 0.5 })
-        .collect()
+pub(crate) fn dist_inside(s: &Map) -> Result<Buffer<f32>, Error> {
+    count_inside_distance();
+    let outside = budget::exact(s.v.len(), s.v.iter().map(|&a| a <= INSIDE_EPS))?;
+    let (mut d, near) = edt(&outside, s.w, s.h)?;
+    drop(near);
+    for (d, &out) in d.iter_mut().zip(outside.iter()) {
+        *d = if out { -0.5 } else { *d - 0.5 };
+    }
+    Ok(d)
 }
 
 /// Outside width from which a stroke's outer edge takes the exact Euclidean
@@ -311,28 +374,28 @@ pub(crate) const STROKE_CHAMFER_MAX: f32 = 20.0;
 
 /// The chamfer distance outside the shape, its seeds starting at their
 /// sub-pixel edge (1 - coverage). Inside reads -0.5.
-pub(crate) fn chamfer_outside(s: &Map) -> Vec<f32> {
-    let mut d: Vec<f32> =
-        s.v.iter()
-            .map(|&a| {
-                if a > INSIDE_EPS {
-                    1.0 - a.min(1.0)
-                } else {
-                    distance::FAR
-                }
-            })
-            .collect();
+pub(crate) fn chamfer_outside(s: &Map) -> Result<Buffer<f32>, Error> {
+    let mut d = budget::exact(
+        s.v.len(),
+        s.v.iter().map(|&a| {
+            if a > INSIDE_EPS {
+                1.0 - a.min(1.0)
+            } else {
+                distance::FAR
+            }
+        }),
+    )?;
     distance::chamfer(&mut d, s.w, s.h);
-    d.iter()
-        .zip(&s.v)
-        .map(|(d, &a)| if a > INSIDE_EPS { -0.5 } else { d - 0.5 })
-        .collect()
+    for (d, &a) in d.iter_mut().zip(s.v.iter()) {
+        *d = if a > INSIDE_EPS { -0.5 } else { *d - 0.5 };
+    }
+    Ok(d)
 }
 
 /// Alpha relative to its 3 x 3 neighbourhood's highest: an edge's coverage
 /// apart from the fill's own opacity.
-fn local_coverage(s: &Map) -> Map {
-    let mut out = Map::new(s.w, s.h, 0.0);
+fn local_coverage(s: &Map) -> Result<Map, Error> {
+    let mut out = Map::filled(s.w, s.h, 0.0)?;
     let (w, h) = (s.w as i64, s.h as i64);
     let get = |x: i64, y: i64| {
         if x < 0 || y < 0 || x >= w || y >= h {
@@ -356,32 +419,33 @@ fn local_coverage(s: &Map) -> Map {
             out.v[y as usize * s.w + x as usize] = (a / mx).min(1.0);
         }
     }
-    out
+    Ok(out)
 }
 
 /// The chamfer distance inside the shape: partly covered edge pixels are
 /// seeds starting at their coverage, so a 25 % edge column puts the edge a
 /// quarter pixel in. Outside reads -0.5.
-pub(crate) fn chamfer_inside(s: &Map) -> Vec<f32> {
-    let cov = local_coverage(s);
-    let mut d: Vec<f32> =
-        s.v.iter()
-            .zip(&cov.v)
-            .map(|(&a, &c)| {
-                if a <= INSIDE_EPS {
-                    0.0
-                } else if c < 1.0 - INSIDE_EPS {
-                    c
-                } else {
-                    distance::FAR
-                }
-            })
-            .collect();
+pub(crate) fn chamfer_inside(s: &Map) -> Result<Buffer<f32>, Error> {
+    count_inside_distance();
+    let cov = local_coverage(s)?;
+    let mut d = budget::exact(
+        s.v.len(),
+        s.v.iter().zip(cov.v.iter()).map(|(&a, &c)| {
+            if a <= INSIDE_EPS {
+                0.0
+            } else if c < 1.0 - INSIDE_EPS {
+                c
+            } else {
+                distance::FAR
+            }
+        }),
+    )?;
+    drop(cov);
     distance::chamfer(&mut d, s.w, s.h);
-    d.iter()
-        .zip(&s.v)
-        .map(|(d, &a)| if a <= INSIDE_EPS { -0.5 } else { d - 0.5 })
-        .collect()
+    for (d, &a) in d.iter_mut().zip(s.v.iter()) {
+        *d = if a <= INSIDE_EPS { -0.5 } else { *d - 0.5 };
+    }
+    Ok(d)
 }
 
 // ---- the effects' maps ----
@@ -400,28 +464,33 @@ pub(crate) struct Soft {
     pub seed: u32,
 }
 
+/// The inverse of `shape`'s coverage: what lies outside it.
+fn inverse(shape: &Map) -> Result<Map, Error> {
+    Map::collect(shape.w, shape.h, shape.v.iter().map(|a| 1.0 - a))
+}
+
+/// Each value of `m` times `shape`'s coverage: the map kept to the shape.
+fn keep_to(m: &mut Map, shape: &Map) {
+    for (v, a) in m.v.iter_mut().zip(shape.v.iter()) {
+        *v *= a;
+    }
+}
+
 /// An Inner Shadow's map over `shape`: the outside of the shape moved by
 /// `(dx, dy)` into it, choked and softened like a drop shadow, through its
 /// contour and noise, and kept to the shape.
-pub(crate) fn inner_shadow(shape: &Map, dx: f32, dy: f32, s: &Soft) -> Map {
-    let src = Map {
-        w: shape.w,
-        h: shape.h,
-        v: shape.v.iter().map(|a| 1.0 - a).collect(),
-    };
-    let mut m = src.shifted(dx, dy, 1.0);
+pub(crate) fn inner_shadow(shape: &Map, dx: f32, dy: f32, s: &Soft) -> Result<Map, Error> {
+    let mut m = inverse(shape)?.shifted(dx, dy, 1.0)?;
     let (r, bw) = spread_split(f64::from(s.size), f64::from(s.spread));
-    m = dilate(&m, r as f32);
-    blur(&mut m, bw as f32);
+    m = dilate(&m, r as f32)?;
+    blur(&mut m, bw as f32)?;
     let mut m = match &s.contour {
         Some(l) => m.map(|v| l.at(v)),
         None => m,
     };
     speckle(&mut m, s.noise, s.seed);
-    for (v, a) in m.v.iter_mut().zip(&shape.v) {
-        *v *= a;
-    }
-    m
+    keep_to(&mut m, shape);
+    Ok(m)
 }
 
 /// Satin's map over `shape`: two copies of the shape moved `(dx, dy)` and
@@ -440,26 +509,25 @@ pub(crate) fn satin(
     size: f32,
     invert: bool,
     contour: Option<&Lut>,
-) -> Map {
-    let mut a = shape.shifted(dx, dy, 0.0);
-    let mut b = shape.shifted(-dx, -dy, 0.0);
-    blur(&mut a, size);
-    blur(&mut b, size);
-    let mut m = Map {
-        w: shape.w,
-        h: shape.h,
-        v: a.v.iter().zip(&b.v).map(|(x, y)| (x - y).abs()).collect(),
-    };
+) -> Result<Map, Error> {
+    let mut a = shape.shifted(dx, dy, 0.0)?;
+    blur(&mut a, size)?;
+    let mut b = shape.shifted(-dx, -dy, 0.0)?;
+    blur(&mut b, size)?;
+    // The gap, into `a`.
+    for (x, y) in a.v.iter_mut().zip(b.v.iter()) {
+        *x = (*x - y).abs();
+    }
+    drop(b);
+    let mut m = a;
     if invert {
         m = m.map(|v| 1.0 - v);
     }
     if let Some(l) = contour.map(Lut::satin).filter(|l| !l.is_identity()) {
         m = m.map(|v| l.at(v));
     }
-    for (v, a) in m.v.iter_mut().zip(&shape.v) {
-        *v *= a;
-    }
-    m
+    keep_to(&mut m, shape);
+    Ok(m)
 }
 
 /// Softer or Precise.
@@ -473,20 +541,13 @@ pub enum Technique {
 /// inner one is built from the edge inward, or, from the Center, is the
 /// inverse of that, taken after the contour and Range (Photoshop 27.11,
 /// measured by PhotoCraft: a centre glow is exactly 1 minus the edge glow).
-pub(crate) fn glow(shape: &Map, technique: Technique, inner: bool, center: bool, s: &Soft) -> Map {
-    let src = if inner {
-        Map {
-            w: shape.w,
-            h: shape.h,
-            v: shape.v.iter().map(|a| 1.0 - a).collect(),
-        }
-    } else {
-        Map {
-            w: shape.w,
-            h: shape.h,
-            v: shape.v.clone(),
-        }
-    };
+pub(crate) fn glow(
+    shape: &Map,
+    technique: Technique,
+    inner: bool,
+    center: bool,
+    s: &Soft,
+) -> Result<Map, Error> {
     let mut m = match technique {
         // Coverage falls linearly from 0.5 at the edge to 0 at `size + 1`
         // pixels, solid within the spread or choke: after the default 50 %
@@ -494,34 +555,35 @@ pub(crate) fn glow(shape: &Map, technique: Technique, inner: bool, center: bool,
         // (measured outside and inside, sizes 10 and 20, spread 0 and 40 %,
         // choke 0 and 30 %: within one level).
         Technique::Precise => {
-            let d = if inner {
-                dist_inside(shape)
+            let mut d = if inner {
+                dist_inside(shape)?
             } else {
-                dist_outside(&src)
+                dist_outside(shape)?
             };
             let solid = s.size * s.spread;
             let soft = (s.size + 1.0 - solid).max(1e-3);
-            let v = d
-                .into_iter()
-                .map(|d| {
-                    let d = d + 0.5;
-                    if d <= solid {
-                        1.0
-                    } else {
-                        0.5 * (1.0 - (d - solid) / soft).clamp(0.0, 1.0)
-                    }
-                })
-                .collect();
+            for d in d.iter_mut() {
+                let e = *d + 0.5;
+                *d = if e <= solid {
+                    1.0
+                } else {
+                    0.5 * (1.0 - (e - solid) / soft).clamp(0.0, 1.0)
+                };
+            }
             Map {
                 w: shape.w,
                 h: shape.h,
-                v,
+                v: d,
             }
         }
         Technique::Softer => {
             let (r, bw) = spread_split(f64::from(s.size), f64::from(s.spread));
-            let mut m = dilate(&src, r as f32);
-            blur(&mut m, bw as f32);
+            let mut m = if inner {
+                dilate(&inverse(shape)?, r as f32)?
+            } else {
+                dilate(shape, r as f32)?
+            };
+            blur(&mut m, bw as f32)?;
             m
         }
     };
@@ -531,28 +593,25 @@ pub(crate) fn glow(shape: &Map, technique: Technique, inner: bool, center: bool,
     }
     speckle(&mut m, s.noise, s.seed);
     if inner {
-        for (v, a) in m.v.iter_mut().zip(&shape.v) {
-            *v *= a;
-        }
+        keep_to(&mut m, shape);
     }
-    m
+    Ok(m)
 }
 
 /// A map read as a share of the shape's own coverage: what an interior effect
 /// lays inside a half-covered edge pixel before that pixel's alpha applies.
-pub(crate) fn relative_to(m: &Map, shape: &Map) -> Map {
-    let v =
-        m.v.iter()
-            .zip(&shape.v)
-            .map(|(m, a)| {
-                if *a > INSIDE_EPS {
-                    (m / a).min(1.0)
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-    Map { w: m.w, h: m.h, v }
+pub(crate) fn relative_to(m: &Map, shape: &Map) -> Result<Map, Error> {
+    Map::collect(
+        m.w,
+        m.h,
+        m.v.iter().zip(shape.v.iter()).map(|(m, a)| {
+            if *a > INSIDE_EPS {
+                (m / a).min(1.0)
+            } else {
+                0.0
+            }
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -594,7 +653,7 @@ mod tests {
     #[test]
     fn an_outer_glow_reaches_its_size_and_never_inside() {
         let shape = disc(60, 60, 30.0, 30.0, 10.0);
-        let g = glow(&shape, Technique::Softer, false, false, &soft(8.0));
+        let g = glow(&shape, Technique::Softer, false, false, &soft(8.0)).unwrap();
         // Full against the shape (the default Range doubles the edge's half).
         assert!(g.v[30 * 60 + 30] > 0.99);
         // Nothing past the size and the edge.
@@ -607,7 +666,7 @@ mod tests {
         let shape = disc(80, 80, 40.0, 40.0, 12.0);
         let mut s = soft(10.0);
         s.range = 1.0;
-        let g = glow(&shape, Technique::Precise, false, false, &s);
+        let g = glow(&shape, Technique::Precise, false, false, &s).unwrap();
         // Half at the edge, falling straight to nothing at size + 1.
         let at = |dx: usize| g.v[40 * 80 + 40 + 12 + dx];
         assert!(at(1) > at(4) && at(4) > at(8));
@@ -617,8 +676,8 @@ mod tests {
     #[test]
     fn an_inner_glow_stays_inside_and_the_centre_one_is_its_inverse() {
         let shape = disc(60, 60, 30.0, 30.0, 15.0);
-        let edge = glow(&shape, Technique::Softer, true, false, &soft(6.0));
-        let centre = glow(&shape, Technique::Softer, true, true, &soft(6.0));
+        let edge = glow(&shape, Technique::Softer, true, false, &soft(6.0)).unwrap();
+        let centre = glow(&shape, Technique::Softer, true, true, &soft(6.0)).unwrap();
         for (i, a) in shape.v.iter().enumerate() {
             if *a == 0.0 {
                 assert_eq!(edge.v[i], 0.0);
@@ -651,7 +710,7 @@ mod tests {
         // black 100 %, angle 90, Linear, distance 0 (drawn as 1 px), size 5
         // over a #808080 square: the rows from the top edge read 82, 102,
         // 123, 128. At 90 degrees the 1 px throw is (0, 1).
-        let m = satin(&square(60), 0.0, 1.0, 5.0, false, None);
+        let m = satin(&square(60), 0.0, 1.0, 5.0, false, None).unwrap();
         for (row, gray) in [(5, 82.0), (7, 102.0), (9, 123.0), (11, 128.0), (30, 128.0)] {
             let want = 1.0 - gray / 128.0;
             let got = m.v[row * 60 + 30];
@@ -662,8 +721,8 @@ mod tests {
     #[test]
     fn a_satin_is_kept_to_the_shape_and_inverts() {
         let shape = square(60);
-        let m = satin(&shape, 3.0, 2.0, 4.0, false, None);
-        let inv = satin(&shape, 3.0, 2.0, 4.0, true, None);
+        let m = satin(&shape, 3.0, 2.0, 4.0, false, None).unwrap();
+        let inv = satin(&shape, 3.0, 2.0, 4.0, true, None).unwrap();
         for (i, a) in shape.v.iter().enumerate() {
             if *a == 0.0 {
                 assert_eq!(m.v[i], 0.0);
@@ -679,7 +738,7 @@ mod tests {
     #[test]
     fn an_inner_shadow_falls_on_the_side_away_from_the_light() {
         let shape = disc(60, 60, 30.0, 30.0, 15.0);
-        let m = inner_shadow(&shape, 5.0, 5.0, &soft(0.0));
+        let m = inner_shadow(&shape, 5.0, 5.0, &soft(0.0)).unwrap();
         // Thrown down and right: the top-left inside edge is dark, the
         // bottom-right is not.
         assert!(m.v[(30 - 13) * 60 + 30 - 2] > 0.9);

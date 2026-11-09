@@ -18,6 +18,9 @@
 //! adjust/tone.rs` `contour_curve_lut`), Copyright (c) 2026 ArtCraft Team
 //! and the PhotoCraft contributors, MIT licence (see `THIRD_PARTY.md`).
 
+use crate::paint::budget;
+use crate::Error;
+
 /// A contour as the style states it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
@@ -380,11 +383,28 @@ impl Table {
 
     /// `curve` baked, or `None` when it changes nothing (Linear).
     pub fn new(curve: &Curve) -> Option<Self> {
+        let mut v = Vec::with_capacity(Self::LEN);
+        Self::bake(curve, &mut v);
+        Self::unless_linear(v)
+    }
+
+    /// [`Table::new`] for a decoded record: the table is charged to the
+    /// painter's budget for the paint, as the record's other vectors are.
+    pub fn charged(curve: &Curve) -> Result<Option<Self>, Error> {
+        let mut v = Vec::new();
+        budget::reserve_raw(&mut v, Self::LEN)?;
+        Self::bake(curve, &mut v);
+        Ok(Self::unless_linear(v))
+    }
+
+    fn bake(curve: &Curve, out: &mut Vec<f32>) {
         let pts = points(curve);
         let n = Self::LEN - 1;
-        let v: Vec<f32> = (0..=n)
-            .map(|k| through(&pts, k as f64 / n as f64).clamp(0.0, 1.0) as f32)
-            .collect();
+        out.extend((0..=n).map(|k| through(&pts, k as f64 / n as f64).clamp(0.0, 1.0) as f32));
+    }
+
+    fn unless_linear(v: Vec<f32>) -> Option<Self> {
+        let n = Self::LEN - 1;
         let linear = v
             .iter()
             .enumerate()
@@ -604,5 +624,19 @@ mod tests {
         assert_eq!(range(100, 100.0), 100);
         assert_eq!(range(100, 50.0), 200);
         assert_eq!(range(200, 50.0), 255);
+    }
+
+    #[test]
+    fn a_decoded_table_is_charged_to_the_budget() {
+        use crate::paint::budget;
+        let cone = Curve::Preset(1);
+        {
+            let _scope = budget::Scope::new();
+            assert_eq!(Table::charged(&cone).unwrap(), Table::new(&cone));
+            assert_eq!(budget::peak_for_test(), Table::LEN * 4);
+        }
+        budget::limit_next_scope_for_test(Table::LEN * 4 - 1);
+        let _scope = budget::Scope::new();
+        assert_eq!(Table::charged(&cone), Err(Error::BadSpec));
     }
 }
