@@ -7,8 +7,8 @@ import { renderBoxTexture, renderBoxLayer, warpTexture, boxFootprint, boxInJob, 
 import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
-import { defaultStyle, normalizeStyle } from './data.js';
 import { identityMesh, warpPoint } from './warp.js';
+import { INK_W as W, INK_H as H, inkBox as boxOf, inkPage as pageOf, ink, bumpy, perspective, parallel, against, laid, makeTips } from '../test/ink-fixtures.js';
 import { warpBoxCanvas, WARP_SUB_MAX } from './warp-paint.js';
 
 // ===========================================================================
@@ -89,40 +89,12 @@ afterAll(() => {
 });
 beforeEach(() => setGlyphPainter(whole));
 
-const W = 260;
-const H = 130;
-const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 48, strokes: [], autoHeight: false, ...over });
-const boxOf = (over = {}, text = 'INK') => ({ id: 'b', lineN: null, text, x: 120, y: 110, w: W, h: H, style: style(over) });
-const pageOf = (box) => ({ id: 1, w: 600, h: 400, lines: [], boxes: [box] });
-
-function wave(n = 24) {
-  const pts = [];
-  for (let i = 0; i < n; i++) {
-    const t = i / (n - 1);
-    pts.push([20 + t * 220, 65 + Math.sin(t * Math.PI * 2) * 35, 1]);
-  }
-  return pts;
-}
-const ink = (...strokes) => ({ on: true, strokes: strokes.map((k, i) => ({ id: `s${i}`, size: 14, color: '#111111', pts: wave(), ...k })) });
-
-// The meshes. A 3 x 3 grid with its inner nodes moved 5 to 10 px; one cell
-// with a corner pulled (the homography); one cell that is a parallelogram
-// (one affine map: the floor). The 3 x 3 is half of mesh-in-job's: that one
-// folds the surface over itself between its inner nodes (a fold has no one
-// picture, and the two routes lay its layers in their own orders), and the
-// stroke here crosses the fold.
-function bumpy() {
-  const pts = identityMesh(3, 3, W, H);
-  const at = (i, j) => j * 4 + i;
-  const move = (i, j, dx, dy) => (pts[at(i, j)] = [pts[at(i, j)][0] + dx, pts[at(i, j)][1] + dy]);
-  move(1, 1, -6, -9);
-  move(2, 1, 8, 5);
-  move(1, 2, 5, 7);
-  move(2, 2, -10, -6);
-  return { on: true, cols: 3, rows: 3, pts };
-}
-const perspective = () => ({ on: true, cols: 1, rows: 1, pts: [[0, 0], [W, 22], [-8, H], [W - 10, H - 12]] });
-const parallel = () => ({ on: true, cols: 1, rows: 1, pts: [[0, 0], [W + 10, 18], [-20, H], [W - 10, H + 18]] });
+// The meshes (src/test/ink-fixtures.js). A 3 x 3 grid with its inner nodes
+// moved 5 to 10 px; one cell with a corner pulled (the homography); one cell
+// that is a parallelogram (one affine map: the floor). The 3 x 3 is half of
+// mesh-in-job's: that one folds the surface over itself between its inner
+// nodes (a fold has no one picture, and the two routes lay its layers in
+// their own orders), and the stroke here crosses the fold.
 const MESHES = { bumpy, perspective, parallel };
 
 // The most the bumpy mesh lengthens a short piece, read as MeshMap::stretch
@@ -189,58 +161,9 @@ function fine(box, painter, scale, tips = null) {
   return w ?? t;
 }
 
-// Two pictures laid box corner on box corner on one grid of `ss` px a page
-// px: each texture's own pixel is `canvas.width / cw` of a page px (a warped
-// one's is not exactly `ss`), so a picture whose scale or corner is off the
-// grid is drawn to it, and that resample is part of what is measured (see
-// `offGrid`).
-function laid(a, b, ss) {
-  const left = Math.max(a.ox, b.ox);
-  const top = Math.max(a.oy, b.oy);
-  const right = Math.max(a.cw - a.ox, b.cw - b.ox);
-  const bottom = Math.max(a.ch - a.oy, b.ch - b.oy);
-  const w = Math.ceil((left + right) * ss);
-  const h = Math.ceil((top + bottom) * ss);
-  const one = (t) => {
-    const c = createCanvas(w, h);
-    const ctx = c.getContext('2d');
-    ctx.imageSmoothingQuality = 'high';
-    const x = (left - t.ox) * ss;
-    const y = (top - t.oy) * ss;
-    const dw = t.cw * ss;
-    const dh = t.ch * ss;
-    if (Number.isInteger(x) && Number.isInteger(y) && t.canvas.width === dw && t.canvas.height === dh) ctx.drawImage(t.canvas, x, y);
-    else ctx.drawImage(t.canvas, x, y, dw, dh);
-    return ctx.getImageData(0, 0, w, h);
-  };
-  return [one(a), one(b)];
-}
+// Two pictures laid box corner on box corner on one grid (`laid`).
 const offGrid = (t, ss) => Math.abs(t.canvas.width / t.cw - ss) + Math.abs(t.ox * ss - Math.round(t.ox * ss));
 
-// As ink-rust.engine.test.js: premultiplied, the mean and the worst
-// difference of any channel (of 255) over the pixels either inked, and the
-// ratio of their total ink.
-function against(a, b) {
-  expect([a.width, a.height]).toEqual([b.width, b.height]);
-  let sum = 0;
-  let n = 0;
-  let worst = 0;
-  let inkA = 0;
-  let inkB = 0;
-  for (let i = 0; i < a.data.length; i += 4) {
-    const aa = a.data[i + 3];
-    const ba = b.data[i + 3];
-    if (!aa && !ba) continue;
-    let d = Math.abs(aa - ba);
-    for (let c = 0; c < 3; c++) d = Math.max(d, Math.abs((a.data[i + c] * aa - b.data[i + c] * ba) / 255));
-    sum += d;
-    n++;
-    if (d > worst) worst = d;
-    inkA += aa;
-    inkB += ba;
-  }
-  return { mean: n ? sum / n : 0, worst, ink: inkB ? inkA / inkB : 0, n };
-}
 const compare = (a, b, ss) => against(...laid(a, b, ss));
 
 // The length of the ink's outline: its alpha averaged over 7 x 7 pixels (so
@@ -301,57 +224,9 @@ const f = (d) => `mean ${d.mean.toFixed(3)} worst ${d.worst.toFixed(1)} ink ${d.
 // ---------------------------------------------------------------------------
 // The tips, as ink-rust.engine.test.js makes them.
 
-function rng(seed) {
-  let t = seed >>> 0;
-  return () => {
-    t = (t + 0x6d2b79f5) >>> 0;
-    let r = Math.imul(t ^ (t >>> 15), t | 1);
-    r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
-    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
-  };
-}
-function tipOf(id, w, h, draw) {
-  const image = createCanvas(w, h);
-  const ctx = image.getContext('2d');
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(0, 0, w, h);
-  draw(ctx, w, h);
-  return { id, width: w, height: h, image };
-}
-function makeTips() {
-  const strip = tipOf('strip', 48, 200, (ctx, w, h) => {
-    const g = ctx.createLinearGradient(0, 0, w, 0);
-    g.addColorStop(0, '#000000');
-    g.addColorStop(0.3, '#ffffff');
-    g.addColorStop(0.7, '#ffffff');
-    g.addColorStop(1, '#000000');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 8, w, h - 16);
-  });
-  const noise = tipOf('noise', 96, 96, (ctx, w, h) => {
-    const img = ctx.getImageData(0, 0, w, h);
-    const r = rng(7);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const d = Math.hypot(x + 0.5 - w / 2, y + 0.5 - h / 2) / (w / 2);
-        const v = d < 1 ? Math.round(255 * r() * Math.min(1, (1 - d) * 3)) : 0;
-        const i = (y * w + x) * 4;
-        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-  });
-  const bars = tipOf('bars', 64, 160, (ctx, w, h) => {
-    ctx.fillStyle = '#ffffff';
-    for (let y = 0; y < h; y += 40) ctx.fillRect(0, y, w, 22);
-    ctx.fillStyle = '#808080';
-    ctx.fillRect(16, 0, 8, h);
-  });
-  return new Map([strip, noise, bars].map((t) => [t.id, t]));
-}
 let TIPS;
 beforeAll(() => {
-  TIPS = makeTips();
+  TIPS = makeTips(['strip', 'noise', 'bars']);
 });
 
 // ---------------------------------------------------------------------------
