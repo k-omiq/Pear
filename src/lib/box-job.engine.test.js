@@ -239,8 +239,27 @@ describe('a roughened box', () => {
     const over = { ...ROUGH, shadows: [{ ...SHADOW, blur: 0, x: 0, y: 40 }] };
     const a = texture(boxOf(over));
     const b = texture(boxOf({ shadows: over.shadows }));
+    // Since review F19 a footprint is padded per side: the roughened one by
+    // its crumple on every side and by the throw plus the crumple below, the
+    // plain one by the throw below only. So the two are laid box corner on box
+    // corner on one canvas before they are compared.
+    expect(a.ss).toBe(b.ss);
+    // Left and top: the crumple's 6 + 2, not the throw. Below: the 40 throw
+    // in both, plus half the crumple's span in the roughened one.
+    expect([a.ox - b.ox, a.oy - b.oy]).toEqual([8, 8]);
+    expect(a.ch - a.oy - (b.ch - b.oy)).toBe(3);
+    const ox = Math.max(a.ox, b.ox);
+    const oy = Math.max(a.oy, b.oy);
+    const at = (t) => [Math.round((ox - t.ox) * t.ss), Math.round((oy - t.oy) * t.ss)];
+    const w = Math.max(...[a, b].map((t) => at(t)[0] + t.canvas.width));
+    const h = Math.max(...[a, b].map((t) => at(t)[1] + t.canvas.height));
+    const laid = (t) => {
+      const c = createCanvas(w, h);
+      c.getContext('2d').drawImage(t.canvas, ...at(t));
+      return c.getContext('2d').getImageData(0, 0, w, h);
+    };
     // The shadow alone (below the letters) is not the plain box's shadow.
-    expect(against(a.img, b.img).mean).toBeGreaterThan(3);
+    expect(against(laid(a), laid(b)).mean).toBeGreaterThan(3);
     const soft = texture(boxOf({ ...ROUGH, blur: 2 }));
     expect(grey(soft.img)).toBeGreaterThan(grey(texture(boxOf(ROUGH)).img) * 2);
   });

@@ -627,7 +627,11 @@ describe('what repaints the picture, and what does not', () => {
     setZoomLive(false);
     await tick();
     expect(m.paints()).toBe(2);
-    expect(el.width).toBe(Math.ceil(f.cw * 2.2 * turned(m.box)));
+    // Padded to whole CSS px (`show`'s unit: TURNED_OVERSAMPLE device px per
+    // CSS px here). Since the per-side pads of review F19 this footprint's
+    // width at 2.2 no longer happens to land on one.
+    const t = turned(m.box);
+    expect(el.width).toBe(Math.ceil(Math.ceil(f.cw * 2.2 * t) / t) * t);
     // Nothing more is owed.
     await tick();
     expect(m.paints()).toBe(2);
