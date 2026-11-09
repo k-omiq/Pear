@@ -86,7 +86,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 12, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 13, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(
         r.shadows,
@@ -145,6 +145,8 @@ fn every_field_of_the_box_comes_back_as_itself() {
     );
     assert_eq!((r.blend, r.fill_opacity), (Blend::ColorBurn, 0.6875));
     assert!(r.blending.interior);
+    // Transparency Shapes Layer off (v13): flag 2.
+    assert!(r.blending.shapeless);
     // R and B kept, G left out: bit 1.
     assert_eq!(r.blending.channels_out, 2);
     // Gray, R, G, B, each This Layer then Underlying: eight sliders, each of

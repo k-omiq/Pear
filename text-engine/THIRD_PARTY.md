@@ -54,6 +54,13 @@ names its source file in a comment.
   Fill Opacity in Photoshop's special eight modes, and its measured test
   (`crates/compose/src/psblend.rs` `fill_is_special`, `blend_rgb_fill`,
   `composite_fill`, `special_eight_fill_matches_photoshop`).
+- `fx/blend.rs` `lay_fill_shapeless`, `fx/blending.rs`
+  `Blending::shapeless`: Transparency Shapes Layer off, the layer's own
+  transparency blending as Fill in the special eight, and its test of
+  Photoshop's measured pixels (`crates/compose/src/composite.rs`
+  `blend_layer_into`; `crates/doc/src/advanced.rs` `AdvancedBlending`;
+  `crates/compose/src/advanced_tests.rs`
+  `transparency_shapes_off_blends_alpha_as_fill`).
 - `fx/blending.rs` `shadow_see_through`: how far a knocked-out drop shadow
   shows through the letters; `fx/effects.rs` `interior`'s `group`: Blend
   Interior Effects as Group (`crates/compose/src/effects/composite.rs`
