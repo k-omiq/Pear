@@ -3,7 +3,7 @@ import { readPsd } from 'ag-psd';
 
 // Phase 7b: every layer effect written by psd.js, read back with ag-psd, field
 // by field, through a real page document (`pagePsdDocument` -> `writePagePsd`).
-import { pagePsdDocument, textLayerFor, writePagePsd, isRasterOnly } from './psd.js';
+import { pagePsdDocument, textLayerFor, writePagePsd, isRasterOnly, gradientFrames, turnedGradientPlacement, needsGradientFrames, RASTER_MARK } from './psd.js';
 import {
   defaultStyle,
   normalizeStyle,
@@ -181,6 +181,18 @@ describe('the PSD effects, written and read back', () => {
     expect(isRasterOnly(normalizeStyle({ ...plain, patternOverlay: { on: true } }))).toBe(true);
     expect(isRasterOnly(normalizeStyle({ ...plain, bevel: { on: true, texture: { on: true } } }))).toBe(true);
     expect(isRasterOnly(normalizeStyle({ ...plain, gradientOverlays: [{ gradient: { style: 'shapeburst' } }] }))).toBe(true);
+  });
+
+  // A Texture at Depth 0 paints nothing (`bevelFx` leaves it out), so it
+  // does not cost the box its live text; any other depth still does.
+  it('keeps a bevel whose Texture is at Depth 0 live, and writes the bevel', () => {
+    const at = (depth) => normalizeStyle({ ...plain, bevel: { on: true, texture: { on: true, depth } } });
+    expect(isRasterOnly(at(0))).toBe(false);
+    expect(isRasterOnly(at(0.5))).toBe(true);
+    expect(isRasterOnly(at(-1))).toBe(true);
+    const layer = layerFor({ bevel: at(0).bevel });
+    expect(layer.text).toBeTruthy();
+    expect(layer.effects.bevel).toMatchObject({ useTexture: false });
   });
 });
 
@@ -393,5 +405,114 @@ describe('the PSD export review fixes', () => {
     expect(isRasterOnly(normalizeStyle({ ...plain, patternOverlay: { on: true, opacity: 0.5 } }))).toBe(true);
     // The stroke that paints nothing is not written either.
     expect(layerFor({ strokeEffects: [normalizeStrokeEffect({ size: 2, opacity: 0 })] }).effects).toBeUndefined();
+  });
+});
+
+// A turned box's effect gradients: the engine lays them over the letters'
+// frame in the box's units, Photoshop over the page bounds. The placement
+// written must give every page pixel the gradient value the engine gave it.
+describe('a turned box writes its effect gradients against the page bounds', () => {
+  // Photoshop's gradient value at (x, y) over `frame` (PhotoCraft
+  // `gradient_t`, crates/compose/src/effects/paint.rs; gradient.rs `t`
+  // without its half-pixel corner).
+  function gradientT(style, angle, scale, offset, frame, x, y) {
+    const w = frame[2] - frame[0];
+    const h = frame[3] - frame[1];
+    const cx = frame[0] + w / 2 + offset[0] * w;
+    const cy = frame[1] + h / 2 + offset[1] * h;
+    const a = (angle * Math.PI) / 180;
+    const [s, c] = [Math.sin(a), Math.cos(a)];
+    const [dx, dy] = [x - cx, y - cy];
+    const along = dx * c - dy * s;
+    const across = dx * s + dy * c;
+    const len = Math.hypot(c * w, s * h) * scale;
+    const chord = Math.min(w / Math.max(Math.abs(c), 1e-6), h / Math.max(Math.abs(s), 1e-6)) * scale;
+    const t = { linear: along / chord + 0.5, reflected: Math.abs(along / (chord / 2)), radial: Math.hypot(dx, dy) / (len / 2), diamond: (Math.abs(along) + Math.abs(across)) / (len / 2), angle: (((a - Math.atan2(-dy, dx)) / (2 * Math.PI)) % 1 + 1) % 1 }[style];
+    return Math.min(1, Math.max(0, t));
+  }
+  // Letters filling [100, 60]-[220, 100] in the box's frame, turned `turn`
+  // about the box's centre (160, 80), as page pixels.
+  function lettersRaster(turn) {
+    const r = (turn * Math.PI) / 180;
+    const [left, top, w, h] = [60, 0, 200, 160];
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const [X, Y] = [left + x + 0.5 - 160, top + y + 0.5 - 80];
+        const lx = 160 + X * Math.cos(-r) - Y * Math.sin(-r);
+        const ly = 80 + X * Math.sin(-r) + Y * Math.cos(-r);
+        if (lx >= 100 && lx <= 220 && ly >= 60 && ly <= 100) data[(y * w + x) * 4 + 3] = 255;
+      }
+    }
+    return { imageData: { width: w, height: h, data }, left, top };
+  }
+  const box = { lineN: null, text: 'hi', x: 100, y: 60, w: 120, h: 40 };
+
+  it('finds the letters frame in the box and their bounds on the page', () => {
+    const f = gradientFrames(lettersRaster(30), [160, 80], 30);
+    // Pixel corners carried back reach a little past the letters.
+    f.local.forEach((v, i) => expect(Math.abs(v - [100, 60, 220, 100][i])).toBeLessThan(1.5));
+    // The turned rect's corners: half-diagonals 60 cos 30 + 20 sin 30 = 61.96 across, 60 sin 30 + 20 cos 30 = 47.32 down.
+    f.page.forEach((v, i) => expect(Math.abs(v - [98.04, 32.68, 221.96, 127.32][i])).toBeLessThan(1.01));
+  });
+
+  for (const style of ['linear', 'reflected', 'radial', 'diamond', 'angle']) {
+    it(`a ${style} gradient lands where the engine put it`, () => {
+      const turn = 30;
+      const frames = gradientFrames(lettersRaster(turn), [160, 80], turn);
+      const g = normalizeGradientOverlay({ gradient: { style, angle: 20, scale: 0.8, offset: [0.1, -0.2] } }).gradient;
+      const q = turnedGradientPlacement(g, turn, frames);
+      expect(q.fits).toBe(true);
+      const r = (turn * Math.PI) / 180;
+      for (const [lx, ly] of [[110, 65], [160, 80], [200, 95], [130, 90], [215, 62]]) {
+        const X = 160 + (lx - 160) * Math.cos(r) - (ly - 80) * Math.sin(r);
+        const Y = 80 + (lx - 160) * Math.sin(r) + (ly - 80) * Math.cos(r);
+        const engine = gradientT(style, g.angle, g.scale, g.offset, frames.local, lx, ly);
+        const photoshop = gradientT(style, q.angle, q.scale, [q.offset.x, q.offset.y], frames.page, X, Y);
+        expect(photoshop).toBeCloseTo(engine, 5);
+      }
+    });
+  }
+
+  it('writes the placement into the overlay and the gradient stroke', () => {
+    const style = normalizeStyle({
+      ...plain,
+      rotation: 30,
+      gradientOverlays: [normalizeGradientOverlay({ gradient: { angle: 20, scale: 0.8, offset: [0.1, -0.2] } })],
+      strokeEffects: [normalizeStrokeEffect({ size: 4, position: 'outside', fill: 'gradient', gradient: { angle: 0 } })],
+    });
+    const frames = gradientFrames(lettersRaster(30), [160, 80], 30);
+    const layer = textLayerFor({ lines: [] }, { ...box, style }, { ...rendered, frames });
+    const q = turnedGradientPlacement(style.gradientOverlays[0].gradient, 30, frames);
+    expect(layer.effects.gradientOverlay[0]).toMatchObject({ angle: q.angle, scale: q.scale, offset: q.offset });
+    // Not the box-frame numbers any more.
+    expect(layer.effects.gradientOverlay[0].scale).not.toBeCloseTo(0.8, 2);
+    // The stroke's frame grows by its outside width less a pixel.
+    const k = turnedGradientPlacement(style.strokeEffects[0].gradient, 30, frames, 3);
+    const sg = layer.effects.stroke.at(-1).gradient;
+    expect([sg.angle, sg.scale, sg.offset]).toEqual([-30, k.scale, k.offset]);
+    const back = roundTrip(layer).layer.effects.gradientOverlay[0];
+    // The file keeps whole percents (ag-psd), as Photoshop's dialog shows them.
+    expect(back.scale).toBeCloseTo(Math.round(q.scale * 100) / 100, 6);
+    expect(back.offset.x).toBeCloseTo(Math.round(q.offset.x * 100) / 100, 6);
+  });
+
+  it('ships the pixels when the scale it needs is outside Photoshop\'s 10 to 150 %', () => {
+    // At 45 degrees in a 120 by 40 frame the ramp spans 57 px; along the
+    // page bounds (124 wide) that is under half the length, 15 % becomes 7 %.
+    const style = normalizeStyle({ ...plain, rotation: 45, gradientOverlays: [normalizeGradientOverlay({ gradient: { angle: 45, scale: 0.15 } })] });
+    const frames = gradientFrames(lettersRaster(45), [160, 80], 45);
+    expect(turnedGradientPlacement(style.gradientOverlays[0].gradient, 45, frames).fits).toBe(false);
+    const layer = textLayerFor({ lines: [] }, { ...box, style }, { ...rendered, frames });
+    expect('text' in layer).toBe(false);
+    expect(layer.name.endsWith(RASTER_MARK)).toBe(true);
+  });
+
+  it('leaves an unturned box and a box with no effect gradient alone', () => {
+    expect(needsGradientFrames(normalizeStyle({ ...plain, gradientOverlays: [normalizeGradientOverlay({})] }))).toBe(false);
+    expect(needsGradientFrames(normalizeStyle({ ...plain, rotation: 30 }))).toBe(false);
+    expect(needsGradientFrames(normalizeStyle({ ...plain, rotation: 30, gradientOverlays: [normalizeGradientOverlay({})] }))).toBe(true);
+    const flat = layerFor({ gradientOverlays: [normalizeGradientOverlay({ gradient: { scale: 0.8, offset: [0.1, -0.2] } })] });
+    expect(flat.effects.gradientOverlay[0]).toMatchObject({ scale: 0.8, offset: { x: 0.1, y: -0.2 } });
   });
 });
