@@ -58,7 +58,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 12;
+pub const BOX_WIRE_VERSION: u32 = 13;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -774,7 +774,8 @@ impl<'a> Reader<'a> {
 ///       3 stroke:  f64 size, u32 n, then n points; one point is a dot
 /// u32 blend                    the letters' mode
 /// f64 fill opacity             0 to 1
-/// u32 blending flags (v9)      1 Blend Interior Effects as Group
+/// u32 blending flags (v9)      1 Blend Interior Effects as Group,
+///                              2 Transparency Shapes Layer off (v13)
 /// u32 channels left out (v10)  bit 0 R, 1 G, 2 B (Channels unticked)
 /// u32 blend if (v10)           0 none, or 1 and 8 ranges of 4 bytes:
 ///                              gray this, gray under, R this, R under,
@@ -1429,7 +1430,9 @@ fn paint_glyphs(
             own_content(engine, request, rasterizer, t)?;
         }
     }
-    if silhouette || (!inside && (hollow || fade >= 1.0)) {
+    // A special-eight fill is handed back whole even at a whole Fill when
+    // Transparency Shapes Layer is off: its own alpha is in the blend.
+    if silhouette || (!inside && (hollow || (fade >= 1.0 && !special))) {
         let rasters: Vec<Raster> = paint_job_with(engine, &request.request, rasterizer)?
             .into_iter()
             .collect();
@@ -1993,11 +1996,14 @@ fn paint(
         }
     }
 
-    // Over a page, one of the special eight takes Fill into its blend.
+    // Over a page, one of the special eight takes Fill into its blend, and
+    // with Transparency Shapes Layer off the letters' own transparency too
+    // (`blend::lay_fill_shapeless`): their anti-aliased edges and any
+    // see-through colour, also at a whole Fill.
     let special = blends
         && request.backdrop.is_some()
         && request.blend.fill_is_special()
-        && request.fill_opacity < 1.0;
+        && (request.fill_opacity < 1.0 || request.blending.shapeless);
     // The box's own content alone, for Blend If's This Layer: its fill and
     // outlines before any effect, not the shadows, glows or strokes round
     // it (PhotoCraft judges a layer by its own content, `render_content`).
@@ -2057,7 +2063,12 @@ fn paint(
             x1: fill.x.saturating_add(fill.width as i32),
             y1: fill.y.saturating_add(fill.height as i32),
         };
-        blend::lay_fill(
+        let lay_fill = if request.blending.shapeless {
+            blend::lay_fill_shapeless
+        } else {
+            blend::lay_fill
+        };
+        lay_fill(
             &mut s,
             own,
             bx,

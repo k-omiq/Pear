@@ -384,11 +384,13 @@ describe('styleSchemaText', () => {
   // to 17000 for the Bevel & Emboss (Structure, Shading, Contour, Texture),
   // and to 17200 for the Advanced Blending options (interior, knockout),
   // and to 17800 for Channels and Blend If (one slider pair printed once),
-  // and to 17900 for the glows' Jitter, and to 18000 for the shadows' kept
-  // angle at Distance 0.
-  it('describes every key, field and item in under 18000 characters', () => {
+  // and to 17900 for the glows' Jitter, to 18000 for the shadows' kept
+  // angle at Distance 0, and to 18500 for the multi effects' own switches and
+  // their cap of 10, and Blend Clipped Layers as Group, Transparency Shapes
+  // Layer and Vector Mask Hides Effects.
+  it('describes every key, field and item in under 18500 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(18000);
+    expect(text.length).toBeLessThan(18500);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.

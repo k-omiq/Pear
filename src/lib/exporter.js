@@ -1024,6 +1024,9 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
     blend: s.blendMode,
     fillOpacity: s.fillOpacity,
     blendInterior: s.blending?.interior === true,
+    // Transparency Shapes Layer off: a special-eight fill blends its own
+    // see-through edges over the page as Fill does.
+    transparencyShapes: s.blending?.transparencyShapes !== false,
     // Channels and Blend If (phase 6b): the engine paints them over the page
     // art only, so a PSD layer (no art) keeps them for Photoshop.
     channels: s.blending?.channels ?? null,

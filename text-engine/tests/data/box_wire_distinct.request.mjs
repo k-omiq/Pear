@@ -84,6 +84,7 @@ export const request = {
   blend: 'color-burn',
   fillOpacity: 0.6875,
   blendInterior: true,
+  transparencyShapes: false,
   channels: { r: true, g: false, b: true },
   // Eight sliders, each four different levels in order.
   blendIf: {

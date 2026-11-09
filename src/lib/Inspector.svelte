@@ -78,6 +78,11 @@
     fxReset,
     fxUntouched,
     storedShadowAngle,
+    FX_INSTANCES_MAX,
+    KNOCKOUT_MODES,
+    BLENDING_SWITCHES,
+    instanceOn,
+    blendingSwitch,
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
   import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
@@ -758,6 +763,18 @@
     s.blending = { ...s.blending, channels: { r: true, g: true, b: true, ...s.blending?.channels, [key]: on } };
     touch();
   }
+  // Knockout, and the Advanced Blending switches past it (`BLENDING_SWITCHES`):
+  // a switch back at its Photoshop default is not stored.
+  const KNOCKOUT_LABEL = { none: 'None', shallow: 'Shallow', deep: 'Deep' };
+  function setKnockout(s, v) {
+    s.blending = { ...s.blending, knockout: KNOCKOUT_MODES.includes(v) ? v : 'none' };
+    touch();
+  }
+  function setBlendingSwitch(s, key, on) {
+    const { [key]: _was, ...rest } = s.blending ?? {};
+    s.blending = on === BLENDING_SWITCHES[key] ? rest : { ...rest, [key]: on };
+    touch();
+  }
   const shownKinds = $derived.by(() => {
     if (!rustPatterns) return CANVAS_PATTERN_KINDS;
     return patGroup === 'all' ? PATTERN_KINDS : PATTERN_GROUPS[patGroup];
@@ -840,8 +857,10 @@
     settle();
     armSnap();
     Object.assign(fx, next);
-    // A shadow's kept angle is only what `next` says (`storedShadowAngle`).
-    if ((kind === 'dropShadow' || kind === 'innerShadow') && !('angle' in next)) delete fx.angle;
+    // What the reset leaves out goes: a switch at its default is not stored
+    // (`on` of an instance, an Advanced Blending switch), and a shadow's kept
+    // angle is only what `next` says (`storedShadowAngle`).
+    for (const k of Object.keys(fx)) if (!Object.hasOwn(next, k)) delete fx[k];
     touch();
     settle();
   }
@@ -856,9 +875,35 @@
     touch();
   }
 
+  // ---- a multi effect's instances ----
+  // Drop Shadow, Inner Shadow, Colour Overlay, Gradient Overlay and the
+  // Photoshop Stroke come up to FX_INSTANCES_MAX of a kind, the first on top.
+  // Each has its own switch (`on`, stored only when off), moves up or down
+  // its list, and is duplicated in place, the copy over it, as Photoshop's +
+  // does. PhotoCraft's dialog does the same (`move_instance`,
+  // `add_instance` in crates/ui-egui/src/dialogs/layer_style.rs).
+  function setInstanceOn(item, on) {
+    if (on) delete item.on;
+    else item.on = false;
+    touch();
+  }
+  function moveInstance(list, i, by) {
+    const j = i + by;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    touch();
+  }
+  function duplicateInstance(list, i) {
+    if (list.length >= FX_INSTANCES_MAX || !list[i]) return;
+    list.splice(i, 0, $state.snapshot(list[i]));
+    touch();
+  }
+  const roomFor = (list) => list.length < FX_INSTANCES_MAX;
+
   // ---- shadows ----
   // Photoshop's Drop Shadow: a new one is Photoshop's, on the chapter's light.
   function addShadow() {
+    if (!roomFor(box.style.shadows)) return;
     box.style.shadows.push(newShadow(app.typesetting.light));
     touch();
   }
@@ -986,6 +1031,7 @@
   }
   // Inner Shadow: a drop shadow's controls, thrown into the letters.
   function addInnerShadow() {
+    if (!roomFor(box.style.innerShadows)) return;
     box.style.innerShadows.push(newInnerShadow(app.typesetting.light));
     touch();
   }
@@ -995,6 +1041,7 @@
   }
   // Color Overlay.
   function addOverlay() {
+    if (!roomFor(box.style.colorOverlays)) return;
     box.style.colorOverlays.push(newOverlay());
     touch();
   }
@@ -1004,6 +1051,7 @@
   }
   // Gradient Overlay, and Photoshop's Stroke effect: lists, first on top.
   function addGradientOverlay() {
+    if (!roomFor(box.style.gradientOverlays)) return;
     box.style.gradientOverlays.push(newGradientOverlay());
     touch();
   }
@@ -1012,6 +1060,7 @@
     touch();
   }
   function addStrokeEffect() {
+    if (!roomFor(box.style.strokeEffects)) return;
     box.style.strokeEffects.push(newStrokeEffect());
     touch();
   }
@@ -1216,7 +1265,7 @@
       <!-- The Global Light is read here so a turn of it shows. -->
       {@const angle = (app.typesetting.light?.angle, angleOf(sh))}
       {@const key = inner ? 'choke' : 'spread'}
-      <div class="insp-row">
+      <div class="insp-row" class:inst-off={!instanceOn(sh)}>
         {@render swatchCell(sh, 'color', `${name} ${i + 1} colour`)}
         <input type="number" min="-180" max="180" step="1" value={angle} aria-label="{name} {i + 1} angle" title={sh.useGlobalLight ? 'Angle of the chapter\'s light, degrees: turns every shadow on it' : 'Angle the light comes from, degrees'} onchange={(e) => setShadowAngle(sh, e)} />
         <input type="number" min="0" max={SHADOW_DISTANCE_MAX} step="1" value={Math.round(shadowDistance(sh) * 100) / 100} aria-label="{name} {i + 1} distance" title="Distance, page px" onchange={(e) => setShadowDistance(sh, e)} />
@@ -1225,6 +1274,7 @@
         <FxMenu kind={inner ? 'innerShadow' : 'dropShadow'} name="{name} {i + 1}" onpick={(id) => fxPick(inner ? 'innerShadow' : 'dropShadow', sh, `${name} ${i + 1}`, id)} />
         {@render rmBtn(`${name.toLowerCase()} ${i + 1}`, () => (inner ? removeInnerShadow(i) : removeShadow(i)))}
       </div>
+      {@render instanceBar(list, i, `${name} ${i + 1}`)}
       <div class="sh-more">
         <label class="sh-num" title="{inner ? 'Choke' : 'Spread'}: how much of the size is a hard edge, %">
           <span>{inner ? 'Choke' : 'Spread'}</span>
@@ -1853,7 +1903,7 @@
      is filled with. -->
 {#snippet strokeEffectRows(k, i)}
   {@const name = `Photoshop stroke ${i + 1}`}
-  <div class="fx-block">
+  <div class="fx-block" class:inst-off={!instanceOn(k)}>
     <div class="fx-head">
       <span class="lbl">Stroke {i + 1}</span>
       <span class="fx-head-end">
@@ -1861,6 +1911,7 @@
         {@render rmBtn(name.toLowerCase(), () => removeStrokeEffect(i))}
       </span>
     </div>
+    {@render instanceBar(box.style.strokeEffects, i, name, true)}
     <div class="sh-more" style="margin:0">
       <label class="sh-num" title="Size, page px">
         <span>Size</span>
@@ -2037,8 +2088,30 @@
   </button>
 {/snippet}
 
-{#snippet addBtn(label, onAdd)}
-  <button type="button" class="add-btn" onclick={onAdd}>
+<!-- One instance of a multi effect: its switch, then up, down and duplicate. -->
+{#snippet instanceBar(list, i, name, flush = false)}
+  {@const item = list[i]}
+  <div class="fx-inst" class:flush>
+    <label class="sh-check" title="On: switched off, it is kept and paints nothing">
+      <input type="checkbox" checked={instanceOn(item)} aria-label="{name} on" onchange={(e) => setInstanceOn(item, e.target.checked)} />
+      <span>On</span>
+    </label>
+    <span class="fx-inst-end">
+      <button type="button" class="inst-btn" title="Move up: paints over the one above" aria-label="Move {name} up" disabled={i === 0} onclick={() => moveInstance(list, i, -1)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6" /></svg>
+      </button>
+      <button type="button" class="inst-btn" title="Move down: paints under the one below" aria-label="Move {name} down" disabled={i >= list.length - 1} onclick={() => moveInstance(list, i, 1)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
+      </button>
+      <button type="button" class="inst-btn" title={roomFor(list) ? 'Duplicate: the copy goes over it' : `At most ${FX_INSTANCES_MAX} of a kind`} aria-label="Duplicate {name}" disabled={!roomFor(list)} onclick={() => duplicateInstance(list, i)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>
+      </button>
+    </span>
+  </div>
+{/snippet}
+
+{#snippet addBtn(label, onAdd, canAdd = true)}
+  <button type="button" class="add-btn" onclick={onAdd} disabled={!canAdd} title={canAdd ? null : `At most ${FX_INSTANCES_MAX} of a kind`}>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" /></svg>
     {label}
   </button>
@@ -2225,7 +2298,7 @@
             {/if}
             <div class="insp-list k-overlay">
               {#each s.colorOverlays as o, i (o)}
-                <div class="insp-row">
+                <div class="insp-row" class:inst-off={!instanceOn(o)}>
                   {@render swatchCell(o, 'color', `Overlay ${i + 1} colour`)}
                   <select value={o.blend} aria-label="Overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
                     {#each LAYER_BLEND_MODES as m (m)}
@@ -2236,12 +2309,13 @@
                   <FxMenu kind="colorOverlay" name="Overlay {i + 1}" onpick={(id) => fxPick('colorOverlay', o, `Overlay ${i + 1}`, id)} />
                   {@render rmBtn(`overlay ${i + 1}`, () => removeOverlay(i))}
                 </div>
+                {@render instanceBar(s.colorOverlays, i, `Overlay ${i + 1}`, true)}
               {/each}
             </div>
             {#if s.colorOverlays.length && !rustBoxes}
               <p class="nofill-note">Colour overlays need the Rust text engine (Settings).</p>
             {/if}
-            {@render addBtn('Add colour overlay', addOverlay)}
+            {@render addBtn('Add colour overlay', addOverlay, roomFor(s.colorOverlays))}
           </div>
           <!-- Photoshop's Gradient Overlay and Pattern Overlay: under the
                colour overlays, over the fill. The Rust engine paints them. -->
@@ -2251,7 +2325,7 @@
               <div class="insp-none">No gradient overlay.</div>
             {/if}
             {#each s.gradientOverlays as o, i (o)}
-              <div class="fx-block">
+              <div class="fx-block" class:inst-off={!instanceOn(o)}>
                 <div class="insp-row k-fxrow">
                   <select value={o.blend} aria-label="Gradient overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
                     {#each LAYER_BLEND_MODES as m (m)}
@@ -2262,13 +2336,14 @@
                   <FxMenu kind="gradientOverlay" name="Gradient overlay {i + 1}" onpick={(id) => fxPick('gradientOverlay', o, `Gradient overlay ${i + 1}`, id)} />
                   {@render rmBtn(`gradient overlay ${i + 1}`, () => removeGradientOverlay(i))}
                 </div>
+                {@render instanceBar(s.gradientOverlays, i, `Gradient overlay ${i + 1}`, true)}
                 {@render fxGradientControls(o.gradient, `Gradient overlay ${i + 1}`)}
               </div>
             {/each}
             {#if s.gradientOverlays.length && !rustBoxes}
               <p class="nofill-note">Gradient overlays need the Rust text engine (Settings).</p>
             {/if}
-            {@render addBtn('Add gradient overlay', addGradientOverlay)}
+            {@render addBtn('Add gradient overlay', addGradientOverlay, roomFor(s.gradientOverlays))}
           </div>
           {@const po = s.patternOverlay}
           <div class="switch-row">
@@ -2596,11 +2671,13 @@
             {#if FILL_SPECIAL_MODES.includes(s.blendMode) && s.fillOpacity < 1}
               <p class="nofill-note">Fill works as in Photoshop for this mode: it changes the blend, not the coverage.</p>
             {/if}
-            {@const inner = s.colorOverlays?.length > 0 || s.gradientOverlays?.length > 0 || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
-            <!-- Advanced Blending, in Photoshop's order: Channels, Blend
-                 Interior Effects as Group, Blend If (phase 6b). -->
+            {@const inner = s.colorOverlays?.some(instanceOn) || s.gradientOverlays?.some(instanceOn) || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
+            <!-- Advanced Blending, in Photoshop's order: Channels, Knockout,
+                 Blend Interior Effects as Group, Blend Clipped Layers as
+                 Group, Transparency Shapes Layer, Vector Mask Hides Effects,
+                 Blend If (phase 6b). -->
             <div class="fx-head">
-              <span class="lbl" title="Channels, Blend Interior Effects as Group and Blend If">Advanced blending</span>
+              <span class="lbl" title="Channels, Knockout, the group and shape options and Blend If">Advanced blending</span>
               <FxMenu kind="blending" name="Advanced blending" onpick={(id) => fxPick('blending', s.blending, 'Advanced blending', id)} />
             </div>
             <div class="blend-chans" role="group" aria-label="Channels" title="Channels: a channel left out shows the page art's">
@@ -2612,9 +2689,32 @@
                 </label>
               {/each}
             </div>
+            <!-- Knockout is stored and written to the PSD, not painted: a box
+                 blends with the page art only, never with the boxes under it
+                 (user decision, phase 6c). -->
+            <label class="sh-contour" title="Knockout: written to the PSD for Photoshop. Not painted here: a box blends with the page art only, never with the boxes under it">
+              <span>Knockout</span>
+              <select value={s.blending?.knockout ?? 'none'} aria-label="Knockout" onchange={(e) => setKnockout(s, e.target.value)}>
+                {#each KNOCKOUT_MODES as k (k)}
+                  <option value={k}>{KNOCKOUT_LABEL[k]}</option>
+                {/each}
+              </select>
+            </label>
             <label class="sh-check" title="Blend Interior Effects as Group: Fill opacity also fades the overlays, the satin and the inner glow">
               <input type="checkbox" checked={s.blending?.interior === true} disabled={!inner} aria-label="Blend interior effects as group" onchange={(e) => { s.blending = { ...s.blending, interior: e.target.checked }; touch(); }} />
               <span>Blend interior effects as group</span>
+            </label>
+            <label class="sh-check" title="Blend Clipped Layers as Group: written to the PSD for Photoshop. A box has no layers clipped to it, so it changes nothing here">
+              <input type="checkbox" checked={blendingSwitch(s.blending, 'blendClipped')} aria-label="Blend clipped layers as group" onchange={(e) => setBlendingSwitch(s, 'blendClipped', e.target.checked)} />
+              <span>Blend clipped layers as group</span>
+            </label>
+            <label class="sh-check" title="Transparency Shapes Layer: off, a fill in Color Burn, Linear Burn, Color Dodge, Linear Dodge, Vivid Light, Linear Light, Hard Mix or Difference blends its own see-through edges as Fill does. Written to the PSD; in Photoshop the effects then cover the whole layer, here they stay on the letters">
+              <input type="checkbox" checked={blendingSwitch(s.blending, 'transparencyShapes')} aria-label="Transparency shapes layer" onchange={(e) => setBlendingSwitch(s, 'transparencyShapes', e.target.checked)} />
+              <span>Transparency shapes layer</span>
+            </label>
+            <label class="sh-check" title="Vector Mask Hides Effects: kept with the box only. A box has no vector mask, and the PSD writer cannot write this option">
+              <input type="checkbox" checked={blendingSwitch(s.blending, 'vectorMaskHidesEffects')} aria-label="Vector mask hides effects" onchange={(e) => setBlendingSwitch(s, 'vectorMaskHidesEffects', e.target.checked)} />
+              <span>Vector mask hides effects</span>
             </label>
             <div class="blend-if">
               <div class="blend-if-head">
@@ -2707,7 +2807,7 @@
             {#if s.strokeEffects.length && !rustBoxes}
               <p class="nofill-note">Photoshop strokes need the Rust text engine (Settings).</p>
             {/if}
-            {@render addBtn('Add Photoshop stroke', addStrokeEffect)}
+            {@render addBtn('Add Photoshop stroke', addStrokeEffect, roomFor(s.strokeEffects))}
           </div>
         {/if}
 
@@ -2722,7 +2822,7 @@
             {#if s.shadows.length && !rustBoxes}
               <p class="nofill-note">Spread, Noise, Contour and Knock out need the Rust text engine (Settings).</p>
             {/if}
-            {@render addBtn('Add shadow', addShadow)}
+            {@render addBtn('Add shadow', addShadow, roomFor(s.shadows))}
           </div>
           <!-- Inner shadows: thrown from outside the letters into them. -->
           {@render secHead('Inner shadows · first on top')}
@@ -2734,7 +2834,7 @@
             {#if s.innerShadows.length && !rustBoxes}
               <p class="nofill-note">Inner shadows need the Rust text engine (Settings).</p>
             {/if}
-            {@render addBtn('Add inner shadow', addInnerShadow)}
+            {@render addBtn('Add inner shadow', addInnerShadow, roomFor(s.innerShadows))}
           </div>
         {/if}
 
@@ -3671,6 +3771,56 @@
   .sh-contour select {
     flex: 1 1 auto;
     min-width: 0;
+  }
+  /* A multi effect instance's switch and its up, down and duplicate. */
+  .fx-inst {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: -2px 0 2px 30px;
+    font-size: 12px;
+    color: var(--t2);
+  }
+  .fx-inst.flush {
+    margin-left: 0;
+  }
+  .fx-inst-end {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .inst-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--t3);
+    cursor: pointer;
+  }
+  .inst-btn svg {
+    width: 13px;
+    height: 13px;
+  }
+  .inst-btn:hover:not(:disabled) {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+  .inst-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .add-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* A switched-off instance: kept, dimmed. */
+  .inst-off {
+    opacity: 0.55;
   }
   /* Advanced Blending: Channels on one row, Blend If's channel menu beside
      its heading, its two sliders under it. */

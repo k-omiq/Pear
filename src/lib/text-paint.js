@@ -7,7 +7,7 @@
 // like - is answered here once, so a change lands on both at the same time.
 
 import { strokeStamps, strokeBounds, aaLevel, textureActive } from './brush.js';
-import { CANVAS_PATTERN_KINDS, blendIfActive, shadowOwnAngle } from './data.js';
+import { CANVAS_PATTERN_KINDS, blendIfActive, shadowOwnAngle, instanceOn } from './data.js';
 
 // A stroke's `width` is the VISIBLE band the user asked for, but neither a
 // canvas stroke nor `-webkit-text-stroke` can draw a band: both draw a line
@@ -1099,8 +1099,16 @@ export function resolveShadow(sh) {
   return { ...sh, ...shadowOffset(light.angle, shadowDistance(sh)) };
 }
 
-// A list of shadows resolved; the list itself when none follows the light.
-const resolveShadows = (list) => (list.some((sh) => sh?.useGlobalLight) ? list.map(resolveShadow) : list);
+// The instances of a multi effect switched on in the list (`instanceOn`):
+// one switched off is kept and paints nothing. The list itself when all are.
+export const shownInstances = (list) => (list.some((x) => !instanceOn(x)) ? list.filter(instanceOn) : list);
+
+// A list of shadows resolved, less the ones switched off; the list itself
+// when none follows the light and none is off.
+const resolveShadows = (all) => {
+  const list = shownInstances(all);
+  return list.some((sh) => sh?.useGlobalLight) ? list.map(resolveShadow) : list;
+};
 
 // ---- the SFX effects, as the shadows the painter casts them with ----
 //
@@ -1180,7 +1188,8 @@ export function boxShadows(style) {
 // them (`encodeBox`'s `effects`): Outer Glow, Inner Glow, each Inner Shadow
 // (thrown from the chapter's light when it follows it), each Color and
 // Gradient Overlay, the Pattern Overlay, the Satin, each Stroke and the Bevel
-// & Emboss (`bevelOf`). Only the Rust engine paints them.
+// & Emboss (`bevelOf`). An instance switched off in its list (`on: false`) is
+// left out. Only the Rust engine paints them.
 export function boxEffects(style) {
   const out = [];
   const og = style?.outerGlow;
@@ -1195,10 +1204,10 @@ export function boxEffects(style) {
     if (!(sh.opacity > 0)) continue;
     out.push({ kind: 'innerShadow', color: sh.color, opacity: sh.opacity, blend: sh.blend, x: sh.x, y: sh.y, size: sh.size, choke: sh.choke, noise: sh.noise, contour: sh.contour });
   }
-  for (const o of Array.isArray(style?.colorOverlays) ? style.colorOverlays : []) {
+  for (const o of Array.isArray(style?.colorOverlays) ? shownInstances(style.colorOverlays) : []) {
     if (o.opacity > 0) out.push({ kind: 'colorOverlay', color: o.color, opacity: o.opacity, blend: o.blend });
   }
-  for (const o of Array.isArray(style?.gradientOverlays) ? style.gradientOverlays : []) {
+  for (const o of Array.isArray(style?.gradientOverlays) ? shownInstances(style.gradientOverlays) : []) {
     if (o.opacity > 0 && o.gradient) out.push({ kind: 'gradientOverlay', opacity: o.opacity, blend: o.blend, gradient: o.gradient });
   }
   const po = style?.patternOverlay;
@@ -1358,7 +1367,7 @@ function glowGradientOf(g) {
 
 // The Photoshop strokes that lay anything.
 function strokeEffectsOf(style) {
-  return (Array.isArray(style?.strokeEffects) ? style.strokeEffects : []).filter((k) => k.opacity > 0 && k.size > 0);
+  return (Array.isArray(style?.strokeEffects) ? style.strokeEffects : []).filter((k) => instanceOn(k) && k.opacity > 0 && k.size > 0);
 }
 
 // What a stroke paints with. A pattern is the style's pattern record; the
