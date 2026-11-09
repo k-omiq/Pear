@@ -21,20 +21,87 @@
   function set(next) {
     onchange?.(next);
   }
+  // Each setter returns the value it kept, so the input can be told: a handle
+  // stopped at its neighbour whose stored value did not change would otherwise
+  // stay drawn where the pointer left it (Svelte skips an unchanged write).
   // Unsplit: a point moves both its halves.
   function setBlack(n) {
     const b = clamp(n, 0, v[2]);
     set([b, b, v[2], v[3]]);
+    return b;
   }
   function setWhite(n) {
     const w = clamp(n, v[1], 255);
     set([v[0], v[1], w, w]);
+    return w;
   }
   // Split: one half, between the handles either side of it.
   function setHalf(i, n) {
     const next = [...v];
     next[i] = clamp(n, i > 0 ? v[i - 1] : 0, i < 3 ? v[i + 1] : 255);
     set(next);
+    return next[i];
+  }
+  const put = (e, kept) => {
+    e.target.value = String(kept);
+  };
+
+  // The inputs lie on top of each other, so the last in the DOM takes every
+  // press, even when its handle cannot move that way (a white point at 255, or
+  // two handles on the same spot). The handle a press should take is the
+  // nearest one that is free to move toward the pointer, and its input is
+  // raised before the press lands.
+  const handles = $derived(
+    split
+      ? [0, 1, 2, 3].map((i) => ({ val: v[i], lo: i > 0 ? v[i - 1] : 0, hi: i < 3 ? v[i + 1] : 255, set: (n) => setHalf(i, n) }))
+      : [
+          { val: v[1], lo: 0, hi: v[2], set: setBlack },
+          { val: v[2], lo: v[1], hi: 255, set: setWhite },
+        ],
+  );
+  let raised = $state(-1);
+  let trackEl;
+  const valueAt = (clientX) => {
+    const r = trackEl.getBoundingClientRect();
+    return r.width > 0 ? clamp(((clientX - r.left) / r.width) * 255, 0, 255) : 0;
+  };
+  function nearest(x) {
+    let best = -1;
+    let bestD = Infinity;
+    handles.forEach((h, i) => {
+      const free = x > h.val ? h.hi > h.val : x < h.val ? h.lo < h.val : true;
+      const d = Math.abs(x - h.val) + (free ? 0 : 1000);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return best;
+  }
+  function aim(e) {
+    if (disabled || !trackEl) return -1;
+    raised = nearest(valueAt(e.clientX));
+    return raised;
+  }
+  // A press that still lands on another input (touch has no hover to raise
+  // from) is taken over and dragged here.
+  function press(e) {
+    const i = aim(e);
+    if (i < 0 || e.target === trackEl.querySelectorAll('input')[i]) return;
+    e.preventDefault();
+    const h = handles[i];
+    const move = (ev) => {
+      const kept = h.set(valueAt(ev.clientX));
+      const input = trackEl.querySelectorAll('input')[i];
+      if (input) input.value = String(kept);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    move(e);
   }
   // Joining a split point puts both halves where its middle was.
   function toggleSplit(on) {
@@ -58,14 +125,14 @@
       <span>Split</span>
     </label>
   </div>
-  <div class="br-track" class:split style:background={ramp}>
+  <div class="br-track" class:split style:background={ramp} bind:this={trackEl} onpointermove={aim} onpointerdowncapture={press} role="presentation">
     {#if split}
       {#each HALVES as half, i (half)}
-        <input type="range" min="0" max="255" step="1" value={v[i]} {disabled} aria-label="{label} {half}" oninput={(e) => setHalf(i, e.target.value)} />
+        <input type="range" min="0" max="255" step="1" value={v[i]} {disabled} aria-label="{label} {half}" style:z-index={raised === i ? 2 : 1} oninput={(e) => put(e, setHalf(i, e.target.value))} />
       {/each}
     {:else}
-      <input type="range" min="0" max="255" step="1" value={v[1]} {disabled} aria-label="{label} black" oninput={(e) => setBlack(e.target.value)} />
-      <input type="range" min="0" max="255" step="1" value={v[2]} {disabled} aria-label="{label} white" oninput={(e) => setWhite(e.target.value)} />
+      <input type="range" min="0" max="255" step="1" value={v[1]} {disabled} aria-label="{label} black" style:z-index={raised === 0 ? 2 : 1} oninput={(e) => put(e, setBlack(e.target.value))} />
+      <input type="range" min="0" max="255" step="1" value={v[2]} {disabled} aria-label="{label} white" style:z-index={raised === 1 ? 2 : 1} oninput={(e) => put(e, setWhite(e.target.value))} />
     {/if}
   </div>
 </div>

@@ -770,11 +770,11 @@ import {
                         <div class="sub-row3">
                           <div class="field">
                             <span class="sub-lbl">X</span>
-                            <input type="number" aria-label="Shadow {i + 1} X" value={sh.x} onchange={(e) => { sh.x = +e.target.value || 0; tickBulkProp('shadows'); }} />
+                            <input type="number" aria-label="Shadow {i + 1} X" value={sh.x} onchange={(e) => { sh.x = +e.target.value || 0; sh.useGlobalLight = false; tickBulkProp('shadows'); }} />
                           </div>
                           <div class="field">
                             <span class="sub-lbl">Y</span>
-                            <input type="number" aria-label="Shadow {i + 1} Y" value={sh.y} onchange={(e) => { sh.y = +e.target.value || 0; tickBulkProp('shadows'); }} />
+                            <input type="number" aria-label="Shadow {i + 1} Y" value={sh.y} onchange={(e) => { sh.y = +e.target.value || 0; sh.useGlobalLight = false; tickBulkProp('shadows'); }} />
                           </div>
                           <div class="field">
                             <span class="sub-lbl">Size</span>

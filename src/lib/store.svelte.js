@@ -2749,16 +2749,30 @@ export function useChapterTypesetting(raw) {
 
 // The chapter's Global Light (Photoshop's, one per document): every shadow
 // with `useGlobalLight` is thrown away from its angle. Saved with the
-// chapter. Not an undo step, as Photoshop's is not: it is the document's
-// setting, and the shadows that follow it hold no angle of their own.
+// chapter. One undo step on the page on screen (the `light` history kind), so
+// a typed angle on a shadow that follows the light can be taken back; the
+// shadows that follow it hold no angle of their own, so the entry is only the
+// light before and after.
+export function applyChapterLight(light) {
+  const next = normalizeLight({ ...(app.typesetting.light ?? LIGHT_DEF), ...light });
+  setGlobalLight(next);
+  app.typesetting = normalizeTypesetting({ ...app.typesetting, light: next });
+  markUnsaved();
+  return next;
+}
 export function setChapterLight(light) {
   if (!app.chapterRef) return;
   const was = app.typesetting.light ?? LIGHT_DEF;
   const next = normalizeLight({ ...was, ...light });
   if (next.angle === was.angle && next.altitude === was.altitude) return;
-  setGlobalLight(next);
-  app.typesetting = normalizeTypesetting({ ...app.typesetting, light: next });
-  markUnsaved();
+  settleEdits();
+  applyChapterLight(next);
+  recordEdit({
+    t: 'light',
+    pageId: page().id,
+    before: { angle: was.angle, altitude: was.altitude },
+    after: { angle: next.angle, altitude: next.altitude },
+  });
 }
 
 // The open chapter's breaker switched wholesale, saved with it, and every box
@@ -3870,6 +3884,8 @@ export function rescaleStyle(st, sx, sy) {
       x: Number.isFinite(sh.x) ? sh.x * sx : sh.x,
       y: Number.isFinite(sh.y) ? sh.y * sy : sh.y,
       size: len(sh.size),
+      // A shadow saved before Size has only `blur`, a length too.
+      ...('blur' in sh ? { blur: len(sh.blur) } : null),
     }));
   }
   if (Array.isArray(st.innerShadows)) {

@@ -851,31 +851,49 @@
   // Angle and Distance are how the panel states a shadow's offset. The angle of
   // one on the Global Light is the chapter's: turning it turns every shadow
   // that follows the light, as in Photoshop.
+  // At Distance 0 the offset holds no direction, so a shadow off the light
+  // would fall back to the light's angle. The angle it had is kept here (the
+  // panel's, not the style's: nothing is painted from it) and used when the
+  // distance comes back, as Photoshop keeps it.
+  const keptAngle = new WeakMap();
+  const angleOf = (sh) => (!sh.useGlobalLight && !sh.x && !sh.y && keptAngle.has(sh) ? keptAngle.get(sh) : shadowAngle(sh));
   function setShadowAngle(sh, e) {
     const el = e.target;
     let a = +el.value;
-    if (!Number.isFinite(a)) a = shadowAngle(sh);
+    if (!Number.isFinite(a)) a = angleOf(sh);
     a = clamp(a, -180, 180);
     if (sh.useGlobalLight) setChapterLight({ angle: a });
     else {
+      keptAngle.set(sh, a);
       Object.assign(sh, shadowOffset(a, shadowDistance(sh)));
       touch();
     }
-    el.value = String(shadowAngle(sh));
+    el.value = String(angleOf(sh));
   }
   function setShadowDistance(sh, e) {
     const el = e.target;
     let d = +el.value;
     if (!Number.isFinite(d)) d = 0;
     d = clamp(d, 0, SHADOW_DISTANCE_MAX);
-    Object.assign(sh, shadowOffset(shadowAngle(sh), d));
+    const a = angleOf(sh);
+    if (!sh.useGlobalLight) keptAngle.set(sh, a);
+    Object.assign(sh, shadowOffset(a, d));
     el.value = String(Math.round(shadowDistance(sh) * 100) / 100);
     touch();
   }
   // Off the light, a shadow keeps the angle it had from it.
   function setShadowGlobal(sh, on) {
-    Object.assign(sh, shadowOffset(shadowAngle(sh), shadowDistance(sh)));
+    const a = angleOf(sh);
+    if (!on) keptAngle.set(sh, a);
+    Object.assign(sh, shadowOffset(a, shadowDistance(sh)));
     sh.useGlobalLight = on;
+    touch();
+  }
+  // A gradient overlay's Offset: % of the box, -100 to 100.
+  function setFxGradientOffset(g, i, e) {
+    const v = clamp(Math.round(+e.target.value || 0), -100, 100);
+    g.offset = i === 0 ? [v / 100, g.offset?.[1] ?? 0] : [g.offset?.[0] ?? 0, v / 100];
+    e.target.value = String(v);
     touch();
   }
   function setShadowContour(sh, preset) {
@@ -1157,7 +1175,7 @@
     {/if}
     {#each list as sh, i (sh)}
       <!-- The Global Light is read here so a turn of it shows. -->
-      {@const angle = (app.typesetting.light?.angle, shadowAngle(sh))}
+      {@const angle = (app.typesetting.light?.angle, angleOf(sh))}
       {@const key = inner ? 'choke' : 'spread'}
       <div class="insp-row">
         {@render swatchCell(sh, 'color', `${name} ${i + 1} colour`)}
@@ -1188,7 +1206,7 @@
             {/if}
           </select>
         </label>
-        <label class="sh-check" title="Anti-aliased: the contour read at every level, not a hundred steps">
+        <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
           <input type="checkbox" checked={sh.contour?.aa === true} aria-label="{name} {i + 1} contour anti-aliased" onchange={(e) => { sh.contour = { ...sh.contour, aa: e.target.checked }; touch(); }} />
           <span>Anti-aliased</span>
         </label>
@@ -1309,6 +1327,10 @@
           {/if}
         </select>
       </label>
+      <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
+        <input type="checkbox" checked={g.contour?.aa === true} disabled={!g.on} aria-label="{title} contour anti-aliased" onchange={(e) => { g.contour = { ...g.contour, aa: e.target.checked }; touch(); }} />
+        <span>Anti-aliased</span>
+      </label>
     </div>
     <!-- Quality > Jitter: scatters each pixel's colour along the gradient, so
          only a gradient glow has it (Photoshop greys it out on a colour). -->
@@ -1394,7 +1416,7 @@
           {/if}
         </select>
       </label>
-      <label class="sh-check" title="Anti-aliased: the contour read at every level, not a hundred steps">
+      <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
         <input type="checkbox" checked={sa.contour?.aa === true} disabled={!sa.on} aria-label="Satin contour anti-aliased" onchange={(e) => { sa.contour = { ...sa.contour, aa: e.target.checked }; touch(); }} />
         <span>Anti-aliased</span>
       </label>
@@ -1693,6 +1715,16 @@
         <input type="checkbox" checked={g.reverse} aria-label="{title} reversed" onchange={(e) => { g.reverse = e.target.checked; touch(); }} />
         <span>Reverse</span>
       </label>
+      <!-- Photoshop's Offset: moves the gradient's centre, % of the box. -->
+      <label class="sh-num" title="Offset X: moves the gradient's centre sideways, % of the box">
+        <span>Offset X</span>
+        <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[0] ?? 0)} aria-label="{title} offset X, percent" onchange={(e) => setFxGradientOffset(g, 0, e)} />
+      </label>
+      <label class="sh-num" title="Offset Y: moves the gradient's centre down, % of the box">
+        <span>Offset Y</span>
+        <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[1] ?? 0)} aria-label="{title} offset Y, percent" onchange={(e) => setFxGradientOffset(g, 1, e)} />
+      </label>
+      <button type="button" class="add-btn" title="Put the gradient's centre back in the middle" aria-label="{title} reset offset" disabled={!g.offset?.[0] && !g.offset?.[1]} onclick={() => { g.offset = [0, 0]; touch(); }}>Reset</button>
     </div>
   {/if}
 {/snippet}
@@ -1717,6 +1749,18 @@
       <span>Angle</span>
       <input type="number" min="-180" max="180" step="1" value={p.angle} aria-label="{title} angle" onchange={(e) => commitNum(p, 'angle', e, -180, 180)} />
     </label>
+    <label class="sh-num" title="Moves the tiles sideways, % of a tile (Phase)">
+      <span>Offset X</span>
+      <input type="number" min="0" max="100" step="1" value={pct(p.ox)} aria-label="{title} offset X, percent of a tile" onchange={(e) => commitAlpha(p, 'ox', e)} />
+    </label>
+    <label class="sh-num" title="Moves the tiles down, % of a tile (Phase)">
+      <span>Offset Y</span>
+      <input type="number" min="0" max="100" step="1" value={pct(p.oy)} aria-label="{title} offset Y, percent of a tile" onchange={(e) => commitAlpha(p, 'oy', e)} />
+    </label>
+    <span class="seg" role="group" aria-label="{title} tiles start at">
+      <button type="button" class:on={p.anchor !== 'page'} aria-pressed={p.anchor !== 'page'} title="Each box starts its own tiles" onclick={() => { p.anchor = 'box'; touch(); }}>Box</button>
+      <button type="button" class:on={p.anchor === 'page'} aria-pressed={p.anchor === 'page'} title="Tiles line up across boxes, from the page's corner (Link with Layer off)" onclick={() => { p.anchor = 'page'; touch(); }}>Page</button>
+    </span>
   </div>
   <div class="insp-row fx-pat-colours">
     {@render swatchCell(p, 'fg', `${title} ink`)}
@@ -2093,7 +2137,7 @@
             {/if}
           </div>
         {/if}
-        {#if fillMode !== 'none'}
+        {#if true}
           <!-- Photoshop's Color Overlay: a flat colour over the fill, in its
                own mode, under the strokes. The Rust engine paints it. -->
           {@render secHead('Colour overlays · first on top')}
@@ -2464,7 +2508,6 @@
         <div class="grp">
           <div class="fx-head">
             <span class="lbl" title="How the box mixes with the page art under it">Blend mode</span>
-            <FxMenu kind="blending" name="Blending options" onpick={(id) => fxPick('blending', s.blending, 'Blending options', id)} />
           </div>
           {#if rustBoxes}
             <select value={s.blendMode} aria-label="Box blend mode" title="Blend mode" onchange={(e) => { s.blendMode = e.target.value; touch(); }}>
@@ -2478,6 +2521,10 @@
             {@const inner = s.colorOverlays?.length > 0 || s.gradientOverlays?.length > 0 || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
             <!-- Advanced Blending, in Photoshop's order: Channels, Blend
                  Interior Effects as Group, Blend If (phase 6b). -->
+            <div class="fx-head">
+              <span class="lbl" title="Channels, Blend Interior Effects as Group and Blend If">Advanced blending</span>
+              <FxMenu kind="blending" name="Advanced blending" onpick={(id) => fxPick('blending', s.blending, 'Advanced blending', id)} />
+            </div>
             <div class="blend-chans" role="group" aria-label="Channels" title="Channels: a channel left out shows the page art's">
               <span class="lbl">Channels</span>
               {#each [['r', 'R'], ['g', 'G'], ['b', 'B']] as [k, name] (k)}

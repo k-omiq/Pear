@@ -86,6 +86,19 @@ it('an arrow a focused control already answered does not also nudge the box', as
   expect(b.y).toBe(100);
 });
 
+it('an arrow on a focused slider or radio does not nudge the box or turn the page', async () => {
+  const b = await openEditor();
+  for (const type of ['range', 'radio']) {
+    const input = document.createElement('input');
+    input.type = type;
+    document.body.append(input);
+    input.focus();
+    const ev = arrow(input);
+    expect(ev.defaultPrevented, type).toBe(false);
+    expect(b.x, type).toBe(100);
+  }
+});
+
 it('the Inspector tab strip takes its arrows without moving the selected box', async () => {
   const b = await openEditor();
   render(Inspector, { onSettings: () => {} }); await settle();
