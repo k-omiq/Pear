@@ -2426,3 +2426,7 @@ mod tests {
         assert!(o.is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "effects_gaps.rs"]
+mod gaps;
