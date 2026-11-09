@@ -697,6 +697,8 @@ export const CONTOUR_LABELS = {
   'sawtooth-1': 'Sawtooth 1',
   custom: 'Custom',
 };
+// The most points a custom contour keeps (the engine's `contour::MAX_POINTS`).
+export const CONTOUR_MAX_POINTS = 64;
 // A contour: a preset, or `custom` with points `[x, y, corner]` from 0 to 255
 // in order of x; `aa` is Photoshop's Anti-aliased box.
 export function normalizeContour(c) {
@@ -716,7 +718,7 @@ export function normalizeContour(c) {
         const twins = all.filter((p) => p[0] === q[0]);
         return twins.some((p) => p[2]) ? q[2] : twins[0] === q;
       })
-      .slice(0, 64);
+      .slice(0, CONTOUR_MAX_POINTS);
     if (pts.length < 2) return { preset: 'linear', aa: out.aa };
     out.pts = pts;
   }
