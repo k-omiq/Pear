@@ -1216,6 +1216,32 @@ export function boxEffects(style) {
   }
   const bv = bevelOf(style);
   if (bv) out.push(bv);
+  return capEffects(out);
+}
+
+// The Rust box decoder refuses a box past these (MAX_NOISE_GRADIENTS and
+// MAX_BEVELS in text-engine/src/paint/boxjob.rs), and the whole box then fails
+// to paint. Keep the effects the engine is sent inside them; the extras, last
+// in paint order, are dropped. A noise gradient can sit in a glow, a gradient
+// overlay or a stroke.
+export const MAX_NOISE_GRADIENTS = 64;
+export const MAX_BEVELS = 8;
+function noiseGradients(fx) {
+  const gs = [fx.gradient, fx.paint?.kind === 'gradient' ? fx.paint.gradient : null];
+  return gs.filter((g) => g?.type === 'noise').length;
+}
+function capEffects(list) {
+  let noises = 0;
+  let bevels = 0;
+  const out = [];
+  for (const fx of list) {
+    const n = noiseGradients(fx);
+    const b = fx.kind === 'bevel' ? 1 : 0;
+    if (noises + n > MAX_NOISE_GRADIENTS || bevels + b > MAX_BEVELS) continue;
+    noises += n;
+    bevels += b;
+    out.push(fx);
+  }
   return out;
 }
 

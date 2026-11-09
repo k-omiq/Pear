@@ -396,3 +396,27 @@ describe('a custom contour', () => {
   });
 });
 
+
+describe('what the box job decoder will take', () => {
+  // The Rust decoder (MAX_NOISE_GRADIENTS in boxjob.rs) refuses a box with more
+  // than 64 noise gradients, so boxEffects sends no more than that.
+  const noisy = { opacity: 1, blend: 'normal', gradient: { type: 'noise', noise: { seed: 1 } } };
+  it('sends at most 64 noise gradients, counting glows, overlays and strokes', () => {
+    const style = {
+      outerGlow: { on: true, opacity: 1, fill: 'gradient', gradient: noisy.gradient, size: 4 },
+      gradientOverlays: Array.from({ length: 40 }, () => noisy),
+      strokeEffects: Array.from({ length: 40 }, () => ({ size: 2, position: 'outside', opacity: 1, blend: 'normal', fill: 'gradient', gradient: noisy.gradient })),
+    };
+    const fx = boxEffects(style);
+    const count = fx.filter((e) => e.gradient?.type === 'noise').length + fx.filter((e) => e.paint?.gradient?.type === 'noise').length;
+    expect(count).toBe(64);
+    expect(fx.filter((e) => e.kind === 'outerGlow')).toHaveLength(1);
+    expect(fx.filter((e) => e.kind === 'gradientOverlay')).toHaveLength(40);
+    expect(fx.filter((e) => e.kind === 'stroke')).toHaveLength(23);
+  });
+  it('keeps solid gradients and a box within the cap whole', () => {
+    const solid = { opacity: 1, blend: 'normal', gradient: { type: 'solid' } };
+    const fx = boxEffects({ gradientOverlays: [...Array.from({ length: 64 }, () => noisy), ...Array.from({ length: 5 }, () => solid)] });
+    expect(fx).toHaveLength(69);
+  });
+});
