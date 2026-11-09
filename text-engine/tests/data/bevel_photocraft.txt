@@ -8,6 +8,13 @@
 # letters are. Then per map (hi, sh): row 36, column 30, the diagonals
 # y = x + 6 ("down") and y = 67 - x ("up"), and the sums (plain, squared,
 # position-weighted). 0 is written as 0, the rest to 7 decimals.
+# PhotoCraft's texture inputs: the 6 x 6 tile of bevel_photocraft.rs `tile`
+# as a Pattern, link on, anchor (0, 0), the maps' rect at origin (0, 0), its
+# Scale the case's scale and its Phase the case's phase (our Fill::Pattern
+# origin), so both tile from the same point. Shape "letters" is
+# bevel_photocraft.rs `letters`; "band" is our `stroke_band` of it (an
+# outside stroke of 3 and an inside one of 2), handed to PhotoCraft as the
+# shape.
 case a_emboss_soft_1      emboss soft 1 1 1 0 120 30   0 0 1 0 0  letters 1
 hi row 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.0520738 0.1424707 0.1424707 0.0520738 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.0533553 0.0597334 0.0230240 0.0235486 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 hi col 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.0518051 0.2128890 0.2863954 0.1356665 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

@@ -268,7 +268,7 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), 
         // PhotoCraft). Emboss styles keep PhotoCraft's `max(1, size / 4)`
         // tent, which is a limit, not a measurement: PhotoCraft dada110 says
         // "keep the blur until measured" (`bevel.rs:81-85`, GPU
-        // `builders.rs:114`) and has no test, comment or result for it. Its
+        // `builders.rs:114-115`) and has no test, comment or result for it. Its
         // pinned Photoshop oracles `effects/bevel-emboss-chisel-soft.psd` and
         // `bevel-pillow-chisel-soft.psd` (`xtask/photoshop-corpus.sha256`:137,
         // 155, in storytold/photocraft-corpus at f5b1178) are not fetched
