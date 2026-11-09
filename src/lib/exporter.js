@@ -20,12 +20,10 @@ import {
   inkActive,
   inkBounds,
   inkReach,
-  shadowExtent,
   shadowSigma,
   boxShadows,
   boxEffects,
   usesBackdrop,
-  reachShadows,
   strokeReach,
   drawInk,
 } from './text-paint.js';
@@ -34,7 +32,8 @@ import { findTag } from './tags.svelte.js';
 import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, ITALIC_ANGLE_DEF } from './data.js';
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
-import { backdropPixels, boxToPage } from './backdrop.js';
+import { backdropPixels, boxToPage, BACKDROP_MAX_PX } from './backdrop.js';
+import { styleReach } from './paint-reach.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
@@ -233,11 +232,9 @@ function layoutBox(box, p) {
   // gaussian is done at about three sigma, so 2x the named blur clears it with
   // room to spare where the old `+ blur` cut into it.
   const strokeOut = strokeReach(s);
-  const shadowOut = shadowExtent(reachShadows(s));
-  const pad = Math.ceil(
+  const pad0 = Math.ceil(
     Math.max(
       strokeOut,
-      shadowOut > 0 ? strokeOut + shadowOut : 0,
       s.roughen.on ? s.roughen.amount + roughenGrit(s) + 2 : 0,
       // Ink is drawn in box-local px and may be drawn right over the box edge,
       // so its overhang has to be padded for like any other thing that paints
@@ -249,6 +246,16 @@ function layoutBox(box, p) {
       motionBlurExtent(s.motionBlur) +
       PAD_SPARE,
   );
+  // A shadow is padded on the sides it is thrown to, by its own offset and
+  // spread (`styleReach`, as `boxInkRect` does), not by its full throw on
+  // every side. The footprint is the unflipped frame (the flip mirrors the
+  // finished bitmap), and the ink has its own growth below.
+  const reach = styleReach({ ...s, ink: null, flipH: false, flipV: false }, box.w, box.h);
+  const padL = Math.max(pad0, Math.ceil(reach.l) + PAD_SPARE);
+  const padT = Math.max(pad0, Math.ceil(reach.t) + PAD_SPARE);
+  const padR = Math.max(pad0, Math.ceil(reach.r) + PAD_SPARE);
+  const padB = Math.max(pad0, Math.ceil(reach.b) + PAD_SPARE);
+  const pad = Math.max(padL, padT, padR, padB);
 
   // Every glyph-by-glyph layout - the bezier path, the closed circle and the
   // arc - goes down the same "curve" path here: everything below it only
@@ -443,14 +450,14 @@ function layoutBox(box, p) {
   rightExtra = Math.ceil(rightExtra);
   topExtra = Math.ceil(topExtra);
   bottomExtra = Math.ceil(bottomExtra);
-  const ox = leftExtra + pad; // box's top-left X inside the footprint
-  const oy = topExtra + pad; // box's top-left Y inside the footprint
-  const cw = Math.ceil(box.w + leftExtra + rightExtra + pad * 2);
-  const ch = Math.ceil(box.h + topExtra + bottomExtra + pad * 2);
+  const ox = leftExtra + padL; // box's top-left X inside the footprint
+  const oy = topExtra + padT; // box's top-left Y inside the footprint
+  const cw = Math.ceil(box.w + leftExtra + rightExtra + padL + padR);
+  const ch = Math.ceil(box.h + topExtra + bottomExtra + padT + padB);
   // Where each line's baseline sits inside its line box - the browser's own
   // placement, so the raster draws the glyphs where the editor does.
   const baseY = isCurve ? 0 : place.baseY;
-  return { s, lineH, baseY, pad, isCurve, lines, layout, caption, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
+  return { s, lineH, baseY, pad, padL, padT, padR, padB, isCurve, lines, layout, caption, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
 }
 
 // The caption beside an SFX (`style.sfx.caption`): a line of small straight
@@ -892,7 +899,10 @@ export function textureScale(cw, ch, scale, maxPx = Infinity, maxSide = Infinity
 // and only its resolution: an ordinary box is painted at 2 exactly as before.
 // `under` is the page art for a box that blends with the page (`paintBoxJob`).
 export function renderBox(box, p, tips, under = null) {
-  return warpTexture(renderBoxTexture(box, p, tips, 2, MAX_DEVICE_AREA, glyphPainter().maxSide ?? Infinity, false, false, null, under), box);
+  // A box that blends with the page keeps its surface within the backdrop's
+  // guard, so the page always arrives (a larger one is painted at a lower scale).
+  const cap = under?.image && usesBackdrop(box.style) ? Math.min(MAX_DEVICE_AREA, BACKDROP_MAX_PX) : MAX_DEVICE_AREA;
+  return warpTexture(renderBoxTexture(box, p, tips, 2, cap, glyphPainter().maxSide ?? Infinity, false, false, null, under), box);
 }
 
 // Everything `renderBox` does EXCEPT the mesh - the finished, unwarped picture
@@ -1000,8 +1010,17 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
     // The footprint in the layout's coordinates: every pixel the box can ink.
     rect: { x: L.ox - foot.ox, y: L.oy - foot.oy, w: foot.cw, h: foot.ch },
     shadows: boxShadows(s).map((sh, i) => ({ ...sh, seed: shadowSeed(box.id, i) })),
-    // Their grain apart from the shadows'.
-    effects: effectPaints(box, L, boxEffects(s)).map((fx, i) => ({ ...fx, seed: shadowSeed(box.id, 1024 + i) })),
+    // Their grain apart from the shadows', and from each other: seeded by the
+    // kind and the index within that kind, so adding an Outer Glow leaves an
+    // Inner Glow's noise alone.
+    effects: (() => {
+      const nth = new Map();
+      return effectPaints(box, L, boxEffects(s)).map((fx) => {
+        const k = nth.get(fx.kind) ?? 0;
+        nth.set(fx.kind, k + 1);
+        return { ...fx, seed: shadowSeed(`${box.id}|${fx.kind}`, 1024 + k) };
+      });
+    })(),
     blend: s.blendMode,
     fillOpacity: s.fillOpacity,
     blendInterior: s.blending?.interior === true,
@@ -1044,8 +1063,10 @@ function effectPaints(box, L, effects) {
 
 // The grain of a box's shadow `i` (its Noise, a Dissolve): the same box paints
 // the same grain in the editor, at every zoom, and in the file.
-function shadowSeed(id, i) {
-  let h = (Number(id) || 0) >>> 0;
+export function shadowSeed(id, i) {
+  // The id's text hashed (FNV-1a): ids like `b3` are not numbers.
+  let h = 0x811c9dc5;
+  for (const ch of String(id ?? '')) h = Math.imul(h ^ ch.codePointAt(0), 0x01000193) >>> 0;
   h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
   return (h + Math.imul(i + 1, 0x9e3779b9)) >>> 0;
 }
@@ -1095,7 +1116,15 @@ function inkUnion(rects, canvas) {
 export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null, under = null) {
   const { L, F, foot } = boxPlan(box, p, flat);
   const s = L.s;
-  const SS = textureScale(foot.cw, foot.ch, scale, maxPx, maxSide);
+  let SS = textureScale(foot.cw, foot.ch, scale, maxPx, maxSide);
+  // A box that blends with the page is read back within the backdrop's guard
+  // (`BACKDROP_MAX_PX`). The painter's surface is cut outwards from the
+  // transform it reads back, up to a pixel more on each side than
+  // cw * SS, so the scale steps down until the surface itself is inside.
+  if (under?.image && usesBackdrop(s) && SS < Infinity) {
+    const surf = (v) => (Math.ceil(foot.cw * Math.fround(v)) + 1) * (Math.ceil(foot.ch * Math.fround(v)) + 1);
+    while (surf(SS) > BACKDROP_MAX_PX && SS > 1e-3) SS *= 1 - 1e-4;
+  }
   const job = boxInJob(box);
   const phased = !!at && job && SS === scale && (!!F || !warpActive(s, box.w, box.h));
   const frac = (v) => v - Math.floor(v);
@@ -1244,7 +1273,7 @@ function meshFootprint(box, L) {
   if (!plan.projective && meshMap(w.pts, w.cols, w.rows, box.w, box.h)?.kind === 'projective') return null;
   const e = warpExtent({ warp: w, w: box.w, h: box.h, ox: L.ox, oy: L.oy, cw: L.cw, ch: L.ch });
   if (!e) return null;
-  return { ox: e.ox + L.pad, oy: e.oy + L.pad, cw: e.cw + 2 * L.pad, ch: e.ch + 2 * L.pad };
+  return { ox: e.ox + L.padL, oy: e.oy + L.padT, cw: e.cw + L.padL + L.padR, ch: e.ch + L.padT + L.padB };
 }
 
 // The mesh warp, over everything: the box is a finished picture by now - type

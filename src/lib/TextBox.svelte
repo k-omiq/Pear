@@ -699,7 +699,7 @@
     if (!blendsPage) return null;
     const image = artImage(artSrc);
     if (!image) return null;
-    return { image, W: pg.w || image.naturalWidth, H: pg.h || image.naturalHeight, src: artSrc, key: box };
+    return { image, W: pg.w || image.naturalWidth, H: pg.h || image.naturalHeight, src: artSrc, key: box.id };
   }
   const patternTileKey = $derived.by(() => {
     const p = s.pattern;

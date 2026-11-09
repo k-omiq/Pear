@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createCanvas, Image } from '@napi-rs/canvas';
 import { rustEngine } from '../test/rust-engine.js';
-import { renderBoxTexture, renderPageCanvas, renderBoxLayer } from './exporter.js';
+import { renderBox, renderBoxTexture, renderPageCanvas, renderBoxLayer } from './exporter.js';
 import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { backdropPixels, boxToPage, forgetBackdrops } from './backdrop.js';
+import { backdropPixels, boxToPage, forgetBackdrops, BACKDROP_MAX_PX } from './backdrop.js';
 
 // ===========================================================================
 // The page backdrop, painted (LAYER_STYLES_PLAN.md phase 6a)
@@ -315,4 +315,24 @@ describe('the export', () => {
     for (let i = 0; i < d.length; i += 4) if (d[i] === 255 && d[i + 1] === 0 && d[i + 2] === 0 && d[i + 3] === 255) red++;
     expect(red).toBeGreaterThan(200);
   });
+});
+
+describe('a box as large as a page', () => {
+  it('still gets its backdrop: the surface is held inside the guard (review F15)', () => {
+    const box = { id: 'big', lineN: null, text: 'W', x: 0, y: 0, w: 2150, h: 2150, style: style({ blendMode: 'multiply', color: '#ff0000', size: 1800 }) };
+    const big = createCanvas(2150, 2150);
+    const x = big.getContext('2d');
+    x.fillStyle = '#808080';
+    x.fillRect(0, 0, 2150, 2150);
+    const p = { id: 1, w: 2150, h: 2150, lines: [], boxes: [box] };
+    const under = { image: big, W: 2150, H: 2150, src: 'big' };
+    renderBox(box, p, null, under);
+    const a = asked.find((e) => e.blend === 'multiply');
+    expect(a.bytes?.length).toBeGreaterThan(0);
+    expect(a.bytes.length / 4).toBeLessThanOrEqual(BACKDROP_MAX_PX);
+    // Red over mid grey, Multiply: about (128, 0, 0) where the letter is whole.
+    let hit = 0;
+    for (let i = 0; i < a.bytes.length; i += 4) if (a.bytes[i] === 128) hit++;
+    expect(hit).toBeGreaterThan(1000);
+  }, 120_000);
 });

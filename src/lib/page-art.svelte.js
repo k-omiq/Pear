@@ -49,11 +49,20 @@ export function artImage(src) {
   entry.img.decoding = 'async';
   entry.img.onload = () => {
     entry.ready = entry.img.naturalWidth > 0;
-    if (held.get(src) === entry) art.version++;
+    // Always moved, even if the entry was evicted meanwhile: a box waiting on
+    // this art asks again and gets it (or loads it afresh).
+    art.version++;
   };
-  entry.img.onerror = () => held.delete(src);
+  entry.img.onerror = () => {
+    if (held.get(src) === entry) held.delete(src);
+  };
   held.set(src, entry);
-  while (held.size > MAX_HELD) held.delete(held.keys().next().value);
+  // Entries still loading are not evicted: a box waiting on one would never
+  // get its page. Oldest ready entry goes first.
+  for (const [k, e] of held) {
+    if (held.size <= MAX_HELD) break;
+    if (e.ready && k !== src) held.delete(k);
+  }
   entry.img.src = src;
   return null;
 }

@@ -1446,9 +1446,12 @@ describe('a box with every effect on at once', () => {
     await renderPageCanvas({ id: 7, w: 800, h: 1200, lines: [], boxes: [box] });
 
     // The footprint: the strokes reach 3px out, the shadow hypot(2,3) + its
-    // size + 1 past that, roughening 4 + 2, and 4 besides - so 19 on every edge.
-    const pad = 19;
-    expect(displaced).toEqual([[(360 + pad * 2) * 2, (200 + pad * 2) * 2]]);
+    // size + 1 past that, roughening 4 + 2, and 4 besides. The shadow is thrown
+    // right and down, so it is padded more there (19 right, 20 below) than on
+    // the left and top (15, 14).
+    const pad = 15;
+    const padTop = 14;
+    expect(displaced).toEqual([[(360 + pad + 19) * 2, (200 + padTop + 20) * 2]]);
 
     // One silhouette pass in the shadow's colour at the outermost band's width,
     // then the real stroke over the text itself.
@@ -1476,7 +1479,7 @@ describe('a box with every effect on at once', () => {
     expect(textInset(box.style)).toBe(BOX_PAD + 3);
     expect(x0).toBeCloseTo(pad + textInset(box.style), 6);
     expect(x1).toBeCloseTo(pad + box.w - textInset(box.style), 6);
-    expect(y0).toBeCloseTo(pad + (box.h - lineH) / 2 + lineH / 2, 6);
+    expect(y0).toBeCloseTo(padTop + (box.h - lineH) / 2 + lineH / 2, 6);
     expect(y1).toBeCloseTo(y0, 6);
 
     // And the glyphs still land where an effect-less box would put them.
