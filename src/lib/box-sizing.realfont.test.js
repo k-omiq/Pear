@@ -3,7 +3,8 @@ import { setTypesetEnabled, clearLayoutMemo, lineWidth, textInset } from './meas
 import { defaultStyle, normalizeStyle, normalizeAuto } from './data.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { resizeBoxMath } from './resize-math.js';
-import { app, loadProjectPages, page, resizeBox, retypesetBox, setBoxText, boxText, edgeDragFloor, edgeDragWidthFloor } from './store.svelte.js';
+import { app, loadProjectPages, page, resizeBox, retypesetBox, setBoxText, boxText, edgeDragFloor, edgeDragWidthFloor, LINE_MIN_CHARS } from './store.svelte.js';
+import { containBox } from './contain.js';
 
 // ===========================================================================
 // A box sized by hand, on real advances
@@ -263,5 +264,44 @@ describe('a size drag keeps the layout', () => {
     expect(b.auto.breaks).toBeUndefined();
     expect(linesOf(b).length).toBeGreaterThan(held.length);
     expect(widest(b)).toBeLessThanOrEqual(room(b) + 0.5);
+  });
+});
+
+// Text never stands outside its box: a width pulled in grows the height, a
+// Fixed box as much as an Auto height one, and the side stops at four
+// characters to a line.
+describe('the text stays in the box', () => {
+  const fits = (b) => containBox(boxCandidate(b, boxText(b, page())), placeBlock(boxCandidate(b, boxText(b, page())))).fits;
+  for (const autoHeight of [true, false]) {
+    it(`${autoHeight ? 'Auto height' : 'Fixed'}: a width pulled in as far as it goes grows the height to hold every line`, () => {
+      const b = load({ fit: null, margin: null });
+      b.style.autoHeight = autoHeight;
+      const h0 = b.h;
+      for (const dx of [-40, -80, -120, -400]) drag(b, 'e', dx, 0);
+      expect(b.h).toBeGreaterThan(h0);
+      expect(fits(b)).toBe(true);
+    });
+  }
+
+  it('the side stops at four characters to a line', () => {
+    const b = load({ fit: null, margin: null });
+    const letters = boxText(b, page()).replace(/\s+/g, '');
+    const four = (lineWidth(letters, b.style, b.style.size) / letters.length) * LINE_MIN_CHARS;
+    drag(b, 'e', -1000, 0);
+    expect(b.w).toBeGreaterThanOrEqual(Math.floor(four + 2 * textInset(b.style)));
+    expect(fits(b)).toBe(true);
+  });
+
+  // The fault the screenshot showed: a Fixed box already too short for its
+  // text, scaled by its bottom edge, stayed too short at the new size.
+  it('a Fixed box too short for its text grows to hold it when it is scaled', () => {
+    const b = load({ fit: null, margin: null });
+    b.style.autoHeight = false;
+    b.h = 40;
+    const o = { x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size };
+    const base = { w: o.w, h: o.h, style: JSON.parse(JSON.stringify(b.style)) };
+    resizeBox(1, b.id, resizeBoxMath(0, 20, 's', o, 0, 30, 40, { scale: true }), base);
+    expect(b.style.size).toBeGreaterThan(o.size);
+    expect(fits(b)).toBe(true);
   });
 });
