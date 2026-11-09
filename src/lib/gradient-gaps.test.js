@@ -53,9 +53,10 @@ describe('an effect gradient\'s stops, apart', () => {
 describe('the gradient on the wire (v14)', () => {
   const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
   const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10, width: 4, height: 4 };
-  // The overlay's gradient record starts after the box header, the blending
-  // options and the effect's kind, opacity, blend and paint kind.
-  const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4;
+  // The overlay's gradient record starts after the box header (with the
+  // grain's corner, v15), the blending options and the effect's kind,
+  // opacity, blend and paint kind.
+  const head = 4 * 4 + 8 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4;
   const send = (gradient) => dv(encodeBox({ ...job, effects: [{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient }] }).slice());
 
   it('sends one midpoint per segment, from the stop that ends it, then Dither, the Method and Smoothness', () => {
