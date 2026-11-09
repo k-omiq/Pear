@@ -143,7 +143,9 @@ pub struct Bevel {
     pub gloss: Option<Table>,
     /// Anti-aliased boxes: carried, not painted (PhotoCraft paints none).
     pub gloss_aa: bool,
-    /// The Contour element on the height; `None` is off or Linear.
+    /// The Contour element on the height; `None` is off. Ticked, a Linear
+    /// contour is a table too ([`Table::charged_on`]): it changes no height
+    /// from 0 to 1 but clamps a chisel's past 1, as PhotoCraft's does.
     pub contour: Option<Table>,
     /// The Contour's Range, 0 to 1: carried, never applied. PhotoCraft
     /// found that Photoshop's bevel does not stretch the contour by it as a
@@ -242,7 +244,18 @@ impl Effect {
     }
 }
 
-fn soft(size: f64, spread: f64, range: f64, noise: f64, contour: Option<Lut>, seed: u32) -> Soft {
+/// What a glow or an inner shadow asks of its map, whose corner is device
+/// pixel `origin` (where its Noise is hashed from).
+#[allow(clippy::too_many_arguments)]
+fn soft(
+    size: f64,
+    spread: f64,
+    range: f64,
+    noise: f64,
+    contour: Option<Lut>,
+    seed: u32,
+    origin: (i32, i32),
+) -> Soft {
     Soft {
         size: size as f32,
         spread: spread as f32,
@@ -250,19 +263,22 @@ fn soft(size: f64, spread: f64, range: f64, noise: f64, contour: Option<Lut>, se
         range: range as f32,
         noise: noise as f32,
         seed,
+        origin,
     }
 }
 
 /// An outer glow's map over the letters' outline `shape` (their whole
-/// silhouette, bands included), `scale` device pixels to a job unit. Where
-/// the fill is see-through the glow is kept from behind it: `fill` is the
-/// fill's own matte, at `fill_opacity`.
+/// silhouette, bands included), whose corner is device pixel `origin`,
+/// `scale` device pixels to a job unit. Where the fill is see-through the
+/// glow is kept from behind it: `fill` is the fill's own matte, at
+/// `fill_opacity`.
 pub(crate) fn outer_glow(
     shape: &Map,
     fill: Option<&Map>,
     fill_opacity: f64,
     g: &Glow,
     scale: f64,
+    origin: (i32, i32),
 ) -> Result<Map, Error> {
     let s = soft(
         g.size * scale,
@@ -271,6 +287,7 @@ pub(crate) fn outer_glow(
         g.noise,
         g.contour,
         g.seed,
+        origin,
     );
     let mut m = map::glow(shape, g.technique, false, false, &s)?;
     if let Some(fill) = fill {
@@ -459,20 +476,20 @@ fn brush_in<'a>(
     }
 }
 
-/// Each pixel's depth in a shape from `dist`, its distance in from the
-/// shape's edge (negative outside), as a share of the deepest one: Shape
-/// Burst's run. The deepest counts as `cap` at most. Worked out in `dist`.
-fn depth_share(mut dist: Buffer<f32>, cap: f32) -> Buffer<f32> {
-    let deepest = dist
-        .iter()
-        .copied()
-        .fold(0.0f32, f32::max)
-        .min(cap)
-        .max(1e-3);
-    for d in dist.iter_mut() {
-        *d = (d.max(0.0) / deepest).min(1.0);
-    }
-    dist
+/// Each pixel's depth in a shape from `dist`, its coverage-seeded distance
+/// in from the shape's edge ([`map::chamfer_inside`], negative outside), as
+/// a share of the deepest one and half a pixel: Shape Burst's run. Seeded by
+/// coverage, a partly covered edge pixel lies its coverage in, so the
+/// letters' anti-aliased edge takes the edge stop; the half pixel keeps a 1
+/// or 2 px stem, all of it deepest, from taking the far stop alone. With the
+/// exact distance every edge pixel read 0.5 whatever its coverage, and a
+/// thin stem painted all in the far stop (review F27).
+fn depth_share(dist: &[f32]) -> Result<Buffer<f32>, Error> {
+    let deepest = dist.iter().copied().fold(0.0f32, f32::max) + 0.5;
+    budget::exact(
+        dist.len(),
+        dist.iter().map(|d| (d.max(0.0) / deepest).min(1.0)),
+    )
 }
 
 /// Lays a paint through map `m`, whose corner is `at` on `dst`, at `opacity`
@@ -529,7 +546,7 @@ fn lay_with(
             p[3] = (a * 255.0 + 0.5) as u8;
         }
     }
-    blend::lay(dst, &src, bx, opacity as f32, mode, page, seed);
+    blend::lay_from(dst, &src, bx, opacity as f32, mode, page, seed, dev);
     Ok(Some(bx))
 }
 
@@ -579,21 +596,28 @@ fn lay_glow(
 ///
 /// Ours, not PhotoCraft's (it carries Jitter and paints none) nor a
 /// measured match: a design from how Photoshop's Jitter behaves, after the
-/// rule Krita's layer styles state (`kis_ls_utils.cpp`, the gradient index
-/// moved by a random share of Jitter and wrapped). Each pixel's sample moves
-/// by `(n - 0.5) * jitter` of the ramp, `n` hashed from the pixel and the
-/// glow's seed as its Noise is (`noise::unit`, salted apart from the grain),
-/// and wraps round the ramp's ends: 0 leaves the gradient smooth, 100 % picks
-/// every pixel's colour from anywhere along it. Centred, so a pixel keeps its
-/// place on the ramp on average where Krita's one-sided step shifts it; the
-/// glow's strength is not touched, only which colour (and stop opacity) it
-/// takes.
+/// rule Krita's layer styles state (`kis_ls_utils.cpp`, behaviour only: the
+/// gradient index moved on by a random share of Jitter, wrapping past the
+/// end). Each pixel's sample moves on towards the clear end by `n * jitter`
+/// of the ramp, `n` from 0 to 1 hashed from the pixel and the glow's seed
+/// as its Noise is (`noise::unit`, salted apart from the grain), and only a
+/// sample carried past 1 wraps round to the strong end: 0 leaves the
+/// gradient smooth, a small Jitter keeps each pixel near its place on the
+/// ramp (a solid band, `t` 0, stays solid), 100 % picks every pixel's colour
+/// from anywhere along it. A centred step wrapped both ways once threw half
+/// of a solid band to the clear end at any Jitter (review F6). The glow's
+/// strength is not touched, only which colour (and stop opacity) it takes.
 pub(crate) fn jittered(t: f32, jitter: f32, x: i32, y: i32, seed: u32) -> f32 {
     if jitter.is_nan() || jitter <= 0.0 {
         return t;
     }
     let n = noise::unit(x, y, seed ^ JITTER_SALT);
-    (t + (n - 0.5) * jitter.min(1.0)).rem_euclid(1.0)
+    let v = t.clamp(0.0, 1.0) + n * jitter.min(1.0);
+    if v > 1.0 {
+        v - 1.0
+    } else {
+        v
+    }
 }
 
 /// Keeps a glow's Jitter apart from its Noise, which hashes the same seed.
@@ -620,7 +644,7 @@ pub(crate) fn lay_outer_glows(
         let Effect::OuterGlow(g) = e else {
             continue;
         };
-        let m = outer_glow(shape, fill, fill_opacity, g, scale)?;
+        let m = outer_glow(shape, fill, fill_opacity, g, scale, (region.x0, region.y0))?;
         if let Some(b) = lay_glow(dst, &m, (region.x0, region.y0), (0, 0), g, page)? {
             laid = Some(laid.map_or(b, |l| l.union(&b)));
         }
@@ -1259,13 +1283,31 @@ fn interior_at(
     )?;
     // Of each kind the first listed is on top, so it is laid last.
     let shown = || effects.iter().rev().filter(|e| e.shows());
-    // A Shape Burst overlay's depth, worked out once for them all.
+    let strokes: Vec<(usize, &Stroke)> = effects
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.shows())
+        .filter_map(|(i, e)| match e {
+            Effect::Stroke(s) => Some((i, s)),
+            _ => None,
+        })
+        .collect();
+    let inside_parts = strokes.iter().any(|(_, s)| s.widths().0 > 0.0);
+    let burst_strokes = strokes.iter().any(|(_, s)| is_burst(&s.paint));
     let burst_overlay =
         shown().any(|e| matches!(e, Effect::GradientOverlay(o) if is_burst(&o.paint)));
-    let overlay_depth = if burst_overlay {
-        Some(depth_share(map::dist_inside(&shape)?, f32::INFINITY))
+    // The depth in from the letters' edge, worked out once: a Shape Burst
+    // overlay's run, the strokes' inside parts' bands, a Stroke Emboss's
+    // band and a Shape Burst stroke's run.
+    let din = if burst_overlay || inside_parts || burst_strokes {
+        Some(map::chamfer_inside(&shape)?)
     } else {
         None
+    };
+    // A Shape Burst overlay's depth, worked out once for them all.
+    let overlay_depth = match &din {
+        Some(d) if burst_overlay => Some(depth_share(d)?),
+        _ => None,
     };
     let overlay = |lay: &mut Surface, o: &PaintOverlay| -> Result<(), Error> {
         let depth = overlay_depth.as_ref().map(|d| d.as_slice());
@@ -1347,6 +1389,7 @@ fn interior_at(
                 g.noise,
                 g.contour,
                 g.seed,
+                dev,
             );
             let m = map::glow(&shape, g.technique, true, g.center, &s)?;
             let m = map::relative_to(&m, &shape)?;
@@ -1370,6 +1413,7 @@ fn interior_at(
                 sh.noise,
                 sh.contour,
                 sh.seed,
+                dev,
             );
             let m = map::inner_shadow(&shape, dx as f32, dy as f32, &s)?;
             let m = map::relative_to(&m, &shape)?;
@@ -1388,24 +1432,6 @@ fn interior_at(
         }
     }
     // The strokes: their inside parts over the letters, the bottom one first.
-    let strokes: Vec<(usize, &Stroke)> = effects
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.shows())
-        .filter_map(|(i, e)| match e {
-            Effect::Stroke(s) => Some((i, s)),
-            _ => None,
-        })
-        .collect();
-    let inside_parts = strokes.iter().any(|(_, s)| s.widths().0 > 0.0);
-    let burst_strokes = strokes.iter().any(|(_, s)| is_burst(&s.paint));
-    // The depth in from the letters' edge, worked out once: the inside
-    // parts' bands, a Stroke Emboss's band and a Shape Burst stroke's run.
-    let din = if inside_parts || burst_strokes {
-        Some(map::chamfer_inside(&shape)?)
-    } else {
-        None
-    };
     let din = din.as_ref().map(|d| d.as_slice());
     let deepest = din.map_or(0.0, |d| d.iter().copied().fold(0.0f32, f32::max));
     // A Shape Burst stroke runs from its outer edge (0) to its inner one
@@ -1851,15 +1877,57 @@ mod tests {
             let edges = [(10, 20), (29, 20), (20, 10), (20, 29)].map(|(x, y)| at(&out, x, y)[0]);
             let middle = at(&out, 19, 19)[0];
             assert!(edges.iter().all(|&e| e == edges[0]), "{edges:?}");
+            // The edge pixel half a pixel in, the middle 9.5, both of 10
+            // (the deepest and half a pixel): 13 and 242.
             if reverse {
-                assert!(edges[0] > 235 && middle < 5, "{edges:?} {middle}");
+                assert!(edges[0] > 235 && middle < 20, "{edges:?} {middle}");
             } else {
-                assert!(edges[0] < 20 && middle > 250, "{edges:?} {middle}");
+                assert!(edges[0] < 20 && middle > 235, "{edges:?} {middle}");
             }
             // Half way in, about half way along.
             let half = at(&out, 15, 19)[0];
             assert!((100..160).contains(&half), "{half}");
         }
+    }
+
+    /// Review F27: a Shape Burst overlay's depth is seeded by coverage and
+    /// shared over the deepest and half a pixel. A 1 px stem once painted
+    /// all in the far stop (255); it takes the middle of the ramp. A 25 %
+    /// edge column read the same as a whole one (85 on a 4 px stem); it
+    /// takes the edge stop.
+    #[test]
+    fn a_shape_burst_overlay_shows_the_edge_stop_on_thin_stems() {
+        let _scope = budget::Scope::new();
+        let o = || {
+            Effect::GradientOverlay(PaintOverlay {
+                opacity: 1.0,
+                blend: Blend::Normal,
+                paint: Paint::Gradient(burst(false)),
+            })
+        };
+        let stem = |alphas: &[u8]| Raster {
+            x: 10,
+            y: 10,
+            width: alphas.len() as u32,
+            height: 20,
+            data: (0..20)
+                .flat_map(|_| alphas.iter().flat_map(|&a| [255, 0, 0, a]))
+                .collect(),
+        };
+        // 1 px: every pixel half a pixel in, of 0.5 + 0.5.
+        let (out, _) = inside(&stem(&[255]), &[o()]);
+        let mid = at(&out, 10, 20);
+        assert!((124..=131).contains(&mid[0]), "{mid:?}");
+        assert_eq!(mid[3], 255);
+        // 25 %, whole, whole, 25 %: the edge column a quarter pixel in, so
+        // nothing past the edge (the edge stop); the whole ones 0.75 in, of
+        // 0.75 + 0.5 (153).
+        let (out, _) = inside(&stem(&[64, 255, 255, 64]), &[o()]);
+        let (edge, next) = (at(&out, 10, 20), at(&out, 11, 20));
+        assert!(edge[0] < 5, "{edge:?}");
+        assert_eq!(edge[3], 64);
+        assert!((148..=158).contains(&next[0]), "{next:?}");
+        assert_eq!(at(&out, 13, 20)[0], edge[0]);
     }
 
     #[test]
@@ -1971,34 +2039,114 @@ mod tests {
         assert!(edge[1] > 200 && edge[2] < 60, "{edge:?}");
     }
 
+    /// Review F6 and F65: each sample moves on by `n * jitter` and only one
+    /// carried past 1 wraps round to the strong end; one that would go below
+    /// 0 cannot (a solid band, `t` 0, keeps its place). Told from a clamp:
+    /// a sample past 1 comes back at exactly `t + n * jitter - 1`, near 0,
+    /// not at 1.
     #[test]
-    fn jitter_moves_a_sample_by_its_share_and_wraps() {
+    fn jitter_moves_a_sample_on_by_its_share_and_wraps_past_the_end() {
         assert_eq!(jittered(0.3, 0.0, 4, 5, 9), 0.3);
         assert_eq!(jittered(0.3, f32::NAN, 4, 5, 9), 0.3);
         let mut moved = 0;
-        let mut low = 0;
+        let mut wrapped = 0;
         for i in 0..2000 {
             let (x, y) = (i % 50, i / 50);
+            let n = noise::unit(x, y, 3 ^ JITTER_SALT);
             let t = jittered(0.5, 0.4, x, y, 3);
-            assert!((0.3..=0.7).contains(&t), "{t}");
-            moved += usize::from((t - 0.5).abs() > 0.05);
-            low += usize::from(t < 0.5);
+            assert!((0.5..0.9).contains(&t), "{t}");
+            assert!((t - (0.5 + n * 0.4)).abs() < 1e-6);
+            moved += usize::from(t - 0.5 > 0.05);
             // The same pixel and seed move the same way every time.
             assert_eq!(t, jittered(0.5, 0.4, x, y, 3));
-            // Past an end it comes back in at the other.
-            let w = jittered(0.95, 1.0, x, y, 3);
-            assert!((0.0..=1.0).contains(&w), "{w}");
+            // Past the end it comes back in at the other: wrapped, not
+            // clamped.
+            let w = jittered(0.95, 0.5, x, y, 3);
+            let past = 0.95 + n * 0.5;
+            if past > 1.0 {
+                assert!((w - (past - 1.0)).abs() < 1e-6, "{w} vs {past}");
+                assert!(w < 0.45, "{w}");
+                wrapped += 1;
+            } else {
+                assert!((w - past).abs() < 1e-6);
+            }
+            // A solid band at Jitter 1 % stays within 1 % of the strong end.
+            let solid = jittered(0.0, 0.01, x, y, 3);
+            assert!((0.0..0.01).contains(&solid), "{solid}");
         }
-        assert!(moved > 1300, "{moved}");
-        assert!((800..1200).contains(&low), "{low}");
+        assert!(moved > 1600, "{moved}");
+        assert!((1700..1900).contains(&wrapped), "{wrapped}");
         // Its own numbers, not the grain's.
         let same = (0..200)
             .filter(|&i| {
                 let n = noise::unit(i, 7, 3);
-                (jittered(0.5, 1.0, i, 7, 3) - n).abs() < 1e-6
+                (jittered(0.0, 1.0, i, 7, 3) - n).abs() < 1e-6
             })
             .count();
         assert!(same < 5, "{same}");
+    }
+
+    /// Review F6: an Outer Glow with a colour-to-clear gradient, Precise,
+    /// Size 8, Spread 50 %, Jitter 1 %. Its solid band (4 px out) read
+    /// alpha [254, 1, 1, 1, 0] along a row with the centred wrap; it stays
+    /// solid, within the 1 % of the ramp Jitter moves it (253 to 255).
+    #[test]
+    fn jitter_keeps_a_solid_glow_band_solid() {
+        let _scope = budget::Scope::new();
+        let fade = Gradient {
+            stops: vec![(0.0, [1.0, 1.0, 0.0]), (1.0, [1.0, 1.0, 0.0])],
+            opacity: vec![(0.0, 1.0), (1.0, 0.0)],
+            style: gradient::Style::Linear,
+            angle: 0.0,
+            scale: 1.0,
+            reverse: false,
+            offset: (0.0, 0.0),
+            noise: None,
+        };
+        let n = 40usize;
+        let mut shape = Map::new(n, n, 0.0);
+        for y in 15..25 {
+            for x in 15..25 {
+                shape.v[y * n + x] = 1.0;
+            }
+        }
+        for jitter in [0.0, 0.01, 0.2] {
+            let g = Effect::OuterGlow(Glow {
+                color: RED,
+                gradient: Some(fade.clone()),
+                opacity: 1.0,
+                blend: Blend::Normal,
+                technique: Technique::Precise,
+                size: 8.0,
+                spread: 0.5,
+                range: 0.5,
+                noise: 0.0,
+                contour: None,
+                center: false,
+                jitter,
+                seed: 11,
+            });
+            let mut dst = Surface::new(n, n).unwrap();
+            let region = IBox {
+                x0: 0,
+                y0: 0,
+                x1: n as i32,
+                y1: n as i32,
+            };
+            lay_outer_glows(&mut dst, &[g], &shape, None, 1.0, region, 1.0, None).unwrap();
+            // Along row 20, the four pixels left of the square, the band.
+            let band: Vec<u8> = (11..15).map(|x| dst.data[(20 * n + x) * 4 + 3]).collect();
+            if jitter == 0.0 {
+                assert_eq!(band, vec![255; 4]);
+            } else if jitter <= 0.01 {
+                // Moved on by under 1 % of the ramp: within 1 % of solid.
+                assert!(band.iter().all(|&a| a >= 252), "jitter {jitter}: {band:?}");
+            } else {
+                // A larger Jitter scatters it, but none of it is thrown to
+                // the clear end.
+                assert!(band.iter().all(|&a| a > 150), "jitter {jitter}: {band:?}");
+            }
+        }
     }
 
     #[test]
@@ -2225,8 +2373,8 @@ mod tests {
         ];
         map::INSIDE_DISTANCES.with(|c| c.set(0));
         let (out, o) = inside(&square(20), &fx);
-        // One chamfer for the strokes, one exact distance for the overlays.
-        assert_eq!(map::INSIDE_DISTANCES.with(|c| c.get()), 2);
+        // One chamfer for the strokes and the overlays.
+        assert_eq!(map::INSIDE_DISTANCES.with(|c| c.get()), 1);
         assert!(out.data.chunks_exact(4).any(|p| p[3] > 0));
         assert!(o.is_some());
     }

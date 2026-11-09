@@ -190,9 +190,13 @@ pub(crate) fn blur(m: &mut Map, w: f32) -> Result<(), Error> {
     Ok(())
 }
 
-/// Photoshop's Noise over a map: each covered pixel keeps `1 + (n - 0.5) * 2
-/// * amount` of itself, so the speckle fades with the effect.
-pub(crate) fn speckle(m: &mut Map, amount: f32, seed: u32) {
+/// Photoshop's Noise over a map whose corner is device pixel `origin`: each
+/// covered pixel keeps `1 + (n - 0.5) * 2 * amount` of itself, so the
+/// speckle fades with the effect. `n` is hashed from the device pixel, as
+/// PhotoCraft's `noise` adds the map's origin: the map's own corner moves
+/// with the room the box's other effects ask for, and an Outside Stroke's
+/// size (or an Inner Shadow's) once re-rolled a glow's grain (review F22).
+pub(crate) fn speckle(m: &mut Map, amount: f32, seed: u32, origin: (i32, i32)) {
     if amount.is_nan() || amount <= 0.0 {
         return;
     }
@@ -203,7 +207,11 @@ pub(crate) fn speckle(m: &mut Map, amount: f32, seed: u32) {
             if *v <= 0.0 {
                 continue;
             }
-            let n = noise::unit(x as i32, y as i32, seed);
+            let n = noise::unit(
+                origin.0.wrapping_add(x as i32),
+                origin.1.wrapping_add(y as i32),
+                seed,
+            );
             *v = (*v * (1.0 + (n - 0.5) * 2.0 * amount)).clamp(0.0, 1.0);
         }
     }
@@ -211,8 +219,12 @@ pub(crate) fn speckle(m: &mut Map, amount: f32, seed: u32) {
 
 /// A contour read over a Range: `contour(min(v / range, 1))`. Photoshop's
 /// default Range of 50 % doubles a blurred edge's 0.5 to full strength.
-/// `contour` `None` is Linear.
-pub(crate) fn ranged(m: Map, contour: Option<&Lut>, range: f32) -> Map {
+/// `contour` `None` is Linear. `hide_edge`: an effect that spreads out past
+/// the letters (an Outer Glow) reads its contour with the edge hidden
+/// ([`Lut::at_hidden`]), so where the matte is 0 it is too: a contour that
+/// does not start at 0 once filled the whole region the glow is worked out
+/// over, whose edge moves with the zoom (review F7).
+pub(crate) fn ranged(m: Map, contour: Option<&Lut>, range: f32, hide_edge: bool) -> Map {
     let range = if range.is_finite() {
         range.clamp(0.01, 1.0)
     } else {
@@ -227,7 +239,11 @@ pub(crate) fn ranged(m: Map, contour: Option<&Lut>, range: f32) -> Map {
         } else {
             (v / range).min(1.0)
         };
-        contour.map_or(v, |l| l.at(v))
+        match contour {
+            Some(l) if hide_edge => l.at_hidden(v),
+            Some(l) => l.at(v),
+            None => v,
+        }
     })
 }
 
@@ -462,6 +478,8 @@ pub(crate) struct Soft {
     /// Noise, 0 to 1.
     pub noise: f32,
     pub seed: u32,
+    /// The map's corner in device pixels: where the Noise is hashed from.
+    pub origin: (i32, i32),
 }
 
 /// The inverse of `shape`'s coverage: what lies outside it.
@@ -488,7 +506,7 @@ pub(crate) fn inner_shadow(shape: &Map, dx: f32, dy: f32, s: &Soft) -> Result<Ma
         Some(l) => m.map(|v| l.at(v)),
         None => m,
     };
-    speckle(&mut m, s.noise, s.seed);
+    speckle(&mut m, s.noise, s.seed, s.origin);
     keep_to(&mut m, shape);
     Ok(m)
 }
@@ -587,11 +605,11 @@ pub(crate) fn glow(
             m
         }
     };
-    m = ranged(m, s.contour.as_ref(), s.range);
+    m = ranged(m, s.contour.as_ref(), s.range, !inner);
     if inner && center {
         m = m.map(|v| 1.0 - v);
     }
-    speckle(&mut m, s.noise, s.seed);
+    speckle(&mut m, s.noise, s.seed, s.origin);
     if inner {
         keep_to(&mut m, shape);
     }
@@ -637,6 +655,7 @@ mod tests {
             range: 0.5,
             noise: 0.0,
             seed: 1,
+            origin: (0, 0),
         }
     }
 
@@ -659,6 +678,117 @@ mod tests {
         // Nothing past the size and the edge.
         assert_eq!(g.v[30 * 60 + 30 + 10 + 10], 0.0);
         assert!(g.v[30 * 60 + 30 + 10 + 3] > 0.0);
+    }
+
+    /// Review F7: an Outer Glow through Cone - Inverted (contour(0) = 1) or
+    /// Cove - Deep (66) once filled every pixel of its map. With the edge
+    /// hidden, nothing lies past its Size; the band against the letters
+    /// still takes the curve.
+    #[test]
+    fn an_outer_glow_through_a_lifted_contour_stops_at_its_size() {
+        use super::super::contour::{Curve, Lut};
+        let shape = disc(60, 60, 30.0, 30.0, 10.0);
+        for (preset, ground) in [(2, 255), (3, 66)] {
+            let lut = Lut::new(&Curve::Preset(preset));
+            assert_eq!(lut.apply(0), ground);
+            for technique in [Technique::Softer, Technique::Precise] {
+                let mut s = soft(8.0);
+                s.contour = Some(lut);
+                let g = glow(&shape, technique, false, false, &s).unwrap();
+                // The map's corners and far edge: nothing.
+                for i in [0, 59, 60 * 59, 60 * 60 - 1, 30 * 60 + 1, 30 * 60 + 58] {
+                    assert_eq!(g.v[i], 0.0, "preset {preset} {technique:?} at {i}");
+                }
+                // Past Size + 1 from the edge, nothing anywhere (bar the
+                // blur's float residue on a Softer glow's square reach).
+                for y in 0..60 {
+                    for x in 0..60 {
+                        let d = ((x as f32 - 30.0).powi(2) + (y as f32 - 30.0).powi(2)).sqrt();
+                        let v = g.v[y * 60 + x];
+                        if d > 10.0 + 8.0 + 3.0 {
+                            assert!(v < 1e-3, "{preset} {technique:?} ({x}, {y}): {v}");
+                        }
+                    }
+                }
+                // Against the letters the glow is full (the curve's 1 there).
+                assert!(g.v[30 * 60 + 30] > 0.99);
+            }
+        }
+        // An inner glow keeps its curve's ground: it is kept to the shape.
+        let mut s = soft(4.0);
+        s.contour = Some(Lut::new(&Curve::Preset(3)));
+        let g = glow(&shape, Technique::Softer, true, false, &s).unwrap();
+        assert!(
+            (g.v[30 * 60 + 30] - 66.0 / 255.0).abs() < 0.01,
+            "{}",
+            g.v[30 * 60 + 30]
+        );
+    }
+
+    /// Review F22: the grain is hashed from device pixels, so the same
+    /// glow over maps with different corners has the same grain where they
+    /// meet.
+    #[test]
+    fn noise_grain_stays_with_the_device_pixel() {
+        let mut s = soft(6.0);
+        s.noise = 0.8;
+        s.seed = 9;
+        // The disc at device (40, 40): one map from device (10, 10), one
+        // from (0, 0) and wider.
+        let small = disc(60, 60, 30.0, 30.0, 8.0);
+        let big = disc(80, 80, 40.0, 40.0, 8.0);
+        s.origin = (10, 10);
+        let a = glow(&small, Technique::Softer, false, false, &s).unwrap();
+        s.origin = (0, 0);
+        let b = glow(&big, Technique::Softer, false, false, &s).unwrap();
+        let mut grained = 0;
+        for y in 0..60 {
+            for x in 0..60 {
+                let (va, vb) = (a.v[y * 60 + x], b.v[(y + 10) * 80 + x + 10]);
+                assert!((va - vb).abs() < 1e-5, "({x}, {y}): {va} vs {vb}");
+                grained += usize::from(va > 0.0 && va < 0.99);
+            }
+        }
+        assert!(grained > 100, "{grained}");
+        // And the inner shadow's.
+        let (sa, sb) = (
+            inner_shadow(
+                &small,
+                2.0,
+                2.0,
+                &Soft {
+                    origin: (10, 10),
+                    ..soft_noise()
+                },
+            )
+            .unwrap(),
+            inner_shadow(
+                &big,
+                2.0,
+                2.0,
+                &Soft {
+                    origin: (0, 0),
+                    ..soft_noise()
+                },
+            )
+            .unwrap(),
+        );
+        for y in 0..60 {
+            for x in 0..60 {
+                let (va, vb) = (sa.v[y * 60 + x], sb.v[(y + 10) * 80 + x + 10]);
+                assert!(
+                    (va - vb).abs() < 1e-5,
+                    "inner shadow ({x}, {y}): {va} vs {vb}"
+                );
+            }
+        }
+    }
+
+    fn soft_noise() -> Soft {
+        let mut s = soft(3.0);
+        s.noise = 0.8;
+        s.seed = 4;
+        s
     }
 
     #[test]

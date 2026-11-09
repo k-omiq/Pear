@@ -347,6 +347,36 @@ impl Lut {
         let (a, b) = (f32::from(self.0[i]), f32::from(self.0[j]));
         (a + (b - a) * (x - i as f32)) / 255.0
     }
+
+    /// [`Lut::at`] with the edge hidden, for the effects that spread out
+    /// past the letters (an Outer Glow, a Drop Shadow): the output times a
+    /// ramp on the input ([`edge_hide`]), so where the matte is 0 the effect
+    /// is too. A contour that does not start at 0 (Cone - Inverted, Cove -
+    /// Deep) would otherwise fill the whole rectangle the effect is worked
+    /// out over. The plan's B4 rule, after the behaviour Krita's layer
+    /// styles have with `edgeHidden` on for these two effects.
+    pub fn at_hidden(&self, v: f32) -> f32 {
+        self.at(v) * edge_hide(v)
+    }
+
+    /// [`Lut::apply`] with the edge hidden, as [`Lut::at_hidden`].
+    pub fn apply_hidden(&self, v: u8) -> u8 {
+        let out = f32::from(self.apply(v)) * edge_hide(f32::from(v) / 255.0);
+        (out + 0.5) as u8
+    }
+}
+
+/// How far up a matte, 0 to 1, the edge-hide ramp runs: 8 levels.
+pub const EDGE_HIDE: f32 = 8.0 / 255.0;
+
+/// The edge-hide ramp at matte `v`: 0 at 0, rising straight to 1 at
+/// [`EDGE_HIDE`]. Ours: a fixed ramp near 0, as the plan's B4 asks; its
+/// length is not measured against Photoshop.
+pub fn edge_hide(v: f32) -> f32 {
+    if v.is_nan() {
+        return 0.0;
+    }
+    (v / EDGE_HIDE).clamp(0.0, 1.0)
 }
 
 /// A curve's points from 0 to 255, a preset's read from its table.
@@ -363,7 +393,23 @@ fn points(curve: &Curve) -> std::borrow::Cow<'_, [Point]> {
                 .collect::<Vec<_>>()
                 .into()
         }
-        Curve::Points(pts) => pts.as_slice().into(),
+        Curve::Points(pts) => {
+            // A smooth point at the x of the one before it has no curve
+            // through it: the spline would floor the gap and run to 0 or 255.
+            // It is dropped, as PhotoCraft's `contour_curve_lut` dedups before
+            // its fit and the app's `normalizeContour` does; a corner may
+            // stay, as a vertical step.
+            let keep = |i: usize| i == 0 || pts[i].corner || pts[i].x != pts[i - 1].x;
+            if (0..pts.len()).all(keep) {
+                pts.as_slice().into()
+            } else {
+                (0..pts.len())
+                    .filter(|&i| keep(i))
+                    .map(|i| pts[i])
+                    .collect::<Vec<_>>()
+                    .into()
+            }
+        }
     }
 }
 
@@ -395,6 +441,18 @@ impl Table {
         budget::reserve_raw(&mut v, Self::LEN)?;
         Self::bake(curve, &mut v);
         Ok(Self::unless_linear(v))
+    }
+
+    /// [`Table::charged`] for a ticked bevel Contour: Linear too is a
+    /// table, so the height still goes through it and is clamped to 0 to 1
+    /// (a chisel's outer ramp tops out past 1). PhotoCraft's
+    /// `bevel_contour_lut` bakes the identity for Linear and reads every
+    /// height through it (`lut_at` clamps).
+    pub fn charged_on(curve: &Curve) -> Result<Self, Error> {
+        let mut v = Vec::new();
+        budget::reserve_raw(&mut v, Self::LEN)?;
+        Self::bake(curve, &mut v);
+        Ok(Table(v))
     }
 
     fn bake(curve: &Curve, out: &mut Vec<f32>) {
@@ -564,6 +622,87 @@ mod tests {
         ];
         let l = Lut::new(&Curve::Points(cone));
         assert!((i32::from(l.apply(64)) - 128).abs() <= 1);
+    }
+
+    /// Review F13: two smooth points at x 128 (the report's curve) once ran
+    /// the spline to 0 and 255 ([0, 255, 255, ..., 0, 0, 0, 60, 255]). The
+    /// second is dropped; the curve runs through the rest.
+    #[test]
+    fn a_smooth_point_at_a_repeated_x_is_dropped() {
+        let p = |x: f64, y: f64, corner: bool| Point { x, y, corner };
+        let pts = vec![
+            p(0.0, 0.0, false),
+            p(100.0, 50.0, false),
+            p(128.0, 60.0, false),
+            p(128.0, 200.0, false),
+            p(255.0, 255.0, false),
+        ];
+        let l = Lut::new(&Curve::Points(pts.clone()));
+        let want = Lut::new(&Curve::Points(vec![
+            p(0.0, 0.0, false),
+            p(100.0, 50.0, false),
+            p(128.0, 60.0, false),
+            p(255.0, 255.0, false),
+        ]));
+        assert_eq!(l, want);
+        assert_eq!(l.apply(0), 0);
+        assert!(
+            (i32::from(l.apply(100)) - 50).abs() <= 1,
+            "{}",
+            l.apply(100)
+        );
+        assert!(
+            (i32::from(l.apply(128)) - 60).abs() <= 1,
+            "{}",
+            l.apply(128)
+        );
+        assert_eq!(l.apply(255), 255);
+        // No run to the ends anywhere along it.
+        assert!(l.0[1..250].iter().all(|&v| v > 0 && v < 255), "{:?}", l.0);
+        // The float table alike.
+        let t = Table::new(&Curve::Points(pts)).unwrap();
+        assert!((t.at(128.0 / 255.0) - 60.0 / 255.0).abs() < 1e-3);
+        assert!((0..=64).all(|k| {
+            let v = t.at(k as f32 / 64.0);
+            k == 0 || k == 64 || (v > 0.0 && v < 1.0)
+        }));
+        // A corner pair at one x stays: a vertical step from 60 to 200.
+        let step = Lut::new(&Curve::Points(vec![
+            p(0.0, 0.0, false),
+            p(128.0, 60.0, true),
+            p(128.0, 200.0, true),
+            p(255.0, 255.0, false),
+        ]));
+        assert!(
+            (i32::from(step.apply(127)) - 60).abs() <= 1,
+            "{}",
+            step.apply(127)
+        );
+        assert!(
+            (i32::from(step.apply(129)) - 200).abs() <= 1,
+            "{}",
+            step.apply(129)
+        );
+    }
+
+    /// Review F7: the edge-hide ramp keeps 0 at 0 whatever the curve.
+    #[test]
+    fn the_hidden_edge_is_nothing_at_nothing() {
+        let inverted = Lut::new(&Curve::Preset(2));
+        let deep = Lut::new(&Curve::Preset(3));
+        assert_eq!((inverted.apply(0), deep.apply(0)), (255, 66));
+        assert_eq!((inverted.apply_hidden(0), deep.apply_hidden(0)), (0, 0));
+        assert_eq!((inverted.at_hidden(0.0), deep.at_hidden(0.0)), (0.0, 0.0));
+        // Past the ramp, the curve as it is.
+        for v in [8u8, 64, 200, 255] {
+            assert_eq!(inverted.apply_hidden(v), inverted.apply(v));
+            assert_eq!(deep.apply_hidden(v), deep.apply(v));
+        }
+        // Half way up it, half.
+        assert_eq!(
+            inverted.apply_hidden(4),
+            (f32::from(inverted.apply(4)) * 0.5 + 0.5) as u8
+        );
     }
 
     #[test]
