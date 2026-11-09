@@ -113,6 +113,14 @@ Outside the engine, for the PSD writer (`src/lib/`):
   `crates/ui-egui/src/dialogs/layer_style.rs` the Overprint row; tests
   `stroke_overprint_is_read_and_written`, `stroke_overprint_is_a_param`,
   `stroke_overprint_survives_the_dialog`).
+- `psd-knockout.js`: the walk over a written or read PSD's layer records
+  that sets and reads Knockout Deep (`knko` 2): the record layout
+  (`crates/psd/src/layer.rs` `LayerRecord::read`, `MAX_LAYER_CHANNELS`), the
+  Pascal name's padding (`crates/psd/src/io.rs` `read_pascal`), and the
+  block list with its padding found by where the next signature starts
+  (`crates/psd/src/tagged.rs` `read_blocks_with`, `is_sig`); the `knko`
+  values 0 / 1 / 2 (`tagged.rs` `BlockData::Knockout`). The PSB long-length
+  rule there is ag-psd's, not PhotoCraft's.
 
 MIT License
 

@@ -9,6 +9,7 @@
 // ag-psd auto-initializes its canvas backend when `document` is present (the
 // Tauri webview / vite browser), so no explicit initializeCanvas call is needed.
 import { writePsd, readPsd } from 'ag-psd';
+import { markDeepKnockout, readDeepKnockout } from './psd-knockout.js';
 import { app, PAGE_W, PAGE_H, isLongstrip } from './store.svelte.js';
 import { isTauri, pickFilesTauri } from './importer.js';
 import { renderBoxLayer, pageSpace, settleNoise, enginesSettled, enginesHeld, measureStrip, chapterNow, chapterHeld } from './exporter.js';
@@ -127,14 +128,16 @@ function psdBlendIf(b) {
 }
 
 // Advanced Blending as a layer record states it (ag-psd `infx`, `knko`), with
-// Channels and Blend If (`psdBlendIf`). ag-psd writes Knockout as on or off,
-// so Shallow and Deep both arrive as on (Photoshop's Shallow); Deep needs a
-// patch (PORT_NOTES_BACKDROP_PSD.md G10). The same on a live type layer and
-// on a raster-only one.
+// Channels and Blend If (`psdBlendIf`). ag-psd writes Knockout as on or off
+// (byte 1, Photoshop's Shallow); a Deep layer also carries our own
+// `knockoutDeep`, which ag-psd ignores and `writePagePsd` turns into byte 2
+// after ag-psd has written the file (psd-knockout.js). The same on a live
+// type layer and on a raster-only one.
 function advancedBlending(s) {
   return {
     ...(s.blending?.interior ? { blendInteriorElements: true } : null),
     ...(s.blending?.knockout && s.blending.knockout !== 'none' ? { knockout: true } : null),
+    ...(s.blending?.knockout === 'deep' ? { knockoutDeep: true } : null),
     // Blend Clipped Layers as Group (clbl; ag-psd spells it
     // `blendClippendElements`) and Transparency Shapes Layer (tsly), written
     // only off their default (on), as PhotoCraft writes a layer's
@@ -1542,9 +1545,15 @@ export function pagePsdDocument({ w, h, textLayers = [], baseLayers = [], projec
 // was against a 39.94 MB per-page baseline, and dropping the supersampled
 // document and the duplicated full-page rasters is what won it. Do not turn ZIP
 // back on without moving the export loop off the main thread first.
+//
+// Knockout Deep: ag-psd can only write Shallow, so the Deep layers' `knko`
+// bytes are set to 2 in the bytes it returned (`markDeepKnockout`; nothing
+// else in the file changes, and a file without a Deep layer is not touched).
 export function writePagePsd(doc) {
   const psb = doc.width > PSD_MAX || doc.height > PSD_MAX;
-  return writePsd(doc, { noBackground: true, psb });
+  const buf = writePsd(doc, { noBackground: true, psb });
+  markDeepKnockout(buf, doc.children);
+  return buf;
 }
 
 // Build a layered, editable PSD (ArrayBuffer) for one page, with the complete
@@ -2049,7 +2058,8 @@ function splitStrokes(list) {
 function blendingFromPsd(n) {
   const out = {};
   if (n.blendInteriorElements) out.interior = true;
-  if (n.knockout) out.knockout = 'shallow';
+  // `knockoutDeep`: the file's byte was 2 (`readDeepKnockout`, parsePagePsd).
+  if (n.knockout) out.knockout = n.knockoutDeep ? 'deep' : 'shallow';
   const off = Array.isArray(n.channelBlendingRestrictions) ? n.channelBlendingRestrictions : [];
   if (off.length) out.channels = { r: !off.includes(0), g: !off.includes(1), b: !off.includes(2) };
   const r = n.blendingRanges;
@@ -2314,9 +2324,13 @@ export async function reconstructForeign(psd) {
 }
 
 // Parse PSD bytes → { project, psd, foreign }. Exposed for verification.
-export function parsePagePsd(bytes) {
+// `readOptions` go to ag-psd's reader (a test skips the pixels with them).
+// A layer whose `knko` byte is 2 gets `knockoutDeep` (`readDeepKnockout`):
+// ag-psd reads the byte as on or off.
+export function parsePagePsd(bytes, readOptions = {}) {
   const buf = bytes instanceof Uint8Array ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) : bytes;
-  const psd = readPsd(buf, { skipThumbnail: false });
+  const psd = readPsd(buf, { skipThumbnail: false, ...readOptions });
+  readDeepKnockout(buf, psd);
   const project = extractProject(psd.imageResources?.xmpMetadata);
   const supported = project && project.key === PROJECT_KEY && Math.floor(project.schema) <= SCHEMA;
   return { project: supported ? project : null, psd };
