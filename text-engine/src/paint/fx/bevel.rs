@@ -37,8 +37,9 @@ pub enum BevelStyle {
     Outer,
     Emboss,
     Pillow,
-    /// Embosses the Photoshop Stroke effect's band (ours; PhotoCraft has
-    /// none, see `effects.rs`).
+    /// Embosses the Photoshop Stroke effect's band (ours, unmeasured, see
+    /// `effects.rs` `stroke_band`). PhotoCraft dada110 maps it to its Inner
+    /// Bevel of the letters (`bevel.rs:40`) with no comment or measurement.
     StrokeEmboss,
 }
 
@@ -263,8 +264,16 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), 
             .map(|(&i, &o)| chisel_h(g.paint, size, i, o, soft));
         let mut h = Map::collect(shape.w, shape.h, v)?;
         // Inner and outer Chisel Soft are not blurred in Photoshop (their
-        // facets equal Chisel Hard's across a straight edge); emboss styles
-        // keep the blur until measured.
+        // facets equal Chisel Hard's across a straight edge: measured by
+        // PhotoCraft). Emboss styles keep PhotoCraft's `max(1, size / 4)`
+        // tent, which is a limit, not a measurement: PhotoCraft dada110 says
+        // "keep the blur until measured" (`bevel.rs:81-85`, GPU
+        // `builders.rs:114`) and has no test, comment or result for it. Its
+        // pinned Photoshop oracles `effects/bevel-emboss-chisel-soft.psd` and
+        // `bevel-pillow-chisel-soft.psd` (`xtask/photoshop-corpus.sha256`:137,
+        // 155, in storytold/photocraft-corpus at f5b1178) are not fetched
+        // here; they are how to measure it. We equal PhotoCraft on it
+        // (`effects.rs` `bevel_photocraft::chisel_soft_matches_photocraft`).
         if soft && g.paint == Reach::Both {
             blur(&mut h, g.chisel_soft)?;
         }
@@ -281,10 +290,15 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), 
         h = h.map(|v| t.at(v));
     }
     // Texture element: the pattern's luminance as extra height, scaled so a
-    // full-contrast step at 100 % depth slopes like the bevel at its depth
-    // (unmeasured by PhotoCraft). The pattern is laid in job units, so a
-    // step of it spans `scale` device pixels: its slope is taken per job
-    // unit, or a zoom of 2 would halve the relief (review F23).
+    // full-contrast step at 100 % depth slopes like the bevel at its depth.
+    // A limit, not a measurement: it is PhotoCraft dada110's `depth / unit`
+    // (`bevel.rs:93-99`), which gives the intent only, with no test, comment
+    // or result against Photoshop, and no texture file among its pinned
+    // Photoshop oracles (`xtask/photoshop-corpus.sha256`). We equal it at one
+    // device pixel a job unit (`bevel_photocraft::texture_matches_photocraft`).
+    // Ours past it: the pattern is laid in job units, so a step of it spans
+    // `scale` device pixels: its slope is taken per job unit, or a zoom of 2
+    // would halve the relief (review F23).
     if let Some(t) = &s.texture {
         let unit = if s.depth.abs() > 1e-6 {
             (g.depth / s.depth).abs().max(1e-3)
