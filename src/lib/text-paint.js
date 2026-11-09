@@ -1667,6 +1667,31 @@ const DENSITY = 'density';
 // read - no decoded image, or a canvas that will not give its pixels back
 // (a tainted one), both of which fall the stroke back to the round dab.
 function buildTinted(tip, color, alloc) {
+  const top = tintedBase(tip, color, alloc);
+  if (!top) return null;
+  const levels = [top];
+  let cur = levels[0];
+  // Halve while the halved level still has a usable short side. Halving rather
+  // than jumping straight to the size a stamp wants is what keeps the average
+  // right: each level is the box filter of the one above it.
+  while (Math.min(cur.width, cur.height) >= MIP_MIN * 2) {
+    const nw = Math.max(1, Math.round(cur.width / 2));
+    const nh = Math.max(1, Math.round(cur.height / 2));
+    if (nw === cur.width && nh === cur.height) break;
+    const next = alloc(nw, nh);
+    const nctx = next?.getContext?.('2d');
+    if (!nctx) break;
+    nctx.imageSmoothingEnabled = true;
+    nctx.imageSmoothingQuality = 'high';
+    nctx.drawImage(cur, 0, 0, nw, nh);
+    levels.push(next);
+    cur = next;
+  }
+  return levels;
+}
+
+// The tip tinted, at no more than `TINT_MAX` a side: the top of its chain.
+function tintedBase(tip, color, alloc) {
   const size = tipSize(tip);
   if (!size || !tip.image) return null;
   const [w, h] = size;
@@ -1707,25 +1732,77 @@ function buildTinted(tip, color, alloc) {
     }
   }
   bctx.putImageData(px, 0, 0);
-  const levels = [capTint(base, alloc)];
-  let cur = levels[0];
-  // Halve while the halved level still has a usable short side. Halving rather
-  // than jumping straight to the size a stamp wants is what keeps the average
-  // right: each level is the box filter of the one above it.
-  while (Math.min(cur.width, cur.height) >= MIP_MIN * 2) {
-    const nw = Math.max(1, Math.round(cur.width / 2));
-    const nh = Math.max(1, Math.round(cur.height / 2));
-    if (nw === cur.width && nh === cur.height) break;
-    const next = alloc(nw, nh);
-    const nctx = next?.getContext?.('2d');
-    if (!nctx) break;
-    nctx.imageSmoothingEnabled = true;
-    nctx.imageSmoothingQuality = 'high';
-    nctx.drawImage(cur, 0, 0, nw, nh);
-    levels.push(next);
-    cur = next;
+  return capTint(base, alloc);
+}
+
+// A tip as the Rust engine takes it (`mt_ink_tip_put`, paint.mjs): its
+// coverage, the grey times the alpha, eight bits a pixel, after the same cap
+// to `TINT_MAX` a tint is made at, so the engine's base is the canvas's.
+// Read from the tip tinted black, whose alpha is that coverage: the cap
+// resamples a tint's alpha the same whatever its colour. `natural` is the
+// tip's own size, which a stamp's shape is made from. Null where the tip
+// cannot be read (`buildTinted`).
+export function tipCoverage(tip, alloc = canvasOf) {
+  const natural = tipSize(tip);
+  const base = natural ? tintedBase(tip, '#000000', alloc) : null;
+  if (!base) return null;
+  const { width, height } = base;
+  let px;
+  try {
+    px = base.getContext('2d').getImageData(0, 0, width, height).data;
+  } catch {
+    releaseCanvas(base);
+    return null;
   }
-  return levels;
+  releaseCanvas(base);
+  const data = new Uint8Array(width * height);
+  for (let i = 0; i < data.length; i++) data[i] = px[i * 4 + 3];
+  return { width, height, natural, data };
+}
+
+function canvasOf(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  return c;
+}
+
+// The key a tip goes by in the Rust engine: the brush and the size of its
+// pixels, so a tip decoded again at another size is another tip.
+export function tipKey(tip) {
+  const size = tipSize(tip);
+  return size ? `${tip.id}|${size[0]}x${size[1]}` : null;
+}
+
+// The tips an ink block stamps with, as the Rust engine's box job names them
+// (`encodeBox`'s `ink`): `keys`, one per tip, with `tips` the wrapper of each
+// (null for a brush not in hand, whose key the engine will not hold, so its
+// stroke paints round, as `tipFor` has it); and `refs`, per stroke, the
+// index of its own tip (-1 round) and of each tip of its cycle (-1 not in
+// hand: the stroke's own is stamped, as `drawInk` does).
+export function inkTipTable(ink, tips) {
+  const keys = [];
+  const wrappers = [];
+  const at = new Map();
+  const index = (id) => {
+    if (!id || id === 'round') return -1;
+    const tip = tipFor({ brush: id }, tips);
+    const key = tip ? tipKey(tip) : `${id}|`;
+    if (!at.has(key)) {
+      at.set(key, keys.length);
+      keys.push(key);
+      wrappers.push(tip);
+    }
+    return at.get(key);
+  };
+  const refs = (ink?.strokes ?? []).map((k) => {
+    const tip = index(k?.brush);
+    const cycle = Array.isArray(k?.tips) && k.tips.length > 1
+      ? k.tips.map((id) => (tipFor({ brush: id }, tips) ? index(id) : -1))
+      : [];
+    return { tip, cycle };
+  });
+  return { keys, tips: wrappers, refs };
 }
 
 // The tinted tip at no more than `TINT_MAX` on its longest side, handing the

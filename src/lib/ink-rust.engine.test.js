@@ -4,7 +4,8 @@ import { resolve } from 'node:path';
 import { createCanvas } from '@napi-rs/canvas';
 import { rustEngine } from '../test/rust-engine.js';
 import { renderBoxTexture, renderBoxLayer, boxInJob } from './exporter.js';
-import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
+import { textEngine, setTextEngine, glyphPainter, setGlyphPainter, forgetPainterTips } from './text-engine/index.js';
+import { inkTipBytes, putInkTip, hasInkTip } from '../../text-engine/js/paint.mjs';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
@@ -33,10 +34,11 @@ const oldDocument = globalThis.document;
 const before = { engine: textEngine(), painter: glyphPainter(), typeset: typesetEnabled() };
 let whole;
 let canvasInk;
+let rust;
 
 beforeAll(async () => {
   globalThis.document = { createElement: () => createCanvas(300, 150) };
-  const rust = await rustEngine();
+  rust = await rustEngine();
   setTextEngine(rust);
   whole = createRustGlyphPainter(rust);
   canvasInk = { ...whole, ink: false };
@@ -69,9 +71,9 @@ function wave(n = 24, extra = () => []) {
 const zigzag = [[30, 30, 1], [90, 100, 1], [150, 30, 1], [210, 100, 1]];
 const ink = (...strokes) => ({ on: true, strokes: strokes.map((k, i) => ({ id: `s${i}`, size: 14, color: '#111111', pts: wave(), ...k })) });
 
-function texture(box, painter, scale) {
+function texture(box, painter, scale, tips = null) {
   setGlyphPainter(painter);
-  const r = renderBoxTexture(box, pageOf(box), null, scale);
+  const r = renderBoxTexture(box, pageOf(box), tips, scale);
   setGlyphPainter(whole);
   return { ...r, img: r.canvas.getContext('2d').getImageData(0, 0, r.canvas.width, r.canvas.height) };
 }
@@ -126,14 +128,15 @@ const inkOf = (img) => {
 };
 
 describe('the gate', () => {
-  it('lets a box of round ink into the job where the painter paints ink, and nothing else', () => {
+  it('lets a box of ink into the job where the painter paints ink, and nothing else', () => {
     const round = ink({});
     expect(whole.ink).toBe(true);
     expect(boxInJob(boxOf({ ink: round }))).toBe(true);
     expect(boxInJob(boxOf({ ink: round }, ''))).toBe(true);
-    // An imported tip, a tip cycle, a mesh and a roughening are the canvas's.
-    expect(boxInJob(boxOf({ ink: ink({ brush: 'tip-1' }) }))).toBe(false);
-    expect(boxInJob(boxOf({ ink: ink({ tips: ['a', 'b'] }) }))).toBe(false);
+    // An imported tip and a tip cycle are the engine's (phase 8b); a mesh
+    // and a roughening are the canvas's (8c).
+    expect(boxInJob(boxOf({ ink: ink({ brush: 'tip-1' }) }))).toBe(true);
+    expect(boxInJob(boxOf({ ink: ink({ tips: ['a', 'b'] }) }))).toBe(true);
     expect(boxInJob(boxOf({ ink: round, roughen: { on: true, amount: 4, detail: 0.1, seed: 2 } }))).toBe(false);
     const box = boxOf({ ink: round });
     box.style.warp = { on: true, cols: 1, rows: 1, pts: [[0, 0], [260, 10], [0, 130], [260, 130]] };

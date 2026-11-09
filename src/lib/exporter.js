@@ -18,6 +18,7 @@ import {
   drawClipShapes,
   clipActive,
   inkActive,
+  inkTipTable,
   inkBounds,
   inkReach,
   shadowExtent,
@@ -947,29 +948,27 @@ function boxPlan(box, p, flat = false) {
 // `applyTextFilters`, `drawClipShapes`). One engine has to measure and paint
 // and its painter has to say it does this (`box`, the Rust painter's), and
 // nothing of the box may be drawn by the canvas. Hand-drawn ink goes into
-// the job too where the painter paints it (`ink`, a wasm of box wire v12):
-// every stroke round (an imported tip, or a cycle of them, is the canvas's
-// for now) and the box neither meshed nor roughened (both still bend the
-// canvas's ink with its letters). Any other inked box keeps the canvas
-// passes whole. Never true under the browser engine.
+// the job too where the painter paints it (`ink`: a wasm of box wire v12 with
+// the tip cache), round dabs and imported tips alike, where the box is
+// neither meshed nor roughened (both still bend the canvas's ink with its
+// letters). Any other inked box keeps the canvas passes whole. Never true
+// under the browser engine.
 export function boxInJob(box) {
   if (!engineDraws() || glyphPainter().box !== true) return false;
   const s = box.style;
   if (!inkActive(s.ink)) return true;
-  return glyphPainter().ink === true && inkIsRound(s.ink) && !warpActive(s, box.w, box.h) && s.roughen?.on !== true;
-}
-
-// Every stroke of the ink stamped with the round dab: no imported tip, no
-// tip cycle.
-function inkIsRound(ink) {
-  return ink.strokes.every((k) => (!k?.brush || k.brush === 'round') && !(Array.isArray(k?.tips) && k.tips.length > 1));
+  return glyphPainter().ink === true && !warpActive(s, box.w, box.h) && s.roughen?.on !== true;
 }
 
 // The box's brush ink as the painter takes it (`encodeBox`'s `ink`): the
 // strokes, stated from the box's top-left, which is at (L.ox, L.oy) in the
-// job. Null for a box with none.
-export function inkSpec(s, L) {
-  return inkActive(s.ink) ? { ox: L.ox, oy: L.oy, strokes: s.ink.strokes } : null;
+// job, and the tips they stamp with (`inkTipTable`): `tips` is the map the
+// caller settled for this frame (`settleBoxTips`), and a brush not in it
+// paints round. Null for a box with none.
+export function inkSpec(s, L, tips = null) {
+  if (!inkActive(s.ink)) return null;
+  const { keys, tips: wrappers, refs } = inkTipTable(s.ink, tips);
+  return { ox: L.ox, oy: L.oy, strokes: s.ink.strokes, keys, tips: wrappers, refs };
 }
 
 // The box, finished, onto `ctx`, whose user space is the layout's own (the
@@ -985,7 +984,7 @@ export function inkSpec(s, L) {
 // (`usesBackdrop`); null paints it without the page, as Normal. `at` moves
 // the box's place on the page where the caller lays the picture somewhere
 // else than the box's own corner (the export's whole-pixel snap).
-function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
+function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = null) {
   const s = L.s;
   const page = under?.image && usesBackdrop(s) ? under : null;
   const A = page ? boxToPage(box, L, page.at) : null;
@@ -1017,7 +1016,7 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
     clip: clipActive(s.clip) ? { mode: s.clip.mode === 'include' ? 'include' : 'exclude', x: L.ox, y: L.oy, shapes: s.clip.shapes } : null,
     // The brush ink, painted with the letters (`boxInJob` lets it in only
     // where the painter does that).
-    ink: inkSpec(s, L),
+    ink: inkSpec(s, L, tips),
   });
   const caption = L.caption ? glyphPainter().paint(ctx, captionJob(box, L)) : null;
   return inkUnion([body, caption], ctx.canvas);
@@ -1123,7 +1122,7 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
     const page = under?.snap ? { ...under, at: { x: Math.round(box.x - foot.ox) + foot.ox, y: Math.round(box.y - foot.oy) + foot.oy } } : under;
     // A mesh the texture warp bends afterwards would move the letters off the
     // page pixels they were blended with: such a box paints without the page.
-    const ink = paintBoxJob(ctx, box, L, foot, coarse, !F && warpActive(s, box.w, box.h) ? null : page);
+    const ink = paintBoxJob(ctx, box, L, foot, coarse, !F && warpActive(s, box.w, box.h) ? null : page, tips);
     return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, phase: phased ? { x: fx, y: fy } : null, ink };
   }
   paintShadows(ctx, box, L, SS, foot);
@@ -1479,7 +1478,7 @@ function paintBoxOnPage(ctx, box, p, tips, art = null) {
       try {
         // At the angle, straight into the page: the crop is the page under
         // the turned surface in the page's device pixels.
-        paintBoxJob(ctx, box, L, foot, false, art);
+        paintBoxJob(ctx, box, L, foot, false, art, tips);
         return;
       } catch {
         // A surface the engine will not paint (a box across a huge page at a

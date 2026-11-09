@@ -661,8 +661,10 @@ function effectRecord(fx, tileIndex) {
 
 // The box's brush ink (v12, `decode_box`'s ink record): the strokes as
 // `normalizeInkStroke` (src/lib/data.js) keeps them, each number held to the
-// range the engine takes. The tip table is empty while only round strokes
-// are sent: every stroke and every cycle entry is the round dab.
+// range the engine takes, and the table of tips they stamp with, by key
+// (`inkTipTable` in src/lib/text-paint.js): a stroke names its own tip and
+// each of its cycle's by index, 0xffffffff for the round dab or a tip not in
+// hand. A key the engine does not hold (`putInkTip`) paints round.
 const ROUND_TIP = 0xffffffff
 const INK_FLIP = { off: 0, on: 1, random: 2 }
 const INK_ORDER = { repeat: 0, reverse: 1, once: 2, random: 3 }
@@ -681,7 +683,8 @@ function inkAA(v) {
 }
 const factor = (v) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1)
 
-function inkStroke(k, pts) {
+function inkStroke(k, pts, ref, nTips) {
+  const tipAt = (i) => (Number.isInteger(i) && i >= 0 && i < nTips ? i : ROUND_TIP)
   const tex = k.texture ?? {}
   const tin = k.taperIn ?? {}
   const tout = k.taperOut ?? {}
@@ -723,9 +726,9 @@ function inkStroke(k, pts) {
   f64(held(tex.density, 0.5, 0, 1))
   f64(held(tex.scale, 100, 10, 1000))
   f64(held(k.seed, 1, -MAX_SEED, MAX_SEED))
-  u32(ROUND_TIP)
+  u32(tipAt(ref?.tip))
   u32(cycle)
-  for (let i = 0; i < cycle; i++) u32(ROUND_TIP)
+  for (let i = 0; i < cycle; i++) u32(tipAt(ref?.cycle?.[i]))
   const stride = pts.some((p) => p.length > 3) ? 5 : 3
   u32(pts.length)
   u32(stride)
@@ -744,10 +747,10 @@ function inkRecord(ink) {
   // A point that is not one is dropped, as the normaliser drops it, and a
   // stroke left with none is no stroke.
   const strokes = []
-  for (const k of ink?.strokes ?? []) {
+  ;(ink?.strokes ?? []).forEach((k, i) => {
     const pts = (Array.isArray(k?.pts) ? k.pts : []).filter((p) => Array.isArray(p) && Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
-    if (pts.length) strokes.push([k, pts])
-  }
+    if (pts.length) strokes.push([k, pts, ink.refs?.[i] ?? null])
+  })
   if (!strokes.length) {
     u32(0)
     return
@@ -755,9 +758,17 @@ function inkRecord(ink) {
   u32(1)
   f64(held(ink.ox, 0, -MAX_INK_COORD, MAX_INK_COORD))
   f64(held(ink.oy, 0, -MAX_INK_COORD, MAX_INK_COORD))
-  u32(0)
+  const keys = ink.keys ?? []
+  u32(keys.length)
+  for (const key of keys) {
+    const text = String(key)
+    need(4 + text.length * 3)
+    const { written } = encoder.encodeInto(text, u8.subarray(at + 4))
+    u32(written)
+    at += written
+  }
   u32(strokes.length)
-  for (const [k, pts] of strokes) inkStroke(k, pts)
+  for (const [k, pts, ref] of strokes) inkStroke(k, pts, ref, keys.length)
 }
 
 // One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
@@ -856,10 +867,11 @@ function clipShape(sh) {
  *   Texture element. Unset fields take Photoshop's defaults: inner, smooth, 100 %,
  *   up, size 5, soften 0, 120 and 30 degrees, Linear, Screen white and Multiply
  *   black at 75 %
- * @param {{ox: number, oy: number, strokes: object[]} | null} [request.ink] the box's
- *   brush ink: its strokes as `normalizeInkStroke` keeps them, stated from the box's
- *   corner (ox, oy) in the job's units. Round dabs only: a stroke's imported tip is
- *   painted round
+ * @param {{ox: number, oy: number, strokes: object[], keys?: string[], refs?: {tip: number, cycle: number[]}[]} | null} [request.ink]
+ *   the box's brush ink: its strokes as `normalizeInkStroke` keeps them, stated from
+ *   the box's corner (ox, oy) in the job's units; the keys of the tips they stamp
+ *   with, put beforehand (`putInkTip`); and per stroke the index into `keys` of its
+ *   own tip and of each tip of its cycle, -1 for round or not in hand
  * @param {Uint8Array | Uint8ClampedArray | null} [request.backdrop] the page under
  *   the surface, straight RGBA8 of `width * height`, read as opaque: what a blend mode
  *   blends with
@@ -1051,11 +1063,65 @@ export function paintsBoxes(engine) {
 }
 
 /**
- * Whether this wasm paints a box's brush ink in its box job, round dabs
- * (box wire v12 and on): one that paints box jobs of this loader's version.
+ * Whether this wasm paints a box's brush ink in its box job, round dabs and
+ * imported tips: one that paints box jobs of this loader's version and holds
+ * tips (`putInkTip`).
  */
 export function paintsInk(engine) {
-  return paintsBoxes(engine)
+  return paintsBoxes(engine) && typeof engine.exports.mt_ink_tip_put === 'function'
+}
+
+// A tip's key into the job buffer: its length in bytes.
+function writeKey(ex, key) {
+  const bytes = encoder.encode(String(key))
+  const ptr = ex.mt_paint_job_reserve(bytes.length)
+  if (!ptr) return -1
+  new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes)
+  return bytes.length
+}
+
+/**
+ * Whether the engine holds the tip under `key`. A tip held is named for the
+ * next box job: the engine does not let it go before that job is painted.
+ */
+export function hasInkTip(engine, key) {
+  const ex = engine.exports
+  const len = writeKey(ex, key)
+  return len >= 0 && ex.mt_ink_tip_has(len) === 1
+}
+
+/**
+ * Puts one imported tip in the engine, under `key` (a tip there is replaced).
+ *
+ * @param {object} engine from `createEngine`
+ * @param {string} key as a box job's ink names it
+ * @param {{width: number, height: number, natural: [number, number], data: Uint8Array}} tip
+ *   its coverage, eight bits a pixel row by row (`tipCoverage` in src/lib/text-paint.js),
+ *   and the tip's own size
+ * @returns {boolean} false where the engine refused it (past its limits, or no room
+ *   without letting go of a tip the next job names); its strokes then paint round
+ */
+export function putInkTip(engine, key, tip) {
+  const ex = engine.exports
+  const bytes = encoder.encode(String(key))
+  const n = tip.width * tip.height
+  if (!(n > 0) || tip.data.length !== n) return false
+  const ptr = ex.mt_paint_job_reserve(bytes.length + n)
+  if (!ptr) return false
+  const into = new Uint8Array(ex.memory.buffer, ptr, bytes.length + n)
+  into.set(bytes)
+  into.set(tip.data, bytes.length)
+  return ex.mt_ink_tip_put(bytes.length, tip.width, tip.height, tip.natural[0], tip.natural[1]) === 0
+}
+
+/** Lets go of every tip the engine holds. */
+export function forgetInkTips(engine) {
+  engine?.exports?.mt_ink_tips_forget?.()
+}
+
+/** What the engine's tips hold, in bytes; 0 for a wasm with none. */
+export function inkTipBytes(engine) {
+  return engine?.exports?.mt_ink_tips_bytes?.() ?? 0
 }
 
 /**
