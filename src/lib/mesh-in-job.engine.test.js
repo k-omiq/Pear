@@ -15,10 +15,11 @@ import { identityMesh } from './warp.js';
 // Where the Rust engine measures and paints, a box's mesh is stated in the
 // glyph job and the painter bends the outlines (`meshInJob`, exporter.js); the
 // texture then comes back bent (`warped`) and `warpTexture` leaves it alone.
-// Anywhere else - the browser painter, a box with brush ink (the engine paints
-// ink but does not bend it yet, phase 8c) or a mask, a drag
-// of the mesh gizmo (`flat`) - the mesh is the raster warp of the finished
-// texture it always was. Pinned here: which way a box goes, that the footprint
+// A box with brush ink is bent in the job too, ink and all (phase 8c,
+// ink-bend.engine.test.js). Anywhere else - the browser painter, brush ink on
+// an engine that paints none, a mask on a painter that does not paint whole
+// boxes, a drag of the mesh gizmo (`flat`) - the mesh is the raster warp of
+// the finished texture it always was. Pinned here: which way a box goes, that the footprint
 // worked out without a paint is the one a paint returns, and that the two
 // routes put the ink in the same place.
 
@@ -153,6 +154,20 @@ describe('a box whose painter bends the mesh', () => {
     expect([bentInJob.canvas.width, bentInJob.canvas.height]).not.toEqual([flatCanvas.width, flatCanvas.height]);
   });
 
+  it('is bent in the job with its brush ink, and the footprint worked out without a paint still holds it', () => {
+    const box = boxOf({ warp: bumpy(), ink: INK });
+    const p = pageOf(box);
+    expect(glyphPainter().ink).toBe(true);
+    expect(meshInJob(box)).toBe(true);
+    const tex = renderBoxTexture(box, p, null, 2);
+    expect(tex.warped).toBe(true);
+    expect(warpTexture(tex, box).canvas).toBe(tex.canvas);
+    const f = boxFootprint(box, p);
+    expect([f.ox, f.oy]).toEqual([tex.ox, tex.oy]);
+    expect(Math.abs(f.cw - tex.cw)).toBeLessThanOrEqual(1 / 2);
+    expect(Math.abs(f.ch - tex.ch)).toBeLessThanOrEqual(1 / 2);
+  });
+
   it('is bent in the job with its visibility mask, where the painter paints the whole box: the mask bends with the letters', () => {
     const box = boxOf({ warp: bumpy(), clip: CLIP });
     const p = pageOf(box);
@@ -175,8 +190,9 @@ describe('a box whose painter bends the mesh', () => {
   });
 
   // A painter that hands back glyphs for the canvas to mask (`box` unset)
-  // keeps a masked box on the texture warp, as an inked one always is.
-  for (const [name, over, painter] of [['brush ink', { ink: INK }, (w) => w], ['a visibility mask and a painter that does not paint whole boxes', { clip: CLIP }, (w) => ({ ...w, box: false, paintBox: undefined })]]) {
+  // keeps a masked box on the texture warp, as an engine that paints no ink
+  // keeps an inked one.
+  for (const [name, over, painter] of [['brush ink and an engine that paints none', { ink: INK }, (w) => ({ ...w, ink: false })], ['a visibility mask and a painter that does not paint whole boxes', { clip: CLIP }, (w) => ({ ...w, box: false, paintBox: undefined })]]) {
     it(`is not bent in the job when the box has ${name}: the texture warp takes it whole`, () => {
       const whole = glyphPainter();
       setGlyphPainter(painter(whole));
