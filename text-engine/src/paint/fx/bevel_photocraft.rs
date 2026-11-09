@@ -168,6 +168,7 @@ fn ours(c: &Case, letters: &Map) -> (Map, Map) {
         transform: Affine::IDENTITY,
         tiles: &tiles,
         grain: (0, 0),
+        page: None,
     };
     let shape = if c.band {
         band(letters)
