@@ -62,6 +62,8 @@ import {
 } from './editor/history-file.svelte.js';
 import { setLeaveEditorHook } from './route.svelte.js';
 import { forgetPagePixels } from './page-pixels.js';
+import { forgetArt } from './page-art.svelte.js';
+import { forgetBackdrops } from './backdrop.js';
 import { bindPatternTiles, forgetPickedTiles, PATTERNS_DIR } from './pattern-tiles.svelte.js';
 
 const ROOT_KEY = 'mt.libraryRoot';
@@ -2265,6 +2267,9 @@ async function openChapterNow(projectId, chapterId) {
     handedOver = true;
     app.chapterRef = null;
     loadedRef = null;
+    // The outgoing chapter's page art and backdrop crops go with it.
+    forgetArt();
+    forgetBackdrops();
 
     return await loadChapter(p, c, projectId, chapterId, mine);
   } catch (e) {
@@ -2789,6 +2794,8 @@ export function closeChapter() {
   // this is purely returning memory early.
   forgetPagePixels();
   forgetPickedTiles();
+  forgetArt();
+  forgetBackdrops();
   // Cleared before the pages are: a debounce that lands after this point finds
   // no chapterRef and is a no-op, rather than a write of stale state.
   app.chapterRef = null;
