@@ -55,6 +55,7 @@
     ITALIC_ANGLE_DEF,
     CONTOUR_PRESETS,
     CONTOUR_LABELS,
+    normalizeContour,
     SHADOW_SIZE_MAX,
     SHADOW_DISTANCE_MAX,
     SATIN_DISTANCE_MAX,
@@ -95,6 +96,8 @@
   import { patternPick, startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
   import BlendRangeSlider from './BlendRangeSlider.svelte';
+  import ContourEditor from './ContourEditor.svelte';
+  import { contourPoints } from './contour-curve.js';
   import { brushArmed } from './brush-tool.svelte.js';
   // Which tab is open is session state shared with the keyboard - see
   // inspector-tabs.svelte.js. The panel is one of two writers, not the owner.
@@ -908,6 +911,27 @@
     sh.contour = { preset, aa: sh.contour?.aa === true };
     touch();
   }
+  // ---- custom contours (ContourEditor) ----
+  // The one contour editor open, by its title; a press on the panel arms
+  // the step, so a drag in the editor is one undo step and a field edit
+  // another.
+  let contourOpen = $state(null);
+  // A contour picked from its menu. Custom starts from the curve it was
+  // and opens the editor on it.
+  function pickContour(owner, key, value, id) {
+    const was = owner[key];
+    if (value === 'custom') {
+      if (was?.preset !== 'custom') owner[key] = normalizeContour({ preset: 'custom', aa: was?.aa === true, pts: contourPoints(was) });
+      contourOpen = id;
+    } else {
+      owner[key] = { preset: value, aa: was?.aa === true };
+    }
+    touch();
+  }
+  function setContour(owner, key, next) {
+    owner[key] = next;
+    touch();
+  }
 
   // ---- bevel ----
   // Style and Technique as Photoshop's dialog names them.
@@ -1205,19 +1229,19 @@
         </label>
         <label class="sh-contour" title="Contour: how the soft edge falls off">
           <span>Contour</span>
-          <select value={sh.contour?.preset ?? 'linear'} aria-label="{name} {i + 1} contour" onchange={(e) => setShadowContour(sh, e.target.value)}>
+          <select value={sh.contour?.preset ?? 'linear'} aria-label="{name} {i + 1} contour" onchange={(e) => pickContour(sh, 'contour', e.target.value, `${name} ${i + 1} contour`)}>
             {#each CONTOUR_PRESETS as id (id)}
               <option value={id}>{CONTOUR_LABELS[id]}</option>
             {/each}
-            {#if sh.contour?.preset === 'custom'}
-              <option value="custom">{CONTOUR_LABELS.custom}</option>
-            {/if}
+            <option value="custom">{CONTOUR_LABELS.custom}</option>
           </select>
+          {@render contourEditBtn(`${name} ${i + 1} contour`, false)}
         </label>
         <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
           <input type="checkbox" checked={sh.contour?.aa === true} aria-label="{name} {i + 1} contour anti-aliased" onchange={(e) => { sh.contour = { ...sh.contour, aa: e.target.checked }; touch(); }} />
           <span>Anti-aliased</span>
         </label>
+        {@render contourPanel(sh, 'contour', `${name} ${i + 1} contour`)}
         <label class="sh-check" title="Use Global Light: the angle is the chapter's, shared by every shadow that uses it">
           <input type="checkbox" checked={sh.useGlobalLight} aria-label="{name} {i + 1} uses the global light" onchange={(e) => setShadowGlobal(sh, e.target.checked)} />
           <span>Global light</span>
@@ -1326,19 +1350,19 @@
       </label>
       <label class="sh-contour" title="Contour: how the glow falls off">
         <span>Contour</span>
-        <select value={g.contour?.preset ?? 'linear'} disabled={!g.on} aria-label="{title} contour" onchange={(e) => setShadowContour(g, e.target.value)}>
+        <select value={g.contour?.preset ?? 'linear'} disabled={!g.on} aria-label="{title} contour" onchange={(e) => pickContour(g, 'contour', e.target.value, `${title} contour`)}>
           {#each CONTOUR_PRESETS as id (id)}
             <option value={id}>{CONTOUR_LABELS[id]}</option>
           {/each}
-          {#if g.contour?.preset === 'custom'}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          {/if}
+          <option value="custom">{CONTOUR_LABELS.custom}</option>
         </select>
+        {@render contourEditBtn(`${title} contour`, !g.on)}
       </label>
       <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
         <input type="checkbox" checked={g.contour?.aa === true} disabled={!g.on} aria-label="{title} contour anti-aliased" onchange={(e) => { g.contour = { ...g.contour, aa: e.target.checked }; touch(); }} />
         <span>Anti-aliased</span>
       </label>
+      {@render contourPanel(g, 'contour', `${title} contour`)}
     </div>
     <!-- Quality > Jitter: scatters each pixel's colour along the gradient, so
          only a gradient glow has it (Photoshop greys it out on a colour). -->
@@ -1415,19 +1439,19 @@
     <div class="sh-more" style="margin:0">
       <label class="sh-contour" title="Contour: Satin reads it from its far end, as Photoshop does">
         <span>Contour</span>
-        <select value={sa.contour?.preset ?? 'linear'} disabled={!sa.on} aria-label="Satin contour" onchange={(e) => setShadowContour(sa, e.target.value)}>
+        <select value={sa.contour?.preset ?? 'linear'} disabled={!sa.on} aria-label="Satin contour" onchange={(e) => pickContour(sa, 'contour', e.target.value, 'Satin contour')}>
           {#each CONTOUR_PRESETS as id (id)}
             <option value={id}>{CONTOUR_LABELS[id]}</option>
           {/each}
-          {#if sa.contour?.preset === 'custom'}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          {/if}
+          <option value="custom">{CONTOUR_LABELS.custom}</option>
         </select>
+        {@render contourEditBtn('Satin contour', !sa.on)}
       </label>
       <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
         <input type="checkbox" checked={sa.contour?.aa === true} disabled={!sa.on} aria-label="Satin contour anti-aliased" onchange={(e) => { sa.contour = { ...sa.contour, aa: e.target.checked }; touch(); }} />
         <span>Anti-aliased</span>
       </label>
+      {@render contourPanel(sa, 'contour', 'Satin contour')}
       <label class="sh-check" title="Invert: lay the inverse of the gap between the copies">
         <input type="checkbox" checked={sa.invert} disabled={!sa.on} aria-label="Satin invert" onchange={(e) => { sa.invert = e.target.checked; touch(); }} />
         <span>Invert</span>
@@ -1531,19 +1555,19 @@
     <div class="sh-more" style="margin:0">
       <label class="sh-contour" title="Gloss Contour: reshapes the shading">
         <span>Gloss</span>
-        <select value={bv.gloss?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel gloss contour" onchange={(e) => { bv.gloss = { preset: e.target.value, aa: bv.gloss?.aa === true }; touch(); }}>
+        <select value={bv.gloss?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel gloss contour" onchange={(e) => pickContour(bv, 'gloss', e.target.value, 'Bevel gloss contour')}>
           {#each CONTOUR_PRESETS as id (id)}
             <option value={id}>{CONTOUR_LABELS[id]}</option>
           {/each}
-          {#if bv.gloss?.preset === 'custom'}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          {/if}
+          <option value="custom">{CONTOUR_LABELS.custom}</option>
         </select>
+        {@render contourEditBtn('Bevel gloss contour', !bv.on)}
       </label>
       <label class="sh-check" title="Anti-aliased gloss: carried to Photoshop; the engine does not paint it">
         <input type="checkbox" checked={bv.gloss?.aa === true} disabled={!bv.on} aria-label="Bevel gloss anti-aliased" onchange={(e) => { bv.gloss = { ...bv.gloss, aa: e.target.checked }; touch(); }} />
         <span>Anti-aliased</span>
       </label>
+      {@render contourPanel(bv, 'gloss', 'Bevel gloss contour')}
     </div>
     {#each [['highlight', 'Highlight'], ['shadow', 'Shadow']] as [key, label] (key)}
       {@const sh = bv[key]}
@@ -1576,19 +1600,19 @@
       <div class="sh-more" style="margin:0">
         <label class="sh-contour" title="Contour: reshapes the bevel's slope">
           <span>Contour</span>
-          <select value={bv.contour.curve?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel contour curve" onchange={(e) => { bv.contour.curve = { preset: e.target.value, aa: bv.contour.curve?.aa === true }; touch(); }}>
+          <select value={bv.contour.curve?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel contour curve" onchange={(e) => pickContour(bv.contour, 'curve', e.target.value, 'Bevel contour curve')}>
             {#each CONTOUR_PRESETS as id (id)}
               <option value={id}>{CONTOUR_LABELS[id]}</option>
             {/each}
-            {#if bv.contour.curve?.preset === 'custom'}
-              <option value="custom">{CONTOUR_LABELS.custom}</option>
-            {/if}
+            <option value="custom">{CONTOUR_LABELS.custom}</option>
           </select>
+          {@render contourEditBtn('Bevel contour curve', !bv.on)}
         </label>
         <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
           <input type="checkbox" checked={bv.contour.curve?.aa === true} disabled={!bv.on} aria-label="Bevel contour anti-aliased" onchange={(e) => { bv.contour.curve = { ...bv.contour.curve, aa: e.target.checked }; touch(); }} />
           <span>Anti-aliased</span>
         </label>
+        {@render contourPanel(bv.contour, 'curve', 'Bevel contour curve')}
         <label class="sh-num" title="Range, %: kept and written to Photoshop; the engine does not paint it yet">
           <span>Range (not painted yet)</span>
           <input type="number" min="0" max="100" step="1" value={pct(bv.contour.range)} disabled={!bv.on} aria-label="Bevel contour range, percent" onchange={(e) => commitAlpha(bv.contour, 'range', e)} />
@@ -1733,6 +1757,19 @@
         <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[1] ?? 0)} aria-label="{title} offset Y, percent" onchange={(e) => setFxGradientOffset(g, 1, e)} />
       </label>
       <button type="button" class="add-btn" title="Put the gradient's centre back in the middle" aria-label="{title} reset offset" disabled={!g.offset?.[0] && !g.offset?.[1]} onclick={() => { g.offset = [0, 0]; touch(); }}>Reset</button>
+    </div>
+  {/if}
+{/snippet}
+
+<!-- A contour menu's Edit button, and the editor it opens under the row
+     (ContourEditor): a custom curve drawn point by point. -->
+{#snippet contourEditBtn(id, off)}
+  <button type="button" class="ce-open" class:on={contourOpen === id} disabled={off} aria-label="{id}: edit the curve" aria-expanded={contourOpen === id} title="Edit the curve" onclick={() => (contourOpen = contourOpen === id ? null : id)}>Edit</button>
+{/snippet}
+{#snippet contourPanel(owner, key, id)}
+  {#if contourOpen === id}
+    <div class="ce-span">
+      <ContourEditor contour={owner[key]} title={id[0].toUpperCase() + id.slice(1)} onchange={(c) => setContour(owner, key, c)} onclose={() => (contourOpen = null)} />
     </div>
   {/if}
 {/snippet}
@@ -3593,6 +3630,18 @@
     margin: -2px 0 6px 30px;
     font-size: 12px;
     color: var(--t2);
+  }
+  /* A contour's Edit button and its editor, across the row. */
+  .ce-open {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    font-size: 11px;
+  }
+  .ce-open.on {
+    color: var(--accent);
+  }
+  .ce-span {
+    grid-column: 1 / -1;
   }
   .sh-more label {
     display: flex;
