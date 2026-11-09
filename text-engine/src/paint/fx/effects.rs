@@ -779,17 +779,46 @@ fn over(mode: Blend, b: [f32; 4], s: [f32; 4]) -> [f32; 4] {
 /// laid in. A higher stroke covers the ones below it: a Multiply stroke
 /// listed above a wider Normal one multiplies what is under them both.
 /// Ported from PhotoCraft's `paint_outside_strokes`.
+///
+/// With a `page` (the page under the surface, as `blend::lay` takes it),
+/// what a stroke blends with is `dst` over the page, so a Multiply stroke
+/// multiplies the art where `dst` is clear, and `dst` is left in its
+/// over-the-page form: laid source-over on the page it shows the blend.
 pub(crate) fn lay_outside(
     dst: &mut Surface,
     o: &Outside,
     effects: &[Effect],
     place: &Place<'_>,
+    page: Option<&Backdrop<'_>>,
 ) -> Result<(), Error> {
     let (w, h) = (o.w, o.h);
     let n = w.checked_mul(h).ok_or(Error::BadSpec)?;
+    // The share-weighted sum of each stroke blended in: premultiplied over
+    // `dst` alone, or with a page, the colour shown over it (`[3]` is the
+    // alpha either way).
     let mut acc = budget::filled(n, [0.0f32; 4])?;
     let mut cover = budget::filled(n, 0.0f32)?;
     let px = place.px();
+    // Only a mode that reads what is under it needs the page; Normal over
+    // the page shows what Normal over `dst` does.
+    let page = page.filter(|pg| {
+        pg.pixels.len() >= dst.data.len()
+            && o.items.iter().any(|(k, _, _)| {
+                matches!(effects.get(*k), Some(Effect::Stroke(st))
+                    if !matches!(st.blend, Blend::Normal | Blend::Dissolve))
+            })
+    });
+    let page_at = |i: usize| -> [f32; 3] {
+        let p: &[u8] = match page {
+            Some(pg) => &pg.pixels[i * 4..i * 4 + 4],
+            None => &[0; 4],
+        };
+        [
+            f32::from(p[0]) / 255.0,
+            f32::from(p[1]) / 255.0,
+            f32::from(p[2]) / 255.0,
+        ]
+    };
     for (k, share, depth) in &o.items {
         let Some(Effect::Stroke(st)) = effects.get(*k) else {
             continue;
@@ -820,10 +849,23 @@ pub(crate) fn lay_outside(
                 if dx < 0 || dx >= dst.width as i32 {
                     continue;
                 }
-                let base = straight(&dst.data[(dy as usize * dst.width + dx as usize) * 4..][..4]);
-                let b = over(mode, base, br.at(dx, dy));
-                for c in 0..3 {
-                    acc[i][c] += s * b[c] * b[3];
+                let at = dy as usize * dst.width + dx as usize;
+                let base = straight(&dst.data[at * 4..][..4]);
+                let paint = br.at(dx, dy);
+                let b = over(mode, base, paint);
+                if page.is_some() {
+                    // Over what is under the box here, opaque.
+                    let pg = page_at(at);
+                    let da = base[3];
+                    let under = [0, 1, 2].map(|c| base[c] * da + pg[c] * (1.0 - da));
+                    let shown = over(mode, [under[0], under[1], under[2], 1.0], paint);
+                    for c in 0..3 {
+                        acc[i][c] += s * shown[c];
+                    }
+                } else {
+                    for c in 0..3 {
+                        acc[i][c] += s * b[c] * b[3];
+                    }
                 }
                 acc[i][3] += s * b[3];
                 cover[i] += s;
@@ -844,14 +886,32 @@ pub(crate) fn lay_outside(
             if dx < 0 || dx >= dst.width as i32 {
                 continue;
             }
-            let p = &mut dst.data[(dy as usize * dst.width + dx as usize) * 4..][..4];
+            let at = dy as usize * dst.width + dx as usize;
+            let p = &mut dst.data[at * 4..][..4];
             let keep = 1.0 - cover[i].min(1.0);
-            for c in 0..3 {
-                let v = f32::from(p[c]) / 255.0 * keep + acc[i][c];
-                p[c] = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            let a = (f32::from(p[3]) / 255.0 * keep + acc[i][3]).clamp(0.0, 1.0);
+            if page.is_some() {
+                // What shows over the page, and the colour that, laid at
+                // `a` over it, shows that.
+                let base = straight(p);
+                let pg = page_at(at);
+                if a <= 0.0 {
+                    p.copy_from_slice(&[0; 4]);
+                    continue;
+                }
+                for c in 0..3 {
+                    let under = base[c] * base[3] + pg[c] * (1.0 - base[3]);
+                    let shown = under * keep + acc[i][c];
+                    let v = ((shown - pg[c] * (1.0 - a)) / a).clamp(0.0, 1.0);
+                    p[c] = (v * a * 255.0 + 0.5) as u8;
+                }
+            } else {
+                for c in 0..3 {
+                    let v = f32::from(p[c]) / 255.0 * keep + acc[i][c];
+                    p[c] = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                }
             }
-            let a = f32::from(p[3]) / 255.0 * keep + acc[i][3];
-            p[3] = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            p[3] = (a * 255.0 + 0.5) as u8;
         }
     }
     Ok(())
@@ -1712,7 +1772,7 @@ mod tests {
         let (out, o) = inside(&square(12), &fx);
         let o = o.expect("an outside part");
         let mut s = Surface::new(40, 40).unwrap();
-        lay_outside(&mut s, &o, &fx, &place()).unwrap();
+        lay_outside(&mut s, &o, &fx, &place(), None).unwrap();
         let px = |x: usize, y: usize| &s.data[(y * 40 + x) * 4..][..4];
         assert_eq!(px(8, 15), [0, 0, 0, 255]);
         assert_eq!(px(7, 15), [0, 0, 0, 255]);
@@ -1732,7 +1792,7 @@ mod tests {
         ];
         let (_, o) = inside(&square(12), &fx);
         let mut s = Surface::new(40, 40).unwrap();
-        lay_outside(&mut s, &o.unwrap(), &fx, &place()).unwrap();
+        lay_outside(&mut s, &o.unwrap(), &fx, &place(), None).unwrap();
         let px = |x: usize, y: usize| &s.data[(y * 40 + x) * 4..][..4];
         assert_eq!(px(9, 15), [0, 0, 255, 255]);
         assert_eq!(px(6, 15), [0, 0, 0, 255]);
@@ -1814,7 +1874,7 @@ mod tests {
         let fx = [stroke(4.0, Position::Outside, g())];
         let (_, o) = inside(&square(20), &fx);
         let mut s = Surface::new(40, 40).unwrap();
-        lay_outside(&mut s, &o.unwrap(), &fx, &place()).unwrap();
+        lay_outside(&mut s, &o.unwrap(), &fx, &place(), None).unwrap();
         let px = |x: usize, y: usize| s.data[(y * 40 + x) * 4];
         assert!(
             px(6, 20) < 50 && px(9, 20) > 180,

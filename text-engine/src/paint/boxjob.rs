@@ -1197,6 +1197,38 @@ fn set_flat(layer: &mut Surface, rgb: [u8; 3], alpha: &[u8]) {
     }
 }
 
+/// The letters' fill as a matte the surface's size: the shape they would
+/// fill, with no fill painted solid, without the outlines (bands) or a
+/// negative's blob, as `lay_glows` keeps a glow from behind the fill. What a
+/// knocked-out drop shadow is cut by: PhotoCraft's `knock_out_exterior`
+/// multiplies by the content's shape, with no strokes.
+fn fill_matte(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+    width: usize,
+    height: usize,
+) -> Result<Option<budget::Buffer<u8>>, Error> {
+    let job = &mut request.request.job;
+    let bands = core::mem::take(&mut job.bands);
+    let negative = job.effects.negative.take();
+    let silhouette = job.silhouette.replace(Rgba([0, 0, 0, 255]));
+    let no_fill = core::mem::replace(&mut job.no_fill, false);
+    let painted = paint_job_with(engine, &request.request, rasterizer);
+    let job = &mut request.request.job;
+    job.bands = bands;
+    job.effects.negative = negative;
+    job.silhouette = silhouette;
+    job.no_fill = no_fill;
+    let Some(r) = painted? else {
+        return Ok(None);
+    };
+    let mut layer = Surface::new(width, height)?;
+    layer.draw(&r.data, r.width as usize, r.x, r.y);
+    drop(r);
+    alpha_of(&layer).map(Some)
+}
+
 fn alpha_of(layer: &Surface) -> Result<budget::Buffer<u8>, Error> {
     let mut out = budget::filled(layer.width * layer.height, 0u8)?;
     for (a, p) in out.iter_mut().zip(layer.data.chunks_exact(4)) {
@@ -1242,7 +1274,7 @@ fn lay_styled(
     let mut matte = alpha_of(&layer)?;
     // The letters as they stand, unmoved: what a knockout cuts away.
     let letters = if knock > 0.0 {
-        Some(alpha_of(&layer)?)
+        fill_matte(engine, request, rasterizer, width, height)?
     } else {
         None
     };
@@ -1337,7 +1369,15 @@ fn lay_styled(
 /// effects (overlays, Satin, glows, inner shadows, the Photoshop strokes, an
 /// Inner Bevel, and the outer bevels after them) are laid from the letters'
 /// shape as they would have been filled, and the fill itself is not seen.
-/// Its outlines are cut to their outer halves, as without effects.
+/// Its outlines are cut to their outer halves, as without effects. Its
+/// afterimages keep their own fill: they are left out of that shape and
+/// painted alone, under the rest.
+///
+/// `this`, when Blend If's This Layer needs it, is given the box's own
+/// content, before any effect (PhotoCraft's `render_content`): the fill at
+/// its whole Fill, the afterimages, the ink and the outlines. A box with no
+/// fill has none of its fill there.
+#[allow(clippy::too_many_arguments)]
 fn paint_glyphs(
     engine: &mut Engine,
     request: &mut BoxRequest,
@@ -1345,6 +1385,7 @@ fn paint_glyphs(
     carried: impl Fn(f64, f64) -> (f64, f64),
     scale: f64,
     special: bool,
+    this: &mut Option<Content>,
 ) -> Result<Glyphs, Error> {
     let job = &request.request.job;
     let hollow = job.no_fill;
@@ -1352,10 +1393,14 @@ fn paint_glyphs(
     let inside =
         job.silhouette.is_none() && request.effects.iter().any(|e| e.interior() && e.shows());
     if job.silhouette.is_some() || (!inside && (hollow || fade >= 1.0)) {
+        let rasters: Vec<Raster> = paint_job_with(engine, &request.request, rasterizer)?
+            .into_iter()
+            .collect();
+        if let Some(t) = this.as_mut() {
+            rasters.iter().for_each(|r| t.draw(r));
+        }
         return Ok(Glyphs {
-            rasters: paint_job_with(engine, &request.request, rasterizer)?
-                .into_iter()
-                .collect(),
+            rasters,
             ..Glyphs::default()
         });
     }
@@ -1363,11 +1408,28 @@ fn paint_glyphs(
     let mut outside = None;
     let mut bevels = None;
     let mut whole_fill = None;
+    // With no fill, the afterimages in their own fill, under everything.
+    let ghostly = hollow && inside && job.runs.iter().any(|r| r.ghost);
+    if ghostly {
+        if let Some(g) = paint_ghosts(engine, request, rasterizer)? {
+            if let Some(t) = this.as_mut() {
+                t.draw(&g);
+            }
+            out.push(g);
+        }
+    }
     // The fill alone, faded, with the effects on it. With no fill, the
     // letters' shape as they would have been filled: their solid
-    // silhouette, at Fill 0.
+    // silhouette, at Fill 0, without the afterimages.
     let bands = core::mem::take(&mut request.request.job.bands);
     let negative = request.request.job.effects.negative.take();
+    let runs = if ghostly {
+        let runs = core::mem::take(&mut request.request.job.runs);
+        request.request.job.runs = runs.iter().filter(|r| !r.ghost).cloned().collect();
+        Some(runs)
+    } else {
+        None
+    };
     if hollow {
         request.request.job.no_fill = false;
         request.request.job.silhouette = Some(Rgba([0, 0, 0, 255]));
@@ -1377,13 +1439,16 @@ fn paint_glyphs(
     request.request.job.silhouette = None;
     request.request.job.bands = bands;
     request.request.job.effects.negative = negative;
+    if let Some(runs) = runs {
+        request.request.job.runs = runs;
+    }
     if let Some(mut r) = fill? {
         if inside {
             let place = Place {
                 transform: request.request.transform,
                 tiles: &request.request.tiles,
             };
-            (r, outside, bevels) = effects::interior(
+            let (laid, o, b) = effects::interior(
                 &r,
                 &request.effects,
                 fade,
@@ -1392,17 +1457,30 @@ fn paint_glyphs(
                 carried,
                 &place,
             )?;
+            (outside, bevels) = (o, b);
             // No fill hides the letters' fill and not the ink: it stays
             // drawn, under the effects laid on it.
             if hollow {
                 if let Some(c) = request.request.ink.as_ref().and_then(|i| i.content()) {
+                    if let Some(t) = this.as_mut() {
+                        t.draw(&c);
+                    }
                     out.push(c);
                 }
+            } else if let Some(t) = this.as_mut() {
+                t.draw(&r);
             }
-            out.push(r);
+            drop(r);
+            out.push(laid);
         } else if special {
+            if let Some(t) = this.as_mut() {
+                t.draw(&r);
+            }
             whole_fill = Some(r);
         } else {
+            if let Some(t) = this.as_mut() {
+                t.draw(&r);
+            }
             for p in r.data.chunks_exact_mut(4) {
                 p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
             }
@@ -1424,6 +1502,9 @@ fn paint_glyphs(
         rims_of(request, false);
         request.request.job.no_fill = hollow;
         if let Some(r) = rims? {
+            if let Some(t) = this.as_mut() {
+                t.draw(&r);
+            }
             out.push(r);
         }
     }
@@ -1433,6 +1514,86 @@ fn paint_glyphs(
         outside,
         bevels,
     })
+}
+
+/// The afterimages alone, each in its own fill: no letters, no outlines, no
+/// ink (`job.rs`: an afterimage is painted with its fill alone).
+fn paint_ghosts(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
+    let job = &mut request.request.job;
+    let runs = core::mem::take(&mut job.runs);
+    job.runs = runs.iter().filter(|r| r.ghost).cloned().collect();
+    let bands = core::mem::take(&mut job.bands);
+    let negative = job.effects.negative.take();
+    let silhouette = job.silhouette.take();
+    let no_fill = core::mem::replace(&mut job.no_fill, false);
+    let ink = request.request.ink.take();
+    let painted = paint_job_with(engine, &request.request, rasterizer);
+    request.request.ink = ink;
+    let job = &mut request.request.job;
+    job.runs = runs;
+    job.bands = bands;
+    job.effects.negative = negative;
+    job.silhouette = silhouette;
+    job.no_fill = no_fill;
+    painted
+}
+
+/// The box's own content for Blend If's This Layer, straight RGBA8 the
+/// surface's size: each raster laid source-over in straight colour, so a
+/// faint pixel keeps its colour whole, where premultiplied 8-bit would
+/// round it away (130 at alpha 28 is stored as 14 and read back as 127.5).
+struct Content {
+    width: usize,
+    height: usize,
+    data: budget::Buffer<u8>,
+}
+
+impl Content {
+    fn new(width: usize, height: usize) -> Result<Self, Error> {
+        Ok(Self {
+            width,
+            height,
+            data: budget::filled(width * height * 4, 0u8)?,
+        })
+    }
+
+    /// Straight RGBA8 `r` laid source-over, cut to the surface.
+    fn draw(&mut self, r: &Raster) {
+        let rw = r.width as usize;
+        for ry in 0..r.height as usize {
+            let y = r.y.saturating_add(ry as i32);
+            if y < 0 || y as usize >= self.height {
+                continue;
+            }
+            for rx in 0..rw {
+                let x = r.x.saturating_add(rx as i32);
+                if x < 0 || x as usize >= self.width {
+                    continue;
+                }
+                let sp = &r.data[(ry * rw + rx) * 4..][..4];
+                if sp[3] == 0 {
+                    continue;
+                }
+                let dp = &mut self.data[(y as usize * self.width + x as usize) * 4..][..4];
+                if dp[3] == 0 || sp[3] == 255 {
+                    dp.copy_from_slice(sp);
+                    continue;
+                }
+                let sa = f32::from(sp[3]) / 255.0;
+                let da = f32::from(dp[3]) / 255.0;
+                let a = sa + da * (1.0 - sa);
+                for c in 0..3 {
+                    let v = (f32::from(sp[c]) * sa + f32::from(dp[c]) * da * (1.0 - sa)) / a;
+                    dp[c] = (v + 0.5).min(255.0) as u8;
+                }
+                dp[3] = (a * 255.0 + 0.5).min(255.0) as u8;
+            }
+        }
+    }
 }
 
 /// What `paint_glyphs` paints of the letters.
@@ -1751,75 +1912,56 @@ fn paint(
         && request.backdrop.is_some()
         && request.blend.fill_is_special()
         && request.fill_opacity < 1.0;
+    // The box's own content alone, for Blend If's This Layer: its fill and
+    // outlines before any effect, not the shadows, glows or strokes round
+    // it (PhotoCraft judges a layer by its own content, `render_content`).
+    let mut this = if restricts && !request.blending.blend_if.this_is_full() {
+        Some(Content::new(width, height)?)
+    } else {
+        None
+    };
     let Glyphs {
         rasters: glyphs,
         whole_fill,
         outside,
         bevels,
-    } = paint_glyphs(engine, request, rasterizer, carried, scale, special)?;
-    let mut own = if blends {
-        Some(Surface::new(width, height)?)
-    } else {
-        None
-    };
-    // What is drawn on `own` so far, for a special fill laid between.
-    let mut own_drawn: Option<IBox> = None;
-    // The letters alone on a clear surface, for Blend If's This Layer: the
-    // fill, the outlines, the interior effects and the strokes' outside
-    // parts, not the shadows and glows under them (PhotoCraft judges a
-    // layer by its own content, `render_content`).
-    let mut this = if restricts && !request.blending.blend_if.this_is_full() {
-        Some(Surface::new(width, height)?)
-    } else {
-        None
-    };
-    // The strokes' outside parts, slid under the letters.
+    } = paint_glyphs(
+        engine, request, rasterizer, carried, scale, special, &mut this,
+    )?;
+    let page = request
+        .backdrop
+        .as_deref()
+        .map(|pixels| Backdrop { pixels });
+    // The strokes' outside parts, then an Outer Bevel, under the letters:
+    // each in its own mode over what is under the box, the page too.
+    // PhotoCraft (`composite_with_effects_prepared`) paints them on the
+    // backdrop before the layer goes on; only the letters take the box's
+    // mode.
     if let Some(o) = outside {
         let place = Place {
             transform,
             tiles: &request.request.tiles,
         };
-        if let Some(this) = this.as_mut() {
-            effects::lay_outside(this, &o, &request.effects, &place)?;
-        }
-        effects::lay_outside(own.as_mut().unwrap_or(&mut s), &o, &request.effects, &place)?;
+        effects::lay_outside(&mut s, &o, &request.effects, &place, page.as_ref())?;
         let b = o.bounds().intersect(&surface);
         if !b.is_empty() {
             lay(b);
-            own_drawn = Some(b);
         }
     }
-    // An Outer Bevel, under the letters with the strokes' outside parts.
     if let Some(bv) = &bevels {
-        let page = request
-            .backdrop
-            .as_deref()
-            .map(|pixels| Backdrop { pixels });
-        let (dst, page) = match own.as_mut() {
-            Some(own) => (own, None),
-            None => (&mut s, page.as_ref()),
-        };
-        if let Some(b) = effects::lay_bevels(dst, bv, &request.effects, false, page)? {
+        if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, false, page.as_ref())? {
             lay(b);
-            own_drawn = Some(own_drawn.map_or(b, |l| l.union(&b)));
         }
     }
-    // A special-eight fill: what is under it laid first, then the fill at
-    // its whole Fill in its mode, with Fill in the blend; the outlines go
-    // over it below, at Fill 1.
+    let mut own = if blends {
+        Some(Surface::new(width, height)?)
+    } else {
+        None
+    };
+    // A special-eight fill: at its whole Fill in its mode, with Fill in the
+    // blend; the outlines go over it below, at Fill 1.
     if let (Some(fill), Some(own)) = (&whole_fill, own.as_mut()) {
-        let page = request
-            .backdrop
-            .as_deref()
-            .map(|pixels| Backdrop { pixels });
-        if let Some(bx) = own_drawn {
-            blend::lay(&mut s, own, bx, 1.0, request.blend, page.as_ref(), 0);
-            own.clear();
-        }
         own.draw(&fill.data, fill.width as usize, fill.x, fill.y);
-        if let Some(this) = this.as_mut() {
-            this.draw(&fill.data, fill.width as usize, fill.x, fill.y);
-        }
         let bx = IBox {
             x0: fill.x,
             y0: fill.y,
@@ -1851,27 +1993,16 @@ fn paint(
             Some(own) => own.draw(&r.data, r.width as usize, r.x, r.y),
             None => s.draw(&r.data, r.width as usize, r.x, r.y),
         }
-        if let Some(this) = this.as_mut() {
-            this.draw(&r.data, r.width as usize, r.x, r.y);
-        }
         lay(bx);
     }
     drop(glyphs);
     if let (Some(own), Some(bx)) = (&own, laid) {
-        let page = request
-            .backdrop
-            .as_deref()
-            .map(|pixels| Backdrop { pixels });
         blend::lay(&mut s, own, bx, 1.0, request.blend, page.as_ref(), 0);
     }
     drop(own);
     // An Emboss, a Pillow Emboss or a Stroke Emboss, over the finished
     // letters: PhotoCraft shades the composited layer with them.
     if let Some(bv) = &bevels {
-        let page = request
-            .backdrop
-            .as_deref()
-            .map(|pixels| Backdrop { pixels });
         if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, true, page.as_ref())? {
             laid = Some(laid.map_or(b, |l| l.union(&b)));
         }
@@ -1882,7 +2013,8 @@ fn paint(
     // mask, which Photoshop would do to the layer's pixels (a filter, a
     // mask) and not to its blend.
     if let (true, Some(page), Some(bx)) = (restricts, request.backdrop.as_deref(), laid) {
-        blending::restrict(&mut s, bx, &request.blending, page, this.as_ref());
+        let this = this.as_ref().map(|t| t.data.as_slice());
+        blending::restrict(&mut s, bx, &request.blending, page, this);
     }
     drop(this);
     blur::gaussian(&mut s, blur_sigma)?;

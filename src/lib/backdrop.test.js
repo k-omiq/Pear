@@ -44,6 +44,21 @@ describe('usesBackdrop', () => {
     expect(usesBackdrop(style({ outerGlow: { on: false, blend: 'screen', color: '#ffff00', opacity: 0.8 } }))).toBe(false);
     expect(usesBackdrop(style({ bevel: { on: true, style: 'outer', highlight: { blend: 'overlay', color: '#ffffff', opacity: 1 } } }))).toBe(true);
   });
+
+  it('is true for an outside or center stroke whose mode reads the page, and not for an inside one', () => {
+    const stroke = (over = {}) => ({ size: 4, position: 'outside', blend: 'multiply', color: '#ff0000', opacity: 1, ...over });
+    // Its outside part lies on the page in its own mode (review F5).
+    expect(usesBackdrop(style({ strokeEffects: [stroke()] }))).toBe(true);
+    expect(usesBackdrop(style({ strokeEffects: [stroke({ position: 'center', blend: 'screen' })] }))).toBe(true);
+    // An inside stroke blends with the letters alone.
+    expect(usesBackdrop(style({ strokeEffects: [stroke({ position: 'inside' })] }))).toBe(false);
+    // Normal, a mode's no-op colour, or nothing of it shown: no page read.
+    expect(usesBackdrop(style({ strokeEffects: [stroke({ blend: 'normal' })] }))).toBe(false);
+    expect(usesBackdrop(style({ strokeEffects: [stroke({ color: '#000000' })] }))).toBe(false);
+    expect(usesBackdrop(style({ strokeEffects: [stroke({ opacity: 0 })] }))).toBe(false);
+    // A gradient's colours are its stops': never a no-op.
+    expect(usesBackdrop(style({ strokeEffects: [stroke({ color: '#000000', fill: 'gradient' })] }))).toBe(true);
+  });
 });
 
 describe('the picture key of a box', () => {
