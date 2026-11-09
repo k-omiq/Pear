@@ -536,7 +536,13 @@ describe('textLayerFor', () => {
     expect(go.angle).toBe(-90); // CSS 180deg (top→bottom) is Photoshop's -90
     // `fillOpacity` is gone from the schema; the overlay is always full-on.
     expect(go.opacity).toBe(1);
-    expect(go.gradient.colorStops.map((c) => c.location)).toEqual([0, 1]);
+    // The two stops kept at their places, the ramp between them baked into
+    // stops on it (`psdSolidStops`), every one on Photoshop's 4096 grid.
+    const locs = go.gradient.colorStops.map((c) => c.location);
+    expect(locs[0]).toBe(0);
+    expect(locs.at(-1)).toBe(1);
+    expect(locs.every((l) => Number.isInteger(l * 4096))).toBe(true);
+    expect(go.gradient.colorStops.at(-1).color).toEqual({ r: 0, g: 0, b: 0 });
 
     // A radial ramp is not the same construction as Photoshop's radial overlay,
     // so it must not come out as one - and it must not fall back to the linear
@@ -683,7 +689,7 @@ describe('textLayerFor', () => {
       gloss: { preset: 'custom', aa: true, pts: [[0, 0, false], [128, 200, true], [255, 255, false]] },
       highlight: { blend: 'color-dodge', color: '#ffeedd', opacity: 0.5 },
       shadow: { blend: 'linear-burn', color: '#102030', opacity: 0.25 },
-      contour: { on: true, curve: { preset: 'cone', aa: true }, range: 0.3 },
+      contour: { on: true, curve: { preset: 'linear', aa: true }, range: 0.3 },
     });
     const fx = textLayerFor(page, box({ ...baseStyle, bevel }), rendered).effects;
     expect(fx.bevel).toMatchObject({
@@ -734,10 +740,11 @@ describe('textLayerFor', () => {
     expect(fx.stroke[1].gradient).toMatchObject({ style: 'radial', angle: 30, scale: 0.5, reverse: true, offset: { x: 0.1, y: -0.2 } });
     expect(fx.gradientOverlay).toHaveLength(1);
     expect(fx.gradientOverlay[0]).toMatchObject({ type: 'radial', blendMode: 'screen', opacity: 0.7, align: true });
-    expect(fx.gradientOverlay[0].gradient.opacityStops[1]).toMatchObject({ opacity: 0.5, location: 1 });
+    expect(fx.gradientOverlay[0].gradient.opacityStops.at(-1)).toMatchObject({ opacity: 0.5, location: 1 });
     // A pattern overlay or a pattern stroke has no pattern table to name: pixels.
-    expect(isRasterOnly({ ...style, patternOverlay: { on: true } })).toBe(true);
-    expect(isRasterOnly({ ...style, strokeEffects: [{ ...style.strokeEffects[0], fill: 'pattern' }] })).toBe(true);
+    const pattern = { on: true, kind: 'dots', fg: '#000000', bg: '#ffffff', scale: 1 };
+    expect(isRasterOnly({ ...style, patternOverlay: { on: true, opacity: 1, pattern } })).toBe(true);
+    expect(isRasterOnly({ ...style, strokeEffects: [{ ...style.strokeEffects[0], fill: 'pattern', pattern }] })).toBe(true);
     expect(isRasterOnly(style)).toBe(false);
   });
 

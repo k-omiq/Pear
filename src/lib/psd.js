@@ -24,7 +24,7 @@ import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
-import { strokeBands, clipActive, inkActive, resolveShadow, globalLight } from './text-paint.js';
+import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
 import { warpActive } from './warp.js';
 import { withPageImages } from './page-images.js';
 import { snapshotExportPages } from './export-pages.svelte.js';
@@ -123,6 +123,61 @@ function psdBlendIf(b) {
     };
   }
   return out;
+}
+
+// Advanced Blending as a layer record states it (ag-psd `infx`, `knko`), with
+// Channels and Blend If (`psdBlendIf`). ag-psd writes Knockout as on or off,
+// so Shallow and Deep both arrive as on (Photoshop's Shallow); Deep needs a
+// patch (PORT_NOTES_BACKDROP_PSD.md G10). The same on a live type layer and
+// on a raster-only one.
+function advancedBlending(s) {
+  return {
+    ...(s.blending?.interior ? { blendInteriorElements: true } : null),
+    ...(s.blending?.knockout && s.blending.knockout !== 'none' ? { knockout: true } : null),
+    ...psdBlendIf(s.blending),
+  };
+}
+
+// A solid gradient's two tracks as ag-psd writes them, its stops baked into
+// a dense run of stops that lies on the app's linear ramp. ag-psd writes
+// Smoothness 100 % (Intr 4096) unless told otherwise, and it scales every
+// stop's location (Lctn) by the same number, so Smoothness 0 would put every
+// stop at 0. At 100 % Photoshop eases each segment with a Catmull-Rom curve
+// whose tangents come from the neighbouring stops (PhotoCraft
+// `crates/io/src/gradient_bake.rs`); through stops that are collinear that
+// curve is the straight line, so the ramp Photoshop draws is the app's, off
+// by under a level next to a stop where the ramp bends. The stops the user
+// set are kept exactly, so a hard edge stays one. Midpoints are 50 %
+// (ag-psd's 0..1 times 100).
+const GRADIENT_BAKE_STEPS = 64;
+function psdSolidStops(stops) {
+  const pts = stops
+    .map((st) => ({
+      pos: Math.min(1, Math.max(0, Number(st.pos) || 0)),
+      rgb: hexToRgb(st.color),
+      opacity: Math.min(1, Math.max(0, Number.isFinite(+st?.opacity) ? +st.opacity : 1)),
+    }))
+    .sort((a, b) => a.pos - b.pos);
+  const out = [];
+  pts.forEach((p, i) => {
+    out.push(p);
+    const q = pts[i + 1];
+    if (!q || q.pos <= p.pos) return;
+    const same = p.opacity === q.opacity && p.rgb.r === q.rgb.r && p.rgb.g === q.rgb.g && p.rgb.b === q.rgb.b;
+    if (same) return;
+    for (let k = Math.floor(p.pos * GRADIENT_BAKE_STEPS) + 1; k / GRADIENT_BAKE_STEPS < q.pos; k++) {
+      const t = k / GRADIENT_BAKE_STEPS;
+      const u = (t - p.pos) / (q.pos - p.pos);
+      const mix = (a, b) => Math.round((a + (b - a) * u) * 1000) / 1000;
+      // Opacity to a whole percent: ag-psd writes Opct so (`unitsPercent`).
+      const opacity = Math.round((p.opacity + (q.opacity - p.opacity) * u) * 100) / 100;
+      out.push({ pos: t, rgb: { r: mix(p.rgb.r, q.rgb.r), g: mix(p.rgb.g, q.rgb.g), b: mix(p.rgb.b, q.rgb.b) }, opacity });
+    }
+  });
+  return {
+    colorStops: out.map((p) => ({ color: p.rgb, location: p.pos, midpoint: 0.5 })),
+    opacityStops: out.map((p) => ({ opacity: p.opacity, location: p.pos, midpoint: 0.5 })),
+  };
 }
 
 // Every effect object as PhotoCraft writes it (`with_common`, crates/io/src/
@@ -435,6 +490,33 @@ function gradientOverlayable(g) {
   return !!g && g.scope !== 'line' && (g.kind ?? 'linear') === 'linear';
 }
 
+// A contour that leaves its input as it is: Linear, or a custom curve whose
+// every point lies on y = x.
+function linearContour(c) {
+  if (!c || c.preset === 'linear' || c.preset == null) return true;
+  return c.preset === 'custom' && Array.isArray(c.pts) && c.pts.every(([x, y]) => Math.abs(x - y) < 1e-6);
+}
+
+// What the box's effects paint that ag-psd cannot write, read off the same
+// list the engine paints (`boxEffects`), so an effect that paints nothing
+// (opacity 0, a stroke of size 0) never costs the box its live text:
+//   a Pattern Overlay or a pattern Stroke - Photoshop takes a pattern from
+//     the document's pattern table, not a tile we can hand it here;
+//   a bevel's Texture - ag-psd cannot write its pattern, scale, depth or
+//     invert at all;
+//   a bevel's Contour other than Linear - ag-psd has one contour slot, the
+//     Gloss Contour, so the Contour element's curve would be dropped. This
+//     follows the user's recorded answer (PORT_NOTES_BACKDROP_PSD.md section
+//     6 item 4): a bevel Contour exports as pixels.
+function effectsNeedPixels(s) {
+  return boxEffects(s).some(
+    (fx) =>
+      fx.kind === 'patternOverlay' ||
+      (fx.kind === 'stroke' && fx.paint?.kind === 'pattern') ||
+      (fx.kind === 'bevel' && (fx.texture || (fx.contour && !linearContour(fx.contour)))),
+  );
+}
+
 // True when a box's style is something Photoshop's own text engine cannot
 // reproduce, so the layer it gets has to carry pixels instead of a live
 // `text` object.
@@ -522,17 +604,17 @@ export function isRasterOnly(style) {
     (s.blur ?? 0) > 0 ||
     (mb?.on && ((mb.x ?? 0) !== 0 || (mb.y ?? 0) !== 0)) ||
     s.pattern?.on ||
-    // A Pattern Overlay or a pattern Stroke takes its pattern from the
-    // document's pattern table too.
-    s.patternOverlay?.on ||
-    (s.strokeEffects ?? []).some((k) => k.fill === 'pattern') ||
-    // So does a bevel's Texture, and ag-psd cannot write its pattern, scale,
-    // depth or invert at all: the box ships its pixels, the texture with them.
-    (s.bevel?.on && s.bevel.texture?.on) ||
+    // A pattern overlay or stroke, a bevel's Texture or a curved bevel
+    // Contour that paints (`effectsNeedPixels`).
+    effectsNeedPixels(s) ||
     // Shape Burst is a gradient style ag-psd cannot name (its GradientStyle
     // has the five), so a box using one ships its pixels.
     usesShapeBurst(s) ||
     (s.gradient?.on && !gradientOverlayable(s.gradient)) ||
+    // A fill gradient goes in as a Gradient Overlay, and Photoshop's Fill
+    // does not fade layer effects unless Blend Interior Effects is on. The app
+    // fades the fill gradient by Fill, so such a box ships its pixels.
+    (s.gradient?.on && (s.fillOpacity ?? 1) < 1 && !s.blending?.interior) ||
     // No fill: a type layer always has a fill colour, and its own see-through
     // setting (the layer's fill opacity) is not one this writer states.
     s.noFill
@@ -651,12 +733,17 @@ export function textLayerFor(p, box, rendered) {
     const bounds = { left: rendered.left, top: rendered.top, right: rendered.right, bottom: rendered.bottom };
     const name = (raw || `line ${box.lineN ?? '·'}`).slice(0, 40);
 
+    // The pixels are painted with no page under them, so Photoshop does the
+    // blending: the box's mode, Blend If and Channels, and the Advanced
+    // Blending switches, as a live layer states them (`advancedBlending`).
+    // Fill Opacity is not written: the fill is faded in the pixels already.
     return {
       name: `${name}${flag}${RASTER_MARK}`,
       ...bounds,
       imageData: rendered.imageData,
       opacity: s.opacity ?? 1,
-      blendMode: 'normal',
+      blendMode: psdBlend(s.blendMode),
+      ...advancedBlending(s),
     };
   }
 
@@ -785,6 +872,22 @@ export function textLayerFor(p, box, rendered) {
   // not here: `isRasterOnly` sent that box down the raster branch above, so by
   // this line the only fill left to describe is a linear block gradient.
   const effects = {};
+  // A turned box: the engine turns every effect's angle with the box (its
+  // throws and lights go through `carried` in boxjob.rs, its gradients are
+  // read in the box's own frame), and Photoshop does not turn layer effects
+  // with a type layer's transform. The transform above turns clockwise on
+  // the page (y down) by the rotation, and Photoshop's angles run
+  // counter-clockwise with y up, so each angle goes in less the rotation,
+  // off the Global Light (one shared light cannot be turned per layer). A
+  // pure turn can always be said this way: a mirror, the one transform it
+  // could not, is raster-only already.
+  const turn = Number(s.rotation) || 0;
+  const turned = turn % 360 !== 0;
+  const turnAngle = (a) => {
+    if (!turned) return a;
+    const r = (((a - turn) % 360) + 540) % 360 - 180;
+    return Math.round(r * 1e6) / 1e6;
+  };
   const bands = strokeBands(s.strokes);
   if (bands.length) {
     effects.stroke = bands.map((band) => ({
@@ -798,10 +901,10 @@ export function textLayerFor(p, box, rendered) {
   }
   // A shadow's Size, Spread, mode, contour and knockout are Photoshop's own
   // (`normalizeShadow`), so they go in as they are. One on the Global Light
-  // says so, and the document carries the chapter's light (`writePsdPage`).
-  // Spread is written as its percent: Photoshop's dialog shows it so, and the
-  // unit Photoshop tags it with in its own files is not settled (LAYER_STYLES
-  // _PLAN.md G1-G8). Noise is its percent (Nose), as the glows'.
+  // says so, and the document carries the chapter's light (`pagePsdDocument`).
+  // Spread is written as its percent, as Photoshop's dialog shows it and as
+  // PhotoCraft writes it (`crates/io/src/effects_map.rs`). Noise is its
+  // percent (Nose), as the glows'.
   //
   // Every contour goes in as Photoshop writes one (`psdContour`): a preset by
   // its name AND its points, a custom curve as 'Custom', each at most 16
@@ -814,14 +917,14 @@ export function textLayerFor(p, box, rendered) {
     distance: { units: 'Pixels', value: Math.hypot(sh.x || 0, sh.y || 0) },
     // On the Global Light the chapter's angle itself, not one read back off
     // the rounded offset.
-    angle: sh.useGlobalLight ? globalLight().angle : (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI,
+    angle: turnAngle(sh.useGlobalLight ? globalLight().angle : (Math.atan2(sh.y || 0, -(sh.x || 0)) * 180) / Math.PI),
     color: hexToRgb(sh.color),
     opacity: sh.opacity ?? 1,
     blendMode: psdBlend(sh.blend),
     antialiased: sh.contour?.aa === true,
     ...psdContour(sh.contour),
     noise: sh.noise || 0,
-    useGlobalLight: sh.useGlobalLight === true,
+    useGlobalLight: sh.useGlobalLight === true && !turned,
   });
   if ((s.shadows ?? []).length) {
     effects.dropShadow = s.shadows.map(resolveShadow).map((sh) => ({
@@ -842,7 +945,12 @@ export function textLayerFor(p, box, rendered) {
   // A noise gradient goes in as Photoshop's (ag-psd `EffectNoiseGradient`):
   // the same settings, though Photoshop's generator makes its own colours
   // from them. Its Limits list has a fourth (alpha) channel, kept full.
-  const limit = (v) => Math.round(v * 100) / 100;
+  // ag-psd writes each limit as a long of x * 100, which truncates (0.29 * 100
+  // is 28.999...), so a whole percent goes in a hair over itself.
+  const limit = (v) => {
+    const n = Math.round(v * 100);
+    return Math.trunc((n / 100) * 100) === n ? n / 100 : (n + 0.001) / 100;
+  };
   const fxGradient = (g) => g.type === 'noise' ? {
     name: 'Custom',
     type: 'noise',
@@ -856,12 +964,11 @@ export function textLayerFor(p, box, rendered) {
   } : {
     name: 'Custom',
     type: 'solid',
-    colorStops: g.stops.map((st) => ({ color: hexToRgb(st.color), location: st.pos, midpoint: 50 })),
-    opacityStops: g.stops.map((st) => ({ opacity: st.opacity ?? 1, location: st.pos, midpoint: 50 })),
+    ...psdSolidStops(g.stops),
   };
   // The glows: a colour or a gradient, Softer or Precise, Spread (Choke),
-  // Range and Noise as Photoshop's dialog has them, and Jitter 0 (ours has
-  // none). A gradient glow goes in as PhotoCraft writes one (Grad, Rvrs, Type,
+  // Range, Noise and Jitter as Photoshop's dialog has them. A gradient glow
+  // goes in as PhotoCraft writes one (Grad, Rvrs, Type,
   // no colour): ag-psd's typings leave `gradient` off the glows, but its
   // writer takes it for any effect. Its Angle is not written (ag-psd would
   // write it as a light angle, lagl); a glow's gradient runs along the glow
@@ -899,7 +1006,7 @@ export function textLayerFor(p, box, rendered) {
       ...FX_ON,
       size: { units: 'Pixels', value: sa.size || 0 },
       distance: { units: 'Pixels', value: sa.distance || 0 },
-      angle: sa.angle ?? 19,
+      angle: turnAngle(sa.angle ?? 19),
       color: hexToRgb(sa.color),
       opacity: sa.opacity ?? 1,
       blendMode: psdBlend(sa.blend),
@@ -914,11 +1021,22 @@ export function textLayerFor(p, box, rendered) {
   // Shadow, the Gloss Contour (a custom one; a preset as for the other
   // effects), and the Contour element as Photoshop's useShape and Range. ag-psd
   // has one `contour` slot, written as the Gloss Contour (TrnS), so the
-  // Contour element's own curve is not written. A textured bevel never gets
-  // here: ag-psd cannot write the Texture's pattern, so `isRasterOnly` sends
-  // that box down the raster branch, as a Pattern Overlay does.
+  // Contour element's own curve is not written: only a Linear one gets here.
+  // A curved Contour or a Texture never does (`effectsNeedPixels` sends that
+  // box down the raster branch, as a Pattern Overlay does).
+  //
+  // A Stroke Emboss raises the Photoshop strokes' band and nothing else (the
+  // plan's 5a: our outlines are not part of it), so with no Photoshop stroke
+  // that paints, the app lays no bevel, and the bevel is left out: Photoshop
+  // would emboss the outlines, written as its strokes above.
   const bv = s.bevel;
-  if (bv?.on) {
+  // The Photoshop strokes the engine paints: opacity and size above 0, the
+  // rule `boxEffects` takes them by (`strokeEffectsOf` in text-paint.js), and
+  // what each paints with (a gradient or a pattern only when it has one).
+  const psdStrokes = (Array.isArray(s.strokeEffects) ? s.strokeEffects : [])
+    .filter((k) => k.opacity > 0 && k.size > 0)
+    .map((k) => ({ ...k, fill: k.fill === 'gradient' && k.gradient ? 'gradient' : k.fill === 'pattern' && k.pattern ? 'pattern' : 'color' }));
+  if (bv?.on && !(bv.style === 'stroke' && !psdStrokes.length)) {
     const lit = bv.useGlobalLight ? globalLight() : bv;
     effects.bevel = {
       ...FX_ON,
@@ -928,9 +1046,9 @@ export function textLayerFor(p, box, rendered) {
       direction: bv.direction === 'down' ? 'down' : 'up',
       size: { units: 'Pixels', value: bv.size || 0 },
       soften: { units: 'Pixels', value: bv.soften || 0 },
-      angle: lit.angle ?? 120,
+      angle: turnAngle(lit.angle ?? 120),
       altitude: lit.altitude ?? 30,
-      useGlobalLight: bv.useGlobalLight === true,
+      useGlobalLight: bv.useGlobalLight === true && !turned,
       highlightBlendMode: psdBlend(bv.highlight?.blend ?? 'screen'),
       highlightColor: hexToRgb(bv.highlight?.color ?? '#ffffff'),
       highlightOpacity: bv.highlight?.opacity ?? 0.75,
@@ -947,7 +1065,7 @@ export function textLayerFor(p, box, rendered) {
   if ((s.colorOverlays ?? []).length) {
     effects.solidFill = s.colorOverlays.map((o) => ({ ...FX_ON, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
   }
-  const fxPlacement = (g) => ({ angle: g.angle, scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } });
+  const fxPlacement = (g) => ({ angle: turnAngle(g.angle), scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } });
   const gradientOverlays = (s.gradientOverlays ?? []).map((o) => ({
     ...FX_ON,
     blendMode: psdBlend(o.blend),
@@ -957,17 +1075,18 @@ export function textLayerFor(p, box, rendered) {
     gradient: fxGradient(o.gradient),
   }));
   // The Photoshop strokes: the outlines are drawn over them, so in
-  // Photoshop's list (first on top) they come after the outlines. A pattern
-  // stroke sent the box down the raster branch (`isRasterOnly`).
-  const strokeFx = (s.strokeEffects ?? [])
-    .filter((k) => k.size > 0 && k.fill !== 'pattern')
+  // Photoshop's list (first on top) they come after the outlines. Only the
+  // ones the engine paints (`psdStrokes`). A pattern stroke sent the box down
+  // the raster branch (`isRasterOnly`).
+  const strokeFx = psdStrokes
+    .filter((k) => k.fill !== 'pattern')
     .map((k) => ({
       ...FX_ON,
       size: { units: 'Pixels', value: k.size },
       position: k.position,
       fillType: k.fill === 'gradient' ? 'gradient' : 'color',
       blendMode: psdBlend(k.blend),
-      opacity: k.opacity ?? 1,
+      opacity: k.opacity,
       color: hexToRgb(k.color),
       // Overprint: ours has none, so off, as PhotoCraft writes it.
       overprint: false,
@@ -986,25 +1105,12 @@ export function textLayerFor(p, box, rendered) {
       {
         ...FX_ON,
         opacity: 1,
-        angle: 90 - (Number(s.gradient.angle) || 0),
+        angle: turnAngle(90 - (Number(s.gradient.angle) || 0)),
         type: 'linear',
-        gradient: {
-          name: 'Custom',
-          type: 'solid',
-          colorStops: s.gradient.stops.map((st) => ({
-            color: hexToRgb(st.color),
-            location: Math.min(1, Math.max(0, st.pos)),
-            midpoint: 50,
-          })),
-          // Photoshop keeps a gradient's alpha on its own track, so a stop's
-          // colour and its opacity are written twice at the same location
-          // rather than once as an rgba.
-          opacityStops: s.gradient.stops.map((st) => ({
-            opacity: Math.min(1, Math.max(0, Number.isFinite(+st?.opacity) ? +st.opacity : 1)),
-            location: Math.min(1, Math.max(0, st.pos)),
-            midpoint: 50,
-          })),
-        },
+        // Photoshop keeps a gradient's alpha on its own track, so a stop's
+        // colour and its opacity are written twice at the same location
+        // rather than once as an rgba.
+        gradient: { name: 'Custom', type: 'solid', ...psdSolidStops(s.gradient.stops) },
       },
     ];
   }
@@ -1017,12 +1123,7 @@ export function textLayerFor(p, box, rendered) {
     opacity: s.opacity ?? 1,
     fillOpacity: s.fillOpacity ?? 1,
     blendMode: psdBlend(s.blendMode),
-    // Advanced Blending (ag-psd `infx`, `knko`). ag-psd writes Knockout as on
-    // or off, so Shallow and Deep both arrive as on (Photoshop's Shallow);
-    // Deep needs a patch (PORT_NOTES_BACKDROP_PSD.md G10).
-    ...(s.blending?.interior ? { blendInteriorElements: true } : null),
-    ...(s.blending?.knockout && s.blending.knockout !== 'none' ? { knockout: true } : null),
-    ...psdBlendIf(s.blending),
+    ...advancedBlending(s),
     ...(hasEffects ? { effects } : null),
     // The cached pixels keep the outline and shadow baked in for non-Photoshop
     // readers and fallback viewing when the font is not installed. curve is 0

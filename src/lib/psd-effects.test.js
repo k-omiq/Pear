@@ -87,7 +87,10 @@ describe('the PSD effects, written and read back', () => {
     // The gradient glow: Grad, Rvrs, Type, and no colour, as PhotoCraft writes it.
     expect(fx.innerGlow.color).toBeUndefined();
     expect(fx.innerGlow).toMatchObject({ reverse: true, type: 'radial', source: 'center', jitter: 0.6 });
-    expect(fx.innerGlow.gradient.colorStops).toHaveLength(2);
+    // Its two stops, baked into the linear ramp between them (`psdSolidStops`).
+    expect(fx.innerGlow.gradient.colorStops[0]).toMatchObject({ location: 0, color: { r: 255, g: 0, b: 0 } });
+    expect(fx.innerGlow.gradient.colorStops.at(-1)).toMatchObject({ location: 1, color: { r: 0, g: 0, b: 255 } });
+    expect(fx.innerGlow.gradient.opacityStops.at(-1)).toMatchObject({ location: 1, opacity: 0.25 });
     const back = roundTrip(layer).layer.effects;
     expectSame(back.outerGlow, fx.outerGlow, 'outerGlow');
     expectSame(back.innerGlow, fx.innerGlow, 'innerGlow');
@@ -104,7 +107,8 @@ describe('the PSD effects, written and read back', () => {
 
   it('a Bevel & Emboss on the Global Light, its Gloss Contour a preset', () => {
     setGlobalLight({ angle: 135, altitude: 40 });
-    const bevel = normalizeBevel({ on: true, style: 'outer', technique: 'chisel-hard', depth: 3, size: 8, soften: 2, gloss: { preset: 'half-round', aa: true }, contour: { on: true, curve: { preset: 'cone' }, range: 0.4 } });
+    // The Contour element Linear: a curved one ships the box's pixels (F34).
+    const bevel = normalizeBevel({ on: true, style: 'outer', technique: 'chisel-hard', depth: 3, size: 8, soften: 2, gloss: { preset: 'half-round', aa: true }, contour: { on: true, curve: { preset: 'linear' }, range: 0.4 } });
     const layer = layerFor({ bevel });
     expect(layer.effects.bevel).toMatchObject({ angle: 135, altitude: 40, useGlobalLight: true, useShape: true, range: 0.4, present: true });
     expect(layer.effects.bevel.contour.name).toBe('Half Round');
@@ -173,5 +177,217 @@ describe('the PSD effects, written and read back', () => {
     expect(isRasterOnly(normalizeStyle({ ...plain, patternOverlay: { on: true } }))).toBe(true);
     expect(isRasterOnly(normalizeStyle({ ...plain, bevel: { on: true, texture: { on: true } } }))).toBe(true);
     expect(isRasterOnly(normalizeStyle({ ...plain, gradientOverlays: [{ gradient: { style: 'shapeburst' } }] }))).toBe(true);
+  });
+});
+
+// The raw bytes of a written page: what Photoshop reads, where ag-psd's own
+// reader would hide a scaling (it divides back what it multiplied).
+function pageBytes(layer) {
+  return new Uint8Array(writePagePsd(pagePsdDocument({ w: 32, h: 32, textLayers: [layer], project: { v: 1 } })));
+}
+const ascii = (s) => [...s].map((c) => c.charCodeAt(0));
+function findAll(bytes, pattern) {
+  const at = [];
+  outer: for (let i = 0; i + pattern.length <= bytes.length; i++) {
+    for (let j = 0; j < pattern.length; j++) if (bytes[i + j] !== pattern[j]) continue outer;
+    at.push(i + pattern.length);
+  }
+  return at;
+}
+const view = (bytes) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+// Every `key` stored as a `long`, and as a `doub`.
+const longs = (bytes, key) => findAll(bytes, ascii(key + 'long')).map((i) => view(bytes).getInt32(i, false));
+const doubles = (bytes, key) => findAll(bytes, ascii(key + 'doub')).map((i) => view(bytes).getFloat64(i, false));
+// A list of longs (`VlLs`), as the noise gradient's Limits are written.
+const longLists = (bytes, key) =>
+  findAll(bytes, ascii(key + 'VlLs')).map((i) => {
+    const v = view(bytes);
+    const n = v.getInt32(i, false);
+    return Array.from({ length: n }, (_, k) => v.getInt32(i + 4 + k * 8 + 4, false));
+  });
+
+// Photoshop's gradient at Smoothness 100 % (Classic): each segment a
+// Hermite curve whose tangents are Catmull-Rom's, the end stops' at half
+// slope, held inside the segment's own range. The model is PhotoCraft's,
+// fitted on Photoshop (crates/io/src/gradient_bake.rs `eval`).
+function photoshopSmooth(stops, t) {
+  const n = stops.length;
+  if (t <= stops[0][0]) return stops[0][1];
+  if (t >= stops[n - 1][0]) return stops[n - 1][1];
+  let i = 0;
+  while (i < n - 2 && t > stops[i + 1][0]) i++;
+  const [t0, p0] = stops[i];
+  const [t1, p1] = stops[i + 1];
+  const h = Math.max(1e-6, t1 - t0);
+  const u = (t - t0) / h;
+  const tangent = (k) => {
+    const [a, b] = k === 0 ? [0, 1] : k === n - 1 ? [n - 2, n - 1] : [k - 1, k + 1];
+    const half = k === 0 || k === n - 1 ? 0.5 : 1;
+    return ((stops[b][1] - stops[a][1]) / Math.max(1e-6, stops[b][0] - stops[a][0])) * half;
+  };
+  const [m0, m1] = [tangent(i), tangent(i + 1)];
+  const v = (2 * u ** 3 - 3 * u ** 2 + 1) * p0 + (u ** 3 - 2 * u ** 2 + u) * h * m0 + (-2 * u ** 3 + 3 * u ** 2) * p1 + (u ** 3 - u ** 2) * h * m1;
+  return Math.min(Math.max(p0, p1), Math.max(Math.min(p0, p1), v));
+}
+const linearRamp = (stops, t) => {
+  if (t <= stops[0][0]) return stops[0][1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0, a] = stops[i];
+    const [t1, b] = stops[i + 1];
+    if (t <= t1) return t1 > t0 ? a + ((b - a) * (t - t0)) / (t1 - t0) : b;
+  }
+  return stops.at(-1)[1];
+};
+
+describe('the PSD export review fixes', () => {
+  it('F30: writes every gradient midpoint as Photoshop\'s 50 %', () => {
+    const layer = layerFor({
+      gradient: { on: true, angle: 90, stops: [{ color: '#000000', pos: 0, opacity: 1 }, { color: '#ffffff', pos: 1, opacity: 1 }] },
+      gradientOverlays: [normalizeGradientOverlay({})],
+    });
+    const mids = longs(pageBytes(layer), 'Mdpn');
+    expect(mids.length).toBeGreaterThan(4);
+    expect(new Set(mids)).toEqual(new Set([50]));
+  });
+
+  it('F35: bakes the linear ramp into stops Photoshop draws straight at Smoothness 100 %', () => {
+    const black = { color: '#000000', opacity: 1 };
+    const white = { color: '#ffffff', opacity: 0 };
+    for (const stops of [
+      [{ ...black, pos: 0 }, { ...white, pos: 1 }],
+      [{ ...black, pos: 0.1 }, { ...white, pos: 0.4 }, { ...black, pos: 0.9 }],
+    ]) {
+      const layer = layerFor({ gradientOverlays: [normalizeGradientOverlay({ gradient: { stops } })] });
+      const g = layer.effects.gradientOverlay[0].gradient;
+      const bytes = pageBytes(layer);
+      // Smoothness stays 100 % (ag-psd scales Lctn by it), and every location
+      // is on its 4096 grid.
+      expect(doubles(bytes, 'Intr')).toEqual([4096]);
+      expect(longs(bytes, 'Lctn').every((l) => l >= 0 && l <= 4096)).toBe(true);
+      const want = stops.map((st) => [st.pos, st.color === '#000000' ? 0 : 255]);
+      const wantA = stops.map((st) => [st.pos, st.opacity]);
+      const got = g.colorStops.map((c) => [c.location, c.color.r]);
+      const gotA = g.opacityStops.map((c) => [c.location, c.opacity]);
+      for (let k = 0; k <= 400; k++) {
+        const t = k / 400;
+        expect(Math.abs(photoshopSmooth(got, t) - linearRamp(want, t)), `colour at ${t}`).toBeLessThan(1.5);
+        expect(Math.abs(photoshopSmooth(gotA, t) - linearRamp(wantA, t)), `opacity at ${t}`).toBeLessThan(0.01);
+      }
+      // The stops as written, without the bake, would not be: Photoshop eases them.
+      const eased = Math.max(...Array.from({ length: 101 }, (_, k) => Math.abs(photoshopSmooth(want, k / 100) - linearRamp(want, k / 100))));
+      expect(eased).toBeGreaterThan(5);
+    }
+  });
+
+  it('F36: writes noise limits that survive ag-psd\'s truncation', () => {
+    const gradient = { type: 'noise', noise: { min: [0.29, 0.57, 0.58], max: [0.83, 1, 0.07] } };
+    const layer = layerFor({ gradientOverlays: [normalizeGradientOverlay({ gradient })] });
+    const bytes = pageBytes(layer);
+    expect(longLists(bytes, 'Mnm ')).toEqual([[29, 57, 58, 0]]);
+    expect(longLists(bytes, 'Mxm ')).toEqual([[83, 100, 58, 100]]);
+  });
+
+  it('F29: turns every effect angle back by the box rotation, off the Global Light', () => {
+    setGlobalLight({ angle: 120, altitude: 30 });
+    const style = {
+      rotation: 30,
+      // Straight down in the box's frame (light at 90), and one on the light.
+      shadows: [normalizeShadow({ x: 0, y: 5, useGlobalLight: false }), normalizeShadow({ x: 0, y: 5, useGlobalLight: true })],
+      innerShadows: [normalizeInnerShadow({ x: -5, y: 0 })],
+      satin: normalizeSatin({ on: true, angle: 19 }),
+      bevel: normalizeBevel({ on: true, useGlobalLight: true }),
+      gradientOverlays: [normalizeGradientOverlay({ gradient: { angle: 90 } })],
+      strokeEffects: [normalizeStrokeEffect({ size: 2, fill: 'gradient', gradient: { angle: -170 } })],
+      gradient: { on: true, angle: 180, stops: [{ color: '#000000', pos: 0, opacity: 1 }, { color: '#ffffff', pos: 1, opacity: 1 }] },
+    };
+    const fx = layerFor(style).effects;
+    // The box turns clockwise on the page: a shadow thrown straight down in
+    // its frame lands down and to the left, Photoshop's light at 60.
+    expect(fx.dropShadow.map((d) => [d.angle, d.useGlobalLight])).toEqual([[60, false], [90, false]]);
+    expect(fx.innerShadow[0]).toMatchObject({ angle: -30, useGlobalLight: false });
+    expect(fx.satin.angle).toBe(-11);
+    expect(fx.bevel).toMatchObject({ angle: 90, altitude: 30, useGlobalLight: false });
+    expect(fx.gradientOverlay.map((g) => g.angle)).toEqual([60, -120]);
+    // -170 less 30 is -200, written as Photoshop's 160.
+    expect(fx.stroke[0].gradient.angle).toBe(160);
+    const back = roundTrip(layerFor(style)).layer.effects;
+    expect(back.dropShadow.map((d) => [d.angle, d.useGlobalLight])).toEqual([[60, false], [90, false]]);
+    expect(back.bevel).toMatchObject({ angle: 90, useGlobalLight: false });
+    // Not turned: the angles and the Global Light as they were.
+    const flat = layerFor({ ...style, rotation: 0 }).effects;
+    expect(flat.dropShadow.map((d) => [d.angle, d.useGlobalLight])).toEqual([[90, false], [120, true]]);
+    expect(flat.bevel).toMatchObject({ angle: 120, useGlobalLight: true });
+    expect(flat.gradientOverlay.map((g) => g.angle)).toEqual([90, -90]);
+    expect(layerFor({ ...style, rotation: 360 }).effects.satin.angle).toBe(19);
+  });
+
+  it('F31: a raster-only layer keeps its blend mode, Blend If, Channels and Knockout', () => {
+    const blending = normalizeBlending({ interior: true, knockout: 'deep', channels: { g: false }, blendIf: { gray: { under: [10, 40, 255, 255] } } });
+    const layer = layerFor({ curve: 30, blendMode: 'color-burn', blending });
+    expect('text' in layer).toBe(false);
+    expect(layer).toMatchObject({ blendMode: 'color burn', blendInteriorElements: true, knockout: true, channelBlendingRestrictions: [1] });
+    const { layer: back } = roundTrip(layer);
+    expect(back).toMatchObject({ blendMode: 'color burn', blendInteriorElements: true, knockout: true });
+    expect(back.blendingRanges.compositeGraphBlendDestinationRange).toEqual([10, 40, 255, 255]);
+    // Channels from the `brst` block's bytes: ag-psd 31's reader stops one
+    // index short, so it reads a lone channel back as none.
+    const bytes = pageBytes(layer);
+    const [at] = findAll(bytes, ascii('8BIMbrst'));
+    expect(at).toBeGreaterThan(0);
+    const dv = view(bytes);
+    expect(dv.getUint32(at, false)).toBe(4);
+    expect(dv.getInt32(at + 4, false)).toBe(1);
+    // A plain raster-only box stays Normal with nothing more.
+    const plainRaster = layerFor({ curve: 30 });
+    expect(plainRaster.blendMode).toBe('normal');
+    expect(plainRaster.knockout).toBeUndefined();
+    expect(plainRaster.blendingRanges).toBeUndefined();
+  });
+
+  it('F32: a fill gradient under Fill Opacity with Blend Interior off ships pixels', () => {
+    const gradient = { on: true, angle: 90, stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 1 }] };
+    expect(isRasterOnly(normalizeStyle({ ...plain, gradient, fillOpacity: 0.5 }))).toBe(true);
+    // Photoshop fades the overlay by Fill when Blend Interior Effects is on.
+    expect(isRasterOnly(normalizeStyle({ ...plain, gradient, fillOpacity: 0.5, blending: { interior: true } }))).toBe(false);
+    expect(isRasterOnly(normalizeStyle({ ...plain, gradient, fillOpacity: 1 }))).toBe(false);
+    // Fill without a gradient fill is the type layer's own Fill: live.
+    expect(isRasterOnly(normalizeStyle({ ...plain, fillOpacity: 0.5 }))).toBe(false);
+  });
+
+  it('F33: a Stroke Emboss with no Photoshop stroke is left out', () => {
+    const bevel = normalizeBevel({ on: true, style: 'stroke' });
+    const strokes = [{ color: '#ffffff', width: 3, opacity: 1 }];
+    const bare = layerFor({ strokes, bevel }).effects;
+    expect(bare.stroke).toHaveLength(1);
+    expect(bare.bevel).toBeUndefined();
+    const stroked = layerFor({ strokes, bevel, strokeEffects: [normalizeStrokeEffect({ size: 2 })] }).effects;
+    expect(stroked.bevel.style).toBe('stroke emboss');
+    // A stroke that paints nothing is neither written nor embossed.
+    const clear = layerFor({ strokes, bevel, strokeEffects: [normalizeStrokeEffect({ size: 2, opacity: 0 })] }).effects;
+    expect(clear.stroke).toHaveLength(1);
+    expect(clear.bevel).toBeUndefined();
+    // Another style keeps its bevel with no stroke at all.
+    expect(layerFor({ strokes, bevel: { ...bevel, style: 'inner' } }).effects.bevel.style).toBe('inner bevel');
+  });
+
+  it('F34: a bevel with a curved Contour ships pixels', () => {
+    const bevel = (contour) => normalizeStyle({ ...plain, bevel: normalizeBevel({ on: true, contour }) });
+    expect(isRasterOnly(bevel({ on: true, curve: { preset: 'ring' } }))).toBe(true);
+    expect(isRasterOnly(bevel({ on: true, curve: { preset: 'custom', pts: [[0, 0], [128, 200], [255, 255]] } }))).toBe(true);
+    expect(isRasterOnly(bevel({ on: true, curve: { preset: 'linear' } }))).toBe(false);
+    expect(isRasterOnly(bevel({ on: true, curve: { preset: 'custom', pts: [[0, 0], [128, 128], [255, 255]] } }))).toBe(false);
+    // The Contour element off: its curve is not used.
+    expect(isRasterOnly(bevel({ on: false, curve: { preset: 'ring' } }))).toBe(false);
+  });
+
+  it('F37: a pattern effect that paints nothing keeps the box live', () => {
+    const k = { size: 3, fill: 'pattern' };
+    expect(isRasterOnly(normalizeStyle({ ...plain, strokeEffects: [normalizeStrokeEffect(k)] }))).toBe(true);
+    expect(isRasterOnly(normalizeStyle({ ...plain, strokeEffects: [normalizeStrokeEffect({ ...k, opacity: 0 })] }))).toBe(false);
+    expect(isRasterOnly(normalizeStyle({ ...plain, strokeEffects: [normalizeStrokeEffect({ ...k, size: 0 })] }))).toBe(false);
+    expect(isRasterOnly(normalizeStyle({ ...plain, patternOverlay: { on: true, opacity: 0 } }))).toBe(false);
+    expect(isRasterOnly(normalizeStyle({ ...plain, patternOverlay: { on: true, opacity: 0.5 } }))).toBe(true);
+    // The stroke that paints nothing is not written either.
+    expect(layerFor({ strokeEffects: [normalizeStrokeEffect({ size: 2, opacity: 0 })] }).effects).toBeUndefined();
   });
 });
