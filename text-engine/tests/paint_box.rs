@@ -1106,7 +1106,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 12));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 13));
 }
 
 #[test]
@@ -1224,8 +1224,10 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_f(bevel_at + 96, 1.5), Some(Error::BadSpec));
     assert_eq!(with_f(bevel_at + 104, 10.5), Some(Error::BadSpec));
     assert_eq!(with_u(bevel_at + 112, 0), Some(Error::BadSpec));
-    // Blending flags that are not ones.
-    assert_eq!(with_u(blending_at, 2), Some(Error::BadSpec));
+    // Blending flags that are not ones: 1 interior, 2 Transparency Shapes
+    // Layer off (v13), nothing past them.
+    assert_eq!(with_u(blending_at, 4), Some(Error::BadSpec));
+    assert_eq!(with_u(blending_at, 3), None);
     assert_eq!(with_u(blending_at, 0), None);
     // A channel mask past R, G and B; a Blend If that is not 0 or 1.
     assert_eq!(with_u(blending_at + 4, 8), Some(Error::BadSpec));
@@ -1530,6 +1532,61 @@ fn a_special_eight_mode_takes_fill_into_its_blend_over_a_page() {
         "{:?}",
         px(&alone, x, y)
     );
+}
+
+/// Transparency Shapes Layer off (`Blending::shapeless`): in one of the
+/// special eight over a page, the letters' own transparency blends as Fill
+/// does, also at a whole Fill (PhotoCraft's `blend_layer_into`, measured in
+/// Photoshop; the measured values are `blend.rs`'s
+/// `transparency_shapes_off_blends_alpha_as_fill`).
+#[test]
+fn transparency_shapes_off_blends_the_letters_alpha_as_fill() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glyphs = inked(&paint(&mut e, &mut b));
+    let (x, y) = stem(glyphs);
+    b.backdrop = Some([50u8, 50, 50, 255].repeat(200 * 160));
+    b.blend = Blend::Difference;
+    let shown = |r: &Raster, x: i32, y: i32| {
+        let p = px(r, x, y);
+        let a = f32::from(p[3]) / 255.0;
+        f32::from(p[0]) * a + 50.0 * (1.0 - a)
+    };
+    // A half see-through grey fill at a whole Fill. On: half the coverage of
+    // |50 - 200| = 150, so (50 + 150) / 2 = 100. Off: whole coverage of the
+    // grey pulled halfway to black, |50 - 100| = 50.
+    b.request.job.fill = Some(Fill::Solid(Rgba([200, 200, 200, 128])));
+    let on = paint(&mut e, &mut b);
+    assert!((shown(&on, x, y) - 100.0).abs() <= 2.0, "{}", shown(&on, x, y));
+    b.blending.shapeless = true;
+    let off = paint(&mut e, &mut b);
+    assert!((shown(&off, x, y) - 50.0).abs() <= 2.0, "{}", shown(&off, x, y));
+    // An opaque fill: the inside of a letter is the same either way, and
+    // its anti-aliased edge is not.
+    b.request.job.fill = Some(Fill::Solid(Rgba([200, 200, 200, 255])));
+    let off = paint(&mut e, &mut b);
+    b.blending.shapeless = false;
+    let on = paint(&mut e, &mut b);
+    assert_eq!(px(&off, x, y), px(&on, x, y));
+    let (x0, y0, w, h) = (on.x, on.y, on.width as i32, on.height as i32);
+    let edges = (y0..y0 + h)
+        .flat_map(|yy| (x0..x0 + w).map(move |xx| (xx, yy)))
+        .filter(|&(xx, yy)| (1..255).contains(&px(&on, xx, yy)[3]))
+        .filter(|&(xx, yy)| (shown(&on, xx, yy) - shown(&off, xx, yy)).abs() > 2.0)
+        .count();
+    assert!(edges > 0, "no edge changed");
+    // Outside the special eight it changes nothing.
+    b.blend = Blend::Multiply;
+    let on = paint(&mut e, &mut b);
+    b.blending.shapeless = true;
+    assert_eq!(paint(&mut e, &mut b), on);
+    // Nor with no page.
+    b.blend = Blend::Difference;
+    b.backdrop = None;
+    let off = paint(&mut e, &mut b);
+    b.blending.shapeless = false;
+    assert_eq!(paint(&mut e, &mut b), off);
 }
 
 /// PhotoCraft's `blend_interior_effects_as_group_puts_overlays_under_fill_opacity`

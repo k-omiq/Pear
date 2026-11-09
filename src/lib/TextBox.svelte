@@ -36,7 +36,7 @@
 
   import { untrack, flushSync } from 'svelte';
   import { resizeBoxMath } from './resize-math.js';
-  import { sizingOf } from './data.js';
+  import { sizingOf, instanceOn } from './data.js';
   import { record } from './editor/history.svelte.js';
   import {
     createFieldUndo,
@@ -483,10 +483,11 @@
         ? `${app.typesetting.light?.angle ?? 'd'}`
         : '',
   );
-  // The shadows as they are painted, thrown from the light where they follow it.
+  // The shadows as they are painted, thrown from the light where they follow
+  // it; one switched off in the list (`on: false`) paints nothing.
   const cast = $derived.by(() => {
     void lightKey;
-    return (s.shadows ?? []).map(resolveShadow);
+    return (s.shadows ?? []).filter(instanceOn).map(resolveShadow);
   });
   // The strokes and shadows are in the key because they are in the picture:
   // they wrap the ink (see `drawInk`), so a change to either repaints it. The
@@ -1138,7 +1139,7 @@
     if (!bands.length) return [];
     return [
       ...bands.map((b, i) => ({ id: `${hollowId}-b${i}`, color: b.color, opacity: b.opacity })),
-      ...(s.shadows ?? []).map((sh, i) => ({ id: `${hollowId}-s${i}`, color: sh.color, opacity: 1 })),
+      ...cast.map((sh, i) => ({ id: `${hollowId}-s${i}`, color: sh.color, opacity: 1 })),
     ];
   });
 

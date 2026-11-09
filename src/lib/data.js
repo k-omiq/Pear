@@ -661,10 +661,24 @@ export function blendIfActive(blendIf) {
   }));
 }
 
-/** A style's Advanced Blending options, every field present (`defaultStyle`'s `blending`). */
+// Advanced Blending's three switches past Knockout, as PhotoCraft keeps them
+// (`AdvancedBlending` in crates/doc/src/advanced.rs: blend_clipped,
+// transparency_shapes, vector_mask_hides_effects), each stored only when it
+// is off its Photoshop default (on, on, off), so a style saved before them,
+// and every style at the defaults, saves as it did:
+//   blendClipped            Blend Clipped Layers as Group (default on)
+//   transparencyShapes      Transparency Shapes Layer (default on); off, the
+//                           Rust engine lays a special-eight fill with the
+//                           letters' own transparency in the blend (`tsly`)
+//   vectorMaskHidesEffects  Vector Mask Hides Effects (default off)
+// A box has no clipped layers and no vector mask: the first and the last are
+// stored and written to the PSD (`clbl`; ag-psd has no `vmgm`), not painted.
+export const BLENDING_SWITCHES = { blendClipped: true, transparencyShapes: true, vectorMaskHidesEffects: false };
+
+/** A style's Advanced Blending options, every field present (`defaultStyle`'s `blending`) but the switches at their defaults (`BLENDING_SWITCHES`). */
 export function normalizeBlending(x) {
   const ch = x?.channels;
-  return {
+  const out = {
     interior: x?.interior === true,
     knockout: KNOCKOUT_MODES.includes(x?.knockout) ? x.knockout : 'none',
     channels: { r: ch?.r !== false, g: ch?.g !== false, b: ch?.b !== false },
@@ -673,6 +687,16 @@ export function normalizeBlending(x) {
       under: normalizeBlendRange(x?.blendIf?.[c]?.under),
     }])),
   };
+  for (const [k, d] of Object.entries(BLENDING_SWITCHES)) {
+    if (typeof x?.[k] === 'boolean' && x[k] !== d) out[k] = x[k];
+  }
+  return out;
+}
+
+/** An Advanced Blending switch's value (`BLENDING_SWITCHES`), its default when not stored. */
+export function blendingSwitch(blending, key) {
+  const v = blending?.[key];
+  return typeof v === 'boolean' ? v : BLENDING_SWITCHES[key];
 }
 
 // Photoshop's contour presets, in its picker's order (`PRESETS` and
@@ -748,11 +772,25 @@ export function normalizeFinish(finish) {
     strokes: (Array.isArray(finish?.strokes) ? finish.strokes : [])
       .map(normalizeStroke)
       .filter((k) => k.width > 0),
-    shadows: (Array.isArray(finish?.shadows) ? finish.shadows : []).map(normalizeShadow),
+    shadows: capped((Array.isArray(finish?.shadows) ? finish.shadows : []).map(normalizeShadow)),
   };
 }
 
+// Photoshop's effects that come more than once (Drop Shadow, Inner Shadow,
+// Color Overlay, Gradient Overlay, Stroke): at most this many of each, the
+// first listed on top. Each instance has its own box in the list: `on`,
+// stored only when it is off (`instanceOff`), so a style saved before it
+// existed, and every instance left on, saves as it did. PhotoCraft keeps the
+// same per-instance switch (`FxCommon::enabled`, crates/doc; the dialog's
+// `on`, crates/ui-egui/src/dialogs/layer_style.rs `add_instance`).
+export const FX_INSTANCES_MAX = 10;
+const instanceOff = (x) => (x?.on === false ? { on: false } : null);
+/** Whether an instance of a multi effect is switched on (`on`, absent when it is). */
+export const instanceOn = (x) => x?.on !== false;
+const capped = (list) => list.slice(0, FX_INSTANCES_MAX);
+
 // A Drop Shadow, as Photoshop's dialog has it:
+//   on          false: switched off in the list (kept, not painted)
 //   x, y        where it is thrown, page px (Angle and Distance in the panel)
 //   size        how far its soft edge reaches, page px, 0 to 250
 //   spread      0..1: the share of the size the matte is grown by, not blurred
@@ -769,6 +807,7 @@ export function normalizeFinish(finish) {
 export function normalizeShadow(x) {
   const size = Number.isFinite(+x?.size) ? +x.size : Number.isFinite(+x?.blur) ? sizeFromBlur(Math.max(0, +x.blur)) : SHADOW_DEF.size;
   return {
+    ...instanceOff(x),
     x: num(x?.x, SHADOW_DEF.x),
     y: num(x?.y, SHADOW_DEF.y),
     size: Math.min(SHADOW_SIZE_MAX, Math.max(0, size)),
@@ -909,6 +948,7 @@ function factoryInnerShadow(light) {
 // A Color Overlay: a flat colour over the letters' fill, in its own mode.
 export function normalizeOverlay(x) {
   return {
+    ...instanceOff(x),
     color: hex(x?.color, '#ff0000'),
     opacity: Math.min(1, Math.max(0, num(x?.opacity, 1))),
     blend: blendMode(x?.blend, 'normal'),
@@ -1001,6 +1041,7 @@ export function normalizeFxGradient(x, d = fxGradientDefault()) {
 // A Gradient Overlay: an effect gradient over the letters' fill.
 export function normalizeGradientOverlay(x) {
   return {
+    ...instanceOff(x),
     blend: blendMode(x?.blend, 'normal'),
     opacity: Math.min(1, Math.max(0, num(x?.opacity, 1))),
     gradient: normalizeFxGradient(x?.gradient),
@@ -1163,6 +1204,7 @@ export const STROKE_POSITIONS = ['outside', 'inside', 'center'];
 export const STROKE_FILLS = ['color', 'gradient', 'pattern'];
 export function normalizeStrokeEffect(x) {
   return {
+    ...instanceOff(x),
     size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, 1))),
     position: STROKE_POSITIONS.includes(x?.position) ? x.position : 'inside',
     blend: blendMode(x?.blend, 'normal'),
@@ -1248,11 +1290,12 @@ export function fxStored(kind, x) {
       const stored = Number.isFinite(+x.distance) && x.distance !== null && x.distance !== '';
       const distance = Math.min(SHADOW_DISTANCE_MAX, Math.max(0, stored ? +x.distance : Math.hypot(sh.x, sh.y)));
       const own = stored ? num(x.angle, LIGHT_DEF.angle) : (shadowOwnAngle(sh) ?? LIGHT_DEF.angle);
-      const { x: _x, y: _y, ...rest } = sh;
+      const { x: _x, y: _y, on: _on, ...rest } = sh;
       return { ...rest, distance: round2(distance), ...(rest.useGlobalLight ? null : { angle: wrapAngle(own) }) };
     }
     const fx = normalizeFxKind(kind, x);
-    if (FX_SINGLE.includes(kind)) delete fx.on;
+    // The switch is the instance's own, a single effect's or one of a list's.
+    if (kind !== 'blending') delete fx.on;
     for (const g of fxGradients(kind, fx)) delete g.noise.seed;
     for (const p of fxPatterns(kind, fx)) {
       delete p.seed;
@@ -1320,6 +1363,7 @@ export function fxReset(kind, inst, light = LIGHT_DEF, factory = false) {
   const next = factory ? factoryFx(kind, light) : newFx(kind, light);
   if (!next) return null;
   if (FX_SINGLE.includes(kind)) next.on = inst?.on === true;
+  else if (inst?.on === false && kind !== 'blending') next.on = false;
   const ga = fxGradients(kind, inst ?? {});
   fxGradients(kind, next).forEach((g, i) => {
     if (Number.isFinite(ga[i]?.noise?.seed)) g.noise.seed = ga[i].noise.seed;
@@ -1835,7 +1879,7 @@ export function normalizeStyle(s) {
   } else strokes = d.strokes;
 
   let shadows;
-  if (Array.isArray(src.shadows)) shadows = src.shadows.map(normalizeShadow);
+  if (Array.isArray(src.shadows)) shadows = capped(src.shadows.map(normalizeShadow));
   else if (shadow && typeof shadow === 'object') shadows = shadow.on ? [normalizeShadow(shadow)] : [];
   else shadows = d.shadows;
 
@@ -1974,13 +2018,13 @@ export function normalizeStyle(s) {
     shadows,
     outerGlow: normalizeGlow(src.outerGlow),
     innerGlow: normalizeGlow(src.innerGlow, true),
-    innerShadows: Array.isArray(src.innerShadows) ? src.innerShadows.map(normalizeInnerShadow) : [],
-    colorOverlays: Array.isArray(src.colorOverlays) ? src.colorOverlays.map(normalizeOverlay) : [],
-    gradientOverlays: Array.isArray(src.gradientOverlays) ? src.gradientOverlays.map(normalizeGradientOverlay) : [],
+    innerShadows: Array.isArray(src.innerShadows) ? capped(src.innerShadows.map(normalizeInnerShadow)) : [],
+    colorOverlays: Array.isArray(src.colorOverlays) ? capped(src.colorOverlays.map(normalizeOverlay)) : [],
+    gradientOverlays: Array.isArray(src.gradientOverlays) ? capped(src.gradientOverlays.map(normalizeGradientOverlay)) : [],
     patternOverlay: normalizePatternOverlay(src.patternOverlay),
     satin: normalizeSatin(src.satin),
     bevel: normalizeBevel(src.bevel),
-    strokeEffects: Array.isArray(src.strokeEffects) ? src.strokeEffects.map(normalizeStrokeEffect) : [],
+    strokeEffects: Array.isArray(src.strokeEffects) ? capped(src.strokeEffects.map(normalizeStrokeEffect)) : [],
     roughen: { ...d.roughen, ...(src.roughen || {}) },
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));

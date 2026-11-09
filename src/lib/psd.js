@@ -22,7 +22,7 @@ import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/i
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
-import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS } from './data.js';
+import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
 import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
 import { warpActive } from './warp.js';
@@ -134,6 +134,14 @@ function advancedBlending(s) {
   return {
     ...(s.blending?.interior ? { blendInteriorElements: true } : null),
     ...(s.blending?.knockout && s.blending.knockout !== 'none' ? { knockout: true } : null),
+    // Blend Clipped Layers as Group (clbl; ag-psd spells it
+    // `blendClippendElements`) and Transparency Shapes Layer (tsly), written
+    // only off their default (on), as PhotoCraft writes a layer's
+    // (crates/psd/src/tagged.rs `blend_clipped_as_group`,
+    // `transparency_shapes`). Vector Mask Hides Effects (vmgm) has no handler
+    // in ag-psd, so it is not written: a box has no vector mask anyway.
+    ...(!blendingSwitch(s.blending, 'blendClipped') ? { blendClippendElements: false } : null),
+    ...(!blendingSwitch(s.blending, 'transparencyShapes') ? { transparencyShapesLayer: false } : null),
     ...psdBlendIf(s.blending),
   };
 }
@@ -184,6 +192,10 @@ function psdSolidStops(stops) {
 // effects_map.rs): on, and Photoshop's `present` and `showInDialog` flags,
 // which ag-psd writes only when given.
 const FX_ON = Object.freeze({ enabled: true, present: true, showInDialog: true });
+// An instance of a multi effect (a shadow, an overlay, a Photoshop stroke):
+// its own box in Photoshop's list, unticked when it is switched off. It is
+// written all the same, so it is there to tick in Photoshop.
+const fxOn = (x) => (instanceOn(x) ? FX_ON : { ...FX_ON, enabled: false });
 
 // The gradient styles ag-psd can name (GrdT); Shape Burst is not one.
 const PSD_GRADIENT_TYPES = FX_GRADIENT_STYLES.filter((t) => t !== 'shapeburst');
@@ -484,7 +496,8 @@ function warpForCurve(curve) {
 // Used twice, deliberately: by `isRasterOnly` to decide the layer even gets a
 // live `text` object, and by the effects builder to decide it emits the
 // overlay. One rule, so the two can never disagree about the same style.
-// A Gradient Overlay or a gradient Stroke in Shape Burst.
+// A Gradient Overlay or a gradient Stroke in Shape Burst, switched on or off
+// (one switched off is still written, and ag-psd has no Shape Burst).
 function usesShapeBurst(s) {
   return (
     (s.gradientOverlays ?? []).some((o) => o.gradient?.style === 'shapeburst') ||
@@ -1095,7 +1108,7 @@ export function textLayerFor(p, box, rendered) {
   // point's x and y only, so a corner point arrives smooth (no `Cnty`).
   // A shadow thrown into the letters or under them: Photoshop's fields alike.
   const shadowFx = (sh) => ({
-    ...FX_ON,
+    ...fxOn(sh),
     size: { units: 'Pixels', value: sh.size || 0 },
     distance: { units: 'Pixels', value: Math.hypot(sh.x || 0, sh.y || 0) },
     // On the Global Light the chapter's angle itself, not one read back off
@@ -1218,10 +1231,12 @@ export function textLayerFor(p, box, rendered) {
   // The Photoshop strokes the engine paints: opacity and size above 0, the
   // rule `boxEffects` takes them by (`strokeEffectsOf` in text-paint.js), and
   // what each paints with (a gradient or a pattern only when it has one).
+  // One switched off is written unticked (`fxOn`) and does not count as
+  // painting for a Stroke Emboss.
   const psdStrokes = (Array.isArray(s.strokeEffects) ? s.strokeEffects : [])
     .filter((k) => k.opacity > 0 && k.size > 0)
     .map((k) => ({ ...k, fill: k.fill === 'gradient' && k.gradient ? 'gradient' : k.fill === 'pattern' && k.pattern ? 'pattern' : 'color' }));
-  if (bv?.on && !(bv.style === 'stroke' && !psdStrokes.length)) {
+  if (bv?.on && !(bv.style === 'stroke' && !psdStrokes.some(instanceOn))) {
     const lit = bv.useGlobalLight ? globalLight() : bv;
     effects.bevel = {
       ...FX_ON,
@@ -1248,7 +1263,7 @@ export function textLayerFor(p, box, rendered) {
     };
   }
   if ((s.colorOverlays ?? []).length) {
-    effects.solidFill = s.colorOverlays.map((o) => ({ ...FX_ON, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
+    effects.solidFill = s.colorOverlays.map((o) => ({ ...fxOn(o), blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
   }
   // On a turned box the angle, scale and offset are measured against the
   // page bounds (`turnedGradientPlacement`).
@@ -1259,7 +1274,7 @@ export function textLayerFor(p, box, rendered) {
       : { angle: turnAngle(g.angle), scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } };
   };
   const gradientOverlays = (s.gradientOverlays ?? []).map((o) => ({
-    ...FX_ON,
+    ...fxOn(o),
     blendMode: psdBlend(o.blend),
     opacity: o.opacity ?? 1,
     type: o.gradient.style,
@@ -1273,7 +1288,7 @@ export function textLayerFor(p, box, rendered) {
   const strokeFx = psdStrokes
     .filter((k) => k.fill !== 'pattern')
     .map((k) => ({
-      ...FX_ON,
+      ...fxOn(k),
       size: { units: 'Pixels', value: k.size },
       position: k.position,
       fillType: k.fill === 'gradient' ? 'gradient' : 'color',

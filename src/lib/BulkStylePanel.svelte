@@ -18,7 +18,7 @@ import {
   import { tagsInUse, boxesWithTag } from './tags.svelte.js';
   import { modKey } from './format.js';
   import FontPicker from './FontPicker.svelte';
-  import { sizingOf, newShadow, SHADOW_SIZE_MAX } from './data.js';
+  import { sizingOf, newShadow, SHADOW_SIZE_MAX, FX_INSTANCES_MAX, instanceOn } from './data.js';
   import { PATTERN_KINDS, CANVAS_PATTERN_KINDS, GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { glyphPainter } from './text-engine/index.js';
@@ -235,10 +235,20 @@ import {
     }
   }
 
-  // Shadow helpers
+  // Shadow helpers. At most FX_INSTANCES_MAX, as the Inspector and the
+  // normaliser keep them; each with its own switch (`on`, stored only when off).
+  const shadowRoom = () => (s.shadows?.length ?? 0) < FX_INSTANCES_MAX;
   function addShadow() {
     if (!Array.isArray(s.shadows)) s.shadows = [];
+    if (!shadowRoom()) return;
     s.shadows.push(newShadow(app.typesetting.light));
+    tickBulkProp('shadows');
+  }
+  function setShadowOn(i, on) {
+    const sh = s.shadows?.[i];
+    if (!sh) return;
+    if (on) delete sh.on;
+    else sh.on = false;
     tickBulkProp('shadows');
   }
   function removeShadow(i) {
@@ -754,7 +764,7 @@ import {
               <div class="sub-list-block">
                 <div class="sub-list-head">
                   <span class="sub-count">{s.shadows?.length ?? 0} shadow{s.shadows?.length === 1 ? '' : 's'}</span>
-                  <button class="btn btn-sm" onclick={addShadow}>+ Add</button>
+                  <button class="btn btn-sm" onclick={addShadow} disabled={!shadowRoom()} title={shadowRoom() ? null : `At most ${FX_INSTANCES_MAX} shadows`}>+ Add</button>
                 </div>
                 {#if s.shadows?.length}
                   <div class="sub-list">
@@ -765,6 +775,10 @@ import {
                             <ColorPicker value={sh.color} label="Shadow colour" size={30} unclipped onchange={(hex) => { sh.color = hex; tickBulkProp('shadows'); }} />
                             <input type="text" class="hex" value={sh.color} aria-label="Shadow {i + 1} hex colour" onchange={(e) => setShadowHex(i, e.currentTarget.value, e.currentTarget)} />
                           </div>
+                          <label class="sub-on" title="On: switched off, it is kept and paints nothing">
+                            <input type="checkbox" checked={instanceOn(sh)} aria-label="Shadow {i + 1} on" onchange={(e) => setShadowOn(i, e.currentTarget.checked)} />
+                            <span>On</span>
+                          </label>
                           <button class="sub-del" title="Remove shadow" onclick={() => removeShadow(i)}>×</button>
                         </div>
                         <div class="sub-row3">
@@ -999,6 +1013,7 @@ import {
   .sub-del { width: 22px; height: 22px; border: 1px solid var(--line2); background: transparent; color: var(--t2); border-radius: 4px; cursor: pointer; display: grid; place-items: center; font-size: 14px; line-height: 1; flex: 0 0 auto; }
   .sub-del:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
   .sub-del:disabled { opacity: 0.3; cursor: not-allowed; }
+  .sub-on { display: flex; align-items: center; gap: 4px; margin-left: auto; font-size: 11px; color: var(--t2); }
   .bulk-tagstyle {
     margin-top: 4px;
     height: 26px;

@@ -31,16 +31,26 @@ pub struct Blending {
     pub channels_out: u8,
     /// Blend If.
     pub blend_if: BlendIf,
+    /// Transparency Shapes Layer off (Photoshop's default is on). What it
+    /// changes in a box: in the special eight, over a page, the letters' own
+    /// transparency blends as Fill does (`blend::lay_fill_shapeless`). The
+    /// rest of it, effects that cover the whole layer and not the letters,
+    /// has no meaning for a box, which paints its own letters only: in
+    /// Photoshop a type layer's whole layer is the whole canvas. PhotoCraft's
+    /// `AdvancedBlending::transparency_shapes` (`crates/doc/src/advanced.rs`).
+    pub shapeless: bool,
 }
 
 impl Blending {
-    /// The wire's flags: 1 Blend Interior Effects as Group.
+    /// The wire's flags: 1 Blend Interior Effects as Group, 2 Transparency
+    /// Shapes Layer off.
     pub fn from_flags(flags: u32) -> Option<Self> {
-        if flags > 1 {
+        if flags > 3 {
             return None;
         }
         Some(Self {
             interior: flags & 1 != 0,
+            shapeless: flags & 2 != 0,
             ..Self::default()
         })
     }
@@ -298,7 +308,15 @@ mod tests {
                 ..Blending::default()
             })
         );
-        assert_eq!(Blending::from_flags(2), None);
+        assert_eq!(
+            Blending::from_flags(3),
+            Some(Blending {
+                interior: true,
+                shapeless: true,
+                ..Blending::default()
+            })
+        );
+        assert_eq!(Blending::from_flags(4), None);
     }
 
     /// After PhotoCraft's `shadow_knockout_needs_see_through_fill` and
