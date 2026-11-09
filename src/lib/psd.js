@@ -22,7 +22,7 @@ import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/i
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
-import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES } from './data.js';
+import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, GRADIENT_MAX_STOPS } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
 import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
 import { warpActive } from './warp.js';
@@ -1758,9 +1758,9 @@ async function reconstructFromProject(project, psd) {
 // writer's `effects.stroke` in `textLayerFor`. The writer states each band as an
 // OUTSIDE stroke whose size is the band's outer edge - the cumulative width -
 // so the visible widths are the steps between consecutive sizes, innermost
-// first as the style keeps them. Another tool's centred stroke reaches half its
-// size past the glyph and an inside one none, which is all of either the app
-// can draw. A layer with no stroke effect has no outline, and the box gets none
+// first as the style keeps them. Only the strokes `splitStrokes` takes for
+// outlines get here; every other one is a Photoshop stroke (`strokeEffects`).
+// A layer with no stroke effect has no outline, and the box gets none
 // rather than the app's default: the layer's frame was not laid out with the
 // default's inset, so the box recovered from it could not be either.
 function strokesFromEffects(list) {
@@ -1781,6 +1781,289 @@ function strokesFromEffects(list) {
     prev = Math.max(prev, k.reach);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// import: a foreign type layer's effects -> the box's style
+// ---------------------------------------------------------------------------
+//
+// The inverse of the effects `textLayerFor` writes, read off ag-psd's parsed
+// `effects` (its `lfx2` / `lmfx` reader). The field map is PhotoCraft's PSD
+// reader (crates/io/src/effects_map.rs `parse_shadow`, `parse_glow`,
+// `parse_stroke`, `parse_bevel`, `parse_one`, MIT): an effect marked not
+// `present` is not there; Spread and Choke are percents; a Photoshop stroke
+// keeps its position, fill and mode. What ag-psd cannot hand over is left at
+// the app's default: a Pattern Overlay's and a Texture's pattern (Photoshop's
+// pattern table, not a tile), a corner point of a contour (ag-psd reads x
+// and y only), and a bevel Contour element's curve (ag-psd reads it into the
+// same `contour` slot as the Gloss Contour).
+
+const psdUnits = (v) => (Number.isFinite(+v?.value) ? +v.value : Number.isFinite(+v) ? +v : 0);
+const psdNum = (v, d) => (Number.isFinite(+v) ? +v : d);
+// A blend mode as ag-psd names it, as ours ('color burn' is 'color-burn').
+const blendFromPsd = (m) => (typeof m === 'string' && m ? m.trim().replace(/\s+/g, '-') : 'normal');
+// A whole percent, as the file keeps a layer's opacities (one byte).
+const pct2 = (v) => Math.round(Math.min(1, Math.max(0, psdNum(v, 1))) * 100) / 100;
+const exact = (v) => Math.round(v * 1e6) / 1e6 || 0;
+const fxOn = (e) => !!e && e.present !== false && e.enabled !== false;
+
+// A contour (`ShpC`): a preset by Photoshop's name, else the curve's points.
+function contourFromPsd(c, aa) {
+  const out = { preset: 'linear', aa: aa === true };
+  const name = typeof c?.name === 'string' ? c.name : '';
+  const preset = Object.keys(CONTOUR_LABELS).find((k) => k !== 'custom' && CONTOUR_LABELS[k] === name);
+  if (preset) return { ...out, preset };
+  const pts = (Array.isArray(c?.curve) ? c.curve : []).map((q) => [psdNum(q?.x, 0), psdNum(q?.y, 0), false]);
+  const linear = pts.length === 2 && pts[0][0] === 0 && pts[0][1] === 0 && pts[1][0] === 255 && pts[1][1] === 255;
+  return pts.length >= 2 && !linear ? { ...out, preset: 'custom', pts } : out;
+}
+
+// A gradient's colour and opacity tracks back to the app's stops: paired by
+// index when the writer paired them (`psdSolidStops`), else each track read
+// at the other's locations. The stops `psdSolidStops` baked in between lie on
+// the line through their neighbours and are taken out again, as are any that
+// lie within a level of it; past GRADIENT_MAX_STOPS the least needed go.
+function stopsFromPsd(gr) {
+  const cs = (Array.isArray(gr?.colorStops) ? gr.colorStops : []).map((st) => ({ pos: psdNum(st.location, 0), c: [st.color?.r, st.color?.g, st.color?.b].map((v) => psdNum(v, 0)) }));
+  const os = (Array.isArray(gr?.opacityStops) ? gr.opacityStops : []).map((st) => ({ pos: psdNum(st.location, 0), a: psdNum(st.opacity, 1) }));
+  if (!cs.length) return null;
+  const at = (list, pos, key) => {
+    if (!list.length) return key === 'a' ? 1 : [0, 0, 0];
+    const i = list.findIndex((q) => q.pos >= pos);
+    if (i <= 0) return list[i < 0 ? list.length - 1 : 0][key];
+    const [p, q] = [list[i - 1], list[i]];
+    const u = q.pos > p.pos ? (pos - p.pos) / (q.pos - p.pos) : 0;
+    return key === 'a' ? p.a + (q.a - p.a) * u : p.c.map((v, k) => v + (q.c[k] - v) * u);
+  };
+  const paired = os.length === cs.length && os.every((q, i) => Math.abs(q.pos - cs[i].pos) < 1e-6);
+  let pts = paired
+    ? cs.map((q, i) => ({ pos: q.pos, c: q.c, a: os[i].a }))
+    : [...new Set([...cs.map((q) => q.pos), ...os.map((q) => q.pos)])].sort((a, b) => a - b).map((pos) => ({ pos, c: at(cs, pos, 'c'), a: at(os, pos, 'a') }));
+  // How far stop i is off the line between its neighbours: 1 is a level of
+  // colour, or a percent of opacity and a little (the writer rounds each
+  // baked opacity to a whole percent, so two neighbours can each be half a
+  // percent out).
+  const off = (i) => {
+    const [p, q, r] = [pts[i - 1], pts[i], pts[i + 1]];
+    const u = r.pos > p.pos ? (q.pos - p.pos) / (r.pos - p.pos) : 0;
+    const dc = Math.max(...q.c.map((v, k) => Math.abs(v - (p.c[k] + (r.c[k] - p.c[k]) * u))));
+    const da = Math.abs(q.a - (p.a + (r.a - p.a) * u)) / 0.011;
+    return Math.max(dc, da);
+  };
+  for (;;) {
+    if (pts.length <= 2) break;
+    let best = -1;
+    let bestOff = Infinity;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const d = off(i);
+      if (d < bestOff) [best, bestOff] = [i, d];
+    }
+    if (bestOff > 1 && pts.length <= GRADIENT_MAX_STOPS) break;
+    pts.splice(best, 1);
+  }
+  const hex2 = (v) => Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2, '0');
+  // A location is kept in 4096ths: to a thousandth, every one the app writes.
+  return pts.map((q) => ({ color: '#' + q.c.map(hex2).join(''), pos: Math.round(Math.min(1, Math.max(0, q.pos)) * 1000) / 1000, opacity: Math.round(Math.min(1, Math.max(0, q.a)) * 100) / 100 }));
+}
+
+// An effect gradient (`normalizeFxGradient`) from ag-psd's gradient and the
+// effect's placement (its Style, Angle, Scale, Reverse and Offset).
+function fxGradientFromPsd(gr, place = {}) {
+  const out = {
+    ...(FX_GRADIENT_STYLES.includes(place.type) ? { style: place.type } : null),
+    ...(Number.isFinite(+place.angle) ? { angle: exact(+place.angle) } : null),
+    ...(Number.isFinite(+place.scale) ? { scale: exact(+place.scale) } : null),
+    reverse: place.reverse === true,
+    offset: [exact(psdNum(place.offset?.x, 0)), exact(psdNum(place.offset?.y, 0))],
+  };
+  if (gr?.type === 'noise') {
+    return {
+      ...out,
+      type: 'noise',
+      noise: {
+        seed: psdNum(gr.randomSeed, 1),
+        roughness: psdNum(gr.roughness, 0.5),
+        model: gr.colorModel,
+        min: (gr.min ?? []).slice(0, 3),
+        max: (gr.max ?? []).slice(0, 3),
+        restrict: gr.restrictColors !== false,
+        transparency: gr.addTransparency === true,
+      },
+    };
+  }
+  const stops = stopsFromPsd(gr);
+  return { ...out, type: 'solid', ...(stops && stops.length >= 2 ? { stops } : null) };
+}
+
+// A shadow's throw: Photoshop's light angle and distance as the app's x and
+// y (`shadowFx` in `textLayerFor` the other way); on the Global Light, the
+// document's angle.
+function shadowFromPsd(e, light) {
+  const d = psdUnits(e.distance);
+  const angle = e.useGlobalLight && Number.isFinite(+light?.angle) ? +light.angle : psdNum(e.angle, 120);
+  const a = (angle * Math.PI) / 180;
+  return {
+    x: exact(-d * Math.cos(a)),
+    y: exact(d * Math.sin(a)),
+    size: psdUnits(e.size),
+    color: e.color ? rgbHex(e.color) : '#000000',
+    opacity: psdNum(e.opacity, 0.75),
+    noise: psdNum(e.noise, 0),
+    blend: blendFromPsd(e.blendMode),
+    contour: contourFromPsd(e.contour, e.antialiased),
+    useGlobalLight: e.useGlobalLight === true,
+  };
+}
+
+function glowFromPsd(e, inner) {
+  const gradient = !!e.gradient;
+  return {
+    on: fxOn(e),
+    blend: blendFromPsd(e.blendMode),
+    opacity: psdNum(e.opacity, 0.75),
+    noise: psdNum(e.noise, 0),
+    ...(e.color ? { color: rgbHex(e.color) } : null),
+    fill: gradient ? 'gradient' : 'color',
+    ...(gradient ? { gradient: fxGradientFromPsd(e.gradient, { type: e.type, reverse: e.reverse }) } : null),
+    technique: e.technique === 'precise' ? 'precise' : 'softer',
+    spread: psdUnits(e.choke) / 100,
+    size: psdUnits(e.size),
+    contour: contourFromPsd(e.contour, e.antialiased),
+    range: psdNum(e.range, 0.5),
+    jitter: psdNum(e.jitter, 0),
+    ...(inner ? { source: e.source === 'center' ? 'center' : 'edge' } : null),
+  };
+}
+
+const BEVEL_STYLE_FROM_PSD = Object.fromEntries(Object.entries(PSD_BEVEL_STYLE).map(([k, v]) => [v, k]));
+const BEVEL_TECHNIQUE_FROM_PSD = Object.fromEntries(Object.entries(PSD_BEVEL_TECHNIQUE).map(([k, v]) => [v, k]));
+
+// The outlines among a layer's strokes: the run at the head of the list the
+// writer puts there (`strokeBands`, outermost first), each Outside, a colour,
+// Normal, and with no Overprint flag (Photoshop writes one on every stroke it
+// saves; the writer gives one to every Photoshop stroke and none to an
+// outline). Every other stroke is a Photoshop stroke.
+function splitStrokes(list) {
+  const outlines = [];
+  const strokes = [];
+  let head = true;
+  let last = Infinity;
+  for (const e of Array.isArray(list) ? list : []) {
+    if (!e || e.present === false || e.enabled === false) continue;
+    const size = psdUnits(e.size);
+    const outline =
+      head && e.overprint === undefined && (e.position ?? 'outside') === 'outside' && (e.fillType ?? 'color') === 'color' && blendFromPsd(e.blendMode) === 'normal' && size < last;
+    if (outline) {
+      outlines.push(e);
+      last = size;
+      continue;
+    }
+    head = false;
+    const fill = e.fillType === 'gradient' ? 'gradient' : e.fillType === 'pattern' ? 'pattern' : 'color';
+    strokes.push({
+      size,
+      position: ['outside', 'inside', 'center'].includes(e.position) ? e.position : 'outside',
+      blend: blendFromPsd(e.blendMode),
+      opacity: psdNum(e.opacity, 1),
+      fill,
+      ...(e.color ? { color: rgbHex(e.color) } : null),
+      ...(fill === 'gradient' && e.gradient ? { gradient: fxGradientFromPsd(e.gradient, { ...e.gradient, type: e.gradient.style }) } : null),
+    });
+  }
+  return { outlines, strokes };
+}
+
+// Blend If and Channels back off a layer record (`psdBlendIf` the other way).
+function blendingFromPsd(n) {
+  const out = {};
+  if (n.blendInteriorElements) out.interior = true;
+  if (n.knockout) out.knockout = 'shallow';
+  const off = Array.isArray(n.channelBlendingRestrictions) ? n.channelBlendingRestrictions : [];
+  if (off.length) out.channels = { r: !off.includes(0), g: !off.includes(1), b: !off.includes(2) };
+  const r = n.blendingRanges;
+  if (r) {
+    out.blendIf = {
+      gray: { this: r.compositeGrayBlendSource, under: r.compositeGraphBlendDestinationRange },
+      ...Object.fromEntries(['red', 'green', 'blue'].map((c, i) => [c, { this: r.ranges?.[i]?.sourceRange, under: r.ranges?.[i]?.destRange }])),
+    };
+  }
+  return out;
+}
+
+/**
+ * A foreign type layer's layer style as the box's style fields: its effects
+ * (`n.effects`, ag-psd), its blending, and its outlines (`strokes`), every
+ * effect field stated so an absent one is off rather than the app's default.
+ * `light` is the document's Global Light (`imageResources.globalAngle` and
+ * `globalAltitude`).
+ */
+export function styleFromPsdLayer(n, light = {}) {
+  const fx = n?.effects ?? {};
+  const list = (v) => (Array.isArray(v) ? v : v ? [v] : []).filter(fxOn);
+  const { outlines, strokes } = splitStrokes(list(fx.stroke));
+  const style = {
+    strokes: strokesFromEffects(outlines),
+    shadows: list(fx.dropShadow).map((e) => ({ ...shadowFromPsd(e, light), spread: psdUnits(e.choke) / 100, knockout: e.layerConceals === true })),
+    innerShadows: list(fx.innerShadow).map((e) => ({ ...shadowFromPsd(e, light), choke: psdUnits(e.choke) / 100 })),
+    colorOverlays: list(fx.solidFill).map((e) => ({ color: e.color ? rgbHex(e.color) : '#000000', opacity: psdNum(e.opacity, 1), blend: blendFromPsd(e.blendMode) })),
+    gradientOverlays: [],
+    strokeEffects: strokes,
+    outerGlow: fx.outerGlow ? glowFromPsd(fx.outerGlow, false) : { on: false },
+    innerGlow: fx.innerGlow ? glowFromPsd(fx.innerGlow, true) : { on: false },
+    satin: { on: false },
+    bevel: { on: false },
+    patternOverlay: { on: false },
+    blendMode: blendFromPsd(n?.blendMode),
+    opacity: pct2(n?.opacity),
+    fillOpacity: pct2(n?.fillOpacity),
+    blending: blendingFromPsd(n ?? {}),
+  };
+  // The fill's own gradient is written last, as a plain overlay with no
+  // mode, scale or offset of its own (`textLayerFor`); Photoshop writes all
+  // three on every overlay it saves.
+  const overlays = list(fx.gradientOverlay);
+  const last = overlays.at(-1);
+  if (last && last.blendMode === undefined && last.scale === undefined && last.offset === undefined && last.gradient?.type !== 'noise') {
+    overlays.pop();
+    const stops = stopsFromPsd(last.gradient);
+    if (stops && stops.length >= 2) style.gradient = { on: true, kind: 'linear', scope: 'box', angle: exact(90 - psdNum(last.angle, -90)), stops };
+  }
+  style.gradientOverlays = overlays.map((e) => ({ blend: blendFromPsd(e.blendMode), opacity: psdNum(e.opacity, 1), gradient: fxGradientFromPsd(e.gradient, e) }));
+  const sa = fx.satin;
+  if (sa) {
+    style.satin = {
+      on: fxOn(sa),
+      blend: blendFromPsd(sa.blendMode),
+      ...(sa.color ? { color: rgbHex(sa.color) } : null),
+      opacity: psdNum(sa.opacity, 0.5),
+      angle: psdNum(sa.angle, 19),
+      distance: psdUnits(sa.distance),
+      size: psdUnits(sa.size),
+      contour: contourFromPsd(sa.contour, sa.antialiased),
+      invert: sa.invert === true,
+    };
+  }
+  const bv = fx.bevel;
+  if (bv) {
+    const global = bv.useGlobalLight === true;
+    style.bevel = {
+      on: fxOn(bv),
+      style: BEVEL_STYLE_FROM_PSD[bv.style] ?? 'inner',
+      technique: BEVEL_TECHNIQUE_FROM_PSD[bv.technique] ?? 'smooth',
+      depth: psdNum(bv.strength, 1),
+      direction: bv.direction === 'down' ? 'down' : 'up',
+      size: psdUnits(bv.size),
+      soften: psdUnits(bv.soften),
+      useGlobalLight: global,
+      angle: global && Number.isFinite(+light.angle) ? +light.angle : psdNum(bv.angle, 120),
+      altitude: global && Number.isFinite(+light.altitude) ? +light.altitude : psdNum(bv.altitude, 30),
+      gloss: contourFromPsd(bv.contour, bv.antialiasGloss),
+      highlight: { blend: blendFromPsd(bv.highlightBlendMode ?? 'screen'), color: bv.highlightColor ? rgbHex(bv.highlightColor) : '#ffffff', opacity: psdNum(bv.highlightOpacity, 0.75) },
+      shadow: { blend: blendFromPsd(bv.shadowBlendMode ?? 'multiply'), color: bv.shadowColor ? rgbHex(bv.shadowColor) : '#000000', opacity: psdNum(bv.shadowOpacity, 0.75) },
+      contour: { on: bv.useShape === true, curve: { preset: 'linear', aa: bv.antialiased === true }, range: psdNum(bv.range, 0.5) },
+    };
+  }
+  return style;
 }
 
 // Best-effort reconstruction for a foreign PSD (no embedded project). Maps the
@@ -1821,6 +2104,8 @@ export async function reconstructForeign(psd) {
   // Photoshop rewriting the XMP packet - since the lossless path reads the JSON
   // and never looks at layers for text at all.
   const boxes = [];
+  // The document's Global Light, which a shadow or bevel on it follows.
+  const light = { angle: psd.imageResources?.globalAngle, altitude: psd.imageResources?.globalAltitude };
   const collectText = (nodes) => {
     for (const n of nodes ?? []) {
       if (n.children) collectText(n.children);
@@ -1842,7 +2127,10 @@ export async function reconstructForeign(psd) {
         const st = n.text.style || {};
         // The outline first: the box comes back from the layer's frame by
         // undoing the content box's inset, and the inset counts the outline.
-        const strokes = strokesFromEffects(n.effects?.stroke);
+        // Its layer style: the effects, the blending and the outlines
+        // (`styleFromPsdLayer`); a Photoshop stroke is not an outline.
+        const fxStyle = styleFromPsdLayer(n, light);
+        const strokes = fxStyle.strokes;
         const inset = textInset({ strokes });
         let x = n.left ?? 0;
         let y = n.top ?? 0;
@@ -1914,6 +2202,7 @@ export async function reconstructForeign(psd) {
             // through a PSD whose embedded project Photoshop has rewritten.
             valign: 'top',
             color: st.fillColor ? rgbHex(st.fillColor) : '#000000',
+            ...fxStyle,
             strokes,
           },
         });
