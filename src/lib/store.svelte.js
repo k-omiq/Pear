@@ -3864,6 +3864,13 @@ export const lengthScale = (sx, sy) => Math.sqrt(sx * sy);
 // it read off disk with the boxes only shallow-copied, and a rollback that found
 // the record's own style objects already scaled would write the new geometry
 // back under the old images.
+// A shadow's kept angle (F48, `storedShadowAngle` in data.js) turns as its
+// offset does: the direction it throws, (-cos, sin), takes the axis factors.
+function rescaledShadowAngle(sh, sx, sy) {
+  if (!Number.isFinite(sh?.angle)) return null;
+  const r = (sh.angle * Math.PI) / 180;
+  return { angle: Math.round(((Math.atan2(Math.sin(r) * sy, Math.cos(r) * sx) * 180) / Math.PI) * 100) / 100 };
+}
 export function rescaleStyle(st, sx, sy) {
   if (!st || typeof st !== 'object') return st;
   const s = lengthScale(sx, sy);
@@ -3886,6 +3893,7 @@ export function rescaleStyle(st, sx, sy) {
       size: len(sh.size),
       // A shadow saved before Size has only `blur`, a length too.
       ...('blur' in sh ? { blur: len(sh.blur) } : null),
+      ...rescaledShadowAngle(sh, sx, sy),
     }));
   }
   if (Array.isArray(st.innerShadows)) {
@@ -3894,6 +3902,7 @@ export function rescaleStyle(st, sx, sy) {
       x: Number.isFinite(sh.x) ? sh.x * sx : sh.x,
       y: Number.isFinite(sh.y) ? sh.y * sy : sh.y,
       size: len(sh.size),
+      ...rescaledShadowAngle(sh, sx, sy),
     }));
   }
   for (const k of ['outerGlow', 'innerGlow']) {

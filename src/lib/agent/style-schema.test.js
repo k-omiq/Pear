@@ -311,6 +311,8 @@ describe('normalizer numeric sanity', () => {
       // A nullable object (null by default) is given the one number.
       for (const key of path.slice(0, -1)) target = target[key] ??= {};
       target[path.at(-1)] = value;
+      // A shadow keeps its own angle only where x, y cannot say it (F48).
+      if (/^(inner)?[sS]hadows\.0\.angle$/.test(path.join('.'))) Object.assign(target, { x: 0, y: 0, useGlobalLight: false });
       const normalized = normalizeStyle({ ...defaultStyle(), ...style });
       // normalizeStroke preserves the 0 boundary; normalizeStyle then removes
       // invisible bands. This intentional filtering is separate from clamping.
@@ -339,10 +341,11 @@ describe('styleSchemaText', () => {
   // to 17000 for the Bevel & Emboss (Structure, Shading, Contour, Texture),
   // and to 17200 for the Advanced Blending options (interior, knockout),
   // and to 17800 for Channels and Blend If (one slider pair printed once),
-  // and to 17900 for the glows' Jitter.
-  it('describes every key, field and item in under 17900 characters', () => {
+  // and to 17900 for the glows' Jitter, and to 18000 for the shadows' kept
+  // angle at Distance 0.
+  it('describes every key, field and item in under 18000 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(17900);
+    expect(text.length).toBeLessThan(18000);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.

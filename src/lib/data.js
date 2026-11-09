@@ -760,6 +760,8 @@ export function normalizeFinish(finish) {
 //   knockout    Layer Knocks Out Drop Shadow
 //   useGlobalLight  its angle is the chapter's light (`globalLight` in
 //               text-paint.js) and only its distance is its own
+//   angle       off the light, its own angle where x and y cannot say it
+//               (`storedShadowAngle`); left out when they do
 // A shadow saved before these existed had `blur` (a canvas blur) and is read
 // as the same softness, Normal, not knocked out, its own angle: as it looked.
 export function normalizeShadow(x) {
@@ -776,7 +778,52 @@ export function normalizeShadow(x) {
     contour: normalizeContour(x?.contour),
     knockout: x?.knockout === true,
     useGlobalLight: x?.useGlobalLight === true,
+    ...shadowAngleField(x),
   };
+}
+// A shadow's own angle, degrees as Photoshop states it (F48). Photoshop
+// stores Angle and Distance (PhotoCraft's `Shadow` in crates/doc/src/
+// effects.rs, read from `lagl` and `Dstn` in crates/io/src/effects_map.rs);
+// a style stores the painted offset, x and y, and keeps `angle` beside it
+// only where the offset cannot say it: at Distance 0, where (0, 0) has no
+// direction, and finer than the offset's hundredths do. An angle that does
+// not throw the shadow to (about) x, y is stale (the offset was set without
+// it) and the offset wins. Null for (0, 0) with no angle: the light's then.
+// Function declarations all, as `normalizeShadow` may run while this module
+// is still loading.
+export function shadowOwnAngle(sh) {
+  const x = Number(sh?.x) || 0;
+  const y = Number(sh?.y) || 0;
+  const a = sh?.angle !== null && sh?.angle !== '' && Number.isFinite(+sh?.angle) ? wrapDegrees(+sh.angle) : null;
+  if (!x && !y) return a;
+  const implied = wrapDegrees((Math.atan2(y, -x) * 180) / Math.PI);
+  if (a === null) return implied;
+  // About: within the rounding of x, y (and so the distance) to hundredths.
+  const d = Math.hypot(x, y);
+  const r = (a * Math.PI) / 180;
+  const fits = Math.abs(-Math.cos(r) * d - x) <= 0.015 && Math.abs(Math.sin(r) * d - y) <= 0.015;
+  return fits ? a : implied;
+}
+// The `angle` a shadow keeps for `a` (its own angle; `x.angle` when not
+// given): none on the Global Light, none where its x, y give that angle.
+export function storedShadowAngle(x, a = x?.angle) {
+  if (x?.useGlobalLight === true) return undefined;
+  const sx = num(x?.x, SHADOW_DEF.x);
+  const sy = num(x?.y, SHADOW_DEF.y);
+  const own = shadowOwnAngle({ x: sx, y: sy, angle: a });
+  if (own === null) return undefined;
+  if ((sx || sy) && sameDegrees(own, wrapDegrees((Math.atan2(sy, -sx) * 180) / Math.PI))) return undefined;
+  return own;
+}
+function wrapDegrees(a) {
+  return Math.round((Math.abs(a) <= 180 ? a : (((a % 360) + 540) % 360) - 180) * 100) / 100;
+}
+function sameDegrees(a, b) {
+  return Math.abs(((((a - b) % 360) + 540) % 360) - 180) < 0.005;
+}
+function shadowAngleField(x) {
+  const a = storedShadowAngle(x);
+  return a === undefined ? null : { angle: a };
 }
 // Photoshop's Size and Distance limits.
 export const SHADOW_SIZE_MAX = 250;
@@ -1198,7 +1245,7 @@ export function fxStored(kind, x) {
       // A stored default says its distance (and angle); an instance its x, y.
       const stored = Number.isFinite(+x.distance) && x.distance !== null && x.distance !== '';
       const distance = Math.min(SHADOW_DISTANCE_MAX, Math.max(0, stored ? +x.distance : Math.hypot(sh.x, sh.y)));
-      const own = stored ? num(x.angle, LIGHT_DEF.angle) : sh.x || sh.y ? (Math.atan2(sh.y, -sh.x) * 180) / Math.PI : LIGHT_DEF.angle;
+      const own = stored ? num(x.angle, LIGHT_DEF.angle) : (shadowOwnAngle(sh) ?? LIGHT_DEF.angle);
       const { x: _x, y: _y, ...rest } = sh;
       return { ...rest, distance: round2(distance), ...(rest.useGlobalLight ? null : { angle: wrapAngle(own) }) };
     }
@@ -1225,7 +1272,8 @@ function fxFromStored(kind, d, light) {
     const a = rest.useGlobalLight ? num(light?.angle, LIGHT_DEF.angle) : num(angle, LIGHT_DEF.angle);
     const r = (a * Math.PI) / 180;
     const off = { x: round2(-Math.cos(r) * distance), y: round2(Math.sin(r) * distance) };
-    return kind === 'dropShadow' ? normalizeShadow({ ...rest, ...off }) : normalizeInnerShadow({ ...rest, ...off });
+    // The angle goes along (`storedShadowAngle`): at Distance 0 the offset cannot hold it.
+    return kind === 'dropShadow' ? normalizeShadow({ ...rest, ...off, angle: a }) : normalizeInnerShadow({ ...rest, ...off, angle: a });
   }
   return normalizeFxKind(kind, d);
 }

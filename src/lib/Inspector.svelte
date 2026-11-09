@@ -74,6 +74,7 @@
     fxDefault,
     fxReset,
     fxUntouched,
+    storedShadowAngle,
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
   import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
@@ -828,6 +829,8 @@
     settle();
     armSnap();
     Object.assign(fx, next);
+    // A shadow's kept angle is only what `next` says (`storedShadowAngle`).
+    if ((kind === 'dropShadow' || kind === 'innerShadow') && !('angle' in next)) delete fx.angle;
     touch();
     settle();
   }
@@ -852,11 +855,15 @@
   // one on the Global Light is the chapter's: turning it turns every shadow
   // that follows the light, as in Photoshop.
   // At Distance 0 the offset holds no direction, so a shadow off the light
-  // would fall back to the light's angle. The angle it had is kept here (the
-  // panel's, not the style's: nothing is painted from it) and used when the
-  // distance comes back, as Photoshop keeps it.
-  const keptAngle = new WeakMap();
-  const angleOf = (sh) => (!sh.useGlobalLight && !sh.x && !sh.y && keptAngle.has(sh) ? keptAngle.get(sh) : shadowAngle(sh));
+  // keeps its angle in the style (`angle`, `storedShadowAngle` in data.js),
+  // as Photoshop stores Angle and Distance: it is saved, undone and redone
+  // with the rest, and used when the distance comes back.
+  const angleOf = (sh) => shadowAngle(sh);
+  function keepShadowAngle(sh, a) {
+    const keep = storedShadowAngle(sh, a);
+    if (keep === undefined) delete sh.angle;
+    else sh.angle = keep;
+  }
   function setShadowAngle(sh, e) {
     const el = e.target;
     let a = +el.value;
@@ -864,8 +871,8 @@
     a = clamp(a, -180, 180);
     if (sh.useGlobalLight) setChapterLight({ angle: a });
     else {
-      keptAngle.set(sh, a);
       Object.assign(sh, shadowOffset(a, shadowDistance(sh)));
+      keepShadowAngle(sh, a);
       touch();
     }
     el.value = String(angleOf(sh));
@@ -876,17 +883,17 @@
     if (!Number.isFinite(d)) d = 0;
     d = clamp(d, 0, SHADOW_DISTANCE_MAX);
     const a = angleOf(sh);
-    if (!sh.useGlobalLight) keptAngle.set(sh, a);
     Object.assign(sh, shadowOffset(a, d));
+    if (!sh.useGlobalLight) keepShadowAngle(sh, a);
     el.value = String(Math.round(shadowDistance(sh) * 100) / 100);
     touch();
   }
   // Off the light, a shadow keeps the angle it had from it.
   function setShadowGlobal(sh, on) {
     const a = angleOf(sh);
-    if (!on) keptAngle.set(sh, a);
     Object.assign(sh, shadowOffset(a, shadowDistance(sh)));
     sh.useGlobalLight = on;
+    keepShadowAngle(sh, a);
     touch();
   }
   // A gradient overlay's Offset: % of the box, -100 to 100.

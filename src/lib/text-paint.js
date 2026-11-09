@@ -7,7 +7,7 @@
 // like - is answered here once, so a change lands on both at the same time.
 
 import { strokeStamps, strokeBounds, aaLevel, textureActive } from './brush.js';
-import { CANVAS_PATTERN_KINDS, blendIfActive } from './data.js';
+import { CANVAS_PATTERN_KINDS, blendIfActive, shadowOwnAngle } from './data.js';
 
 // A stroke's `width` is the VISIBLE band the user asked for, but neither a
 // canvas stroke nor `-webkit-text-stroke` can draw a band: both draw a line
@@ -1077,13 +1077,12 @@ export function shadowSpread(sh) {
 
 // The angle a shadow's light comes from, degrees as Photoshop states it, and
 // how far it is thrown. Its offset is away from the light: a light at 120
-// throws it down and to the right.
+// throws it down and to the right. Off the light it is the shadow's own
+// (`shadowOwnAngle` in data.js: its stored `angle` at Distance 0 or where it
+// fits the offset, else the offset's); the light's at Distance 0 with none.
 export function shadowAngle(sh) {
   if (sh?.useGlobalLight) return light.angle;
-  const x = Number(sh?.x) || 0;
-  const y = Number(sh?.y) || 0;
-  if (!x && !y) return light.angle;
-  return Math.round(((Math.atan2(y, -x) * 180) / Math.PI) * 100) / 100;
+  return shadowOwnAngle(sh) ?? light.angle;
 }
 export function shadowDistance(sh) {
   return Math.hypot(Number(sh?.x) || 0, Number(sh?.y) || 0);
