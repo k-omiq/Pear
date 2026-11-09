@@ -502,8 +502,9 @@ fn depth_share(dist: &[f32]) -> Result<Buffer<f32>, Error> {
 /// Lays a paint through map `m`, whose corner is `at` on `dst`, at `opacity`
 /// in `mode`. `dev` is `dst`'s corner in device pixels; `color(x, y, i)` is
 /// the paint at device pixel `(x, y)`, map pixel `i`: straight RGB and an
-/// alpha the map's coverage is multiplied by. Hands back where it can have
-/// laid ink, in `dst`'s pixels.
+/// alpha the map's coverage is multiplied by. A Dissolve is hashed from the
+/// device pixel plus `grain` ([`Place::grain`]). Hands back where it can
+/// have laid ink, in `dst`'s pixels.
 #[allow(clippy::too_many_arguments)]
 fn lay_with(
     dst: &mut Surface,
@@ -639,7 +640,9 @@ const JITTER_SALT: u32 = 0x6a09_e667;
 /// `shape` is the letters' outline (their whole silhouette, bands included)
 /// over `region` of `dst`; `fill`, over the same pixels, is the fill's own
 /// matte where the fill is see-through, at `fill_opacity`, and keeps each
-/// glow from behind it. Hands back where they can have laid ink.
+/// glow from behind it. Their Noise, Dissolve and Jitter are hashed from a
+/// `dst` pixel plus `grain` ([`Place::grain`]). Hands back where they can
+/// have laid ink.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lay_outer_glows(
     dst: &mut Surface,
