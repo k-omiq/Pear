@@ -557,22 +557,46 @@ fn the_ink_layer_is_laid_where_the_mesh_takes_the_ink_and_not_where_it_was() {
 fn a_layer_laid_for_one_mesh_or_roughening_is_not_used_for_another() {
     let mut e = Engine::new();
     let font = load(&mut e);
-    for (mesh, roughen) in [
-        (Some(bumpy()), None),
-        (None, Some(rough())),
-        (Some(bumpy()), Some(rough())),
+    // Another mesh of the same grid, its inner nodes moved the other way,
+    // and the same roughening on another seed.
+    let other = || {
+        let mut m = bumpy();
+        for (k, p) in m.pts.iter_mut().enumerate() {
+            if ![5, 6, 9, 10].contains(&k) {
+                continue;
+            }
+            let (i, j) = ((k % 4) as f64, (k / 4) as f64);
+            let at = Pt::new(200.0 * i / 3.0, 120.0 * j / 3.0);
+            *p = Pt::new(2.0 * at.x - p.x, 2.0 * at.y - p.y);
+        }
+        m
+    };
+    let seed = || Roughen {
+        seed: 8.0,
+        ..rough()
+    };
+    for (from, to) in [
+        ((Some(bumpy()), None), (None, None)),
+        ((None, Some(rough())), (None, None)),
+        ((Some(bumpy()), Some(rough())), (None, None)),
+        ((Some(bumpy()), None), (Some(other()), None)),
+        ((None, Some(rough())), (None, Some(seed()))),
+        (
+            (Some(bumpy()), Some(rough())),
+            (Some(other()), Some(seed())),
+        ),
     ] {
         // The box job lays the ink for its mesh and roughening and keeps it.
-        let mut laid = inked(font, wave(14.0), &[], Affine::IDENTITY, mesh, roughen);
+        let mut laid = inked(font, wave(14.0), &[], Affine::IDENTITY, from.0, from.1);
         paint_box(&mut e, &mut laid).unwrap();
-        // The same request, its bends gone, painted as a job: the ink is
-        // laid again, unbent, as on a request never laid.
-        laid.request.job.mesh = None;
-        laid.request.job.roughen = None;
+        // The same request, its bends changed, painted as a job: the ink is
+        // laid again for them, as on a request never laid.
+        laid.request.job.mesh = to.0.clone();
+        laid.request.job.roughen = to.1;
         let again = paint_job(&mut e, &laid.request).unwrap();
         let fresh = paint_job(
             &mut e,
-            &inked(font, wave(14.0), &[], Affine::IDENTITY, None, None).request,
+            &inked(font, wave(14.0), &[], Affine::IDENTITY, to.0, to.1).request,
         )
         .unwrap();
         assert_eq!(hash(&again), hash(&fresh));
