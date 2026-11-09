@@ -127,6 +127,23 @@ describe('an export waits for the fonts its pages need', () => {
     expect(downloaded).toEqual(['ch01-11.psd', 'ch01-22.psd']);
   });
 
+  it('a PSD into a folder (the desktop app) is written from the bytes the document was built as, not a copy', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const psd = await import('./psd.js');
+    // ag-psd's `writePsd` hands back an ArrayBuffer.
+    const built = new Uint8Array([1, 2, 3]).buffer;
+    vi.spyOn(psd, 'buildPagePsd').mockResolvedValue(built);
+    const wrote = [];
+    vi.spyOn(fsx, 'writeFileAtomic').mockImplementation(async (path, bytes) => void wrote.push([path, bytes.buffer === built]));
+    try {
+      gate().open();
+      expect(await exportImages('PSD', 'all')).toBe(true);
+      expect(wrote).toEqual([['/out/ch01-11.psd', true], ['/out/ch01-22.psd', true]]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('a longstrip: one page’s slice paints its neighbours’ lettering, so it waits for the whole chapter', async () => {
     app.projectLayout = 'longstrip';
     app.stripSliceH = 1000;

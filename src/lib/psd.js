@@ -65,7 +65,14 @@ async function imageDataFromSrc(src, w, h) {
   cnv.height = ch;
   const ctx = cnv.getContext('2d');
   ctx.drawImage(img, 0, 0, cw, ch);
-  return ctx.getImageData(0, 0, cw, ch);
+  const data = ctx.getImageData(0, 0, cw, ch);
+  // The pixels are read: the page-size canvas and the decoded picture go
+  // back now, not when the collector next runs (a batch export decodes two
+  // per page).
+  cnv.width = 0;
+  cnv.height = 0;
+  img.removeAttribute?.('src');
+  return data;
 }
 
 // The document's pixel space, and the space every layer's bounds are written
@@ -1664,7 +1671,14 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   // Boxes with raster-only styling that paint nothing return null from textLayerFor
   // and are filtered out so ag-psd does not receive an image layer missing image data.
   const scratch = document.createElement('canvas');
-  const textLayers = (await pageTextLayers(p, entries, W, H, scratch, tips)).map((e) => e.layer);
+  let textLayers;
+  try {
+    textLayers = (await pageTextLayers(p, entries, W, H, scratch, tips)).map((e) => e.layer);
+  } finally {
+    // A page-size canvas, given back before the base layers are decoded.
+    scratch.width = 0;
+    scratch.height = 0;
+  }
 
   // Base layers - Cleaned over Raw (bottom), both forced to the document's (=
   // the page's) size, which is a resample rather than a copy whenever the two

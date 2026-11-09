@@ -94,8 +94,14 @@ export const BOLD_DRAW = { rule: 0, outset: 1, smear: 2 }
 /** The largest `request.weight` the engine accepts, in device pixels. */
 export const MAX_WEIGHT = 64
 
-// One buffer for every job, grown when a job does not fit.
-let buf = new ArrayBuffer(4096)
+// One buffer for every job, grown when a job does not fit. A job past
+// `WIRE_KEEP` (a backdrop, a big picked tile) grows it to the job's size, and
+// the buffer goes back to its small self once that job is in the engine
+// (`dropBigWire`): kept, it would be the largest backdrop ever painted, held
+// for the rest of the session.
+const WIRE_START = 4096
+const WIRE_KEEP = 1 << 20
+let buf = new ArrayBuffer(WIRE_START)
 let view = new DataView(buf)
 let u8 = new Uint8Array(buf)
 let at = 0
@@ -103,11 +109,28 @@ const encoder = new TextEncoder()
 
 function need(n) {
   if (at + n <= buf.byteLength) return
-  const grown = new ArrayBuffer(Math.max(buf.byteLength * 2, at + n))
+  // A large piece grows the buffer to it and a little more, not to twice it:
+  // the records after a backdrop are small, and doubling a 60 MB buffer to
+  // write them is a 120 MB one and a 60 MB copy.
+  const want = at + n
+  const grown = new ArrayBuffer(Math.max(buf.byteLength * 2, want + Math.min(want, WIRE_KEEP)))
   new Uint8Array(grown).set(u8.subarray(0, at))
   buf = grown
   view = new DataView(buf)
   u8 = new Uint8Array(buf)
+}
+
+// The engine has its copy of the job: a buffer grown past `WIRE_KEEP` goes.
+function dropBigWire() {
+  if (buf.byteLength <= WIRE_KEEP) return
+  buf = new ArrayBuffer(WIRE_START)
+  view = new DataView(buf)
+  u8 = new Uint8Array(buf)
+}
+
+/** The wire buffer's size in bytes (tests). */
+export function wireBytes() {
+  return buf.byteLength
 }
 function u32(v) {
   need(4)
@@ -1114,6 +1137,7 @@ export function patternSwatch(engine, { width, height, fill: f, tiles }) {
   const ptr = ex.mt_paint_job_reserve(bytes.length)
   if (!ptr) throw new Error(`mt-text: patternSwatch: the engine refused a swatch of ${bytes.length} bytes`)
   new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes)
+  dropBigWire()
   const code = ex.mt_paint_pattern_swatch(bytes.length)
   if (code < 0) throw new Error(`mt-text: patternSwatch: ${STATUS[code] ?? `error ${code}`}`)
   if (code === 0) return null
@@ -1142,6 +1166,7 @@ function writeKey(ex, key) {
   const ptr = ex.mt_paint_job_reserve(bytes.length)
   if (!ptr) return -1
   new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes)
+  dropBigWire()
   return bytes.length
 }
 
@@ -1208,6 +1233,7 @@ export function paintBox(engine, request) {
   const ptr = ex.mt_paint_job_reserve(bytes.length)
   if (!ptr) throw new Error(`mt-text: paintBox: the engine refused a job of ${bytes.length} bytes`)
   new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes)
+  dropBigWire()
   const code = ex.mt_paint_box(bytes.length)
   if (code < 0) throw new Error(`mt-text: paintBox: ${STATUS[code] ?? `error ${code}`}`)
   if (code === 0) return null
@@ -1237,6 +1263,7 @@ export function paintJob(engine, request) {
   if (!ptr) throw new Error(`mt-text: paintJob: the engine refused a job of ${bytes.length} bytes`)
   // Views over wasm memory are made after the last call that can grow it.
   new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes)
+  dropBigWire()
   const code = ex.mt_paint_job(bytes.length)
   if (code < 0) throw new Error(`mt-text: paintJob: ${STATUS[code] ?? `error ${code}`}`)
   if (code === 0) return null
