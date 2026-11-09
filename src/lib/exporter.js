@@ -930,7 +930,7 @@ export function renderBox(box, p, tips, under = null, sheet = null) {
 // painter that has a limit. The scale that was really used comes back as `ss`.
 //
 // THE MESH IN THE JOB. Where the painter bends outlines itself (`meshInJob`:
-// the Rust engine, a box with no ink and no mask) the mesh is NOT left for
+// the Rust engine, a box whose ink and mask it paints too) the mesh is NOT left for
 // `warpTexture`: the glyph job carries it, the letters and their strokes come
 // out of the painter already bent, and the texture is the bent box's own
 // footprint (`meshFootprint`) with `warped: true` on it, which `warpTexture`
@@ -959,11 +959,10 @@ function boxPlan(box, p, flat = false) {
 // `applyTextFilters`, `drawClipShapes`). One engine has to measure and paint
 // and its painter has to say it does this (`box`, the Rust painter's), and
 // nothing of the box may be drawn by the canvas. Hand-drawn ink goes into
-// the job too where the painter paints it (`ink`: a wasm of box wire v12 with
-// the tip cache), round dabs and imported tips alike, where the box is
-// neither meshed nor roughened (both still bend the canvas's ink with its
-// letters). Any other inked box keeps the canvas passes whole. Never true
-// under the browser engine.
+// the job too where the painter paints it (`ink`: a wasm of box wire v17 with
+// the tip cache), round dabs and imported tips alike, bent by the box's mesh
+// and roughened by its field with the letters (phase 8c). Any other inked box
+// keeps the canvas passes whole. Never true under the browser engine.
 export function boxInJob(box) {
   if (!engineDraws() || glyphPainter().box !== true) return false;
   return inkJobGap(box) === null;
@@ -971,8 +970,9 @@ export function boxInJob(box) {
 
 // Why a box's brush ink keeps the box out of the job (`boxInJob`) where the
 // painter paints whole boxes, or null where it does not: 'engine' (a wasm
-// without the tip cache, which paints no ink), 'mesh' (a mesh that moves
-// something) or 'roughen'. Imported tips and tip cycles are painted (8b).
+// without the tip cache, which paints no ink). Imported tips and tip cycles
+// are painted (8b), and a mesh and a roughening bend and roughen the ink in
+// the job with the letters (8c).
 // Such a box is painted by the canvas, which paints none of its layer
 // effects, Fill Opacity, blend mode, Channels or Blend If: the Inspector says
 // so (its ink note) rather than showing them as live. The question is asked of a
@@ -981,8 +981,6 @@ export function inkJobGap(box) {
   const s = box.style;
   if (!inkActive(s.ink)) return null;
   if (glyphPainter().ink !== true) return 'engine';
-  if (warpActive(s, box.w, box.h)) return 'mesh';
-  if (s.roughen?.on === true) return 'roughen';
   return null;
 }
 
@@ -1256,9 +1254,10 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
 // averaged back together; a moved outline is rasterised after, and is as
 // sharp roughened as plain. Two things have to hold: one engine measures and
 // paints and its painter says it roughens (`roughen`, the Rust painter's),
-// and nothing of the box is drawn by the canvas - hand-drawn ink is, and a
-// box with ink keeps the pixel pass whole, so its ink and its letters are
-// roughened alike. Never true under the browser engine.
+// and nothing of the box is drawn by the canvas: hand-drawn ink is roughened
+// in the job where the painter paints it (`boxInJob`), and where it does not
+// the canvas draws the ink and the pixel pass is kept whole, so its ink and
+// its letters are roughened alike. Never true under the browser engine.
 //
 // It changes the order: the outline is roughened before the blur and the
 // smear are laid over the picture, where the pixel pass came after them.
@@ -1272,7 +1271,7 @@ export function roughenGrit(s) {
 
 export function roughenInJob(box) {
   const s = box.style;
-  return s.roughen?.on === true && engineDraws() && glyphPainter().roughen === true && !inkActive(s.ink);
+  return s.roughen?.on === true && engineDraws() && glyphPainter().roughen === true && (!inkActive(s.ink) || boxInJob(box));
 }
 
 // Whether a box's mesh goes to the glyph painter in the job, to bend the
@@ -1280,9 +1279,9 @@ export function roughenInJob(box) {
 // to hold: one engine measures and paints and its painter says it bends
 // (`mesh`, the Rust painter's); the box has a mesh that moves something; and
 // nothing of the box is drawn by the canvas in the box's unbent coordinates -
-// hand-drawn ink is, and so is the visibility mask unless the painter paints
-// the whole box (`boxInJob`), where the mask's shapes are bent through the
-// mesh with the letters. A box the canvas draws part of keeps the texture
+// hand-drawn ink and the visibility mask are, unless the painter paints the
+// whole box (`boxInJob`), where the ink's dabs and the mask's shapes are bent
+// through the mesh with the letters. A box the canvas draws part of keeps the texture
 // warp whole, so its ink and its mask bend with its letters as they always
 // have. Never true under the browser engine.
 export function meshInJob(box) {
@@ -1291,7 +1290,7 @@ export function meshInJob(box) {
     engineDraws() &&
     glyphPainter().mesh === true &&
     warpActive(s, box.w, box.h) &&
-    !inkActive(s.ink) &&
+    (!inkActive(s.ink) || boxInJob(box)) &&
     (!clipActive(s.clip) || glyphPainter().box === true)
   );
 }

@@ -398,7 +398,9 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // here and in boxjob.rs (BOX_WIRE_VERSION) at once. paintsBoxes() compares
 // only the number. v11 had two forms: 7858367 added shadow flag 4 (exact)
 // without a bump, so an early v11 wasm refuses every SFX copy's shadow.
-export const BOX_WIRE_VERSION = 16
+// v17 is a changed meaning with no new byte: the glyph job's mesh and
+// roughening now bend the box's brush ink too (a v16 wasm left it unbent).
+export const BOX_WIRE_VERSION = 17
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */

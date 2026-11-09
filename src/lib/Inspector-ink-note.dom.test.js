@@ -3,8 +3,8 @@ import { cleanup, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 // The ink note (review Gaps, Decision A2): a box whose brush ink the engine's
-// box job cannot take yet (`inkJobGap`: a mesh, roughening, an old engine)
-// is painted by the canvas, with none of its layer effects, Fill Opacity,
+// box job cannot take (`inkJobGap`: an engine that paints no ink; since 8c a
+// mesh and a roughening are the job's) is painted by the canvas, with none of its layer effects, Fill Opacity,
 // blend mode, Channels or Blend If. The Inspector says so on the Fill and
 // Effects tabs instead of showing them as live; a box of round or imported
 // tips says nothing, as a box of type does.
@@ -49,34 +49,24 @@ function mounted(over, tab, { rust = true, ink = true } = {}) {
 const note = (view) => view.container.querySelector('.ink-gap-note')?.textContent ?? null;
 
 describe('the ink note', () => {
-  it('says roughening keeps the effects and blending off the box, on both tabs', async () => {
+  it('says an engine without ink keeps the effects and blending off the box, on both tabs', async () => {
     for (const tab of ['fill', 'effects']) {
-      const view = mounted({ ink: { on: true, strokes: [stroke()] }, roughen: { on: true, amount: 3 } }, tab);
+      const view = mounted({ ink: { on: true, strokes: [stroke()] } }, tab, { ink: false });
       await tick();
       expect(note(view), tab).toContain('Not painted on this box: layer effects, Fill opacity, blend mode, Channels and Blend If');
-      expect(note(view), tab).toContain('roughen');
+      expect(note(view), tab).toContain('paints no brush ink');
       cleanup();
     }
   });
 
-  it('names roughening and an engine without ink', async () => {
-    const cases = [
-      [{ ink: { on: true, strokes: [stroke()] }, roughen: { on: true, amount: 3 } }, {}, 'roughen'],
-      [{ ink: { on: true, strokes: [stroke()] } }, { ink: false }, 'paints no brush ink'],
-    ];
-    for (const [over, opts, word] of cases) {
-      const view = mounted(over, 'fill', opts);
-      await tick();
-      expect(note(view), word).toContain(word);
-      cleanup();
-    }
-  });
-
-  it('says nothing for round ink, type, or the browser engine', async () => {
+  it('says nothing for round ink, type, the browser engine, or ink under a roughening or a mesh', async () => {
+    const mesh = { on: true, cols: 1, rows: 1, pts: [[0, 0], [240, 12], [0, 90], [240, 90]] };
     for (const [over, opts] of [
       [{ ink: { on: true, strokes: [stroke()] } }, {}],
       [{ ink: { on: true, strokes: [stroke({ brush: 'tip:chalk' })] } }, {}],
       [{ ink: { on: true, strokes: [stroke({ tips: ['tip:a', 'tip:b'] })] } }, {}],
+      [{ ink: { on: true, strokes: [stroke()] }, roughen: { on: true, amount: 3 } }, {}],
+      [{ ink: { on: true, strokes: [stroke()] }, warp: mesh }, {}],
       [{}, {}],
       [{ ink: { on: true, strokes: [stroke({ brush: 'tip:chalk' })] } }, { rust: false }],
     ]) {

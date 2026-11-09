@@ -126,7 +126,7 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(16);
+    expect(BOX_WIRE_VERSION).toBe(17);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header (the grain's corner

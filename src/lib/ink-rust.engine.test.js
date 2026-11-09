@@ -133,14 +133,14 @@ describe('the gate', () => {
     expect(whole.ink).toBe(true);
     expect(boxInJob(boxOf({ ink: round }))).toBe(true);
     expect(boxInJob(boxOf({ ink: round }, ''))).toBe(true);
-    // An imported tip and a tip cycle are the engine's (phase 8b); a mesh
-    // and a roughening are the canvas's (8c).
+    // An imported tip and a tip cycle are the engine's (phase 8b), and so
+    // are ink under a mesh and a roughening (8c).
     expect(boxInJob(boxOf({ ink: ink({ brush: 'tip-1' }) }))).toBe(true);
     expect(boxInJob(boxOf({ ink: ink({ tips: ['a', 'b'] }) }))).toBe(true);
-    expect(boxInJob(boxOf({ ink: round, roughen: { on: true, amount: 4, detail: 0.1, seed: 2 } }))).toBe(false);
+    expect(boxInJob(boxOf({ ink: round, roughen: { on: true, amount: 4, detail: 0.1, seed: 2 } }))).toBe(true);
     const box = boxOf({ ink: round });
     box.style.warp = { on: true, cols: 1, rows: 1, pts: [[0, 0], [260, 10], [0, 130], [260, 130]] };
-    expect(boxInJob(box)).toBe(false);
+    expect(boxInJob(box)).toBe(true);
     setGlyphPainter(canvasInk);
     expect(boxInJob(boxOf({ ink: round }))).toBe(false);
     expect(boxInJob(boxOf())).toBe(true);

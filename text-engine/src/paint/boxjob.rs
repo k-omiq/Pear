@@ -59,7 +59,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 16;
+pub const BOX_WIRE_VERSION: u32 = 17;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -924,7 +924,9 @@ impl<'a> Reader<'a> {
 ///     The lengths are page px from the box's corner, which the job's
 ///     transform carries like everything else. The box's outlines go round
 ///     the ink and its shadows are thrown from the letters and the ink as
-///     one shape.
+///     one shape. (v17, a changed meaning, no new byte:) the glyph job's
+///     mesh and roughening bend and roughen the ink as they do the letters;
+///     a wasm of v16 or older painted the ink of such a job unbent.
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow,
 ///                              straight RGBA8 read as opaque: the page art
 ///                              under each surface pixel
@@ -1905,8 +1907,10 @@ fn paint(
             .first()
             .map_or(0.0, |b| (b.line / 2.0).max(0.0));
         let grow = request.shadows.iter().map(|s| s.grow).fold(0.0, f64::max);
-        if let Some(ink) = request.request.ink.as_mut() {
-            ink.prepare(&transform, surface, outer + grow, rasterizer)?;
+        // Bent and roughened by the job's mesh and field, as the letters.
+        let req = &mut request.request;
+        if let Some(ink) = req.ink.as_mut() {
+            ink.prepare(&transform, &req.job, surface, outer + grow, rasterizer)?;
         }
     }
     // Lengths are carried by the scale that keeps areas, vectors by the
