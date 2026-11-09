@@ -60,6 +60,9 @@ import { warpBoxCanvas, WARP_SUB_MAX } from './warp-paint.js';
 
 const OUT = process.env.MT_INK_COMPARE;
 const MEASURE = process.env.MT_INK_MEASURE === '1';
+// A compare case paints 12 to 36 boxes both ways: 2 to 7 s alone, and more on a
+// machine busy with other builds.
+const SLOW = 60_000;
 const hadDocument = 'document' in globalThis;
 const oldDocument = globalThis.document;
 const before = { engine: textEngine(), painter: glyphPainter(), typeset: typesetEnabled() };
@@ -384,7 +387,7 @@ describe('the gate', () => {
 });
 
 describe('the footprint of a bent inked box', () => {
-  it('is the one worked out without a paint, and holds all of the ink', () => {
+  it('is the one worked out without a paint, and holds all of the ink', { timeout: SLOW }, () => {
     for (const mesh of [bumpy, perspective]) {
       for (const text of ['INK', '']) {
         const box = boxOf({ ink: ink({ size: 20 }), warp: mesh() }, text);
@@ -408,14 +411,19 @@ describe('the footprint of a bent inked box', () => {
 // Each case: the style over the defaults, and its limits, of 255, set from
 // the first measured run (`MT_INK_MEASURE=1`, 2026-11-09) over the three
 // meshes, three scales, with and without letters:
-// - `mean` and `worst`: the reference compare, the largest measured mean and
-//   a third more, the largest worst and one more (256 where a pixel flips
-//   whole, which every edge a pixel off does);
+// - `mean`: the reference compare's mean, the largest measured and a third
+//   more;
+// - `worst`: the most one pixel differs by, the largest measured and one
+//   more, where that is under 255 (the noisy tip, the watercolour edge, whose
+//   edges are soft). Where it is not (`null`), no single-pixel bound can be
+//   set: an opaque edge a pixel off flips a pixel from ink to none, 255, and
+//   the reference's own warp puts the edge a pixel off (below), so the mean,
+//   the ink and the floor hold those cases;
 // - `ink`: the total ink against the reference's, the measured range and
 //   half a percent either way;
 // - `over`: how far A (bend against a fine resample) may sit over the same
 //   ink's FLOOR (the parallelogram), the largest measured and a third more,
-//   and half a level.
+//   and half a level (the half is in the number).
 //
 // What the numbers are made of, beyond FLAT (ink-rust's own per-case limits):
 // - The app's texture warp lays the surface as triangles, 3 a mesh cell on a
@@ -432,7 +440,20 @@ describe('the footprint of a bent inked box', () => {
 //   carried by the mesh's tangent over the stamp (the user's rule), so on the
 //   bumpy mesh, which stretches 0.55 to 1.57 times, a 28 to 30 px tip's
 //   inside is up to a device pixel or two off the surface at its far side: A
-//   sits 11 to 16 over its floor there, 1.6 to 2.8 on the perspective cell.
+//   sits 11 to 14 over its floor there (1.6 to 2.8 on the perspective cell),
+//   and read through the mesh itself instead (measured once, not built) 1.6
+//   to 2.8.
+// - A ribbon sits 15.7 over its floor on the bumpy mesh, and of that only
+//   about 9.6 is the tangent: read through the mesh itself, 6.1 is left. That
+//   rest is the same for a ribbon of a smooth strip (5.0), so it is not the
+//   bars; it halves on a ribbon half as wide (2.9 at 12), and grows with the
+//   scale (1.2, 4.3, 6.1 at 1, 2, 2.74), so it is in the ribbon's geometry
+//   across its width: its slices are cut on straight chords between their
+//   bent corners, where the bumpy mesh curves the line across a 24 px ribbon
+//   by about a page pixel, and the pixels between chord and curve are read
+//   by the neighbouring slice's frame. (Measured with the slices read
+//   through the mesh, 2026-11-09; what is left is consistent with the chords,
+//   not proved to be them.)
 // - Grain is not bent (the user's rule): the canvas sheared and stretched its
 //   cells with the texture, so no cell lines up under any mesh, the
 //   parallelogram included (mean 40 to 48 everywhere, its floor too).
@@ -444,15 +465,15 @@ describe('the footprint of a bent inked box', () => {
 //   (perspective) over its floor and is up to 5.6 % heavier where the cell
 //   squeezes; the watercolour edge 6 and 7, and up to 3.8 % heavier.
 const MESH_CASES = {
-  'round hard': [{ ink: ink({}) }, { mean: 20.8, worst: 256, ink: [0.995, 1.015], over: 3.2 }],
-  'soft red at hardness 30': [{ ink: ink({ color: '#dc2626', hardness: 30, size: 24 }) }, { mean: 13.6, worst: 256, ink: [0.993, 1.015], over: 3.1 }],
-  'flat and turned': [{ ink: ink({ flatness: 0.3, angle: 40, size: 22 }) }, { mean: 18.2, worst: 256, ink: [0.997, 1.015], over: 2.9 }],
-  'a tall strip tip, following the line': [{ ink: ink({ brush: 'strip', size: 28, followDir: true }) }, { mean: 27, worst: 256, ink: [0.984, 1.006], over: 19.4 }],
+  'round hard': [{ ink: ink({}) }, { mean: 20.8, worst: null, ink: [0.995, 1.015], over: 3.2 }],
+  'soft red at hardness 30': [{ ink: ink({ color: '#dc2626', hardness: 30, size: 24 }) }, { mean: 13.6, worst: null, ink: [0.993, 1.015], over: 3.1 }],
+  'flat and turned': [{ ink: ink({ flatness: 0.3, angle: 40, size: 22 }) }, { mean: 18.2, worst: null, ink: [0.997, 1.015], over: 2.9 }],
+  'a tall strip tip, following the line': [{ ink: ink({ brush: 'strip', size: 28, followDir: true }) }, { mean: 27, worst: null, ink: [0.984, 1.006], over: 19.4 }],
   'a noisy tip': [{ ink: ink({ brush: 'noise', size: 30, spacing: 25 }) }, { mean: 33.4, worst: 254, ink: [0.993, 1.007], over: 15.4 }],
-  'a ribbon of bars': [{ ink: ink({ brush: 'bars', size: 24, ribbon: true }) }, { mean: 48.7, worst: 256, ink: [0.999, 1.025], over: 21.4 }],
-  'grain': [{ ink: ink({ size: 26, texture: { on: true, density: 0.6, scale: 300 } }) }, { mean: 64.4, worst: 256, ink: [0.988, 1.009], over: 0.5 }],
+  'a ribbon of bars': [{ ink: ink({ brush: 'bars', size: 24, ribbon: true }) }, { mean: 48.7, worst: null, ink: [0.999, 1.025], over: 21.4 }],
+  'grain': [{ ink: ink({ size: 26, texture: { on: true, density: 0.6, scale: 300 } }) }, { mean: 64.4, worst: null, ink: [0.988, 1.009], over: 0.5 }],
   'watercolour edge': [{ ink: ink({ size: 20, color: '#16a34a', waterEdge: true, waterEdgeWidth: 4, waterEdgePower: 0.7 }) }, { mean: 16.6, worst: 251, ink: [0.99, 1.038], over: 10.1 }],
-  'outlined, two bands': [{ ink: ink({ size: 12, color: '#000000' }), strokes: [{ color: '#ffffff', width: 3, opacity: 1 }, { color: '#1d4ed8', width: 2, opacity: 0.8 }] }, { mean: 45, worst: 256, ink: [0.987, 1.061], over: 22.4 }],
+  'outlined, two bands': [{ ink: ink({ size: 12, color: '#000000' }), strokes: [{ color: '#ffffff', width: 3, opacity: 1 }, { color: '#1d4ed8', width: 2, opacity: 0.8 }] }, { mean: 45, worst: null, ink: [0.987, 1.061], over: 22.4 }],
 };
 const SCALES = [1, 2, 2.74];
 
@@ -481,7 +502,7 @@ describe('a mesh bends the ink as the texture warp bent it', () => {
   });
 
   for (const [name, [over, lim]] of Object.entries(MESH_CASES)) {
-    it(name, () => {
+    it(name, { timeout: SLOW }, () => {
       const tips = TIPS;
       for (const scale of SCALES) {
         for (const text of ['INK', '']) {
@@ -505,10 +526,10 @@ describe('a mesh bends the ink as the texture warp bent it', () => {
             const at = `${mesh}, scale ${scale}, ${text ? 'over letters' : 'alone'}`;
             want(d.n, at).toBeGreaterThan(1000);
             want(d.mean, `${at}: mean`).toBeLessThan(lim.mean);
-            want(d.worst, `${at}: worst`).toBeLessThan(lim.worst);
+            if (lim.worst !== null) want(d.worst, `${at}: worst`).toBeLessThan(lim.worst);
             want(d.ink, `${at}: ink`).toBeGreaterThan(lim.ink[0]);
             want(d.ink, `${at}: ink`).toBeLessThan(lim.ink[1]);
-            if (mesh !== 'parallel') want(a.mean - floor.mean, `${at}: A ${a.mean} over its floor ${floor.mean}`).toBeLessThan(lim.over + 0.5);
+            if (mesh !== 'parallel') want(a.mean - floor.mean, `${at}: A ${a.mean} over its floor ${floor.mean}`).toBeLessThan(lim.over);
             // Hard round ink is all edge, as letters are: the bend is no
             // further from the resample than the letters' bend is.
             if (name === 'round hard' && mesh !== 'parallel' && scale === 2 && text === '') want(a8.mean, `${at}: A against B ${glyphB[mesh].mean}`).toBeLessThanOrEqual(glyphB[mesh].mean);
@@ -550,7 +571,7 @@ const ROUGH_CASES = {
 
 describe('a roughening moves the ink edge as it moves the letters', () => {
   for (const [name, [over, lim]] of Object.entries(ROUGH_CASES)) {
-    it(name, () => {
+    it(name, { timeout: SLOW }, () => {
       const roughen = over.roughen ?? ROUGH;
       for (const scale of [2, 2.74]) {
         for (const text of ['INK', '']) {
@@ -587,7 +608,7 @@ describe('a roughening moves the ink edge as it moves the letters', () => {
     });
   }
 
-  it('meshed and roughened: roughened first, then bent, as the reference does both', () => {
+  it('meshed and roughened: roughened first, then bent, as the reference does both', { timeout: SLOW }, () => {
     for (const scale of [2, 2.74]) {
       const box = boxOf({ ink: ink({ size: 18 }), warp: bumpy(), roughen: ROUGH }, '');
       const swapped = boxOf({ ink: ink({ size: 18 }), warp: bumpy(), roughen: { ...ROUGH, seed: 8 } }, '');
@@ -615,7 +636,7 @@ describe('a turned box of bent ink', () => {
     c.getContext('2d').putImageData(l.imageData, l.left, l.top);
     return c.getContext('2d').getImageData(0, 0, w, h);
   };
-  it('lands where the turned, warped bitmap landed', () => {
+  it('lands where the turned, warped bitmap landed', { timeout: SLOW }, () => {
     for (const scale of [1, 2]) {
       const box = boxOf({ rotation: 17, ink: ink({ size: 18 }), warp: bumpy() });
       const a = layer(box, whole, scale);
