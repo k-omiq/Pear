@@ -157,7 +157,7 @@ fn parse(f: &[&str]) -> Case {
         key: f[0].to_string(),
         check: f[15].parse().unwrap(),
         bevel,
-        band: f[14] == "band" || f[14] == "pcletters",
+        band: f[14] == "band",
     }
 }
 
@@ -338,7 +338,10 @@ fn chisel_soft_matches_photocraft() {
 /// Outer Smooth and Emboss Chisel Soft where we shade. Scale 0.8 is left
 /// out: there our shader takes one sample a pixel and PhotoCraft's two
 /// (`shade.rs` `taps` against PhotoCraft `pattern.rs` `pixel_taps`), a
-/// difference of the shared pattern sampler, not of the bevel.
+/// difference of the shared pattern sampler, not of the bevel. Measured at
+/// 0.8: the base case differs by up to 0.151 (mean 0.027), the crossed one
+/// (Chisel Hard, Depth 250 %, Texture Depth -1.5, Invert, Phase (2, 1)) by
+/// up to 0.52 (mean 0.058).
 #[test]
 fn texture_matches_photocraft() {
     assert_eq!(check("b_"), 14);
@@ -348,7 +351,10 @@ fn texture_matches_photocraft() {
 /// (an outside stroke of 3 and an inside one of 2), Smooth, Chisel Hard and
 /// Chisel Soft. The band itself and where it is laid are ours: PhotoCraft
 /// maps Stroke Emboss to its Inner Bevel of the letters (`bevel.rs:40`) with
-/// no comment or measurement.
+/// no comment or measurement. Measured on these letters, PhotoCraft's own
+/// Stroke Emboss against ours differs by up to 0.89 (highlight) and 1.0
+/// (shadow); the means over the pixels either shades, highlight / shadow,
+/// are Smooth 0.23 / 0.34, Chisel Hard 0.22 / 0.30, Chisel Soft 0.25 / 0.35.
 #[test]
 fn stroke_emboss_band_shades_as_photocraft() {
     assert_eq!(check("c_"), 3);

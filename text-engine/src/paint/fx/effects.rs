@@ -1015,7 +1015,7 @@ fn bevel_light(b: &Bevel, carried: impl Fn(f64, f64) -> (f64, f64)) -> [f32; 3] 
 /// united over the strokes as `1 - prod(1 - band)`. `None` with no stroke.
 /// Ours, not PhotoCraft's, and a limit: unmeasured. PhotoCraft dada110 maps
 /// Stroke Emboss to its Inner Bevel of the letters (`bevel.rs:40`, painted
-/// in the inner pass, `composite.rs:213`) with no comment or measurement;
+/// in the inner pass, `effects/composite.rs:213`) with no comment or measurement;
 /// we follow Photoshop's documented behaviour instead (the emboss is kept
 /// to the Stroke effect, and shows nothing without one). The height and
 /// shading over the band are PhotoCraft's Inner Bevel
