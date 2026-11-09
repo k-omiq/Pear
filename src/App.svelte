@@ -45,7 +45,7 @@
   import './lib/prefs.svelte.js';
   import { library, initRoot, scanLibrary, openChapter, flushBeforeLeaving, leaveApprovalCurrent, checkOutsideChange, watchProjectRecords } from './lib/library.svelte.js';
   import { route, goBack, goEditor } from './lib/route.svelte.js';
-  import { watchFontLoads, installContextMenuGuard, isReloadKey, isEditableTarget } from './lib/shell-guards.js';
+  import { watchFontLoads, installContextMenuGuard, isReloadKey, isEditableTarget, ownsArrowKeys } from './lib/shell-guards.js';
 
   let fontModalOpen = $state(false);
   let paletteOpen = $state(false);
@@ -667,6 +667,8 @@
     }
     // The arrows nudge the selected box and turn the page when nothing is
     // selected - one key, and which it means is what the user is looking at.
+    // A focused slider or radio keeps its own arrow keys.
+    if (NUDGE[e.key] && ownsArrowKeys(e.target)) return;
     const step = !mod ? NUDGE[e.key] : null;
     if (step && app.selectedId && !isTranslateMode()) {
       e.preventDefault();

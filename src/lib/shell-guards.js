@@ -24,6 +24,17 @@ export function isEditableTarget(el) {
 }
 
 /**
+ * A slider or a radio uses the arrow keys itself. The nudge and the page turn
+ * must leave them alone, or the box moves while the slider stays put.
+ * @param {any} el event target
+ * @returns {boolean}
+ */
+export function ownsArrowKeys(el) {
+  const node = el?.nodeType === 3 ? el.parentElement : el;
+  return !!node?.matches?.('input[type=range], input[type=radio]');
+}
+
+/**
  * Context menu handler that prevents the browser/webview native menu unless
  * the target is an editable element.
  *

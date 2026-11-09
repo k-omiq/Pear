@@ -23,6 +23,7 @@ import {
   dropHeldFit,
   payHeldFit,
   setFitLander,
+  applyChapterLight,
 } from '../store.svelte.js';
 import { applyLineOrder, remapLineStack } from '../reading-order.js';
 
@@ -157,6 +158,14 @@ const restoreLine = (p, e) => {
 };
 
 const KINDS = {
+  // The chapter's Global Light, turned from a shadow or bevel field. Kept on
+  // the page that was open; undoing it from there puts the light back for all.
+  light: {
+    label: 'that light change',
+    apply(e, dir) {
+      applyChapterLight(dir === 'undo' ? e.before : e.after);
+    },
+  },
   order: {
     label: 'that reading order change',
     apply(e, dir) {
