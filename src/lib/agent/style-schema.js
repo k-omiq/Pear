@@ -36,7 +36,8 @@ const union = (desc, key, variants) => ({
 // An object several fields take whole: `styleSchemaText` prints its fields
 // the first time and points back to that path after.
 const shared = (name, entry) => ({ ...entry, shape: name });
-const readOnly = (desc) => ({ type: 'any', readOnly: true, desc });
+// `same` is what a stored read-only field may be sent back as (an empty pick).
+const readOnly = (desc, same) => ({ type: 'any', readOnly: true, desc, ...(same === undefined ? {} : { same }) });
 const alpha = (desc) => number(desc, 0, 1);
 const point = (desc) => array(desc, number('px'), { minItems: 2, maxItems: 2 });
 
@@ -45,10 +46,11 @@ const point = (desc) => array(desc, number('px'), { minItems: 2, maxItems: 2 });
 // the renderers read `path.pts` and `clip.shapes` in. Coordinates are not
 // clamped (a path or a mask may reach past the box) and have no bounds here.
 // The caps on list lengths are only there to stop a runaway list.
-const contourField = () => object('edge falloff', {
-  preset: listed('CONTOUR', 'contour', CONTOUR_PRESETS),
+const contourField = () => shared('contour', object('edge falloff (Rust)', {
+  preset: listed('CONTOUR', 'contour', [...CONTOUR_PRESETS, 'custom']),
   aa: boolean('anti-aliased contour'),
-});
+  pts: { ...array('custom: points [x, y, corner?], 0..255', { type: 'contourPoint', desc: '[x, y, corner?]' }, { minItems: 2, maxItems: 64 }), optional: true },
+}));
 // An effect gradient (Photoshop's, as Gradient Overlay and Stroke take it).
 const fxGradient = (desc) => shared('gradient', object(desc, {
   style: choice('shape; shapeburst runs from the edge in', FX_GRADIENT_STYLES),
@@ -75,7 +77,7 @@ const fxGradient = (desc) => shared('gradient', object(desc, {
 // One Blend If channel: its This Layer and Underlying Layer sliders, printed
 // whole once (`shared`).
 const blendIfPair = () => shared('blendRange', object('sliders', {
-  this: array('This Layer, by box colour: [black lo, black hi, white lo, white hi] rising', integer('level', 0, 255), { minItems: 4, maxItems: 4 }),
+  this: array('This Layer, by box colour: [black lo, black hi, white lo, white hi], each >= the one before', integer('level', 0, 255), { minItems: 4, maxItems: 4 }),
   under: array('Underlying, by page art', integer('level', 0, 255), { minItems: 4, maxItems: 4 }),
 }));
 // An Outer or Inner Glow's fields; `spread` is Choke on an inner one.
@@ -92,7 +94,7 @@ const glowFields = (spreadKey, spreadDesc) => ({
   noise: alpha('grain'),
   color: color('glow colour'),
   fill: choice('colour or gradient', ['color', 'gradient']),
-  gradient: fxGradient('along the glow, first stop at the edge'),
+  gradient: fxGradient('along the glow, first stop at the edge; ignores style/angle/scale/reverse/offset'),
   technique: choice('soft blur or exact distance', ['softer', 'precise']),
   [spreadKey]: alpha(spreadDesc),
   size: number('reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),
@@ -122,10 +124,12 @@ const patternFields = () => ({
   }),
   anchor: choice('tile origin', PATTERN_ANCHORS),
   seed: integer('random kinds seed', 1, 9999),
-  src: readOnly('set through Pick from page'),
-  cell: readOnly('set through Pick from page'),
+  src: readOnly('set through Pick from page', ''),
+  cell: readOnly('set through Pick from page', []),
   mode: choice('picked: recolour or keep', PATTERN_MODES),
 });
+// An effect's pattern is always on: `on` is read only, true as stored.
+const effectPatternFields = () => ({ ...patternFields(), on: readOnly('set through the effect; always on here', true) });
 const PATH_MAX_ANCHORS = 64;
 const MASK_MAX_SHAPES = 64;
 const MASK_MAX_POINTS = 256;
@@ -180,12 +184,17 @@ export const STYLE_SCHEMA = {
     size: number('soft edge reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),
     color: color('shadow colour'),
     opacity: alpha('shadow alpha'),
-    spread: alpha('share of size that is a hard edge'),
-    noise: alpha('grain'),
+    spread: alpha('share of size that is a hard edge (Rust)'),
+    noise: alpha('grain (Rust)'),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     contour: contourField(),
-    knockout: boolean('letters knock the shadow out'),
+    knockout: boolean('letters knock the shadow out (Rust)'),
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
+  })),
+  gradientOverlays: array('gradients over the fill, top first (Photoshop Gradient Overlay; Rust)', object('gradient overlay', {
+    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
+    opacity: alpha('overlay alpha'),
+    gradient: fxGradient('over the letters'),
   })),
   outerGlow: object('glow round the letters (Photoshop Outer Glow; Rust)', glowFields('spread', 'share of size that is solid')),
   innerGlow: object('glow inside the letters (Photoshop Inner Glow; Rust)', {
@@ -209,16 +218,11 @@ export const STYLE_SCHEMA = {
     opacity: alpha('overlay alpha'),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
   })),
-  gradientOverlays: array('gradients over the fill, top first (Photoshop Gradient Overlay; Rust)', object('gradient overlay', {
-    blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
-    opacity: alpha('overlay alpha'),
-    gradient: fxGradient('over the letters'),
-  })),
   patternOverlay: object('pattern over the fill (Photoshop Pattern Overlay; Rust)', {
     on: boolean('enable overlay'),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     opacity: alpha('overlay alpha'),
-    pattern: shared('pattern', object('as the fill pattern', patternFields())),
+    pattern: shared('pattern', object('as the fill pattern', effectPatternFields())),
   }),
   satin: object('silky inner sheen (Photoshop Satin; Rust)', {
     on: boolean('enable satin'),
@@ -267,12 +271,12 @@ export const STYLE_SCHEMA = {
     fill: choice('paint', STROKE_FILLS),
     color: color('fill color'),
     gradient: fxGradient('fill gradient, over the stroke'),
-    pattern: shared('pattern', object('fill pattern', patternFields())),
+    pattern: shared('pattern', object('fill pattern', effectPatternFields())),
   })),
-  fillOpacity: alpha('fill alpha only; strokes and shadows stay'),
+  fillOpacity: alpha('fill alpha only; strokes and shadows stay (Rust)'),
   blendMode: listed('BLEND', 'how the box mixes with the page art (Photoshop layer blend, Rust)', LAYER_BLEND_MODES),
   blending: object('Photoshop advanced blending', {
-    interior: boolean('Fill also fades overlays, satin, inner glow'),
+    interior: boolean('Fill also fades overlays, satin, inner glow (Rust)'),
     knockout: choice('stored and in the PSD, not painted', KNOCKOUT_MODES),
     channels: object('false keeps the page art channel (Rust)', { r: boolean('R'), g: boolean('G'), b: boolean('B') }),
     blendIf: object('Blend If (Rust)', Object.fromEntries(['gray', 'red', 'green', 'blue'].map((c) => [c, blendIfPair()]))),
@@ -475,7 +479,11 @@ export function validateStylePatch(patch) {
 
   // `whole`: the value is an item of a list given whole (see `required`).
   function check(value, entry, path, whole = false) {
-    if (entry.readOnly) return fail(path, entry.desc);
+    if (entry.readOnly) {
+      // The unset value sent back whole (a stored list echoed) is no edit.
+      if (Object.hasOwn(entry, 'same') && JSON.stringify(value) === JSON.stringify(entry.same)) return;
+      return fail(path, entry.desc);
+    }
     if (value === null && entry.nullable) return;
     switch (entry.type) {
       case 'number':
@@ -494,6 +502,11 @@ export function validateStylePatch(patch) {
       case 'string':
         if (typeof value !== 'string') fail(path, 'expected a string');
         else if (entry.minLength !== undefined && value.length < entry.minLength) fail(path, `expected at least ${entry.minLength} characters`);
+        return;
+      case 'contourPoint':
+        if (!Array.isArray(value) || value.length < 2 || value.length > 3 || !value.slice(0, 2).every((n) => typeof n === 'number' && n >= 0 && n <= 255) || (value.length === 3 && typeof value[2] !== 'boolean')) {
+          fail(path, 'expected [x, y] or [x, y, corner] with x and y 0..255');
+        }
         return;
       case 'enum':
         if (!entry.values.includes(value)) fail(path, `expected one of: ${entry.values.join(', ')}`);
@@ -529,10 +542,35 @@ export function validateStylePatch(patch) {
     }
   }
 
+  // Orders the normaliser would otherwise repair without a word: Blend If
+  // levels rising, a noise gradient's min below its max. Whole arrays only
+  // (an index patch does not carry the other half).
+  function order(node, path = '') {
+    if (Array.isArray(node)) return node.forEach((v, i) => order(v, `${path}[${i}]`));
+    if (!isObject(node)) return;
+    const q = node.blendIf;
+    if (isObject(q)) {
+      for (const [ch, pair] of Object.entries(q)) {
+        for (const side of ['this', 'under']) {
+          const v = pair?.[side];
+          if (Array.isArray(v) && v.length === 4 && v.every((n) => typeof n === 'number') && v.some((n, i) => i && n < v[i - 1])) {
+            fail(at(at(at(path, 'blendIf'), ch), side), `levels must not fall: [${v.join(', ')}]`, 'black low <= black high <= white low <= white high');
+          }
+        }
+      }
+    }
+    const { min, max } = node;
+    if (Array.isArray(min) && Array.isArray(max) && min.some((n, i) => typeof n === 'number' && typeof max[i] === 'number' && n > max[i])) {
+      fail(at(path, 'min'), `noise min must not pass max: min [${min.join(', ')}], max [${max.join(', ')}]`);
+    }
+    for (const [k, v] of Object.entries(node)) if (k !== 'blendIf') order(v, at(path, k));
+  }
+
   // No JSON input can recurse beyond the finite schema. Catch unreadable JS
   // objects too (throwing getters, revoked proxies), without inspecting them.
   try {
     fields(patch, STYLE_SCHEMA, '');
+    if (!errors.length) order(patch);
   } catch {
     fail('', 'invalid or unreadable patch');
   }

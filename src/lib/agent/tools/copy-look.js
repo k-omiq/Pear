@@ -13,14 +13,19 @@ import { applyStylePatch } from '../../style-patch.js';
 import { app, allFonts, cloneStyle, editBoxes, isTranslateMode } from '../../store.svelte.js';
 import { projectById, chapterById, readChapterRecord } from '../../library.svelte.js';
 import { lineTags, knownTags } from '../../tags.svelte.js';
-import { normalizeAuto } from '../../data.js';
+import { normalizeAuto, defaultStyle } from '../../data.js';
 import { parseChapterKey, chapterKey } from '../windows.js';
 import { solverOwns, reportOf } from './edit.js';
 
 // What a look is. Not the place, the turn, the warp or the path (a box's own),
 // nor SFX lettering (per sound: sfx_kinds), nor the margin and balloon fit
 // (how it is laid out, not how it looks).
-export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'strokes', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin'];
+// Photoshop Layer Styles: a hollow look is only its effects.
+const LAYER_KEYS = ['strokeEffects', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'blendMode', 'fillOpacity', 'blending'];
+export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'strokes', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin',
+  ...LAYER_KEYS];
+
+const STYLE_DEFAULTS = defaultStyle();
 
 const median = (vs) => {
   const s = vs.filter((v) => v > 0).sort((a, z) => a - z);
@@ -59,6 +64,12 @@ export function looksOf(pages) {
       const v = commonest(boxes.map((b) => b.style[k]));
       if (v === undefined || v === null) continue;
       if (k === 'gradient' && !v?.on) continue;
+      // A layer style left at its default is still part of the look (the
+      // target's own is switched off), sent short: a plain off.
+      if (LAYER_KEYS.includes(k) && v && !Array.isArray(v) && typeof v === 'object' && v.on === false && JSON.stringify(v) === JSON.stringify(STYLE_DEFAULTS[k])) {
+        style[k] = { on: false };
+        continue;
+      }
       style[k] = v;
     }
     const sounds = boxes.filter((b) => b.style.sfx?.on && b.style.sfx.kind).map((b) => b.style.sfx.kind);
@@ -117,7 +128,7 @@ defineTool({
   name: 'copy_look',
   description:
     'Copy another chapter\'s look, by tag ("letter it like chapter 14"). from: a chapter key (chapters lists them) or a chapter number of this series ("14"). ' +
-    'Reads that chapter\'s saved boxes and returns, per tag (a line\'s first tag), the look its boxes share - the most common font, bold, italic, colour, fill, outlines (strokes), shadows, gradient, case, line height and spacing - as a style patch, the size they aim for (the median), and the sound types its SFX used (sfxKinds: apply them with edit do "sfx_kind:<id>"). ' +
+    'Reads that chapter\'s saved boxes and returns, per tag (a line\'s first tag), the look its boxes share - the most common font, bold, italic, colour, fill, outlines (strokes), shadows, gradient, Photoshop layer styles (stroke effects, glows, inner shadows, overlays, satin, bevel, blend mode, fill opacity, blending), case, line height and spacing - as a style patch, the size they aim for (the median), and the sound types its SFX used (sfxKinds: apply them with edit do "sfx_kind:<id>"). ' +
     'tags limits it to these tags. apply: true also lays each look on this chapter\'s boxes of the same tag (the size as the size each aims for), laid out again by the solver; one undo step per page; a font this machine lacks is left out and named in skipped. ' +
     'It copies looks, not places, turns or SFX layouts. To make a look the default for new boxes too, save it on the tag with the tag tool. compact as edit.',
   input: {

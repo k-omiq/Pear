@@ -33,6 +33,8 @@ const { callContext, __resetRun } = await import('../run.svelte.js');
 const { callTool } = await import('../registry.js');
 const { normalizeStyle } = await import('../../data.js');
 const { looksOf } = await import('./copy-look.js');
+const { defaultStyle, newStrokeEffect } = await import('../../data.js');
+const { validateStylePatch } = await import('../style-schema.js');
 
 let fonts;
 beforeEach(() => {
@@ -67,6 +69,22 @@ describe('looksOf', () => {
     const [speech, sfx] = looksOf(record.pages);
     expect(speech).toMatchObject({ tag: 'speech', boxes: 3, size: 32, style: { font: 'Arial', bold: true, color: '#111111', strokes: [{ color: '#ffffff', width: 3 }] } });
     expect(sfx).toMatchObject({ tag: 'sfx-soft', sfxKinds: ['impact'] });
+  });
+});
+
+describe('looksOf, layer styles', () => {
+  it('carries a hollow look\'s effects and sends layer styles at their defaults as off', () => {
+    const glow = { ...defaultStyle().outerGlow, on: true, size: 9 };
+    const pages = [{ lines: [{ n: 1, tags: ['title'] }], boxes: [{ id: 't', lineN: 1, style: { ...defaultStyle(), noFill: true, outerGlow: glow, strokeEffects: [newStrokeEffect()] } }] }];
+    const [look] = looksOf(pages);
+    expect(look.style.noFill).toBe(true);
+    expect(look.style.outerGlow).toMatchObject({ on: true, size: 9 });
+    expect(look.style.strokeEffects).toHaveLength(1);
+    // Left at default, they still switch the target's own off.
+    expect(look.style.bevel).toEqual({ on: false });
+    expect(look.style.satin).toEqual({ on: false });
+    expect(look.style.innerShadows).toEqual([]);
+    expect(validateStylePatch({ bevel: look.style.bevel })).toEqual([]);
   });
 });
 

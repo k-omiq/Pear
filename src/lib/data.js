@@ -707,6 +707,10 @@ export function normalizeContour(c) {
       .filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
       .map((q) => [Math.min(255, Math.max(0, +q[0])), Math.min(255, Math.max(0, +q[1])), q[2] === true])
       .sort((a, b) => a[0] - b[0])
+      // A smooth point at the x of the one before it has no curve through it
+      // (the spline would floor the gap and run to 0 or 255); a corner may
+      // stay, as a vertical step.
+      .filter((q, i, all) => i === 0 || q[2] || q[0] !== all[i - 1][0])
       .slice(0, 64);
     if (pts.length < 2) return { preset: 'linear', aa: out.aa };
     out.pts = pts;
