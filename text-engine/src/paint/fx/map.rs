@@ -166,27 +166,7 @@ pub(crate) fn blur(m: &mut Map, w: f32) -> Result<(), Error> {
         return Ok(());
     }
     let (mw, mh) = (m.w, m.h);
-    let mut mid = Vec::new();
-    let mut src = budget::filled(mw.max(mh), 0f64)?;
-    let mut dst = budget::filled(mw.max(mh), 0f64)?;
-    for y in 0..mh {
-        for x in 0..mw {
-            src[x] = f64::from(m.v[y * mw + x]);
-        }
-        tent::line(&src[..mw], &mut dst[..mw], f64::from(w), &mut mid);
-        for x in 0..mw {
-            m.v[y * mw + x] = dst[x] as f32;
-        }
-    }
-    for x in 0..mw {
-        for y in 0..mh {
-            src[y] = f64::from(m.v[y * mw + x]);
-        }
-        tent::line(&src[..mh], &mut dst[..mh], f64::from(w), &mut mid);
-        for y in 0..mh {
-            m.v[y * mw + x] = dst[y] as f32;
-        }
-    }
+    tent::grid(&mut m.v, mw, mh, f64::from(w))?;
     Ok(())
 }
 
