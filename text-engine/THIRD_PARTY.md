@@ -29,6 +29,16 @@ names its source file in a comment.
   (`crates/compose/src/effects/distance.rs`, `composite.rs`).
 - `fx/gradient.rs`: the five gradient styles, their lengths and the stop
   sampling (`crates/compose/src/effects/paint.rs`).
+- `fx/gradient.rs` `sample`, `sample_at`, `dither`, `dither_noise`: colour
+  and opacity stops with midpoints, and Dither
+  (`crates/compose/src/gradient_fill.rs` `Ramp::sample`, `sample_color`,
+  `sample_opacity`, `dither`; `crates/color/src/lib.rs` `dither_noise`);
+  `fx/gradient_bake.rs`: Smoothness and the Interpolation Method (Classic,
+  Perceptual, Linear, Smooth) baked into dense stops, with its Photoshop
+  samples as tests (`crates/io/src/gradient_bake.rs` `Method`, `eval`,
+  `bake`, `bake_opacity`, `SMOOTH_EASE`, `OPACITY_RESPONSE`;
+  `crates/compose/src/gradient_fill.rs` `midpoint_remap`). The app's
+  `src/lib/gradient-ramp.js` is a JS copy of the same maths.
 - `fx/map.rs` `satin`, `fx/contour.rs` `Lut::satin`, `fx/effects.rs`
   `satin_throw`: the Satin map, its mirrored contour table, and its throw
   (Distance 0 drawn as 1 px, rounded to whole pixels)

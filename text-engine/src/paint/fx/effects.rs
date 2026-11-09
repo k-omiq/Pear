@@ -403,7 +403,7 @@ impl Brush<'_> {
                 px,
             } => {
                 let p = to_job.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
-                g.sample(g.t(*frame, *px, p.x as f32, p.y as f32))
+                g.sample_at(g.t(*frame, *px, p.x as f32, p.y as f32), x, y)
             }
             Brush::Burst { g, depth, dev, w } => {
                 let (ix, iy) = (x - dev.0, y - dev.1);
@@ -412,7 +412,7 @@ impl Brush<'_> {
                 } else {
                     None
                 };
-                g.sample(g.burst(d.unwrap_or(0.0)))
+                g.sample_at(g.burst(d.unwrap_or(0.0)), x, y)
             }
             Brush::Shade(s) => {
                 let p = s.at(x, y);
@@ -584,7 +584,7 @@ fn lay_glow(
             let jitter = g.jitter.clamp(0.0, 1.0) as f32;
             let color = |x: i32, y: i32, i: usize| {
                 let t = 1.0 - m.v[i].clamp(0.0, 1.0);
-                grad.sample(jittered(t, jitter, x, y, g.seed))
+                grad.sample_at(jittered(t, jitter, x, y, g.seed), x, y)
             };
             lay_with(
                 dst, &strength, at, dev, &color, g.opacity, g.blend, page, g.seed,
@@ -1885,6 +1885,9 @@ mod tests {
             scale: 1.0,
             reverse: false,
             offset: (0.0, 0.0),
+            mids: Vec::new(),
+            opacity_mids: Vec::new(),
+            dither: false,
             noise: None,
         };
         let o = Effect::GradientOverlay(PaintOverlay {
@@ -1899,6 +1902,52 @@ mod tests {
         assert_eq!(l[3], 255);
     }
 
+    /// Dither (review Gaps table): a gentle ramp, a few levels across the
+    /// letters, paints one level down each column plain and a mix of the
+    /// two nearest levels dithered, whose mean keeps the ramp's.
+    #[test]
+    fn a_dithered_gradient_overlay_mixes_levels_and_a_midpoint_moves_its_middle() {
+        let _scope = budget::Scope::new();
+        let ramp = |dither: bool, mids: Vec<f32>| {
+            Effect::GradientOverlay(PaintOverlay {
+                opacity: 1.0,
+                blend: Blend::Normal,
+                paint: Paint::Gradient(Gradient {
+                    stops: vec![(0.0, [0.4; 3]), (1.0, [0.42; 3])],
+                    opacity: Vec::new(),
+                    style: gradient::Style::Linear,
+                    angle: 0.0,
+                    scale: 1.0,
+                    reverse: false,
+                    offset: (0.0, 0.0),
+                    mids,
+                    opacity_mids: Vec::new(),
+                    dither,
+                    noise: None,
+                }),
+            })
+        };
+        let column = |out: &Raster, x: i32| (12..28).map(|y| at(out, x, y)[0]).collect::<Vec<_>>();
+        let (plain, _) = inside(&square(20), &[ramp(false, Vec::new())]);
+        let (dith, _) = inside(&square(20), &[ramp(true, Vec::new())]);
+        let mut mixed = 0;
+        for x in 11..29 {
+            let p = column(&plain, x);
+            assert!(p.iter().all(|v| *v == p[0]), "plain column {x}: {p:?}");
+            let d = column(&dith, x);
+            assert!(d.iter().all(|v| v.abs_diff(p[0]) <= 1), "dithered column {x}: {d:?}");
+            if d.iter().any(|v| *v != d[0]) {
+                mixed += 1;
+            }
+        }
+        assert!(mixed >= 9, "{mixed} columns mixed");
+        // A midpoint at 25 %: the half-way grey sits a quarter across.
+        let (bent, _) = inside(&square(20), &[ramp(false, vec![0.25])]);
+        let half = (0.41f32 * 255.0 + 0.5) as u8;
+        assert!(at(&bent, 15, 20)[0].abs_diff(half) <= 1, "{:?}", at(&bent, 15, 20));
+        assert!(at(&plain, 15, 20)[0] < half);
+    }
+
     fn burst(reverse: bool) -> Gradient {
         Gradient {
             stops: vec![(0.0, [0.0; 3]), (1.0, [1.0; 3])],
@@ -1908,6 +1957,9 @@ mod tests {
             scale: 1.0,
             reverse,
             offset: (0.3, 0.0),
+            mids: Vec::new(),
+            opacity_mids: Vec::new(),
+            dither: false,
             noise: None,
         }
     }
@@ -2016,6 +2068,9 @@ mod tests {
             style: gradient::Style::Linear,
             angle: 0.0,
             offset: (0.0, 0.0),
+            mids: Vec::new(),
+            opacity_mids: Vec::new(),
+            dither: false,
             noise: Some(ramp.clone()),
             ..burst(false)
         };
@@ -2067,6 +2122,9 @@ mod tests {
                 scale: 1.0,
                 reverse: false,
                 offset: (0.0, 0.0),
+                mids: Vec::new(),
+                opacity_mids: Vec::new(),
+                dither: false,
                 noise: None,
             }),
             opacity: 1.0,
@@ -2148,6 +2206,9 @@ mod tests {
             scale: 1.0,
             reverse: false,
             offset: (0.0, 0.0),
+            mids: Vec::new(),
+            opacity_mids: Vec::new(),
+            dither: false,
             noise: None,
         };
         let n = 40usize;
@@ -2222,6 +2283,9 @@ mod tests {
             scale: 1.0,
             reverse: false,
             offset: (0.0, 0.0),
+            mids: Vec::new(),
+            opacity_mids: Vec::new(),
+            dither: false,
             noise: None,
         };
         let paint = |g: Glow| inside(&square(30), &[Effect::InnerGlow(g)]).0;

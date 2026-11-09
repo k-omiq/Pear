@@ -35,6 +35,7 @@ use super::fx::effects::{
     Paint, PaintOverlay, Place, Position, Satin, Stroke, Technique,
 };
 use super::fx::gradient::{Gradient, Style};
+use super::fx::gradient_bake::Method;
 use super::fx::noise_gradient::{Model, Noise, Ramp};
 use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
@@ -58,7 +59,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 12;
+pub const BOX_WIRE_VERSION: u32 = 13;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -504,7 +505,8 @@ impl<'a> Reader<'a> {
 
     /// An effect gradient: style, angle, scale, reverse, offset, then the
     /// colour stops (position, RGBA) and the opacity stops (position,
-    /// opacity), each in order.
+    /// opacity), each in order, their midpoints, Dither, the Method and
+    /// Smoothness (baked into the stops here, [`Gradient::interpolate`]).
     fn gradient(&mut self) -> Result<Gradient, Error> {
         let style = Style::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
         let angle = self.within(36_000.0)? as f32;
@@ -532,6 +534,16 @@ impl<'a> Reader<'a> {
         {
             return Err(Error::BadSpec);
         }
+        // v13: the midpoints, Dither, the Method and Smoothness.
+        let mids = self.gradient_mids(n)?;
+        let opacity_mids = self.gradient_mids(m)?;
+        let dither = match self.u32()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::BadSpec),
+        };
+        let method = Method::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
+        let smoothness = self.upto(1.0)? as f32;
         let noise = match self.u32()? {
             0 => None,
             1 => {
@@ -543,7 +555,7 @@ impl<'a> Reader<'a> {
             }
             _ => return Err(Error::BadSpec),
         };
-        Ok(Gradient {
+        let mut g = Gradient {
             stops,
             opacity,
             style,
@@ -552,7 +564,27 @@ impl<'a> Reader<'a> {
             reverse,
             offset,
             noise,
-        })
+            mids,
+            opacity_mids,
+            dither,
+        };
+        g.interpolate(method, smoothness)?;
+        Ok(g)
+    }
+
+    /// A gradient's midpoints (v13): none (every one even), or one for each
+    /// segment between its `stops` stops, each 0 to 1 (the painter keeps
+    /// them to Photoshop's 5 to 95 %).
+    fn gradient_mids(&mut self, stops: usize) -> Result<Vec<f32>, Error> {
+        let k = self.count(MAX_GRADIENT_STOPS, 8)?;
+        if k != 0 && k + 1 != stops {
+            return Err(Error::BadSpec);
+        }
+        let mut mids = Vec::with_capacity(k);
+        for _ in 0..k {
+            mids.push(self.upto(1.0)? as f32);
+        }
+        Ok(mids)
     }
 
     /// A noise gradient: seed, Roughness, colour model, each channel's
@@ -872,7 +904,11 @@ impl<'a> Reader<'a> {
 ///   to 10), u32 reverse, f64 x, y (the centre moved, a share of the frame,
 ///   within 10), u32 n then n (f64 position, rgba colour), u32 m then m (f64
 ///   position, f64 opacity); at most 256 of each, positions 0 to 1 and in
-///   order; then u32 type, 0 solid (the stops), 1 noise (v6), whose record
+///   order; then (v13) u32 k then k f64 colour midpoints and u32 j then j
+///   f64 opacity midpoints (0, or one per segment: n - 1 and m - 1; each 0
+///   to 1, painted kept to 5 to 95 %), u32 dither (0 or 1), u32 method (0
+///   Classic, 1 Perceptual, 2 Linear, 3 Smooth), f64 smoothness (0 to 1);
+///   then u32 type, 0 solid (the stops), 1 noise (v6), whose record
 ///   follows in place of the stops' colours:
 /// noise record: u32 seed, f64 roughness (0 to 1), u32 model (0 RGB, 1 HSB,
 ///   2 LAB), then per channel f64 min, f64 max (0 to 1, min <= max), u32
@@ -903,7 +939,8 @@ impl<'a> Reader<'a> {
 /// - a flag past its bits: the blending flags, a channel mask past 7, the
 ///   shadow flags past 7, the satin flags past 3, the bevel flags past 63
 ///   (a texture's Invert with no texture), the noise flags past 3, a glow's
-///   Centre or gradient flag, a contour corner flag, a backdrop flag, or a
+///   Centre or gradient flag, a gradient's dither flag or method, a midpoint
+///   count that is neither 0 nor one per segment, a contour corner flag, a backdrop flag, or a
 ///   Blend If flag past 1, or a Blend If range out of order (black low,
 ///   black high, white low, white high must not fall);
 /// - a bevel texture whose paint is not a fill;

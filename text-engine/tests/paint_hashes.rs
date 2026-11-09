@@ -129,12 +129,18 @@ fn grad(style: Style) -> Gradient {
         scale: 0.9,
         reverse: false,
         offset: (0.05, -0.05),
+        mids: Vec::new(),
+        opacity_mids: Vec::new(),
+        dither: false,
         noise: None,
     }
 }
 
 fn noise_grad() -> Gradient {
     Gradient {
+        mids: Vec::new(),
+        opacity_mids: Vec::new(),
+        dither: false,
         noise: Some(Ramp::new(Noise {
             seed: 9,
             roughness: 0.6,

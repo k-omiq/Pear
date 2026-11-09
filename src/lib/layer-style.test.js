@@ -126,14 +126,16 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(12);
+    expect(BOX_WIRE_VERSION).toBe(13);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header, the blending options
     // and the effect's kind, opacity and blend: its style is Shape Burst.
     const head = 4 * 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4;
     expect(dv(solid).getUint32(head + 4 + 8 + 4 + 4, true)).toBe(5);
-    const typeAt = head + 4 + 8 + 4 + 4 + 4 + 8 + 8 + 4 + 8 + 8 + 4 + 2 * 12 + 4;
+    // v13: the two midpoint counts, Dither, the Method and Smoothness come
+    // between the stops and the type.
+    const typeAt = head + 4 + 8 + 4 + 4 + 4 + 8 + 8 + 4 + 8 + 8 + 4 + 2 * 12 + 4 + 4 + 4 + 4 + 4 + 8;
     expect(dv(solid).getUint32(typeAt, true)).toBe(0);
     expect(dv(noisy).getUint32(typeAt, true)).toBe(1);
     expect(dv(noisy).getUint32(typeAt + 4, true)).toBe(42);

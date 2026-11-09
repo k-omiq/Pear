@@ -13,8 +13,18 @@
 //! turns its gradient with it, and the whole-pixel snap of PhotoCraft's
 //! `fill_layout` is left out (it is a device-pixel grid; up to about 1 px
 //! along the gradient, and Reflected tilts on odd frames).
+//!
+//! Midpoints, separate opacity stops and Dither: PhotoCraft's
+//! `crates/compose/src/gradient_fill.rs` (`Ramp::sample`, `sample_color`,
+//! `sample_opacity`, `dither`) and `crates/color/src/lib.rs`
+//! (`dither_noise`). Changed: opacity stops take midpoints too (Photoshop's
+//! Gradient Editor has them; PhotoCraft folds them into its bake), and the
+//! stops are found by halving, not walked. Smoothness and the Method are
+//! [`super::gradient_bake`]'s.
 
+use super::gradient_bake::{self, Method};
 use super::noise_gradient::Ramp;
+use crate::Error;
 
 /// The gradient's shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,6 +61,14 @@ pub struct Gradient {
     pub stops: Vec<(f32, [f32; 3])>,
     /// Opacity stops: position, opacity. None is opaque.
     pub opacity: Vec<(f32, f32)>,
+    /// The midpoint of each segment between colour stops, 0.05 to 0.95 (0.5
+    /// is even); missing ones are even.
+    pub mids: Vec<f32>,
+    /// The same between opacity stops.
+    pub opacity_mids: Vec<f32>,
+    /// Photoshop's Dither: a fraction of a level of noise per pixel, so a
+    /// long, gentle ramp does not band.
+    pub dither: bool,
     pub style: Style,
     /// Degrees, counter-clockwise from the +x axis with y up (Photoshop's).
     pub angle: f32,
@@ -146,59 +164,109 @@ impl Gradient {
         if let Some(r) = &self.noise {
             return r.sample(t);
         }
-        let c = sample_stops(&self.stops, t);
+        let c = sample_stops(&self.stops, &self.mids, t);
         let a = if self.opacity.is_empty() {
             1.0
         } else {
-            sample_stops1(&self.opacity, t)
+            sample_stops1(&self.opacity, &self.opacity_mids, t)
         };
         [c[0], c[1], c[2], a]
     }
-}
 
-fn sample_stops(stops: &[(f32, [f32; 3])], t: f32) -> [f32; 3] {
-    match stops {
-        [] => [t; 3],
-        [s] => s.1,
-        _ => {
-            if t <= stops[0].0 {
-                return stops[0].1;
-            }
-            for w in stops.windows(2) {
-                if t <= w[1].0 {
-                    let k = if w[1].0 > w[0].0 {
-                        (t - w[0].0) / (w[1].0 - w[0].0)
-                    } else {
-                        0.0
-                    };
-                    return core::array::from_fn(|i| w[0].1[i] + (w[1].1[i] - w[0].1[i]) * k);
-                }
-            }
-            stops[stops.len() - 1].1
+    /// [`Gradient::sample`] at device pixel `(x, y)`: with Dither on, the
+    /// colour moves by under half a level, by the pixel's own noise.
+    pub fn sample_at(&self, t: f32, x: i32, y: i32) -> [f32; 4] {
+        let mut c = self.sample(t);
+        if self.dither {
+            dither(&mut c, x, y);
         }
+        c
+    }
+
+    /// Photoshop's Smoothness (0 to 1) and interpolation `method`, baked
+    /// into the stops: dense ones the painter runs between in a straight
+    /// line, the midpoints folded in. Classic at 0 % is how the stops are
+    /// sampled anyway and leaves them; so does Smooth at 0 % for the
+    /// opacity, which keeps Classic's curve ([`gradient_bake`]).
+    pub fn interpolate(&mut self, method: Method, smoothness: f32) -> Result<(), Error> {
+        let plain = smoothness.is_nan() || smoothness <= 0.0;
+        if !(plain && method == Method::Classic) && self.stops.len() >= 2 {
+            self.stops = gradient_bake::bake(&self.stops, &self.mids, smoothness, method)?;
+            self.mids.clear();
+        }
+        let shaped = !(plain && matches!(method, Method::Classic | Method::Smooth));
+        if shaped && self.opacity.len() >= 2 {
+            self.opacity =
+                gradient_bake::bake_opacity(&self.opacity, &self.opacity_mids, smoothness, method)?;
+            self.opacity_mids.clear();
+        }
+        Ok(())
     }
 }
 
-fn sample_stops1(stops: &[(f32, f32)], t: f32) -> f32 {
+/// Per-pixel dither noise, 0 up to 1, from a hash of the pixel: PhotoCraft's
+/// `dither_noise` (`crates/color/src/lib.rs`), which its Gradient tool,
+/// Gradient Fill layers and Gradient Overlay share.
+pub fn dither_noise(x: i32, y: i32) -> f32 {
+    let mut h = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    f32::from((h & 0xFFFF) as u16) / 65535.0
+}
+
+/// One level's worth of the pixel's dither noise, centred, added to a
+/// colour's RGB (PhotoCraft's `gradient_fill::dither`).
+pub fn dither(c: &mut [f32; 4], x: i32, y: i32) {
+    let n = (dither_noise(x, y) - 0.5) / 255.0;
+    for ch in &mut c[..3] {
+        *ch = (*ch + n).clamp(0.0, 1.0);
+    }
+}
+
+/// The segment `t` falls in: the index of its first stop, and how far
+/// across it `t` is. Before the first stop or past the last, `None` (the end
+/// stop's own value stands).
+fn locate<T>(stops: &[(f32, T)], t: f32) -> Option<(usize, f32)> {
+    // The first stop at or past `t`; a hard edge's two stops share a
+    // position and `t` on it takes the first segment that ends there.
+    let j = stops.partition_point(|s| s.0 < t);
+    if j == 0 || j >= stops.len() {
+        return None;
+    }
+    let (a, b) = (stops[j - 1].0, stops[j].0);
+    let k = if b > a { (t - a) / (b - a) } else { 0.0 };
+    Some((j - 1, k))
+}
+
+fn sample_stops(stops: &[(f32, [f32; 3])], mids: &[f32], t: f32) -> [f32; 3] {
+    match stops {
+        [] => [t; 3],
+        [s] => s.1,
+        _ => match locate(stops, t) {
+            None if t <= stops[0].0 => stops[0].1,
+            None => stops[stops.len() - 1].1,
+            Some((i, k)) => {
+                let k = gradient_bake::midpoint_remap(k, mids.get(i).copied().unwrap_or(0.5));
+                let (a, b) = (stops[i].1, stops[i + 1].1);
+                core::array::from_fn(|c| a[c] + (b[c] - a[c]) * k)
+            }
+        },
+    }
+}
+
+fn sample_stops1(stops: &[(f32, f32)], mids: &[f32], t: f32) -> f32 {
     match stops {
         [] => 1.0,
         [s] => s.1,
-        _ => {
-            if t <= stops[0].0 {
-                return stops[0].1;
+        _ => match locate(stops, t) {
+            None if t <= stops[0].0 => stops[0].1,
+            None => stops[stops.len() - 1].1,
+            Some((i, k)) => {
+                let k = gradient_bake::midpoint_remap(k, mids.get(i).copied().unwrap_or(0.5));
+                stops[i].1 + (stops[i + 1].1 - stops[i].1) * k
             }
-            for w in stops.windows(2) {
-                if t <= w[1].0 {
-                    let k = if w[1].0 > w[0].0 {
-                        (t - w[0].0) / (w[1].0 - w[0].0)
-                    } else {
-                        0.0
-                    };
-                    return w[0].1 + (w[1].1 - w[0].1) * k;
-                }
-            }
-            stops[stops.len() - 1].1
-        }
+        },
     }
 }
 
@@ -230,6 +298,9 @@ mod tests {
             reverse: false,
             offset: (0.0, 0.0),
             noise: None,
+            mids: Vec::new(),
+            opacity_mids: Vec::new(),
+            dither: false,
         }
     }
 
@@ -324,5 +395,104 @@ mod tests {
         for t in [0.0, 0.3, 1.0] {
             assert_eq!(g.sample(t), ramp.sample(t));
         }
+    }
+
+    #[test]
+    fn midpoints_move_the_half_way_point_of_each_kind_of_stop() {
+        // PhotoCraft's `ramp_midpoints_and_opacity`, with the opacity's own
+        // midpoint too.
+        let g = Gradient {
+            mids: vec![0.25],
+            opacity: vec![(0.0, 1.0), (1.0, 0.0)],
+            opacity_mids: vec![0.75],
+            ..bw()
+        };
+        let p = g.sample(0.25);
+        assert!((p[0] - 0.5).abs() < 1e-5, "{p:?}");
+        assert!((g.sample(0.75)[3] - 0.5).abs() < 1e-5);
+        // Either side of a midpoint is a straight line.
+        assert!((g.sample(0.125)[0] - 0.25).abs() < 1e-5);
+        assert!((g.sample(0.625)[0] - 0.75).abs() < 1e-5);
+        assert_eq!(g.sample(1.0), [1.0, 1.0, 1.0, 0.0]);
+        // Out of Photoshop's 5 to 95 %, a midpoint is held to it.
+        let far = Gradient {
+            mids: vec![0.0],
+            ..bw()
+        };
+        assert!((far.sample(0.05)[0] - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn three_stops_take_one_midpoint_per_segment_and_a_hard_edge_holds() {
+        let g = Gradient {
+            stops: vec![(0.0, [0.0; 3]), (0.5, [1.0; 3]), (0.5, [0.0; 3]), (1.0, [1.0; 3])],
+            mids: vec![0.5, 0.5, 0.2],
+            ..bw()
+        };
+        assert!((g.sample(0.25)[0] - 0.5).abs() < 1e-5);
+        assert_eq!(g.sample(0.5)[0], 1.0);
+        assert!(g.sample(0.5001)[0] < 0.01);
+        assert!((g.sample(0.6)[0] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dither_moves_a_colour_by_under_half_a_level_and_keeps_its_mean() {
+        // PhotoCraft's dither check (`native_cmyk_ramp_interpolates...`):
+        // the noise is the pixel's own, alpha untouched.
+        let g = Gradient {
+            dither: true,
+            ..bw()
+        };
+        let plain = Gradient { ..bw() };
+        let mut sum = 0.0f64;
+        let mut moved = 0;
+        for y in 0..32 {
+            for x in 0..32 {
+                let c = g.sample_at(0.3, x, y);
+                let n = (dither_noise(x, y) - 0.5) / 255.0;
+                assert!((c[0] - 0.3 - n).abs() < 1e-6 && c[3] == 1.0);
+                assert!((c[0] - 0.3).abs() <= 0.5 / 255.0 + 1e-7);
+                sum += f64::from(c[0]);
+                let level = |v: f32| (v * 255.0 + 0.5) as u8;
+                if level(c[0]) != level(0.3) {
+                    moved += 1;
+                }
+            }
+        }
+        assert!((sum / 1024.0 - 0.3).abs() < 1e-3);
+        // 0.3 is 76.5 levels: dithered, about half the pixels round each way.
+        assert!((300..700).contains(&moved), "{moved}");
+        assert_eq!(plain.sample_at(0.3, 5, 7), plain.sample(0.3));
+        assert_eq!(dither_noise(3, 7), dither_noise(3, 7));
+    }
+
+    #[test]
+    fn interpolate_bakes_the_method_and_smoothness_and_folds_the_midpoints() {
+        let mut g = Gradient {
+            mids: vec![0.25],
+            opacity: vec![(0.0, 1.0), (1.0, 0.0)],
+            opacity_mids: vec![0.5],
+            ..bw()
+        };
+        let before = g.clone();
+        g.interpolate(Method::Classic, 0.0).unwrap();
+        assert_eq!(g, before, "Classic at 0 % samples the stops as they are");
+        g.interpolate(Method::Linear, 0.0).unwrap();
+        assert!(g.mids.is_empty() && g.opacity_mids.is_empty());
+        assert!(g.stops.len() > 2 && g.opacity.len() > 2);
+        // The midpoint still puts the half-way blend at 25 %, in linear
+        // light: sRGB 0.735.
+        assert!((g.sample(0.25)[0] - 0.7354).abs() < 3e-3, "{:?}", g.sample(0.25));
+        // Linear opacity: PhotoCraft's Photoshop sample, 63 % at x 128 of 256.
+        assert!((g.sample(128.5 / 256.0)[3] - 0.631).abs() < 0.015);
+        // Smooth at 0 % leaves the opacity on Classic's curve.
+        let mut s = Gradient {
+            opacity: vec![(0.0, 1.0), (1.0, 0.0)],
+            opacity_mids: vec![0.25],
+            ..bw()
+        };
+        s.interpolate(Method::Smooth, 0.0).unwrap();
+        assert_eq!(s.opacity_mids, vec![0.25]);
+        assert!((s.sample(0.25)[3] - 0.5).abs() < 1e-5);
     }
 }
