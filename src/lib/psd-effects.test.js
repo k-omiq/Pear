@@ -19,6 +19,7 @@ import {
 } from './data.js';
 import { CONTOUR_PRESET_POINTS, PSD_CONTOUR_POINTS } from './contour-presets.js';
 import { setGlobalLight } from './text-paint.js';
+import { sampleRamp } from './gradient-ramp.js';
 
 const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
 const rendered = { imageData: { width: 10, height: 6, data: new Uint8ClampedArray(10 * 6 * 4) }, left: 3, top: 4, right: 13, bottom: 10, opacity: 1 };
@@ -514,5 +515,83 @@ describe('a turned box writes its effect gradients against the page bounds', () 
     expect(needsGradientFrames(normalizeStyle({ ...plain, rotation: 30, gradientOverlays: [normalizeGradientOverlay({})] }))).toBe(true);
     const flat = layerFor({ gradientOverlays: [normalizeGradientOverlay({ gradient: { scale: 0.8, offset: [0.1, -0.2] } })] });
     expect(flat.effects.gradientOverlay[0]).toMatchObject({ scale: 0.8, offset: { x: 0.1, y: -0.2 } });
+  });
+});
+
+// Gradient midpoints, separate opacity stops, Dither and the Interpolation
+// Method (review Gaps table, F87).
+describe('an effect gradient\'s midpoints, opacity stops, Dither and Method', () => {
+  const stops = [{ color: '#000000', pos: 0 }, { color: '#ffffff', pos: 0.6, mid: 0.25 }, { color: '#ff0000', pos: 1, mid: 0.7 }];
+  const opacityStops = [{ opacity: 1, pos: 0 }, { opacity: 0.2, pos: 0.3, mid: 0.8 }, { opacity: 0.9, pos: 1 }];
+
+  it('at Smoothness 100 % writes the stops, their midpoints and the method as they are', () => {
+    const gradient = { stops, opacityStops, smoothness: 1, method: 'perceptual', dither: true };
+    const layer = layerFor({
+      gradientOverlays: [normalizeGradientOverlay({ gradient })],
+      strokeEffects: [normalizeStrokeEffect({ size: 2, fill: 'gradient', gradient: { ...gradient, method: 'linear', dither: false } })],
+    });
+    const bytes = pageBytes(layer);
+    // Photoshop's percent, on the stop that ends each segment (F30's 50 on
+    // the first stops).
+    expect(longs(bytes, 'Mdpn')).toEqual([50, 25, 70, 50, 80, 50, 50, 25, 70, 50, 80, 50]);
+    expect(doubles(bytes, 'Intr')).toEqual([4096, 4096]);
+    const { layer: back } = roundTrip(layer);
+    const o = back.effects.gradientOverlay[0];
+    expect(o.dither).toBe(true);
+    expect(o.interpolationMethod).toBe('perceptual');
+    const r3 = (v) => Math.round(v * 1000) / 1000;
+    expect(o.gradient.colorStops.map((c) => [r3(c.location), c.midpoint])).toEqual([[0, 0.5], [0.6, 0.25], [1, 0.7]]);
+    expect(o.gradient.opacityStops.map((c) => [r3(c.location), r3(c.opacity), c.midpoint])).toEqual([[0, 1, 0.5], [0.3, 0.2, 0.8], [1, 0.9, 0.5]]);
+    const k = back.effects.stroke.find((s) => s.fillType === 'gradient');
+    expect(k.gradient.interpolationMethod).toBe('linear');
+    expect(k.gradient.dither).toBe(false);
+  });
+
+  it('at any other Smoothness bakes the ramp the engine paints, Classic, so Photoshop draws it the same', () => {
+    for (const [method, smoothness] of [['classic', 0], ['linear', 0], ['perceptual', 0.5], ['smooth', 0]]) {
+      const gradient = normalizeGradientOverlay({ gradient: { stops, opacityStops, smoothness, method } }).gradient;
+      const layer = layerFor({ gradientOverlays: [{ blend: 'normal', opacity: 1, gradient }] });
+      const o = layer.effects.gradientOverlay[0];
+      expect(o.interpolationMethod, method).toBe('classic');
+      expect(new Set(o.gradient.colorStops.map((c) => c.midpoint))).toEqual(new Set([0.5]));
+      const want = sampleRamp(gradient, 400);
+      const red = o.gradient.colorStops.map((c) => [c.location, c.color.r]);
+      const green = o.gradient.colorStops.map((c) => [c.location, c.color.g]);
+      const alpha = o.gradient.opacityStops.map((c) => [c.location, c.opacity]);
+      const worst = [0, 0, 0];
+      for (const p of want) {
+        worst[0] = Math.max(worst[0], Math.abs(photoshopSmooth(red, p.pos) - p.rgb[0] * 255));
+        worst[1] = Math.max(worst[1], Math.abs(photoshopSmooth(green, p.pos) - p.rgb[1] * 255));
+        worst[2] = Math.max(worst[2], Math.abs(photoshopSmooth(alpha, p.pos) - p.opacity));
+      }
+      // Within a level or so of the engine's ramp (most where Linear's
+      // light curve is steepest, next to black); the alpha within 1.5 %.
+      expect(worst[0], `${method} red`).toBeLessThan(3.5);
+      expect(worst[1], `${method} green`).toBeLessThan(3.5);
+      expect(worst[2], `${method} alpha`).toBeLessThan(0.015);
+      if (method === 'linear') {
+        // The stops written as they are would be far off it.
+        const raw = stops.map((st) => [st.pos, st.color === '#000000' ? 0 : 255]);
+        expect(Math.max(...want.map((p) => Math.abs(photoshopSmooth(raw, p.pos) - p.rgb[0] * 255)))).toBeGreaterThan(20);
+      }
+    }
+  });
+
+  it('a midpoint moves the half-way colour where the engine puts it', () => {
+    const g = normalizeGradientOverlay({ gradient: { stops: [{ color: '#000000', pos: 0 }, { color: '#ffffff', pos: 1, mid: 0.25 }] } }).gradient;
+    const at = (t) => sampleRamp(g, 4).find((p) => p.pos === t);
+    expect(at(0.25).rgb[0]).toBeCloseTo(0.5, 6);
+    const o = layerFor({ gradientOverlays: [{ blend: 'normal', opacity: 1, gradient: g }] }).effects.gradientOverlay[0];
+    const red = o.gradient.colorStops.map((c) => [c.location, c.color.r]);
+    expect(Math.abs(photoshopSmooth(red, 0.25) - 127.5)).toBeLessThan(1.5);
+  });
+
+  it('a glow, which ag-psd gives no method, bakes any method but Classic', () => {
+    const gradient = { stops, opacityStops, smoothness: 1, method: 'perceptual' };
+    const glow = layerFor({ outerGlow: normalizeGlow({ on: true, fill: 'gradient', gradient }) }).effects.outerGlow;
+    expect(glow.gradient.colorStops.length).toBeGreaterThan(10);
+    const classic = layerFor({ outerGlow: normalizeGlow({ on: true, fill: 'gradient', gradient: { ...gradient, method: 'classic' } }) }).effects.outerGlow;
+    expect(classic.gradient.colorStops.map((c) => c.midpoint)).toEqual([0.5, 0.25, 0.7]);
+    expect(glow.dither).toBeUndefined();
   });
 });

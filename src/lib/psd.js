@@ -26,6 +26,7 @@ import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RAN
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
 import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
 import { warpActive } from './warp.js';
+import { bakeRamp } from './gradient-ramp.js';
 import { withPageImages } from './page-images.js';
 import { snapshotExportPages } from './export-pages.svelte.js';
 
@@ -185,6 +186,38 @@ function psdSolidStops(stops) {
   return {
     colorStops: out.map((p) => ({ color: p.rgb, location: p.pos, midpoint: 0.5 })),
     opacityStops: out.map((p) => ({ opacity: p.opacity, location: p.pos, midpoint: 0.5 })),
+  };
+}
+
+// An effect gradient's two tracks (`normalizeFxGradient`: colour and
+// opacity stops apart, each with the midpoint of the segment it ends, as
+// Photoshop stores it) and the Interpolation Method to write with them.
+// ag-psd writes every gradient at Smoothness 100 % (see psdSolidStops), so
+// a gradient at 100 % goes in as it is: its stops, its midpoints (ag-psd's
+// 0..1) and its method, which Photoshop draws as the engine does (both are
+// PhotoCraft's fit, crates/io/src/gradient_bake.rs). Any other Smoothness
+// cannot be stated through ag-psd: the ramp the engine paints is baked into
+// dense stops (`bakeRamp`) that Classic at 100 % draws in a straight line
+// between, as psdSolidStops does. `methods` is false where ag-psd writes no
+// method (the glows): there a method other than Classic is baked too.
+function psdFxSolidStops(g, methods = true) {
+  const method = g.method ?? 'classic';
+  const mid = (st, i) => (i > 0 && Number.isFinite(st?.mid) ? st.mid : 0.5);
+  const ops = Array.isArray(g.opacityStops) ? g.opacityStops : (g.stops ?? []).map((st) => ({ pos: st.pos, opacity: st.opacity ?? 1 }));
+  if ((g.smoothness ?? 0) >= 1 && (methods || method === 'classic')) {
+    return {
+      method,
+      colorStops: [...(g.stops ?? [])].sort((a, b) => a.pos - b.pos).map((st, i) => ({ color: hexToRgb(st.color), location: st.pos, midpoint: mid(st, i) })),
+      opacityStops: [...ops].sort((a, b) => a.pos - b.pos).map((st, i) => ({ opacity: st.opacity, location: st.pos, midpoint: mid(st, i) })),
+    };
+  }
+  const baked = bakeRamp(g, GRADIENT_BAKE_STEPS);
+  const c255 = (v) => Math.round(v * 255 * 1000) / 1000;
+  return {
+    method: 'classic',
+    colorStops: baked.color.map((p) => ({ color: { r: c255(p.rgb[0]), g: c255(p.rgb[1]), b: c255(p.rgb[2]) }, location: p.pos, midpoint: 0.5 })),
+    // Opacity to a whole percent: ag-psd writes Opct so (`unitsPercent`).
+    opacityStops: baked.opacity.map((p) => ({ opacity: Math.round(p.opacity * 100) / 100, location: p.pos, midpoint: 0.5 })),
   };
 }
 
@@ -1149,7 +1182,7 @@ export function textLayerFor(p, box, rendered) {
     const n = Math.round(v * 100);
     return Math.trunc((n / 100) * 100) === n ? n / 100 : (n + 0.001) / 100;
   };
-  const fxGradient = (g) => g.type === 'noise' ? {
+  const fxGradient = (g, methods) => g.type === 'noise' ? {
     name: 'Custom',
     type: 'noise',
     roughness: g.noise.roughness,
@@ -1159,11 +1192,13 @@ export function textLayerFor(p, box, rendered) {
     addTransparency: g.noise.transparency,
     min: [...g.noise.min.map(limit), 0],
     max: [...g.noise.max.map(limit), 1],
-  } : {
-    name: 'Custom',
-    type: 'solid',
-    ...psdSolidStops(g.stops),
-  };
+  } : (({ method, ...stops }) => ({ name: 'Custom', type: 'solid', ...stops }))(psdFxSolidStops(g, methods));
+  // Dither and the Interpolation Method, where Photoshop has them (Gradient
+  // Overlay and Stroke): the method psdFxSolidStops wrote the stops for.
+  const fxInterp = (g) => ({
+    dither: g.dither === true,
+    ...(g.type === 'noise' ? null : { interpolationMethod: psdFxSolidStops(g).method }),
+  });
   // The glows: a colour or a gradient, Softer or Precise, Spread (Choke),
   // Range, Noise and Jitter as Photoshop's dialog has them. A gradient glow
   // goes in as PhotoCraft writes one (Grad, Rvrs, Type,
@@ -1176,7 +1211,7 @@ export function textLayerFor(p, box, rendered) {
     size: { units: 'Pixels', value: g.size || 0 },
     ...(g.fill === 'gradient' && g.gradient
       ? {
-          gradient: fxGradient(g.gradient),
+          gradient: fxGradient(g.gradient, false),
           reverse: g.gradient.reverse === true,
           ...(PSD_GRADIENT_TYPES.includes(g.gradient.style) ? { type: g.gradient.style } : null),
         }
@@ -1279,7 +1314,8 @@ export function textLayerFor(p, box, rendered) {
     opacity: o.opacity ?? 1,
     type: o.gradient.style,
     ...fxPlacement(o.gradient),
-    gradient: fxGradient(o.gradient),
+    ...fxInterp(o.gradient),
+    gradient: fxGradient(o.gradient, true),
   }));
   // The Photoshop strokes: the outlines are drawn over them, so in
   // Photoshop's list (first on top) they come after the outlines. Only the
@@ -1297,7 +1333,7 @@ export function textLayerFor(p, box, rendered) {
       color: hexToRgb(k.color),
       // Overprint: ours has none, so off, as PhotoCraft writes it.
       overprint: false,
-      ...(k.fill === 'gradient' ? { gradient: { ...fxGradient(k.gradient), style: k.gradient.style, ...fxPlacement(k.gradient) } } : null),
+      ...(k.fill === 'gradient' ? { gradient: { ...fxGradient(k.gradient, true), style: k.gradient.style, ...fxPlacement(k.gradient), ...fxInterp(k.gradient) } } : null),
     }));
   if (strokeFx.length) effects.stroke = [...(effects.stroke ?? []), ...strokeFx];
   // A whole-block gradient is the one fill Photoshop can state itself. Its angle

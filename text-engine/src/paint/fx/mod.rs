@@ -13,6 +13,7 @@
 //! bevel.rs     Bevel & Emboss: the height, the shading, where it lies
 //! edges.rs     a chisel's distances, the edge placed by its coverage
 //! noise_gradient.rs  Photoshop's noise gradients (ours, not PhotoCraft's)
+//! gradient_bake.rs   Smoothness and the interpolation Method, baked
 //! ```
 //!
 //! and here, how an effect's Size, Spread and Choke become a grow and a
@@ -31,6 +32,7 @@ pub mod distance;
 pub(crate) mod edges;
 pub mod effects;
 pub mod gradient;
+pub mod gradient_bake;
 pub(crate) mod map;
 pub mod noise;
 pub mod noise_gradient;
