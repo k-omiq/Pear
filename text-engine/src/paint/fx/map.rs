@@ -521,7 +521,8 @@ pub(crate) fn inner_shadow(shape: &Map, dx: f32, dy: f32, s: &Soft) -> Result<Ma
 /// they are, `|a - b|`; inverted when `invert`, then through the contour's
 /// Satin table (`Lut::satin`), then kept to the shape. The order matters:
 /// the contour runs on the inverted value. `contour` `None` is Linear. The
-/// offsets come in whole and at least a pixel long (see `effects::satin`).
+/// offsets come in whole and at least a pixel long (see
+/// [`effects::satin_throw`](super::effects::satin_throw)).
 /// Ported from PhotoCraft `crates/compose/src/effects/bevel.rs`
 /// `satin_map`; the two box passes are fitted there to 0.2 % mean error on
 /// psd-tools' layer_effects.

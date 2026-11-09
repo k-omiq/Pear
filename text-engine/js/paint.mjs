@@ -442,8 +442,8 @@ export const BLEND_MODE_IDS = Object.freeze(
   ),
 )
 
-// The contour presets by the number the engine reads (`PRESET_NAMES` in
-// fx/contour.rs); a curve of points is 255.
+// The contour presets by the number the engine reads (`PRESETS` and
+// `preset_name` in fx/contour.rs); a curve of points is 255.
 export const CONTOUR_IDS = Object.freeze(
   Object.fromEntries(
     [
