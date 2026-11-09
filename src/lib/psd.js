@@ -202,6 +202,12 @@ function psdContour(c) {
   return { contour: { name: CONTOUR_LABELS[preset] ?? 'Custom', curve } };
 }
 
+// The name the fill's own gradient goes out under, as the last Gradient
+// Overlay (`textLayerFor`): the mark the foreign importer knows it by, since
+// the overlay itself is one Photoshop could have saved. Photoshop shows it
+// as the gradient's name in the overlay's Gradient Editor.
+export const FILL_GRADIENT_NAME = 'Pear text fill';
+
 // A bevel's Style and Technique as ag-psd names them (BESl, bvlT).
 const PSD_BEVEL_STYLE = { inner: 'inner bevel', outer: 'outer bevel', emboss: 'emboss', pillow: 'pillow emboss', stroke: 'stroke emboss' };
 const PSD_BEVEL_TECHNIQUE = { smooth: 'smooth', 'chisel-hard': 'chisel hard', 'chisel-soft': 'chisel soft' };
@@ -1294,7 +1300,8 @@ export function textLayerFor(p, box, rendered) {
         // Photoshop keeps a gradient's alpha on its own track, so a stop's
         // colour and its opacity are written twice at the same location
         // rather than once as an rgba.
-        gradient: { name: 'Custom', type: 'solid', ...psdSolidStops(s.gradient.stops) },
+        // Named so the importer knows it for the fill's (`FILL_GRADIENT_NAME`).
+        gradient: { name: FILL_GRADIENT_NAME, type: 'solid', ...psdSolidStops(s.gradient.stops) },
       },
     ];
   }
@@ -2018,12 +2025,23 @@ export function styleFromPsdLayer(n, light = {}) {
     fillOpacity: pct2(n?.fillOpacity),
     blending: blendingFromPsd(n ?? {}),
   };
-  // The fill's own gradient is written last, as a plain overlay with no
-  // mode, scale or offset of its own (`textLayerFor`); Photoshop writes all
-  // three on every overlay it saves.
+  // The fill's own gradient is written last, under FILL_GRADIENT_NAME, as
+  // a Normal, linear overlay with no mode, scale or offset of its own
+  // (`textLayerFor`). Only an overlay that is all of that is the fill's; any
+  // other, a foreign one with the same fields left out included, stays an
+  // overlay.
   const overlays = list(fx.gradientOverlay);
   const last = overlays.at(-1);
-  if (last && last.blendMode === undefined && last.scale === undefined && last.offset === undefined && last.gradient?.type !== 'noise') {
+  const fillMark =
+    last &&
+    last.gradient?.name === FILL_GRADIENT_NAME &&
+    last.gradient.type === 'solid' &&
+    (last.type ?? 'linear') === 'linear' &&
+    last.blendMode === undefined &&
+    last.scale === undefined &&
+    last.offset === undefined &&
+    last.reverse === undefined;
+  if (fillMark) {
     overlays.pop();
     const stops = stopsFromPsd(last.gradient);
     if (stops && stops.length >= 2) style.gradient = { on: true, kind: 'linear', scope: 'box', angle: exact(90 - psdNum(last.angle, -90)), stops };
