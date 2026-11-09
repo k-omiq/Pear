@@ -81,6 +81,7 @@ const fxGradient = (desc) => shared('gradient', object(desc, {
   smoothness: alpha('1 eases'),
   method: choice('blend space', FX_GRADIENT_METHODS),
   dither: boolean('no banding'),
+  align: { ...boolean('false=laid over the page'), optional: true },
   type: choice('solid=stops, noise=random ramp (Rust)', FX_GRADIENT_TYPES),
   noise: object('noise gradient', {
     seed: integer('random seed', 0, 4294967295),
@@ -112,7 +113,7 @@ const glowFields = (spreadKey, spreadDesc) => ({
   noise: alpha('grain'),
   color: color('glow colour'),
   fill: choice('colour or gradient', ['color', 'gradient']),
-  gradient: fxGradient('along the glow, first stop at the edge; ignores style/angle/scale/reverse/offset'),
+  gradient: fxGradient('along the glow, first stop at edge; only its ramp is read'),
   technique: choice('soft blur or exact distance', ['softer', 'precise']),
   [spreadKey]: alpha(spreadDesc),
   size: number('reach px (Photoshop Size)', 0, SHADOW_SIZE_MAX),

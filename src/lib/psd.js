@@ -644,11 +644,14 @@ export function turnedGradientPlacement(g, turn, frames, grow = 0) {
 }
 
 // The effect gradients a box writes with a placement: its Gradient Overlays
-// and its gradient Photoshop strokes, the ones that paint.
-function placedGradients(s) {
-  const out = (s.gradientOverlays ?? []).filter((o) => o?.gradient).map((o) => ({ g: o.gradient, grow: 0 }));
+// and its gradient Photoshop strokes, the ones that paint. `page` picks the
+// ones with Align with Layer off (laid over the page, which does not turn),
+// else the ones with it on (laid over the letters, which do).
+function placedGradients(s, page = false) {
+  const out = (s.gradientOverlays ?? []).filter((o) => o?.gradient && (o.gradient.align === false) === page).map((o) => ({ g: o.gradient, grow: 0 }));
   for (const k of Array.isArray(s.strokeEffects) ? s.strokeEffects : []) {
     if (!(k?.opacity > 0 && k.size > 0) || k.fill !== 'gradient' || !k.gradient) continue;
+    if ((k.gradient.align === false) !== page) continue;
     // The stroke's outside width less a pixel (`stroke_frame`), page px.
     const out_ = k.position === 'inside' ? 0 : k.position === 'center' ? k.size / 2 : k.size;
     out.push({ g: k.gradient, grow: Math.max(0, Math.ceil(out_) - 1), stroke: k });
@@ -928,7 +931,12 @@ function borrowedRuns(s, content) {
 // predicate actually turns into "no `text` key", and unlike buildPagePsd's
 // other DOM-bound helpers it touches no canvas - `rendered` is handed in
 // pre-computed - so the decision is reachable from node without one.
-export function textLayerFor(p, box, rendered) {
+//
+// `doc` is set for a longstrip neighbour's box laid into another page's
+// document (`pageTextLayers`): `{ dx, dy, W, H }`, how far it was moved and
+// the document's size. Its Align off gradients were painted over its own
+// page, so they are placed against the document here.
+export function textLayerFor(p, box, rendered, doc = null) {
   const s = box.style;
   const raw = boxTextFor(p, box);
   // The review flag, then - with the Rust engine drawing - that the box's font
@@ -938,7 +946,14 @@ export function textLayerFor(p, box, rendered) {
   // whose scale Photoshop cannot hold ships the box's pixels.
   const frames = needsGradientFrames(s) ? (rendered?.frames ?? boxGradientFrames(box)) : null;
   const placed = frames ? new Map(placedGradients(s).map(({ g, grow }) => [g, turnedGradientPlacement(g, Number(s.rotation) || 0, frames, grow)])) : null;
-  const turnPixels = !!placed && [...placed.values()].some((q) => !q.fits);
+  // A gradient with Align with Layer off is laid over the page, which
+  // Photoshop's Align off is (the document), in the page's own angle. A
+  // neighbour's box was painted over its own page, moved into this
+  // document: its gradient's centre and reach are carried over the same way
+  // (no turn), and one past Photoshop's scale ships the pixels.
+  const own = doc && p?.w > 0 && p?.h > 0 ? { local: [doc.dx, doc.dy, doc.dx + p.w, doc.dy + p.h], page: [0, 0, doc.W, doc.H], centre: [0, 0] } : null;
+  const onPage = own ? new Map(placedGradients(s, true).map(({ g }) => [g, turnedGradientPlacement(g, 0, own)])) : null;
+  const turnPixels = (!!placed && [...placed.values()].some((q) => !q.fits)) || (!!onPage && [...onPage.values()].some((q) => !q.fits));
 
   if (isRasterOnly(s) || turnPixels) {
     // If the box paints no pixels (e.g. empty or whitespace-only text),
@@ -1302,7 +1317,15 @@ export function textLayerFor(p, box, rendered) {
   }
   // On a turned box the angle, scale and offset are measured against the
   // page bounds (`turnedGradientPlacement`).
+  // Align with Layer off: Photoshop's own (`align: false`), the page's angle
+  // as it is (it does not turn with the box), against the document.
   const fxPlacement = (g) => {
+    if (g.align === false) {
+      const q = onPage?.get(g);
+      return q
+        ? { angle: q.angle, scale: q.scale, reverse: g.reverse === true, align: false, offset: q.offset }
+        : { angle: g.angle, scale: g.scale, reverse: g.reverse === true, align: false, offset: { x: g.offset[0], y: g.offset[1] } };
+    }
     const q = placed?.get(g);
     return q
       ? { angle: q.angle, scale: q.scale, reverse: g.reverse === true, align: true, offset: q.offset }
@@ -1753,7 +1776,7 @@ function pageTextLayers(p, entries, W, H, scratch, tips) {
       const frames = letters ? gradientFrames(letters, centre, Number(e.box.style.rotation) || 0) : null;
       if (frames) rendered.frames = frames;
     }
-    const layer = textLayerFor(e.owner, e.box, rendered);
+    const layer = textLayerFor(e.owner, e.box, rendered, e.dx || e.dy ? { dx: e.dx, dy: e.dy, W, H } : null);
     if (!layer) continue;
     if (layer.text && (e.dx || e.dy)) {
       const t = layer.text.transform;
@@ -1940,6 +1963,9 @@ function fxGradientFromPsd(gr, place = {}) {
     ...(Number.isFinite(+place.scale) ? { scale: exact(+place.scale) } : null),
     reverse: place.reverse === true,
     offset: [exact(psdNum(place.offset?.x, 0)), exact(psdNum(place.offset?.y, 0))],
+    // Align with Layer off (`Algn`): on the overlay itself, on a stroke's
+    // gradient; a glow has none.
+    ...(place.align === false ? { align: false } : null),
   };
   if (gr?.type === 'noise') {
     return {

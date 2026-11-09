@@ -1807,12 +1807,18 @@
         <input type="checkbox" checked={g.dither === true} aria-label="{title} dither" onchange={(e) => { g.dither = e.target.checked; touch(); }} />
         <span>Dither</span>
       </label>
+      <!-- Photoshop's Align with Layer, kept on the gradient only when off.
+           Shape Burst runs from the letters' edge and reads no frame. -->
+      <label class="sh-check" title="Align with Layer: on, the gradient spans the letters and turns with the box; off, it spans the whole page under them and stays put when the box moves or turns">
+        <input type="checkbox" checked={g.align !== false} disabled={g.style === 'shapeburst'} aria-label="{title} align with layer" onchange={(e) => { if (e.target.checked) delete g.align; else g.align = false; touch(); }} />
+        <span>Align with Layer</span>
+      </label>
       <!-- Photoshop's Offset: moves the gradient's centre, % of the box. -->
-      <label class="sh-num" title="Offset X: moves the gradient's centre sideways, % of the box">
+      <label class="sh-num" title="Offset X: moves the gradient's centre sideways, % of the box, or of the page with Align with Layer off">
         <span>Offset X</span>
         <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[0] ?? 0)} aria-label="{title} offset X, percent" onchange={(e) => setFxGradientOffset(g, 0, e)} />
       </label>
-      <label class="sh-num" title="Offset Y: moves the gradient's centre down, % of the box">
+      <label class="sh-num" title="Offset Y: moves the gradient's centre down, % of the box, or of the page with Align with Layer off">
         <span>Offset Y</span>
         <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[1] ?? 0)} aria-label="{title} offset Y, percent" onchange={(e) => setFxGradientOffset(g, 1, e)} />
       </label>
