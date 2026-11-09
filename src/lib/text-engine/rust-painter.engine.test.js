@@ -419,4 +419,37 @@ describe('the Rust engine behind the glyph-painter seam', () => {
       expect(got.x1, `${n}`).toBeGreaterThanOrEqual(one.x1);
     }
   });
+  // Box wire v13: the painter tells the engine where the surface's corner is
+  // on the page (`grainOrigin`), so a shadow's Noise and a glow's Dissolve
+  // stay on the page pixels they fell on when the layout takes more room
+  // round the box (its footprint's corner further from the letters).
+  it('keeps the grain on the page when the layout round the box takes more room', () => {
+    const painter = createRustGlyphPainter(rust);
+    const shadows = [{ color: '#2040ff', opacity: 1, x: 3, y: 2, size: 3, spread: 0.2, noise: 0.7, blend: 'normal', seed: 77 }];
+    const effects = [{ kind: 'outerGlow', color: '#ff0000', opacity: 0.6, blend: 'dissolve', technique: 'softer', size: 5, spread: 0, range: 0.5, noise: 0.4, seed: 9 }];
+    // `room` page px more on the left and top: the letters stand that much
+    // further into the job, and the job's corner that much further up the page.
+    const box = (room, toPage) => {
+      const canvas = createCanvas(500, 300);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      const j = job({ runs: [{ text: 'WAIT', x: 20 + room[0], y: 60 + room[1] }] });
+      painter.paintBox(ctx, { job: j, rect: { x: 0, y: 0, w: 220 + room[0], h: 120 + room[1] }, shadows, blur: 0, taps: [], clip: null, effects, toPage });
+      return canvas.getContext('2d').getImageData(0, 0, 500, 300).data;
+    };
+    const tight = box([0, 0], [1, 0, 0, 1, 100, 50]);
+    const roomy = box([10, 6], [1, 0, 0, 1, 90, 44]);
+    const off = (other) => {
+      let n = 0;
+      for (let y = 0; y < 240; y++) {
+        for (let x = 0; x < 440; x++) {
+          for (let c = 0; c < 4; c++) if (tight[(y * 500 + x) * 4 + c] !== other[((y + 12) * 500 + x + 20) * 4 + c]) n++;
+        }
+      }
+      return n;
+    };
+    expect(off(roomy)).toBe(0);
+    // Anchored to the canvas's own corner instead, the grain moves.
+    expect(off(box([10, 6], null))).toBeGreaterThan(500);
+  });
 });

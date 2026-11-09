@@ -16,6 +16,7 @@ fn place() -> Place<'static> {
     Place {
         transform: Affine::IDENTITY,
         tiles: &[],
+        grain: (0, 0),
     }
 }
 
@@ -236,6 +237,7 @@ fn a_gradient_overlay_on_a_turned_box_has_its_end_stops_at_the_letters_ends() {
     let turned = Place {
         transform,
         tiles: &[],
+        grain: (0, 0),
     };
     let (out, _, _) = interior(&r, &fx, 1.0, false, 1.0, |x, y| (x, y), &turned).unwrap();
     // The red channel at a job point: the gradient's t there, 0 to 1.

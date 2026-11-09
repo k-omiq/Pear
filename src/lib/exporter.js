@@ -1030,6 +1030,10 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null) {
     blendIf: s.blending?.blendIf ?? null,
     // The page art under the surface, read once the painter knows it.
     backdrop: page ? (rect) => backdropPixels(page, A, rect) : null,
+    // The layout onto the page, page px: the painter anchors the box's grain
+    // (Noise, Dissolve, Jitter) to the page with it (`grainOrigin`), so how
+    // much room the surface takes round the box does not move it.
+    toPage: A ?? boxToPage(box, L, under?.at ?? null),
     blur: s.blur > 0 ? s.blur : 0,
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
     // The mask's shapes are the box's own, so the box's corner goes with them.

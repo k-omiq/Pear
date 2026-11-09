@@ -356,6 +356,10 @@ pub(crate) struct Place<'a> {
     /// Job units to device pixels.
     pub transform: Affine,
     pub tiles: &'a [Tile],
+    /// The surface's corner in device pixels anchored to the page
+    /// (`BoxRequest::grain`): what a surface pixel's grain (Noise,
+    /// Dissolve, Jitter) is hashed from is the pixel plus this.
+    pub grain: (i32, i32),
 }
 
 impl Place<'_> {
@@ -511,6 +515,7 @@ fn lay_with(
     mode: Blend,
     page: Option<&Backdrop<'_>>,
     seed: u32,
+    grain: (i32, i32),
 ) -> Result<Option<IBox>, Error> {
     let Some(bx) = ink(m) else {
         return Ok(None);
@@ -549,7 +554,8 @@ fn lay_with(
             p[3] = (a * 255.0 + 0.5) as u8;
         }
     }
-    blend::lay_from(dst, &src, bx, opacity as f32, mode, page, seed, dev);
+    let hashed = (dev.0.wrapping_add(grain.0), dev.1.wrapping_add(grain.1));
+    blend::lay_from(dst, &src, bx, opacity as f32, mode, page, seed, hashed);
     Ok(Some(bx))
 }
 
@@ -561,6 +567,7 @@ fn lay_glow(
     m: &Map,
     at: (i32, i32),
     dev: (i32, i32),
+    grain: (i32, i32),
     g: &Glow,
     page: Option<&Backdrop<'_>>,
 ) -> Result<Option<IBox>, Error> {
@@ -577,6 +584,7 @@ fn lay_glow(
                 g.blend,
                 page,
                 g.seed,
+                grain,
             )
         }
         Some(grad) => {
@@ -585,10 +593,11 @@ fn lay_glow(
             let jitter = g.jitter.clamp(0.0, 1.0) as f32;
             let color = |x: i32, y: i32, i: usize| {
                 let t = 1.0 - m.v[i].clamp(0.0, 1.0);
+                let (x, y) = (x.wrapping_add(grain.0), y.wrapping_add(grain.1));
                 grad.sample(jittered(t, jitter, x, y, g.seed))
             };
             lay_with(
-                dst, &strength, at, dev, &color, g.opacity, g.blend, page, g.seed,
+                dst, &strength, at, dev, &color, g.opacity, g.blend, page, g.seed, grain,
             )
         }
     }
@@ -641,14 +650,19 @@ pub(crate) fn lay_outer_glows(
     region: IBox,
     scale: f64,
     page: Option<&Backdrop<'_>>,
+    grain: (i32, i32),
 ) -> Result<Option<IBox>, Error> {
     let mut laid: Option<IBox> = None;
+    let hashed = (
+        region.x0.wrapping_add(grain.0),
+        region.y0.wrapping_add(grain.1),
+    );
     for e in effects.iter().rev().filter(|e| e.shows()) {
         let Effect::OuterGlow(g) = e else {
             continue;
         };
-        let m = outer_glow(shape, fill, fill_opacity, g, scale, (region.x0, region.y0))?;
-        if let Some(b) = lay_glow(dst, &m, (region.x0, region.y0), (0, 0), g, page)? {
+        let m = outer_glow(shape, fill, fill_opacity, g, scale, hashed)?;
+        if let Some(b) = lay_glow(dst, &m, (region.x0, region.y0), (0, 0), grain, g, page)? {
             laid = Some(laid.map_or(b, |l| l.union(&b)));
         }
     }
@@ -954,6 +968,8 @@ pub(crate) fn lay_outside(
 /// corner is device `dev`.
 pub(crate) struct Bevels {
     pub dev: (i32, i32),
+    /// [`Place::grain`], for a Dissolve highlight or shadow.
+    grain: (i32, i32),
     /// Effect index, laid over the letters (`true`) or under them, and the
     /// highlight and shadow maps; of a kind the last listed first.
     items: Vec<(usize, bool, Map, Map)>,
@@ -1128,6 +1144,7 @@ pub(crate) fn lay_bevels(
                 o.blend,
                 page,
                 0,
+                b.grain,
             )? {
                 laid = Some(laid.map_or(bx, |l| l.union(&bx)));
             }
@@ -1273,6 +1290,11 @@ fn interior_at(
         return Err(Error::BadSpec);
     }
     let dev = (r.x - pad as i32, r.y - pad as i32);
+    // Where the frame's grain is hashed from: anchored to the page.
+    let hashed = (
+        dev.0.wrapping_add(place.grain.0),
+        dev.1.wrapping_add(place.grain.1),
+    );
     let group = group && fill_opacity < 1.0;
     // Grouped, the fill is whole until the group is faded.
     let content_fill = if group { 1.0 } else { fill_opacity };
@@ -1349,6 +1371,7 @@ fn interior_at(
                 o.blend,
                 None,
                 0,
+                place.grain,
             )?;
         }
         Ok(())
@@ -1377,6 +1400,7 @@ fn interior_at(
                 o.blend,
                 None,
                 0,
+                place.grain,
             )?;
         }
     }
@@ -1404,17 +1428,18 @@ fn interior_at(
                 st.blend,
                 None,
                 0,
+                place.grain,
             )?;
         }
     }
     for e in shown() {
         if let Effect::InnerGlow(g) = e {
             let s = soft(
-                g.size, g.spread, scale, g.range, g.noise, g.contour, g.seed, dev,
+                g.size, g.spread, scale, g.range, g.noise, g.contour, g.seed, hashed,
             );
             let m = map::glow(&shape, g.technique, true, g.center, &s)?;
             let m = map::relative_to(&m, &shape)?;
-            lay_glow(&mut lay, &m, (0, 0), dev, g, None)?;
+            lay_glow(&mut lay, &m, (0, 0), dev, place.grain, g, None)?;
         }
     }
     // Grouped: Fill Opacity fades the fill and what is on it so far.
@@ -1428,7 +1453,7 @@ fn interior_at(
         if let Effect::InnerShadow(sh) = e {
             let (dx, dy) = whole_throw(sh.x, sh.y, &carried);
             let s = soft(
-                sh.size, sh.choke, scale, 1.0, sh.noise, sh.contour, sh.seed, dev,
+                sh.size, sh.choke, scale, 1.0, sh.noise, sh.contour, sh.seed, hashed,
             );
             let m = map::inner_shadow(&shape, dx as f32, dy as f32, &s)?;
             let m = map::relative_to(&m, &shape)?;
@@ -1443,6 +1468,7 @@ fn interior_at(
                 sh.blend,
                 None,
                 sh.seed,
+                place.grain,
             )?;
         }
     }
@@ -1496,6 +1522,7 @@ fn interior_at(
                     st.blend,
                     None,
                     st.seed,
+                    place.grain,
                 )?;
             }
         }
@@ -1539,6 +1566,7 @@ fn interior_at(
                 o.blend,
                 None,
                 0,
+                place.grain,
             )?;
         }
     }
@@ -1585,7 +1613,7 @@ fn interior_at(
                 };
                 let mut k = k * st.opacity as f32;
                 if st.blend == Blend::Dissolve {
-                    let (x, y) = (dev.0 + (i % w) as i32, dev.1 + (i / w) as i32);
+                    let (x, y) = (hashed.0 + (i % w) as i32, hashed.1 + (i / w) as i32);
                     k = if k > 0.0 && noise::unit(x, y, st.seed) < k {
                         1.0
                     } else {
@@ -1615,7 +1643,11 @@ fn interior_at(
         frame,
         items,
     });
-    let bevels = (!bevels.is_empty()).then_some(Bevels { dev, items: bevels });
+    let bevels = (!bevels.is_empty()).then_some(Bevels {
+        dev,
+        grain: place.grain,
+        items: bevels,
+    });
     Ok((
         Raster {
             x: dev.0,
@@ -1651,6 +1683,7 @@ mod tests {
         Place {
             transform: Affine::IDENTITY,
             tiles: &[],
+            grain: (0, 0),
         }
     }
 
@@ -2181,7 +2214,7 @@ mod tests {
                 x1: n as i32,
                 y1: n as i32,
             };
-            lay_outer_glows(&mut dst, &[g], &shape, None, 1.0, region, 1.0, None).unwrap();
+            lay_outer_glows(&mut dst, &[g], &shape, None, 1.0, region, 1.0, None, (0, 0)).unwrap();
             // Along row 20, the four pixels left of the square, the band.
             let band: Vec<u8> = (11..15).map(|x| dst.data[(20 * n + x) * 4 + 3]).collect();
             if jitter == 0.0 {
