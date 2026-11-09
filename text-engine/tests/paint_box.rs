@@ -2965,3 +2965,79 @@ fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
         check(&format!("outer glow spread {spread}"), &got);
     }
 }
+
+/// Blend If, This Layer, on a box with no fill (user decision 2026-11-09,
+/// No Fill reads as Fill 0 %): Photoshop judges a layer's pixels before
+/// Fill Opacity, so This Layer sees the black fill No Fill hides. A black
+/// point above 0 hides the blue overlay laid on the letters' shape, which
+/// showed when No Fill gave This Layer nothing inside the letters; the box
+/// paints as the same box at Fill 0 %, with and without the gate.
+#[test]
+fn blend_if_this_layer_reads_no_fill_as_fill_zero() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let (x, y) = stem(inked(&paint(&mut e, &mut b)));
+    b.request.job.bands = vec![mt_text::paint::Band {
+        color: Rgba([255, 255, 255, 255]),
+        opacity: 1.0,
+        line: 6.0,
+    }];
+    b.backdrop = Some(grey_page(100));
+    let mut gate = Blending::default();
+    gate.blend_if.ranges[0][0] = range([50, 50], [255, 255]);
+    let hollow = |b: &mut BoxRequest| {
+        b.request.job.no_fill = true;
+        b.fill_opacity = 1.0;
+    };
+    let zero = |b: &mut BoxRequest| {
+        b.request.job.no_fill = false;
+        b.fill_opacity = 0.0;
+    };
+    for effects in [
+        Vec::new(),
+        vec![Effect::ColorOverlay(Overlay {
+            color: BLUE,
+            opacity: 1.0,
+            blend: Blend::Normal,
+        })],
+    ] {
+        let overlaid = !effects.is_empty();
+        b.effects = effects;
+        b.blending = Blending::default();
+        hollow(&mut b);
+        let shown = paint(&mut e, &mut b);
+        zero(&mut b);
+        assert_eq!(paint(&mut e, &mut b), shown);
+        b.blending = gate;
+        hollow(&mut b);
+        let hid = paint(&mut e, &mut b);
+        zero(&mut b);
+        assert_eq!(paint(&mut e, &mut b), hid, "overlay {overlaid}");
+        // What the gate takes, against No Fill shown whole: under the old
+        // rule This Layer saw nothing inside the letters and the white
+        // outline only, so the whole of it showed.
+        let (mut fewer, mut lost) = (0u32, 0u64);
+        for yy in shown.y..shown.y + shown.height as i32 {
+            for xx in shown.x..shown.x + shown.width as i32 {
+                let (s, h) = (px(&shown, xx, yy)[3], px(&hid, xx, yy)[3]);
+                if h < s {
+                    fewer += 1;
+                    lost += u64::from(s - h);
+                }
+            }
+        }
+        eprintln!(
+            "overlay {overlaid}: {fewer} pixels hidden, alpha {lost} of {}",
+            alpha_sum(&shown)
+        );
+        if overlaid {
+            assert_eq!(px(&shown, x, y), [0, 0, 255, 255]);
+            assert_eq!(px(&hid, x, y)[3], 0, "{:?}", px(&hid, x, y));
+            assert!(fewer > 500, "{fewer}");
+        } else {
+            // Only where the outline's inner edge meets the fill's.
+            assert!(fewer > 0, "{fewer}");
+        }
+    }
+}
