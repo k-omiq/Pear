@@ -1151,7 +1151,11 @@ describe('a chapter laid out under the old chapter switch', () => {
   });
 
   it('gives the boxes and box styles of a stored stack the plain wrap', () => {
-    const smart = { shape: 'auto', hyphenate: true, balloon: true, strokes: [], shadows: [], gradient: {}, pattern: { fade: {} } };
+    // A style of this build: since review F2 a style with no Layer Styles
+    // fields is one from before them, and goes through normalizeStyle, so the
+    // identity checks below need those fields to mean "left as recorded".
+    const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {} };
+    const smart = { shape: 'auto', hyphenate: true, balloon: true, strokes: [], shadows: [], gradient: {}, pattern: { fade: {} }, ...layerStyles };
     const entries = [
       { t: 'style', before: { ...smart, color: '#000' }, after: { ...smart, color: '#f00' } },
       { t: 'place', box: { id: 'b1', style: smart } },
