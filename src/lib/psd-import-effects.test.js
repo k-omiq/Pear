@@ -4,7 +4,7 @@ import { readPsd } from 'ag-psd';
 // A foreign PSD's type layers bring their layer style in (`styleFromPsdLayer`):
 // written by this app, read back by ag-psd as Photoshop would hand it over
 // with the embedded project gone, and imported, a style comes back as it was.
-import { pagePsdDocument, textLayerFor, writePagePsd, reconstructForeign, styleFromPsdLayer } from './psd.js';
+import { pagePsdDocument, textLayerFor, writePagePsd, reconstructForeign, styleFromPsdLayer, FILL_GRADIENT_NAME } from './psd.js';
 import { defaultStyle, normalizeStyle } from './data.js';
 import { setGlobalLight, resolveShadow } from './text-paint.js';
 
@@ -139,5 +139,25 @@ describe('a Photoshop file', () => {
     expect(style.shadows).toEqual([]);
     // With no Overprint flag (an older writer), an Outside colour stroke is an outline.
     expect(styleFromPsdLayer({ effects: { stroke: [stroke({ overprint: undefined })] } }).strokes).toEqual([{ color: '#000000', width: 3, opacity: 1 }]);
+  });
+
+  // A foreign overlay that leaves out its mode, scale and offset, as the
+  // writer's fill gradient does, is still an overlay: only the writer's mark
+  // makes it the fill.
+  it('keeps a foreign overlay with no mode, scale or offset an overlay', () => {
+    const ramp = { type: 'solid', colorStops: [{ color: { r: 255, g: 0, b: 0 }, location: 0 }, { color: { r: 0, g: 0, b: 255 }, location: 1 }], opacityStops: [{ opacity: 1, location: 0 }, { opacity: 1, location: 1 }] };
+    const overlay = (name) => ({ enabled: true, opacity: 1, angle: 30, type: 'linear', gradient: { ...ramp, name } });
+    for (const name of ['Custom', 'Foreground to Background', undefined]) {
+      const style = styleFromPsdLayer({ effects: { gradientOverlay: [overlay(name)] } });
+      expect(style.gradient, String(name)).toBeUndefined();
+      expect(style.gradientOverlays).toHaveLength(1);
+      expect(style.gradientOverlays[0].gradient).toMatchObject({ angle: 30, stops: [{ color: '#ff0000' }, { color: '#0000ff' }] });
+    }
+    // The writer's own, by its name: the fill, at 90 less the angle.
+    const fill = styleFromPsdLayer({ effects: { gradientOverlay: [overlay(FILL_GRADIENT_NAME)] } });
+    expect(fill.gradientOverlays).toEqual([]);
+    expect(fill.gradient).toMatchObject({ on: true, angle: 60 });
+    // Its name with a mode of its own is not the writer's either.
+    expect(styleFromPsdLayer({ effects: { gradientOverlay: [{ ...overlay(FILL_GRADIENT_NAME), blendMode: 'multiply' }] } }).gradient).toBeUndefined();
   });
 });
