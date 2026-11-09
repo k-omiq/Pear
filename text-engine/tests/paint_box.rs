@@ -2912,18 +2912,70 @@ fn red_per_page_px(r: &Raster, scale: f64) -> f64 {
 /// Size 5, Choke 30 % is a grow of 2 page px at every zoom; split in device
 /// pixels it was 2, 3 and 5 device px at zooms 1, 2 and 3, and the shadow
 /// laid 10 % less per page pixel at 2 than at 1 (192299 / 173992 / 180198;
-/// now within 0.2 %). An Outer Glow's Spread 30 % laid 18 % less.
+/// now within 0.2 %). An Outer Glow's Spread 30 % laid 18 % less (now
+/// 1.1 %, 1.5 % before the tent below was fixed).
+///
+/// With no Spread or Choke the tent itself moved with the zoom: a box of
+/// 10 taps spreads further than two of 5 (`fx::tent_width`), and a plain
+/// Outer Glow of 5 laid 132294, 136195 and 134355 per page pixel at zooms
+/// 1, 2 and 3 (3 %); an Inner Glow 3 %, an Outer Glow of 2 17 % at zoom 4.
+/// Now each within 0.4 % (2: 1.6 %). An Inner Shadow of Size 0 (no tent)
+/// was and is within 0.01 %. A glow of Size 0 or 1 is no tent at any zoom,
+/// and only lights the letters' own anti-aliased edge, one device pixel
+/// wide, so it is left out.
 #[test]
 fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
     let mut e = Engine::new();
     let font = load(&mut e);
     let mut b = plain(font);
-    let check = |name: &str, got: &[f64]| {
+    let check = |name: &str, got: &[f64], within: f64| {
         for g in &got[1..] {
             let off = (g - got[0]).abs() / got[0];
-            assert!(off < 0.02, "{name}: {got:?}");
+            assert!(off < within, "{name}: {got:?}");
         }
     };
+    let shadow = |size: f64, choke: f64| {
+        vec![Effect::InnerShadow(InnerShadow {
+            color: RED,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            x: 3.0,
+            y: 3.0,
+            size,
+            choke,
+            noise: 0.0,
+            contour: None,
+            seed: 1,
+        })]
+    };
+    fn laid(e: &mut Engine, b: &mut BoxRequest) -> Vec<f64> {
+        [1.0, 2.0, 3.0, 4.0]
+            .iter()
+            .map(|&s| red_per_page_px(&at_scale(e, b, s), s))
+            .collect()
+    }
+    for (size, within) in [(0.0, 0.001), (2.0, 0.005), (5.0, 0.005)] {
+        b.effects = shadow(size, 0.0);
+        check(
+            &format!("inner shadow size {size}"),
+            &laid(&mut e, &mut b),
+            within,
+        );
+    }
+    for (size, within) in [(2.0, 0.02), (5.0, 0.005), (8.0, 0.005)] {
+        b.effects = vec![Effect::OuterGlow(glow(RED, size))];
+        check(
+            &format!("outer glow size {size}"),
+            &laid(&mut e, &mut b),
+            within,
+        );
+        b.effects = vec![Effect::InnerGlow(glow(RED, size))];
+        check(
+            &format!("inner glow size {size}"),
+            &laid(&mut e, &mut b),
+            within,
+        );
+    }
     for choke in [0.3, 0.5] {
         b.effects = vec![Effect::InnerShadow(InnerShadow {
             color: RED,
@@ -2941,7 +2993,7 @@ fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
             .iter()
             .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
             .collect();
-        check(&format!("inner shadow choke {choke}"), &got);
+        check(&format!("inner shadow choke {choke}"), &got, 0.01);
     }
     for spread in [0.3, 0.5] {
         // On black letters: a red Inner Glow, a red Outer Glow round them.
@@ -2953,7 +3005,7 @@ fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
             .iter()
             .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
             .collect();
-        check(&format!("inner glow choke {spread}"), &got);
+        check(&format!("inner glow choke {spread}"), &got, 0.01);
         b.effects = vec![Effect::OuterGlow(Glow {
             spread,
             ..glow(RED, 5.0)
@@ -2962,7 +3014,7 @@ fn a_choke_or_a_spread_lays_the_same_at_every_zoom() {
             .iter()
             .map(|&s| red_per_page_px(&at_scale(&mut e, &mut b, s), s))
             .collect();
-        check(&format!("outer glow spread {spread}"), &got);
+        check(&format!("outer glow spread {spread}"), &got, 0.015);
     }
 }
 

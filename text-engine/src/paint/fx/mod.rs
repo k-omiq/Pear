@@ -60,6 +60,48 @@ pub fn spread_split(size: f64, share: f64) -> (f64, f64) {
     ((size * share).round(), size * (1.0 - share))
 }
 
+/// The device width of the tent (`tent`) for a soft edge of `size` job
+/// units at `scale` device pixels to a job unit, so it spreads as far, in
+/// job units, at every zoom as at 1, where it is `size`, unchanged.
+///
+/// A tent of `size * scale` does not: a box of `w` whole and fractional
+/// taps spreads more or less than `w` scaled would (`tent::variance`: a
+/// box of 2 spreads as far as a box of 2.45, one of 10 as one of 10.1, one
+/// of 15 as one of 14.97), and how much more swings with the width. A
+/// plain Outer Glow of 5 laid 3 % more per page pixel at zoom 2 than at 1
+/// (a box of 10 against one of 5). Here each of the tent's two boxes takes
+/// `scale^2` times the variance its box has at zoom 1: its taps a job unit
+/// apart are `scale` device pixels apart. A Size of 1 or less is no tent
+/// at zoom 1, and none at any zoom.
+///
+/// PhotoCraft has nothing to port here: it paints at the document's
+/// resolution only and keeps its proxy off any layer with effects
+/// (`crates/compose/src/proxy.rs`), so a size there is never zoomed.
+pub fn tent_width(size: f64, scale: f64) -> f64 {
+    let plain = size * scale;
+    if !plain.is_finite() || scale <= 0.0 || (scale - 1.0).abs() < 1e-12 {
+        return plain;
+    }
+    let v = scale * scale * tent::variance(size);
+    if v <= 0.0 {
+        return plain.min(1.0);
+    }
+    // Inside the room a box is padded by: a Size reaches `size + 1`
+    // (`size_reach`). A tent reaches twice its box's radius, which stays
+    // `r` up to a width of `2r + 1`.
+    let room = ((size + 1.0) * scale).floor();
+    tent::width_of_variance(v).min(2.0 * (room / 2.0).floor() + 1.0)
+}
+
+/// How far a soft edge of `size` with `share` of it spread or choked
+/// reaches, device pixels at `scale`: the grow's whole pixels and the
+/// tent's ([`tent_width`]), and never less than `size * scale`.
+pub(crate) fn soft_room(size: f64, share: f64, scale: f64) -> f64 {
+    let (grow, rest) = spread_split(size, share);
+    let soft = tent::reach(tent_width(rest, scale));
+    (grow * scale + f64::from(soft)).max(size * scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +112,42 @@ mod tests {
         // The tent fits inside the reach.
         for s in [1.0, 5.0, 40.0, 250.0] {
             assert!(f64::from(tent::reach(s)) <= size_reach(s));
+        }
+    }
+
+    #[test]
+    fn a_tent_keeps_its_zoom_one_spread_and_stays_in_its_reach() {
+        // Unchanged at zoom 1.
+        for s in [0.0, 0.5, 1.0, 2.0, 5.0, 40.0] {
+            assert_eq!(tent_width(s, 1.0), s);
+        }
+        // Each box of the tent: its zoom-1 spread, `scale` times as far.
+        for (size, scale) in [(5.0, 2.0), (2.0, 3.0), (7.5, 1.5)] {
+            let w = tent_width(size, scale);
+            let want = scale * scale * tent::variance(size);
+            assert!(
+                (tent::variance(w) - want).abs() < 1e-9,
+                "{size} {scale}: {w}"
+            );
+        }
+        for size in (0..200).map(|i| f64::from(i) * 0.25) {
+            for scale in [0.25, 0.5, 1.5, 2.0, 3.0, 4.0, 8.0] {
+                let w = tent_width(size, scale);
+                assert!(w.is_finite() && w >= 0.0, "{size} {scale}");
+                // Inside the room a box is padded by: a Size's `size + 1`.
+                assert!(
+                    f64::from(tent::reach(w)) <= size_reach(size) * scale,
+                    "{size} {scale}: {w}"
+                );
+                // Close to the plain width once the box is wide enough
+                // that its end taps hardly count.
+                if size >= 10.0 && scale >= 1.0 {
+                    assert!(
+                        (w / (size * scale) - 1.0).abs() < 0.05,
+                        "{size} {scale}: {w}"
+                    );
+                }
+            }
         }
     }
 

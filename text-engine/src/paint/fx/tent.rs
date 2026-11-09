@@ -36,6 +36,44 @@ pub fn reach(w: f64) -> i32 {
     2 * geom(w).0.min(i64::from(i32::MAX / 4)) as i32
 }
 
+/// The variance of one box of width `w` as [`geom`] lays its taps, pixels
+/// squared: 0 at a width of 1 or less (the box changes nothing).
+pub fn variance(w: f64) -> f64 {
+    let (r, f, norm) = geom(w);
+    if r == 0 {
+        return 0.0;
+    }
+    let r = r as f64;
+    // The whole taps 1 ..= r - 1 each side, and the two end ones at r.
+    let whole = (r - 1.0) * r * (2.0 * r - 1.0) / 6.0;
+    (2.0 * whole + 2.0 * f * r * r) * norm
+}
+
+/// The width of the box whose [`variance`] is `v`: the inverse of it, at
+/// least 1 (a box that changes nothing), at most [`MAX_WIDTH`]. Between
+/// widths `2r - 1` and `2r + 1` the end taps sit at `r` and weigh
+/// `w / 2 - r + 1/2`, so `v * w = 2 S + r^2 (w - 2r + 1)` (`S` the whole
+/// taps' sum of squares), which is solved for `w`.
+pub fn width_of_variance(v: f64) -> f64 {
+    if v.is_nan() || v <= 0.0 {
+        return 1.0;
+    }
+    if v >= variance(MAX_WIDTH) {
+        return MAX_WIDTH;
+    }
+    // Near `sqrt(12 v) / 2` (a box's `w^2 / 12`), a little below it.
+    let mut r = (((12.0 * v).sqrt() / 2.0).floor() - 2.0).max(1.0);
+    while r > 1.0 && variance(2.0 * r - 1.0) > v {
+        r -= 1.0;
+    }
+    while variance(2.0 * r + 1.0) < v {
+        r += 1.0;
+    }
+    let whole = (r - 1.0) * r * (2.0 * r - 1.0) / 6.0;
+    let w = (2.0 * whole - 2.0 * r * r * r + r * r) / (v - r * r);
+    w.clamp(2.0 * r - 1.0, 2.0 * r + 1.0)
+}
+
 /// One box pass over `src` (zero outside it), read at `x0 .. x0 +
 /// dst.len()`, as a running sum.
 fn box_line(src: &[f64], x0: i64, dst: &mut [f64], w: f64) {
@@ -93,6 +131,34 @@ mod tests {
         let mut out = vec![0.0; src.len()];
         line(src, &mut out, w, &mut Vec::new());
         out
+    }
+
+    #[test]
+    fn the_variance_is_the_taps_own_and_its_inverse_finds_the_width() {
+        // Measured on the taps a box lays.
+        let mut src = vec![0.0; 81];
+        src[40] = 1.0;
+        for w in [1.0, 1.5, 2.0, 2.7, 3.0, 4.0, 5.5, 10.0, 17.25] {
+            let mut out = vec![0.0; 81];
+            box_line(&src, 0, &mut out, w);
+            let got: f64 = out
+                .iter()
+                .enumerate()
+                .map(|(i, v)| v * (i as f64 - 40.0).powi(2))
+                .sum();
+            assert!((got - variance(w)).abs() < 1e-9, "{w}: {got}");
+            if w > 1.0 {
+                assert!((width_of_variance(variance(w)) - w).abs() < 1e-9, "{w}");
+            }
+        }
+        assert_eq!(width_of_variance(0.0), 1.0);
+        // Rising: a wider box spreads further.
+        let mut last = 0.0;
+        for i in 1..400 {
+            let v = variance(f64::from(i) * 0.25);
+            assert!(v >= last);
+            last = v;
+        }
     }
 
     #[test]
