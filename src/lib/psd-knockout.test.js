@@ -199,6 +199,98 @@ describe('a file the pass does not understand is left alone', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
+
+  // Write the file from `writeDoc`, check it against `checkDoc`: nothing may
+  // change, and the refusal is said once.
+  function refused(writeDoc, checkDoc) {
+    const warn = quiet();
+    const u8 = agPsdBytes(writeDoc);
+    const before = u8.slice();
+    let n;
+    expect(() => (n = markDeepKnockout(u8, checkDoc.children))).not.toThrow();
+    expect(n).toBe(0);
+    expect(diffs(u8, before)).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  }
+  const withTop = (doc) => {
+    doc.children.push({ name: 'top', left: 0, top: 0, right: 2, bottom: 2, imageData: { width: 2, height: 2, data: new Uint8ClampedArray(16).fill(9) } });
+    return doc;
+  };
+  const textOf = (doc) => doc.children.find((c) => c.name === 'Text');
+
+  it('a document with one layer fewer than the file (the rest lines up): unchanged', () => {
+    refused(withTop(pageDoc()), pageDoc());
+  });
+
+  it('a closed group in the file, an open one in the document: unchanged', () => {
+    const closed = pageDoc();
+    textOf(closed).opened = false;
+    refused(closed, pageDoc());
+  });
+
+  it('a Deep layer without Knockout: unchanged', () => {
+    // Knockout off (byte 0) with Deep.
+    const off = () => {
+      const doc = pageDoc();
+      Object.assign(textOf(doc).children[1], { knockout: false });
+      return doc;
+    };
+    refused(off(), off());
+    // No Knockout at all (no block) with Deep.
+    const none = () => {
+      const doc = pageDoc();
+      delete textOf(doc).children[1].knockout;
+      return doc;
+    };
+    refused(none(), none());
+  });
+
+  it('a knockout byte that is not what the document says: unchanged', () => {
+    // The file has Shallow off (0); the document says on.
+    const file = pageDoc();
+    textOf(file).children[2].knockout = false;
+    refused(file, pageDoc());
+  });
+
+  it('no Deep layer: the bytes are not read at all', () => {
+    const warn = quiet();
+    // Not a PSD: reading it would be refused (and said).
+    const junk = new Uint8Array(64).fill(7);
+    const list = [box('none', 'none'), box('shallow', 'shallow')];
+    expect(markDeepKnockout(junk, pageDoc({ list }).children)).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    // With a Deep layer the same bytes are read, refused and said.
+    expect(markDeepKnockout(junk, pageDoc().children)).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect([...junk]).toEqual(new Array(64).fill(7));
+    warn.mockRestore();
+  });
+});
+
+describe('the read pass refuses what does not line up', () => {
+  const deep = [block('knko', [2, 0, 0, 0])];
+  it('a file with one record more than the tree: nothing marked', () => {
+    const tree = () => ({ children: [{ name: 'a', knockout: true }] });
+    expect(readDeepKnockout(handFile([deep]), tree())).toBe(1);
+    const psd = tree();
+    expect(readDeepKnockout(handFile([deep, []]), psd)).toBe(0);
+    expect(psd.children[0].knockoutDeep).toBeUndefined();
+  });
+
+  it('a knko block of length 5: nothing marked', () => {
+    const tree = () => ({ children: [{ name: 'a', knockout: true }] });
+    expect(readDeepKnockout(handFile([[block('knko', [2, 0, 0, 0, 0])]]), tree())).toBe(0);
+  });
+
+  it('a group whose divider record has no lsct 3: nothing marked', () => {
+    const tree = () => ({ children: [{ name: 'g', opened: true, children: [{ name: 'a', knockout: true }] }] });
+    const group = [block('lsct', u32(1))];
+    // Divider, layer, group: bottom first.
+    expect(readDeepKnockout(handFile([[block('lsct', u32(3))], deep, group]), tree())).toBe(1);
+    expect(readDeepKnockout(handFile([[], deep, group]), tree())).toBe(0);
+    expect(readDeepKnockout(handFile([[block('lsct', u32(0))], deep, group]), tree())).toBe(0);
+  });
 });
 
 // Ported from PhotoCraft's block reader (tagged.rs read_blocks_with): the pad
@@ -236,6 +328,18 @@ describe('the block walk', () => {
     expect(readDeepKnockout(handPsd([block('knko', [2, 0, 0, 0])]), { children: [{ name: 'a' }] })).toBe(0);
   });
 
+  it("a PSB: a block with an 8-byte length (8B64, or one of ag-psd's long keys) before knko", () => {
+    // ag-psd's reader rule (psdReader.ts:850): `8B64`, or a long key in a PSB.
+    for (const b of [block64('FMsk', [1, 2, 3, 4, 5, 6]), block64('cinf', [1, 2, 3, 4], '8BIM')]) {
+      const recs = psdLayerRecords(handPsd([b, block('knko', [2, 0, 0, 0])], { psb: true }));
+      expect(recs.psb).toBe(true);
+      expect(recs.records).toHaveLength(1);
+      expect(recs.records[0].knko.value).toBe(2);
+    }
+    // The same `cinf` with a 4-byte length in a PSD.
+    expect(psdLayerRecords(handPsd([block('cinf', [1, 2, 3, 4]), block('knko', [2, 0, 0, 0])])).records[0].knko.value).toBe(2);
+  });
+
   it('a layer info of length 0 is no records', () => {
     const u8 = handPsd(null);
     expect(psdLayerRecords(u8).records).toEqual([]);
@@ -261,21 +365,35 @@ function block(key, data, pad = data.length % 2) {
 function u32(v) {
   return [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
 }
+// A 64-bit-length block (PSB): `8B64` or `8BIM`, key, an 8-byte length, data.
+function block64(key, data, sig = '8B64') {
+  return [...ascii(sig), ...ascii(key), ...u32(0), ...u32(data.length), ...data, ...new Array(data.length % 2).fill(0)];
+}
 // A minimal PSD by hand: one layer record with no channels whose extra data
 // holds `blocks` (or no layer info at all when `blocks` is null).
-function handPsd(blocks) {
-  const header = [...ascii('8BPS'), 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, ...u32(1), ...u32(1), 0, 8, 0, 3];
+function handPsd(blocks, opts) {
+  return handFile(blocks ? [blocks] : null, opts);
+}
+// The same with one record per entry of `records` (each a list of blocks).
+// A PSB (`psb`) gets version 2, 8-byte layer and mask info and layer info
+// lengths, and one channel per record with an 8-byte length.
+function handFile(records, { psb = false } = {}) {
+  const len = (n) => (psb ? [...u32(0), ...u32(n)] : u32(n));
+  const header = [...ascii('8BPS'), 0, psb ? 2 : 1, 0, 0, 0, 0, 0, 0, 0, 3, ...u32(1), ...u32(1), 0, 8, 0, 3];
   const name = [1, ...ascii('a'), 0, 0]; // pascal, padded to 4
   let layerInfo = [];
-  if (blocks) {
-    const extra = [...u32(0), ...u32(0), ...name, ...blocks.flat()];
-    const record = [...u32(0), ...u32(0), ...u32(1), ...u32(1), 0, 0, ...ascii('8BIMnorm'), 255, 0, 8, 0, ...u32(extra.length), ...extra];
-    const body = [0, 1, ...record];
+  if (records) {
+    const body = [0, records.length];
+    for (const blocks of records) {
+      const extra = [...u32(0), ...u32(0), ...name, ...blocks.flat()];
+      const channels = psb ? [0, 1, 0, 0, ...len(0)] : [0, 0];
+      body.push(...u32(0), ...u32(0), ...u32(1), ...u32(1), ...channels, ...ascii('8BIMnorm'), 255, 0, 8, 0, ...u32(extra.length), ...extra);
+    }
     while (body.length % 4) body.push(0);
-    layerInfo = [...u32(body.length), ...body];
+    layerInfo = [...len(body.length), ...body];
   } else {
-    layerInfo = u32(0);
+    layerInfo = len(0);
   }
   const lmi = [...layerInfo, ...u32(0)];
-  return new Uint8Array([...header, ...u32(0), ...u32(0), ...u32(lmi.length), ...lmi]);
+  return new Uint8Array([...header, ...u32(0), ...u32(0), ...len(lmi.length), ...lmi]);
 }
