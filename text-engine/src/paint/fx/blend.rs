@@ -620,24 +620,23 @@ pub(crate) fn lay_source<S>(
     let unit = |v: f32| v.clamp(0.0, 1.0);
     match mode {
         Blend::Normal | Blend::Dissolve => {
-            lay_rows(dst, bx, opacity, None, dissolve, &src, |_, s| {
-                [unit(s[0]), unit(s[1]), unit(s[2])]
-            })
+            // A source's straight colour is a share of one already.
+            lay_rows(dst, bx, opacity, None, dissolve, true, &src, |_, s| s)
         }
-        Blend::Multiply => lay_rows(dst, bx, opacity, page, None, &src, |b, s| {
+        Blend::Multiply => lay_rows(dst, bx, opacity, page, None, true, &src, |b, s| {
             [unit(b[0] * s[0]), unit(b[1] * s[1]), unit(b[2] * s[2])]
         }),
-        Blend::Screen => lay_rows(dst, bx, opacity, page, None, &src, |b, s| {
+        Blend::Screen => lay_rows(dst, bx, opacity, page, None, true, &src, |b, s| {
             [
                 unit(screen(b[0], s[0])),
                 unit(screen(b[1], s[1])),
                 unit(screen(b[2], s[2])),
             ]
         }),
-        _ if page.is_some() => lay_rows(dst, bx, opacity, page, None, &src, |b, s| {
+        _ if page.is_some() => lay_rows(dst, bx, opacity, page, None, false, &src, |b, s| {
             mode.mix_fill(b, s, fill)
         }),
-        _ => lay_rows(dst, bx, opacity, None, None, &src, |b, s| mode.mix(b, s)),
+        _ => lay_rows(dst, bx, opacity, None, None, false, &src, |b, s| mode.mix(b, s)),
     }
 }
 
@@ -660,11 +659,16 @@ fn unpremul_by(p: [u8; 4], levels: &[f32; 256]) -> [f32; 3] {
         ],
         a => {
             let a = f32::from(a);
-            [
-                (f32::from(p[0]) / a).min(1.0),
-                (f32::from(p[1]) / a).min(1.0),
-                (f32::from(p[2]) / a).min(1.0),
-            ]
+            // `min(1.0)`, said as the one compare it is.
+            let share = |c: u8| {
+                let q = f32::from(c) / a;
+                if q < 1.0 {
+                    q
+                } else {
+                    1.0
+                }
+            };
+            [share(p[0]), share(p[1]), share(p[2])]
         }
     }
 }
@@ -672,7 +676,8 @@ fn unpremul_by(p: [u8; 4], levels: &[f32; 256]) -> [f32; 3] {
 /// The rows of [`lay_source`] for one way of mixing: `mix(under, source)` is
 /// the colour the mode makes, both straight. `page` is there only for a mode
 /// that blends with it, `dissolve` (the seed and the surface's corner) only
-/// for Dissolve. `bx` is inside `dst`.
+/// for Dissolve. `plain`: `mix` makes a finite colour of any two finite
+/// ones, so over a clear pixel it need not be asked. `bx` is inside `dst`.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn lay_rows<S, M>(
@@ -681,6 +686,7 @@ fn lay_rows<S, M>(
     opacity: f32,
     page: Option<&Backdrop<'_>>,
     dissolve: Option<(u32, (i32, i32))>,
+    plain: bool,
     src: &S,
     mix: M,
 ) where
@@ -711,6 +717,34 @@ fn lay_rows<S, M>(
                 if sa <= 0.0 {
                     continue;
                 }
+            }
+            if page.is_none() && dp[3] == 255 {
+                // Over an opaque pixel the alpha stays whole (`sa + (1 -
+                // sa)` is 1 for every `sa` from 0 to 1), so the source's
+                // own colour drops out and nothing is divided.
+                let d_col = [
+                    levels[usize::from(dp[0])],
+                    levels[usize::from(dp[1])],
+                    levels[usize::from(dp[2])],
+                ];
+                let mixed = mix(d_col, s_col);
+                let rest = 1.0 - sa;
+                for k in 0..3 {
+                    dp[k] = super::super::blur::to_u8((sa * mixed[k] + rest * d_col[k]) * 255.0);
+                }
+                continue;
+            }
+            if page.is_none() && plain && dp[3] == 0 {
+                // Over a clear pixel the source is its own colour at its
+                // own alpha: the mode makes a finite colour of nothing, and
+                // it is weighed by the nothing under it.
+                for k in 0..3 {
+                    let c = sa * s_col[k];
+                    let c = if sa == 1.0 { c } else { c / sa };
+                    dp[k] = super::super::blur::to_u8(c * sa * 255.0);
+                }
+                dp[3] = super::super::blur::to_u8(sa * 255.0);
+                continue;
             }
             let da = levels[usize::from(dp[3])];
             let d_col = unpremul_by(*dp, &levels);
@@ -883,7 +917,7 @@ mod tests {
                     _ => (next() % 256) as u8,
                 };
                 for c in &mut p[..3] {
-                    *c = if next() % 9 == 0 {
+                    *c = if next().is_multiple_of(9) {
                         (next() % 256) as u8
                     } else {
                         (next() % (u64::from(a) + 1)) as u8

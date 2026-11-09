@@ -85,11 +85,12 @@ pub fn width_of_variance(v: f64) -> f64 {
 /// The sum can keep a crumb of rounding once the last ink has left the
 /// window, which noise would raise into a speck: an empty window is reset to
 /// nothing. `dead_from` is the first centre whose window the last ink seen
-/// has left.
+/// has left; ink coming in only ever moves it on. So the line is worked in
+/// stretches: up to `dead_from` nothing is reset and the sum runs on with
+/// one add a pixel; from it, while nothing comes in, every sum is reset.
 fn run(buf: &[f64], c0: usize, out: &mut [f64], r: usize, f: f64, norm: f64) {
     let n = out.len();
-    let lo = &buf[c0 - r..c0 - r + n];
-    let lo1 = &buf[c0 - r + 1..c0 - r + 1 + n];
+    let lo = &buf[c0 - r..c0 - r + n + 1];
     let hi = &buf[c0 + r..c0 + r + n];
     let window = &buf[c0 + 1 - r..c0 + r];
     let mut inner: f64 = window.iter().sum();
@@ -97,17 +98,37 @@ fn run(buf: &[f64], c0: usize, out: &mut [f64], r: usize, f: f64, norm: f64) {
         .iter()
         .rposition(|v| *v != 0.0)
         .map_or(0, |i| c0 + 1 - r + i + r - 1);
-    for (k, d) in out.iter_mut().enumerate() {
-        let x = c0 + k;
-        let entering = hi[k];
-        *d = (inner + f * (lo[k] + entering)) * norm;
-        inner += entering - lo1[k];
-        if entering != 0.0 {
-            dead_from = x + 2 * r - 1;
+    let mut k = 0;
+    while k < n {
+        let live = dead_from.saturating_sub(c0).min(n);
+        if k < live {
+            // The pixel leaving the window is the one the next box ends on.
+            let mut left = lo[k];
+            let mut last = usize::MAX;
+            let stretch = out[k..live].iter_mut().zip(&hi[k..live]).zip(&lo[k + 1..live + 1]);
+            for (j, ((d, &entering), &leaving)) in stretch.enumerate() {
+                *d = (inner + f * (left + entering)) * norm;
+                inner += entering - leaving;
+                left = leaving;
+                if entering != 0.0 {
+                    last = j;
+                }
+            }
+            if last != usize::MAX {
+                dead_from = c0 + k + last + 2 * r - 1;
+            }
+            k = live;
+            continue;
         }
-        if x >= dead_from {
+        let entering = hi[k];
+        out[k] = (inner + f * (lo[k] + entering)) * norm;
+        if entering != 0.0 {
+            inner += entering - lo[k + 1];
+            dead_from = c0 + k + 2 * r - 1;
+        } else {
             inner = 0.0;
         }
+        k += 1;
     }
 }
 

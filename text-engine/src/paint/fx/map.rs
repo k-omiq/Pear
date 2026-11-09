@@ -111,6 +111,90 @@ impl Map {
         let (fx, fy) = (dx.floor(), dy.floor());
         let (ax, ay) = (dx - fx, dy - fy);
         let (w, h) = (self.w as i64, self.h as i64);
+        let (mx, my) = (fx as i64, fy as i64);
+        // Zero or more, and finite: what a share is. Such a value times one
+        // is itself, and times nothing is plain zero.
+        let share = |v: &f32| v.to_bits() < 0x7f80_0000;
+        if ax == 0.0 && ay == 0.0 && share(&outside) && self.v.iter().all(share) {
+            // A move by whole pixels reads one pixel for each it writes: the
+            // other three weigh nothing, and add nothing.
+            let x0 = mx.clamp(0, w) as usize;
+            let x1 = (w + mx).clamp(0, w) as usize;
+            for y in 0..h {
+                let row = &mut out.v[y as usize * self.w..][..self.w];
+                let from = y - my;
+                if from < 0 || from >= h || x0 >= x1 {
+                    row.fill(outside);
+                    continue;
+                }
+                row[..x0].fill(outside);
+                row[x1..].fill(outside);
+                let first = from as usize * self.w + (x0 as i64 - mx) as usize;
+                row[x0..x1].copy_from_slice(&self.v[first..first + (x1 - x0)]);
+            }
+            return Ok(out);
+        }
+        let s = |x: i64, y: i64| {
+            if x < 0 || y < 0 || x >= w || y >= h {
+                outside
+            } else {
+                self.v[y as usize * self.w + x as usize]
+            }
+        };
+        let cell = |x: i64, y: i64| {
+            let (sx, sy) = (x - mx, y - my);
+            let top = s(sx, sy) * (1.0 - ax) + s(sx - 1, sy) * ax;
+            let bot = s(sx, sy - 1) * (1.0 - ax) + s(sx - 1, sy - 1) * ax;
+            top * (1.0 - ay) + bot * ay
+        };
+        // The columns whose four reads are all in the map, in a row whose
+        // two source rows are: read there side by side, with no asking.
+        let xa = (mx + 1).clamp(0, w);
+        let xb = (w + mx).clamp(xa, w);
+        for y in 0..h {
+            let row = &mut out.v[y as usize * self.w..][..self.w];
+            let sy = y - my;
+            if sy < 1 || sy >= h || xa >= xb {
+                for x in 0..w {
+                    row[x as usize] = cell(x, y);
+                }
+                continue;
+            }
+            for x in (0..xa).chain(xb..w) {
+                row[x as usize] = cell(x, y);
+            }
+            let first = (xa - mx - 1) as usize;
+            let n = (xb - xa) as usize;
+            let top = &self.v[sy as usize * self.w + first..][..n + 1];
+            let bot = &self.v[(sy as usize - 1) * self.w + first..][..n + 1];
+            let cells = row[xa as usize..xb as usize]
+                .iter_mut()
+                .zip(top.windows(2))
+                .zip(bot.windows(2));
+            for ((o, t), b) in cells {
+                let top = t[1] * (1.0 - ax) + t[0] * ax;
+                let bot = b[1] * (1.0 - ax) + b[0] * ax;
+                *o = top * (1.0 - ay) + bot * ay;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The move as it was first written: four asked-for reads to the pixel.
+    #[cfg(test)]
+    fn shifted_as_first_written(&self, dx: f32, dy: f32, outside: f32) -> Map {
+        let mut out = Map::new(self.w, self.h, 0.0);
+        let reach = |d: f32| {
+            if d.is_finite() {
+                d.clamp(-1.0e9, 1.0e9)
+            } else {
+                0.0
+            }
+        };
+        let (dx, dy) = (reach(dx), reach(dy));
+        let (fx, fy) = (dx.floor(), dy.floor());
+        let (ax, ay) = (dx - fx, dy - fy);
+        let (w, h) = (self.w as i64, self.h as i64);
         let s = |x: i64, y: i64| {
             if x < 0 || y < 0 || x >= w || y >= h {
                 outside
@@ -126,7 +210,7 @@ impl Map {
                 out.v[y as usize * self.w + x as usize] = top * (1.0 - ay) + bot * ay;
             }
         }
-        Ok(out)
+        out
     }
 }
 
@@ -608,8 +692,15 @@ pub(crate) fn relative_to(m: &Map, shape: &Map) -> Result<Map, Error> {
         m.w,
         m.h,
         m.v.iter().zip(shape.v.iter()).map(|(m, a)| {
-            if *a > INSIDE_EPS {
-                (m / a).min(1.0)
+            // Nothing is a share of nothing, with no divide; `min(1.0)`,
+            // said as the one compare it is.
+            if *a > INSIDE_EPS && m.to_bits() != 0 {
+                let q = m / a;
+                if q < 1.0 {
+                    q
+                } else {
+                    1.0
+                }
             } else {
                 0.0
             }
@@ -620,6 +711,76 @@ pub(crate) fn relative_to(m: &Map, shape: &Map) -> Result<Map, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn next(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    /// A value of a map: mostly a share, now and then one that is not.
+    fn value(seed: &mut u64, odd: bool) -> f32 {
+        let r = next(seed);
+        let v = (r % 1001) as f32 / 1000.0;
+        match (r >> 12) % 23 {
+            0..=6 => 0.0,
+            7..=9 => 1.0,
+            10 if odd => -0.0,
+            11 if odd => -v,
+            12 if odd => f32::NAN,
+            13 if odd => f32::INFINITY,
+            14 if odd => v * 1.0e30,
+            _ => v,
+        }
+    }
+
+    #[test]
+    fn a_move_is_what_it_was_to_the_bit() {
+        let mut seed = 7u64;
+        let moves = [
+            0.0, -0.0, 1.0, -1.0, 3.0, -4.0, 0.5, -0.5, 2.25, -3.75, 40.0, -40.0, 1.0e12,
+            f32::NAN, f32::INFINITY, 1.0e-30, -1.0e-30,
+        ];
+        let outsides = [0.0, 1.0, 0.25, -0.0, -1.0, f32::NAN, f32::INFINITY];
+        for round in 0..600 {
+            let (w, h) = (next(&mut seed) as usize % 9, next(&mut seed) as usize % 9);
+            let odd = round % 3 == 0;
+            let mut m = Map::new(w, h, 0.0);
+            for v in m.v.iter_mut() {
+                *v = value(&mut seed, odd);
+            }
+            let dx = moves[next(&mut seed) as usize % moves.len()];
+            let dy = moves[next(&mut seed) as usize % moves.len()];
+            let outside = outsides[next(&mut seed) as usize % if odd { outsides.len() } else { 3 }];
+            let now = m.shifted(dx, dy, outside).unwrap();
+            let then = m.shifted_as_first_written(dx, dy, outside);
+            let bits = |m: &Map| m.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&now), bits(&then), "{w}x{h} by {dx},{dy} past {outside}");
+        }
+    }
+
+    #[test]
+    fn a_share_of_the_shape_is_what_it_was_to_the_bit() {
+        let mut seed = 11u64;
+        for _ in 0..200 {
+            let (w, h) = (1 + next(&mut seed) as usize % 9, 1 + next(&mut seed) as usize % 9);
+            let (mut m, mut shape) = (Map::new(w, h, 0.0), Map::new(w, h, 0.0));
+            for v in m.v.iter_mut().chain(shape.v.iter_mut()) {
+                *v = value(&mut seed, true);
+            }
+            let now = relative_to(&m, &shape).unwrap();
+            for ((now, m), a) in now.v.iter().zip(m.v.iter()).zip(shape.v.iter()) {
+                // As first written.
+                let then = if *a > INSIDE_EPS {
+                    (m / a).min(1.0)
+                } else {
+                    0.0
+                };
+                assert_eq!(now.to_bits(), then.to_bits(), "{m} of {a}");
+            }
+        }
+    }
 
     fn disc(w: usize, h: usize, cx: f32, cy: f32, r: f32) -> Map {
         let mut m = Map::new(w, h, 0.0);

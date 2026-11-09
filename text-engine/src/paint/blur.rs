@@ -125,6 +125,12 @@ impl Surface {
                 if a == 0 {
                     continue;
                 }
+                // An opaque pixel is itself: `s * 255 / 255`, over nothing
+                // kept.
+                if a == 255 {
+                    *d = *s;
+                    continue;
+                }
                 let keep = 255 - a;
                 for c in 0..3 {
                     d[c] = (div255(u32::from(s[c]) * a) + div255(u32::from(d[c]) * keep)) as u8;
@@ -168,9 +174,13 @@ fn div255(v: u32) -> u32 {
     (v + 127) / 255
 }
 
+#[inline(always)]
 pub(super) fn to_u8(v: f32) -> u8 {
-    // A NaN is 0, and anything past the ends is the end.
-    (v + 0.5).clamp(0.0, 255.0) as u8
+    // A NaN is 0, and anything past the ends is the end: the cast to a
+    // whole number does both but for the top end, which is then one compare
+    // of whole numbers. (A clamp and a cast straight to a byte are the same
+    // and cost five float steps more in wasm.)
+    ((v + 0.5) as u32).min(255) as u8
 }
 
 // ---- the gaussian ----
@@ -773,6 +783,83 @@ pub(crate) fn mask(s: &mut Surface, mask: &[u8], bx: IBox, keep_outside: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drawn_pixel_is_what_it_was_to_the_byte() {
+        let mut seed = 13u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let (w, h) = (16usize, 16usize);
+        for _ in 0..200 {
+            let mut byte = || {
+                let r = next();
+                match (r >> 10) % 4 {
+                    0 => 0,
+                    1 => 255,
+                    _ => r as u8,
+                }
+            };
+            let pixels: Vec<u8> = (0..w * h * 4).map(|_| byte()).collect();
+            let under: Vec<u8> = (0..w * h * 4).map(|_| byte()).collect();
+            let mut now = Surface::new(w, h).unwrap();
+            now.data.copy_from_slice(&under);
+            now.draw(&pixels, w, 0, 0);
+            // As first written: every pixel through the same sum.
+            let mut then = under.clone();
+            for (s, d) in pixels.as_chunks::<4>().0.iter().zip(then.as_chunks_mut::<4>().0) {
+                let a = u32::from(s[3]);
+                if a == 0 {
+                    continue;
+                }
+                let keep = 255 - a;
+                for c in 0..3 {
+                    d[c] = (div255(u32::from(s[c]) * a) + div255(u32::from(d[c]) * keep)) as u8;
+                }
+                d[3] = (a + div255(u32::from(d[3]) * keep)) as u8;
+            }
+            assert_eq!(&now.data[..], &then[..]);
+        }
+    }
+
+    /// The rounding as it was first written: a clamp, then the cast.
+    fn to_u8_as_first_written(v: f32) -> u8 {
+        (v + 0.5).clamp(0.0, 255.0) as u8
+    }
+
+    #[test]
+    fn the_cast_alone_rounds_as_the_clamp_and_cast_did() {
+        // Every 4099th float (the step is odd, so every exponent and both
+        // signs are met), and the ends by hand.
+        let mut bits = 0u32;
+        loop {
+            let v = f32::from_bits(bits);
+            assert_eq!(to_u8(v), to_u8_as_first_written(v), "{bits:#x}");
+            let Some(next) = bits.checked_add(4099) else {
+                break;
+            };
+            bits = next;
+        }
+        for v in [
+            0.0, -0.0, -0.5, -0.50001, 0.49999, 0.5, 254.4999, 254.5, 255.0, 255.5, 1e9, -1e9,
+            f32::INFINITY, f32::NEG_INFINITY, f32::NAN, f32::MIN_POSITIVE,
+        ] {
+            assert_eq!(to_u8(v), to_u8_as_first_written(v), "{v}");
+        }
+    }
+
+    /// Every float there is: minutes in a debug build, so run by hand.
+    #[test]
+    #[ignore]
+    fn the_cast_alone_rounds_every_float_as_the_clamp_and_cast_did() {
+        for bits in 0..=u32::MAX {
+            let v = f32::from_bits(bits);
+            assert_eq!(to_u8(v), to_u8_as_first_written(v), "{bits:#x}");
+        }
+    }
 
     fn dot(w: usize, h: usize, x: usize, y: usize) -> Surface {
         let mut s = Surface::new(w, h).unwrap();

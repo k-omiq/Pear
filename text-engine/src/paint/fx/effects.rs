@@ -20,7 +20,7 @@
 //! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors for the
 //! order and the compositing it follows, MIT licence (see `THIRD_PARTY.md`).
 
-use super::super::blur::Surface;
+use super::super::blur::{to_u8, Surface};
 use super::super::geom::{Affine, IBox, Pt};
 use super::super::job::{Fill, Rgba, Tile};
 use super::super::shade::Shader;
@@ -679,12 +679,13 @@ where
             return [0; 4];
         }
         let c = (self.color)(x + self.dev.0, y + self.dev.1, i);
-        let a = (v * c[3].clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        // Two shares of one, so a share of one: nothing to clamp.
+        let a = v * c[3].clamp(0.0, 1.0);
         [
-            (c[0].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8,
-            (c[1].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8,
-            (c[2].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8,
-            (a * 255.0 + 0.5) as u8,
+            to_u8(c[0].clamp(0.0, 1.0) * a * 255.0),
+            to_u8(c[1].clamp(0.0, 1.0) * a * 255.0),
+            to_u8(c[2].clamp(0.0, 1.0) * a * 255.0),
+            to_u8(a * 255.0),
         ]
     }
 }
@@ -894,6 +895,61 @@ pub fn outline_share(cov: f32, l: f32) -> f32 {
         1.0
     } else {
         (outside / rest).min(1.0)
+    }
+}
+
+/// Whether `v` is plain zero to one: no minus zero, no NaN.
+fn plain_share(v: f32) -> bool {
+    v.to_bits() <= 1.0f32.to_bits()
+}
+
+/// What one outside stroke's share is worked out from.
+struct Reach2<'a> {
+    /// The distance out from the letters' edge.
+    d: &'a [f32],
+    shape: &'a [f32],
+    /// The letters' alpha as laid.
+    alpha: &'a [f32],
+    out_w: f32,
+    opacity: f32,
+    /// A Dissolve stroke's seed, where its grain is hashed from, and the
+    /// frame's width.
+    dissolve: Option<(u32, (i32, i32), usize)>,
+    /// Whether a pixel with nothing to add may be passed over: every stroke's
+    /// opacity is plain nothing to one.
+    skip: bool,
+}
+
+/// One outside stroke's share of each pixel, of what the strokes listed
+/// before it left: `cover` is what they and it have taken.
+fn stroke_share(share: &mut [f32], cover: &mut [f32], r: &Reach2<'_>) {
+    for (i, sh) in share.iter_mut().enumerate() {
+        let band = (r.out_w + 0.5 - r.d[i]).clamp(0.0, 1.0);
+        // Out of the stroke's reach, or under a whole pixel of the letters:
+        // a share of plain zero, as the slice holds, and none for the cover
+        // (which is nothing to one, or the sum is worked out as it was).
+        if r.skip
+            && (band.to_bits() == 0 || (r.shape[i] == 1.0 && band <= 1.0))
+            && plain_share(cover[i])
+        {
+            continue;
+        }
+        let k = if r.shape[i] > map::INSIDE_EPS {
+            band * outline_share(r.shape[i], r.alpha[i])
+        } else {
+            band
+        };
+        let mut k = k * r.opacity;
+        if let Some((seed, hashed, w)) = r.dissolve {
+            let (x, y) = (hashed.0 + (i % w) as i32, hashed.1 + (i / w) as i32);
+            k = if k > 0.0 && noise::unit(x, y, seed) < k {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        *sh = k * (1.0 - cover[i]);
+        cover[i] += *sh;
     }
 }
 
@@ -1447,14 +1503,22 @@ fn interior_at(
         for x in 0..rw {
             let p = &r.data[(y * rw + x) * 4..(y * rw + x) * 4 + 4];
             let i = (y + pad) * w + x + pad;
+            if p[3] == 0 {
+                continue;
+            }
             let a = f32::from(p[3]) / 255.0;
             shape.v[i] = a;
             if a <= map::INSIDE_EPS {
                 continue;
             }
             let d = &mut lay.data[i * 4..i * 4 + 4];
-            for c in 0..3 {
-                d[c] = ((u32::from(p[c]) * k + 127) / 255) as u8;
+            if k == 255 {
+                // A whole fill is the colour it is: `c * 255 / 255`.
+                d[..3].copy_from_slice(&p[..3]);
+            } else {
+                for c in 0..3 {
+                    d[c] = ((u32::from(p[c]) * k + 127) / 255) as u8;
+                }
             }
             d[3] = k as u8;
         }
@@ -1747,6 +1811,10 @@ fn interior_at(
         let mut chamfer = None;
         let mut exact = None;
         let mut cover = budget::filled(n, 0.0f32)?;
+        // Each stroke at an opacity of plain nothing to one (by its bits: a
+        // minus zero is not): a pixel a stroke does not reach then adds
+        // plain zero.
+        let sure = strokes.iter().all(|(_, s)| plain_share(s.opacity as f32));
         for (k, st) in &strokes {
             let out_w = (st.widths().1 * scale) as f32;
             if out_w <= 0.0 {
@@ -1754,25 +1822,17 @@ fn interior_at(
             }
             let d = outside_dist(&shape, out_w, &mut chamfer, &mut exact)?;
             let mut share = budget::filled(n, 0.0f32)?;
-            for (i, sh) in share.iter_mut().enumerate() {
-                let band = (out_w + 0.5 - d[i]).clamp(0.0, 1.0);
-                let k = if shape.v[i] > map::INSIDE_EPS {
-                    band * outline_share(shape.v[i], alpha[i])
-                } else {
-                    band
-                };
-                let mut k = k * st.opacity as f32;
-                if st.blend == Blend::Dissolve {
-                    let (x, y) = (hashed.0 + (i % w) as i32, hashed.1 + (i / w) as i32);
-                    k = if k > 0.0 && noise::unit(x, y, st.seed) < k {
-                        1.0
-                    } else {
-                        0.0
-                    };
-                }
-                *sh = k * (1.0 - cover[i]);
-                cover[i] += *sh;
-            }
+            let dissolve = (st.blend == Blend::Dissolve).then_some((st.seed, hashed, w));
+            let reach = Reach2 {
+                d,
+                shape: &shape.v,
+                alpha: &alpha,
+                out_w,
+                opacity: st.opacity as f32,
+                dissolve,
+                skip: sure,
+            };
+            stroke_share(&mut share, &mut cover, &reach);
             let depth = if is_burst(&st.paint) {
                 let (out, total) = burst_in(st);
                 Some(budget::exact(
@@ -1814,6 +1874,87 @@ fn interior_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stroke's share as it was first written: every pixel worked out.
+    fn stroke_share_as_first_written(share: &mut [f32], cover: &mut [f32], r: &Reach2<'_>) {
+        for (i, sh) in share.iter_mut().enumerate() {
+            let band = (r.out_w + 0.5 - r.d[i]).clamp(0.0, 1.0);
+            let k = if r.shape[i] > map::INSIDE_EPS {
+                band * outline_share(r.shape[i], r.alpha[i])
+            } else {
+                band
+            };
+            let mut k = k * r.opacity;
+            if let Some((seed, hashed, w)) = r.dissolve {
+                let (x, y) = (hashed.0 + (i % w) as i32, hashed.1 + (i / w) as i32);
+                k = if k > 0.0 && noise::unit(x, y, seed) < k {
+                    1.0
+                } else {
+                    0.0
+                };
+            }
+            *sh = k * (1.0 - cover[i]);
+            cover[i] += *sh;
+        }
+    }
+
+    #[test]
+    fn a_strokes_share_is_what_it_was_to_the_bit() {
+        let mut seed = 5u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let opacities = [1.0f32, 0.5, 0.0, 0.3, -0.0, 2.0, -1.0, f32::NAN, f32::INFINITY];
+        let widths = [3.0f32, 0.25, 40.0, f32::NAN, f32::INFINITY];
+        for round in 0..400 {
+            let n = 64;
+            let odd = round % 4 == 0;
+            let mut pick = |whole: u64| -> f32 {
+                let r = next();
+                let v = (r % 1001) as f32 / 1000.0;
+                match (r >> 12) % 16 {
+                    0..=4 => 0.0,
+                    5..=8 => whole as f32,
+                    9 if odd => f32::NAN,
+                    10 if odd => -v,
+                    _ => v,
+                }
+            };
+            let d: Vec<f32> = (0..n).map(|_| pick(1) * 8.0 - 0.5).collect();
+            let shape: Vec<f32> = (0..n).map(|_| pick(1)).collect();
+            let alpha: Vec<f32> = (0..n).map(|_| pick(1)).collect();
+            let (mut cover, mut cover_then) = (vec![0.0f32; n], vec![0.0f32; n]);
+            // Three strokes, one after another, over the one cover.
+            let strokes: Vec<(f32, f32, bool)> = (0..3)
+                .map(|_| {
+                    let o = opacities[next() as usize % if odd { opacities.len() } else { 5 }];
+                    let w = widths[next() as usize % if odd { widths.len() } else { 3 }];
+                    (o, w, next() % 3 == 0)
+                })
+                .collect();
+            let sure = strokes.iter().all(|(o, _, _)| plain_share(*o));
+            for (opacity, out_w, dissolve) in strokes {
+                let r = Reach2 {
+                    d: &d,
+                    shape: &shape,
+                    alpha: &alpha,
+                    out_w,
+                    opacity,
+                    dissolve: dissolve.then_some((9, (-3, 4), 8)),
+                    skip: sure,
+                };
+                let (mut now, mut then) = (vec![0.0f32; n], vec![0.0f32; n]);
+                stroke_share(&mut now, &mut cover, &r);
+                stroke_share_as_first_written(&mut then, &mut cover_then, &r);
+                let bits = |v: &[f32]| v.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&now), bits(&then), "share, {opacity} at {out_w}");
+                assert_eq!(bits(&cover), bits(&cover_then), "cover, {opacity} at {out_w}");
+            }
+        }
+    }
 
     const RED: Rgba = Rgba([255, 0, 0, 255]);
     const BLUE: Rgba = Rgba([0, 0, 255, 255]);
