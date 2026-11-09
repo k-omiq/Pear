@@ -404,8 +404,11 @@ impl<'a> Reader<'a> {
             return Err(Error::BadSpec);
         }
         let gloss = self.table()?;
+        // Ticked, the Contour is a table even when it is Linear: the height
+        // still goes through it and is clamped to 0 to 1 (review F28).
         let (contour, range) = if flags & 4 != 0 {
-            (self.table()?, self.upto(1.0)?)
+            let curve = self.curve()?.unwrap_or(Curve::Preset(0));
+            (Some(Table::charged_on(&curve)?), self.upto(1.0)?)
         } else {
             (None, 0.5)
         };
@@ -814,7 +817,8 @@ impl<'a> Reader<'a> {
 ///                              32 texture invert (only with 16)
 ///     u32 gloss contour        as a shadow's
 ///     if flags & 4:  u32 contour (as a shadow's), f64 range (0 to 1;
-///                    carried, never applied)
+///                    carried, never applied); Linear too clamps the
+///                    height to 0 to 1
 ///     if flags & 16: f64 texture depth (-10 to 10), a paint record that is
 ///                    a fill (kind 2): the pattern
 ///     The anti-aliased flags are carried, not painted.
@@ -1300,9 +1304,12 @@ fn lay_styled(
     };
     if sh.contour.is_some() || positive(sh.noise) {
         let mut matte = alpha_of(&layer)?;
+        // The edge hidden, so a contour that does not start at 0 (Cone -
+        // Inverted, Cove - Deep) keeps to the shadow and does not fill its
+        // whole rectangle (review F7).
         if let Some(lut) = &sh.contour {
             for a in matte.iter_mut() {
-                *a = lut.apply(*a);
+                *a = lut.apply_hidden(*a);
             }
         }
         if positive(sh.noise) {

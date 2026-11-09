@@ -165,7 +165,9 @@ pub(crate) struct Shading<'a> {
     pub light: [f32; 3],
     /// Gloss Contour; `None` is Linear.
     pub gloss: Option<&'a Table>,
-    /// The Contour element on the height; `None` is off or Linear. Its Range
+    /// The Contour element on the height; `None` is off. Ticked, Linear is
+    /// a table too, which clamps the height to 0 to 1 (PhotoCraft
+    /// `bevel_contour_lut` bakes the identity and `lut_at` clamps). Its Range
     /// is not applied (PhotoCraft `bevel_contour_lut`: a `v / range` stretch
     /// halved a real Linear bevel, and what Range does is still open).
     pub contour: Option<&'a Table>,
@@ -229,12 +231,16 @@ pub(crate) fn chisel_h(paint: Reach, size: f32, din: f32, dout: f32, soft: bool)
 }
 
 /// The bevel height map in `0..=1` (PhotoCraft `bevel_height`), and, when a
-/// texture raises it, the height without the texture (softened alike): the
-/// bevel's own extent, which keeps an outer or emboss texture from filling
-/// every pixel of the map. Smooth: the shape blurred by two box passes of
-/// the bevel width. Chisel: linear ramps of the distance to the edge (size
-/// wide; emboss styles straddle the edge), slightly blurred for Chisel Soft
-/// emboss. Then the Contour, the Texture, and Soften over both.
+/// contour or a texture reshapes it, the height before either (softened
+/// alike): the bevel's own extent, which keeps an outer or emboss bevel
+/// from shading every pixel of the map. A texture raises the height
+/// everywhere, and a contour that does not start at 0 (Cone - Inverted,
+/// Cove - Deep) lifts the flat ground round the bevel, whose step down to
+/// the 0 read off the map's edge once shaded as a 1 px frame there (review
+/// F8). Smooth: the shape blurred by two box passes of the bevel width.
+/// Chisel: linear ramps of the distance to the edge (size wide; emboss
+/// styles straddle the edge), slightly blurred for Chisel Soft emboss. Then
+/// the Contour, the Texture, and Soften over both.
 fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), Error> {
     let size = if s.size.is_nan() {
         1.0
@@ -261,6 +267,12 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), 
         }
         h
     };
+    // An inner bevel is kept to the shape: it needs no extent.
+    let mut own = if g.paint != Reach::Inner && (s.contour.is_some() || s.texture.is_some()) {
+        Some(h.try_clone()?)
+    } else {
+        None
+    };
     // Contour element: the height profile through the contour.
     if let Some(t) = s.contour {
         h = h.map(|v| t.at(v));
@@ -268,11 +280,7 @@ fn height(shape: &Map, s: &Shading<'_>, g: &Geom) -> Result<(Map, Option<Map>), 
     // Texture element: the pattern's luminance as extra height, scaled so a
     // full-contrast step at 100 % depth slopes like the bevel at its depth
     // (unmeasured by PhotoCraft).
-    let mut own = None;
     if let Some(t) = &s.texture {
-        if g.paint != Reach::Inner {
-            own = Some(h.try_clone()?);
-        }
         let unit = if s.depth.abs() > 1e-6 {
             (g.depth / s.depth).abs().max(1e-3)
         } else {
@@ -629,11 +637,96 @@ mod tests {
         }
     }
 
+    /// Review F28: a ticked Linear Contour is a table (PhotoCraft
+    /// `bevel_contour_lut` bakes the identity), which leaves a height from 0
+    /// to 1 alone, whatever its Range (carried, never applied), and clamps
+    /// one past 1. Off, there is no table and nothing is clamped.
     #[test]
-    fn linear_bevel_contour_leaves_the_height_alone() {
-        // A Linear contour bakes to no table at all, whatever its Range: the
-        // Range is carried, never applied.
+    fn a_ticked_linear_bevel_contour_clamps_the_height() {
+        let linear = Table::charged_on(&Curve::Preset(0)).unwrap();
+        for v in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            assert!((linear.at(v) - v).abs() < 1e-6, "{v}");
+        }
+        assert_eq!(linear.at(12.0 / 11.0), 1.0);
         assert!(Table::new(&Curve::Preset(0)).is_none());
+        // Outer Hard, size 10: the chisel's height is 12/11 on the letters
+        // and 1 at the first pixel out, so the slope there halves when it is
+        // clamped. Light from the top at 30 degrees, depth 5 (100 % of
+        // size / 2): at row 60, below the letters, slope 5 (h(61) - h(59)) /
+        // 2.
+        let shadow = |g: f32| {
+            let (se, ce) = 30f32.to_radians().sin_cos();
+            let shade = (-g * -ce + se) / (1.0 + g * g).sqrt();
+            ((se - shade) / se).clamp(0.0, 1.0)
+        };
+        let n = 80;
+        let shape = square(n, 20, 60);
+        let mut b = bevel_of(BevelStyle::Outer, BevelTechnique::ChiselHard);
+        b.size = 10.0;
+        let (_, off, _) = maps(&shape, &b);
+        let on = Shading {
+            contour: Some(&linear),
+            ..b
+        };
+        let (_, on, _) = maps(&shape, &on);
+        let at = |m: &Map, y: usize| m.v[y * n + 40];
+        let (h59, h61) = (12.0 / 11.0, 10.0 / 11.0);
+        let unclamped = shadow(5.0 * (h61 - h59) / 2.0);
+        let clamped = shadow(5.0 * (h61 - 1.0) / 2.0);
+        assert!(
+            (at(&off, 60) - unclamped).abs() < 0.01,
+            "{} vs {unclamped}",
+            at(&off, 60)
+        );
+        assert!(
+            (at(&on, 60) - clamped).abs() < 0.01,
+            "{} vs {clamped}",
+            at(&on, 60)
+        );
+        // Further out the ramp is under 1: the same either way.
+        assert!((at(&on, 64) - at(&off, 64)).abs() < 1e-6);
+    }
+
+    /// Review F8: an Outer Bevel or an Emboss with a contour that does not
+    /// start at 0 lifts the flat ground to contour(0) = 1 (Cone - Inverted);
+    /// the 0 read off the map once shaded its edge as a 1 px frame. Kept to
+    /// the bevel's own extent, the map's edge rows are left alone.
+    #[test]
+    fn a_contour_that_lifts_the_ground_draws_no_frame_at_the_map_edge() {
+        let n = 60;
+        let shape = square(n, 20, 40);
+        let cone_inverted = Table::new(&Curve::Preset(2)).unwrap();
+        let cove_deep = Table::new(&Curve::Preset(3)).unwrap();
+        for style in [BevelStyle::Outer, BevelStyle::Emboss, BevelStyle::Pillow] {
+            for technique in [BevelTechnique::Smooth, BevelTechnique::ChiselHard] {
+                for t in [&cone_inverted, &cove_deep] {
+                    let b = Shading {
+                        contour: Some(t),
+                        ..bevel_of(style, technique)
+                    };
+                    let (hi, sh, _) = maps(&shape, &b);
+                    let reach = outward(style, technique, 5.0, 0.0) as usize;
+                    for y in 0..n {
+                        for x in 0..n {
+                            let far = x + reach < 20
+                                || x >= 40 + reach
+                                || y + reach < 20
+                                || y >= 40 + reach;
+                            if far {
+                                let i = y * n + x;
+                                assert_eq!(
+                                    (hi.v[i], sh.v[i]),
+                                    (0.0, 0.0),
+                                    "{style:?} {technique:?} at ({x}, {y})"
+                                );
+                            }
+                        }
+                    }
+                    // The bevel itself still shades.
+                    assert!(hi.v.iter().chain(sh.v.iter()).any(|&v| v > 0.05));
+                }
+            }
+        }
     }
 
     #[test]

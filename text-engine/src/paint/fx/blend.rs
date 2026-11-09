@@ -112,15 +112,17 @@ impl Blend {
             return [f(b[0], s[0]), f(b[1], s[1]), f(b[2], s[2])];
         }
         match self {
+            // By luma, as PhotoCraft's `blend_rgb` (crates/color/src/blend.rs)
+            // and its GPU path compare: not by R + G + B.
             Blend::DarkerColor => {
-                if sum(s) < sum(b) {
+                if lum(s) < lum(b) {
                     s
                 } else {
                     b
                 }
             }
             Blend::LighterColor => {
-                if sum(s) > sum(b) {
+                if lum(s) > lum(b) {
                     s
                 } else {
                     b
@@ -315,10 +317,6 @@ fn color_burn(b: f32, s: f32) -> f32 {
     }
 }
 
-fn sum(c: [f32; 3]) -> f32 {
-    c[0] + c[1] + c[2]
-}
-
 /// Luma with the weights Photoshop's colour modes are known to use.
 fn lum(c: [f32; 3]) -> f32 {
     0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
@@ -397,7 +395,7 @@ impl Backdrop<'_> {
 /// is drawn under. With no backdrop, what is under is `dst` alone, and the
 /// mode blends with nothing where `dst` is clear (the W3C rule).
 ///
-/// `seed` decides Dissolve's pattern.
+/// `seed` decides Dissolve's pattern, hashed from `dst`'s own pixels.
 pub(crate) fn lay(
     dst: &mut Surface,
     src: &Surface,
@@ -407,7 +405,25 @@ pub(crate) fn lay(
     backdrop: Option<&Backdrop<'_>>,
     seed: u32,
 ) {
-    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, 1.0);
+    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, 1.0, (0, 0));
+}
+
+/// [`lay`] onto a `dst` whose corner is device pixel `origin`: Dissolve's
+/// pattern is hashed from the device pixel, so a layer whose corner moves
+/// with the room its effects ask for (the letters' interior) keeps its
+/// pattern (review F22).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lay_from(
+    dst: &mut Surface,
+    src: &Surface,
+    bx: IBox,
+    opacity: f32,
+    mode: Blend,
+    backdrop: Option<&Backdrop<'_>>,
+    seed: u32,
+    origin: (i32, i32),
+) {
+    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, 1.0, origin);
 }
 
 /// [`lay`] for a layer whose Fill Opacity is `fill`, its `src` drawn at the
@@ -429,9 +445,19 @@ pub(crate) fn lay_fill(
 ) {
     let fill = fill.clamp(0.0, 1.0);
     if fill >= 1.0 || !mode.fill_is_special() || backdrop.is_none() {
-        return lay_at_fill(dst, src, bx, opacity * fill, mode, backdrop, seed, 1.0);
+        return lay_at_fill(
+            dst,
+            src,
+            bx,
+            opacity * fill,
+            mode,
+            backdrop,
+            seed,
+            1.0,
+            (0, 0),
+        );
     }
-    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, fill);
+    lay_at_fill(dst, src, bx, opacity, mode, backdrop, seed, fill, (0, 0));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,6 +470,7 @@ fn lay_at_fill(
     backdrop: Option<&Backdrop<'_>>,
     seed: u32,
     fill: f32,
+    origin: (i32, i32),
 ) {
     let w = dst.width;
     let bx = bx.intersect(&IBox {
@@ -467,7 +494,8 @@ fn lay_at_fill(
             let s_col = unpremul(sp);
             if mode == Blend::Dissolve {
                 // Each pixel is all or nothing, with the alpha as its odds.
-                sa = if noise::unit(x, y, seed) < sa {
+                let (dx, dy) = (origin.0.wrapping_add(x), origin.1.wrapping_add(y));
+                sa = if noise::unit(dx, dy, seed) < sa {
                     1.0
                 } else {
                     0.0
@@ -599,8 +627,26 @@ mod tests {
 
     #[test]
     fn darker_and_lighter_colour_pick_a_whole_colour() {
-        assert_eq!(Blend::DarkerColor.mix(B, S), B);
-        assert_eq!(Blend::LighterColor.mix(B, S), S);
+        // S's luma (0.397) is under B's (0.4525).
+        assert_eq!(Blend::DarkerColor.mix(B, S), S);
+        assert_eq!(Blend::LighterColor.mix(B, S), B);
+    }
+
+    /// Review F12: yellow (100, 100, 0) over pure blue. Its R + G + B (200)
+    /// is under blue's (255), but its luma (89) is over blue's (28):
+    /// Darker Color keeps the blue, Lighter Color takes the yellow
+    /// (PhotoCraft `blend_rgb`).
+    #[test]
+    fn darker_and_lighter_colour_compare_luma_not_the_sum() {
+        let yellow = [100.0 / 255.0, 100.0 / 255.0, 0.0];
+        let blue = [0.0, 0.0, 1.0];
+        assert!((lum(yellow) * 255.0 - 89.0).abs() < 0.5);
+        assert!((lum(blue) * 255.0 - 28.05).abs() < 0.5);
+        assert_eq!(Blend::DarkerColor.mix(blue, yellow), blue);
+        assert_eq!(Blend::LighterColor.mix(blue, yellow), yellow);
+        // And the mirror: blue over yellow.
+        assert_eq!(Blend::DarkerColor.mix(yellow, blue), blue);
+        assert_eq!(Blend::LighterColor.mix(yellow, blue), yellow);
     }
 
     fn surface(px: [u8; 4]) -> Surface {

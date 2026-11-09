@@ -2665,3 +2665,162 @@ fn a_knockout_cuts_the_shadow_by_the_fill_and_not_the_outline() {
     let red = |p: [u8; 4]| u32::from(p[0]) * u32::from(p[3]) / 255;
     assert!(red(px(&soft_knocked, sx + 2, sy)) < red(px(&soft_through, sx + 2, sy)));
 }
+
+// ---- Contours, grain and Jitter (review F7, F22, F28) ----
+
+fn a_glow(noise: f64, contour: Option<Lut>, seed: u32) -> Glow {
+    Glow {
+        color: RED,
+        gradient: None,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        technique: Technique::Softer,
+        size: 6.0,
+        spread: 0.0,
+        range: 0.5,
+        noise,
+        contour,
+        center: false,
+        jitter: 0.0,
+        seed,
+    }
+}
+
+/// F7: an Outer Glow or a Drop Shadow through Cone - Inverted (or Cove -
+/// Deep) once filled the whole rectangle it was worked out over. With the
+/// edge hidden it shows nowhere a Linear one does not.
+#[test]
+fn a_lifted_contour_keeps_to_the_glow_and_the_shadow() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    // Where the curved one shows more than two pixels past the Linear one
+    // (whose faintest tail rounds to nothing: the curve lifts it). Without
+    // the edge hidden, 568 pixels of the glow's rectangle at scale 1.
+    let outside_of = |linear: &Raster, curved: &Raster| {
+        let mut n = 0;
+        for y in 0..160 {
+            for x in 0..200 {
+                let near = (-2..=2).any(|dy| (-2..=2).any(|dx| px(linear, x + dx, y + dy)[3] != 0));
+                if !near && px(curved, x, y)[3] != 0 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    for scale in [1.0, 2.0] {
+        b.request.transform = Affine::scale(scale, scale);
+        b.effects = Vec::new();
+        let letters = alpha_sum(&paint(&mut e, &mut b));
+        b.effects = vec![Effect::OuterGlow(a_glow(0.0, None, 1))];
+        let linear = paint(&mut e, &mut b);
+        for preset in [2, 3] {
+            let lut = Lut::new(&Curve::Preset(preset));
+            b.effects = vec![Effect::OuterGlow(a_glow(0.0, Some(lut), 1))];
+            let curved = paint(&mut e, &mut b);
+            assert_eq!(outside_of(&linear, &curved), 0, "glow {preset} at {scale}");
+            // And it still shows: the curve's band against the letters.
+            assert!(
+                alpha_sum(&curved) > letters + 1000,
+                "glow {preset} at {scale}"
+            );
+        }
+    }
+    b.request.transform = Affine::IDENTITY;
+    b.effects = Vec::new();
+    // Darken, so the Linear one is laid as a styled shadow too.
+    b.shadows = vec![Shadow {
+        size: 4.0,
+        blend: Blend::Darken,
+        ..shadow(RED, 3.0, 3.0)
+    }];
+    let linear = paint(&mut e, &mut b);
+    for preset in [2, 3] {
+        b.shadows[0].contour = Some(Lut::new(&Curve::Preset(preset)));
+        let curved = paint(&mut e, &mut b);
+        assert_eq!(outside_of(&linear, &curved), 0, "shadow {preset}");
+        assert_ne!(curved, linear);
+    }
+}
+
+/// F22: an Outer Glow's grain is hashed from device pixels. An Outside
+/// Stroke wider than the glow, too faint to lay a level, widens the room
+/// the glow is worked out over; the grain once re-rolled with it. Likewise
+/// an Inner Glow's when an Inner Shadow's Size grows the letters' interior.
+#[test]
+fn a_glows_grain_stays_put_when_another_effect_widens_its_room() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let mut b = plain(font);
+    let glow = Effect::OuterGlow(a_glow(0.8, None, 3));
+    b.effects = vec![glow.clone()];
+    let alone = paint(&mut e, &mut b);
+    let faint = Effect::Stroke(Stroke {
+        size: 14.0,
+        position: Position::Outside,
+        opacity: 1e-4,
+        blend: Blend::Normal,
+        paint: Paint::Color(BLUE),
+        seed: 0,
+    });
+    b.effects = vec![glow, faint];
+    let with = paint(&mut e, &mut b);
+    let same =
+        |a: &Raster, b: &Raster| (0..160).all(|y| (0..200).all(|x| px(a, x, y) == px(b, x, y)));
+    assert!(same(&alone, &with));
+    // The grain is there: the glow differs from one without Noise.
+    b.effects = vec![Effect::OuterGlow(a_glow(0.0, None, 3))];
+    assert!(!same(&alone, &paint(&mut e, &mut b)));
+    // An Inner Glow (Softer, Size 4) and a faint Inner Shadow of Size 2 or
+    // 12 (the interior's room: 6 or 16 px).
+    let inner = |shadow_size: f64| {
+        vec![
+            Effect::InnerGlow(Glow {
+                color: BLUE,
+                size: 4.0,
+                ..a_glow(0.8, None, 5)
+            }),
+            Effect::InnerShadow(InnerShadow {
+                color: RED,
+                opacity: 1e-4,
+                blend: Blend::Normal,
+                x: 0.0,
+                y: 0.0,
+                size: shadow_size,
+                choke: 0.0,
+                noise: 0.0,
+                contour: None,
+                seed: 1,
+            }),
+        ]
+    };
+    b.effects = inner(2.0);
+    let near = paint(&mut e, &mut b);
+    b.effects = inner(12.0);
+    let far = paint(&mut e, &mut b);
+    assert!(same(&near, &far));
+}
+
+/// F28: a ticked Contour with the default Linear curve decodes to a table,
+/// so it clamps a chisel's heights as PhotoCraft's does; off, none.
+#[test]
+fn a_ticked_linear_bevel_contour_is_a_table() {
+    let (mut good, [_, _, _, _, _, _, _, bevel_at, _, _, _]) = wire(1);
+    // The bevel's Contour (the Cone) at kind, style, technique, five f64s,
+    // two shades (rgba, f64, u32) and the flags and gloss u32s on.
+    let contour_at = bevel_at + 4 * 3 + 8 * 5 + 2 * (4 + 8 + 4) + 4 + 4;
+    assert_eq!(&good[contour_at..contour_at + 4], &1u32.to_le_bytes());
+    good[contour_at..contour_at + 4].copy_from_slice(&0u32.to_le_bytes());
+    let r = decode_box(&good).unwrap();
+    let Some(Effect::Bevel(bv)) = r.effects.iter().find(|e| matches!(e, Effect::Bevel(_))) else {
+        panic!("no bevel");
+    };
+    let t = bv
+        .contour
+        .as_ref()
+        .expect("a ticked Linear contour is a table");
+    assert!((t.at(0.3) - 0.3).abs() < 1e-6);
+    assert_eq!(t.at(1.2), 1.0);
+    assert!(Table::new(&Curve::Preset(0)).is_none());
+}
