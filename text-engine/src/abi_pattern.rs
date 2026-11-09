@@ -101,7 +101,7 @@ mod tests {
             let s = s.borrow();
             assert_eq!(s.info[8], 16.0);
             assert_eq!(s.pixels.len(), 16 * 16 * 4);
-            assert!(s.pixels.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+            assert!(s.pixels.as_chunks::<4>().0.iter().all(|p| *p == [0, 0, 0, 255]));
         });
         for (w, h) in [
             (0, 16),

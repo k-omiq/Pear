@@ -74,6 +74,9 @@ impl Ramp {
     }
 }
 
+// One shader lives on the stack per fill, so the big screen variant costs
+// nothing worth a box (and an allocation) on every fill.
+#[allow(clippy::large_enum_variant)]
 pub enum Shader<'a> {
     Solid(Premul),
     Screen(super::screen::ScreenShader<'a>),

@@ -225,7 +225,7 @@ impl Tile {
         }
         let mut texels = Vec::new();
         super::budget::reserve_raw(&mut texels, n).ok()?;
-        texels.extend(rgba.chunks_exact(4).map(|p| {
+        texels.extend(rgba.as_chunks::<4>().0.iter().map(|p| {
             let a = f32::from(p[3]) / 255.0;
             [
                 f32::from(p[0]) / 255.0 * a,

@@ -570,7 +570,7 @@ fn the_default_blending_is_what_a_blending_pass_that_hides_nothing_paints() {
     // hides the box.
     b.backdrop = Some(grey_page(0));
     let hidden = paint_box(&mut e, &mut b).unwrap();
-    assert!(hidden.is_none_or(|r| r.data.chunks_exact(4).all(|p| p[3] == 0)));
+    assert!(hidden.is_none_or(|r| r.data.as_chunks::<4>().0.iter().all(|p| p[3] == 0)));
     // And the quick path (letters alone over a page) agrees with it too.
     let mut q = plain(font);
     let glyph_only = paint(&mut e, &mut q);

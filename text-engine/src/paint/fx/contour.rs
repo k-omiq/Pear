@@ -38,10 +38,13 @@ pub struct Point {
     pub corner: bool,
 }
 
+/// A preset: its name and its points (input, output, corner).
+pub type Preset = (&'static str, &'static [(f64, f64, bool)]);
+
 /// The presets, in wire order (Photoshop's picker order): a name and the
 /// curve's points, input to output, both 0 to 1, and whether each is a
 /// corner.
-pub const PRESETS: [(&str, &[(f64, f64, bool)]); 12] = [
+pub const PRESETS: [Preset; 12] = [
     ("Linear", &[(0.0, 0.0, false), (1.0, 1.0, false)]),
     (
         "Cone",

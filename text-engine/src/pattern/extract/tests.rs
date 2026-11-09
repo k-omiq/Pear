@@ -103,7 +103,7 @@ fn noisy_rotated_dots_recover_reduced_basis_and_repaint() {
         assert!(tile.a[0] > 0.0 || (tile.a[0] == 0.0 && tile.a[1] > 0.0));
         assert!(tile.confidence >= 0.5);
         assert!(error < 8.0, "repaint MAE={error}");
-        assert!(tile.pixels.chunks_exact(4).all(|p| p[3] == 255));
+        assert!(tile.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
     }
 }
 
@@ -164,7 +164,7 @@ fn too_few_repeats_and_tiny_crops_use_centred_fallback() {
     assert!(tile.confidence < 0.35);
     for (w, h) in [(1, 1), (2, 7), (15, 30), (30, 15)] {
         let mut crop = vec![0; w * h * 4];
-        for (i, p) in crop.chunks_exact_mut(4).enumerate() {
+        for (i, p) in crop.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             p.copy_from_slice(&[i as u8, 70, 90, 0]);
         }
         let tile = extract(w, h, &crop).unwrap();
@@ -173,7 +173,7 @@ fn too_few_repeats_and_tiny_crops_use_centred_fallback() {
         assert_eq!(tile.side, side);
         let shifted_source = ((((h - side) / 2 + side / 2) * w) + (w - side) / 2 + side / 2) * 4;
         assert_eq!(&tile.pixels[..3], &crop[shifted_source..shifted_source + 3]);
-        assert!(tile.pixels.chunks_exact(4).all(|p| p[3] == 255));
+        assert!(tile.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
     }
 }
 
@@ -189,7 +189,7 @@ fn validates_allocation_bounds_and_ignores_alpha() {
     }
     let opaque = tone(64, 96, 7.3, 45.0, false, false);
     let mut transparent = opaque.clone();
-    for p in transparent.chunks_exact_mut(4) {
+    for p in transparent.as_chunks_mut::<4>().0.iter_mut() {
         p[3] = 0;
     }
     let a = extract(64, 96, &opaque).unwrap();

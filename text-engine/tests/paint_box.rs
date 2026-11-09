@@ -131,7 +131,7 @@ fn inked(r: &Raster) -> (i32, i32, i32, i32) {
 }
 
 fn alpha_sum(r: &Raster) -> u64 {
-    r.data.chunks_exact(4).map(|p| u64::from(p[3])).sum()
+    r.data.as_chunks::<4>().0.iter().map(|p| u64::from(p[3])).sum()
 }
 
 fn is_red(p: [u8; 4]) -> bool {
@@ -1378,8 +1378,8 @@ fn a_box_has_every_shadow_its_style_has() {
         let r = paint(&mut e, &mut b);
         assert!(
             r.data
-                .chunks_exact(4)
-                .any(|p| is_red(p.try_into().unwrap())),
+                .as_chunks::<4>().0.iter()
+                .any(|p| is_red(*p)),
             "{n}"
         );
     }
@@ -1441,7 +1441,7 @@ fn a_box_has_every_mask_shape_its_style_has() {
         assert_eq!(b.clip.as_ref().unwrap().shapes.len(), shapes as usize + 1);
         let r = paint(&mut e, &mut b);
         assert!(
-            r.data.chunks_exact(4).any(|p| p[3] > 0),
+            r.data.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
             "{shapes} shapes, {points} points"
         );
     }
@@ -1690,7 +1690,7 @@ fn a_mode_blends_with_the_page_it_is_given() {
     assert_eq!(px(&alone, x, y), [128, 128, 128, 255]);
     // Over a page of mid red the grey multiplies it.
     let mut page = vec![0u8; 200 * 160 * 4];
-    for p in page.chunks_exact_mut(4) {
+    for p in page.as_chunks_mut::<4>().0.iter_mut() {
         p.copy_from_slice(&[200, 100, 50, 255]);
     }
     b.backdrop = Some(page);
@@ -3014,7 +3014,7 @@ fn a_bevel_texture_has_the_same_relief_at_every_zoom() {
 fn red_per_page_px(r: &Raster, scale: f64) -> f64 {
     let sum: u64 = r
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|p| u64::from(p[0]) * u64::from(p[3]))
         .sum();
     sum as f64 / 255.0 / (scale * scale)

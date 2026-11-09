@@ -361,7 +361,7 @@ fn glyphs_that_overlap_are_one_shape_and_weight_grows_it() {
     j.fill = Some(Fill::Solid(Rgba([255, 0, 0, 128])));
     let r = paint(&mut e, &request(j.clone(), face));
     let mut alphas = [0usize; 256];
-    for p in r.data.chunks_exact(4) {
+    for p in r.data.as_chunks::<4>().0 {
         alphas[p[3] as usize] += 1;
     }
     assert!(alphas[128] > 300, "{}", alphas[128]);
@@ -675,7 +675,7 @@ fn a_translucent_band_is_laid_once_where_strokes_overlap() {
     }];
     j.fill = Some(Fill::Solid(Rgba([0, 0, 0, 0])));
     let r = paint(&mut e, &request(j, face));
-    let alphas: Vec<u8> = r.data.chunks_exact(4).map(|p| p[3]).collect();
+    let alphas: Vec<u8> = r.data.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
     assert_eq!(alphas.iter().copied().max(), Some(128));
     // Most of the band is at exactly that one alpha: it is a flat tone.
     let full = alphas.iter().filter(|&&a| a == 128).count();
@@ -690,7 +690,7 @@ fn a_translucent_band_is_laid_once_where_strokes_overlap() {
     }];
     j.fill = None;
     let r = paint(&mut e, &request(j, face));
-    assert_eq!(r.data.chunks_exact(4).map(|p| p[3]).max(), Some(64));
+    assert_eq!(r.data.as_chunks::<4>().0.iter().map(|p| p[3]).max(), Some(64));
 }
 
 #[test]
@@ -747,7 +747,7 @@ fn the_silhouette_is_one_flat_shape() {
     let r = paint(&mut e, &request(j, face));
     // One colour throughout, and nowhere more than its own alpha: the
     // stroke and the fill are one shape, not one laid over the other.
-    for p in r.data.chunks_exact(4).filter(|p| p[3] != 0) {
+    for p in r.data.as_chunks::<4>().0.iter().filter(|p| p[3] != 0) {
         assert!(p[3] <= 128);
         if p[3] > 8 {
             assert!(p[..3].iter().all(|&c| (118..=120).contains(&c)), "{p:?}");

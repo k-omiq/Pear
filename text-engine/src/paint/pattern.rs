@@ -210,7 +210,7 @@ pub fn tile(
     };
     let (f, b) = (premul(fg), premul(bg));
     let mut out = budget::filled(n * n * 4, 0u8)?;
-    for (i, px) in out.chunks_exact_mut(4).enumerate() {
+    for (i, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let share = cover
             .as_ref()
             .map_or(0.0, |c| f32::from(c[i * 4 + 3]) / 255.0);
@@ -254,7 +254,7 @@ mod tests {
     /// The share of the tile the foreground covers, 0 to 1.
     fn ink(t: &[u8]) -> f64 {
         let dark: f64 = t
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|p| 1.0 - f64::from(p[0]) / 255.0)
             .sum();
         dark / (t.len() / 4) as f64
@@ -292,7 +292,7 @@ mod tests {
         for id in 0..11 {
             let t = drawn(Kind::from_id(id).unwrap(), 33);
             assert_eq!(t.len(), 33 * 33 * 4);
-            assert!(t.chunks_exact(4).all(|p| p[3] == 255), "kind {id}");
+            assert!(t.as_chunks::<4>().0.iter().all(|p| p[3] == 255), "kind {id}");
         }
         assert!(Kind::from_id(11).is_none());
     }
