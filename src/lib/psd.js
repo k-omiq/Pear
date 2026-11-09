@@ -517,6 +517,178 @@ function effectsNeedPixels(s) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// A turned box's effect gradients
+// ---------------------------------------------------------------------------
+//
+// The engine lays a Gradient Overlay or a gradient Stroke over the letters'
+// frame in the box's own units (`job_frame` in text-engine/src/paint/fx/
+// effects.rs: every covered pixel carried back through the turn), and
+// Photoshop over the layer's bounds on the page, which do not turn. The angle
+// is turned back by the rotation (`turnAngle` in `textLayerFor`); the scale
+// and the offset are worked out here so the ramp lands where the engine put
+// it. The maths is PhotoCraft's handle pair (crates/compose/src/
+// gradient_fill.rs `handles` and `from_handles`, and `gradient_units` in
+// crates/compose/src/effects/paint.rs, MIT): the gradient's centre and reach
+// in the box's frame are carried onto the page and read back against the
+// page bounds. Every style but Shape Burst (raster-only already) survives a
+// turn exactly: Linear and Reflected run along one axis, Radial and Diamond
+// are a circle and a square turned with the angle, Angle needs only its centre.
+
+// The lengths a 100 % gradient at `angle` spans in a `w` by `h` frame
+// (gradient.rs `units`): the chord and the ellipse-norm length.
+function gradientUnits(angle, w, h) {
+  const a = (angle * Math.PI) / 180;
+  const s = Math.sin(a);
+  const c = Math.cos(a);
+  const len = Math.max(1e-3, Math.hypot(c * w, s * h));
+  const chord = Math.max(1e-3, Math.min(w / Math.max(Math.abs(c), 1e-6), h / Math.max(Math.abs(s), 1e-6)));
+  return { chord, len };
+}
+
+// Photoshop's Gradient Overlay Scale, 10 to 150 %.
+const PSD_GRADIENT_SCALE = [0.1, 1.5];
+
+/**
+ * A turned box's effect gradient `g` (`normalizeFxGradient`) as Photoshop's
+ * angle, scale and offset over the page bounds. `frames.local` is the
+ * letters' frame in the box's unturned units, `frames.page` their bounds on
+ * the page, `frames.centre` the point the box turns about, all page px
+ * (`gradientFrames`); `turn` is the rotation, degrees clockwise. `grow` widens
+ * both frames, as a stroke's gradient spans the letters grown by its outside
+ * width (`stroke_frame`). `fits` is false when the scale it needs is past
+ * Photoshop's, which then cannot show it.
+ */
+export function turnedGradientPlacement(g, turn, frames, grow = 0) {
+  const F = [frames.local[0] - grow, frames.local[1] - grow, frames.local[2] + grow, frames.local[3] + grow];
+  const G = [frames.page[0] - grow, frames.page[1] - grow, frames.page[2] + grow, frames.page[3] + grow];
+  const [wF, hF] = [Math.max(1e-3, F[2] - F[0]), Math.max(1e-3, F[3] - F[1])];
+  const [wG, hG] = [Math.max(1e-3, G[2] - G[0]), Math.max(1e-3, G[3] - G[1])];
+  const off = Array.isArray(g.offset) ? g.offset : [0, 0];
+  const angle = Number(g.angle) || 0;
+  const turned = ((((angle - turn) % 360) + 540) % 360) - 180;
+  // The centre, in the box's frame and then on the page (turned clockwise,
+  // y down, about the box's centre, as the exporter paints it).
+  const lx = F[0] + wF / 2 + off[0] * wF;
+  const ly = F[1] + hF / 2 + off[1] * hF;
+  const [ox, oy] = frames.centre;
+  const r = (turn * Math.PI) / 180;
+  const px = ox + (lx - ox) * Math.cos(r) - (ly - oy) * Math.sin(r);
+  const py = oy + (lx - ox) * Math.sin(r) + (ly - oy) * Math.cos(r);
+  // The reach: the same length on the page as in the box.
+  const k = Number(g.scale) || 1;
+  const a = gradientUnits(angle, wF, hF);
+  const b = gradientUnits(turned, wG, hG);
+  const style = g.style ?? 'linear';
+  const scale =
+    style === 'linear' || style === 'reflected' ? (k * a.chord) / b.chord : style === 'radial' || style === 'diamond' ? (k * a.len) / b.len : k;
+  const round = (v, n = 1e6) => Math.round(v * n) / n;
+  return {
+    angle: round(turned),
+    scale: round(scale),
+    offset: { x: round((px - (G[0] + wG / 2)) / wG), y: round((py - (G[1] + hG / 2)) / hG) },
+    fits: scale >= PSD_GRADIENT_SCALE[0] - 1e-9 && scale <= PSD_GRADIENT_SCALE[1] + 1e-9,
+  };
+}
+
+// The effect gradients a box writes with a placement: its Gradient Overlays
+// and its gradient Photoshop strokes, the ones that paint.
+function placedGradients(s) {
+  const out = (s.gradientOverlays ?? []).filter((o) => o?.gradient).map((o) => ({ g: o.gradient, grow: 0 }));
+  for (const k of Array.isArray(s.strokeEffects) ? s.strokeEffects : []) {
+    if (!(k?.opacity > 0 && k.size > 0) || k.fill !== 'gradient' || !k.gradient) continue;
+    // The stroke's outside width less a pixel (`stroke_frame`), page px.
+    const out_ = k.position === 'inside' ? 0 : k.position === 'center' ? k.size / 2 : k.size;
+    out.push({ g: k.gradient, grow: Math.max(0, Math.ceil(out_) - 1), stroke: k });
+  }
+  return out;
+}
+
+const isTurned = (s) => (Number(s?.rotation) || 0) % 360 !== 0;
+
+/** Whether a box needs `gradientFrames` for its PSD layer: turned, with an effect gradient. */
+export function needsGradientFrames(s) {
+  return isTurned(s) && placedGradients(s).length > 0;
+}
+
+/**
+ * The frames `turnedGradientPlacement` reads, from a raster of the box's
+ * letters alone (`imageData` with its `left`, `top` on the page): their
+ * bounds on the page, and every covered pixel's corners carried back through
+ * the turn about `centre` (job_frame's rule). Null when nothing is covered.
+ */
+export function gradientFrames(raster, centre, turn) {
+  const { imageData: im, left = 0, top = 0 } = raster ?? {};
+  if (!im) return null;
+  const r = (-turn * Math.PI) / 180;
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  const [ox, oy] = centre;
+  const page = [Infinity, Infinity, -Infinity, -Infinity];
+  const local = [Infinity, Infinity, -Infinity, -Infinity];
+  const take = (x, y) => {
+    const lx = ox + (x - ox) * cos - (y - oy) * sin;
+    const ly = oy + (x - ox) * sin + (y - oy) * cos;
+    if (lx < local[0]) local[0] = lx;
+    if (ly < local[1]) local[1] = ly;
+    if (lx > local[2]) local[2] = lx;
+    if (ly > local[3]) local[3] = ly;
+  };
+  for (let y = 0; y < im.height; y++) {
+    for (let x = 0; x < im.width; x++) {
+      if (im.data[(y * im.width + x) * 4 + 3] === 0) continue;
+      const X = left + x;
+      const Y = top + y;
+      page[0] = Math.min(page[0], X);
+      page[1] = Math.min(page[1], Y);
+      page[2] = Math.max(page[2], X + 1);
+      page[3] = Math.max(page[3], Y + 1);
+      take(X, Y);
+      take(X + 1, Y);
+      take(X, Y + 1);
+      take(X + 1, Y + 1);
+    }
+  }
+  return Number.isFinite(page[0]) ? { page, local, centre: [ox, oy] } : null;
+}
+
+// Without a raster of the letters (no canvas: node), the box's own rect
+// stands in for the letters: its corners turned for the page bounds.
+function boxGradientFrames(box) {
+  const [x0, y0, x1, y1] = [box.x, box.y, box.x + box.w, box.y + box.h];
+  const centre = [(x0 + x1) / 2, (y0 + y1) / 2];
+  const r = ((Number(box.style?.rotation) || 0) * Math.PI) / 180;
+  const pts = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].map(([x, y]) => [
+    centre[0] + (x - centre[0]) * Math.cos(r) - (y - centre[1]) * Math.sin(r),
+    centre[1] + (x - centre[0]) * Math.sin(r) + (y - centre[1]) * Math.cos(r),
+  ]);
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  return { local: [x0, y0, x1, y1], page: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], centre };
+}
+
+// The letters of a box without its effects or its blending: the shape the
+// engine lays an effect gradient over (the fill and the outlines).
+export function lettersOnlyStyle(s) {
+  return {
+    ...s,
+    shadows: [],
+    innerShadows: [],
+    colorOverlays: [],
+    gradientOverlays: [],
+    strokeEffects: [],
+    outerGlow: { ...s.outerGlow, on: false },
+    innerGlow: { ...s.innerGlow, on: false },
+    satin: { ...s.satin, on: false },
+    patternOverlay: { ...s.patternOverlay, on: false },
+    bevel: { ...s.bevel, on: false },
+    opacity: 1,
+    fillOpacity: 1,
+    blendMode: 'normal',
+    blending: undefined,
+  };
+}
+
 // True when a box's style is something Photoshop's own text engine cannot
 // reproduce, so the layer it gets has to carry pixels instead of a live
 // `text` object.
@@ -710,8 +882,13 @@ export function textLayerFor(p, box, rendered) {
   // The review flag, then - with the Rust engine drawing - that the box's font
   // is not on this machine and what it shows is the stand-in.
   const flag = (reviewOf(box, p) ? REVIEW_MARK : '') + (engineDraws() && fontMissing(s.font) ? fontMissingMark(s.font) : '');
+  // A turned box's effect gradients, placed against the page bounds; one
+  // whose scale Photoshop cannot hold ships the box's pixels.
+  const frames = needsGradientFrames(s) ? (rendered?.frames ?? boxGradientFrames(box)) : null;
+  const placed = frames ? new Map(placedGradients(s).map(({ g, grow }) => [g, turnedGradientPlacement(g, Number(s.rotation) || 0, frames, grow)])) : null;
+  const turnPixels = !!placed && [...placed.values()].some((q) => !q.fits);
 
-  if (isRasterOnly(s)) {
+  if (isRasterOnly(s) || turnPixels) {
     // If the box paints no pixels (e.g. empty or whitespace-only text),
     // renderBoxLayer returns null. A layer with no imageData and no text object
     // causes ag-psd to crash during channel serialization. Safest guard:
@@ -1065,7 +1242,14 @@ export function textLayerFor(p, box, rendered) {
   if ((s.colorOverlays ?? []).length) {
     effects.solidFill = s.colorOverlays.map((o) => ({ ...FX_ON, blendMode: psdBlend(o.blend), color: hexToRgb(o.color), opacity: o.opacity ?? 1 }));
   }
-  const fxPlacement = (g) => ({ angle: turnAngle(g.angle), scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } });
+  // On a turned box the angle, scale and offset are measured against the
+  // page bounds (`turnedGradientPlacement`).
+  const fxPlacement = (g) => {
+    const q = placed?.get(g);
+    return q
+      ? { angle: q.angle, scale: q.scale, reverse: g.reverse === true, align: true, offset: q.offset }
+      : { angle: turnAngle(g.angle), scale: g.scale, reverse: g.reverse === true, align: true, offset: { x: g.offset[0], y: g.offset[1] } };
+  };
   const gradientOverlays = (s.gradientOverlays ?? []).map((o) => ({
     ...FX_ON,
     blendMode: psdBlend(o.blend),
@@ -1501,6 +1685,14 @@ function pageTextLayers(p, entries, W, H, scratch, tips) {
   for (const e of entries) {
     const rendered = renderBoxLayer(e.box, W, H, scratch, e.owner, 1, tips, e.dx, e.dy);
     if (e.owner !== p && !rendered) continue;
+    // A turned box with an effect gradient: its letters alone, for the
+    // frames the gradient is placed by (`gradientFrames`).
+    if (rendered && needsGradientFrames(e.box.style)) {
+      const letters = renderBoxLayer({ ...e.box, style: lettersOnlyStyle(e.box.style) }, W, H, scratch, e.owner, 1, tips, e.dx, e.dy);
+      const centre = [e.box.x + e.box.w / 2 + (e.dx || 0), e.box.y + e.box.h / 2 + (e.dy || 0)];
+      const frames = letters ? gradientFrames(letters, centre, Number(e.box.style.rotation) || 0) : null;
+      if (frames) rendered.frames = frames;
+    }
     const layer = textLayerFor(e.owner, e.box, rendered);
     if (!layer) continue;
     if (layer.text && (e.dx || e.dy)) {
