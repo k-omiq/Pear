@@ -1940,6 +1940,13 @@
           {/each}
         </select>
       </label>
+      <!-- Overprint is stored and written to the PSD, not painted: PhotoCraft
+           paints nothing for it and Photoshop states no rule. Off leaves no
+           key, so old files stay as they were. -->
+      <label class="sh-check" title="Overprint: a print setting written to the PSD for Photoshop. It changes nothing in how the stroke mixes with the page here">
+        <input type="checkbox" checked={k.overprint === true} aria-label="{name} overprint" onchange={(e) => { if (e.target.checked) k.overprint = true; else delete k.overprint; touch(); }} />
+        <span>Overprint</span>
+      </label>
     </div>
     <div class="seg">
       {#each [['color', 'Colour'], ['gradient', 'Gradient'], ['pattern', 'Pattern']] as [f, label] (f)}
