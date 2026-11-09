@@ -2594,7 +2594,7 @@
             {#if FILL_SPECIAL_MODES.includes(s.blendMode) && s.fillOpacity < 1}
               <p class="nofill-note">Fill works as in Photoshop for this mode: it changes the blend, not the coverage.</p>
             {/if}
-            {@const inner = s.colorOverlays?.length > 0 || s.gradientOverlays?.length > 0 || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
+            {@const inner = s.colorOverlays?.some(instanceOn) || s.gradientOverlays?.some(instanceOn) || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
             <!-- Advanced Blending, in Photoshop's order: Channels, Knockout,
                  Blend Interior Effects as Group, Blend Clipped Layers as
                  Group, Transparency Shapes Layer, Vector Mask Hides Effects,

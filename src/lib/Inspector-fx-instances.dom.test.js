@@ -130,6 +130,16 @@ describe('Advanced Blending: Knockout and the switches', () => {
     engineSwitch.painting = true;
   });
 
+  it('offers Blend Interior Effects as Group only for an interior effect that is switched on', async () => {
+    const { view, box } = mounted({ colorOverlays: [normalizeOverlay({ on: false })], gradientOverlays: [] }, 'fill');
+    await tick();
+    const group = () => view.getByLabelText('Blend interior effects as group');
+    expect(group().disabled).toBe(true);
+    delete box().style.colorOverlays[0].on;
+    await tick();
+    expect(group().disabled).toBe(false);
+  });
+
   it('sets Knockout as an undo step', async () => {
     const { view, box } = mounted({}, 'fill');
     await tick();
