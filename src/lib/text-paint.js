@@ -1227,6 +1227,14 @@ export function boxEffects(style) {
   return capEffects(out);
 }
 
+// Whether the box paints a gradient with Align with Layer off (a Gradient
+// Overlay's or a gradient Stroke's `align: false`): one laid over the page,
+// so its picture depends on where the box stands on which page, turned and
+// mirrored.
+export function pageGradients(style) {
+  return boxEffects(style).some((fx) => (fx.kind === 'gradientOverlay' ? fx.gradient : fx.kind === 'stroke' && fx.paint?.kind === 'gradient' ? fx.paint.gradient : null)?.align === false);
+}
+
 // The Rust box decoder refuses a box past these (MAX_NOISE_GRADIENTS and
 // MAX_BEVELS in text-engine/src/paint/boxjob.rs), and the whole box then fails
 // to paint. Keep the effects the engine is sent inside them; the extras, last
