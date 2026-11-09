@@ -11,13 +11,20 @@
   goes through `onchange` (the Inspector's `touch`), and a colour through
   `oncolour(stop, key, hex)` (its `setColour`, which arms the undo snapshot
   the colour picker's popover would otherwise miss).
+
+  `flat` edits the text fill's gradient instead (`style.gradient`): one list
+  of stops, each with its own colour and opacity, and no midpoints. It has the
+  one rail, under a ramp that shows both, and never makes or reads
+  `opacityStops` or `mid`. Its list is kept sorted by position, the selection
+  following its stop through a sort.
 -->
 <script>
   import ColorPicker from './ColorPicker.svelte';
   import { GRADIENT_MIN_STOPS, GRADIENT_MAX_STOPS, GRADIENT_MID_MIN, GRADIENT_MID_MAX } from './data.js';
   import { rampCss, sampleRamp } from './gradient-ramp.js';
+  import { gradientCss, sampleStops } from './text-paint.js';
 
-  let { g, title, onchange, oncolour } = $props();
+  let { g, title, onchange, oncolour, flat = false } = $props();
 
   // What is selected: a stop of a kind, or the midpoint a stop ends.
   let sel = $state({ kind: 'color', i: 0, mid: false });
@@ -189,8 +196,223 @@
     onchange();
     if (key === 'pos') resort(sel.kind, sel.i);
   }
+
+  // ---- flat: the text fill's gradient ----
+  // Which stop the fields talk about, by index into the (sorted) list.
+  let fi = $state(0);
+  // The picker behind the selected stop's swatch: a double-click or Enter on
+  // a handle opens it.
+  let flatPicker = $state(null);
+  // The index being dragged, or null. Nothing renders from it.
+  let fdrag = null;
+  const HEX = /^#?(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+  const HEX_MSG = 'Not a hex colour - use 3, 4, 6 or 8 hex digits, like #ff00aa';
+  const snap = (v) => $state.snapshot(v);
+
+  const fStops = $derived(flat ? (g?.stops ?? []) : []);
+  const fIdx = $derived(Math.max(0, Math.min(fi, fStops.length - 1)));
+  const fSel = $derived(fStops[fIdx] ?? null);
+  // A stop's number is its place by position, which is its index except while
+  // a drag carries it past a neighbour.
+  const fOrder = $derived(fStops.map((_, i) => i).sort((a, b) => fStops[a].pos - fStops[b].pos));
+  // The ramp left to right, each stop at its own opacity, over the chequer.
+  const fCss = $derived(flat ? gradientCss({ kind: 'linear', angle: 90, stops: fStops }) : '');
+
+  // Another gradient (another box) has other stops: start from its first.
+  $effect.pre(() => {
+    if (!flat) return;
+    g;
+    fi = 0;
+  });
+
+  const r100 = (v) => Math.round(v * 100) / 100;
+
+  // Sorts the list by position, the stop at `keep` staying selected. Says
+  // whether the order changed; an unchanged one is left alone.
+  function fSort(keep = fIdx) {
+    const raw = snap(g.stops);
+    const st = raw[keep] ?? null;
+    const was = raw.slice();
+    raw.sort((a, b) => a.pos - b.pos);
+    if (raw.every((x, k) => x === was[k])) {
+      fi = keep;
+      return false;
+    }
+    g.stops = raw;
+    if (st) fi = raw.indexOf(st);
+    return true;
+  }
+
+  // A new stop in the colour and opacity the ramp already shows there, so it
+  // changes nothing until it is moved or recoloured.
+  function fAddAt(p) {
+    if (g.stops.length >= GRADIENT_MAX_STOPS) return;
+    const raw = snap(g.stops);
+    const { color, opacity } = sampleStops(raw, p);
+    const st = { color, pos: p, opacity: clamp(opacity, 0, 1) };
+    raw.push(st);
+    raw.sort((a, b) => a.pos - b.pos);
+    g.stops = raw;
+    fi = raw.indexOf(st);
+    onchange();
+  }
+  // The middle of the widest quiet stretch, rail ends included: the add
+  // button's answer to clicking an empty part of the rail.
+  function fAddGap() {
+    const edges = [0, ...g.stops.map((st) => clamp(Number(st.pos) || 0, 0, 1)).sort((a, b) => a - b), 1];
+    let gap = -1;
+    let p = 0.5;
+    for (let i = 0; i < edges.length - 1; i++) {
+      const w = edges[i + 1] - edges[i];
+      if (w > gap) {
+        gap = w;
+        p = (edges[i] + edges[i + 1]) / 2;
+      }
+    }
+    fAddAt(r100(p));
+  }
+  function fRemove(i) {
+    const stops = g.stops;
+    if (stops.length <= GRADIENT_MIN_STOPS || !stops[i]) return;
+    stops.splice(i, 1);
+    fi = Math.max(0, Math.min(i, stops.length - 1));
+    onchange();
+  }
+
+  function onFlatDown(e) {
+    if (e.target.closest('.fxg-stop')) return;
+    fAddAt(r100(posOf(e)));
+  }
+  function onFlatStopDown(e, i) {
+    e.stopPropagation();
+    e.preventDefault();
+    fi = i;
+    fdrag = i;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    e.currentTarget.focus();
+  }
+  // Live while dragged a stop keeps its index; sorted when let go.
+  function onFlatStopMove(e) {
+    if (fdrag == null) return;
+    const st = g.stops[fdrag];
+    if (!st) return;
+    const p = r100(posOf(e));
+    if (p === st.pos) return;
+    st.pos = p;
+    onchange();
+  }
+  function onFlatStopUp(e) {
+    if (fdrag == null) return;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    const was = fdrag;
+    fdrag = null;
+    if (fSort(was)) onchange();
+  }
+  function openFlatColour(e, i) {
+    e.stopPropagation();
+    fi = i;
+    flatPicker?.show();
+  }
+  function onFlatStopKey(e, i) {
+    const st = g.stops[i];
+    if (!st) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      openFlatColour(e, i);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      e.stopPropagation();
+      fi = i;
+      const step = e.shiftKey ? 0.1 : 0.01;
+      const p = r100(clamp((Number(st.pos) || 0) + (e.key === 'ArrowLeft' ? -step : step), 0, 1));
+      if (p === st.pos) return;
+      st.pos = p;
+      fSort(i);
+      onchange();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      e.stopPropagation();
+      fRemove(i);
+    }
+  }
+
+  // Position and opacity, typed in percent, stored as a fraction.
+  function setFlatNum(e, key) {
+    const el = e.target;
+    const v = clamp(Math.round(+el.value || 0), 0, 100);
+    el.value = String(v);
+    const st = fSel;
+    if (!st || st[key] === v / 100) return;
+    const i = fIdx;
+    st[key] = v / 100;
+    if (key === 'pos') fSort(i);
+    onchange();
+  }
+  // An invalid hex is flagged in place, not reverted.
+  function hexFlag(el, bad) {
+    el.classList.toggle('hex-bad', !!bad);
+    if (bad) el.title = HEX_MSG;
+    else el.removeAttribute('title');
+  }
+  function setFlatHex(e) {
+    const el = e.target;
+    const raw = String(el.value ?? '').trim();
+    if (!HEX.test(raw)) return hexFlag(el, true);
+    hexFlag(el, false);
+    if (fSel) oncolour(fSel, 'color', raw.startsWith('#') ? raw : '#' + raw);
+  }
 </script>
 
+{#if flat}
+<div class="fxg flat">
+  <div class="fxg-flat" role="presentation" onpointerdown={onFlatDown} title="Stops: click to add one">
+    <div class="fxg-bar solo"><div class="fxg-ramp" bind:this={rampEl} style="background-image:{fCss}"></div></div>
+    <div class="fxg-rail bottom">
+      {#each fStops as st, i (i)}
+        <button
+          type="button"
+          class="fxg-stop up"
+          class:on={i === fIdx}
+          style="left:{clamp(Number(st.pos) || 0, 0, 1) * 100}%;--stop-c:{st.color}"
+          aria-label="{title} stop {fOrder.indexOf(i) + 1} at {pct(st.pos)} percent"
+          aria-pressed={i === fIdx}
+          title="Stop · {pct(st.pos)}% · drag to move, double-click or press Enter for colour"
+          onpointerdown={(e) => onFlatStopDown(e, i)}
+          onpointermove={onFlatStopMove}
+          onpointerup={onFlatStopUp}
+          onpointercancel={onFlatStopUp}
+          ondblclick={(e) => openFlatColour(e, i)}
+          onkeydown={(e) => onFlatStopKey(e, i)}
+        ></button>
+      {/each}
+    </div>
+  </div>
+
+  {#if fSel}
+    <div class="prow">
+      <span class="pl" title="The selected stop, of all">Stop {fOrder.indexOf(fIdx) + 1} of {fStops.length}</span>
+      <div class="pc">
+        <ColorPicker bind:this={flatPicker} value={fSel.color} label="{title} stop colour" size={24} unclipped onchange={(hex) => oncolour(fSel, 'color', hex)} />
+        <input type="text" class="hex" value={fSel.color} aria-label="{title} stop hex colour" oninput={(e) => hexFlag(e.target, e.target.value !== '' && !HEX.test(e.target.value))} onchange={setFlatHex} />
+        <button type="button" class="icon-btn" title={fStops.length >= GRADIENT_MAX_STOPS ? `At most ${GRADIENT_MAX_STOPS} stops` : 'Add a stop in the widest gap'} aria-label="{title} add stop" disabled={fStops.length >= GRADIENT_MAX_STOPS} onclick={fAddGap}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" /></svg>
+        </button>
+        <button type="button" class="icon-btn" title={fStops.length > GRADIENT_MIN_STOPS ? 'Delete this stop' : `A gradient needs ${GRADIENT_MIN_STOPS} stops`} aria-label="{title} delete stop" disabled={fStops.length <= GRADIENT_MIN_STOPS} onclick={() => fRemove(fIdx)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+    </div>
+    <div class="prow">
+      <span class="pl" title="Where the stop sits along the gradient, %">Position</span>
+      <div class="pc">
+        <input type="number" min="0" max="100" step="1" value={pct(fSel.pos)} aria-label="{title} stop position" onchange={(e) => setFlatNum(e, 'pos')} />
+        <span class="axis" title="Opacity of this stop, %">Opacity</span>
+        <input type="number" min="0" max="100" step="1" value={pct(fSel.opacity ?? 1)} aria-label="{title} stop opacity" onchange={(e) => setFlatNum(e, 'opacity')} />
+      </div>
+    </div>
+  {/if}
+</div>
+{:else}
 <div class="fxg">
   <div class="fxg-rail top" role="presentation" onpointerdown={(e) => onRailDown(e, 'opacity')} title="Opacity stops: click to add one">
     {#each opacityRail.mids as d (d.i)}
@@ -286,6 +508,7 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
   .fxg {
@@ -405,5 +628,27 @@
   }
   .fxg-num input {
     width: 46px;
+  }
+  /* Flat (the text fill): one rail, so the ramp closes the top itself, and
+     the bar and the rail under it are one control a click adds a stop on. */
+  .fxg-flat {
+    display: flex;
+    flex-direction: column;
+    cursor: copy;
+    touch-action: none;
+  }
+  .fxg-bar.solo {
+    border-top: 1px solid var(--line2);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+  .fxg.flat {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .fxg.flat .hex {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
   }
 </style>

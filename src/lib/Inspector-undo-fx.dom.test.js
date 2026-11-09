@@ -48,6 +48,13 @@ async function edit(el, type, value) {
   await fireEvent[type](el, { target: { value } });
   settleEdits();
 }
+async function openFold(view, name) {
+  const b = view.container.querySelector(`button.insp-fold[aria-label="${name}"]`);
+  if (b && b.getAttribute('aria-expanded') !== 'true') {
+    await fireEvent.click(b);
+    await tick();
+  }
+}
 const records = () => peekStack().undo.length;
 const fx = (b) => JSON.parse(JSON.stringify({ s: b.style.strokeEffects, i: b.style.innerShadows, o: b.style.colorOverlays }));
 
@@ -73,7 +80,8 @@ describe('Layer Styles controls and undo', () => {
     setEffectsSubTab('fill');
     setInspectorTab('fill');
     await tick();
-    await edit(view.getByLabelText('Overlay 1 opacity'), 'input', '33');
+    await openFold(view, 'Overlays');
+    await edit(view.getByLabelText('Overlay 1 opacity'), 'change', '33');
     expect(box().style.colorOverlays[0].opacity).toBeCloseTo(0.33, 5);
     expect(records()).toBe(base + 3);
 

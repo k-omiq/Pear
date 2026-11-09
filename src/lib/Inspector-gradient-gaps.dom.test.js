@@ -40,6 +40,14 @@ function mounted(style) {
   return { view, g: () => page().boxes[0].style.gradientOverlays[0].gradient };
 }
 
+async function openFold(view, name) {
+  const b = view.container.querySelector(`button.insp-fold[aria-label="${name}"]`);
+  if (b && b.getAttribute('aria-expanded') !== 'true') {
+    await fireEvent.click(b);
+    await tick();
+  }
+}
+
 const T = 'Gradient overlay 1';
 // A real edit starts with a press, which arms the panel's before-snapshot,
 // and a pause ends its burst.
@@ -60,6 +68,7 @@ describe('the effect gradient editor', () => {
   it('has a rail of opacity stops and a rail of colour stops, a midpoint between each two', async () => {
     const { view } = mounted(overlay());
     await tick();
+    await openFold(view, 'Overlays');
     expect(view.getAllByRole('button', { name: new RegExp(`^${T} colour stop`) })).toHaveLength(2);
     expect(view.getAllByRole('button', { name: new RegExp(`^${T} opacity stop`) })).toHaveLength(2);
     expect(view.getByRole('button', { name: `${T} colour midpoint 1 at 50 percent` })).toBeTruthy();
@@ -69,6 +78,7 @@ describe('the effect gradient editor', () => {
   it('moves a colour midpoint as one undo step, and leaves an even one out', async () => {
     const { view, g } = mounted(overlay());
     await tick();
+    await openFold(view, 'Overlays');
     await press(view.getByRole('button', { name: `${T} colour midpoint 1 at 50 percent` }));
     await edit(view.getByLabelText(`${T} midpoint, percent`), '25');
     expect(g().stops[1].mid).toBe(0.25);
@@ -87,6 +97,7 @@ describe('the effect gradient editor', () => {
   it('sets an opacity stop apart from the colour stops, and the arrow keys move a midpoint', async () => {
     const { view, g } = mounted(overlay());
     await tick();
+    await openFold(view, 'Overlays');
     const second = view.getByRole('button', { name: `${T} opacity stop 2 at 100 percent, 0 percent opaque` });
     await press(second);
     await edit(view.getByLabelText(`${T} stop opacity, percent`), '40');
@@ -109,6 +120,7 @@ describe('the effect gradient editor', () => {
   it('adds a stop where the rail is clicked, its colour the ramp\'s there, and deletes it down to two', async () => {
     const { view, g } = mounted(overlay());
     await tick();
+    await openFold(view, 'Overlays');
     const rail = view.container.querySelector('.fxg-rail.bottom');
     await fireEvent.pointerDown(rail, { clientX: 0 });
     await tick();
@@ -122,6 +134,8 @@ describe('the effect gradient editor', () => {
   it('sets Smoothness, the Method and Dither, each an undo step', async () => {
     const { view, g } = mounted(overlay());
     await tick();
+    await openFold(view, 'Overlays');
+    await openFold(view, `${T} more options`);
     await edit(view.getByLabelText(`${T} smoothness, percent`), '60');
     expect(g().smoothness).toBe(0.6);
     await edit(view.getByLabelText(`${T} interpolation method`), 'perceptual');
@@ -143,6 +157,7 @@ describe('the effect gradient editor', () => {
     setInspectorTab('effects');
     setEffectsSubTab('glow');
     await tick();
+    await openFold(view, 'Outer glow gradient more options');
     expect(view.getByLabelText('Outer glow gradient interpolation method')).toBeTruthy();
     expect(view.getByLabelText('Outer glow gradient smoothness, percent')).toBeTruthy();
     expect(view.getAllByRole('button', { name: /^Outer glow gradient opacity stop/ })).toHaveLength(2);
