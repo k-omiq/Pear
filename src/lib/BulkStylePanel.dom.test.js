@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import BulkStylePanel from './BulkStylePanel.svelte';
 import { app, closeBulk, loadProjectPages, openBulk } from './store.svelte.js';
+import { FX_INSTANCES_MAX, newShadow } from './data.js';
 
 // ===========================================================================
 // The Bulk style panel: where it stays, and what its controls are called
@@ -108,5 +109,35 @@ describe('every control in the panel', () => {
     const sizing = [...panel.querySelectorAll('.brow')].find((r) => r.querySelector(':scope > .lbl')?.textContent === 'Sizing');
     expect(sizing.querySelector('[role="group"]').getAttribute('aria-label')).toBe('Sizing');
     expect([...sizing.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Auto height', 'Fixed', 'Fit to box']);
+  });
+});
+
+describe('the bulk shadows', () => {
+  it('stop at FX_INSTANCES_MAX, as the Inspector and the normaliser keep them', async () => {
+    app.bulk.style.shadows = Array.from({ length: FX_INSTANCES_MAX - 1 }, () => newShadow());
+    const view = render(BulkStylePanel);
+    await tick();
+    const add = [...view.container.querySelectorAll('.sub-list-head button')].find((b) => b.textContent.includes('Add') && b.closest('.brow')?.textContent.includes('Shadows'));
+    expect(add.disabled).toBe(false);
+    await fireEvent.click(add);
+    expect(app.bulk.style.shadows).toHaveLength(FX_INSTANCES_MAX);
+    expect(add.disabled).toBe(true);
+    await fireEvent.click(add);
+    expect(app.bulk.style.shadows).toHaveLength(FX_INSTANCES_MAX);
+  });
+
+  it('switch each shadow on and off, storing on only when off', async () => {
+    app.bulk.style.shadows = [newShadow(), { ...newShadow(), on: false }];
+    const view = render(BulkStylePanel);
+    await tick();
+    const one = view.getByLabelText('Shadow 1 on');
+    const two = view.getByLabelText('Shadow 2 on');
+    expect([one.checked, two.checked]).toEqual([true, false]);
+    one.checked = false;
+    await fireEvent.change(one);
+    two.checked = true;
+    await fireEvent.change(two);
+    expect(app.bulk.style.shadows[0].on).toBe(false);
+    expect('on' in app.bulk.style.shadows[1]).toBe(false);
   });
 });
