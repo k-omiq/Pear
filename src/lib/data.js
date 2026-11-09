@@ -1263,6 +1263,11 @@ export function normalizeBevel(x) {
 //   position   STROKE_POSITIONS: outside the letters' edge, inside it, or
 //              half and half
 //   blend, opacity
+//   overprint  Photoshop's Overprint: stored only when on, and written to
+//              the PSD. Not painted: PhotoCraft (doc/src/effects.rs
+//              `StrokeFx.overprint`, io/src/effects_map.rs) keeps it and
+//              paints nothing for it, and Photoshop states no rule. If it
+//              ever paints, it sees the page art only, never lower boxes.
 //   fill       STROKE_FILLS: `color`, `gradient` (an effect gradient over the
 //              stroke's own frame) or `pattern` (as the fill's)
 // Of the list the first is on top: a higher stroke covers the ones under it.
@@ -1276,6 +1281,7 @@ export function normalizeStrokeEffect(x) {
     position: STROKE_POSITIONS.includes(x?.position) ? x.position : 'inside',
     blend: blendMode(x?.blend, 'normal'),
     opacity: Math.min(1, Math.max(0, num(x?.opacity, 1))),
+    ...(x?.overprint === true ? { overprint: true } : null),
     fill: STROKE_FILLS.includes(x?.fill) ? x.fill : 'color',
     color: hex(x?.color, '#000000'),
     gradient: normalizeFxGradient(x?.gradient),

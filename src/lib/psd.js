@@ -1331,8 +1331,12 @@ export function textLayerFor(p, box, rendered) {
       blendMode: psdBlend(k.blend),
       opacity: k.opacity,
       color: hexToRgb(k.color),
-      // Overprint: ours has none, so off, as PhotoCraft writes it.
-      overprint: false,
+      // Overprint as stored, on every Photoshop stroke (PhotoCraft
+      // io/src/effects_map.rs writes it on each). Our outlines carry no
+      // key, which is how `splitStrokes` tells them apart. A pattern stroke
+      // is not written at all (the filter above), so neither is its
+      // Overprint.
+      overprint: k.overprint === true,
       ...(k.fill === 'gradient' ? { gradient: { ...fxGradient(k.gradient, true), style: k.gradient.style, ...fxPlacement(k.gradient), ...fxInterp(k.gradient) } } : null),
     }));
   if (strokeFx.length) effects.stroke = [...(effects.stroke ?? []), ...strokeFx];
@@ -2007,7 +2011,8 @@ const BEVEL_TECHNIQUE_FROM_PSD = Object.fromEntries(Object.entries(PSD_BEVEL_TEC
 // writer puts there (`strokeBands`, outermost first), each Outside, a colour,
 // Normal, and with no Overprint flag (Photoshop writes one on every stroke it
 // saves; the writer gives one to every Photoshop stroke and none to an
-// outline). Every other stroke is a Photoshop stroke.
+// outline). The flag's presence decides, not its value: a stroke with
+// Overprint on or off is a Photoshop stroke. Every other stroke is one too.
 function splitStrokes(list) {
   const outlines = [];
   const strokes = [];
@@ -2030,6 +2035,8 @@ function splitStrokes(list) {
       position: ['outside', 'inside', 'center'].includes(e.position) ? e.position : 'outside',
       blend: blendFromPsd(e.blendMode),
       opacity: psdNum(e.opacity, 1),
+      // Kept only when on; no key reads as off (PhotoCraft `bool_of`).
+      ...(e.overprint === true ? { overprint: true } : null),
       fill,
       ...(e.color ? { color: rgbHex(e.color) } : null),
       ...(fill === 'gradient' && e.gradient ? { gradient: fxGradientFromPsd(e.gradient, { ...e.gradient, type: e.gradient.style }) } : null),
