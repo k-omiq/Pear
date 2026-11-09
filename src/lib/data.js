@@ -1484,16 +1484,31 @@ export const CANVAS_PATTERN_KINDS = PATTERN_KINDS.slice(0, 11);
 export const SEEDED_PATTERN_KINDS = ['sand', 'stipple', 'speed-lines', 'kakeami', 'glitch'];
 export const PATTERN_ANCHORS = ['box', 'page'];
 export const PATTERN_MODES = ['tone', 'image'];
+// A pattern's Scale, as Photoshop's 1 to 1000 %: the tile against the
+// font size (`patternTilePx`, never under 2 px a side).
+export const PATTERN_SCALE_MIN = 0.01;
+export const PATTERN_SCALE_MAX = 10;
 // A picked tile's file: its content hash, as `<chapter>/patterns/` names it.
 export const PATTERN_SRC = /^[0-9a-f]{16,64}\.png$/;
+
+// Every pattern a style holds: the fill's, the Pattern Overlay's, each
+// Photoshop stroke's and the bevel Texture's. Each can be a picked tile.
+export function stylePatterns(style) {
+  if (!style || typeof style !== 'object') return [];
+  const out = [style.pattern, style.patternOverlay?.pattern, style.bevel?.texture?.pattern];
+  for (const k of Array.isArray(style.strokeEffects) ? style.strokeEffects : []) out.push(k?.pattern);
+  return out.filter((p) => p && typeof p === 'object');
+}
 
 /** Names of every picked tile `pages` refer to, on or off. */
 export function patternSrcsUsed(pages) {
   const out = new Set();
   for (const p of pages ?? []) {
     for (const b of p?.boxes ?? []) {
-      const src = b?.style?.pattern?.src;
-      if (typeof src === 'string' && PATTERN_SRC.test(src)) out.add(src);
+      for (const pat of stylePatterns(b?.style)) {
+        const src = pat.src;
+        if (typeof src === 'string' && PATTERN_SRC.test(src)) out.add(src);
+      }
     }
   }
   return out;
@@ -1731,7 +1746,7 @@ export function normalizePattern(p, d = defaultStyle().pattern) {
     // painters' to read, and both read every form the app writes.
     fg: typeof src.fg === 'string' && src.fg ? src.fg : d.fg,
     bg: typeof src.bg === 'string' && src.bg ? src.bg : d.bg,
-    scale: clamp(src.scale, 0.25, 4, 1),
+    scale: clamp(src.scale, PATTERN_SCALE_MIN, PATTERN_SCALE_MAX, 1),
     angle: num(src.angle, d.angle) % 360,
     density: clamp(src.density, 0, 1, d.density),
     aspect: clamp(src.aspect, 0.25, 4, d.aspect),

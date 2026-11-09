@@ -4,6 +4,7 @@ import {
   LAYER_BLEND_MODES, CONTOUR_PRESETS, SHADOW_SIZE_MAX, SATIN_DISTANCE_MAX, FX_GRADIENT_STYLES, FX_GRADIENT_TYPES, NOISE_MODELS,
   STROKE_POSITIONS, STROKE_FILLS, BEVEL_STYLES, BEVEL_TECHNIQUES, BEVEL_DIRECTIONS, BEVEL_DEPTH_MAX,
   BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX, KNOCKOUT_MODES,
+  PATTERN_SCALE_MIN, PATTERN_SCALE_MAX,
 } from '../data.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
@@ -108,7 +109,7 @@ const patternFields = () => ({
   kind: choice('tile kind', PATTERN_KINDS),
   fg: color('tile ink'),
   bg: color('tile background'),
-  scale: number('tile/font scale', 0.25, 4),
+  scale: number('tile/font scale', PATTERN_SCALE_MIN, PATTERN_SCALE_MAX),
   angle: number('turn degrees'),
   density: alpha('ink; 0.5=designed'),
   aspect: number('x stretch', 0.25, 4),
