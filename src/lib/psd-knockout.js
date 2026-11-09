@@ -237,6 +237,10 @@ export function markDeepKnockout(buf, children) {
  * Mark the layers of `psd` (ag-psd's read of `buf`) whose `knko` byte is 2
  * with `knockoutDeep`. Returns how many it marked. Every record must agree
  * with ag-psd's layer for it, or nothing is marked.
+ *
+ * It trusts `psd` to be ag-psd's read of these same bytes (as parsePagePsd
+ * hands it). Given a tree from another file of the same shape and knockout
+ * flags, it would mark by position.
  */
 export function readDeepKnockout(buf, psd) {
   try {
