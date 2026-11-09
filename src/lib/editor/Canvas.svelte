@@ -47,6 +47,7 @@
   import { patternPick, finishPatternPick } from '../pattern-pick.svelte.js';
   import { showPanel, setHidden } from './panels.svelte.js';
   import { sfxAsk } from '../sfx-live.svelte.js';
+  import { releaseLeavingImages } from '../release-image.js';
 
   // Handle for dock Fit button.
   let { onReady } = $props();
@@ -255,6 +256,26 @@
       if (i === cur || mountedIds.includes(app.pages[i].id)) out.push({ pg: app.pages[i], i });
     }
     return out;
+  });
+
+  // The page pictures this render will show; every other page `<img>` is on
+  // its way out of the document and gives its bytes back BEFORE it goes
+  // (release-image.js says why it cannot be after). Pre, so it runs ahead of
+  // the frames' own update.
+  $effect.pre(() => {
+    const keep = new Set();
+    if (strip) {
+      for (const pg of app.pages) {
+        const src = srcOf(pg);
+        if (src) keep.add(src);
+      }
+    } else {
+      for (const m of mountedPages) {
+        const src = srcOf(m.pg);
+        if (src) keep.add(src);
+      }
+    }
+    untrack(() => releaseLeavingImages(scrollEl, 'img.page-img', keep));
   });
 
   // ---------- the boxes a strip keeps in the DOM ----------
