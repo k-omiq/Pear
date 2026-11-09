@@ -2073,7 +2073,7 @@ mod bend_tests {
             .collect()
     }
 
-    fn job(bent: bool) -> Job {
+    fn job(mesh: bool, roughen: bool) -> Job {
         let mut pts = Vec::new();
         for j in 0..=3u32 {
             for i in 0..=3u32 {
@@ -2086,7 +2086,7 @@ mod bend_tests {
         pts[5] = Pt::new(pts[5].x - 12.0, pts[5].y - 18.0);
         pts[10] = Pt::new(pts[10].x - 20.0, pts[10].y - 12.0);
         Job {
-            mesh: bent.then_some(Mesh {
+            mesh: mesh.then_some(Mesh {
                 cols: 3,
                 rows: 3,
                 pts,
@@ -2095,7 +2095,7 @@ mod bend_tests {
                 w: 200.0,
                 h: 120.0,
             }),
-            roughen: bent.then_some(Roughen {
+            roughen: roughen.then_some(Roughen {
                 amount: 6.0,
                 detail: 0.07,
                 seed: 7.0,
@@ -2115,10 +2115,23 @@ mod bend_tests {
     }
 
     /// The most the painter's budget held while the ink of a heavy box (a
-    /// hundred strokes) was laid at 2.74, bent and not, and how long each
-    /// took (`--nocapture` prints them). A bent stamp's outline is let go
-    /// once it is laid, and found again for the next pass, so the bent
-    /// peak is the flat one and a stamp's outline more.
+    /// hundred strokes, of round dabs and of a noisy 32 x 32 tip) was laid
+    /// at 2.74, flat, roughened, meshed and both, and how long each took
+    /// against the flat round ink of the same run (`--nocapture` prints
+    /// them; times are a quiet machine's, ratios hold better than ms). A
+    /// bent stamp's outline is let go once it is laid, and found again for
+    /// the next pass, so the bent peak is the flat one and a stamp's
+    /// outline more.
+    ///
+    /// Where the time goes (one run, 2026-11-09): round dabs meshed and
+    /// roughened take 3.5x the flat; the pass that bends every stamp to find
+    /// the layer's rectangle is 37 % of that, and the paint pass bends each
+    /// again. A roughened tip takes 5.4x, most of it the roughening read
+    /// inside every tip pixel (`p + d(p)`); its bounds pass is 13 %. Keeping
+    /// the first pass's outlines for the second would save that share, but
+    /// the layer is sized before any stroke is laid, so every stroke's
+    /// outlines would be held at once: more memory for a third of the time,
+    /// not taken.
     #[test]
     fn a_heavy_box_of_bent_ink_holds_no_more_than_the_flat_one_and_a_stamp() {
         let t = Affine::scale(2.74, 2.74);
@@ -2128,18 +2141,49 @@ mod bend_tests {
             x1: 800,
             y1: 600,
         };
-        let mut peaks = Vec::new();
-        for bent in [false, true] {
-            let mut ink = Ink::new(Pt::new(20.0, 30.0), heavy());
-            let _scope = budget::Scope::new();
-            let start = std::time::Instant::now();
-            ink.prepare(&t, &job(bent), surface, 3.0, &Exact).unwrap();
-            let took = start.elapsed();
-            assert!(ink.layer.is_some());
-            let peak = budget::peak_for_test();
-            println!("heavy ink, bent {bent}: peak {peak} bytes, {took:?}");
-            peaks.push(peak);
+        let noise: Vec<u8> = (0u32..32 * 32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        tips::with_cache(|c| c.put("bench-noise|32x32", 32, 32, (32, 32), &noise)).unwrap();
+        let mut first = None;
+        for tip in [false, true] {
+            let mut flat_peak = 0;
+            for (mesh, roughen) in [(false, false), (false, true), (true, false), (true, true)] {
+                let strokes = heavy()
+                    .into_iter()
+                    .map(|k| Stroke {
+                        tip: tip.then_some(0),
+                        ..k
+                    })
+                    .collect();
+                let mut ink = Ink::new(Pt::new(20.0, 30.0), strokes);
+                ink.name_tips(if tip {
+                    vec!["bench-noise|32x32".to_owned()]
+                } else {
+                    Vec::new()
+                });
+                let _scope = budget::Scope::new();
+                let start = std::time::Instant::now();
+                ink.prepare(&t, &job(mesh, roughen), surface, 3.0, &Exact)
+                    .unwrap();
+                let took = start.elapsed().as_secs_f64();
+                assert!(ink.layer.is_some());
+                let peak = budget::peak_for_test();
+                let base = *first.get_or_insert(took);
+                println!(
+                    "heavy ink, tip {tip}, mesh {mesh}, roughen {roughen}: peak {peak} bytes, {:.0} ms, {:.2}x the flat round",
+                    took * 1e3,
+                    took / base
+                );
+                if !mesh && !roughen {
+                    flat_peak = peak;
+                } else {
+                    assert!(
+                        peak < flat_peak + (1 << 20),
+                        "tip {tip}: {peak} against {flat_peak}"
+                    );
+                }
+            }
         }
-        assert!(peaks[1] < peaks[0] + (1 << 20), "{peaks:?}");
     }
 }

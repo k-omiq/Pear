@@ -13,8 +13,8 @@
 use mt_text::paint::ink::tips::with_cache;
 use mt_text::paint::ink::{Ink, Stroke};
 use mt_text::paint::{
-    paint_box, Affine, Align, BoxRequest, Effects, Fill, Job, Mesh, Pt, Raster, Request, Rgba,
-    Roughen, Run,
+    paint_box, paint_job, Affine, Align, Band, BoxRequest, Effects, Fill, Job, Mesh, Pt, Raster,
+    Request, Rgba, Roughen, Run,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -430,6 +430,155 @@ fn a_mesh_that_crushes_a_stamp_to_nothing_draws_no_stamp_there() {
     assert!(inked_px < 200, "{inked_px}");
 }
 
+/// Four cells over (20, 30, 256, 120), its right edge folded back onto its
+/// left one and its fourth column pulled in and down: the two edges go to
+/// one line (to the bit: the nodes are whole numbers), and the map between
+/// them is not a mirror, so what it folds keeps some area.
+fn folded() -> Mesh {
+    let xs = [0.0, 64.0, 128.0, 100.0, 0.0];
+    Mesh {
+        cols: 4,
+        rows: 1,
+        pts: [0.0, 120.0]
+            .iter()
+            .flat_map(|&y| {
+                xs.iter()
+                    .enumerate()
+                    .map(move |(i, &x)| Pt::new(x, if i == 3 { y + 16.0 } else { y }))
+            })
+            .collect(),
+        x: 20.0,
+        y: 30.0,
+        w: 256.0,
+        h: 120.0,
+    }
+}
+
+#[test]
+fn a_stamp_whose_mesh_has_no_slope_across_it_is_not_drawn_though_its_outline_keeps_area() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    put("full|64x64", 64, 64, &[255; 64 * 64]);
+    // Stamps the mesh's width, their middles on its middle column (`at`): the
+    // mesh takes their left and right sides to one place, so there is no
+    // slope to read across them. Their outlines, folded, still have area: a
+    // pixel off the middle, where there is a slope, they are drawn.
+    let down = |tip, at: f64| Stroke {
+        size: 256.0,
+        tip,
+        color: Rgba([20, 20, 20, 255]),
+        pts: vec![[at, 50.0, 1.0, 1.0, 1.0], [at, 54.0, 1.0, 1.0, 1.0]],
+        ..Stroke::default()
+    };
+    let count = |r: Option<Raster>| {
+        r.map_or(0, |r| {
+            r.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] > 0)
+                .count()
+        })
+    };
+    let mut paint = |k: Stroke, keys: &[&str]| {
+        count(
+            paint_box(
+                &mut e,
+                &mut inked(font, k, keys, Affine::IDENTITY, Some(folded()), None),
+            )
+            .unwrap(),
+        )
+    };
+    for (name, tip, keys) in [
+        ("tip", Some(0), &["full|64x64"][..]),
+        ("round", None, &[][..]),
+    ] {
+        let off = paint(down(tip, 127.0), keys);
+        assert!(off > 200, "{name}: a pixel off the fold: {off}");
+        // No tangent to carry the stamp by (and none to read a round dab's
+        // size on the device): not drawn, where the identity moved to the
+        // middle (`tangent_over`) would draw the folded outline whole.
+        let on = paint(down(tip, 128.0), keys);
+        assert_eq!(on, 0, "{name}: on the fold");
+    }
+}
+
+fn ink_total(r: &Option<Raster>) -> u64 {
+    r.as_ref().map_or(0, |r| {
+        r.data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| u64::from(p[3]))
+            .sum()
+    })
+}
+
+#[test]
+fn the_ink_layer_is_laid_where_the_mesh_takes_the_ink_and_not_where_it_was() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    // A cell moved by (70, 60) whole, further than any outline or shadow
+    // reaches round the ink: the layer laid over the unbent strokes would
+    // hold none of it.
+    let q = [(70.0, 60.0), (270.0, 60.0), (70.0, 180.0), (270.0, 180.0)];
+    let base = Affine([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
+    // The ink alone, and with an outline round it (the margin the layer is
+    // grown by).
+    for bands in [
+        vec![],
+        vec![Band {
+            color: Rgba([255, 0, 0, 255]),
+            opacity: 1.0,
+            line: 12.0,
+        }],
+    ] {
+        let mut flat = inked(font, wave(14.0), &[], base.after(&cell_map(q)), None, None);
+        flat.request.job.bands = bands.clone();
+        let mut bent = inked(font, wave(14.0), &[], base, Some(cell(q)), None);
+        bent.request.job.bands = bands.clone();
+        let (flat, bent) = (
+            paint_box(&mut e, &mut flat).unwrap(),
+            paint_box(&mut e, &mut bent).unwrap(),
+        );
+        let (f, b) = (ink_total(&flat), ink_total(&bent));
+        assert!(f > 100_000, "{f}");
+        assert!(
+            b.abs_diff(f) * 1000 < f,
+            "bands {}: flat {f}, bent {b}",
+            bands.len()
+        );
+        let (f, b) = (flat.unwrap(), bent.unwrap());
+        assert_eq!((b.x, b.y, b.width, b.height), (f.x, f.y, f.width, f.height));
+    }
+}
+
+#[test]
+fn a_layer_laid_for_one_mesh_or_roughening_is_not_used_for_another() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    for (mesh, roughen) in [
+        (Some(bumpy()), None),
+        (None, Some(rough())),
+        (Some(bumpy()), Some(rough())),
+    ] {
+        // The box job lays the ink for its mesh and roughening and keeps it.
+        let mut laid = inked(font, wave(14.0), &[], Affine::IDENTITY, mesh, roughen);
+        paint_box(&mut e, &mut laid).unwrap();
+        // The same request, its bends gone, painted as a job: the ink is
+        // laid again, unbent, as on a request never laid.
+        laid.request.job.mesh = None;
+        laid.request.job.roughen = None;
+        let again = paint_job(&mut e, &laid.request).unwrap();
+        let fresh = paint_job(
+            &mut e,
+            &inked(font, wave(14.0), &[], Affine::IDENTITY, None, None).request,
+        )
+        .unwrap();
+        assert_eq!(hash(&again), hash(&fresh));
+    }
+}
+
 #[test]
 fn a_roughened_stroke_is_moved_and_paints_the_same_twice() {
     let mut e = Engine::new();
@@ -555,9 +704,12 @@ fn a_ribbon_bent_by_a_mesh_has_no_seam_between_its_slices() {
                 ..wave(22.0)
             };
             let mut paint = |mesh: Option<Mesh>, roughen: Option<Roughen>| {
-                paint_box(&mut e, &mut inked(font, k.clone(), &["solid|16x64"], base, mesh, roughen))
-                    .unwrap()
-                    .unwrap()
+                paint_box(
+                    &mut e,
+                    &mut inked(font, k.clone(), &["solid|16x64"], base, mesh, roughen),
+                )
+                .unwrap()
+                .unwrap()
             };
             // The middle of the line, page px, as a device rectangle.
             let (x0, y0) = (20.0 + pts[0][0], 30.0 + pts[0][1]);
