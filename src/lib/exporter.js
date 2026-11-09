@@ -1630,8 +1630,11 @@ function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null) {
 // `scale` supersamples to match a scaled document; returned bounds are in the
 // scaled (device) pixel space. `dx`/`dy` move the box by that many page px
 // before it is painted: a longstrip neighbour's box, painted into this page's
-// document from its own page's space (psd.js).
-export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, dy = 0) {
+// document from its own page's space (psd.js). `sheet` is the page an Align
+// off gradient is laid over, `{ w, h }` page px: the document, unless the
+// caller says otherwise (a neighbour's own page, psd.js `pageTextLayers`,
+// which hands the same size to its live layer).
+export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, dy = 0, sheet = { w: W, h: H }) {
   const SW = Math.round(W * scale);
   const SH = Math.round(H * scale);
   const cnv = scratch || document.createElement('canvas');
@@ -1645,10 +1648,9 @@ export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, d
   ctx.imageSmoothingQuality = 'high';
   // Full opacity; the layer opacity is the consumer's. No page art: the
   // layer's pixels are un-blended and Photoshop blends them from the layer's
-  // `blendMode`, so a backdrop here would blend twice. The page an Align off
-  // gradient is laid over is the document's, or for a longstrip neighbour's
-  // box (moved in by dx, dy) its own page's, as the strip export lays it.
-  paintBoxOnPage(ctx, box, p, tips, null, dx || dy ? { w: p?.w, h: p?.h } : { w: W, h: H });
+  // `blendMode`, so a backdrop here would blend twice. An Align off gradient
+  // is laid over `sheet`.
+  paintBoxOnPage(ctx, box, p, tips, null, sheet);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   const full = ctx.getImageData(0, 0, SW, SH);
   const d = full.data;

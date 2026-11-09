@@ -1808,8 +1808,10 @@
         <span>Dither</span>
       </label>
       <!-- Photoshop's Align with Layer, kept on the gradient only when off.
-           Shape Burst runs from the letters' edge and reads no frame. -->
-      <label class="sh-check" title="Align with Layer: on, the gradient spans the letters and turns with the box; off, it spans the whole page under them and stays put when the box moves or turns">
+           Shape Burst runs from the letters' edge and reads no frame: the box
+           shows the kept value, greyed, and it applies again when the style
+           changes back. -->
+      <label class="sh-check" title={g.style === 'shapeburst' ? 'Align with Layer does not apply to Shape Burst, which runs from the letters\' edge. The setting is kept for the other styles.' : 'Align with Layer: on, the gradient spans the letters and turns with the box; off, it spans the whole page under them and stays put when the box moves or turns'}>
         <input type="checkbox" checked={g.align !== false} disabled={g.style === 'shapeburst'} aria-label="{title} align with layer" onchange={(e) => { if (e.target.checked) delete g.align; else g.align = false; touch(); }} />
         <span>Align with Layer</span>
       </label>

@@ -5,7 +5,7 @@ import { readPsd } from 'ag-psd';
 // the wire, the editor's repaint key and the PSD. The engine's own compare
 // against PhotoCraft is text-engine/src/paint/fx/effects_align.rs; the wasm
 // end to end is gradient-align.engine.test.js.
-import { encodeBox } from '../../text-engine/js/paint.mjs';
+import { encodeBox, MAX_PAGE } from '../../text-engine/js/paint.mjs';
 import { defaultStyle, normalizeFxGradient, normalizeGlow, normalizeGradientOverlay, normalizeStrokeEffect, normalizeStyle } from './data.js';
 import { pageGradients } from './text-paint.js';
 import { pageGradientKey, pageSheet, pictureKey } from './editor/box-picture.js';
@@ -44,6 +44,14 @@ describe('the data', () => {
     expect(pageGradients(normalizeStyle({ ...plain, gradientOverlays: [{ ...off(), on: false }] }))).toBe(false);
     // A colour stroke has no gradient to lay.
     expect(pageGradients(normalizeStyle({ ...plain, strokeEffects: [{ ...offStroke(), fill: 'color' }] }))).toBe(false);
+    // A Shape Burst reads no frame: its kept `align: false` lays nothing over
+    // the page, so the box sends no page and needs no page in its key.
+    const burst = normalizeStyle({ ...plain, gradientOverlays: [off({ style: 'shapeburst' })] });
+    expect(burst.gradientOverlays[0].gradient.align).toBe(false);
+    expect(pageGradients(burst)).toBe(false);
+    expect(pageSheet({ x: 0, y: 0, w: 10, h: 10, style: burst }, { w: 800, h: 1200 }, null)).toBeNull();
+    const burstStroke = normalizeStrokeEffect({ size: 4, position: 'outside', fill: 'gradient', gradient: { style: 'shapeburst', align: false } });
+    expect(pageGradients(normalizeStyle({ ...plain, strokeEffects: [burstStroke] }))).toBe(false);
   });
 });
 
@@ -63,6 +71,25 @@ describe('the wire (v16)', () => {
     // One the engine would refuse is not sent: no size, a flat matrix.
     for (const bad of [{ ...page, w: 0 }, { ...page, toPage: [0, 0, 0, 0, 1, 1] }, { ...page, toPage: [1, 0, 0, 1, NaN, 0] }]) {
       expect(dv(encodeBox({ ...job, page: bad }).slice()).getUint32(PAGE_AT, true)).toBe(0);
+    }
+  });
+
+  it('sends a page only within the engine\'s MAX_PAGE, a side and every matrix entry', () => {
+    const page = { toPage: [0.5, 0.25, -0.25, 0.5, 10.5, 20.25], w: 841, h: 1190 };
+    const sent = (p) => dv(encodeBox({ ...job, page: p }).slice()).getUint32(PAGE_AT, true) === 1;
+    // The next f64 past 2^20 (its step there is 2^-32).
+    const over = MAX_PAGE + 2 ** -32;
+    expect(over).toBeGreaterThan(MAX_PAGE);
+    for (const k of ['w', 'h']) {
+      expect(sent({ ...page, [k]: MAX_PAGE }), k).toBe(true);
+      expect(sent({ ...page, [k]: over }), k).toBe(false);
+    }
+    for (let i = 0; i < 6; i++) {
+      for (const sign of [1, -1]) {
+        const at = (v) => ({ ...page, toPage: page.toPage.map((x, j) => (j === i ? sign * v : x)) });
+        expect(sent(at(MAX_PAGE)), `${sign * i}`).toBe(true);
+        expect(sent(at(over)), `${sign * i}`).toBe(false);
+      }
     }
   });
 
@@ -142,8 +169,10 @@ describe('the PSD', () => {
 
   it('places a longstrip neighbour\'s Align off gradient against the document it lands in', () => {
     const style = { gradientOverlays: [off()] };
-    const owner = { lines: [], w: 800, h: 600 };
-    const doc = { dx: 0, dy: -600, W: 800, H: 1000 };
+    // The owner's size comes in `doc` (w, h), the size its pixels were
+    // painted over (`pageTextLayers`), not from the page record itself.
+    const owner = { lines: [], w: 0, h: 0 };
+    const doc = { dx: 0, dy: -600, W: 800, H: 1000, w: 800, h: 600 };
     const layer = textLayerFor(owner, box(style), rendered, doc);
     const g = box(style).style.gradientOverlays[0].gradient;
     const q = turnedGradientPlacement(g, 0, { local: [0, -600, 800, 0], page: [0, 0, 800, 1000], centre: [0, 0] });
@@ -155,7 +184,7 @@ describe('the PSD', () => {
     expect(500 + q.offset.y * 1000).toBeCloseTo(-300 - 0.2 * 600, 6);
     // Past Photoshop's scale against a far wider document (10 % of an 800 px
     // page is 1 % of an 8000 px one): the pixels go instead.
-    const far = textLayerFor(owner, box({ gradientOverlays: [off({ scale: 0.1 })] }), rendered, { dx: 0, dy: 0, W: 8000, H: 600 });
+    const far = textLayerFor(owner, box({ gradientOverlays: [off({ scale: 0.1 })] }), rendered, { dx: 0, dy: 0, W: 8000, H: 600, w: 800, h: 600 });
     expect('text' in far).toBe(false);
     expect(far.name.endsWith(RASTER_MARK)).toBe(true);
   });
