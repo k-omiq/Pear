@@ -182,6 +182,18 @@ describe('the PSD effects, written and read back', () => {
     expect(isRasterOnly(normalizeStyle({ ...plain, bevel: { on: true, texture: { on: true } } }))).toBe(true);
     expect(isRasterOnly(normalizeStyle({ ...plain, gradientOverlays: [{ gradient: { style: 'shapeburst' } }] }))).toBe(true);
   });
+
+  // A Texture at Depth 0 paints nothing (`bevelFx` leaves it out), so it
+  // does not cost the box its live text; any other depth still does.
+  it('keeps a bevel whose Texture is at Depth 0 live, and writes the bevel', () => {
+    const at = (depth) => normalizeStyle({ ...plain, bevel: { on: true, texture: { on: true, depth } } });
+    expect(isRasterOnly(at(0))).toBe(false);
+    expect(isRasterOnly(at(0.5))).toBe(true);
+    expect(isRasterOnly(at(-1))).toBe(true);
+    const layer = layerFor({ bevel: at(0).bevel });
+    expect(layer.text).toBeTruthy();
+    expect(layer.effects.bevel).toMatchObject({ useTexture: false });
+  });
 });
 
 // The raw bytes of a written page: what Photoshop reads, where ag-psd's own
