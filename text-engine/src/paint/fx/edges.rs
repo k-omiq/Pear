@@ -657,12 +657,12 @@ pub(crate) mod tests {
             assert!(sharp.is_empty(), "map {kind} has no anti-aliased edge");
             assert_eq!(
                 bevel_dist_inside(&m, &sharp, 1e9),
-                dist_inside(&m),
+                *dist_inside(&m).unwrap(),
                 "inside {kind}"
             );
             assert_eq!(
                 bevel_dist_outside(&m, &sharp, 1e9),
-                dist_outside(&m),
+                *dist_outside(&m).unwrap(),
                 "outside {kind}"
             );
         }
@@ -698,7 +698,7 @@ pub(crate) mod tests {
             }
         }
         let plain = aa_bar(w, h, 60.0, 120.0, 40.0);
-        let (ripple, _) = bar_ripple(&dist_inside(&plain), w, h, 60.0, 40.0, true);
+        let (ripple, _) = bar_ripple(&dist_inside(&plain).unwrap(), w, h, 60.0, 40.0, true);
         assert!(ripple > 0.1, "the plain field still ripples ({ripple})");
     }
 

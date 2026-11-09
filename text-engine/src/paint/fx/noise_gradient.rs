@@ -23,6 +23,9 @@
 //! - The ramp is baked once, [`SAMPLES`] colours, and read with a linear
 //!   step between them.
 
+use crate::paint::budget;
+use crate::Error;
+
 /// The colour model the channels walk in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Model {
@@ -76,8 +79,20 @@ pub struct Ramp {
 
 impl Ramp {
     pub fn new(noise: Noise) -> Self {
-        let table = bake(&noise);
+        let mut table = Vec::with_capacity(SAMPLES);
+        bake(&noise, &mut table);
         Ramp { noise, table }
+    }
+
+    /// [`Ramp::new`] for a decoded record: its table is charged to the
+    /// painter's budget for the paint, as the record's other vectors are,
+    /// and the walks it is baked from are checked against it first.
+    pub fn charged(noise: Noise) -> Result<Self, Error> {
+        budget::ensure(4 * SAMPLES * core::mem::size_of::<f32>())?;
+        let mut table = Vec::new();
+        budget::reserve_raw(&mut table, SAMPLES)?;
+        bake(&noise, &mut table);
+        Ok(Ramp { noise, table })
     }
 
     /// The colour at `t`, 0 to 1: straight RGB and alpha.
@@ -270,7 +285,8 @@ fn restrict(c: [f32; 3]) -> [f32; 3] {
     c.map(|v| mid + (v - mid) * (RESTRICT_CHROMA / chroma))
 }
 
-fn bake(n: &Noise) -> Vec<[f32; 4]> {
+/// The ramp's [`SAMPLES`] colours, onto `out`.
+fn bake(n: &Noise, out: &mut Vec<[f32; 4]>) {
     let r = clean(n.roughness, 0.0, 1.0, 0.5);
     let lim = |i: usize| {
         let lo = clean(n.min[i], 0.0, 1.0, 0.0);
@@ -287,20 +303,18 @@ fn bake(n: &Noise) -> Vec<[f32; 4]> {
         let mut rng = Rng::new(n.seed, 4);
         walk(&mut rng, 0.0, 1.0, r, false, SAMPLES)
     });
-    (0..SAMPLES)
-        .map(|i| {
-            let (a, b, c) = (ch[0][i], ch[1][i], ch[2][i]);
-            let rgb = match n.model {
-                Model::Rgb => [a, b, c],
-                Model::Hsb => hsb_rgb(a, b, c),
-                Model::Lab => lab_rgb(a * 100.0, a_b(b), a_b(c)),
-            }
-            .map(|v| v.clamp(0.0, 1.0));
-            let rgb = if n.restrict { restrict(rgb) } else { rgb };
-            let al = alpha.as_ref().map_or(1.0, |al| al[i].clamp(0.0, 1.0));
-            [rgb[0], rgb[1], rgb[2], al]
-        })
-        .collect()
+    out.extend((0..SAMPLES).map(|i| {
+        let (a, b, c) = (ch[0][i], ch[1][i], ch[2][i]);
+        let rgb = match n.model {
+            Model::Rgb => [a, b, c],
+            Model::Hsb => hsb_rgb(a, b, c),
+            Model::Lab => lab_rgb(a * 100.0, a_b(b), a_b(c)),
+        }
+        .map(|v| v.clamp(0.0, 1.0));
+        let rgb = if n.restrict { restrict(rgb) } else { rgb };
+        let al = alpha.as_ref().map_or(1.0, |al| al[i].clamp(0.0, 1.0));
+        [rgb[0], rgb[1], rgb[2], al]
+    }));
 }
 
 /// A Lab a or b channel: 0 to 1 of its range to -128 to 127.
@@ -472,5 +486,20 @@ mod tests {
             .table()
             .iter()
             .all(|c| c.iter().all(|v| (0.0..=1.0).contains(v))));
+    }
+
+    #[test]
+    fn a_decoded_ramp_is_charged_to_the_budget() {
+        {
+            let _scope = budget::Scope::new();
+            assert_eq!(
+                Ramp::charged(noise(7, 0.5)).unwrap(),
+                Ramp::new(noise(7, 0.5))
+            );
+            assert_eq!(budget::peak_for_test(), SAMPLES * 16);
+        }
+        budget::limit_next_scope_for_test(SAMPLES * 16 - 1);
+        let _scope = budget::Scope::new();
+        assert_eq!(Ramp::charged(noise(7, 0.5)), Err(Error::BadSpec));
     }
 }

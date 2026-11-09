@@ -51,6 +51,13 @@ use crate::Error;
 
 /// "MTPB", little-endian.
 pub const BOX_MAGIC: u32 = 0x4250_544d;
+/// The box wire's version, which `js/paint.mjs` writes and checks as its own
+/// `BOX_WIRE_VERSION`. Rule: every new flag bit, field, record kind or
+/// changed meaning bumps it, on both sides at once, and is noted in
+/// [`decode_box`]'s docs; the loader compares only this number, so a wasm
+/// and a loader that agree on it must read the same bytes. v11 broke this
+/// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
+/// before it reads v11 and refuses every SFX copy's shadow.
 pub const BOX_WIRE_VERSION: u32 = 12;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
@@ -72,6 +79,14 @@ pub const MAX_GRADIENT_STOPS: usize = 256;
 pub const MAX_GRADIENT_SCALE: f64 = 10.0;
 /// Largest bevel Depth and Texture Depth (1 is 100 %): Photoshop's 1000 %.
 pub const MAX_BEVEL_DEPTH: f64 = 10.0;
+/// Most bevels a box takes. A guard, not a design limit: Photoshop and the
+/// app give a style one. Each bakes its two contours to [`Table::LEN`]
+/// floats and paints over the whole frame.
+pub const MAX_BEVELS: usize = 8;
+/// Most noise gradients a box takes, over all its effects. A guard: each
+/// bakes to a 1024-colour ramp (16 KiB), and the app's gradient overlays
+/// are a list with no count of its own.
+pub const MAX_NOISE_GRADIENTS: usize = 64;
 
 /// One shadow of the box (`style.shadows`): Photoshop's Drop Shadow.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -243,6 +258,9 @@ impl BoxRequest {
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// Bevels and noise gradients read so far, for their caps.
+    bevels: usize,
+    noises: usize,
 }
 
 impl<'a> Reader<'a> {
@@ -349,8 +367,12 @@ impl<'a> Reader<'a> {
     }
 
     /// A contour baked to floats (the bevel's), or `None` for Linear.
+    /// The table is charged to the painter's budget.
     fn table(&mut self) -> Result<Option<Table>, Error> {
-        Ok(self.curve()?.and_then(|c| Table::new(&c)))
+        match self.curve()? {
+            Some(c) => Table::charged(&c),
+            None => Ok(None),
+        }
     }
 
     /// A bevel's highlight or shadow: colour, opacity, mode.
@@ -363,6 +385,10 @@ impl<'a> Reader<'a> {
     }
 
     fn bevel(&mut self) -> Result<Bevel, Error> {
+        self.bevels += 1;
+        if self.bevels > MAX_BEVELS {
+            return Err(Error::BadSpec);
+        }
         let style = BevelStyle::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
         let technique = BevelTechnique::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
         let depth = self.upto(MAX_BEVEL_DEPTH)?;
@@ -502,7 +528,13 @@ impl<'a> Reader<'a> {
         }
         let noise = match self.u32()? {
             0 => None,
-            1 => Some(Ramp::new(self.noise()?)),
+            1 => {
+                self.noises += 1;
+                if self.noises > MAX_NOISE_GRADIENTS {
+                    return Err(Error::BadSpec);
+                }
+                Some(Ramp::charged(self.noise()?)?)
+            }
             _ => return Err(Error::BadSpec),
         };
         Ok(Gradient {
@@ -717,7 +749,9 @@ impl<'a> Reader<'a> {
 ///     f64 spread, f64 noise    0 to 1 each
 ///     u32 blend                a mode number (`Blend::from_u32`)
 ///     u32 flags                1 knockout, 2 contour anti-aliased, 4 exact
-///                              (v11): laid at its exact throw (an SFX copy);
+///                              (v11, added late without a bump: an early
+///                              v11 wasm refuses it): laid at its exact
+///                              throw (an SFX copy);
 ///                              without it the throw is rounded to whole
 ///                              pixels, in job units and then in device
 ///                              pixels, as Photoshop rounds a Drop Shadow's
@@ -845,14 +879,21 @@ impl<'a> Reader<'a> {
 /// contour that does not exist, a contour point outside 0 to 255 or out of
 /// order, a bevel style or technique that does not exist, a bevel depth
 /// outside 0 to 10, an altitude outside 0 to 90, a bevel texture that is not
-/// a fill, blending flags past 1, a channel mask past 7, a Blend If that is
-/// not 0 or 1 or with a range out of order (black low, black high, white
-/// low, white high must not fall), ink past its limits above (a stroke's
-/// number out of its range, a flag that is not one, a tip index past the
-/// tips, a stride that is not 3 or 5), and anything a glyph job is refused
-/// for.
+/// a fill, more than 8 bevels or 64 noise gradients ([`MAX_BEVELS`],
+/// [`MAX_NOISE_GRADIENTS`]), blending flags past 1, a channel mask past 7,
+/// a Blend If that is not 0 or 1 or with a range out of order (black low,
+/// black high, white low, white high must not fall), ink past its limits
+/// above (a stroke's number out of its range, a flag that is not one, a tip
+/// index past the tips, a stride that is not 3 or 5), records the painter's
+/// budget cannot hold (the baked contour tables and noise ramps count), and
+/// anything a glyph job is refused for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
-    let mut r = Reader { bytes, at: 0 };
+    let mut r = Reader {
+        bytes,
+        at: 0,
+        bevels: 0,
+        noises: 0,
+    };
     if r.u32()? != BOX_MAGIC || r.u32()? != BOX_WIRE_VERSION {
         return Err(Error::BadSpec);
     }
@@ -1448,7 +1489,7 @@ fn lay_glows(
     if region.is_empty() {
         return Ok(None);
     }
-    let shape = effects::alpha_map(&outline, region);
+    let shape = effects::alpha_map(&outline, region)?;
     drop(outline);
     let job = &request.request.job;
     let fill = if request.fill_opacity < 1.0 && !job.no_fill {
@@ -1459,7 +1500,7 @@ fn lay_glows(
         request.request.job.silhouette = job_silhouette;
         request.request.job.bands = bands;
         request.request.job.effects.negative = negative;
-        fill?.map(|r| effects::alpha_map(&r, region))
+        fill?.map(|r| effects::alpha_map(&r, region)).transpose()?
     } else {
         None
     };

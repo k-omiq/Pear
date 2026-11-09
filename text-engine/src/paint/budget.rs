@@ -261,6 +261,18 @@ pub fn resize<T: Clone>(v: &mut Buffer<T>, len: usize, value: T) -> Result<(), E
     v.data.resize(len, value);
     Ok(())
 }
+/// Exactly `n` items of `items`, charged before the first is taken. Fewer or
+/// more is refused, so a buffer read as `n` long is never short.
+pub fn exact<T>(n: usize, items: impl IntoIterator<Item = T>) -> Result<Buffer<T>, Error> {
+    let mut v = Buffer::new();
+    reserve(&mut v, n)?;
+    let mut items = items.into_iter();
+    v.data.extend(items.by_ref().take(n));
+    if v.len() != n || items.next().is_some() {
+        return Err(Error::BadSpec);
+    }
+    Ok(v)
+}
 // Public decoded job vectors stay live for the whole scope. They do not grow
 // again during painting. Decode uses exact capacities, not doubling.
 pub fn reserve_raw<T>(v: &mut Vec<T>, additional: usize) -> Result<(), Error> {
@@ -353,6 +365,21 @@ mod tests {
         assert_eq!(STATE.with(|s| s.get().unwrap().used), bytes);
         drop(iter);
         assert_eq!(STATE.with(|s| s.get().unwrap().used), 0);
+    }
+    #[test]
+    fn exact_charges_first_and_refuses_a_wrong_count() {
+        let _scope = Scope::new();
+        let v = exact(100, 0..100u64).unwrap();
+        assert_eq!(v.len(), 100);
+        assert_eq!(STATE.with(|s| s.get().unwrap().used), v.capacity() * 8);
+        assert_eq!(exact(5, 0..4u64).err(), Some(Error::BadSpec));
+        assert_eq!(exact(5, 0..6u64).err(), Some(Error::BadSpec));
+        drop(v);
+        limit_for_test(64);
+        // Refused before a single item is taken.
+        let mut taken = 0;
+        assert!(exact(100, (0..100u64).inspect(|_| taken += 1)).is_err());
+        assert_eq!(taken, 0);
     }
     #[test]
     fn buffer_from_an_earlier_scope_is_charged_to_this_one() {

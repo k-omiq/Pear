@@ -2391,3 +2391,32 @@ fn a_box_with_no_fill_keeps_its_outlines_cut_under_its_effects() {
     // And the job it came from is left as it was.
     assert!(b.request.job.no_fill && b.request.job.silhouette.is_none());
 }
+
+#[test]
+fn a_box_takes_a_bounded_number_of_bevels_and_noise_gradients() {
+    // Each bevel bakes two 4096-float contours and each noise gradient a
+    // 1024-colour ramp, charged to the budget; past 8 bevels or 64 noise
+    // gradients (`MAX_BEVELS`, `MAX_NOISE_GRADIENTS`) the box is refused.
+    let (good, [_, _, _, _, effects_at, _, _, bevel_at, _, _, ink_at]) = wire(1);
+    let bevel = good[bevel_at..ink_at].to_vec();
+    let mut overlay = Vec::new();
+    u(&mut overlay, 6);
+    f(&mut overlay, 0.5);
+    u(&mut overlay, 0);
+    u(&mut overlay, 1);
+    noise_gradient_record(&mut overlay);
+    // The wire has one of each already, among its nine effects.
+    let more = |record: &[u8], k: u32| {
+        let mut b = good[..ink_at].to_vec();
+        for _ in 0..k {
+            b.extend_from_slice(record);
+        }
+        b.extend_from_slice(&good[ink_at..]);
+        b[effects_at..effects_at + 4].copy_from_slice(&(9 + k).to_le_bytes());
+        decode_box(&b).map(|r| r.effects.len())
+    };
+    assert_eq!(more(&bevel, 7), Ok(16));
+    assert_eq!(more(&bevel, 8), Err(Error::BadSpec));
+    assert_eq!(more(&overlay, 63), Ok(72));
+    assert_eq!(more(&overlay, 64), Err(Error::BadSpec));
+}
