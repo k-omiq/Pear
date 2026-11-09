@@ -1754,15 +1754,15 @@ describe('placement chooses the size (FIT-1)', () => {
       expect(b.y + b.h / 2).toBeCloseTo(cy, 6);
     });
 
-    it('is never grown past its balloon by the grow-only net, even in a longstrip', () => {
+    // Text never stands outside its box: the grow-only net grows a solved box
+    // past its balloon as it does a box from before the solver.
+    it('is grown past its balloon by the grow-only net to hold its text', () => {
       app.projectLayout = 'longstrip';
       try {
         const b = placeAt(26);
         const floor = bottom(b.fit);
         autoFitBoxTo(b, 20, page());
-        expect(b.y + b.h).toBeLessThanOrEqual(floor);
-        // The same box saved before the solver existed is grown as it always
-        // was, past the balloon and bounded by the page.
+        expect(b.y + b.h).toBeGreaterThan(floor);
         const legacy = placeAt(26);
         delete legacy.auto;
         autoFitBoxTo(legacy, 20, page());
