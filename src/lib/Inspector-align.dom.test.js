@@ -43,6 +43,14 @@ function mounted(style) {
 }
 const style = () => page().boxes[0].style;
 
+async function openFold(view, name) {
+  const b = view.container.querySelector(`button.insp-fold[aria-label="${name}"]`);
+  if (b && b.getAttribute('aria-expanded') !== 'true') {
+    await fireEvent.click(b);
+    await tick();
+  }
+}
+
 async function toggle(el) {
   await fireEvent.pointerDown(el);
   await fireEvent.click(el);
@@ -54,6 +62,8 @@ describe('Align with Layer', () => {
   it('on a Gradient Overlay: off stores false, on leaves the key out, each an undo step', async () => {
     const view = mounted({ gradientOverlays: [newGradientOverlay()] });
     await tick();
+    await openFold(view, 'Overlays');
+    await openFold(view, 'Gradient overlay 1 more options');
     const g = () => style().gradientOverlays[0].gradient;
     const box = view.getByLabelText('Gradient overlay 1 align with layer');
     expect(box.checked).toBe(true);
@@ -77,6 +87,7 @@ describe('Align with Layer', () => {
     setInspectorTab('effects');
     setEffectsSubTab('stroke');
     await tick();
+    await openFold(view, 'Photoshop stroke 1 gradient more options');
     const g = () => style().strokeEffects[0].gradient;
     await toggle(view.getByLabelText('Photoshop stroke 1 gradient align with layer'));
     expect(g().align).toBe(false);
@@ -87,6 +98,8 @@ describe('Align with Layer', () => {
   it('keeps an off setting through Shape Burst, greyed, and back again', async () => {
     const view = mounted({ gradientOverlays: [newGradientOverlay()] });
     await tick();
+    await openFold(view, 'Overlays');
+    await openFold(view, 'Gradient overlay 1 more options');
     const g = () => style().gradientOverlays[0].gradient;
     const box = () => view.getByLabelText('Gradient overlay 1 align with layer');
     const setStyle = async (v) => {
@@ -115,6 +128,8 @@ describe('Align with Layer', () => {
   it('is greyed out for Shape Burst and missing from a glow', async () => {
     const view = mounted({ gradientOverlays: [{ ...newGradientOverlay(), gradient: { style: 'shapeburst' } }], outerGlow: { on: true, fill: 'gradient' } });
     await tick();
+    await openFold(view, 'Overlays');
+    await openFold(view, 'Gradient overlay 1 more options');
     expect(view.getByLabelText('Gradient overlay 1 align with layer').disabled).toBe(true);
     setInspectorTab('effects');
     setEffectsSubTab('glow');

@@ -810,7 +810,7 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 /* An invalid hex commit is flagged, not reverted: the field keeps what was
    typed, with a warning border and a title saying what a valid one looks
    like, until the next valid value lands. */
-.insp input.hex-bad{ border-color:var(--warn); }
+input.hex-bad,.insp input.hex-bad,.bulk-panel input.hex-bad{ border-color:var(--warn); }
 .row2{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 /* A grid item's default `min-width:auto` is the intrinsic width of whatever is
    inside it, and a number input's intrinsic width is wider than half this
@@ -1051,7 +1051,6 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .insp-row.k-goverlay{ --cols:minmax(0,1fr) 52px 20px; }
 /* A list effect's row with its "…" defaults menu (FxMenu) before the ×. */
 .insp-row.k-fxrow{ --cols:minmax(0,1fr) 52px 20px 20px; }
-.insp-row.fx-pat-colours{ --cols:24px auto 24px auto 52px; }
 /* One effect of a list whose items carry more than a row: a stroke effect, a
    gradient overlay. */
 .fx-block{ display:flex; flex-direction:column; gap:8px; padding:8px; border:1px solid var(--line); border-radius:6px; min-width:0; }
@@ -1130,6 +1129,114 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .switch.on .knob{ background:var(--accent-fg); transform:translateX(16px); }
 
 /* slider-with-value row */
+/* A PROPERTY ROW: a setting's name on the left, its control on the right,
+   on one line. The Inspector's Fill tab is made of these (and the pattern
+   editor wherever it shows): a name over every control doubled the pane's
+   height, and a column of small capitals was most of what made it loud. The
+   name is sentence case in the quiet ink; the section and panel heads keep the
+   capitals. A slider takes the room and its number sits at the row's end, so
+   the numbers make one column down the pane. */
+.prow{ display:grid; grid-template-columns:78px minmax(0,1fr); align-items:center; column-gap:10px; min-height:28px; min-width:0; }
+.prow > .pl{ font-size:12px; color:var(--t2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.prow > .pc{ display:flex; align-items:center; gap:8px; min-width:0; }
+.prow > .pc > input[type=range],.prow > .pc > select,.prow > .pc > .seg,.prow > .pc > .color-field{ flex:1 1 auto; min-width:0; width:auto; }
+.prow > .pc > input[type=number]{ flex:0 0 46px; width:46px; padding:0 6px; -moz-appearance:textfield; }
+.prow > .pc > input[type=number].wide{ flex-basis:64px; width:64px; }
+.prow > .pc > input[type=number]::-webkit-inner-spin-button,
+.prow > .pc > input[type=number]::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
+.prow > .pc > .end{ margin-left:auto; }
+.prow > .pc > .axis{ font-size:11px; color:var(--t3); }
+.prow .color-field .hex{ min-width:0; }
+/* A quiet verb at the end of a row or a heading: no frame until it is under
+   the pointer. */
+
+/* Shared by the Inspector and the pattern editor: a fold's head, a lone
+   checkbox row, and a quiet note. */
+/* A fold's head: one quiet row, a chevron that turns, a badge at the end.
+   A hairline over it sets the fold apart from the rows above. */
+.insp-fold {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 3px;
+  padding: 11px 0 0;
+  border: none;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  color: var(--t2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+/* A lone checkbox with its words: one row of the pane. */
+.sh-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  font-size: 12px;
+  color: var(--t2);
+}
+/* A fold inside a group: it belongs to the rows over it, so no hairline. */
+.insp-fold.sub {
+  margin-top: 0;
+  padding: 2px 0;
+  min-height: 24px;
+  border-top: none;
+  font-size: 11.5px;
+}
+.insp-fold:hover,
+.insp-fold.open {
+  color: var(--text);
+}
+.insp-fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.fold-chev {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--t3);
+  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.insp-fold.open .fold-chev {
+  transform: rotate(90deg);
+}
+.fold-badge {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--t2);
+  font-size: 11px;
+  text-align: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .fold-chev {
+    transition: none;
+  }
+}
+.nofill-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--t3);
+}
+
+.link-btn{
+  display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 7px; margin-right:-7px;
+  border:none; border-radius:5px; background:none; color:var(--t2); cursor:pointer;
+  font-family:inherit; font-size:11.5px; white-space:nowrap;
+}
+.link-btn svg{ width:12px; height:12px; flex:none; }
+.link-btn:hover,.link-btn.on{ background:var(--accent-soft); color:var(--text); }
+.link-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+.link-btn:disabled{ opacity:.45; cursor:default; background:none; color:var(--t2); }
 .slider-row{ display:flex; align-items:center; gap:9px; }
 .slider-row input[type=range]{ flex:1 1 auto; }
 .slider-row .val{ flex:0 0 42px; text-align:right; font-variant-numeric:tabular-nums; color:var(--t2); font-size:12px; }

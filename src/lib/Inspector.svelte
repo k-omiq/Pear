@@ -36,10 +36,6 @@
   import {
     PATTERN_KINDS,
     CANVAS_PATTERN_KINDS,
-    SEEDED_PATTERN_KINDS,
-    PATTERN_SCALE_MIN,
-    PATTERN_SCALE_MAX,
-    GRADIENT_MAX_STOPS,
     defaultPathPts,
     WARP_MIN_GRID,
     WARP_MAX_GRID,
@@ -68,7 +64,6 @@
     FX_GRADIENT_METHODS,
     NOISE_MODELS,
     STROKE_POSITIONS,
-    GRADIENT_MIN_STOPS,
     LAYER_BLEND_MODES,
     LIGHT_DEF,
     BEVEL_DEPTH_MAX,
@@ -84,11 +79,13 @@
     BLENDING_SWITCHES,
     instanceOn,
     blendingSwitch,
+    blendIfActive,
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
+  import { editLive, holdEditLive } from './edit-live.svelte.js';
   import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
   import { layoutShape } from './balloon.js';
-  import { gradientCss, patternTileCanvas, sampleStops, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
+  import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
   import { maskTool, setMaskTool } from './mask-tool.svelte.js';
   import { regridWarp } from './warp-gizmo.js';
@@ -104,6 +101,7 @@
   import { patternPick, startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
   import ColorPicker from './ColorPicker.svelte';
   import FxGradientEditor from './FxGradientEditor.svelte';
+  import PatternEditor from './PatternEditor.svelte';
   import BlendRangeSlider from './BlendRangeSlider.svelte';
   import ContourEditor from './ContourEditor.svelte';
   import { contourPoints } from './contour-curve.js';
@@ -121,10 +119,7 @@
     tabIcons,
     effectsSubTabIcons,
     iconRotate,
-    iconGradientLinear,
-    iconGradientRadial,
     iconNoFill,
-    iconArrowUp,
   } from './tab-icons.js';
   import {
     createFieldUndo,
@@ -256,6 +251,23 @@
   // The fold under B and I (bold weight, italic angle): closed until asked.
   let styleMore = $state(false);
   const styleTuned = (st) => (st.bold && st.boldWeight !== BOLD_WEIGHT_MIN) || (st.italic && st.italicAngle !== ITALIC_ANGLE_DEF);
+
+  // The Fill tab's folds: closed until asked and kept for the session, as the
+  // tabs are. A closed fold's head says what it holds (a count, or "set").
+  let overlaysOpen = $state(false);
+  let blendOpen = $state(false);
+  // One per layer gradient (its title): an overlay's fold does not open a
+  // stroke's.
+  let gradMore = $state({});
+  const overlayCount = $derived(box ? box.style.colorOverlays.length + box.style.gradientOverlays.length + (box.style.patternOverlay.on ? 1 : 0) : 0);
+  const blendTuned = $derived.by(() => {
+    const b = box?.style.blending;
+    if (!b) return false;
+    return b.interior === true || (b.knockout ?? 'none') !== 'none' || Object.values(b.channels ?? {}).some((v) => v === false) || blendIfActive(b.blendIf) || ['blendClipped', 'transparencyShapes'].some((k) => blendingSwitch(b, k) !== BLENDING_SWITCHES[k]);
+  });
+  // A layer gradient's fold says "set" when a setting inside it is not the plain one.
+  // `placed` gradients alone show dither, align and offset (a glow's does not).
+  const gradTuned = (g, placed) => g.type === 'noise' || !!g.smoothness || (g.method ?? 'classic') !== 'classic' || (placed && (g.dither === true || g.align === false || !!g.offset?.[0] || !!g.offset?.[1]));
 
   function setNum(obj, key, v, lo, hi, round = false) {
     let n = +v;
@@ -484,26 +496,7 @@
     touch();
   }
 
-  // The eight-way pad, laid out as it reads: the cell's position IS the
-  // direction. Angles are the style's own CSS degrees (0 = bottom→top), so
-  // picking a cell writes the same field the number beside it does.
-  const DIRS = [
-    { a: 315, n: 'Up left' },
-    { a: 0, n: 'Up' },
-    { a: 45, n: 'Up right' },
-    { a: 270, n: 'Left' },
-    null,
-    { a: 90, n: 'Right' },
-    { a: 225, n: 'Down left' },
-    { a: 180, n: 'Down' },
-    { a: 135, n: 'Down right' },
-  ];
-  function setAngle(a) {
-    box.style.gradient.angle = ((Math.round(a) % 360) + 360) % 360;
-    touch();
-  }
-
-  // The same nine cells for a radial centre, with the corners left out: a
+  // Nine cells for a radial centre, with the corners left out: a
   // gradient centred on a corner of a line of text is a look nobody has asked
   // for, and the five that are here are the ones a highlight is built from.
   const CENTRES = [
@@ -524,229 +517,10 @@
   }
   const near = (a, b) => Math.abs((a ?? 0) - b) < 0.02;
 
-  // ---- gradient stops ----
-  //
-  // The stop bar: the ramp drawn left to right, a handle per stop under it, and
-  // one row of controls for whichever handle is selected. It is a bar rather
-  // than a list because a stop's whole meaning is WHERE it is, and a column of
-  // percentages says that worse than a handle sitting at the place it means.
-  //
-  // The arrays here are `$state` proxies reached through `box.style`, so every
-  // push/splice below mutates in place and the render follows; `touch()` is
-  // what turns it into one undo entry.
-
-  // Which handle the controls under the bar are talking about, by index. The
-  // list is kept sorted, so an index is a stable enough name for it: the only
-  // thing that reorders the list is a drag or a nudge, and both of those carry
-  // the selection across the sort themselves.
-  let stopIdx = $state(0);
-  // The bar element, which is what a pointer position is measured against - the
-  // handles sit on a rail of the same width below it. `$state` only because
-  // `bind:this` writes it; nothing renders from either of these.
-  let barEl = $state(null);
-  // The colour picker behind the selected stop's swatch, so a double-click on
-  // a handle can open the same picker the swatch opens.
-  let stopPicker = $state(null);
-  // The index being dragged, or null. Not `$state`: nothing renders from it.
-  let dragging = null;
-
-  const gradStops = $derived(box?.style.gradient.stops ?? []);
-  const selStop = $derived(gradStops[Math.min(stopIdx, gradStops.length - 1)] ?? null);
-  // The bar shows the RAMP, not the gradient's direction: left to right whatever
-  // the angle is, and flat whether the fill is linear or radial. The pad above
-  // it is where direction is decided; asking the bar to say both at once would
-  // leave a radial one as a bullseye you cannot read stop positions off.
-  const barCss = $derived(gradientCss({ kind: 'linear', angle: 90, stops: gradStops }));
-
-  // Selection belongs to the box, not to the panel: a different box's gradient
-  // has different stops and the old index would name one of them.
-  $effect(() => {
-    box?.id;
-    stopIdx = 0;
-  });
-
-  // Where along the bar a pointer is, 0..1.
-  function posOf(e) {
-    const r = barEl?.getBoundingClientRect();
-    if (!r?.width) return 0;
-    return clamp((e.clientX - r.left) / r.width, 0, 1);
-  }
-
-  // Sorting reassigns the array from a plain snapshot rather than sorting the
-  // proxy in place, so the selected stop can be found again afterwards by
-  // identity - the proxies do not survive the swap, the plain objects they
-  // snapshot to do. The sort is a real edit to the style - it changes which
-  // colour the gradient starts at - so it has to touch() like every other
-  // mutation, or a reorder that lands after the debounce has already fired is
-  // never recorded and never marks the document unsaved.
-  function sortStops(keep = stopIdx) {
-    const raw = $state.snapshot(box.style.gradient.stops);
-    const sel = raw[keep] ?? null;
-    raw.sort((a, b) => a.pos - b.pos);
-    box.style.gradient.stops = raw;
-    if (sel) stopIdx = raw.indexOf(sel);
-    touch();
-  }
-
-  // A click on an empty part of the bar adds a handle there, in the colour the
-  // ramp was already showing at that spot - so the gesture gives the gradient a
-  // control point without changing what it looks like.
-  function addStopAt(p) {
-    const stops = box.style.gradient.stops;
-    if (stops.length >= GRADIENT_MAX_STOPS) return;
-    const { color, opacity } = sampleStops($state.snapshot(stops), p);
-    // Inserted in place rather than appended and sorted, so the list stays
-    // ordered and the new stop's index is known without a search.
-    let i = stops.findIndex((st) => st.pos > p);
-    if (i < 0) i = stops.length;
-    stops.splice(i, 0, { color, pos: p, opacity: Math.min(1, Math.max(0, opacity)) });
-    stopIdx = i;
-    touch();
-  }
-  function onBarDown(e) {
-    // A handle is a button inside the same box and takes its own pointerdown;
-    // anything else that lands here is the bar itself.
-    if (e.target.closest('.gstop')) return;
-    addStopAt(posOf(e));
-  }
-
-  // Midpoint of the widest quiet stretch of the ramp, rail ends included -
-  // where a new stop has the most room to mean something. This is what the
-  // add-stop button inserts at: the keyboard's answer to clicking an empty
-  // part of the bar.
-  function addStopWidestGap() {
-    if (!box) return;
-    const pts = box.style.gradient.stops
-      .map((st) => clamp(Number(st.pos) || 0, 0, 1))
-      .sort((a, b) => a - b);
-    let gap = -1;
-    let p = 0.5;
-    const edges = [0, ...pts, 1];
-    for (let i = 0; i < edges.length - 1; i++) {
-      const w = edges[i + 1] - edges[i];
-      if (w > gap) {
-        gap = w;
-        p = (edges[i] + edges[i + 1]) / 2;
-      }
-    }
-    addStopAt(p);
-  }
-
-  function onStopDown(e, i) {
-    // Selecting and dragging a handle is not clicking the bar under it.
-    e.stopPropagation();
-    e.preventDefault();
-    stopIdx = i;
-    dragging = i;
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    e.currentTarget.focus();
-  }
-  // Live while the pointer moves, unsorted: a stop dragged past its neighbour
-  // keeps its index until the pointer comes up, or the handle would swap out
-  // from under the finger holding it. The ramp itself is correct either way -
-  // both renderers read `pos`, not array order.
-  function onStopMove(e) {
-    if (dragging == null) return;
-    const st = box.style.gradient.stops[dragging];
-    if (!st) return;
-    st.pos = posOf(e);
-    touch();
-  }
-  function onStopUp(e) {
-    if (dragging == null) return;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    const was = dragging;
-    dragging = null;
-    sortStops(was);
-  }
-  // Arrow keys nudge the selected stop by a percent. The propagation stops here
-  // because the canvas' own arrow keys nudge the whole BOX, and a handle with
-  // focus is not an input the global shortcuts already stand back from.
-  function onStopKey(e, i) {
-    // Enter on a focused handle opens the colour picker, matching the
-    // double-click - the one stop gesture pointer users had that keyboard
-    // users did not.
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      e.stopPropagation();
-      openStopColour(e, i);
-      return;
-    }
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    e.preventDefault();
-    e.stopPropagation();
-    const st = box.style.gradient.stops[i];
-    if (!st) return;
-    stopIdx = i;
-    st.pos = clamp((Number(st.pos) || 0) + (e.key === 'ArrowRight' ? 0.01 : -0.01), 0, 1);
-    sortStops(i);
-  }
-  // A double-click on a handle is the shortest way to the thing a stop is
-  // mostly about, so it opens the colour picker the swatch below opens.
-  function openStopColour(e, i) {
-    e.stopPropagation();
-    stopIdx = i;
-    stopPicker?.show();
-  }
-
-  function removeStop(i) {
-    // Two stops is the floor: one stop is not a gradient, it is a fill.
-    const stops = box.style.gradient.stops;
-    if (stops.length <= 2) return;
-    stops.splice(i, 1);
-    if (stopIdx >= stops.length) stopIdx = stops.length - 1;
-    touch();
-  }
-
   // ---- patterns ----
   // A pattern is picked by looking at it. Each card draws the real tile through
   // the same painter the editor and the exporter use, in the box's own two
   // colours, so what is on the card is what lands on the glyphs.
-  const PATTERN_LABELS = {
-    dots: 'Dots',
-    halftone: 'Halftone',
-    stripes: 'Stripes',
-    hstripes: 'Bands',
-    diagonal: 'Diagonal',
-    'diagonal-alt': 'Diagonal 2',
-    crosshatch: 'Crosshatch',
-    checker: 'Checker',
-    grid: 'Grid',
-    vlines: 'Hairline',
-    hlines: 'Hairline 2',
-    'halftone-fade': 'Tone fade',
-    'square-dots': 'Squares',
-    'diamond-dots': 'Diamonds',
-    'line-tone': 'Line tone',
-    sand: 'Sand',
-    stipple: 'Stipple',
-    'speed-lines': 'Speed lines',
-    burst: 'Burst',
-    rings: 'Rings',
-    waves: 'Waves',
-    zigzag: 'Zigzag',
-    bricks: 'Bricks',
-    scales: 'Scales',
-    hex: 'Hex',
-    triangles: 'Triangles',
-    plus: 'Plus',
-    stars: 'Stars',
-    hearts: 'Hearts',
-    kakeami: 'Kakeami',
-    glitch: 'Glitch',
-    dither: 'Dither',
-    'dither-dots': 'Dither dots',
-    picked: 'From page',
-  };
-  const patLabel = (k) => PATTERN_LABELS[k] ?? k;
-  // The picker's groups, so thirty-three cards are not one long wall.
-  const PATTERN_GROUPS = {
-    tone: ['dots', 'halftone', 'halftone-fade', 'dither', 'dither-dots', 'square-dots', 'diamond-dots', 'stipple', 'sand'],
-    lines: ['stripes', 'hstripes', 'diagonal', 'diagonal-alt', 'crosshatch', 'vlines', 'hlines', 'line-tone', 'waves', 'zigzag', 'kakeami'],
-    action: ['speed-lines', 'burst', 'rings', 'glitch'],
-    shapes: ['checker', 'grid', 'bricks', 'scales', 'hex', 'triangles', 'plus', 'stars', 'hearts'],
-  };
-  let patGroup = $state('all');
   // The Rust engine shades a pattern per pixel and paints every kind and
   // control; the browser engine repeats one of the eleven canvas tiles.
   const rustPatterns = $derived(engineSwitch.painting && glyphPainter().screen === true);
@@ -786,17 +560,40 @@
     s.blending = on === BLENDING_SWITCHES[key] ? rest : { ...rest, [key]: on };
     touch();
   }
-  const shownKinds = $derived.by(() => {
-    if (!rustPatterns) return CANVAS_PATTERN_KINDS;
-    return patGroup === 'all' ? PATTERN_KINDS : PATTERN_GROUPS[patGroup];
-  });
+  const shownKinds = $derived(rustPatterns ? PATTERN_KINDS : CANVAS_PATTERN_KINDS);
   // The card's tile is a fixed size rather than the box's, so the cards are
   // comparable with each other; `scale` is the slider under them.
   const CARD_SIZE = 44;
   const CARD_TILE = CARD_SIZE * 0.3;
-  const CARD_W = 70;
+  // A swatch of the grid: six to a row of the panel.
+  const CARD_W = 44;
   const CARD_H = 30;
+  // While a control is held (`editLive`) the cards keep the pictures they
+  // have: a slider's every frame would otherwise paint all of them again
+  // (thirty-one engine fills and as many `toDataURL`s), and that, not the
+  // box, was most of a pattern slider's lag. They are painted once on release.
+  // A plain variable, not state: it is the derived's own memory and nothing
+  // is to run because it was written.
+  let cardsKept = null;
   const patternCards = $derived.by(() => {
+    if (editLive.on && cardsKept?.boxId === box?.id) return cardsKept.cards;
+    // Painted again only for what the cards show: the pattern's look, never
+    // which card is chosen. A press in the panel turns `editLive` on and off
+    // and runs this again; with nothing changed it hands back what it has.
+    const pat = box?.style.pattern;
+    const key = JSON.stringify([box?.id, rustPatterns, shownKinds, patternTiles.version, pat ? { ...$state.snapshot(pat), kind: '' } : null]);
+    if (cardsKept?.key === key) return cardsKept.cards;
+    const cards = paintPatternCards();
+    cardsKept = { boxId: box?.id, key, cards };
+    return cards;
+  });
+  // A press that can be a drag says so (`editLive`). Not a list: WebKit runs
+  // a <select>'s menu in a loop of its own and the page hears no pointerup,
+  // so the flag would stay up and the box stay soft until the next click.
+  function holdLive(e) {
+    if (e.button === 0 && !e.target.closest?.('select')) holdEditLive();
+  }
+  function paintPatternCards() {
     const pat = box?.style.pattern;
     const fg = pat?.fg ?? '#000000';
     const bg = pat?.bg ?? '#ffffff';
@@ -817,10 +614,6 @@
       out[k] = cnv ? cnv.toDataURL() : '';
     }
     return out;
-  });
-  function setPatternKind(k) {
-    box.style.pattern.kind = k;
-    touch();
   }
   // Pattern from page: the next drag on the page is read (pattern-pick.svelte.js),
   // which records its own style step, so the panel's pending one lands first.
@@ -1687,7 +1480,7 @@
     </div>
     {#if bv.texture.on}
       <div class="fx-block">
-        {@render fxPatternControls(bv.texture.pattern, 'Bevel texture', 'bevel.texture.pattern')}
+        {@render patternEditor(bv.texture.pattern, 'Bevel texture pattern', 'bevel.texture.pattern', false)}
         <div class="sh-more" style="margin:0">
           <label class="sh-num" title="Scale, %: over the pattern's own">
             <span>Scale</span>
@@ -1716,94 +1509,129 @@
      Style, Angle, Scale, Reverse, and its stops. `placed` false hides what a
      glow's gradient does not read (it runs along the glow). -->
 {#snippet fxGradientControls(g, title, placed = true)}
-  <div class="sh-more" style="margin:0">
-    <label class="sh-contour" title="Gradient Type: Solid paints the stops; Noise paints a random ramp made from a seed">
-      <span>Gradient Type</span>
-      <select value={g.type} aria-label="{title} type" onchange={(e) => { g.type = e.target.value; touch(); }}>
-        <option value="solid">Solid</option>
-        <option value="noise">Noise</option>
-      </select>
-    </label>
-  </div>
+  {@const moreKey = `g:${title}`}
   {#if g.type === 'noise'}
     {@const n = g.noise}
-    <div class="sh-more" style="margin:0">
-      <label class="sh-num" title="Roughness, %: how many colour steps, and how sharp">
-        <span>Roughness</span>
+    <div class="prow" title="Roughness, %: how many colour steps, and how sharp">
+      <span class="pl">Roughness</span>
+      <div class="pc">
+        <input type="range" min="0" max="100" step="1" value={pct(n.roughness)} aria-label="{title} roughness" oninput={(e) => { n.roughness = +e.target.value / 100; touch(); }} />
         <input type="number" min="0" max="100" step="1" value={pct(n.roughness)} aria-label="{title} roughness, percent" onchange={(e) => { const v = clamp(Math.round(+e.target.value || 0), 0, 100); n.roughness = v / 100; e.target.value = String(v); touch(); }} />
-      </label>
-      <label class="sh-num" title="Color Model: the channels the colours walk in">
-        <span>Model</span>
+      </div>
+    </div>
+    <div class="prow" title="Color Model: the channels the colours walk in">
+      <span class="pl">Model</span>
+      <div class="pc">
         <select value={n.model} aria-label="{title} colour model" onchange={(e) => { n.model = e.target.value; touch(); }}>
           {#each NOISE_MODELS as m (m)}
             <option value={m}>{NOISE_MODEL_LABELS[m]}</option>
           {/each}
         </select>
-      </label>
-      {#each NOISE_CHANNELS[n.model] as ch, i (i)}
-        <label class="sh-num" title="{ch} limit, low end, %">
-          <span>{ch} min</span>
-          <input type="number" min="0" max="100" step="1" value={pct(n.min[i])} aria-label="{title} {ch} limit low, percent" onchange={(e) => setNoiseLimit(n, 'min', i, e)} />
-        </label>
-        <label class="sh-num" title="{ch} limit, high end, %">
-          <span>max</span>
-          <input type="number" min="0" max="100" step="1" value={pct(n.max[i])} aria-label="{title} {ch} limit high, percent" onchange={(e) => setNoiseLimit(n, 'max', i, e)} />
-        </label>
-      {/each}
-      <label class="sh-check" title="Restrict Colors: no oversaturated colours">
-        <input type="checkbox" checked={n.restrict} aria-label="{title} restrict colours" onchange={(e) => { n.restrict = e.target.checked; touch(); }} />
-        <span>Restrict Colors</span>
-      </label>
-      <label class="sh-check" title="Add Transparency: a random opacity too">
-        <input type="checkbox" checked={n.transparency} aria-label="{title} add transparency" onchange={(e) => { n.transparency = e.target.checked; touch(); }} />
-        <span>Add Transparency</span>
-      </label>
+      </div>
     </div>
-    <button type="button" class="add-btn" title="A new random seed: a new ramp from the same settings" aria-label="{title} randomize" onclick={() => randomizeNoise(n)}>Randomize</button>
+    {#each NOISE_CHANNELS[n.model] as ch, i (i)}
+      <div class="prow" title="{ch} limits, %: the range this channel may take">
+        <span class="pl">{ch}</span>
+        <div class="pc">
+          <input type="number" min="0" max="100" step="1" value={pct(n.min[i])} aria-label="{title} {ch} limit low, percent" onchange={(e) => setNoiseLimit(n, 'min', i, e)} />
+          <span class="axis">to</span>
+          <input type="number" min="0" max="100" step="1" value={pct(n.max[i])} aria-label="{title} {ch} limit high, percent" onchange={(e) => setNoiseLimit(n, 'max', i, e)} />
+        </div>
+      </div>
+    {/each}
+    <div class="prow">
+      <span class="pl"></span>
+      <div class="pc">
+        <label class="sh-check" title="Restrict Colors: no oversaturated colours">
+          <input type="checkbox" checked={n.restrict} aria-label="{title} restrict colours" onchange={(e) => { n.restrict = e.target.checked; touch(); }} />
+          <span>Restrict</span>
+        </label>
+        <label class="sh-check" title="Add Transparency: a random opacity too">
+          <input type="checkbox" checked={n.transparency} aria-label="{title} add transparency" onchange={(e) => { n.transparency = e.target.checked; touch(); }} />
+          <span>See-through</span>
+        </label>
+        <button type="button" class="link-btn end" title="A new random seed: a new ramp from the same settings" aria-label="{title} randomize" onclick={() => randomizeNoise(n)}>Randomize</button>
+      </div>
+    </div>
   {:else}
     <!-- Photoshop's Gradient Editor: opacity stops above the ramp, colour
          stops under it, a midpoint diamond between each two. -->
     <FxGradientEditor {g} {title} onchange={() => touch()} oncolour={setColour} />
-    <div class="sh-more" style="margin:0">
-      <label class="sh-num" title="Smoothness, %: 0 runs straight from stop to stop, 100 eases through them">
-        <span>Smoothness</span>
-        <input type="number" min="0" max="100" step="1" value={pct(g.smoothness ?? 0)} aria-label="{title} smoothness, percent" onchange={(e) => commitAlpha(g, 'smoothness', e)} />
-      </label>
-      <label class="sh-contour" title="Method: the colour space the stops blend in. Classic is how gradients blended before Photoshop 2022">
-        <span>Method</span>
-        <select value={g.method ?? 'classic'} aria-label="{title} interpolation method" onchange={(e) => { g.method = e.target.value; touch(); }}>
-          {#each FX_GRADIENT_METHODS as m (m)}
-            <option value={m}>{FX_METHOD_LABELS[m]}</option>
-          {/each}
-        </select>
-      </label>
-    </div>
   {/if}
   {#if placed}
-    <div class="sh-more" style="margin:0">
-      <label class="sh-contour" title="Style: the gradient's shape. Shape Burst runs from the edge in">
-        <span>Style</span>
+    <div class="prow" title="Style: the gradient's shape. Shape Burst runs from the edge in">
+      <span class="pl">Style</span>
+      <div class="pc">
         <select value={g.style} aria-label="{title} style" onchange={(e) => { g.style = e.target.value; touch(); }}>
           {#each FX_GRADIENT_STYLES as st (st)}
             <option value={st}>{FX_STYLE_LABELS[st]}</option>
           {/each}
         </select>
-      </label>
-      <label class="sh-num" title="Angle, degrees: 90 runs bottom to top, as Photoshop's dial">
-        <span>Angle</span>
+      </div>
+    </div>
+    <div class="prow" title="Angle, degrees: 90 runs bottom to top, as Photoshop's dial. Reverse: the ramp the other way">
+      <span class="pl">Angle</span>
+      <div class="pc">
         <input type="number" min="-180" max="180" step="1" value={g.angle} aria-label="{title} angle" onchange={(e) => commitNum(g, 'angle', e, -180, 180)} />
-      </label>
-      <label class="sh-num" title="Scale, %">
-        <span>Scale</span>
+        <label class="sh-check end">
+          <input type="checkbox" checked={g.reverse} aria-label="{title} reversed" onchange={(e) => { g.reverse = e.target.checked; touch(); }} />
+          <span>Reverse</span>
+        </label>
+      </div>
+    </div>
+    <div class="prow" title="Scale, %: how much of the box the ramp spans">
+      <span class="pl">Scale</span>
+      <div class="pc">
+        <input type="range" min="10" max="150" step="1" value={pct(g.scale)} aria-label="{title} scale" oninput={(e) => { g.scale = +e.target.value / 100; touch(); }} />
         <input type="number" min="10" max="150" step="1" value={pct(g.scale)} aria-label="{title} scale, percent" onchange={(e) => { const v = clamp(+e.target.value || 100, 10, 150); g.scale = v / 100; e.target.value = String(v); touch(); }} />
-      </label>
-      <label class="sh-check" title="Reverse: the ramp the other way">
-        <input type="checkbox" checked={g.reverse} aria-label="{title} reversed" onchange={(e) => { g.reverse = e.target.checked; touch(); }} />
-        <span>Reverse</span>
-      </label>
+      </div>
+    </div>
+  {/if}
+  <!-- The settings a plain gradient never needs wait in a fold. -->
+  {@render foldHead(`${title} more options`, 'More', !!gradMore[moreKey], () => (gradMore[moreKey] = !gradMore[moreKey]), gradTuned(g, placed) ? 'set' : '', 'Noise, smoothness, method, dither and offset', true)}
+  {#if gradMore[moreKey]}
+    <div class="prow" title="Gradient Type: Solid paints the stops; Noise paints a random ramp made from a seed">
+      <span class="pl">Type</span>
+      <div class="pc">
+        <select value={g.type} aria-label="{title} type" onchange={(e) => { g.type = e.target.value; touch(); }}>
+          <option value="solid">Solid</option>
+          <option value="noise">Noise</option>
+        </select>
+      </div>
+    </div>
+    {#if g.type !== 'noise'}
+      <div class="prow" title="Smoothness, %: 0 runs straight from stop to stop, 100 eases through them">
+        <span class="pl">Smoothness</span>
+        <div class="pc">
+          <input type="number" min="0" max="100" step="1" value={pct(g.smoothness ?? 0)} aria-label="{title} smoothness, percent" onchange={(e) => commitAlpha(g, 'smoothness', e)} />
+        </div>
+      </div>
+      <div class="prow" title="Method: the colour space the stops blend in. Classic is how gradients blended before Photoshop 2022">
+        <span class="pl">Method</span>
+        <div class="pc">
+          <select value={g.method ?? 'classic'} aria-label="{title} interpolation method" onchange={(e) => { g.method = e.target.value; touch(); }}>
+            {#each FX_GRADIENT_METHODS as m (m)}
+              <option value={m}>{FX_METHOD_LABELS[m]}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+    {/if}
+    {#if placed}
+      <!-- Photoshop's Offset: moves the gradient's centre, % of the box. -->
+      <div class="prow" title="Offset: moves the gradient's centre, % of the box, or of the page with Follow the box off">
+        <span class="pl">Offset</span>
+        <div class="pc">
+          <span class="axis">X</span>
+          <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[0] ?? 0)} aria-label="{title} offset X, percent" onchange={(e) => setFxGradientOffset(g, 0, e)} />
+          <span class="axis">Y</span>
+          <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[1] ?? 0)} aria-label="{title} offset Y, percent" onchange={(e) => setFxGradientOffset(g, 1, e)} />
+          <button type="button" class="link-btn end" title="Put the gradient's centre back in the middle" aria-label="{title} reset offset" disabled={!g.offset?.[0] && !g.offset?.[1]} onclick={() => { g.offset = [0, 0]; touch(); }}>Reset</button>
+        </div>
+      </div>
       <label class="sh-check" title="Dither: a touch of noise so a long, gentle ramp does not band">
         <input type="checkbox" checked={g.dither === true} aria-label="{title} dither" onchange={(e) => { g.dither = e.target.checked; touch(); }} />
-        <span>Dither</span>
+        <span>Dither, against banding</span>
       </label>
       <!-- Photoshop's Align with Layer, kept on the gradient only when off.
            Shape Burst runs from the letters' edge and reads no frame: the box
@@ -1811,19 +1639,9 @@
            changes back. -->
       <label class="sh-check" title={g.style === 'shapeburst' ? 'Align with Layer does not apply to Shape Burst, which runs from the letters\' edge. The setting is kept for the other styles.' : 'Align with Layer: on, the gradient spans the letters and turns with the box; off, it spans the whole page under them and stays put when the box moves or turns'}>
         <input type="checkbox" checked={g.align !== false} disabled={g.style === 'shapeburst'} aria-label="{title} align with layer" onchange={(e) => { if (e.target.checked) delete g.align; else g.align = false; touch(); }} />
-        <span>Align with Layer</span>
+        <span>Follow the box</span>
       </label>
-      <!-- Photoshop's Offset: moves the gradient's centre, % of the box. -->
-      <label class="sh-num" title="Offset X: moves the gradient's centre sideways, % of the box, or of the page with Align with Layer off">
-        <span>Offset X</span>
-        <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[0] ?? 0)} aria-label="{title} offset X, percent" onchange={(e) => setFxGradientOffset(g, 0, e)} />
-      </label>
-      <label class="sh-num" title="Offset Y: moves the gradient's centre down, % of the box, or of the page with Align with Layer off">
-        <span>Offset Y</span>
-        <input type="number" min="-100" max="100" step="1" value={pct(g.offset?.[1] ?? 0)} aria-label="{title} offset Y, percent" onchange={(e) => setFxGradientOffset(g, 1, e)} />
-      </label>
-      <button type="button" class="add-btn" title="Put the gradient's centre back in the middle" aria-label="{title} reset offset" disabled={!g.offset?.[0] && !g.offset?.[1]} onclick={() => { g.offset = [0, 0]; touch(); }}>Reset</button>
-    </div>
+    {/if}
   {/if}
 {/snippet}
 
@@ -1840,72 +1658,65 @@
   {/if}
 {/snippet}
 
-<!-- An effect's pattern: the fill's patterns, its two colours, its size and
-     its turn. The finer controls stay the fill's own. -->
-{#snippet fxPatternControls(p, title, path)}
-  {@const pickable = rustPatterns && !!p.src && p.cell?.length > 0}
-  <div class="sh-more" style="margin:0">
-    <label class="sh-contour" title="Pattern">
-      <span>Pattern</span>
-      <select value={p.kind} aria-label="{title} kind" onchange={(e) => { p.kind = e.target.value; touch(); }}>
-        {#each pickable ? [...PATTERN_KINDS, 'picked'] : PATTERN_KINDS as k (k)}
-          <option value={k}>{patLabel(k)}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="sh-num" title="Scale: the tile against the font size, % (Photoshop's 1 to 1000)">
-      <span>Scale</span>
-      <input type="number" min={PATTERN_SCALE_MIN * 100} max={PATTERN_SCALE_MAX * 100} step="1" value={pct(p.scale)} aria-label="{title} scale, percent" onchange={(e) => { const v = clamp(Math.round(+e.target.value) || 100, PATTERN_SCALE_MIN * 100, PATTERN_SCALE_MAX * 100); p.scale = v / 100; e.target.value = String(v); touch(); }} />
-    </label>
-    <label class="sh-num" title="Turns the pattern, degrees">
-      <span>Angle</span>
-      <input type="number" min="-180" max="180" step="1" value={p.angle} aria-label="{title} angle" onchange={(e) => commitNum(p, 'angle', e, -180, 180)} />
-    </label>
-    <label class="sh-num" title="Moves the tiles sideways, % of a tile (Phase)">
-      <span>Offset X</span>
-      <input type="number" min="0" max="100" step="1" value={pct(p.ox)} aria-label="{title} offset X, percent of a tile" onchange={(e) => commitAlpha(p, 'ox', e)} />
-    </label>
-    <label class="sh-num" title="Moves the tiles down, % of a tile (Phase)">
-      <span>Offset Y</span>
-      <input type="number" min="0" max="100" step="1" value={pct(p.oy)} aria-label="{title} offset Y, percent of a tile" onchange={(e) => commitAlpha(p, 'oy', e)} />
-    </label>
-    <span class="seg" role="group" aria-label="{title} tiles start at">
-      <button type="button" class:on={p.anchor !== 'page'} aria-pressed={p.anchor !== 'page'} title="Each box starts its own tiles" onclick={() => { p.anchor = 'box'; touch(); }}>Box</button>
-      <button type="button" class:on={p.anchor === 'page'} aria-pressed={p.anchor === 'page'} title="Tiles line up across boxes, from the page's corner (Link with Layer off)" onclick={() => { p.anchor = 'page'; touch(); }}>Page</button>
-    </span>
-    <!-- Photoshop's Snap to Origin: the tiles start on the box's corner, or
-         the page's with Page on; the offset (Phase) goes back to 0. -->
-    <button type="button" class="add-btn" title="Start the tiles on the {p.anchor === 'page' ? "page's" : "box's"} corner (Snap to Origin)" aria-label="{title} snap to origin" disabled={!p.ox && !p.oy} onclick={() => { p.ox = 0; p.oy = 0; touch(); }}>Snap to origin</button>
+<!-- A fold's head: a part of a pane a plain box never needs, closed until
+     asked. The badge says what is inside while it is closed. -->
+{#snippet foldHead(label, title, open, toggle, badge, hint, sub = false)}
+<!-- svelte-ignore a11y_role_supports_aria_props_implicit -->
+  <button type="button" class="insp-fold" class:sub class:open aria-expanded={open} aria-label={label} aria-description={badge ? (badge === 'set' ? 'has settings' : `${badge} inside`) : undefined} title={hint} onclick={toggle}>
+    <svg class="fold-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+    <span>{title}</span>
+    {#if badge}<span class="fold-badge">{badge}</span>{/if}
+  </button>
+{/snippet}
+
+<!-- A list's own line inside a fold: its name, and the one thing to do to it. -->
+{#snippet subHead(name, addLabel, onAdd, canAdd, hint)}
+  <div class="sub-head" title={hint}>
+    <span class="sub-name">{name}</span>
+    <button type="button" class="link-btn" aria-label={addLabel} disabled={!canAdd} title={canAdd ? addLabel : `At most ${FX_INSTANCES_MAX} of a kind`} onclick={onAdd}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+      Add
+    </button>
   </div>
-  {#if rustPatterns && path}
-    <div class="pat-pick">
-      <button
-        type="button"
-        class="add-btn"
-        class:on={patternPick.active && patternPick.target === path}
-        disabled={patternPick.busy || !canPickPattern()}
-        title="Drag over a tone on the page; it becomes this effect's pattern"
-        aria-label="{title} pick from page"
-        onclick={() => pickFromPage(path)}
-      >{patternPick.busy ? 'Reading…' : patternPick.active && patternPick.target === path ? 'Drag on the page…' : 'Pick from page'}</button>
-      {#if !pickable && box?.style.pattern?.src && box.style.pattern.cell?.length}
-        <button type="button" class="add-btn" title="Use the tone the fill took from the page" aria-label="{title} use the fill's tone" onclick={() => usePickedTile(p, box.style.pattern)}>Use the fill's tone</button>
-      {/if}
-    </div>
-    {#if p.kind === 'picked'}
-      <div class="seg">
-        <button type="button" class:on={p.mode === 'tone'} aria-pressed={p.mode === 'tone'} title="Recolour the tone with the two colours below" onclick={() => { p.mode = 'tone'; touch(); }}>Tone</button>
-        <button type="button" class:on={p.mode === 'image'} aria-pressed={p.mode === 'image'} title="Keep the page's own greys" onclick={() => { p.mode = 'image'; touch(); }}>Image</button>
-      </div>
-    {/if}
+{/snippet}
+
+<!-- A pattern's tone from the page: the pick, and for an effect the tone the
+     fill already took. While the pick waits for its drag, where it reads. -->
+{#snippet patActs(p, title, path, fromFill)}
+  {@const picking = patternPick.active && patternPick.target === path}
+  {#if fromFill}
+    <button type="button" class="link-btn" title="Use the tone the fill took from the page" aria-label="{title} use the fill's tone" onclick={() => usePickedTile(p, box.style.pattern)}>Use the fill's tone</button>
   {/if}
-  <div class="insp-row fx-pat-colours">
-    {@render swatchCell(p, 'fg', `${title} ink`)}
-    <span class="lbl">Ink</span>
-    {@render swatchCell(p, 'bg', `${title} ground`)}
-    <span class="lbl">Ground</span>
-    <input type="number" min="0" max="100" step="1" value={pct(p.bgOpacity)} aria-label="{title} ground opacity" title="Ground opacity, %; 0 lets the letters show between" oninput={(e) => setAlpha(p, 'bgOpacity', e.target.value)} />
-  </div>
+  <button
+    type="button"
+    class="link-btn"
+    class:on={picking}
+    disabled={patternPick.busy || !canPickPattern()}
+    title="Drag over a tone on the page; it becomes this pattern"
+    aria-label="{title} pick from page"
+    onclick={() => pickFromPage(path)}
+  >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 22 1-1h3l9-9" /><path d="M3 21v-3l9-9" /><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" /></svg>
+    {patternPick.busy ? 'Reading…' : picking ? 'Drag on the page…' : 'Pick from page'}
+  </button>
+{/snippet}
+
+<!-- The one pattern editor (PatternEditor.svelte), with the Inspector's own
+     extras: the pick from the page, named by `path` (`patternPick.target`). -->
+{#snippet patternEditor(p, title, path, cards)}
+  {@const hasTile = rustPatterns && !!p.src && p.cell?.length > 0}
+  {@const fromFill = !cards && !hasTile && !!box?.style.pattern?.src && box.style.pattern.cell?.length > 0}
+  <PatternEditor bind:p={() => p, () => {}} {title} rust={rustPatterns} full={!cards} onchange={() => touch()} oncolour={setColour} kinds={cards ? shownKinds : null} cards={cards ? patternCards : null} cardTile={CARD_TILE}>
+    {#snippet acts()}{@render patActs(p, title, path, fromFill)}{/snippet}
+    {#snippet note()}
+      {#if patternPick.active && patternPick.target === path}
+        <label class="sh-check" title="Cleaning often takes the tone away; the raw page still has it">
+          <input type="checkbox" checked={patternPick.raw} aria-label="Read the raw page" onchange={(e) => (patternPick.raw = e.target.checked)} />
+          <span>Read the raw page, not the cleaned one</span>
+        </label>
+      {/if}
+    {/snippet}
+  </PatternEditor>
 {/snippet}
 
 <!-- One Photoshop Stroke effect: Size, Position, Mode, Opacity, and what it
@@ -1962,7 +1773,7 @@
     {#if k.fill === 'gradient'}
       {@render fxGradientControls(k.gradient, `${name} gradient`)}
     {:else if k.fill === 'pattern'}
-      {@render fxPatternControls(k.pattern, `${name} pattern`, `strokeEffects.${i}.pattern`)}
+      {@render patternEditor(k.pattern, `${name} pattern`, `strokeEffects.${i}.pattern`, false)}
     {:else}
       {@render colorField(k, 'color', `${name} colour`)}
     {/if}
@@ -1976,113 +1787,6 @@
 <!-- Swatch + hex, the one colour idiom in the panel. The label is named by
      the caller, as `swatchCell` does for the list rows - three identical
      "Colour" inputs are three identical names to a screen reader. -->
-<!-- The Rust pattern's controls (Fill::Screen). Every one defaults to the old
-     look; the browser engine reads none of them, so they are shown only while
-     the Rust engine paints. -->
-{#snippet patternControls(s)}
-  {@const p = s.pattern}
-  <div class="grp">
-    <span class="lbl">Ink</span>
-    <div class="slider-row">
-      <input type="range" min="0" max="100" step="1" value={pct(p.fgOpacity)} aria-label="Pattern opacity" oninput={(e) => setAlpha(p, 'fgOpacity', e.target.value)} />
-      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.fgOpacity)} title="Pattern opacity, %" aria-label="Pattern opacity, percent" onchange={(e) => commitAlpha(p, 'fgOpacity', e)} />
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Ground</span>
-    <div class="slider-row">
-      <input type="range" min="0" max="100" step="1" value={pct(p.bgOpacity)} aria-label="Background opacity" oninput={(e) => setAlpha(p, 'bgOpacity', e.target.value)} />
-      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.bgOpacity)} title="Background opacity, %; 0 lets the page show between" aria-label="Background opacity, percent" onchange={(e) => commitAlpha(p, 'bgOpacity', e)} />
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Density · {pct(p.density)}%</span>
-    <div class="slider-row">
-      <input type="range" min="0" max="100" step="1" value={pct(p.density)} aria-label="Pattern density" oninput={(e) => setAlpha(p, 'density', e.target.value)} />
-      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.density)} title="How much ink; 50% is the pattern as designed" aria-label="Pattern density, percent" onchange={(e) => commitAlpha(p, 'density', e)} />
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Angle</span>
-    <div class="slider-row">
-      <input type="range" min="-180" max="180" step="1" value={p.angle} aria-label="Pattern angle" oninput={(e) => setNum(p, 'angle', e.target.value, -180, 180)} />
-      <input class="num-s" type="number" min="-180" max="180" step="1" value={p.angle} title="Turns the pattern, degrees" aria-label="Pattern angle, degrees" onchange={(e) => commitNum(p, 'angle', e, -180, 180)} />
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Stretch · {Number(p.aspect).toFixed(2)}×</span>
-    <div class="slider-row">
-      <input type="range" min="0.25" max="4" step="0.05" value={p.aspect} aria-label="Pattern stretch" oninput={(e) => setNum(p, 'aspect', e.target.value, 0.25, 4)} />
-      <input class="num-s" type="number" min="0.25" max="4" step="0.05" value={p.aspect} title="Stretches the tile along its own width" aria-label="Pattern stretch, multiple" onchange={(e) => commitNum(p, 'aspect', e, 0.25, 4)} />
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Offset X</span>
-    <div class="slider-row">
-      <input type="range" min="0" max="100" step="1" value={pct(p.ox)} aria-label="Pattern offset X" oninput={(e) => setAlpha(p, 'ox', e.target.value)} />
-      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.ox)} title="Moves the tiles sideways, % of a tile" aria-label="Pattern offset X, percent of a tile" onchange={(e) => commitAlpha(p, 'ox', e)} />
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Offset Y</span>
-    <div class="slider-row">
-      <input type="range" min="0" max="100" step="1" value={pct(p.oy)} aria-label="Pattern offset Y" oninput={(e) => setAlpha(p, 'oy', e.target.value)} />
-      <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.oy)} title="Moves the tiles down, % of a tile" aria-label="Pattern offset Y, percent of a tile" onchange={(e) => commitAlpha(p, 'oy', e)} />
-    </div>
-  </div>
-  <div class="grp">
-    <span class="lbl">Tiles start at</span>
-    <div class="seg">
-      <button type="button" class:on={p.anchor === 'box'} aria-pressed={p.anchor === 'box'} title="Each box starts its own tiles" onclick={() => { p.anchor = 'box'; touch(); }}>Box</button>
-      <button type="button" class:on={p.anchor === 'page'} aria-pressed={p.anchor === 'page'} title="Tiles line up across boxes, from the page's corner" onclick={() => { p.anchor = 'page'; touch(); }}>Page</button>
-    </div>
-  </div>
-  {#if SEEDED_PATTERN_KINDS.includes(p.kind)}
-    <div class="grp">
-      <label class="lbl" for="insp-pat-seed">Seed</label>
-      <div class="slider-row">
-        <input id="insp-pat-seed" class="num-s" type="number" min="1" max="9999" step="1" value={p.seed} title="Picks the random arrangement; same seed, same pattern" onchange={(e) => commitNum(p, 'seed', e, 1, 9999, true)} />
-        <button type="button" class="add-btn" onclick={() => { p.seed = 1 + Math.floor(Math.random() * 9999); touch(); }}>Reshuffle</button>
-      </div>
-    </div>
-  {/if}
-  <div class="switch-row">
-    <button
-      type="button"
-      class="switch"
-      class:on={p.fade.on}
-      role="switch"
-      aria-checked={p.fade.on}
-      aria-label="Fade"
-      onclick={() => { p.fade.on = !p.fade.on; touch(); }}
-    ><span class="knob"></span></button>
-    <span class="lbl2">Fade</span>
-  </div>
-  <div class="insp-sub-body" class:disabled={!p.fade.on} style="padding:0;border:none;gap:11px">
-    <div class="grp">
-      <span class="lbl">Direction</span>
-      <div class="slider-row">
-        <input type="range" min="0" max="359" step="1" value={((p.fade.angle % 360) + 360) % 360} disabled={!p.fade.on} aria-label="Fade direction" oninput={(e) => setNum(p.fade, 'angle', e.target.value, 0, 359)} />
-        <input class="num-s" type="number" min="0" max="359" step="1" value={((p.fade.angle % 360) + 360) % 360} disabled={!p.fade.on} title="Degrees, as a gradient's: 180 fades top to bottom" aria-label="Fade direction, degrees" onchange={(e) => commitNum(p.fade, 'angle', e, 0, 359)} />
-      </div>
-    </div>
-    <div class="grp">
-      <span class="lbl">Start</span>
-      <div class="slider-row">
-        <input type="range" min="0" max="100" step="1" value={pct(p.fade.from)} disabled={!p.fade.on} aria-label="Fade start" oninput={(e) => setAlpha(p.fade, 'from', e.target.value)} />
-        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.fade.from)} disabled={!p.fade.on} title="Full ink up to here, % across the box" aria-label="Fade start, percent" onchange={(e) => commitAlpha(p.fade, 'from', e)} />
-      </div>
-    </div>
-    <div class="grp">
-      <span class="lbl">End</span>
-      <div class="slider-row">
-        <input type="range" min="0" max="100" step="1" value={pct(p.fade.to)} disabled={!p.fade.on} aria-label="Fade end" oninput={(e) => setAlpha(p.fade, 'to', e.target.value)} />
-        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(p.fade.to)} disabled={!p.fade.on} title="No ink from here, % across the box" aria-label="Fade end, percent" onchange={(e) => commitAlpha(p.fade, 'to', e)} />
-      </div>
-    </div>
-  </div>
-{/snippet}
-
 {#snippet colorField(obj, key, label = 'Colour')}
   <div class="color-field">
     <ColorPicker value={obj[key]} {label} size={24} unclipped onchange={(hex) => setColour(obj, key, hex)} />
@@ -2149,7 +1853,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- Capture phase, so the snapshot lands before any control's own handler
        mutates the style - see armSnap. -->
-  <div class="insp" onpointerdowncapture={armSnap} onkeydowncapture={armSnap}>
+  <div class="insp" onpointerdowncapture={(e) => { armSnap(); holdLive(e); }} onkeydowncapture={armSnap}>
     <div class="insp-tabs" role="tablist" aria-label="Text box options">
       {#each TABS as [id, label] (id)}
         <button
@@ -2277,42 +1981,152 @@
     {/if}
 
     <!-- ===== Fill ===== -->
+    <!-- One grammar down the pane: a property row is its name on the left and
+         its control on the right, on one line (`.prow`). Top to bottom: what
+         the letters are filled with, that fill's own rows, how see-through it
+         is; then the box over the page; then the two folds a plain box never
+         needs (overlays, advanced blending). -->
     {#if tab === 'fill'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-fill" aria-labelledby="insp-tab-fill">
         {@render inkGapNote()}
-        <div class="grp">
-          <span class="lbl">Fill</span>
-          <div class="seg">
-            <button type="button" class="nofill" class:on={fillMode === 'none'} aria-pressed={fillMode === 'none'} title="No fill" aria-label="No fill" onclick={() => setFillMode('none')}>{@html iconNoFill}</button>
-            {#each [['solid', 'Solid'], ['gradient', 'Gradient'], ['pattern', 'Pattern']] as [m, label] (m)}
-              <button type="button" class:on={fillMode === m} aria-pressed={fillMode === m} onclick={() => setFillMode(m)}>{label}</button>
-            {/each}
-          </div>
+        <div class="seg" role="group" aria-label="Fill">
+          <button type="button" class="nofill" class:on={fillMode === 'none'} aria-pressed={fillMode === 'none'} title="No fill" aria-label="No fill" onclick={() => setFillMode('none')}>{@html iconNoFill}</button>
+          {#each [['solid', 'Solid'], ['gradient', 'Gradient'], ['pattern', 'Pattern']] as [m, label] (m)}
+            <button type="button" class:on={fillMode === m} aria-pressed={fillMode === m} onclick={() => setFillMode(m)}>{label}</button>
+          {/each}
         </div>
 
-        {#if fillMode !== 'none'}
-          <!-- Photoshop's Fill Opacity: the fill fades, the strokes and the
-               shadows stay. The Rust engine paints it. -->
-          <div class="grp">
-            <span class="lbl" title="Fades the fill only: strokes and shadows stay">Fill opacity</span>
-            {#if rustBoxes}
-              <div class="slider-row">
-                <input type="range" min="0" max="100" step="1" value={pct(s.fillOpacity)} aria-label="Fill opacity" oninput={(e) => setAlpha(s, 'fillOpacity', e.target.value)} />
-                <input class="num-s" type="number" min="0" max="100" step="1" value={pct(s.fillOpacity)} title="Fill opacity, %" aria-label="Fill opacity, percent" onchange={(e) => commitAlpha(s, 'fillOpacity', e)} />
+        {#if fillMode === 'none'}
+          <p class="nofill-note">{s.strokes.length ? 'The letters are see-through: their outlines and layer effects show, as a Photoshop layer at Fill 0 % does.' : 'No fill and no stroke: only the layer effects show. Add a stroke or an effect.'}</p>
+        {:else if fillMode === 'solid'}
+          <div class="prow">
+            <span class="pl">Colour</span>
+            <div class="pc">{@render colorField(s, 'color', 'Fill colour')}</div>
+          </div>
+        {:else if fillMode === 'gradient'}
+          <!-- The gradient in the order it is built: its shape, its stops (the
+               one gradient editor, in its fill form), where it runs, and what
+               it spans. -->
+          <div class="prow">
+            <span class="pl">Shape</span>
+            <div class="pc">
+              <div class="seg">
+                <button type="button" class:on={s.gradient.kind !== 'radial'} aria-pressed={s.gradient.kind !== 'radial'} title="Linear gradient" onclick={() => setGradKind('linear')}>Linear</button>
+                <button type="button" class:on={s.gradient.kind === 'radial'} aria-pressed={s.gradient.kind === 'radial'} title="Radial gradient" onclick={() => setGradKind('radial')}>Radial</button>
               </div>
-            {:else}
-              <p class="nofill-note">Needs the Rust text engine (Settings).</p>
-            {/if}
+            </div>
+          </div>
+          <FxGradientEditor flat g={s.gradient} title="Fill gradient" onchange={() => touch()} oncolour={setColour} />
+          {#if s.gradient.kind === 'radial'}
+            <!-- A style that reached the panel without going through
+                 `normalizeStyle` (an old undo snapshot, a hand-edited file) has
+                 no radius at all, and an empty number field is a worse answer
+                 than the default the renderers would use for it anyway. -->
+            {@const rad = Number.isFinite(+s.gradient.radius) ? +s.gradient.radius : 1}
+            <div class="prow">
+              <span class="pl">Centre</span>
+              <div class="pc">
+                <div class="dirpad" role="radiogroup" aria-label="Gradient centre">
+                  {#each CENTRES as c, i (i)}
+                    {#if c}
+                      <button
+                        type="button"
+                        role="radio"
+                        class="cell"
+                        class:on={near(s.gradient.cx, c.cx) && near(s.gradient.cy, c.cy)}
+                        title={c.n}
+                        aria-label="Centre {c.n.toLowerCase()}"
+                        aria-checked={near(s.gradient.cx, c.cx) && near(s.gradient.cy, c.cy)}
+                        onclick={() => setCentre(c)}
+                      ><span class="cdot"></span></button>
+                    {:else}
+                      <span class="cell blank"></span>
+                    {/if}
+                  {/each}
+                </div>
+              </div>
+            </div>
+            <div class="prow" title="How far the last stop is from the centre, % of the distance to the far corner">
+              <span class="pl">Radius</span>
+              <div class="pc">
+                <input type="range" min="10" max="400" step="5" value={Math.round(rad * 100)} aria-label="Radius" oninput={(e) => setNum(s.gradient, 'radius', e.target.value / 100, 0.1, 4)} />
+                <input type="number" min="10" max="400" step="5" value={Math.round(rad * 100)} aria-label="Radius, percent" onchange={(e) => { const v = clamp(Math.round(+e.target.value) || 100, 10, 400); s.gradient.radius = v / 100; e.target.value = String(v); touch(); }} />
+              </div>
+            </div>
+          {:else}
+            <div class="prow" title="0° runs bottom to top, 90° left to right">
+              <span class="pl">Angle</span>
+              <div class="pc">
+                <input type="range" min="0" max="360" step="5" value={Math.round(s.gradient.angle)} aria-label="Gradient angle" oninput={(e) => setNum(s.gradient, 'angle', e.target.value, 0, 360, true)} />
+                <input type="number" min="0" max="360" step="5" value={Math.round(s.gradient.angle)} aria-label="Gradient angle, degrees" onchange={(e) => commitNum(s.gradient, 'angle', e, 0, 360, true)} />
+              </div>
+            </div>
+          {/if}
+          <div class="prow">
+            <span class="pl">Spans</span>
+            <div class="pc">
+              <div class="seg">
+                <button type="button" class:on={s.gradient.scope === 'box'} aria-pressed={s.gradient.scope === 'box'} title="One gradient across the whole block" onclick={() => { s.gradient.scope = 'box'; touch(); }}>Box</button>
+                <button type="button" class:on={s.gradient.scope === 'line'} aria-pressed={s.gradient.scope === 'line'} title="Restart the gradient on every line" onclick={() => { s.gradient.scope = 'line'; touch(); }}>Line</button>
+              </div>
+            </div>
+          </div>
+        {:else}
+          {@render patternEditor(s.pattern, 'Pattern', 'pattern', true)}
+        {/if}
+
+        <!-- Photoshop's Fill Opacity: the fill fades, the strokes and the
+             shadows stay. The Rust engine paints it. -->
+        {#if fillMode !== 'none' && rustBoxes}
+          <div class="prow" title="Fades the fill only: strokes and shadows stay">
+            <span class="pl">Fill opacity</span>
+            <div class="pc">
+              <input type="range" min="0" max="100" step="1" value={pct(s.fillOpacity)} aria-label="Fill opacity" oninput={(e) => setAlpha(s, 'fillOpacity', e.target.value)} />
+              <input type="number" min="0" max="100" step="1" value={pct(s.fillOpacity)} aria-label="Fill opacity, percent" onchange={(e) => commitAlpha(s, 'fillOpacity', e)} />
+            </div>
           </div>
         {/if}
-        {#if true}
-          <!-- Photoshop's Color Overlay: a flat colour over the fill, in its
-               own mode, under the strokes. The Rust engine paints it. -->
-          {@render secHead('Colour overlays · first on top')}
-          <div class="grp">
-            {#if !s.colorOverlays.length}
-              <div class="insp-none">No colour overlay.</div>
-            {/if}
+
+        <div class="insp-rule"></div>
+
+        <div class="prow" title="Fades the whole box: fill, strokes and effects">
+          <span class="pl">Box opacity</span>
+          <div class="pc">
+            <input type="range" min="0" max="100" step="1" value={pct(s.opacity)} aria-label="Opacity" oninput={(e) => setAlpha(s, 'opacity', e.target.value)} />
+            <input type="number" min="0" max="100" step="1" value={pct(s.opacity)} aria-label="Opacity, percent" onchange={(e) => commitAlpha(s, 'opacity', e)} />
+          </div>
+        </div>
+        <!-- Photoshop's Blending Options: the box's mode over the page art.
+             The Rust engine paints it (LAYER_STYLES_PLAN.md phase 6a). -->
+        {#if rustBoxes}
+          <div class="prow" title="How the box mixes with the page art under it">
+            <span class="pl">Blend mode</span>
+            <div class="pc">
+              <select value={s.blendMode} aria-label="Box blend mode" onchange={(e) => { s.blendMode = e.target.value; touch(); }}>
+                {#each LAYER_BLEND_MODES as m (m)}
+                  <option value={m}>{blendLabel(m)}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+          {#if FILL_SPECIAL_MODES.includes(s.blendMode) && s.fillOpacity < 1}
+            <p class="nofill-note">Fill works as in Photoshop for this mode: it changes the blend, not the coverage.</p>
+          {/if}
+          {#if usesBackdrop(s)}
+            <p class="nofill-note">Blends with the page art.</p>
+          {/if}
+        {:else}
+          <p class="nofill-note">Fill opacity, blend modes and overlays need the Rust text engine (Settings).</p>
+        {/if}
+
+        <!-- Photoshop's Color, Gradient and Pattern Overlay: laid over the
+             fill, each in its own mode, under the strokes. A plain box has
+             none, so they wait in a fold; its badge counts them. -->
+        {@render foldHead('Overlays', 'Overlays', overlaysOpen, () => (overlaysOpen = !overlaysOpen), overlayCount ? String(overlayCount) : '', 'Colour, gradient and pattern laid over the fill')}
+        {#if overlaysOpen}
+          {@const po = s.patternOverlay}
+          {@render subHead('Colour', 'Add colour overlay', addOverlay, roomFor(s.colorOverlays), 'A flat colour over the fill. The first is on top')}
+          {#if s.colorOverlays.length}
             <div class="insp-list k-overlay">
               {#each s.colorOverlays as o, i (o)}
                 <div class="insp-row" class:inst-off={!instanceOn(o)}>
@@ -2322,59 +2136,45 @@
                       <option value={m}>{blendLabel(m)}</option>
                     {/each}
                   </select>
-                  <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Overlay {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(o, 'opacity', e.target.value)} />
+                  <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Overlay {i + 1} opacity" title="Opacity, %" onchange={(e) => commitAlpha(o, 'opacity', e)} />
                   <FxMenu kind="colorOverlay" name="Overlay {i + 1}" onpick={(id) => fxPick('colorOverlay', o, `Overlay ${i + 1}`, id)} />
                   {@render rmBtn(`overlay ${i + 1}`, () => removeOverlay(i))}
                 </div>
                 {@render instanceBar(s.colorOverlays, i, `Overlay ${i + 1}`, true)}
               {/each}
             </div>
-            {#if s.colorOverlays.length && !rustBoxes}
-              <p class="nofill-note">Colour overlays need the Rust text engine (Settings).</p>
-            {/if}
-            {@render addBtn('Add colour overlay', addOverlay, roomFor(s.colorOverlays))}
-          </div>
-          <!-- Photoshop's Gradient Overlay and Pattern Overlay: under the
-               colour overlays, over the fill. The Rust engine paints them. -->
-          {@render secHead('Gradient overlays · first on top')}
-          <div class="grp">
-            {#if !s.gradientOverlays.length}
-              <div class="insp-none">No gradient overlay.</div>
-            {/if}
-            {#each s.gradientOverlays as o, i (o)}
-              <div class="fx-block" class:inst-off={!instanceOn(o)}>
-                <div class="insp-row k-fxrow">
-                  <select value={o.blend} aria-label="Gradient overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
-                    {#each LAYER_BLEND_MODES as m (m)}
-                      <option value={m}>{blendLabel(m)}</option>
-                    {/each}
-                  </select>
-                  <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Gradient overlay {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(o, 'opacity', e.target.value)} />
-                  <FxMenu kind="gradientOverlay" name="Gradient overlay {i + 1}" onpick={(id) => fxPick('gradientOverlay', o, `Gradient overlay ${i + 1}`, id)} />
-                  {@render rmBtn(`gradient overlay ${i + 1}`, () => removeGradientOverlay(i))}
-                </div>
-                {@render instanceBar(s.gradientOverlays, i, `Gradient overlay ${i + 1}`, true)}
-                {@render fxGradientControls(o.gradient, `Gradient overlay ${i + 1}`)}
+          {/if}
+          {@render subHead('Gradient', 'Add gradient overlay', addGradientOverlay, roomFor(s.gradientOverlays), 'A gradient over the fill, under the colour overlays. The first is on top')}
+          {#each s.gradientOverlays as o, i (o)}
+            <div class="fx-block" class:inst-off={!instanceOn(o)}>
+              <div class="insp-row k-fxrow">
+                <select value={o.blend} aria-label="Gradient overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
+                  {#each LAYER_BLEND_MODES as m (m)}
+                    <option value={m}>{blendLabel(m)}</option>
+                  {/each}
+                </select>
+                <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Gradient overlay {i + 1} opacity" title="Opacity, %" onchange={(e) => commitAlpha(o, 'opacity', e)} />
+                <FxMenu kind="gradientOverlay" name="Gradient overlay {i + 1}" onpick={(id) => fxPick('gradientOverlay', o, `Gradient overlay ${i + 1}`, id)} />
+                {@render rmBtn(`gradient overlay ${i + 1}`, () => removeGradientOverlay(i))}
               </div>
-            {/each}
-            {#if s.gradientOverlays.length && !rustBoxes}
-              <p class="nofill-note">Gradient overlays need the Rust text engine (Settings).</p>
-            {/if}
-            {@render addBtn('Add gradient overlay', addGradientOverlay, roomFor(s.gradientOverlays))}
-          </div>
-          {@const po = s.patternOverlay}
-          <div class="switch-row">
-            <button
-              type="button"
-              class="switch"
-              class:on={po.on}
-              role="switch"
-              aria-checked={po.on}
-              aria-label="Pattern overlay"
-              onclick={() => switchFx('patternOverlay', po)}
-            ><span class="knob"></span></button>
-            <span class="lbl2">Pattern overlay</span>
-            <span class="fx-menu-end"><FxMenu kind="patternOverlay" name="Pattern overlay" onpick={(id) => fxPick('patternOverlay', po, 'Pattern overlay', id)} /></span>
+              {@render instanceBar(s.gradientOverlays, i, `Gradient overlay ${i + 1}`, true)}
+              {@render fxGradientControls(o.gradient, `Gradient overlay ${i + 1}`)}
+            </div>
+          {/each}
+          <div class="sub-head" title="A pattern over the fill, under the gradient overlays">
+            <span class="sub-name">Pattern</span>
+            <span class="sub-end">
+              <FxMenu kind="patternOverlay" name="Pattern overlay" onpick={(id) => fxPick('patternOverlay', po, 'Pattern overlay', id)} />
+              <button
+                type="button"
+                class="switch"
+                class:on={po.on}
+                role="switch"
+                aria-checked={po.on}
+                aria-label="Pattern overlay"
+                onclick={() => switchFx('patternOverlay', po)}
+              ><span class="knob"></span></button>
+            </span>
           </div>
           {#if po.on}
             <div class="fx-block">
@@ -2384,383 +2184,82 @@
                     <option value={m}>{blendLabel(m)}</option>
                   {/each}
                 </select>
-                <input type="number" min="0" max="100" step="1" value={pct(po.opacity)} aria-label="Pattern overlay opacity" title="Opacity, %" oninput={(e) => setAlpha(po, 'opacity', e.target.value)} />
+                <input type="number" min="0" max="100" step="1" value={pct(po.opacity)} aria-label="Pattern overlay opacity" title="Opacity, %" onchange={(e) => commitAlpha(po, 'opacity', e)} />
               </div>
-              {@render fxPatternControls(po.pattern, 'Pattern overlay', 'patternOverlay.pattern')}
-              {#if !rustBoxes}
-                <p class="nofill-note">The pattern overlay needs the Rust text engine (Settings).</p>
-              {/if}
+              {@render patternEditor(po.pattern, 'Pattern overlay', 'patternOverlay.pattern', false)}
             </div>
           {/if}
         {/if}
-        {#if fillMode === 'none'}
-          <p class="nofill-note">{s.strokes.length ? 'The letters are see-through: their outlines and layer effects show, as a Photoshop layer at Fill 0 % does.' : 'No fill and no stroke: only the layer effects show. Add a stroke or an effect.'}</p>
-        {:else if fillMode === 'solid'}
-          <div class="grp">
-            <span class="lbl">Colour</span>
-            {@render colorField(s, 'color', 'Fill colour')}
-          </div>
-        {:else if fillMode === 'gradient'}
-          <!-- The gradient, top to bottom in the order it is built: what shape
-               it is, where it runs, where it stops, and what it looks like
-               while you do it. -->
-          <div class="seg">
-            <button type="button" class="kbtn" class:on={s.gradient.kind !== 'radial'} aria-pressed={s.gradient.kind !== 'radial'} title="Linear gradient" onclick={() => setGradKind('linear')}>
-              {@html iconGradientLinear}<span>Linear</span>
-            </button>
-            <button type="button" class="kbtn" class:on={s.gradient.kind === 'radial'} aria-pressed={s.gradient.kind === 'radial'} title="Radial gradient" onclick={() => setGradKind('radial')}>
-              {@html iconGradientRadial}<span>Radial</span>
-            </button>
-          </div>
 
-          <!-- The stop bar. The ramp, the handles that set it, and the one
-               handle that is selected - and clicking anywhere on the bar that
-               is not a handle puts a new one there. -->
-          <div class="grad-edit" role="presentation" onpointerdown={onBarDown}>
-            <div class="grad-bar">
-              <!-- The ramp, not the bar around it, is what a pointer position is
-                   measured against: it is the box the rail's handles are laid
-                   out in, so the two are the same ruler down to the pixel. -->
-              <div class="grad-ramp" bind:this={barEl} style="background-image:{barCss}"></div>
-            </div>
-            <div class="grad-rail">
-              {#each s.gradient.stops as st, i (i)}
-                <button
-                  type="button"
-                  class="gstop"
-                  class:on={i === stopIdx}
-                  style="left:{clamp(Number(st.pos) || 0, 0, 1) * 100}%;--stop-c:{st.color}"
-                  title="Stop {i + 1} · {pct(st.pos)}% · drag to move, double-click or press Enter for colour"
-                  aria-label="Stop {i + 1} at {pct(st.pos)} percent"
-                  aria-pressed={i === stopIdx}
-                  onpointerdown={(e) => onStopDown(e, i)}
-                  onpointermove={onStopMove}
-                  onpointerup={onStopUp}
-                  onpointercancel={onStopUp}
-                  ondblclick={(e) => openStopColour(e, i)}
-                  onkeydown={(e) => onStopKey(e, i)}
-                ></button>
-              {/each}
-            </div>
-          </div>
-
-          <!-- One stop's own fields. The list used to be here in full; a stop
-               that is not selected has nothing to say that its handle is not
-               already saying by sitting where it sits. -->
-          {#if selStop}
-            <!-- The caption sits above its fields, as it does in the Effects
-                 lists; the columns are shared with the row below it. -->
-            <div class="insp-cap grad-cap"><span></span><span></span><span class="left">Colour</span><span>Pos %</span><span>Op %</span><span></span><span></span></div>
-            <div class="grad-sel">
-              <span class="grad-n">{Math.min(stopIdx, s.gradient.stops.length - 1) + 1}/{s.gradient.stops.length}</span>
-              <!-- The swatch snippet's own markup, spelled out here because this
-                   one needs a handle on the picker: a double-click on a stop
-                   opens it. -->
-              <ColorPicker bind:this={stopPicker} value={selStop.color} label="Stop colour" size={24} unclipped onchange={(hex) => setColour(selStop, 'color', hex)} />
-              <input type="text" class="hex" value={selStop.color} aria-label="Stop hex colour" oninput={hexInput} onchange={(e) => setHex(selStop, 'color', e.target.value, e.target)} />
-              <input type="number" min="0" max="100" step="1" value={pct(selStop.pos)} aria-label="Stop position" title="Position along the gradient, %" oninput={(e) => setAlpha(selStop, 'pos', e.target.value)} onchange={() => sortStops()} />
-              <input type="number" min="0" max="100" step="1" value={pct(selStop.opacity)} aria-label="Stop opacity" title="Opacity of this stop, %" oninput={(e) => setAlpha(selStop, 'opacity', e.target.value)} />
-              <!-- The keyboard's add-a-stop, for whoever never found
-                   click-the-empty-bar. It lands in the widest gap. -->
-              <button
-                type="button"
-                class="icon-btn"
-                title={s.gradient.stops.length >= GRADIENT_MAX_STOPS ? `At most ${GRADIENT_MAX_STOPS} stops` : 'Add a stop in the widest gap'}
-                aria-label="Add gradient stop"
-                disabled={s.gradient.stops.length >= GRADIENT_MAX_STOPS}
-                onclick={addStopWidestGap}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" /></svg>
-              </button>
-              <button
-                type="button"
-                class="icon-btn"
-                title={s.gradient.stops.length > 2 ? 'Delete this stop' : 'A gradient needs two stops'}
-                aria-label="Delete stop"
-                disabled={s.gradient.stops.length <= 2}
-                onclick={() => removeStop(Math.min(stopIdx, s.gradient.stops.length - 1))}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-              </button>
-            </div>
-          {/if}
-
-          {#if s.gradient.kind === 'radial'}
-            <!-- A style that reached the panel without going through
-                 `normalizeStyle` (an old undo snapshot, a hand-edited file) has
-                 no radius at all, and an empty number field is a worse answer
-                 than the default the renderers would use for it anyway. -->
-            {@const rad = Number.isFinite(+s.gradient.radius) ? +s.gradient.radius : 1}
-            <div class="pad-row">
-              <div class="dirpad" role="radiogroup" aria-label="Gradient centre">
-                {#each CENTRES as c, i (i)}
-                  {#if c}
-                    <button
-                      type="button"
-                      role="radio"
-                      class="cell"
-                      class:on={near(s.gradient.cx, c.cx) && near(s.gradient.cy, c.cy)}
-                      title={c.n}
-                      aria-label="Centre {c.n.toLowerCase()}"
-                      aria-checked={near(s.gradient.cx, c.cx) && near(s.gradient.cy, c.cy)}
-                      onclick={() => setCentre(c)}
-                    ><span class="cdot"></span></button>
-                  {:else}
-                    <span class="cell blank"></span>
-                  {/if}
+        <!-- Advanced Blending: Channels, Blend Interior Effects as Group,
+             Transparency Shapes Layer and Blend If are painted (phase 6b).
+             Knockout and Blend Clipped Layers as Group are written to the PSD
+             and paint nothing here (user decision, phase 6c): they sit apart,
+             under their own heading. -->
+        {#if rustBoxes}
+          {@const inner = s.colorOverlays?.some(instanceOn) || s.gradientOverlays?.some(instanceOn) || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
+          {@render foldHead('Advanced blending', 'Advanced blending', blendOpen, () => (blendOpen = !blendOpen), blendTuned ? 'set' : '', 'Channels, Blend If and the Photoshop options')}
+          {#if blendOpen}
+            <div class="prow" title="Channels: a channel left out shows the page art's">
+              <span class="pl">Channels</span>
+              <div class="pc" role="group" aria-label="Channels">
+                {#each [['r', 'R'], ['g', 'G'], ['b', 'B']] as [k, name] (k)}
+                  <label class="sh-check">
+                    <input type="checkbox" checked={s.blending?.channels?.[k] !== false} aria-label="Channel {name}" onchange={(e) => setChannel(s, k, e.target.checked)} />
+                    <span>{name}</span>
+                  </label>
                 {/each}
-              </div>
-              <div class="pad-side">
-                <div class="field">
-                  <label class="lbl" for="insp-grad-radius">Radius · {Math.round(rad * 100)}%</label>
-                  <div class="slider-row">
-                    <input id="insp-grad-radius" type="range" min="0.1" max="4" step="0.05" value={rad} aria-label="Radius" oninput={(e) => setNum(s.gradient, 'radius', e.target.value, 0.1, 4)} />
-                  </div>
-                  <input type="number" min="0.1" max="4" step="0.05" value={rad} title="How far the last stop is from the centre, as a multiple of the distance to the far corner" aria-label="Radius, multiple" oninput={(e) => setNum(s.gradient, 'radius', e.target.value, 0.1, 4)} />
-                </div>
+                <span class="end"><FxMenu kind="blending" name="Advanced blending" onpick={(id) => fxPick('blending', s.blending, 'Advanced blending', id)} /></span>
               </div>
             </div>
-          {:else}
-            <div class="pad-row">
-              <div class="dirpad" role="radiogroup" aria-label="Gradient direction">
-                {#each DIRS as d, i (i)}
-                  {#if d}
-                    <button
-                      type="button"
-                      role="radio"
-                      class="cell"
-                      class:on={Math.round(s.gradient.angle) % 360 === d.a}
-                      title="{d.n} · {d.a}°"
-                      aria-label="{d.n}, {d.a} degrees"
-                      aria-checked={Math.round(s.gradient.angle) % 360 === d.a}
-                      onclick={() => setAngle(d.a)}
-                    ><span class="arrow" style="transform:rotate({d.a}deg)">{@html iconArrowUp}</span></button>
-                  {:else}
-                    <span class="cell mid">{Math.round(s.gradient.angle)}°</span>
-                  {/if}
-                {/each}
-              </div>
-              <div class="pad-side">
-                <div class="field">
-                  <label class="lbl" for="insp-grad-angle">Angle</label>
-                  <input id="insp-grad-angle" type="number" min="0" max="360" step="5" value={Math.round(s.gradient.angle)} title="0° runs bottom to top, 90° left to right" oninput={(e) => setNum(s.gradient, 'angle', e.target.value, 0, 360, true)} />
-                </div>
-              </div>
-            </div>
-          {/if}
-
-          <div class="grp">
-            <span class="lbl">Spans</span>
-            <div class="seg">
-              <button type="button" class:on={s.gradient.scope === 'box'} aria-pressed={s.gradient.scope === 'box'} title="One gradient across the whole block" onclick={() => { s.gradient.scope = 'box'; touch(); }}>Box</button>
-              <button type="button" class:on={s.gradient.scope === 'line'} aria-pressed={s.gradient.scope === 'line'} title="Restart the gradient on every line" onclick={() => { s.gradient.scope = 'line'; touch(); }}>Line</button>
-            </div>
-          </div>
-
-        {:else}
-          <div class="grp">
-            <span class="lbl">Tile</span>
-            {#if rustPatterns}
-              <div class="seg" role="group" aria-label="Pattern group">
-                {#each [['all', 'All'], ['tone', 'Tone'], ['lines', 'Lines'], ['action', 'Action'], ['shapes', 'Shapes']] as [g, label] (g)}
-                  <button type="button" class:on={patGroup === g} aria-pressed={patGroup === g} onclick={() => (patGroup = g)}>{label}</button>
-                {/each}
-              </div>
-            {/if}
-            <div class="pat-grid" role="radiogroup" aria-label="Pattern">
-              {#each shownKinds as k (k)}
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={s.pattern.kind === k}
-                  class="pat-card"
-                  class:on={s.pattern.kind === k}
-                  title={patLabel(k)}
-                  onclick={() => setPatternKind(k)}
-                >
-                  {#if rustPatterns}
-                    <span class="pat-tile" style="background-image:url({patternCards[k]});background-size:100% 100%"></span>
-                  {:else}
-                    <span class="pat-tile" style="background-image:url({patternCards[k]});background-size:{CARD_TILE}px {CARD_TILE}px"></span>
-                  {/if}
-                  <span class="pat-name">{patLabel(k)}</span>
-                </button>
-              {/each}
-            </div>
-            {#if !rustPatterns}
-              <p class="pat-note">More patterns and controls need the Rust text engine (Settings).</p>
-            {/if}
-          </div>
-          {#if rustPatterns}
-            <div class="grp">
-              <span class="lbl">From the page</span>
-              <div class="pat-pick">
-                {#if s.pattern.src && s.pattern.cell.length}
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={s.pattern.kind === 'picked'}
-                    class="pat-card"
-                    class:on={s.pattern.kind === 'picked'}
-                    title="The tone taken from the page"
-                    onclick={() => setPatternKind('picked')}
-                  >
-                    <span class="pat-tile" style="background-image:url({patternCards.picked ?? ''});background-size:100% 100%"></span>
-                    <span class="pat-name">{patLabel('picked')}</span>
-                  </button>
-                {/if}
-                <button
-                  type="button"
-                  class="add-btn"
-                  class:on={patternPick.active}
-                  disabled={patternPick.busy || !canPickPattern()}
-                  title="Drag over a tone on the page; it becomes this box's pattern"
-                  onclick={() => pickFromPage()}
-                >{patternPick.busy ? 'Reading…' : patternPick.active ? 'Drag on the page…' : 'Pick from page'}</button>
-              </div>
-              <div class="switch-row">
-                <button
-                  type="button"
-                  class="switch"
-                  class:on={patternPick.raw}
-                  role="switch"
-                  aria-checked={patternPick.raw}
-                  aria-label="Read the raw page"
-                  onclick={() => (patternPick.raw = !patternPick.raw)}
-                ><span class="knob"></span></button>
-                <span class="lbl2" title="Cleaning often takes the tone away; the raw page still has it">Read the raw page</span>
-              </div>
-              {#if s.pattern.kind === 'picked'}
-                <div class="seg">
-                  <button type="button" class:on={s.pattern.mode === 'tone'} aria-pressed={s.pattern.mode === 'tone'} title="Recolour the tone with the two colours below" onclick={() => { s.pattern.mode = 'tone'; touch(); }}>Tone</button>
-                  <button type="button" class:on={s.pattern.mode === 'image'} aria-pressed={s.pattern.mode === 'image'} title="Keep the page's own greys" onclick={() => { s.pattern.mode = 'image'; touch(); }}>Image</button>
-                </div>
-              {/if}
-            </div>
-          {/if}
-          <div class="grp">
-            <span class="lbl">Scale · {Number(s.pattern.scale).toFixed(2)}×</span>
-            <!-- The slider spans the usual 0.25..4; the field takes all that
-                 normalizePattern keeps (PATTERN_SCALE_MIN..MAX, 1-1000 %). -->
-            <div class="slider-row">
-              <input type="range" min="0.25" max="4" step="0.05" value={s.pattern.scale} aria-label="Pattern scale" oninput={(e) => setNum(s.pattern, 'scale', e.target.value, 0.25, 4)} />
-              <input class="num-s" type="number" min={PATTERN_SCALE_MIN} max={PATTERN_SCALE_MAX} step="0.05" value={s.pattern.scale} title="Tile size, relative to the font size" aria-label="Pattern scale, multiple" oninput={(e) => setNum(s.pattern, 'scale', e.target.value, PATTERN_SCALE_MIN, PATTERN_SCALE_MAX)} />
-            </div>
-          </div>
-          <div class="row2">
-            <div class="field">
-              <span class="lbl">Pattern</span>
-              {@render colorField(s.pattern, 'fg', 'Pattern colour')}
-            </div>
-            <div class="field">
-              <span class="lbl">Background</span>
-              {@render colorField(s.pattern, 'bg', 'Background colour')}
-            </div>
-          </div>
-          {#if rustPatterns}
-            {@render patternControls(s)}
-          {/if}
-        {/if}
-
-        <div class="insp-rule"></div>
-
-        <div class="grp">
-          <span class="lbl">Opacity</span>
-          <div class="slider-row">
-            <input type="range" min="0" max="100" step="1" value={pct(s.opacity)} aria-label="Opacity" oninput={(e) => setAlpha(s, 'opacity', e.target.value)} />
-            <input class="num-s" type="number" min="0" max="100" step="1" value={pct(s.opacity)} title="Opacity, %" aria-label="Opacity, percent" onchange={(e) => commitAlpha(s, 'opacity', e)} />
-          </div>
-        </div>
-
-        <!-- Photoshop's Blending Options: the box's mode over the page art,
-             and Blend Interior Effects as Group. The Rust engine paints them
-             (LAYER_STYLES_PLAN.md phase 6a). -->
-        <div class="grp">
-          <div class="fx-head">
-            <span class="lbl" title="How the box mixes with the page art under it">Blend mode</span>
-          </div>
-          {#if rustBoxes}
-            <select value={s.blendMode} aria-label="Box blend mode" title="Blend mode" onchange={(e) => { s.blendMode = e.target.value; touch(); }}>
-              {#each LAYER_BLEND_MODES as m (m)}
-                <option value={m}>{blendLabel(m)}</option>
-              {/each}
-            </select>
-            {#if FILL_SPECIAL_MODES.includes(s.blendMode) && s.fillOpacity < 1}
-              <p class="nofill-note">Fill works as in Photoshop for this mode: it changes the blend, not the coverage.</p>
-            {/if}
-            {@const inner = s.colorOverlays?.some(instanceOn) || s.gradientOverlays?.some(instanceOn) || s.patternOverlay?.on || s.satin?.on || s.innerGlow?.on}
-            <!-- Advanced Blending, in Photoshop's order: Channels, Knockout,
-                 Blend Interior Effects as Group, Blend Clipped Layers as
-                 Group, Transparency Shapes Layer, Vector Mask Hides Effects,
-                 Blend If (phase 6b). -->
-            <div class="fx-head">
-              <span class="lbl" title="Channels, Knockout, the group and shape options and Blend If">Advanced blending</span>
-              <FxMenu kind="blending" name="Advanced blending" onpick={(id) => fxPick('blending', s.blending, 'Advanced blending', id)} />
-            </div>
-            <div class="blend-chans" role="group" aria-label="Channels" title="Channels: a channel left out shows the page art's">
-              <span class="lbl">Channels</span>
-              {#each [['r', 'R'], ['g', 'G'], ['b', 'B']] as [k, name] (k)}
-                <label class="sh-check">
-                  <input type="checkbox" checked={s.blending?.channels?.[k] !== false} aria-label="Channel {name}" onchange={(e) => setChannel(s, k, e.target.checked)} />
-                  <span>{name}</span>
-                </label>
-              {/each}
-            </div>
-            <!-- Knockout is stored and written to the PSD, not painted: a box
-                 blends with the page art only, never with the boxes under it
-                 (user decision, phase 6c). -->
-            <label class="sh-contour" title="Knockout: written to the PSD for Photoshop. Not painted here: a box blends with the page art only, never with the boxes under it">
-              <span>Knockout</span>
-              <select value={s.blending?.knockout ?? 'none'} aria-label="Knockout" onchange={(e) => setKnockout(s, e.target.value)}>
-                {#each KNOCKOUT_MODES as k (k)}
-                  <option value={k}>{KNOCKOUT_LABEL[k]}</option>
-                {/each}
-              </select>
-            </label>
             <label class="sh-check" title="Blend Interior Effects as Group: Fill opacity also fades the overlays, the satin and the inner glow">
               <input type="checkbox" checked={s.blending?.interior === true} disabled={!inner} aria-label="Blend interior effects as group" onchange={(e) => { s.blending = { ...s.blending, interior: e.target.checked }; touch(); }} />
-              <span>Blend interior effects as group</span>
-            </label>
-            <label class="sh-check" title="Blend Clipped Layers as Group: written to the PSD for Photoshop. A box has no layers clipped to it, so it changes nothing here">
-              <input type="checkbox" checked={blendingSwitch(s.blending, 'blendClipped')} aria-label="Blend clipped layers as group" onchange={(e) => setBlendingSwitch(s, 'blendClipped', e.target.checked)} />
-              <span>Blend clipped layers as group</span>
+              <span>Fill opacity fades the inner effects too</span>
             </label>
             <label class="sh-check" title="Transparency Shapes Layer: off, a fill in Color Burn, Linear Burn, Color Dodge, Linear Dodge, Vivid Light, Linear Light, Hard Mix or Difference blends its own see-through edges as Fill does. Written to the PSD; in Photoshop the effects then cover the whole layer, here they stay on the letters">
               <input type="checkbox" checked={blendingSwitch(s.blending, 'transparencyShapes')} aria-label="Transparency shapes layer" onchange={(e) => setBlendingSwitch(s, 'transparencyShapes', e.target.checked)} />
               <span>Transparency shapes layer</span>
             </label>
-            <label class="sh-check" title="Vector Mask Hides Effects: kept with the box only. A box has no vector mask, and the PSD writer cannot write this option">
-              <input type="checkbox" checked={blendingSwitch(s.blending, 'vectorMaskHidesEffects')} aria-label="Vector mask hides effects" onchange={(e) => setBlendingSwitch(s, 'vectorMaskHidesEffects', e.target.checked)} />
-              <span>Vector mask hides effects</span>
-            </label>
-            <div class="blend-if">
-              <div class="blend-if-head">
-                <span class="lbl" title="Blend If: hide the box where its own colour, or the page art's under it, is outside the sliders">Blend If</span>
+            <div class="prow" title="Blend If: hide the box where its own colour, or the page art's under it, is outside the sliders">
+              <span class="pl">Blend If</span>
+              <div class="pc">
                 <select value={blendIfChannel} aria-label="Blend If channel" onchange={(e) => (blendIfChannel = e.target.value)}>
                   {#each BLEND_IF_CHANNELS as c (c)}
                     <option value={c}>{BLEND_IF_LABEL[c]}</option>
                   {/each}
                 </select>
               </div>
-              <!-- A split set by hand belongs to one box's one channel. -->
-              {#key `${app.selectedId}|${blendIfChannel}`}
-                {#each [['this', 'This Layer'], ['under', 'Underlying Layer']] as [side, name] (side)}
-                  <BlendRangeSlider
-                    label={name}
-                    channel={blendIfChannel}
-                    value={s.blending?.blendIf?.[blendIfChannel]?.[side] ?? BLEND_RANGE_FULL}
-                    onchange={(r) => setBlendIf(s, blendIfChannel, side, r)}
-                  />
-                {/each}
-              {/key}
             </div>
-            {#if usesBackdrop(s)}
-              <p class="nofill-note">Blends with the page art.</p>
-            {/if}
-          {:else}
-            <p class="nofill-note">Needs the Rust text engine (Settings).</p>
+            <!-- A split set by hand belongs to one box's one channel. -->
+            {#key `${app.selectedId}|${blendIfChannel}`}
+              {#each [['this', 'This Layer'], ['under', 'Underlying Layer']] as [side, name] (side)}
+                <BlendRangeSlider
+                  label={name}
+                  channel={blendIfChannel}
+                  value={s.blending?.blendIf?.[blendIfChannel]?.[side] ?? BLEND_RANGE_FULL}
+                  onchange={(r) => setBlendIf(s, blendIfChannel, side, r)}
+                />
+              {/each}
+            {/key}
+            <div class="sub-head sub-apart" title="Saved in the PSD for Photoshop. They change nothing on the page here">
+              <span class="sub-name">Photoshop file only</span>
+            </div>
+            <div class="prow" title="Knockout: written to the PSD for Photoshop. Not painted here: a box blends with the page art only, never with the boxes under it">
+              <span class="pl">Knockout</span>
+              <div class="pc">
+                <select value={s.blending?.knockout ?? 'none'} aria-label="Knockout" onchange={(e) => setKnockout(s, e.target.value)}>
+                  {#each KNOCKOUT_MODES as k (k)}
+                    <option value={k}>{KNOCKOUT_LABEL[k]}</option>
+                  {/each}
+                </select>
+              </div>
+            </div>
+            <label class="sh-check" title="Blend Clipped Layers as Group: written to the PSD for Photoshop. A box has no layers clipped to it, so it changes nothing here">
+              <input type="checkbox" checked={blendingSwitch(s.blending, 'blendClipped')} aria-label="Blend clipped layers as group" onchange={(e) => setBlendingSwitch(s, 'blendClipped', e.target.checked)} />
+              <span>Blend clipped layers as group</span>
+            </label>
           {/if}
-        </div>
+        {/if}
       </div>
     {/if}
 
@@ -3526,7 +3025,7 @@
   .insp-actions {
     display: grid;
     gap: 6px;
-    margin-top: 4px;
+    margin-top: 14px;
   }
   .insp-actions.pair {
     grid-template-columns: 1fr 1fr;
@@ -3842,174 +3341,20 @@
   }
   /* Advanced Blending: Channels on one row, Blend If's channel menu beside
      its heading, its two sliders under it. */
-  .blend-chans,
-  .blend-if-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .blend-if {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .blend-if-head select {
-    margin-left: auto;
-  }
-  .nofill-note {
-    margin: 0;
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--t3);
-  }
-
-  /* Gradient type: an icon over its name, two up. */
-  .kbtn {
-    flex-direction: column;
-    gap: 2px;
-    height: 46px;
-    font-size: 10px;
-  }
-  .kbtn :global(svg) {
-    width: 17px;
-    height: 17px;
-  }
-
-  /* The stop bar: the ramp at the size a decision needs, and a rail of handles
-     under it. The two are one control - the wrapper takes the pointerdown that
-     adds a stop, so clicking either the ramp or the empty rail beside a handle
-     puts a new one where it was clicked. */
-  .grad-edit {
-    display: flex;
-    flex-direction: column;
-    cursor: copy;
-    touch-action: none;
-  }
-  .grad-bar {
-    position: relative;
-    height: 34px;
-    border-radius: 7px 7px 0 0;
-    border: 1px solid var(--line2);
-    border-bottom: none;
-    overflow: hidden;
-    /* The chequerboard a stop's alpha is read against: without something
-       underneath it, a transparent stop is the panel's own background and
-       reads as a colour rather than as a hole. */
-    background-color: #fff;
-    background-image:
-      linear-gradient(45deg, #c9c9c9 25%, transparent 25%),
-      linear-gradient(-45deg, #c9c9c9 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, #c9c9c9 75%),
-      linear-gradient(-45deg, transparent 75%, #c9c9c9 75%);
-    background-size: 10px 10px;
-    background-position: 0 0, 0 5px, 5px -5px, -5px 0;
-  }
-  .grad-ramp {
-    position: absolute;
-    inset: 0;
-    background-size: cover;
-  }
-  /* The rail's PADDING box is the ramp's box exactly - same 1px side borders,
-     no margin - because a handle's `left` is its position along the gradient
-     and the two have to be the same ruler. */
-  .grad-rail {
-    position: relative;
-    height: 15px;
-    border-radius: 0 0 7px 7px;
-    background: var(--surface);
-    border: 1px solid var(--line2);
-    border-top: none;
-  }
-  /* A house: flat-bottomed, pointed at the ramp it marks. The point IS the
-     position, so the chip is centred on its own left edge. */
-  .gstop {
-    position: absolute;
-    top: -1px;
-    width: 13px;
-    height: 15px;
-    margin-left: -6.5px;
-    padding: 0;
-    border: none;
-    background: var(--stop-c, #000);
-    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.45);
-    clip-path: polygon(50% 0, 100% 40%, 100% 100%, 0 100%, 0 40%);
-    cursor: ew-resize;
-    touch-action: none;
-  }
-  .gstop:hover {
-    box-shadow: inset 0 0 0 1px var(--text);
-  }
-  .gstop.on,
-  .gstop:focus-visible {
-    outline: none;
-    box-shadow:
-      inset 0 0 0 1px var(--accent-fg),
-      inset 0 0 0 3px var(--accent);
-  }
-
-  /* The selected stop's own row, on the same column widths as the caption
-      above it: index, swatch, hex, position, opacity, add, bin. */
-  .grad-sel,
-  .grad-cap {
-    display: grid;
-    grid-template-columns: 22px 24px minmax(0, 1fr) 46px 46px 20px 20px;
-    gap: 6px;
-    align-items: center;
-  }
-  .grad-cap {
-    margin-top: 8px;
-  }
-  .grad-sel {
-    margin-top: 2px;
-  }
-  /* The same stripped number field the list rows use: at 46px a spinner costs
-     the column the third digit of "100". */
-  .grad-sel input[type='number'] {
-    padding: 0 5px;
-    -moz-appearance: textfield;
-  }
-  .grad-sel input[type='number']::-webkit-inner-spin-button,
-  .grad-sel input[type='number']::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-  }
-  .grad-n {
-    font-size: 10px;
-    color: var(--t3);
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* The direction pad: nine cells, and a cell's POSITION is the direction it
-     sets. The number beside it is the same field, for the angles between. */
-  .pad-row {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    min-width: 0;
-  }
+  /* The centre pad: nine cells, and a cell's POSITION is where the middle of
+     the circle goes. */
   .dirpad {
     flex: 0 0 auto;
     display: grid;
-    grid-template-columns: repeat(3, 32px);
-    grid-auto-rows: 32px;
-    gap: 3px;
-  }
-  .pad-side {
-    flex: 1 1 auto;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .pad-side .field {
-    gap: 6px;
+    grid-template-columns: repeat(3, 22px);
+    grid-auto-rows: 22px;
+    gap: 2px;
   }
   .dirpad .cell {
     display: grid;
     place-items: center;
     border: 1px solid var(--line2);
-    border-radius: 6px;
+    border-radius: 5px;
     background: var(--surface);
     color: var(--t2);
     padding: 0;
@@ -4018,11 +3363,9 @@
     font-family: inherit;
     font-variant-numeric: tabular-nums;
   }
-  .dirpad .cell.blank,
-  .dirpad .cell.mid {
+  .dirpad .cell.blank {
     border-color: transparent;
     background: transparent;
-    color: var(--t3);
     cursor: default;
   }
   button.cell:hover {
@@ -4034,90 +3377,41 @@
     border-color: var(--accent);
     color: var(--accent-fg);
   }
-  .dirpad .arrow {
-    display: grid;
-    place-items: center;
-    width: 16px;
-    height: 16px;
-  }
-  .dirpad .arrow :global(svg) {
-    width: 16px;
-    height: 16px;
-  }
   /* The centre presets say where the middle of the circle goes, so the dot is
      the whole picture. */
   .dirpad .cdot {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: currentColor;
   }
 
-  /* Patterns as cards. Nobody knows what "grid" looks like from the word; the
-     tile is drawn by the same painter that paints the glyphs, in this box's own
-     two colours, so the card IS the answer. */
-  .pat-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-  }
-  .pat-card {
+  /* A list's own line inside a fold: its name, and the one thing to do. */
+  .sub-head {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 4px 4px 5px;
-    border: 1px solid var(--line2);
-    border-radius: 7px;
-    background: var(--surface);
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 24px;
+  }
+  .sub-name {
+    font-size: 12px;
+    color: var(--text);
+  }
+  .sub-end {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  /* The heading of the part that is for the PSD only: a hairline apart. */
+  .sub-apart {
+    margin-top: 4px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  .sub-apart .sub-name {
     color: var(--t2);
-    font-family: inherit;
-    cursor: pointer;
-    min-width: 0;
   }
-  .pat-card:hover {
-    border-color: var(--accent);
-    color: var(--text);
-  }
-  .pat-card.on {
-    border-color: var(--accent);
-    box-shadow: inset 0 0 0 1px var(--accent);
-    color: var(--text);
-  }
-  .pat-tile {
-    height: 30px;
-    border-radius: 4px;
-    background-repeat: repeat;
-    background-position: center;
-    border: 1px solid var(--line);
-  }
-  .pat-pick {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    align-items: stretch;
-  }
-  .pat-pick .add-btn {
-    grid-column: span 2;
-    min-height: 30px;
-  }
-  .pat-pick .add-btn.on {
-    border-color: var(--accent);
-    color: var(--text);
-  }
-  .pat-note {
-    margin: 2px 0 0;
-    font-size: 11px;
-    color: var(--t3);
-  }
-  .pat-name {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   /* The inline preset name field takes the room the menu takes, and the armed
      delete reads as the warning it is. */
   .preset-row input {

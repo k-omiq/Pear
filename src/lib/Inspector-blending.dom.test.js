@@ -45,6 +45,14 @@ function mounted(over = {}, rust = true) {
   return { view, box: () => page().boxes[0] };
 }
 
+async function openFold(view, name) {
+  const b = view.container.querySelector(`button.insp-fold[aria-label="${name}"]`);
+  if (b && b.getAttribute('aria-expanded') !== 'true') {
+    await fireEvent.click(b);
+    await tick();
+  }
+}
+
 describe('the Fill tab blending options', () => {
   it('shows the box blend mode, and what it is set to is the style', async () => {
     const { view, box } = mounted();
@@ -67,10 +75,12 @@ describe('the Fill tab blending options', () => {
   it('offers Blend Interior Effects as Group where an interior effect is', async () => {
     const plain = mounted();
     await tick();
+    await openFold(plain.view, 'Advanced blending');
     expect(plain.view.getByLabelText('Blend interior effects as group').disabled).toBe(true);
     cleanup();
     const { view, box } = mounted({ colorOverlays: [{ color: '#0000ff', opacity: 1, blend: 'normal' }] });
     await tick();
+    await openFold(view, 'Advanced blending');
     const group = view.getByLabelText('Blend interior effects as group');
     expect(group.disabled).toBe(false);
     await fireEvent.click(group);
@@ -80,6 +90,7 @@ describe('the Fill tab blending options', () => {
   it('turns a channel off, and the box then blends with the page art', async () => {
     const { view, box } = mounted();
     await tick();
+    await openFold(view, 'Advanced blending');
     const red = view.getByLabelText('Channel R');
     expect(red.checked).toBe(true);
     expect(view.container.textContent).not.toContain('Blends with the page art.');
@@ -92,6 +103,7 @@ describe('the Fill tab blending options', () => {
   it('sets Blend If per channel: a black point on Underlying, then split into a fade', async () => {
     const { view, box } = mounted();
     await tick();
+    await openFold(view, 'Advanced blending');
     const channel = view.getByRole('combobox', { name: 'Blend If channel' });
     expect([...channel.options].map((o) => o.textContent)).toEqual(['Gray', 'Red', 'Green', 'Blue']);
     await fireEvent.input(view.getByLabelText('Underlying Layer black'), { target: { value: '128' } });
@@ -119,6 +131,7 @@ describe('the Fill tab blending options', () => {
   it('shows a saved split as split', async () => {
     const { view } = mounted({ blending: { blendIf: { gray: { this: [0, 0, 180, 220] } } } });
     await tick();
+    await openFold(view, 'Advanced blending');
     expect(view.getByLabelText('This Layer split').checked).toBe(true);
     expect(view.getByLabelText('This Layer white high').value).toBe('220');
     expect(view.getByLabelText('Underlying Layer split').checked).toBe(false);

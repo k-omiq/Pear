@@ -61,6 +61,14 @@ function mounted(over = {}) {
   return { view, box: () => page().boxes[0] };
 }
 
+async function openFold(view, name) {
+  const b = view.container.querySelector(`button.insp-fold[aria-label="${name}"]`);
+  if (b && b.getAttribute('aria-expanded') !== 'true') {
+    await fireEvent.click(b);
+    await tick();
+  }
+}
+
 describe('an effect pattern', () => {
   it('keeps a scale from 1 to 1000 %, in the model and the panel', async () => {
     expect(normalizePattern({ scale: 0.01 }).scale).toBe(0.01);
@@ -69,6 +77,7 @@ describe('an effect pattern', () => {
     expect(normalizePattern({ scale: 40 }).scale).toBe(10);
     const { view, box } = mounted({ patternOverlay: { on: true } });
     await tick();
+    await openFold(view, 'Overlays');
     const field = view.getByLabelText('Pattern overlay scale, percent');
     await fireEvent.change(field, { target: { value: '1000' } });
     expect(box().style.patternOverlay.pattern.scale).toBe(10);
@@ -82,6 +91,8 @@ describe('an effect pattern', () => {
   it('snaps to the origin: the phase goes back to 0, as one undo step', async () => {
     const { view, box } = mounted({ patternOverlay: { on: true, pattern: { ox: 0.3, oy: 0.6 } } });
     await tick();
+    await openFold(view, 'Overlays');
+    await openFold(view, 'Pattern overlay more options');
     const snap = view.getByLabelText('Pattern overlay snap to origin');
     expect(snap.disabled).toBe(false);
     await press(snap);
@@ -98,6 +109,7 @@ describe('an effect pattern', () => {
     const pattern = { on: false, kind: 'picked', src: SRC, cell: CELL, mode: 'image' };
     const { view, box } = mounted({ pattern, patternOverlay: { on: true } });
     await tick();
+    await openFold(view, 'Overlays');
     const kind = view.getByLabelText('Pattern overlay kind');
     expect([...kind.options].map((o) => o.value)).not.toContain('picked');
     await press(view.getByLabelText("Pattern overlay use the fill's tone"));
@@ -116,6 +128,7 @@ describe('an effect pattern', () => {
   it('starts a pick for the effect it belongs to', async () => {
     const { view } = mounted({ patternOverlay: { on: true } });
     await tick();
+    await openFold(view, 'Overlays');
     // The fake painter cannot extract a tile, so the button is shown, off.
     expect(view.getByLabelText('Pattern overlay pick from page').disabled).toBe(true);
     startPatternPick(1, 'b', 'patternOverlay.pattern');

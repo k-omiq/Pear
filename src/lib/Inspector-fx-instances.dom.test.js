@@ -67,6 +67,14 @@ async function tickBox(el, on) {
   await tick();
 }
 
+async function openFold(view, name) {
+  const b = view.container.querySelector(`button.insp-fold[aria-label="${name}"]`);
+  if (b && b.getAttribute('aria-expanded') !== 'true') {
+    await fireEvent.click(b);
+    await tick();
+  }
+}
+
 const shadow = (color) => ({ ...newShadow({ angle: 120 }), color });
 
 describe('multi effect instances', () => {
@@ -90,6 +98,7 @@ describe('multi effect instances', () => {
   it('moves an overlay up and down, first on top, and undoes the move', async () => {
     const { view, box } = mounted({ colorOverlays: [normalizeOverlay({ color: '#ff0000' }), normalizeOverlay({ color: '#0000ff' })] }, 'fill');
     await tick();
+    await openFold(view, 'Overlays');
     const colours = () => box().style.colorOverlays.map((o) => o.color);
     expect(view.getByLabelText('Move Overlay 1 up').disabled).toBe(true);
     expect(view.getByLabelText('Move Overlay 2 down').disabled).toBe(true);
@@ -133,6 +142,7 @@ describe('Advanced Blending: Knockout and the switches', () => {
   it('offers Blend Interior Effects as Group only for an interior effect that is switched on', async () => {
     const { view, box } = mounted({ colorOverlays: [normalizeOverlay({ on: false })], gradientOverlays: [] }, 'fill');
     await tick();
+    await openFold(view, 'Advanced blending');
     const group = () => view.getByLabelText('Blend interior effects as group');
     expect(group().disabled).toBe(true);
     delete box().style.colorOverlays[0].on;
@@ -143,6 +153,7 @@ describe('Advanced Blending: Knockout and the switches', () => {
   it('sets Knockout as an undo step', async () => {
     const { view, box } = mounted({}, 'fill');
     await tick();
+    await openFold(view, 'Advanced blending');
     const sel = view.getByRole('combobox', { name: 'Knockout' });
     await fireEvent.pointerDown(sel);
     await fireEvent.change(sel, { target: { value: 'deep' } });
@@ -155,14 +166,14 @@ describe('Advanced Blending: Knockout and the switches', () => {
   it('stores each switch only off its default, and undoes it', async () => {
     const { view, box } = mounted({}, 'fill');
     await tick();
+    await openFold(view, 'Advanced blending');
     const ts = view.getByLabelText('Transparency shapes layer');
     const clip = view.getByLabelText('Blend clipped layers as group');
-    const vm = view.getByLabelText('Vector mask hides effects');
-    expect([ts.checked, clip.checked, vm.checked]).toEqual([true, true, false]);
+    expect([ts.checked, clip.checked]).toEqual([true, true]);
+    // The data key stays off its default; no control drives it any more.
+    expect('vectorMaskHidesEffects' in box().style.blending).toBe(false);
     await tickBox(ts, false);
     expect(box().style.blending.transparencyShapes).toBe(false);
-    await tickBox(vm, true);
-    expect(box().style.blending.vectorMaskHidesEffects).toBe(true);
     await tickBox(clip, false);
     expect(box().style.blending.blendClipped).toBe(false);
     undo();

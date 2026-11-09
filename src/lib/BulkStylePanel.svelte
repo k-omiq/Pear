@@ -19,10 +19,11 @@ import {
   import { modKey } from './format.js';
   import FontPicker from './FontPicker.svelte';
   import { sizingOf, newShadow, SHADOW_SIZE_MAX, FX_INSTANCES_MAX, instanceOn } from './data.js';
-  import { PATTERN_KINDS, CANVAS_PATTERN_KINDS, GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
+  import { GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { glyphPainter } from './text-engine/index.js';
   import ColorPicker from './ColorPicker.svelte';
+  import PatternEditor from './PatternEditor.svelte';
   import { iconNoFill } from './tab-icons.js';
 
   // app.bulk.style is the editable template; null when closed.
@@ -325,17 +326,6 @@ import {
   // The Rust engine paints every pattern kind and control; the browser engine
   // the eleven canvas tiles (Inspector.svelte says the same).
   const rustPatterns = $derived(engineSwitch.painting && glyphPainter().screen === true);
-
-  // Pattern helpers
-  function setPatternHex(field, v, el) {
-    if (!s.pattern) return;
-    if (HEX.test(v)) {
-      s.pattern[field] = v.startsWith('#') ? v : '#' + v;
-      tickBulkProp('pattern');
-    } else if (el) {
-      el.value = s.pattern[field];
-    }
-  }
 
   // The group headers read the mask vocabulary's own grouping: GROUPS lives in
   // store.svelte.js beside BULK_PROPS, so a key the panel headers tick but the
@@ -711,46 +701,13 @@ import {
                 <div class="sub-list-head">
                   <div class="switch" class:on={s.pattern.on} role="switch" aria-checked={s.pattern.on} aria-label="Pattern" tabindex="0" onclick={() => { s.pattern.on = !s.pattern.on; tickBulkProp('pattern'); }} onkeydown={(e) => e.key === 'Enter' && ((s.pattern.on = !s.pattern.on), tickBulkProp('pattern'))}><span class="knob"></span></div>
                   <span class="sub-count">{s.pattern.on ? 'On' : 'Off'}</span>
-                  <select aria-label="Pattern kind" value={s.pattern.kind} onchange={(e) => { s.pattern.kind = e.target.value; tickBulkProp('pattern'); }} style="flex:1 1 auto; height:26px">
-                    {#each rustPatterns ? PATTERN_KINDS : CANVAS_PATTERN_KINDS as k}<option value={k}>{k}</option>{/each}
-                  </select>
                 </div>
-                <div class="sub-row2">
-                  <div class="field">
-                    <span class="sub-lbl">FG</span>
-                    <div class="color-field">
-                      <ColorPicker value={s.pattern.fg} label="Pattern foreground colour" size={30} unclipped onchange={(hex) => { s.pattern.fg = hex; tickBulkProp('pattern'); }} />
-                      <input type="text" class="hex" value={s.pattern.fg} aria-label="Pattern foreground hex" onchange={(e) => setPatternHex('fg', e.currentTarget.value, e.currentTarget)} />
-                    </div>
-                  </div>
-                  <div class="field">
-                    <span class="sub-lbl">BG</span>
-                    <div class="color-field">
-                      <ColorPicker value={s.pattern.bg} label="Pattern background colour" size={30} unclipped onchange={(hex) => { s.pattern.bg = hex; tickBulkProp('pattern'); }} />
-                      <input type="text" class="hex" value={s.pattern.bg} aria-label="Pattern background hex" onchange={(e) => setPatternHex('bg', e.currentTarget.value, e.currentTarget)} />
-                    </div>
-                  </div>
-                </div>
-                <div class="sub-row">
-                  <span class="sub-lbl" style="width:36px">Scale</span>
-                  <input type="number" aria-label="Pattern scale" min="0.25" max="4" step="0.25" value={s.pattern.scale} onchange={(e) => { s.pattern.scale = clamp(+e.target.value || 1, 0.25, 4); tickBulkProp('pattern'); }} />
-                </div>
-                {#if rustPatterns}
-                  <!-- The Rust pattern's basic controls; the Inspector has the rest. -->
-                  <div class="sub-row">
-                    <span class="sub-lbl" style="width:36px">Angle</span>
-                    <input type="number" aria-label="Pattern angle" min="-180" max="180" step="1" value={s.pattern.angle} onchange={(e) => { s.pattern.angle = clamp(+e.target.value || 0, -180, 180); tickBulkProp('pattern'); }} />
-                    <span class="sub-lbl" style="width:44px">Density</span>
-                    <input type="number" aria-label="Pattern density, percent" min="0" max="100" step="1" value={Math.round(s.pattern.density * 100)} onchange={(e) => { s.pattern.density = clamp((+e.target.value || 0) / 100, 0, 1); tickBulkProp('pattern'); }} />
-                  </div>
-                  <div class="sub-row">
-                    <span class="sub-lbl" style="width:36px">Ink</span>
-                    <input type="number" aria-label="Pattern opacity, percent" min="0" max="100" step="1" value={Math.round(s.pattern.fgOpacity * 100)} onchange={(e) => { s.pattern.fgOpacity = clamp((+e.target.value || 0) / 100, 0, 1); tickBulkProp('pattern'); }} />
-                    <span class="sub-lbl" style="width:44px">Ground</span>
-                    <input type="number" aria-label="Background opacity, percent" min="0" max="100" step="1" value={Math.round(s.pattern.bgOpacity * 100)} onchange={(e) => { s.pattern.bgOpacity = clamp((+e.target.value || 0) / 100, 0, 1); tickBulkProp('pattern'); }} />
-                  </div>
-                {/if}
               </div>
+            </div>
+            <!-- The same pattern editor as the Inspector's, under its row and
+                 as wide as the pane: its sliders need the room. -->
+            <div class="bulk-pat" class:off={!app.bulk.mask.pattern}>
+              <PatternEditor bind:p={s.pattern} title="Pattern" rust={rustPatterns} onchange={() => tickBulkProp('pattern')} oncolour={(o, k, hex) => { o[k] = hex; tickBulkProp('pattern'); }} />
             </div>
           </div>
         </div>
@@ -998,6 +955,21 @@ import {
 {/if}
 
 <style>
+  /* The pattern editor: in line with the rows' labels, past the tick. */
+  .bulk-pat {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 22px;
+    min-width: 0;
+  }
+  .bulk-pat.off {
+    opacity: 0.5;
+  }
+  .bulk-pat :global(.prow) {
+    grid-template-columns: 62px minmax(0, 1fr);
+    column-gap: 8px;
+  }
   .sub-list-block { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .sub-list-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
   .sub-count { font-size: 11.5px; color: var(--t2); }

@@ -42,12 +42,21 @@ function mounted(style, tab = 'fill', sub = null) {
   return { view, box: () => page().boxes[0] };
 }
 
+async function openFold(view, name) {
+  const b = view.container.querySelector(`button.insp-fold[aria-label="${name}"]`);
+  if (b && b.getAttribute('aria-expanded') !== 'true') {
+    await fireEvent.click(b);
+    await tick();
+  }
+}
+
 describe('F43: No Fill keeps the overlay controls', () => {
   it('shows the colour, gradient and pattern overlay sections on a No Fill box', async () => {
     const { view } = mounted({ noFill: true });
     await tick();
-    expect(view.container.textContent).toContain('Colour overlays');
-    expect(view.container.textContent).toContain('Gradient overlays');
+    await openFold(view, 'Overlays');
+    expect(view.getByRole('button', { name: 'Add colour overlay' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Add gradient overlay' })).toBeTruthy();
     expect(view.getByRole('switch', { name: 'Pattern overlay' })).toBeTruthy();
   });
 });
