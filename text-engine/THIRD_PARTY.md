@@ -86,6 +86,11 @@ names its source file in a comment.
   and their tests (`crates/doc/src/blend_if.rs` tests,
   `crates/compose/src/tests.rs` `channel_restrictions_keep_the_backdrop`
   and the `blend_if_*` tests).
+- `ink/tips.rs` `level_sizes`, `halve`, `Level::sample`, `TipCache`: an
+  imported brush tip's halvings, the bilinear read of a level, and the
+  byte-bounded least-recently-used cache of tips (`crates/paint/src/tile.rs`
+  `Mips::new`, `Mips::sample_clamped`; `crates/paint/src/mip_cache.rs`
+  `MipCache`, `purge_mip_cache`).
 
 Outside the engine, for the PSD writer (`src/lib/`):
 

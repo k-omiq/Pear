@@ -12,7 +12,7 @@ import { defaultStyle, normalizeStyle } from './data.js';
 // A box painted whole by the engine
 // ===========================================================================
 // With the Rust painter a box is one job: its glyphs, its brush ink (round
-// dabs; a box inked with imported tips stays on the canvas), and the shadows, the blur, the smear, the mask, the roughening and the mesh
+// dabs and imported tips), and the shadows, the blur, the smear, the mask, the roughening and the mesh
 // that the canvas used to lay over them a pass at a time (`boxInJob`,
 // `roughenInJob`, `meshInJob` in exporter.js; text-engine/src/paint/boxjob.rs).
 //
@@ -96,13 +96,13 @@ const grey = (img) => {
 };
 
 describe('the gate', () => {
-  it('is the painter that paints whole boxes, and a box whose ink is round dabs', () => {
+  it('is the painter that paints whole boxes, and a box with brush ink', () => {
     expect(whole.box).toBe(true);
     expect(boxInJob(boxOf())).toBe(true);
     expect(boxInJob(boxOf({ ink: INK }))).toBe(true);
-    // Imported tips are not the engine's yet (phase 8b), nor is ink under a
-    // mesh or roughening (8c): the canvas draws those.
-    expect(boxInJob(boxOf({ ink: { ...INK, strokes: [{ ...INK.strokes[0], brush: 'tip', tips: ['a'] }] } }))).toBe(false);
+    // Imported tips are the engine's too (phase 8b); ink under a mesh or
+    // roughening is not yet (8c): the canvas draws those.
+    expect(boxInJob(boxOf({ ink: { ...INK, strokes: [{ ...INK.strokes[0], brush: 'tip', tips: ['a', 'b'] }] } }))).toBe(true);
     expect(boxInJob(boxOf({ ink: INK, roughen: { on: true, amount: 6, detail: 0.07, seed: 7 } }))).toBe(false);
     // An engine built before the ink was (no `ink` on its painter).
     setGlyphPainter({ ...whole, ink: false });
