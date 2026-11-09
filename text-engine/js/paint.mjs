@@ -398,7 +398,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // here and in boxjob.rs (BOX_WIRE_VERSION) at once. paintsBoxes() compares
 // only the number. v11 had two forms: 7858367 added shadow flag 4 (exact)
 // without a bump, so an early v11 wasm refuses every SFX copy's shadow.
-export const BOX_WIRE_VERSION = 15
+export const BOX_WIRE_VERSION = 16
 const BOX_MAGIC = 0x4250544d // "MTPB"
 const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
@@ -510,7 +510,7 @@ const STROKE_POSITION = { outside: 0, inside: 1, center: 2 }
 // An effect gradient (`Reader::gradient`): Photoshop's Style, Angle
 // (degrees), Scale (1 is 100 %), Reverse, the centre's offset as a share of
 // the frame, then the colour stops and the opacity stops, each by position,
-// their midpoints, Dither, the Method and Smoothness. A colour stop is
+// their midpoints, Dither and Align with Layer, the Method and Smoothness. A colour stop is
 // `{pos, color, mid?}`, an opacity stop (`opacityStops`) `{pos, opacity,
 // mid?}`; with every one opaque no opacity stops are sent. `type: 'noise'` sends `noise` (`{seed, roughness, model,
 // min: [3], max: [3], restrict, transparency}`) too, whose colours the
@@ -546,7 +546,10 @@ function gradientRecord(g) {
   }
   gradientMids(list)
   gradientMids(fades ? ops : [])
-  u32(g.dither ? 1 : 0)
+  // v16: the flags. 1 Dither, 2 Align with Layer off: laid over the page
+  // (`request.page`). A glow's gradient never sends it (it runs along the
+  // glow, and the engine would ignore it there).
+  u32((g.dither ? 1 : 0) | (g.align === false ? 2 : 0))
   const method = GRADIENT_METHOD[g.method ?? 'classic']
   if (method === undefined) throw new Error(`mt-text: unknown gradient method ${JSON.stringify(g.method)}`)
   u32(method)
@@ -844,6 +847,11 @@ function clipShape(sh) {
  *   Noise, Dissolve, Jitter) is hashed from a surface pixel plus it, so a page pixel
  *   keeps its grain however much room the surface takes; `[0, 0]` hashes the surface's
  *   own pixels
+ * @param {{toPage: number[], w: number, h: number} | null} [request.page] the page the
+ *   box sits on (v16): `toPage` the job's units onto the page, page px (a canvas matrix:
+ *   the box's place, turn and mirror), and the page's size, page px. A gradient whose
+ *   `align` is false (Align with Layer off) is laid over it; null lays such a gradient
+ *   as one with Align on
  * @param {{color: string, opacity: number, x: number, y: number, size: number, grow?: number,
  *   spread?: number, noise?: number, blend?: string, knockout?: boolean, exact?: boolean,
  *   seed?: number, contour?: {preset: string, aa?: boolean, pts?: number[][]}}[]} [request.shadows]
@@ -890,7 +898,7 @@ function clipShape(sh) {
  *   `gradient` runs along it in place of its colour, `jitter` (0 to 1) scattering each
  *   pixel's sample of it; a gradient is `{style, angle, scale,
  *   reverse, offset: [x, y], stops: [{pos, color, mid?}], opacityStops?: [{pos, opacity,
- *   mid?}], method?, smoothness?, dither?, type?, noise?}` (style
+ *   mid?}], method?, smoothness?, dither?, align?, type?, noise?}` (style
  *   'shapeburst' runs from the painted shape's edge in; type 'noise' paints `noise`). A stroke paints a colour,
  *   a gradient or a fill (a pattern, as a glyph job's fill), and a pattern overlay its
  *   `fill`, in job units. A satin throws two copies `distance` apart along its own
@@ -916,7 +924,7 @@ function clipShape(sh) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, grain = null, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
+  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -924,6 +932,15 @@ export function encodeBox(request) {
   u32(height)
   // Whole device pixels, as i32: the engine reads two's complement.
   for (const v of [grain?.[0], grain?.[1]]) u32(Number.isFinite(v) ? Math.round(v) | 0 : 0)
+  // v16: the page, for the gradients with Align with Layer off.
+  const pm = page?.toPage
+  const paged = Array.isArray(pm) && pm.length === 6 && pm.every(Number.isFinite) && pm[0] * pm[3] - pm[1] * pm[2] !== 0 && page.w > 0 && page.h > 0
+  u32(paged ? 1 : 0)
+  if (paged) {
+    for (const v of pm) f64(v)
+    f64(page.w)
+    f64(page.h)
+  }
   u32(shadows.length)
   for (const sh of shadows) shadowRecord(sh)
   f64(blur)

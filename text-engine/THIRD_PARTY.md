@@ -39,6 +39,12 @@ names its source file in a comment.
   `bake`, `bake_opacity`, `SMOOTH_EASE`, `OPACITY_RESPONSE`;
   `crates/compose/src/gradient_fill.rs` `midpoint_remap`). The app's
   `src/lib/gradient-ramp.js` is a JS copy of the same maths.
+- `fx/effects.rs` `brush`, `Page`, `fx/gradient.rs` `Gradient::align`:
+  Align with Layer off lays an effect gradient over the page, PhotoCraft's
+  rule for a fill layer's gradient (`crates/compose/src/content.rs`
+  `fill_frame`: the canvas) and its flag (`crates/doc/src/effects.rs`
+  `Gradient::align`). `fx/effects_align.rs` compares against PhotoCraft's
+  renders (`tests/data/align_off/`, made with `photocraft_compose::render`).
 - `fx/map.rs` `satin`, `fx/contour.rs` `Lut::satin`, `fx/effects.rs`
   `satin_throw`: the Satin map, its mirrored contour table, and its throw
   (Distance 0 drawn as 1 px, rounded to whole pixels)
