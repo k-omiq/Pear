@@ -17,13 +17,13 @@ use mt_text::paint::fx::blending::Range;
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
     Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
-    PaintOverlay, Position, Satin, Stroke, Technique,
+    Page, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::gradient_bake::Method;
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::{
-    decode_box, Align, Band, Clip, ClipMode, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
+    decode_box, Affine, Align, Band, Clip, ClipMode, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
     BOX_WIRE_VERSION,
 };
 
@@ -58,6 +58,7 @@ fn stops_gradient(style: Style, angle: f32, scale: f32, offset: (f32, f32)) -> G
         // v14: each midpoint is sent for the segment the stop ends.
         mids: vec![0.3125, 0.8125],
         opacity_mids: vec![0.6875, 0.5, 0.1875],
+        align: true,
         dither: false,
         noise: None,
     }
@@ -73,10 +74,12 @@ fn overlay_gradient() -> Gradient {
 }
 
 /// [`stops_gradient`] as the stroke sends it (v14): Perceptual at 43.75 %,
-/// which the reader bakes into the stops.
+/// which the reader bakes into the stops, and (v16) Align with Layer off.
 fn stroke_gradient() -> Gradient {
     let mut g = stops_gradient(Style::Angle, 12.5, 0.625, (-0.0625, 0.125));
     g.interpolate(Method::Perceptual, 0.4375).unwrap();
+    // v16: Align with Layer off.
+    g.align = false;
     g
 }
 
@@ -91,6 +94,7 @@ fn noise_gradient() -> Gradient {
         offset: (0.0625, -0.1875),
         mids: Vec::new(),
         opacity_mids: Vec::new(),
+        align: true,
         dither: false,
         noise: Some(Ramp::new(Noise {
             seed: 31415,
@@ -111,9 +115,17 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 15, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 16, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(r.grain, (-1_234_567, 89_012));
+    assert_eq!(
+        r.page,
+        Some(Page {
+            to_page: Affine([0.75, -0.625, -0.5, -0.875, 123.5, 456.25]),
+            w: 841.5,
+            h: 1190.25,
+        })
+    );
     assert_eq!(
         r.shadows,
         vec![
@@ -311,4 +323,35 @@ fn every_field_of_every_effect_comes_back_as_itself() {
     for (i, (got, want)) in r.effects.iter().zip(&want).enumerate() {
         assert_eq!(got, want, "effect {i}");
     }
+}
+
+/// The page record (v16) right after the grain: a matrix that does not
+/// invert, a number that is not one, or a page with no size is refused.
+#[test]
+fn a_damaged_page_record_is_refused() {
+    let good = bytes();
+    assert!(decode_box(&good).is_ok());
+    // magic, version, width, height, the grain: the page record is next.
+    let at = 6 * 4;
+    assert_eq!(u32::from_le_bytes(good[at..at + 4].try_into().unwrap()), 1);
+    let with_f = |k: usize, v: f64| {
+        let mut b = good.clone();
+        let o = at + 4 + k * 8;
+        b[o..o + 8].copy_from_slice(&v.to_le_bytes());
+        decode_box(&b).is_err()
+    };
+    for k in 0..8 {
+        assert!(with_f(k, f64::NAN), "NaN at {k}");
+        assert!(with_f(k, 1e9), "far at {k}");
+    }
+    // A flat matrix: a, b, c, d all 0.
+    let mut flat = good.clone();
+    for k in 0..4 {
+        let o = at + 4 + k * 8;
+        flat[o..o + 8].copy_from_slice(&0f64.to_le_bytes());
+    }
+    assert!(decode_box(&flat).is_err());
+    // No size.
+    assert!(with_f(6, 0.0));
+    assert!(with_f(7, -1.0));
 }

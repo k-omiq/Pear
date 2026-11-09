@@ -360,6 +360,32 @@ pub(crate) struct Place<'a> {
     /// (`BoxRequest::grain`): what a surface pixel's grain (Noise,
     /// Dissolve, Jitter) is hashed from is the pixel plus this.
     pub grain: (i32, i32),
+    /// The page the box sits on (`BoxRequest::page`): what a gradient with
+    /// Align with Layer off is laid over. None lays it as one with it on.
+    pub page: Option<Page>,
+}
+
+/// The page a box sits on, for the gradients laid with Align with Layer off
+/// (wire v16).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Page {
+    /// Job units onto the page, page px: the app's `boxToPage`, the box's
+    /// place, turn and mirror.
+    pub to_page: Affine,
+    /// The page's size, page px.
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Page {
+    /// The page's frame, page px, and the map from device pixels onto the
+    /// page for a job laid by `transform` (job units to device pixels).
+    fn frame(&self, transform: &Affine) -> Option<(Frame, Affine)> {
+        let to_page = self.to_page.after(&transform.invert()?);
+        to_page
+            .is_finite()
+            .then_some(([0.0, 0.0, self.w as f32, self.h as f32], to_page))
+    }
 }
 
 impl Place<'_> {
@@ -455,15 +481,32 @@ fn flat(c: Rgba) -> [f32; 4] {
 
 /// The brush for `paint` over a gradient frame `frame` (job units); `None`
 /// paints nothing.
+///
+/// A gradient with Align with Layer off is laid over the page instead, in
+/// the page's own units, when the page is known (PhotoCraft's rule for a
+/// fill layer, `fill_frame` in `crates/compose/src/content.rs`: the
+/// canvas); without it, over `frame` as one with it on.
 fn brush<'a>(paint: &'a Paint, frame: Frame, place: &Place<'a>) -> Option<Brush<'a>> {
     Some(match paint {
         Paint::Color(c) => Brush::Flat(flat(*c)),
-        Paint::Gradient(g) => Brush::Ramp {
-            g,
-            frame,
-            to_job: place.transform.invert()?,
-            px: place.px(),
-            grain: place.grain,
+        Paint::Gradient(g) => match place.page.filter(|_| !g.align) {
+            Some(page) => {
+                let (frame, to_page) = page.frame(&place.transform)?;
+                Brush::Ramp {
+                    g,
+                    frame,
+                    to_job: to_page,
+                    px: to_page.det().abs().sqrt() as f32,
+                    grain: place.grain,
+                }
+            }
+            None => Brush::Ramp {
+                g,
+                frame,
+                to_job: place.transform.invert()?,
+                px: place.px(),
+                grain: place.grain,
+            },
         },
         Paint::Fill(f) => Brush::Shade(Shader::new(f, &place.transform, place.tiles)?),
     })
@@ -1701,6 +1744,7 @@ mod tests {
             transform: Affine::IDENTITY,
             tiles: &[],
             grain: (0, 0),
+            page: None,
         }
     }
 
@@ -1938,6 +1982,7 @@ mod tests {
             offset: (0.0, 0.0),
             mids: Vec::new(),
             opacity_mids: Vec::new(),
+            align: true,
             dither: false,
             noise: None,
         };
@@ -1973,6 +2018,7 @@ mod tests {
                     offset: (0.0, 0.0),
                     mids,
                     opacity_mids: Vec::new(),
+                    align: true,
                     dither,
                     noise: None,
                 }),
@@ -2010,6 +2056,7 @@ mod tests {
             offset: (0.3, 0.0),
             mids: Vec::new(),
             opacity_mids: Vec::new(),
+            align: true,
             dither: false,
             noise: None,
         }
@@ -2121,6 +2168,7 @@ mod tests {
             offset: (0.0, 0.0),
             mids: Vec::new(),
             opacity_mids: Vec::new(),
+            align: true,
             dither: false,
             noise: Some(ramp.clone()),
             ..burst(false)
@@ -2175,6 +2223,7 @@ mod tests {
                 offset: (0.0, 0.0),
                 mids: Vec::new(),
                 opacity_mids: Vec::new(),
+                align: true,
                 dither: false,
                 noise: None,
             }),
@@ -2259,6 +2308,7 @@ mod tests {
             offset: (0.0, 0.0),
             mids: Vec::new(),
             opacity_mids: Vec::new(),
+            align: true,
             dither: false,
             noise: None,
         };
@@ -2336,6 +2386,7 @@ mod tests {
             offset: (0.0, 0.0),
             mids: Vec::new(),
             opacity_mids: Vec::new(),
+            align: true,
             dither: false,
             noise: None,
         };
@@ -2545,3 +2596,7 @@ mod tests {
 #[cfg(test)]
 #[path = "effects_gaps.rs"]
 mod gaps;
+
+#[cfg(test)]
+#[path = "effects_align.rs"]
+mod align;

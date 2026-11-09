@@ -420,7 +420,8 @@ fn wire(font: u32, text: &str, flags: u32) -> (Vec<u8>, usize, usize) {
     u(&mut b, BOX_WIRE_VERSION);
     u(&mut b, 200);
     u(&mut b, 160);
-    // The grain's corner (v15).
+    // The grain's corner (v15), no page (v16).
+    u(&mut b, 0);
     u(&mut b, 0);
     u(&mut b, 0);
     u(&mut b, 0);
@@ -833,6 +834,7 @@ fn every_effect_and_blending_option_paints_on_ink_alone() {
         offset: (0.0, 0.0),
         mids: Vec::new(),
         opacity_mids: Vec::new(),
+        align: true,
         dither: false,
         noise: None,
     };

@@ -244,6 +244,7 @@ fn boxed(font: FontId, shadows: Vec<Shadow>) -> BoxRequest {
         width: 300,
         height: 200,
         grain: (0, 0),
+        page: None,
         shadows,
         blur: 0.0,
         taps: Vec::new(),

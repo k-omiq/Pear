@@ -32,7 +32,7 @@ use super::fx::blending::{self, shadow_see_through, Blending, Range};
 use super::fx::contour::{self, Curve, Lut, Table};
 use super::fx::effects::{
     self, Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay,
-    Paint, PaintOverlay, Place, Position, Satin, Stroke, Technique,
+    Page, Paint, PaintOverlay, Place, Position, Satin, Stroke, Technique,
 };
 use super::fx::gradient::{Gradient, Style};
 use super::fx::gradient_bake::Method;
@@ -59,7 +59,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 15;
+pub const BOX_WIRE_VERSION: u32 = 16;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -218,6 +218,9 @@ pub struct BoxRequest {
     /// surface pixel plus this, so the same page pixel keeps its grain
     /// however much room the surface takes round the box (wire v15).
     pub grain: (i32, i32),
+    /// The page the box sits on, for the gradients laid with Align with
+    /// Layer off (wire v16); None lays them as with it on.
+    pub page: Option<Page>,
     /// First on top.
     pub shadows: Vec<Shadow>,
     /// The whole-box blur: a gaussian's sigma, job units. Zero for none.
@@ -252,6 +255,7 @@ impl BoxRequest {
             width,
             height,
             grain: (0, 0),
+            page: None,
             shadows: Vec::new(),
             blur: 0.0,
             taps: Vec::new(),
@@ -544,11 +548,12 @@ impl<'a> Reader<'a> {
         // v14: the midpoints, Dither, the Method and Smoothness.
         let mids = self.gradient_mids(n)?;
         let opacity_mids = self.gradient_mids(m)?;
-        let dither = match self.u32()? {
-            0 => false,
-            1 => true,
-            _ => return Err(Error::BadSpec),
-        };
+        // v16: Dither is bit 1 of the flags, Align with Layer off bit 2.
+        let flags = self.u32()?;
+        if flags > 3 {
+            return Err(Error::BadSpec);
+        }
+        let (dither, align) = (flags & 1 != 0, flags & 2 == 0);
         let method = Method::from_u32(self.u32()?).ok_or(Error::BadSpec)?;
         let smoothness = self.upto(1.0)? as f32;
         let noise = match self.u32()? {
@@ -574,6 +579,7 @@ impl<'a> Reader<'a> {
             mids,
             opacity_mids,
             dither,
+            align,
         };
         g.interpolate(method, smoothness)?;
         Ok(g)
@@ -791,6 +797,11 @@ impl<'a> Reader<'a> {
 /// u32 width, u32 height        the surface, device pixels; its corner is (0, 0)
 /// i32 x, i32 y (v15)           the surface's corner in device pixels anchored
 ///                              to the page: each grain is hashed from it on
+/// u32 page (v16)              0 none; 1 then f64 a, b, c, d, e, f (job units
+///                              onto the page, page px: the box's place, turn
+///                              and mirror) and f64 w, h (the page, page px):
+///                              what a gradient with Align with Layer off is
+///                              laid over (none lays it as one with it on)
 /// u32 shadow count, then per shadow, first in the style first:
 ///     rgba colour, f64 opacity, f64 x, y, f64 size, f64 grow,
 ///     f64 spread, f64 noise    0 to 1 each
@@ -918,7 +929,9 @@ impl<'a> Reader<'a> {
 ///   position, f64 opacity); at most 256 of each, positions 0 to 1 and in
 ///   order; then (v14) u32 k then k f64 colour midpoints and u32 j then j
 ///   f64 opacity midpoints (0, or one per segment: n - 1 and m - 1; each 0
-///   to 1, painted kept to 5 to 95 %), u32 dither (0 or 1), u32 method (0
+///   to 1, painted kept to 5 to 95 %), u32 flags (v16; was dither, 0 or 1):
+///   1 Dither, 2 Align with Layer off (laid over the page; a glow's and a
+///   Shape Burst's gradient read it and ignore it), u32 method (0
 ///   Classic, 1 Perceptual, 2 Linear, 3 Smooth), f64 smoothness (0 to 1);
 ///   then u32 type, 0 solid (the stops), 1 noise (v6), whose record
 ///   follows in place of the stops' colours:
@@ -951,7 +964,8 @@ impl<'a> Reader<'a> {
 /// - a flag past its bits: the blending flags, a channel mask past 7, the
 ///   shadow flags past 7, the satin flags past 3, the bevel flags past 63
 ///   (a texture's Invert with no texture), the noise flags past 3, a glow's
-///   Centre or gradient flag, a gradient's dither flag or method, a midpoint
+///   Centre or gradient flag, a gradient's flags past 3 or its method, a
+///   page record whose matrix does not invert or whose size is not above 0, a midpoint
 ///   count that is neither 0 nor one per segment, a contour corner flag, a backdrop flag, or a
 ///   Blend If flag past 1, or a Blend If range out of order (black low,
 ///   black high, white low, white high must not fall);
@@ -973,6 +987,23 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     }
     let (width, height) = (r.u32()?, r.u32()?);
     let grain = (r.u32()? as i32, r.u32()? as i32);
+    let page = match r.u32()? {
+        0 => None,
+        1 => {
+            let mut m = [0.0; 6];
+            for v in m.iter_mut() {
+                *v = r.within(MAX_THROW)?;
+            }
+            let to_page = Affine(m);
+            to_page.invert().ok_or(Error::BadSpec)?;
+            let (w, h) = (r.upto(MAX_THROW)?, r.upto(MAX_THROW)?);
+            if w <= 0.0 || h <= 0.0 {
+                return Err(Error::BadSpec);
+            }
+            Some(Page { to_page, w, h })
+        }
+        _ => return Err(Error::BadSpec),
+    };
     if width == 0
         || height == 0
         || width > MAX_SIDE
@@ -1052,6 +1083,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         width,
         height,
         grain,
+        page,
         shadows,
         blend,
         fill_opacity,
@@ -1543,6 +1575,7 @@ fn paint_glyphs(
                 transform: request.request.transform,
                 tiles: &request.request.tiles,
                 grain: request.grain,
+                page: request.page,
             };
             let (laid, o, b) = effects::interior(
                 &r,
@@ -2094,6 +2127,7 @@ fn paint(
             transform,
             tiles: &request.request.tiles,
             grain: request.grain,
+            page: request.page,
         };
         effects::lay_outside(&mut s, &o, &request.effects, &place, page.as_ref())?;
         let b = o.bounds().intersect(&surface);

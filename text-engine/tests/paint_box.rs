@@ -75,6 +75,7 @@ fn plain(font: FontId) -> BoxRequest {
         width: 200,
         height: 160,
         grain: (0, 0),
+        page: None,
         shadows: Vec::new(),
         blur: 0.0,
         taps: Vec::new(),
@@ -674,7 +675,7 @@ fn gradient_record(b: &mut Vec<u8>) {
     f(b, 1.0);
     f(b, 1.0);
     f(b, 0.0);
-    // v14: no midpoints of either kind, no Dither, Classic at 0 %.
+    // v14: no midpoints of either kind, no flags (v16: Dither, Align off), Classic at 0 %.
     u(b, 0);
     u(b, 0);
     u(b, 0);
@@ -710,6 +711,7 @@ fn noise_gradient() -> Gradient {
         style: Style::ShapeBurst,
         mids: Vec::new(),
         opacity_mids: Vec::new(),
+        align: true,
         dither: false,
         noise: Some(Ramp::new(Noise {
             seed: 21,
@@ -735,6 +737,7 @@ fn gradient() -> Gradient {
         offset: (0.1, 0.0),
         mids: Vec::new(),
         opacity_mids: Vec::new(),
+        align: true,
         dither: false,
         noise: None,
     }
@@ -749,6 +752,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     // The grain's corner (v15): (-3, 7).
     u(&mut b, (-3i32) as u32);
     u(&mut b, 7);
+    u(&mut b, 0); // no page (v16)
     u(&mut b, 1);
     b.extend_from_slice(&[255, 0, 0, 255]);
     let opacity_at = b.len();
@@ -1123,7 +1127,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 15));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 16));
     assert_eq!(r.grain, (-3, 7));
 }
 
@@ -1189,9 +1193,9 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(8, 0), Some(Error::BadSpec));
     assert_eq!(with_u(8, 1 << 20), Some(Error::BadSpec));
     // Counts past their guards, and counts the bytes cannot hold (the
-    // shadow count is past the grain's corner, v15).
-    assert_eq!(with_u(24, 17), Some(Error::BadSpec));
-    assert_eq!(with_u(24, 2), Some(Error::BadSpec));
+    // shadow count is past the grain's corner, v15, and the page, v16).
+    assert_eq!(with_u(28, 17), Some(Error::BadSpec));
+    assert_eq!(with_u(28, 2), Some(Error::BadSpec));
     assert_eq!(with_u(blur_at + 8, 513), Some(Error::BadSpec));
     assert_eq!(with_u(mode_at + 20, 4097), Some(Error::BadSpec));
     // A shape of no known kind.
@@ -1214,10 +1218,11 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_f(effects_at + 196, 1.5), Some(Error::BadSpec));
     // v14, after the inner glow's two colour stops and two opacity stops: a
     // midpoint count that is neither none nor one per segment, of either
-    // kind; a Dither flag and a Method that are not ones; Smoothness past 1.
+    // kind; flags past Dither and Align off (v16) and a Method that are not
+    // ones; Smoothness past 1.
     assert_eq!(with_u(effects_at + 152 + 104, 2), Some(Error::BadSpec));
     assert_eq!(with_u(effects_at + 152 + 108, 2), Some(Error::BadSpec));
-    assert_eq!(with_u(effects_at + 152 + 112, 2), Some(Error::BadSpec));
+    assert_eq!(with_u(effects_at + 152 + 112, 4), Some(Error::BadSpec));
     assert_eq!(with_u(effects_at + 152 + 116, 4), Some(Error::BadSpec));
     assert_eq!(with_f(effects_at + 152 + 120, 1.5), Some(Error::BadSpec));
     // A gradient type that is not one, after them.
@@ -1228,6 +1233,23 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(noise_at + 12, 3), Some(Error::BadSpec));
     assert_eq!(with_f(noise_at + 16 + 16, 0.9), Some(Error::BadSpec));
     assert_eq!(with_u(noise_at + 16 + 48, 4), Some(Error::BadSpec));
+    // The gradient's flags (v16), before its Method, Smoothness and type: 1
+    // Dither and 2 Align with Layer off; past 3 refused.
+    let flags_at = noise_at - 4 - 8 - 4 - 4;
+    assert_eq!(with_u(flags_at, 4), Some(Error::BadSpec));
+    let mut b = good.clone();
+    b[flags_at..flags_at + 4].copy_from_slice(&3u32.to_le_bytes());
+    let r = decode_box(&b).unwrap();
+    let off = r.effects.iter().find_map(|e| match e {
+        Effect::GradientOverlay(o) => match &o.paint {
+            Paint::Gradient(g) => Some((g.dither, g.align)),
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(off, Some((true, false)));
+    // The page record (v16) is 0 or 1.
+    assert_eq!(with_u(24, 2), Some(Error::BadSpec));
     // A satin's distance below 0, its size past the guard, flags that are not
     // ones and a contour that does not exist.
     assert_eq!(with_f(satin_at + 28, -1.0), Some(Error::BadSpec));
@@ -1318,7 +1340,8 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     u(&mut b, BOX_WIRE_VERSION);
     u(&mut b, 200);
     u(&mut b, 160);
-    // The grain's corner (v15).
+    // The grain's corner (v15), no page (v16).
+    u(&mut b, 0);
     u(&mut b, 0);
     u(&mut b, 0);
     u(&mut b, n);
@@ -1375,7 +1398,8 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
     u(&mut b, BOX_WIRE_VERSION);
     u(&mut b, 200);
     u(&mut b, 160);
-    // The grain's corner (v15).
+    // The grain's corner (v15), no page (v16).
+    u(&mut b, 0);
     u(&mut b, 0);
     u(&mut b, 0);
     u(&mut b, 0);
