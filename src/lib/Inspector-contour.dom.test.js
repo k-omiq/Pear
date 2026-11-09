@@ -57,7 +57,7 @@ async function press(el) {
 // The plot is 172 units across (160 and a 6 pad each side): laid out at
 // that size from the corner, a client pixel is a plot unit.
 function plotOf(view, title) {
-  const svg = view.getByRole('application', { name: new RegExp(`^${title} curve`) });
+  const svg = view.getByRole('slider', { name: new RegExp(`^${title} curve`) });
   svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 172, height: 172, right: 172, bottom: 172 });
   svg.setPointerCapture = () => {};
   return svg;
@@ -114,6 +114,10 @@ describe('the contour editor', () => {
     await fireEvent.pointerUp(svg, at(100, 200));
     settleEdits();
     expect(pts(box)[1]).toEqual([100, 200, false]);
+    // The square says which point it holds and where.
+    await tick();
+    expect(svg.getAttribute('aria-valuenow')).toBe('200');
+    expect(svg.getAttribute('aria-valuetext')).toBe('Point 2 of 3: input 100, output 200');
     // A drag cannot carry a point past or onto its neighbour's x.
     await fireEvent.pointerDown(svg, at(100, 200));
     await fireEvent.pointerMove(svg, at(300, 200));

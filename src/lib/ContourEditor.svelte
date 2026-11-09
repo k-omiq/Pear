@@ -145,12 +145,18 @@
       </select>
     </label>
   </div>
+  <!-- The square is a slider for the chosen point: up and down move its
+       output, left and right its input, and the pointer adds and drags. -->
   <svg
     bind:this={svgEl}
     class="ce-plot"
     viewBox="0 0 {SIDE + PAD * 2} {SIDE + PAD * 2}"
-    role="application"
+    role="slider"
     aria-label="{title} curve: click to add a point, drag to move one, arrow keys nudge the chosen point"
+    aria-valuemin="0"
+    aria-valuemax="255"
+    aria-valuenow={Math.round(pts[sel]?.[1] ?? 0)}
+    aria-valuetext="Point {sel + 1} of {pts.length}: input {Math.round(pts[sel]?.[0] ?? 0)}, output {Math.round(pts[sel]?.[1] ?? 0)}{pts[sel]?.[2] ? ', corner' : ''}"
     tabindex="0"
     onpointerdown={press}
     onpointermove={move}
