@@ -675,8 +675,8 @@ export function normalizeBlending(x) {
   };
 }
 
-// Photoshop's contour presets, in its picker's order (`PRESET_NAMES` in
-// text-engine/src/paint/fx/contour.rs), and 'custom' for a curve of points.
+// Photoshop's contour presets, in its picker's order (`PRESETS` and
+// `preset_name` in text-engine/src/paint/fx/contour.rs), and 'custom' for a curve of points.
 export const CONTOUR_PRESETS = [
   'linear', 'cone', 'cone-inverted', 'cove-deep', 'cove-shallow', 'gaussian',
   'half-round', 'ring', 'ring-double', 'rolling-slope-descending', 'rounded-steps', 'sawtooth-1',

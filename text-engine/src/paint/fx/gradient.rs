@@ -11,8 +11,8 @@
 //! lengths on psd-tools' cached Photoshop renders; the notes are kept.
 //! Changed: the frame is in the box's own units, so a turned or mirrored box
 //! turns its gradient with it, and the whole-pixel snap of PhotoCraft's
-//! `fill_layout` is left out (it is a device-pixel grid; at most half a
-//! device pixel along the gradient).
+//! `fill_layout` is left out (it is a device-pixel grid; up to about 1 px
+//! along the gradient, and Reflected tilts on odd frames).
 
 use super::noise_gradient::Ramp;
 

@@ -507,11 +507,12 @@ impl Table {
     }
 }
 
-/// Photoshop's Range (glows; the bevel's contour carries one but PhotoCraft
-/// found no `v / range` stretch that matches Photoshop there, so the bevel
-/// applies none): the curve is laid over
-/// the inner `range` percent of the matte, so a smaller range pulls the whole
-/// curve towards the far edge.
+/// Photoshop's Range on a byte, as a stretch of the curve's input. Nothing in
+/// the paint calls it: the glows apply their Range in [`super::map::ranged`],
+/// and the bevel's contour carries one that PhotoCraft found no `v / range`
+/// stretch matching Photoshop for, so the bevel applies none. Only the tests
+/// here use it. The curve is laid over the inner `range` percent of the
+/// matte, so a smaller range pulls the whole curve towards the far edge.
 pub fn range(v: u8, range: f64) -> u8 {
     if range >= 100.0 {
         return v;

@@ -34,6 +34,10 @@ names its source file in a comment.
   (Distance 0 drawn as 1 px, rounded to whole pixels)
   (`crates/compose/src/effects/bevel.rs` `satin_map`, `satin_distance`;
   `effects/paint.rs` `satin_lut`, `offset`).
+- `fx/effects.rs` `whole_throw`: a drop or inner shadow's throw, rounded to
+  whole pixels in job units and then in device pixels
+  (`crates/compose/src/effects/paint.rs` `offset`, which rounds each axis).
+  The half-pixel snap under it, `whole`, is ours, not PhotoCraft's.
 - `fx/bevel.rs`: Bevel & Emboss, its geometry, height map, chisel ramps and
   shading (`crates/compose/src/effects/bevel.rs` `BevelPaint`,
   `BEVEL_H_EPS`, `BevelGeom`, `bevel_geom`, `bevel_height`,

@@ -186,7 +186,8 @@ pub struct Stroke {
 }
 
 impl Stroke {
-    /// (inside width, outside width), job units.
+    /// (inside width, outside width), job units. Ported from PhotoCraft's
+    /// `stroke_widths` (`crates/compose/src/effects/composite.rs`).
     pub fn widths(&self) -> (f64, f64) {
         let s = self.size.max(0.0);
         match self.position {
@@ -734,7 +735,9 @@ fn stroke_frame(f: Frame, st: &Stroke, px: f32) -> Frame {
 /// Coverage of an outside stroke under an edge pixel the letters cover `cov`
 /// of and end at alpha `l`: Photoshop treats the stroke and the letters as
 /// disjoint, so the stroke fills the part outside the path and the letters
-/// add their own alpha (psd-tools stroke-effects).
+/// add their own alpha (psd-tools stroke-effects). Ported from PhotoCraft's
+/// `outline_share` (`crates/compose/src/effects/composite.rs`; the GPU copy
+/// is `outline_share` in `crates/gpu/src/compose.wgsl`).
 pub fn outline_share(cov: f32, l: f32) -> f32 {
     let outside = (1.0 - cov.clamp(0.0, 1.0)).max(0.0);
     if outside <= 1e-6 {
@@ -1048,7 +1051,9 @@ fn outside_dist<'a>(
 }
 
 /// A bevel's highlight and shadow maps over `shape`, whose corner is device
-/// `dev`, and where they paint. `None` when the budget cannot hold them.
+/// `dev`, and where they paint. `Err` when the painter's budget cannot hold
+/// them: the `?` at the call sites fails the whole box, it does not skip the
+/// bevel (the one skip is a Stroke Emboss with no stroke band, in the caller).
 fn bevel_maps(
     shape: &Map,
     b: &Bevel,

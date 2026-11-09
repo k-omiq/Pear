@@ -7,11 +7,15 @@
 //!
 //! The shared modes follow the W3C compositing spec. The ones Photoshop has
 //! and the spec does not (Linear Burn, Darker Color, Linear Dodge, Lighter
-//! Color, Vivid Light, Linear Light, Pin Light, Hard Mix, Subtract, Divide,
-//! Dissolve) and Photoshop's own Soft Light are from Adobe's descriptions of
-//! them. Soft Light and the luma of the four colour modes are not stated by
-//! Adobe in numbers; a Photoshop golden checks them (LAYER_STYLES_PLAN.md,
-//! G4).
+//! Color, Linear Light, Pin Light, Subtract, Divide, Dissolve) are from
+//! Adobe's descriptions of them. Photoshop's own Soft Light
+//! (`soft_light_ps`, `crates/color/src/blend.rs`), Vivid Light
+//! (`vivid_light_ps`) and Hard Mix (`hard_mix_ps`, and its Fill formula in
+//! `blend_rgb_fill`) are PhotoCraft's, from `crates/compose/src/psblend.rs`:
+//! PhotoCraft, Copyright (c) 2026 ArtCraft Team and the PhotoCraft
+//! contributors, MIT licence (see `text-engine/THIRD_PARTY.md`). The luma of
+//! the four colour modes is not stated by Adobe in numbers; a Photoshop
+//! golden checks it (LAYER_STYLES_PLAN.md, G4).
 
 use super::super::blur::Surface;
 use super::super::geom::IBox;

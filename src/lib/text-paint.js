@@ -1024,8 +1024,8 @@ export function inkExtent(ink) {
 
 // How far a list of shadows throws ink past the shape that casts them, page
 // px: the furthest offset (a diagonal, not the sum of its legs) plus how far
-// its soft edge reaches (`shadowSpread`): its Size, which is three of its
-// sigmas and a pixel. The Rust engine lays a Photoshop shadow at its throw
+// its soft edge reaches (`shadowSpread`): Size (the tent's reach) and a pixel.
+// The Rust engine lays a Photoshop shadow at its throw
 // rounded to whole page px (`whole_throw` in fx/effects.rs; an SFX copy,
 // `exact`, where it is thrown), so a leg counts as the further of the two.
 export function shadowExtent(shadows) {

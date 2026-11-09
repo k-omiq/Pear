@@ -97,7 +97,8 @@ pub struct Shadow {
     pub x: f64,
     pub y: f64,
     /// Photoshop's Size, job units: how far the soft edge reaches
-    /// ([`size_sigma`]). 0 is a hard edge.
+    /// ([`fx::size_reach`](crate::paint::fx::size_reach); the blur is the
+    /// tent in [`fx::tent`](crate::paint::fx::tent)). 0 is a hard edge.
     pub size: f64,
     /// The silhouette grown this much more, job units (times each run's
     /// pen): an SFX extrude's edge. 0 for a drop shadow.
@@ -225,8 +226,10 @@ pub struct BoxRequest {
     pub fill_opacity: f64,
     /// The Advanced Blending options.
     pub blending: Blending,
-    /// The layer effects past the drop shadows: glows, inner shadows, colour
-    /// overlays. Of a kind, first on top.
+    /// The layer effects past the drop shadows, the [`Effect`] kinds: Outer
+    /// Glow, Inner Glow, Inner Shadow, Colour Overlay, Gradient Overlay,
+    /// Pattern Overlay, Satin, Stroke and Bevel & Emboss (wire kinds 1 to 9).
+    /// Of a kind, first on top.
     pub effects: Vec<Effect>,
     /// The page under the surface, straight RGBA8 of the surface's size,
     /// read as opaque: what a blend mode blends with.
@@ -876,21 +879,39 @@ impl<'a> Reader<'a> {
 ///   flags (1 restrict colours, 2 add transparency)
 /// ```
 ///
-/// Refused: a surface with no size or past the painter's guards, more than
-/// 512 taps, a count the bytes cannot hold, an opacity, a weight, a spread, a
-/// noise, a jitter or a fill opacity outside 0 to 1, a size or a blur outside 0 to
-/// 4096, a throw, a tap or a point further than 65536 from zero, a mode or a
-/// contour that does not exist, a contour point outside 0 to 255 or out of
-/// order, a bevel style or technique that does not exist, a bevel depth
-/// outside 0 to 10, an altitude outside 0 to 90, a bevel texture that is not
-/// a fill, more than 8 bevels or 64 noise gradients ([`MAX_BEVELS`],
-/// [`MAX_NOISE_GRADIENTS`]), blending flags past 1, a channel mask past 7,
-/// a Blend If that is not 0 or 1 or with a range out of order (black low,
-/// black high, white low, white high must not fall), ink past its limits
-/// above (a stroke's number out of its range, a flag that is not one, a tip
-/// index past the tips, a stride that is not 3 or 5), records the painter's
-/// budget cannot hold (the baked contour tables and noise ramps count), and
-/// anything a glyph job is refused for.
+/// Refused (`BadSpec`, or the painter's budget error):
+/// - a surface with no size, past [`MAX_SIDE`] a side or [`MAX_PIXELS`] in all;
+/// - a count the bytes cannot hold, or past its cap: more than [`MAX_TAPS`]
+///   taps, [`MAX_GRADIENT_STOPS`] stops of a kind, [`contour::MAX_POINTS`]
+///   custom contour points, more than [`MAX_BEVELS`] bevels or
+///   [`MAX_NOISE_GRADIENTS`] noise gradients;
+/// - a number that is not finite, or outside its range: an opacity, weight,
+///   spread, choke, noise, jitter, Range, fill opacity, gradient stop
+///   position, noise limit or roughness outside 0 to 1; a noise limit's min
+///   above its max; a stop or contour x out of order; a size or blur outside
+///   0 to [`MAX_BLUR`]; a throw, tap, point or the
+///   centre of a gradient further than [`MAX_THROW`] from zero (a gradient
+///   offset further than 10); a gradient angle past 36000 degrees or a scale
+///   outside 0 to [`MAX_GRADIENT_SCALE`]; a bevel depth or texture depth
+///   outside 0 to [`MAX_BEVEL_DEPTH`]; an altitude outside 0 to 90; a
+///   contour point outside 0 to 255;
+/// - a name that does not exist: a blend mode, a contour preset, a gradient
+///   style, a glow technique, a stroke position, a bevel style or technique,
+///   a noise colour model, a clip mode or shape, a paint kind (0 to 2), or an
+///   effect kind (1 to 9); a gradient overlay that does not carry a gradient
+///   paint, or a pattern overlay that does not carry a fill;
+/// - a flag past its bits: the blending flags, a channel mask past 7, the
+///   shadow flags past 7, the satin flags past 3, the bevel flags past 63
+///   (a texture's Invert with no texture), the noise flags past 3, a glow's
+///   Centre or gradient flag, a contour corner flag, a backdrop flag, or a
+///   Blend If flag past 1, or a Blend If range out of order (black low,
+///   black high, white low, white high must not fall);
+/// - a bevel texture whose paint is not a fill;
+/// - bytes left over after the job's end;
+/// - ink past its limits above (a stroke's number out of its range, a flag
+///   that is not one, a tip index past the tips, a stride that is not 3 or 5);
+/// - records the painter's budget cannot hold (the baked contour tables and
+///   noise ramps count), and anything a glyph job is refused for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     let mut r = Reader {
         bytes,
