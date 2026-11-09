@@ -24,7 +24,7 @@ function drift(value, schema, path = '', errors = []) {
       else drift(child, schema.fields[key], childPath, errors);
     }
     for (const key of Object.keys(schema.fields)) {
-      if (!Object.hasOwn(value, key)) errors.push(`${join(path, key)}: stale schema`);
+      if (!Object.hasOwn(value, key) && !schema.fields[key].optional) errors.push(`${join(path, key)}: stale schema`);
     }
   } else if (Array.isArray(value)) {
     if (schema.type !== 'array' || !schema.items) errors.push(`${path}: missing array items`);
@@ -248,7 +248,7 @@ describe('validateStylePatch', () => {
   });
 
   it('refuses every read-only payload with its setting instructions', () => {
-    for (const [path, entry] of allEntries.filter(([, e]) => e.readOnly)) {
+    for (const [path, entry] of allEntries.filter(([, e]) => e.readOnly && !Object.hasOwn(e, 'same'))) {
       for (const value of [null, [], {}, { 0: {} }]) {
         expect(validateStylePatch(patchAt(path, value))).toEqual([{ path: path.replaceAll('[]', '[0]'), error: entry.desc }]);
       }
@@ -472,7 +472,8 @@ describe('the bevel in the schema', () => {
     const text = styleSchemaText();
     expect(text).toContain('bevel.style: enum inner|outer|emboss|pillow|stroke - ');
     expect(text).toContain('bevel.highlight.blend: enum BLEND - ');
-    expect(text).toContain('bevel.gloss.preset: enum CONTOUR - ');
+    expect(text).toContain('shadows[].contour.preset: enum CONTOUR - ');
+    expect(text).toContain('bevel.gloss: object like shadows[].contour - ');
     expect(text).toContain('bevel.shadow: object like bevel.highlight - ');
     expect(text).toContain('bevel.texture.pattern: object like pattern - ');
   });
@@ -508,5 +509,44 @@ describe('Channels and Blend If in the schema', () => {
     const text = styleSchemaText();
     expect(text).toContain('blending.blendIf.gray.under: array 4..4 items of integer - ');
     expect(text).toContain('blending.blendIf.blue: object like blending.blendIf.gray - ');
+  });
+});
+
+describe('review fixes: stored values, custom contours, order checks', () => {
+  it('lets a stored strokeEffects list go back whole, empty pick fields included', () => {
+    const list = [newStrokeEffect()];
+    expect(list[0].pattern.src).toBe('');
+    expect(validateStylePatch({ strokeEffects: list })).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: [{ pattern: { src: 'data:x' } }] }).length).toBeGreaterThan(0);
+  });
+
+  it('takes a custom contour with its points', () => {
+    const contour = { preset: 'custom', aa: false, pts: [[0, 0, false], [128, 200], [255, 255, true]] };
+    expect(validateStylePatch({ shadows: [{ contour }] })).toEqual([]);
+    expect(validateStylePatch({ shadows: [{ contour: { preset: 'custom', pts: [[0, 300]] } }] }).length).toBeGreaterThan(0);
+  });
+
+  it('refuses falling Blend If levels and a noise min above its max, by name', () => {
+    const bad = validateStylePatch({ blending: { blendIf: { gray: { this: [0, 0, 255, 128] } } } });
+    expect(bad[0].path).toBe('blending.blendIf.gray.this');
+    expect(bad[0].error).toContain('levels must not fall');
+    expect(validateStylePatch({ blending: { blendIf: { gray: { this: [0, 10, 200, 255] } } } })).toEqual([]);
+    const noise = validateStylePatch({ gradientOverlays: [{ gradient: { noise: { min: [0.9, 0, 0], max: [0.1, 1, 1] } } }] });
+    expect(noise[0].error).toContain('noise min must not pass max');
+  });
+});
+
+describe('review fixes round 2', () => {
+  it('refuses on:false in an effect pattern but takes the stored on:true', () => {
+    expect(validateStylePatch({ patternOverlay: { pattern: { on: false } } }).length).toBe(1);
+    expect(validateStylePatch({ strokeEffects: [{ pattern: { on: true } }] })).toEqual([]);
+  });
+
+  it('appends an item at the index just past the end of a list', () => {
+    const base = normalizeStyle({ ...defaultStyle(), strokes: [{ color: '#000', width: 2 }] });
+    const r = applyStylePatch(base, { strokes: { 1: { color: '#fff', width: 3 } } });
+    expect(r.errors).toEqual([]);
+    expect(r.style.strokes).toHaveLength(2);
+    expect(applyStylePatch(base, { strokes: { 3: { width: 3 } } }).errors).toHaveLength(1);
   });
 });

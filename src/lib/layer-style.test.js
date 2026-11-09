@@ -6,6 +6,7 @@ import {
   LIGHT_DEF,
   normalizeLight,
   normalizeShadow,
+  normalizeContour,
   normalizeTypesetting,
   normalizeFxGradient,
   normalizeNoiseGradient,
@@ -377,3 +378,21 @@ describe('a bevel in the style', () => {
     expect(rescaleStyle({ bevel }, 2, 2).bevel).toMatchObject({ size: 20, soften: 4, depth: 3, angle: 45, altitude: 20, texture: { scale: 2 } });
   });
 });
+
+describe('a shadow saved before Size', () => {
+  it('rescales its blur with the page', () => {
+    const out = rescaleStyle({ shadows: [{ x: 2, y: 2, blur: 4 }] }, 2, 2);
+    expect(out.shadows[0]).toMatchObject({ x: 4, y: 4, blur: 8 });
+    expect(normalizeShadow(out.shadows[0]).size).toBe(10);
+  });
+});
+
+describe('a custom contour', () => {
+  it('drops a smooth point at the x of the one before, and keeps a corner step', () => {
+    const smooth = normalizeContour({ preset: 'custom', pts: [[0, 0], [100, 50], [128, 60], [128, 200], [255, 255]] });
+    expect(smooth.pts.map((q) => q[0])).toEqual([0, 100, 128, 255]);
+    const step = normalizeContour({ preset: 'custom', pts: [[0, 0], [128, 60], [128, 200, true], [255, 255]] });
+    expect(step.pts).toHaveLength(4);
+  });
+});
+

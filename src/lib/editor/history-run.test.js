@@ -3,8 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app, loadProjectPages, pageById, editBoxes, settleEdits, cloneStyle } from '../store.svelte.js';
 import { initHistory, resetHistory, peekStack, inRun, undo } from './history.svelte.js';
+import { defaultStyle, normalizeStyle } from '../data.js';
 import { __setDir, switchHistoryPage, flushHistory, rescaleEntry, migrateEntry } from './history-file.svelte.js';
-import { defaultStyle } from '../data.js';
 
 vi.mock('../fsx.js', () => {
   const files = new Map();
@@ -76,5 +76,19 @@ describe('a stored group', () => {
 
   it('is migrated item by item, and left as it is when nothing moves', () => {
     expect(migrateEntry(group)).toBe(group);
+  });
+});
+
+describe('an entry from before Layer Styles', () => {
+  it('goes through normalizeStyle, so a shadow has its size and the new fields exist', () => {
+    const old = { ...defaultStyle(), shadows: [{ x: 2, y: 2, blur: 4 }] };
+    for (const k of ['innerShadows', 'strokeEffects', 'blendMode', 'bevel', 'blending']) delete old[k];
+    const out = migrateEntry({ t: 'delete', pageId: 1, box: { id: 'a', style: old } });
+    expect(out.box.style.shadows[0]).toMatchObject({ x: 2, y: 2, size: 5 });
+    expect(out.box.style.innerShadows).toEqual([]);
+    expect(out.box.style.bevel).toBeTruthy();
+    expect(out.box.style.blending).toBeTruthy();
+    const cur = { t: 'delete', pageId: 1, box: { id: 'a', style: normalizeStyle(defaultStyle()) } };
+    expect(migrateEntry(cur)).toBe(cur);
   });
 });

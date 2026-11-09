@@ -122,6 +122,14 @@ const isCurrentStyle = (s) =>
   typeof s === 'object' &&
   Array.isArray(s.strokes) &&
   Array.isArray(s.shadows) &&
+  // A shadow saved before Photoshop's Size has `blur` and no `size`.
+  s.shadows.every((sh) => !!sh && typeof sh === 'object' && 'size' in sh) &&
+  // The Layer Styles fields: an entry without them goes through normalizeStyle.
+  Array.isArray(s.innerShadows) &&
+  Array.isArray(s.strokeEffects) &&
+  'blendMode' in s &&
+  !!s.bevel &&
+  !!s.blending &&
   !!s.gradient &&
   typeof s.gradient === 'object' &&
   !!s.pattern &&

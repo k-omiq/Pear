@@ -48,13 +48,18 @@ function merge(base, patch, path, errors) {
     const out = base.map(copy);
     for (const [k, v] of Object.entries(patch)) {
       const i = Number(k);
-      if (!Number.isInteger(i) || i < 0 || i >= out.length) {
+      if (!Number.isInteger(i) || i < 0 || i > out.length) {
         errors.push({ path: `${path}.${k}`, error: `no item ${k} (the list has ${out.length})` });
         continue;
       }
       // An item of another kind (an ellipse over a polygon) shares no fields
       // with the one there: merged, it is half of each, which normalizeStyle
       // drops without a word.
+      // An index just past the end appends a new item.
+      if (i === out.length) {
+        out.push(merge(undefined, v, `${path}.${i}`, errors));
+        continue;
+      }
       if (isPlain(out[i]) && isPlain(v) && 'kind' in out[i] && 'kind' in v && v.kind !== out[i].kind) {
         errors.push({ path: `${path}.${k}`, error: `item ${k} is a ${out[i].kind}; to make it a ${v.kind}, give the whole list` });
         continue;
