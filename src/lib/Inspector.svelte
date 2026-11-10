@@ -2557,7 +2557,9 @@
         {#if effectsTab === 'wobble'}
           <!-- Each letter moved up or down and turned by numbers of its own.
                Only the Rust engine paints it, so under the browser engine
-               every control is dimmed and the group's note says why. -->
+               the controls are dimmed and the group's note says why. The
+               switch can still turn a wobble off, so a box set under the
+               Rust engine is not stuck with one. -->
           {@const wb = s.wobble}
           {@const off = !wb.on || !wobblePaints}
           <div class="switch-row" title="Each letter sits a little high or low and can tilt, like a shaky hand">
@@ -2568,7 +2570,7 @@
               role="switch"
               aria-checked={wb.on}
               aria-label="Wobble"
-              disabled={!wobblePaints}
+              disabled={!wobblePaints && !wb.on}
               onclick={() => { wb.on = !wb.on; touch(); }}
             ><span class="knob"></span></button>
             <span class="lbl2">Wobble</span>

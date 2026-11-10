@@ -538,11 +538,7 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     ));
     // Wobble (v12): each letter up or down and turned by numbers of its own.
     // Every pass follows the moved letters, a stroke and a shadow included.
-    let wobble = Wobble {
-        amount: 0.15,
-        tilt: 12.0,
-        seed: 7,
-    };
+    let wobble = Wobble::new(0.15, 12.0, 7);
     rows.push((
         "wobble",
         Box::new(move |b| {

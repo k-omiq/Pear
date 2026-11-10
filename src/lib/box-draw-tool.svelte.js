@@ -11,11 +11,18 @@
 //
 // `target: null` means no tool: the box moves and resizes as ever. Arming a
 // tool hands the box's pointer to the drawing overlay until it is disarmed:
-// the same tool picked again, Escape, or a different box selected.
+// the same tool picked again, Escape, a different box selected, or its panel
+// no longer in front.
 export const DRAW_TARGETS = ['mask', 'fade', 'paint'];
 export const DRAW_KINDS = ['brush', 'rect', 'ellipse', 'poly', 'move', 'erase'];
 
 export const drawTool = $state({ target: null, kind: null });
+
+// The Effects sub-tab whose panel arms each target. A tool is put down when
+// its panel is no longer the one in front (`inspector-tabs.svelte.js`): an
+// armed tool takes the box's pointer, and a tool nobody can see would leave
+// the box unable to move for no reason the letterer can find.
+export const DRAW_PANELS = { mask: 'mask', fade: 'fade' };
 
 export function setDrawTool(target, kind) {
   if (!DRAW_TARGETS.includes(target) || !DRAW_KINDS.includes(kind)) return false;

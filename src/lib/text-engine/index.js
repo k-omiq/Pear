@@ -74,6 +74,15 @@ export function engineDraws() {
   return engine != null && painter.engine === engine;
 }
 
+// Whether a style's wobble is painted: switched on, moving something, and
+// drawn by a painter that moves the letters in the job (the Rust one). A
+// wobble of no amount and no tilt is none, so the job is one without it and
+// Crisp stays on. Under the browser engine nothing moves, so nothing grows.
+export function wobbleDrawn(style) {
+  const w = style?.wobble;
+  return w?.on === true && (w.amount > 0 || w.tilt > 0) && engineDraws() && painter.wobble === true;
+}
+
 // ONE EXPORT, ONE ENGINE. Which engine measures and which painter draws can
 // change between two awaits (the switch is flipped; a font lands and the
 // engine has, or no longer has, something to draw with; it fails and the

@@ -10,13 +10,23 @@
 // App.svelte, which has no handle on the panel and should not grow one. The
 // panel reads this state and writes it; the shortcuts write it; nothing else
 // needs to know the panel exists.
+import { drawTool, clearDrawTool, DRAW_PANELS } from './box-draw-tool.svelte.js';
+
 export const INSPECTOR_TABS = ['text', 'fill', 'effects', 'layout'];
+
+// A draw tool is its panel's: once another tab or sub-tab is in front, the
+// tool is put down (`DRAW_PANELS`). Every change of tab comes through here.
+function drawToolFollowsPanel() {
+  const panel = DRAW_PANELS[drawTool.target];
+  if (panel && !(inspectorTab.id === 'effects' && effectsSubTab.id === panel)) clearDrawTool();
+}
 
 export const inspectorTab = $state({ id: 'text' });
 
 export function setInspectorTab(id) {
   if (!INSPECTOR_TABS.includes(id)) return false;
   inspectorTab.id = id;
+  drawToolFollowsPanel();
   return true;
 }
 
@@ -27,6 +37,7 @@ export function cycleInspectorTab(step = 1) {
   const from = i === -1 ? 0 : i;
   const n = INSPECTOR_TABS.length;
   inspectorTab.id = INSPECTOR_TABS[(((from + step) % n) + n) % n];
+  drawToolFollowsPanel();
   return inspectorTab.id;
 }
 
@@ -89,6 +100,7 @@ export function setEffectsSubTab(id) {
   if (!group) return false;
   effectsSubTab.id = id;
   lastInGroup[group] = id;
+  drawToolFollowsPanel();
   return true;
 }
 

@@ -91,4 +91,21 @@ describe('the Effects groups', () => {
     await fireEvent.click(view.getByRole('button', { name: 'Move' }));
     expect(drawTool.target).toBe(null);
   });
+
+  it('the draw tool is put down when its panel is no longer in front', async () => {
+    setEffectsSubTab('mask');
+    const view = mounted({ on: true });
+    await tick();
+    await fireEvent.click(view.getByRole('button', { name: 'Rectangle' }));
+    expect(drawTool.target).toBe('mask');
+    // Another group.
+    await fireEvent.click(view.getByRole('tab', { name: 'Shape' }));
+    expect(drawTool.target).toBe(null);
+    // Back to Mask, armed again, then another Inspector tab.
+    await fireEvent.click(view.getByRole('tab', { name: 'Paint' }));
+    await fireEvent.click(view.getByRole('button', { name: 'Rectangle' }));
+    expect(drawTool.target).toBe('mask');
+    setInspectorTab('fill');
+    expect(drawTool.target).toBe(null);
+  });
 });
