@@ -383,6 +383,7 @@ function projectFieldsOf(raw) {
     layout: normalizeLayout(raw.layout),
     // Old Korean builds stored this globally; otherwise absent is Japanese.
     ocrLanguage: normalizeOcrLanguage(raw.ocrLanguage ?? legacyProjectLanguage()),
+    exportScale: normalizeExportScale(raw.exportScale),
     ...projectTags(raw),
     guide: sanitizeGuide(raw.guide),
   };
@@ -798,7 +799,7 @@ async function writeProjectRecordNow(p, patch) {
   });
 }
 
-const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'tags', 'tagSizes', 'guide'];
+const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide'];
 
 // The record as this window would write it from its catalogue entry.
 const recordFields = (p) => ({
@@ -808,6 +809,7 @@ const recordFields = (p) => ({
   coverPageId: p.coverPageId ?? null,
   layout: normalizeLayout(p.layout),
   ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
+  exportScale: normalizeExportScale(p.exportScale),
   ...seriesFields(p),
 });
 
@@ -820,7 +822,7 @@ const recordBase = new WeakMap();
 function adoptRecord(p, fields, mine) {
   const sameAs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   let series = false;
-  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'tags', 'tagSizes', 'guide']) {
+  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide']) {
     if (!(k in fields) || sameAs(fields[k], mine[k])) continue;
     p[k] = fields[k];
     if (k === 'tags' || k === 'tagSizes' || k === 'guide') series = true;
@@ -871,6 +873,33 @@ export async function setProjectOcrLanguage(projectId, language) {
   recordWrite = run.catch(() => {});
   await run;
   if (app.chapterRef?.projectId === projectId) app.projectOcrLanguage = next;
+  return next;
+}
+
+// The export dialog's Size for a series: 1 (the page's own pixels) or 2 (twice
+// them each way). A series is exported the same way every time, so it is kept
+// with the series and not as a preference of the app. Absent, and anything
+// else, is 1: every project written before this existed exported at its own
+// size.
+export const EXPORT_SCALES = [1, 2];
+export function normalizeExportScale(scale) {
+  return EXPORT_SCALES.includes(scale) ? scale : 1;
+}
+
+// Queued behind the other record writes as the language is
+// (`setProjectOcrLanguage`): a tag or guide write racing this one would put
+// the old size back on disk.
+export async function setProjectExportScale(projectId, scale) {
+  const p = projectById(projectId);
+  if (!p || p.unreadable) throw new Error('No such readable project');
+  const next = normalizeExportScale(scale);
+  const run = recordWrite.then(async () => {
+    const record = await writeProjectRecord(p, { exportScale: next });
+    p.exportScale = next;
+    p.updatedAt = record.updatedAt;
+  });
+  recordWrite = run.catch(() => {});
+  await run;
   return next;
 }
 

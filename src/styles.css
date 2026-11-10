@@ -849,6 +849,8 @@ input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; he
 .seg button:not(:last-child){ border-right:1px solid var(--line); }
 .seg button:hover{ color:var(--text); }
 .seg button.on{ background:var(--accent); color:var(--accent-fg); }
+/* A segment that cannot be chosen now is dimmed, never hidden (DESIGN.md). */
+.seg button:disabled{ opacity:.5; cursor:default; }
 .seg button svg{ width:15px; height:15px; }
 /* The Inspector's three sizing modes: words, sharing the row evenly. */
 .seg.sizing button{ flex:1 1 0; min-width:0; padding:0 4px; font-size:11.5px; overflow:hidden; text-overflow:ellipsis; }
