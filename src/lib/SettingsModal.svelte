@@ -11,7 +11,9 @@
   import TextStyles from './TextStyles.svelte';
   import { resetPanels } from './editor/panels.svelte.js';
   import { processMemory, ROLE_LABELS } from './memory.js';
-  import { prefs, setPref, typesetDefaults } from './prefs.svelte.js';
+  import { prefs, setPref, typesetDefaults, isComics } from './prefs.svelte.js';
+  import { offerOnboarding } from './onboarding/onboarding.svelte.js';
+  import DiscordInvite from './onboarding/DiscordInvite.svelte';
   import { guide, setSeriesTypeset } from './guide.svelte.js';
   import { engineSwitch, engineHasNoFont } from './engine-switch.svelte.js';
   import ReaderChoice from './ReaderChoice.svelte';
@@ -318,6 +320,15 @@
     toast('New token made');
   }
 
+  // The setup is its own full-window screen and sits over this one, so
+  // Settings closes first and focus goes back to where it was before Settings
+  // opened; the setup returns it there when it closes.
+  async function onRunSetup() {
+    open = false;
+    await tick();
+    offerOnboarding({ force: true });
+  }
+
   // Reset floating panel layout.
   function onResetPanels() {
     if (!confirmResetPanels) {
@@ -583,6 +594,30 @@
         </section>
 
         <section class="settings-section">
+          <h3 class="settings-title">Setup</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Usage</span>
+              <div class="seg" role="group" aria-label="Usage">
+                {#each [['comics', 'Comics'], ['general', 'General use']] as [v, label] (v)}
+                  <button class:on={prefs.usage === v} aria-pressed={prefs.usage === v} onclick={() => setPref('usage', v)}>{label}</button>
+                {/each}
+              </div>
+            </div>
+            <p class="set-desc">Comics keeps the tools for detecting, translating and lettering comics. General use hides them.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Setup</span>
+              <div class="set-ctl">
+                <button class="btn tiny" onclick={onRunSetup}>Run setup again</button>
+              </div>
+            </div>
+            <p class="set-desc">Walk through the theme, usage and community steps again.</p>
+          </div>
+        </section>
+
+        <section class="settings-section">
           <h3 class="settings-title">Editor</h3>
           <div class="set-item">
             <div class="set-line">
@@ -664,6 +699,24 @@
           </p>
           {@render tsRows(mineTs, setMine)}
         </section>
+
+        <!-- Comics only: general use has no translate chapters to start in. -->
+        {#if isComics()}
+          <section class="settings-section">
+            <h3 class="settings-title">New chapters</h3>
+            <div class="set-item">
+              <div class="set-line">
+                <span class="set-label">New chapters start as</span>
+                <div class="seg" role="group" aria-label="New chapters start as">
+                  {#each [['translate', 'Translate'], ['typeset', 'Typeset']] as [v, label] (v)}
+                    <button class:on={prefs.defaultChapterMode === v} aria-pressed={prefs.defaultChapterMode === v} onclick={() => setPref('defaultChapterMode', v)}>{label}</button>
+                  {/each}
+                </div>
+              </div>
+              <p class="set-desc">Translate opens the page beside a typing pane. Typeset goes straight to lettering.</p>
+            </div>
+          </section>
+        {/if}
 
         <!-- Who measures text. Here with the rest of typesetting and not in the
              Inspector: it is one setting for the whole machine, and no box has a
@@ -1004,6 +1057,8 @@
             </div>
           </section>
         {/if}
+
+        <DiscordInvite compact />
       {/if}
 
       {#if tab === 'series' && project}

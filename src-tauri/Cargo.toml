@@ -58,6 +58,12 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-fs = "2"
+# Opens the few outside links the app shows (Discord, the source on GitHub,
+# Manga Cleaner) in the browser. The capability lists each URL, so the webview
+# cannot open anything else. Held at 2.5 to match @tauri-apps/plugin-opener
+# ~2.5.5 in package.json: 2.6 and later need @tauri-apps/api 2.12 while the
+# tauri crate here is 2.11, and the build refuses mismatched versions.
+tauri-plugin-opener = "~2.5"
 # The only outbound requests this app makes are `detect::engine` streaming the
 # ONNX weights down, and every one of those URLs is https (huggingface.co,
 # github.com) - so a TLS backend is unavoidable. rustls rather than native-tls

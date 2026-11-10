@@ -33,6 +33,7 @@ import { app, loadProjectPages, page } from './lib/store.svelte.js';
 import { inspectorTab, setInspectorTab } from './lib/inspector-tabs.svelte.js';
 import { defaultStyle, normalizeStyle } from './lib/data.js';
 import { resetRoute, setLeaveEditorHook, goEditor } from './lib/route.svelte.js';
+import { setPref } from './lib/prefs.svelte.js';
 async function settle() { for (let i = 0; i < 15; i++) { await Promise.resolve(); await tick(); } }
 
 // ===========================================================================
@@ -61,6 +62,9 @@ const arrow = (el, key = 'ArrowRight') => {
 };
 
 beforeEach(() => {
+  // An install that is already set up: on a fresh one the first-run setup
+  // opens over the editor and, rightly, takes the keyboard.
+  setPref('onboarded', true);
   resetRoute(); setLeaveEditorHook(null); app.chapterRef = null; calls.opens = [];
   setInspectorTab('text');
 });
