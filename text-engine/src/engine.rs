@@ -178,10 +178,26 @@ pub(crate) fn extends_cluster(ch: char) -> bool {
     )
 }
 
+/// A number no other state of any engine has had: a new one is taken each
+/// time an engine's fonts or chains change, and by each new engine. What a
+/// paint keeps for the next (`paint::kept`) is kept under it, so nothing
+/// painted with other fonts is ever read back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stamp(pub u64);
+
+impl Default for Stamp {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Stamp(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 #[derive(Default)]
 pub struct Engine {
     fonts: Vec<Option<FontEntry>>,
     chains: Vec<Option<Vec<(FontId, Synth)>>>,
+    /// Which fonts and chains these are ([`Stamp`]).
+    pub(crate) stamp: Stamp,
     pub rules: Rules,
     /// Taken out for each shape call and put back, so a hot loop of `advance`
     /// calls reuses the glyph arrays instead of allocating them every time.
@@ -217,6 +233,7 @@ impl Engine {
     }
 
     fn insert(&mut self, entry: FontEntry) -> FontId {
+        self.stamp = Stamp::default();
         let slot = self.fonts.iter().position(Option::is_none);
         let idx = match slot {
             Some(i) => {
@@ -243,6 +260,7 @@ impl Engine {
     }
 
     pub fn remove_font(&mut self, id: FontId) -> bool {
+        self.stamp = Stamp::default();
         let Some(slot) = self.fonts.get_mut((id as usize).wrapping_sub(1)) else {
             return false;
         };
@@ -375,6 +393,7 @@ impl Engine {
 
     /// Registers an empty fallback chain and returns its handle.
     pub fn chain_new(&mut self) -> ChainId {
+        self.stamp = Stamp::default();
         let idx = match self.chains.iter().position(Option::is_none) {
             Some(i) => i,
             None => {
@@ -407,6 +426,7 @@ impl Engine {
 
     /// Appends a font to a chain. Earlier fonts are preferred.
     pub fn chain_push(&mut self, chain: ChainId, font: FontId, synth: Synth) -> Result<(), Error> {
+        self.stamp = Stamp::default();
         self.font(font)?;
         self.chains
             .get_mut((chain as usize).wrapping_sub(1))
@@ -417,6 +437,7 @@ impl Engine {
     }
 
     pub fn chain_free(&mut self, chain: ChainId) -> bool {
+        self.stamp = Stamp::default();
         self.chains
             .get_mut((chain as usize).wrapping_sub(1))
             .is_some_and(|slot| slot.take().is_some())
