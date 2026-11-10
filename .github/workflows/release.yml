@@ -62,6 +62,10 @@ jobs:
           # glibc 2.39 floor: Ubuntu 24.04, Mint 22, Fedora 39, Debian 13,
           # Arch and newer. Reaching Ubuntu 22.04 or Debian 12 would take a
           # Flatpak, which carries its own runtime.
+          #
+          # This lane does not use pyke's download: that one is built for
+          # x86-64-v3 and needs AVX2. It links an ONNX Runtime built here at
+          # the plain x86-64 baseline (the "ONNX Runtime without AVX" step).
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
@@ -102,6 +106,13 @@ jobs:
           workspaces: src-tauri
           key: ${{ matrix.platform }}
       - run: npm ci
+      - name: ONNX Runtime without AVX
+        # pyke's prebuilt x86_64 ONNX Runtime needs AVX2 and dies with SIGILL
+        # at start-up on CPUs without it (Pentium Silver, Celeron, older
+        # Atom). This lane links its own baseline build instead; see
+        # scripts/ci/build-onnxruntime-baseline.sh.
+        if: matrix.platform == 'linux-x86_64'
+        uses: ./.github/actions/onnxruntime-baseline
       - name: Build app
         # Linux builds only the .deb here; the AppImage is assembled from it by
         # scripts/build-appimage.sh in the next step, without Tauri's bundled
@@ -110,6 +121,27 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+      - name: Check the app starts on a CPU without AVX
+        # The whole executable this time, not just ONNX Runtime: our Rust and
+        # every library it links, through all of their start-up code, which is
+        # where the reported SIGILL was (protobuf's static initialisers).
+        # qemu as Nehalem (SSE4.2, no AVX) raises SIGILL on any AVX
+        # instruction, as the real chip does. `--probe-device none` is the
+        # headless child mode with a provider name that registers nothing, so
+        # the process loads, starts, prints an empty line and exits.
+        #
+        # qemu from Debian trixie, not the runner's: Ubuntu 24.04's qemu 8.2
+        # crashes itself on Rust binaries (internal SIGSEGV reading
+        # /proc/self/maps). The runner's root is the guest's library root;
+        # Dawn comes from gpu-libs, where build.rs staged it.
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          docker run --rm -v /:/host:ro debian:trixie sh -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq qemu-user >/dev/null
+            timeout 600 qemu-x86_64 -L /host -cpu Nehalem \
+              -E LD_LIBRARY_PATH=${{ github.workspace }}/src-tauri/gpu-libs/lib \
+              /host${{ github.workspace }}/src-tauri/target/${{ matrix.target }}/release/app --probe-device none'
       - name: Collect updater artifacts
         shell: bash
         # Renamed to MangaTypesetter_<version>_<platform>.<ext>: the platform tag keeps
