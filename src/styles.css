@@ -329,15 +329,26 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
    over-long word overflows rather than being split, which is the rule. */
 .tbox .txt.shaped{ white-space:normal; }
 .tbox .txt.shaped .tline{ white-space:pre; }
-.tbox.selected{ outline:1.5px solid var(--tintline); }
-.tbox:not(.selected):hover{ outline:1.5px dashed var(--tint); }
+/* The box as shown: its rectangle, grown on each side its ink spills past
+   (--hl/--ht/--hr/--hb, set by TextBox.svelte from `boxHull`). Every outline
+   the box wears is drawn on this, and it takes presses like the box does, so
+   a letter a curve or a mesh carried out of the rectangle is still inside the
+   box the user sees and grabs. Behind the text, never over it. */
+.tbox::before{
+  content:''; position:absolute; z-index:-1;
+  left:calc(-1 * var(--hl, 0px)); top:calc(-1 * var(--ht, 0px));
+  right:calc(-1 * var(--hr, 0px)); bottom:calc(-1 * var(--hb, 0px));
+}
+.tbox.selected::before{ outline:1.5px solid var(--tintline); }
+.tbox:not(.selected):hover::before{ outline:1.5px dashed var(--tint); }
 
 /* bulk-style targeting mode */
-.tbox.bulk-on{ cursor:pointer; outline:1.5px dashed color-mix(in srgb, var(--tint) 70%, transparent); }
-.tbox.bulk-on:hover{ outline:1.5px dashed var(--tintline); }
-.tbox.bulk-target{ outline:2.5px solid var(--tintline); background:color-mix(in srgb, var(--tintline) 9%, transparent); }
+.tbox.bulk-on{ cursor:pointer; }
+.tbox.bulk-on::before{ outline:1.5px dashed color-mix(in srgb, var(--tint) 70%, transparent); }
+.tbox.bulk-on:hover::before{ outline:1.5px dashed var(--tintline); }
+.tbox.bulk-target::before{ outline:2.5px solid var(--tintline); background:color-mix(in srgb, var(--tintline) 9%, transparent); }
 .tbox.bulk-target::after{
-  content:'✓'; position:absolute; top:-11px; right:-11px; z-index:8;
+  content:'✓'; position:absolute; top:calc(-11px - var(--ht, 0px)); right:calc(-11px - var(--hr, 0px)); z-index:8;
   width:20px; height:20px; border-radius:50%; display:grid; place-items:center;
   background:var(--tintline); color:var(--paper); font-size:12px; font-weight:800;
   box-shadow:var(--edge-soft);
@@ -347,9 +358,9 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
    outline in the flag colour whenever the box's own selection outline is not
    up, and a pill over its top-left corner saying how far the ink reaches -
    clear of the corner handle and the rotation grip. The reason is its tooltip. */
-.tbox.flagged:not(.selected):not(.editing){ outline:1.5px dashed var(--flagline); }
+.tbox.flagged:not(.selected):not(.editing)::before{ outline:1.5px dashed var(--flagline); }
 .review-badge{
-  position:absolute; left:-1px; bottom:calc(100% + 9px); z-index:6;
+  position:absolute; left:calc(-1px - var(--hl, 0px)); bottom:calc(100% + 9px + var(--ht, 0px)); z-index:6;
   display:flex; align-items:center; gap:3px; height:17px; padding:0 6px 0 5px;
   border-radius:999px; background:var(--flagline); color:var(--paper);
   font-size:10.5px; font-weight:800; line-height:1; white-space:nowrap;
@@ -359,7 +370,7 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 
 /* Source reference pill (Japanese or Korean) - sits above the box, outside the editable text */
 .jp-pill{
-  position:absolute; bottom:calc(100% + 46px); left:50%; transform:translateX(-50%);
+  position:absolute; bottom:calc(100% + 46px + var(--ht, 0px)); left:calc(50% + (var(--hr, 0px) - var(--hl, 0px)) / 2); transform:translateX(-50%);
   max-width:280px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   padding:3px 9px; border-radius:999px; pointer-events:none; z-index:6;
   font-family:'Noto Sans JP','Hiragino Kaku Gothic Pro','Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic',sans-serif; font-size:12px; font-weight:600;
@@ -378,24 +389,26 @@ button,input,select{ font:inherit; color:inherit; font-variant-numeric:tabular-n
 .handle{ position:absolute; width:11px; height:11px; background:var(--paper); border:1.5px solid var(--tintline); border-radius:2px; z-index:5; }
 .handle.corner{ border-radius:2px; }
 .handle.side{ border-radius:50%; width:9px; height:9px; }
-.handle.nw{ left:-6px; top:-6px; cursor:nwse-resize; }
-.handle.ne{ right:-6px; top:-6px; cursor:nesw-resize; }
-.handle.sw{ left:-6px; bottom:-6px; cursor:nesw-resize; }
-.handle.se{ right:-6px; bottom:-6px; cursor:nwse-resize; }
+/* On the box as shown (`.tbox::before`), not its rectangle: a drag moves the
+   rectangle by the pointer's travel, so the edge under the pointer follows it. */
+.handle.nw{ left:calc(-6px - var(--hl, 0px)); top:calc(-6px - var(--ht, 0px)); cursor:nwse-resize; }
+.handle.ne{ right:calc(-6px - var(--hr, 0px)); top:calc(-6px - var(--ht, 0px)); cursor:nesw-resize; }
+.handle.sw{ left:calc(-6px - var(--hl, 0px)); bottom:calc(-6px - var(--hb, 0px)); cursor:nesw-resize; }
+.handle.se{ right:calc(-6px - var(--hr, 0px)); bottom:calc(-6px - var(--hb, 0px)); cursor:nwse-resize; }
 /* The bottom edge is the size handle (box and text together), so it is drawn
    apart from the two round width handles: a short pill along the edge. */
 .handle.side.size{ width:17px; height:7px; border-radius:4px; }
-.handle.s{ left:50%; bottom:-4px; transform:translateX(-50%); cursor:ns-resize; }
-.handle.w{ left:-5px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
-.handle.e{ right:-5px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
-.rotate-stem{ position:absolute; left:50%; top:-26px; width:1.5px; height:20px; background:var(--tintline); transform:translateX(-50%); z-index:7; }
-.handle.rot{ left:50%; top:-32px; transform:translateX(-50%); border-radius:50%; width:13px; height:13px; cursor:grab; background:var(--tintline); border-color:var(--paper); z-index:7; }
+.handle.s{ left:calc(50% + (var(--hr, 0px) - var(--hl, 0px)) / 2); bottom:calc(-4px - var(--hb, 0px)); transform:translateX(-50%); cursor:ns-resize; }
+.handle.w{ left:calc(-5px - var(--hl, 0px)); top:calc(50% + (var(--hb, 0px) - var(--ht, 0px)) / 2); transform:translateY(-50%); cursor:ew-resize; }
+.handle.e{ right:calc(-5px - var(--hr, 0px)); top:calc(50% + (var(--hb, 0px) - var(--ht, 0px)) / 2); transform:translateY(-50%); cursor:ew-resize; }
+.rotate-stem{ position:absolute; left:calc(50% + (var(--hr, 0px) - var(--hl, 0px)) / 2); top:calc(-26px - var(--ht, 0px)); width:1.5px; height:20px; background:var(--tintline); transform:translateX(-50%); z-index:7; }
+.handle.rot{ left:calc(50% + (var(--hr, 0px) - var(--hl, 0px)) / 2); top:calc(-32px - var(--ht, 0px)); transform:translateX(-50%); border-radius:50%; width:13px; height:13px; cursor:grab; background:var(--tintline); border-color:var(--paper); z-index:7; }
 /* A handle is grabbed by more than it shows: a 10px pad of its own all round,
    so a corner or an edge is easy to catch without hunting for 9 px. */
 .handle::before{ content:''; position:absolute; inset:-10px; }
 /* What a handle drag is setting, as it sets it (TextBox.svelte). */
 .size-chip{
-  position:absolute; left:50%; top:calc(100% + 12px); transform:translateX(-50%); z-index:8;
+  position:absolute; left:calc(50% + (var(--hr, 0px) - var(--hl, 0px)) / 2); top:calc(100% + 12px + var(--hb, 0px)); transform:translateX(-50%); z-index:8;
   padding:2px 8px; border-radius:6px; background:var(--tintline); color:var(--paper);
   font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; pointer-events:none;
 }
@@ -933,7 +946,8 @@ input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; he
 /* ===== v2 additions: editing, curve, effects, tools ===== */
 
 /* inline editing */
-.tbox.editing{ outline:1.5px solid var(--tintline); cursor:text; }
+.tbox.editing{ cursor:text; }
+.tbox.editing::before{ outline:1.5px solid var(--tintline); }
 .txt.editable{
   width:100%; outline:none; cursor:text; white-space:pre; tab-size:1;
   user-select:text; -webkit-user-select:text; caret-color:var(--tintline);

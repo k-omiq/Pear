@@ -46,6 +46,8 @@
 //   isAutoBox(cand), manualReason(cand), fitLimit(cand, page, strip)
 //       Manual: auto sizing off, text on a curve, a mesh warp, hand-drawn ink
 //       or a mask - `manualReason` names which, in that order.
+//   boxHull(box)                     -> { l, t, r, b }: how far the box as shown
+//       reaches past its rectangle, to hold ink that spills out of it.
 //   REVIEW_REASONS, CONTAIN_TOL
 //
 //   box.review = { kind: 'overflow', overflow: { l, t, r, b }, reason } - absent
@@ -596,6 +598,34 @@ export function reviewFor(verdict, reason) {
     overflow: { l: px(o.l), t: px(o.t), r: px(o.r), b: px(o.b) },
     reason: reason || REVIEW_REASONS.stale,
   };
+}
+
+// ===== the box as the user sees it =====
+//
+// The user's rule: whatever pushes the letters past the box - a curve with a
+// big radius, a mesh, a liquify stroke, a shadow, a blur - the box grows to
+// hold them. It grows only on the side the ink reaches past, and only by as
+// much as the ink needs plus a little air, so a curve bowing out of the top
+// gives a box that is taller at the top and nowhere else. It is never smaller
+// than the rectangle the user set, and it shrinks back to that rectangle as
+// soon as the ink comes back inside it.
+//
+// The rectangle the user set (`x`, `y`, `w`, `h`) stays what the text is laid
+// out in: a curve is centred on it, a mesh is stated over it, ink is pinned to
+// its corner. Growing that rectangle would move the letters - or bend the
+// mesh into another one - so the shown box is that rectangle grown by the
+// containment check's own numbers (`box.review.overflow`, which every edit
+// path keeps up to date, and which is whole px past each edge in the frame
+// the user sees). The letters never move; only the edge drawn around them
+// does. `{ l, t, r, b }` page px, each zero where the ink is inside.
+export const HULL_AIR = 0.12; // ems of air past the ink, on a side it spills past
+const NO_HULL = Object.freeze({ l: 0, t: 0, r: 0, b: 0 });
+export function boxHull(box) {
+  const o = box?.review?.overflow;
+  if (!o || !(o.l > 0 || o.t > 0 || o.r > 0 || o.b > 0)) return NO_HULL;
+  const air = Math.max(2, Math.round(HULL_AIR * (Number(box.style?.size) || 0)));
+  const side = (v) => (Number(v) > 0 ? Number(v) + air : 0);
+  return { l: side(o.l), t: side(o.t), r: side(o.r), b: side(o.b) };
 }
 
 // ===== the height the ink needs =====

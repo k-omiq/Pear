@@ -11,7 +11,7 @@ import { addFontFile, removeUserFont, systemFontEntry, watchUserFaces, resolveFa
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo, layoutLines, applyCase, contentWidth } from './measure.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import {
-  fontRequestFor, textLayerFor, buildPagePsd, pagePsdDocument, writePagePsd, reconstructForeign, fontMissingMark, BORROWED_MARK, RASTER_MARK, REVIEW_MARK,
+  fontRequestFor, textLayerFor, buildPagePsd, pagePsdDocument, writePagePsd, reconstructForeign, fontMissingMark, BORROWED_MARK, RASTER_MARK,
 } from './psd.js';
 import { fakeIndexedDB } from '../test/fake-indexeddb.js';
 
@@ -185,14 +185,17 @@ describe('a box whose font this machine does not have', () => {
     expect(layer.text.text).toBe(placeBlock(boxCandidate(p.boxes[0], p.boxes[0].text)).lines.join('\n'));
   });
 
-  it('a raster-only layer says so too, after the review flag and before the raster marker, and the importer takes it back off', async () => {
+  // A curve's ink past its rectangle is held by the box as shown (`boxHull`),
+  // so a curved box is never flagged for it, and its name carries no review
+  // mark however far the curve reaches.
+  it('a raster-only layer says so too, before the raster marker, and the importer takes it back off', async () => {
     await on();
     const b = box('No Such Font', { curve: 30 }, { review: true });
     const p = await open([b]);
     const rendered = { imageData: { width: 4, height: 4, data: new Uint8ClampedArray(64) }, left: 100, top: 500, right: 250, bottom: 620 };
     const layer = textLayerFor(p, p.boxes[0], rendered);
     expect(layer.text).toBeUndefined();
-    expect(layer.name).toBe(`THE QUICK BROWN FOX JUMPS${REVIEW_MARK} [font missing: No Such Font]${RASTER_MARK}`);
+    expect(layer.name).toBe(`THE QUICK BROWN FOX JUMPS [font missing: No Such Font]${RASTER_MARK}`);
     const back = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [{ ...layer, imageData: undefined }] }] });
     expect(back.boxes.map((x) => x.text)).toEqual(['THE QUICK BROWN FOX JUMPS']);
   });

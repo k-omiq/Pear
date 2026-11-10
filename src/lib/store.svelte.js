@@ -108,6 +108,7 @@ import {
   linesInkRect,
   boxInkRect,
   REVIEW_REASONS,
+  CONTAIN_TOL,
 } from './contain.js';
 import { fitPolygon, visualCentre } from './outline-geom.js';
 import { neededHeight, growToFit, heightToFit, hasHangul } from './typeset.js';
@@ -1362,7 +1363,13 @@ function writeReview(b, review) {
 // (below), which is not written anywhere: it is worked out from the solver's
 // record each time it is read, so it can never outlive the box it was about.
 // `p` is the box's page, for its text.
-export const reviewOf = (b, p) => b?.review ?? solverReview(b, p);
+//
+// A box whose text is placed by hand - on a curve, through a mesh, as ink or
+// under a mask - is not flagged for ink past its rectangle: nothing can fit
+// it, and the box as shown grows to hold that ink (`boxHull` in contain.js),
+// so the text is inside its box. The overflow is still written on the box,
+// which is where the shown box and the strip's culling read it from.
+export const reviewOf = (b, p) => (b?.review && !handPlacedBox(b) ? b.review : null) ?? solverReview(b, p);
 
 // The solver's own "does not fit" (FIT-5), for a box the containment check has
 // nothing against. The solver asks more of a box than that its ink stays inside
@@ -3491,6 +3498,9 @@ function settlePending() {
   // have come and gone while the user was typing.
   const index = p ? p.boxes.findIndex((x) => x.id === pend.id) : -1;
   if (index === -1) return; // already gone - the gesture left nothing to undo
+  // Typed into the default width: shrunk to the text before the record is
+  // taken, so the placement and the shrink are one undo.
+  snugNewBox(p.boxes[index], p);
   // No queue fields: a free-typed box never touched `activeLineN`, and claiming
   // it did would make this undo rewind a queue move belonging to another edit.
   //
@@ -5167,6 +5177,121 @@ export function edgeDragWidthFloor(b, p = page()) {
   return hi;
 }
 
+// ---------- a box shrunk to its text ----------
+// A box placed, pasted or duplicated keeps the width it was made at, which is
+// often far wider than its lines: a short line copied into a wide box leaves
+// empty room either side. Shrinking it takes the width down to the narrowest
+// at which the text breaks into exactly the lines it has now, plus a little
+// air either side (`SNUG_AIR`) - so not one
+// letter changes line, size or place on the page. The edge the text is
+// aligned to stays where it is (both edges move in for centred text), turned
+// with the box and mirrored with its flip; the height then follows by the
+// box's sizing mode, as after any edit.
+//
+// Straight text only. A curve, a mesh, ink or a mask is laid out over the
+// rectangle and would move with it; SFX lettering sizes its own frame; Fit to
+// box would grow the type into the room taken away. Nothing narrower than the
+// box already is, and a box whose ink would reach further past a side than it
+// does now is left at the width where it does not.
+export function snugWidthFor(b, p = page()) {
+  const s = b?.style;
+  if (!s || !(s.size > 0) || !(b.w > 0) || !canMeasure() || boxLocked(b) || s.fitText || sfxActive(s)) return null;
+  const text = boxText(b, p);
+  if (!/\S/.test(text ?? '') || faceArriving(s, text)) return null;
+  const cand = boxCandidate(b, text);
+  if (handPlacedBox(cand)) return null;
+  const place = placeBlock(cand);
+  if (!place || place.isCurve || !place.lines?.length) return null;
+  const lines = place.lines.join('\n');
+  const was = containBox(cand, place).overflow;
+  const keeps = (w) => {
+    const c = { ...cand, w };
+    const pl = placeBlock(c, { cache: false });
+    if (!pl || pl.isCurve || pl.lines.join('\n') !== lines) return false;
+    const o = containBox(c, pl).overflow;
+    return o.l <= was.l + CONTAIN_TOL && o.r <= was.r + CONTAIN_TOL;
+  };
+  let widest = 0;
+  for (const line of place.lines) widest = Math.max(widest, lineWidth(line.trim(), place.s, place.s.size));
+  let lo = Math.max(EDGE_DRAG_MIN_W, Math.ceil(widest + 2 * textInset(place.s)));
+  let hi = b.w;
+  if (!(lo < hi)) return null;
+  // A balloon's rows, an indent or a glyph's overhang can want more than the
+  // widest line: the narrowest width that still keeps every line, by halving
+  // between that and the width the box has (which keeps them, being them).
+  if (keeps(lo)) hi = lo;
+  else {
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (keeps(mid)) hi = mid;
+      else lo = mid;
+    }
+  }
+  // Then a little air either side (`SNUG_AIR`), so the letters never touch
+  // the box's edge or sit under its handles - unless that width would break
+  // the lines differently, where the tight width is the answer. Worked out
+  // the same way every time, so a box already shrunk asks for nothing.
+  const air = Math.max(SNUG_AIR_MIN, Math.round(SNUG_AIR * place.s.size));
+  let w = Math.min(b.w, hi + 2 * air);
+  if (w < b.w && !keeps(w)) w = hi;
+  return w < b.w ? w : null;
+}
+// Ems of air either side of the widest line, and the fewest px it may be.
+const SNUG_AIR = 0.25;
+const SNUG_AIR_MIN = 4;
+
+// The box at the width above, its aligned edge held. False when it would not
+// get any narrower.
+function snugBox(b, p) {
+  const w = snugWidthFor(b, p);
+  if (w == null) return false;
+  const s = b.style;
+  // Which edge stays, in the frame the user sees: -1 the left, 1 the right,
+  // 0 both move in. A flip mirrors left-aligned text onto the right.
+  let keep = s.align === 'left' ? -1 : s.align === 'right' ? 1 : 0;
+  if (s.flipH) keep = -keep;
+  const shift = (keep * (b.w - w)) / 2;
+  const a = ((Number(s.rotation) || 0) * Math.PI) / 180;
+  const cx = b.x + b.w / 2 + Math.cos(a) * shift;
+  const cy = b.y + b.h / 2 + Math.sin(a) * shift;
+  b.x = cx - w / 2;
+  b.y = cy - b.h / 2;
+  b.w = w;
+  return true;
+}
+
+// A box just made - pasted, duplicated, or typed onto the page with the Text
+// tool - shrunk to its text as part of the gesture that made it, so it is
+// born without the empty sides the source's width or the default width left.
+// A width set by hand (`auto.locks.width`) is the user's and stays.
+function snugNewBox(b, p) {
+  if (b?.auto?.locks?.width) return false;
+  return snugBox(b, p);
+}
+
+// Shrink these boxes to their text: `{ page, box }` targets, one undo step per
+// page. Says what it did, or why nothing changed. The number shrunk.
+export function snugBoxes(targets, { quiet = false } = {}) {
+  if (!canMeasure()) return 0;
+  const n = editBoxes(targets, (b, pg) => snugBox(b, pg)).length;
+  if (!quiet) {
+    const all = (targets ?? []).length;
+    if (n) toast(all > 1 ? `Shrank ${n} box${n === 1 ? '' : 'es'} to their text` : 'Shrank box to its text');
+    else toast(all > 1 ? 'Every box already fits its text' : 'Box already fits its text');
+  }
+  return n;
+}
+
+// The selected box, and every box on the page.
+export function snugSelectedBox() {
+  const b = byId(app.selectedId);
+  if (!b || refuseLocked(b)) return 0;
+  return snugBoxes([{ page: page(), box: b }]);
+}
+export function snugPageBoxes(p = page()) {
+  return snugBoxes((p?.boxes ?? []).map((box) => ({ page: p, box })));
+}
+
 // The held boxes of a page whose face is in by now, each with the geometry it
 // stood at before anything fits it, and no longer held.
 function heldFitsLanding(p) {
@@ -6520,6 +6645,7 @@ function placeSnapshot(p, snap, x, y, select = true) {
     else delete b.auto.breaks;
     if (src.solved) b.auto.stamp = solveStamp(b, ln.en);
   }
+  snugNewBox(b, p);
   // The copy's own verdict, before the record takes its snapshot. Not the
   // source's flag copied across: the copy sits somewhere else and reads its
   // text off a line of its own.
