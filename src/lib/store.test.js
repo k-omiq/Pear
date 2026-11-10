@@ -117,7 +117,23 @@ import { defaultStyle, normalizeStyle, normalizeAuto, normalizeBevel, GRADIENT_M
 const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, position: 'outside', color, opacity });
 import { setPref } from './prefs.svelte.js';
 import { bindTags, unbindTags, tags, lineTags, setLineTags } from './tags.svelte.js';
-import { initHistory, resetHistory, undo, redo } from './editor/history.svelte.js';
+import { initHistory, resetHistory, undo, redo, peekStack, queueStepNext, record } from './editor/history.svelte.js';
+import {
+  deleteLine,
+  setLineRect,
+  lineRect,
+  lineRectOf,
+  lineLabel,
+  addBoxAt,
+  applyDetection,
+  rescalePageGeometry,
+  setLineText,
+  toast,
+  dismissToast,
+  detectedRectFor,
+} from './store.svelte.js';
+import { rescaleEntry } from './editor/history-file.svelte.js';
+import { buildChapterPackage, readChapterPackage, packagePagesForImport } from './package.js';
 
 beforeEach(() => {
   tags.sizes = {};
@@ -4767,5 +4783,229 @@ describe('canvas selection follows into the queue', () => {
     placeActiveAt(400, 400);
     expect(page().boxes).toHaveLength(3);
     expect(app.selectedId).toBeNull();
+  });
+});
+
+// Translate mode's own edits to its lines (plan section 3): delete, add, and
+// the box drawn for a line, each one undo step that puts back exactly what it
+// changed - and the free line with no box that typeset mode can now place.
+describe('lines added, deleted and drawn', () => {
+  const doc = () => [
+    {
+      id: 1,
+      w: 800,
+      h: 1200,
+      lines: [
+        { n: 1, type: 'dialogue', jp: 'あ', en: 'one' },
+        { n: -1, type: 'dialogue', jp: '', en: 'free', rect: [5, 6, 105, 76] },
+        { n: 2, type: 'dialogue', jp: 'い', en: 'two', tags: ['shout'] },
+        { n: 3, type: 'dialogue', jp: 'う', en: 'three' },
+      ],
+      boxes: [
+        { id: 'b2', lineN: 2, text: null, x: 10, y: 10, w: 100, h: 50 },
+        { id: 'b3', lineN: 3, text: null, x: 20, y: 300, w: 100, h: 50 },
+      ],
+      detect: {
+        panels: [],
+        boxes: [
+          { n: 1, box: [0, 0, 50, 50] },
+          { n: 2, box: [100, 100, 200, 200], vertical: true },
+          { n: 3, box: [300, 300, 400, 400] },
+        ],
+      },
+    },
+  ];
+  const state = (p = page()) => ({
+    lines: JSON.parse(JSON.stringify(p.lines)),
+    detect: JSON.parse(JSON.stringify(p.detect)),
+    boxes: p.boxes.map((b) => [b.id, b.lineN]),
+    active: p.activeLineN,
+  });
+
+  beforeEach(() => {
+    app.chapterRef = null;
+    app.chapterMode = 'translate';
+    app.translateTypeset = false;
+    loadProjectPages(doc());
+    page().activeLineN = 2;
+    initHistory();
+    resetHistory();
+  });
+  afterEach(() => {
+    settleEdits();
+    resetHistory();
+    app.chapterMode = 'typeset';
+  });
+
+  it('deletes a numbered line with its block and boxes, renumbers the rest, and undo and redo walk it exactly', () => {
+    const before = state();
+    expect(deleteLine(2)).toBe(true);
+    const after = state();
+    expect(after.lines.map((l) => [l.n, l.en])).toEqual([[1, 'one'], [-1, 'free'], [2, 'three']]);
+    expect(after.detect.boxes).toEqual([{ n: 1, box: [0, 0, 50, 50] }, { n: 2, box: [300, 300, 400, 400] }]);
+    expect(after.boxes).toEqual([['b3', 2]]);
+    // The row after the deleted one becomes the one being typed.
+    expect(after.active).toBe(2);
+    expect(peekStack().undo.at(-1).t).toBe('lineDelete');
+    expect(undo()).toBe(true);
+    expect(state()).toEqual(before);
+    expect(redo()).toBe(true);
+    expect(state()).toEqual(after);
+    expect(undo()).toBe(true);
+    expect(state()).toEqual(before);
+  });
+
+  it('keeps an older entry about a later line pointing at that line across the delete', () => {
+    setLineText(page(), 3, 'three!');
+    settleEdits();
+    deleteLine(1);
+    // Line 3 is line 2 now, and so is the entry about it.
+    expect(page().lines.find((l) => l.en === 'three!').n).toBe(2);
+    expect(peekStack().undo[0]).toMatchObject({ t: 'line', lineN: 2 });
+    undo();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2, 3]);
+    undo();
+    expect(lineByN(page(), 3).en).toBe('three');
+    expect(lineByN(page(), 1).en).toBe('one');
+  });
+
+  it('deletes the last line without renumbering, and a free line without touching the numbers', () => {
+    deleteLine(3);
+    expect(peekStack().undo.at(-1).numbers).toBeUndefined();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2]);
+    deleteLine(-1);
+    expect(page().lines.map((l) => l.n)).toEqual([1, 2]);
+    undo();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2]);
+    expect(lineByN(page(), -1).rect).toEqual([5, 6, 105, 76]);
+    undo();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2, 3]);
+    expect(page().boxes.map((b) => b.id)).toEqual(['b2', 'b3']);
+  });
+
+  it('records an added line, and undo and redo take it out and put it back', () => {
+    const n = addQueueLine();
+    expect(n).toBe(-2);
+    expect(peekStack().undo.at(-1)).toMatchObject({ t: 'lineAdd', activeBefore: 2, activeAfter: -2 });
+    undo();
+    expect(page().lines.some((l) => l.n === -2)).toBe(false);
+    expect(page().activeLineN).toBe(2);
+    redo();
+    expect(lineByN(page(), -2)).toEqual({ n: -2, type: 'dialogue', jp: '', en: '' });
+    expect(page().activeLineN).toBe(-2);
+  });
+
+  it('draws a box for a line as one step, sorted into corners, on any line', () => {
+    const n = addQueueLine();
+    expect(setLineRect(page(), n, [300, 200, 100, 150])).toBe(true);
+    expect(lineByN(page(), n).rect).toEqual([100, 150, 300, 200]);
+    expect(lineRectOf(page(), n)).toEqual([100, 150, 300, 200]);
+    expect(setLineRect(page(), n, [1, 1, 1, 1])).toBe(false);
+    // A numbered line's drawn box wins over its detected block.
+    setLineRect(page(), 2, [10, 20, 30, 40]);
+    expect(detectedRectFor(page(), 2)).toEqual([10, 20, 30, 40]);
+    undo();
+    expect(lineByN(page(), 2).rect).toBeUndefined();
+    expect(detectedRectFor(page(), 2)).toEqual([100, 100, 200, 200]);
+    undo();
+    expect(lineByN(page(), n).rect).toBeUndefined();
+    redo();
+    expect(lineByN(page(), n).rect).toEqual([100, 150, 300, 200]);
+    redo();
+    expect(lineByN(page(), 2).rect).toEqual([10, 20, 30, 40]);
+  });
+
+  it('labels free lines T1, T2 in page order and numbered lines by number', () => {
+    addQueueLine();
+    expect([1, -1, 2, -2].map((n) => lineLabel(page(), n))).toEqual(['1', 'T1', '2', 'T2']);
+  });
+
+  it('keeps a free line’s drawn box through a re-detect, a rescale and a load', () => {
+    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [{ n: 1, jp: 'あ', box: [0, 0, 10, 10] }] });
+    expect(lineByN(page(), -1).rect).toEqual([5, 6, 105, 76]);
+    rescalePageGeometry(page(), 2, 2);
+    expect(lineByN(page(), -1).rect).toEqual([10, 12, 210, 152]);
+    loadProjectPages(JSON.parse(JSON.stringify(app.pages)));
+    expect(lineByN(page(), -1).rect).toEqual([10, 12, 210, 152]);
+    // A rect nothing can draw is dropped on the way in.
+    loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [{ n: -1, en: '', rect: [0, 0, 'x', 4] }] }]);
+    expect('rect' in lineByN(page(), -1)).toBe(false);
+    expect(lineRect([0, 0, 0, 10])).toBe(null);
+  });
+
+  it('carries a drawn box through a chapter package', () => {
+    const record = { pages: [{ file: 'p1.png', w: 800, h: 1200, lines: JSON.parse(JSON.stringify(page().lines)), boxes: [], detect: null }] };
+    const pkg = readChapterPackage(buildChapterPackage({ record, raws: new Map([['p1.png', new Uint8Array([1, 2, 3])]]) }));
+    expect(packagePagesForImport(pkg)[0].lines.find((l) => l.n === -1).rect).toEqual([5, 6, 105, 76]);
+  });
+
+  it('scales a recorded drawn box with its page', () => {
+    expect(rescaleEntry({ t: 'lineRect', pageId: 1, lineN: -1, before: null, after: [1, 2, 3, 4] }, 2, 3)).toMatchObject({ after: [2, 6, 6, 12] });
+    const del = rescaleEntry(
+      { t: 'lineDelete', pageId: 1, line: { n: 2, rect: [1, 1, 2, 2] }, takenBoxes: [{ index: 0, box: { id: 'b', x: 1, y: 1, w: 2, h: 2, style: {} } }], takenDetect: [{ index: 0, d: { n: 2, box: [1, 1, 2, 2] } }] },
+      2,
+      2,
+    );
+    expect([del.line.rect, del.takenDetect[0].d.box, del.takenBoxes[0].box.x]).toEqual([[2, 2, 4, 4], [2, 2, 4, 4], 2]);
+  });
+
+  it('places a free line with no box in typeset mode: in its drawn box, or 200 x 70 at the click', () => {
+    app.chapterMode = 'typeset';
+    page().activeLineN = -1;
+    placeActiveAt(400, 400);
+    const drawn = page().boxes.find((b) => b.lineN === -1);
+    expect([drawn.x, drawn.y, drawn.w]).toEqual([5, 6, 100]);
+    expect(lineByN(page(), -1).placed).toBeUndefined();
+    undo();
+    // The line was there before the box, so the undo leaves it.
+    expect(page().boxes.some((b) => b.lineN === -1)).toBe(false);
+    expect(lineByN(page(), -1)).toBeTruthy();
+
+    const n = addQueueLine();
+    page().activeLineN = n;
+    placeActiveAt(400, 500);
+    const b = page().boxes.find((x) => x.lineN === n);
+    expect([b.x, b.y, b.w, b.h]).toEqual([300, 465, 200, 70]);
+  });
+
+  it('lets addBoxAt place a free line with no box', () => {
+    app.chapterMode = 'typeset';
+    const n = addQueueLine();
+    const b = addBoxAt(page(), { lineN: n, x: 400, y: 500 });
+    expect(typeof b).toBe('object');
+    expect([b.x, b.y, b.w, b.h]).toEqual([300, 465, 200, 70]);
+    expect(addBoxAt(page(), { lineN: n, x: 1, y: 1 })).toBe(`line ${n} already has a box`);
+    const r = addBoxAt(page(), { lineN: -1, x: 0, y: 0 });
+    expect([r.x, r.y, r.w, r.h]).toEqual([5, 6, 100, 70]);
+  });
+
+  it('says whether the next step is about the queue', () => {
+    expect(queueStepNext('undo')).toBe(false);
+    addQueueLine();
+    expect(queueStepNext('undo')).toBe(true);
+    record({ t: 'move', pageId: 1, boxId: 'b2', before: { x: 10, y: 10 }, after: { x: 11, y: 10 } });
+    expect(queueStepNext('undo')).toBe(false);
+    undo();
+    expect(queueStepNext('redo')).toBe(false);
+    expect(queueStepNext('undo')).toBe(true);
+  });
+
+  it('gives a toast one action, kept up longer, and clears it', () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn();
+      toast('Deleted line 4', 'info', { label: 'Undo', run });
+      expect(app.toast.action.label).toBe('Undo');
+      vi.advanceTimersByTime(2500);
+      expect(app.toast.msg).toBe('Deleted line 4');
+      vi.advanceTimersByTime(3000);
+      expect(app.toast.msg).toBe('');
+      toast('plain');
+      expect(app.toast.action).toBe(null);
+      dismissToast();
+      expect(app.toast.msg).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

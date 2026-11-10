@@ -36,7 +36,7 @@ export function applyLineOrder(p, entry, dir = 'redo') {
 // their maps and before-order stay immutable, and are crossed in stack order.
 // Copy on change because the history file also holds these same entry objects.
 export function remapLineEntry(e, pageId, numbers) {
-  if (e.pageId !== pageId || e.t === 'order') return e;
+  if (e.pageId !== pageId || isOrderStep(e)) return e;
   // A group's items are entries of their own (history.svelte.js `group`).
   if (e.t === 'group') {
     const items = (e.items ?? []).map((it) => remapLineEntry(it, pageId, numbers));
@@ -67,4 +67,39 @@ export function remapLineStack(stack, entry, dir = 'redo') {
   const numbers = orderMap(entry, dir);
   const remap = (e) => remapLineEntry(e, entry.pageId, numbers);
   return { undo: stack.undo.map(remap), redo: stack.redo.map(remap) };
+}
+
+// Entries that move every line number they cross: a reading-order edit, and a
+// numbered line's delete (which is one such edit followed by a removal - see
+// `deleteOrder`). Their own numbers describe the transition, so a renumber
+// never rewrites them, and they are walked only from the top of a stack.
+export const isOrderStep = (e) => e?.t === 'order' || (e?.t === 'lineDelete' && Array.isArray(e.numbers));
+
+// The order step a numbered line's delete starts with: line `n` carried to
+// the end of the imported rows, and every imported row numbered by its place,
+// as `moveLine` numbers them. Taking the line out of the last place then
+// leaves 1..N-1 with no gap, and the map stays one to one, so its reverse puts
+// back every number exactly - including that of an entry lower on the stack
+// that still names the deleted line, which a map that dropped `n` would hand
+// to its neighbour. Null when the line is already last and numbered by its
+// place, because then there is nothing to renumber.
+export function deleteOrder(p, n) {
+  const imported = p.lines.filter((l) => !(l.n < 0));
+  const from = imported.findIndex((l) => l.n === n);
+  if (from < 0) return null;
+  const before = imported.map((l) => l.n);
+  const after = [...imported.slice(0, from), ...imported.slice(from + 1), imported[from]];
+  const numbers = after.map((l, i) => [l.n, i + 1]);
+  if (numbers.every(([a, b]) => a === b) && from === imported.length - 1) return null;
+  return { before, numbers };
+}
+
+// What a row and its page mark are called: the number of a numbered line, and
+// T1, T2... for the free lines in the order they sit on the page. One map for
+// the pane and the page, so the two can never call one line by two names.
+export function lineLabels(lines) {
+  const out = new Map();
+  let t = 0;
+  for (const l of lines ?? []) out.set(l.n, l.n < 0 ? `T${++t}` : String(l.n));
+  return out;
 }

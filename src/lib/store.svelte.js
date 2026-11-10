@@ -1,6 +1,6 @@
 // ===== Central reactive store (Svelte 5 runes) =====
 import { untrack } from 'svelte';
-import { applyLineOrder } from './reading-order.js';
+import { applyLineOrder, deleteOrder, lineLabels } from './reading-order.js';
 import {
   PAGE_W,
   PAGE_H,
@@ -208,6 +208,14 @@ function sanitizeLine(l) {
   if (out.jp != null && typeof out.jp !== 'string') delete out.jp;
   if (typeof out.jp2 !== 'string' || !out.jp2) delete out.jp2;
   if (typeof out.speaker !== 'string' || !out.speaker) delete out.speaker;
+  // The box the user drew for the line (`setLineRect`). A file somebody edited
+  // by hand can hold anything here, and a rect nothing can draw is worse than
+  // none: the line would look placed on the page and be nowhere.
+  if ('rect' in out) {
+    const r = lineRect(out.rect);
+    if (r) out.rect = r;
+    else delete out.rect;
+  }
   delete out.speakerName;
   if (!Array.isArray(l?.tags)) {
     delete out.tags;
@@ -468,6 +476,34 @@ export const isFreeBox = (b) => b?.lineN == null || b.lineN < 0;
 export const nextFreeLineN = (p) =>
   Math.min(0, ...(p?.lines ?? []).map((l) => (Number.isFinite(l?.n) ? l.n : 0))) - 1;
 
+// ---------- a line's box on the page ----------
+// A line a translator adds by hand has no detected block, so nothing on the
+// page says where it goes. `line.rect` is the box the user draws for it, as
+// `[x1, y1, x2, y2]` in page px like a detected block, and any line may have
+// one: on a numbered line it stands in for a detected block that was drawn in
+// the wrong place. It rides on the line object, so a renumber carries it, and
+// a re-detect keeps it exactly where it keeps the line - free lines survive
+// (`carryTagsForward`), numbered ones are replaced along with their blocks.
+//
+// The rect in its one stored shape, corners sorted, or null when it is not
+// one. Smaller than a pixel on a side is not a box anybody drew.
+export function lineRect(r) {
+  if (!Array.isArray(r) || r.length !== 4 || !r.every((v) => typeof v === 'number' && Number.isFinite(v))) return null;
+  const out = [Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])];
+  return out[2] - out[0] >= 1 && out[3] - out[1] >= 1 ? out : null;
+}
+// Where line `n` sits on the page: the box the user drew, else its detected
+// block, else null.
+export function lineRectOf(p, n) {
+  const own = lineRect(p?.lines?.find((l) => l.n === n)?.rect);
+  if (own) return own;
+  const d = (p?.detect?.boxes ?? []).find((x) => x?.n === n);
+  return lineRect(d?.box);
+}
+// What the pane and the page call a line (`lineLabels`): its number, or T1,
+// T2... for a free line.
+export const lineLabel = (p, n) => lineLabels(p?.lines).get(n) ?? String(n);
+
 export function firstUnplaced(p) {
   const placed = placedLineNs(p);
   const u = p?.lines?.find((l) => !isFreeLine(l) && !placed.has(l.n));
@@ -629,7 +665,7 @@ export const app = $state({
   exporting: false,
   leftWidth: 280,
   sidebarHidden: false, // raw reference sidebar collapsed to the rail's caret
-  toast: { msg: '', seq: 0, kind: 'info' },
+  toast: { msg: '', seq: 0, kind: 'info', action: null },
   // Errors that stay until the user closes them (FLOW-6). A failure gone in two
   // seconds is a failure the user may never have seen, so these are kept apart
   // from the passing toast above and stack, newest last. See `toastError`.
@@ -3608,13 +3644,19 @@ export function quietly(fn) {
   }
 }
 
-export function toast(msg, kind = 'info') {
+// `action`, when given, is one button on the toast (`{ label, run }`): the way
+// back from an edit the toast reports, such as a line's Undo. A toast with one
+// stays up longer, because the user has to read it and reach for it.
+export function toast(msg, kind = 'info', action = null) {
   if (quiet) return;
-  app.toast = { msg, seq: app.toast.seq + 1, kind };
+  const act = action && typeof action.run === 'function' && action.label ? { label: String(action.label), run: action.run } : null;
+  app.toast = { msg, seq: app.toast.seq + 1, kind, action: act };
   clearTimeout(toastT);
-  toastT = setTimeout(() => {
-    app.toast = { msg: '', seq: app.toast.seq + 1, kind: 'info' };
-  }, 2200);
+  toastT = setTimeout(dismissToast, act ? 5000 : 2200);
+}
+export function dismissToast() {
+  clearTimeout(toastT);
+  app.toast = { msg: '', seq: app.toast.seq + 1, kind: 'info', action: null };
 }
 
 // An error that stays until it is closed. The same message raised again - an
@@ -4040,12 +4082,15 @@ export function rescalePageGeometry(p, sx, sy) {
     }
     seeSize(b);
   }
-  const d = p.detect;
-  if (!d) return;
   const scaleBox = (box) =>
     Array.isArray(box) && box.length === 4
       ? [box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy]
       : box;
+  // The box the user drew for a line is page geometry like a detected block,
+  // and a page re-cleaned at 2x must not leave it marking half the bubble.
+  for (const l of p.lines ?? []) if (l?.rect) l.rect = scaleBox(l.rect);
+  const d = p.detect;
+  if (!d) return;
   d.panels = (d.panels ?? []).map(scaleBox);
   if (d.bubbles) d.bubbles = d.bubbles.map(scaleBox);
   for (const db of d.boxes ?? []) {
@@ -4418,6 +4463,11 @@ const insideRect = (r, x, y) =>
 // and the two have to come from the SAME entry or a page with two overlapping
 // bubbles could take its rectangle from one and its orientation from the other.
 export function detectedEntryFor(p, lineN, imgX, imgY) {
+  // A box the user drew for the line is a better answer than the detector's,
+  // because it was drawn to correct it (`lineRect`). No `vertical` or size
+  // rides along: those described the block it replaces.
+  const drawn = lineRect(p?.lines?.find((l) => l.n === lineN)?.rect);
+  if (drawn) return { n: lineN, box: drawn };
   const dets = p?.detect?.boxes ?? [];
   const own = dets.find((d) => d.n === lineN && Array.isArray(d.box) && d.box.length === 4);
   if (own) return own;
@@ -5391,7 +5441,10 @@ export function placeActiveAt(imgX, imgY, target = null) {
   // first, with no sign in the queue that there were two. The tool's job is the
   // next line that is NOT on the page yet, so it places that one instead; with
   // nothing left to place, the click does what it does with an empty queue.
-  if (isFreeLine(ln) || isPlaced(p, ln.n)) {
+  // A free line with no box is not on the page yet either: one a translator
+  // added by hand is placed like any other line, which is the only way it can
+  // ever get a box.
+  if (isPlaced(p, ln.n)) {
     const n = firstUnplaced(p);
     if (n == null) {
       deselect();
@@ -5399,12 +5452,15 @@ export function placeActiveAt(imgX, imgY, target = null) {
     }
     ln = lineByN(p, n);
   }
-  ln.placed = true;
+  const free = isFreeLine(ln);
+  // A free line is placed by its box alone (`placedLineNs`), so it carries no
+  // flag for an undo to clear.
+  if (!free) ln.placed = true;
   // The queue advances as part of this edit, so the record carries both sides
   // of it - undoing the box without rewinding the queue would leave the two
   // disagreeing about what still needs placing.
   const activeBefore = p.activeLineN;
-  const b = bornBox(p, ln, imgX, imgY);
+  const b = free ? freeLineBox(p, ln, imgX, imgY) : bornBox(p, ln, imgX, imgY);
   p.boxes.push(b);
   p.activeLineN = firstUnplaced(p);
   if (p.activeLineN == null && app.tool === 'place') {
@@ -5423,8 +5479,27 @@ export function placeActiveAt(imgX, imgY, target = null) {
   // the line's tag stamped over it. See `selectBox`.
   selectBox(b.id, { remember: false });
   toast(
-    `Placed line ${ln.n} → next: ${p.activeLineN ? 'line ' + p.activeLineN : 'all placed'}`,
+    `Placed line ${lineLabel(p, ln.n)} → next: ${p.activeLineN ? 'line ' + p.activeLineN : 'all placed'}`,
   );
+}
+
+// The box a free line is born in: exactly the box drawn for it (`lineRect`)
+// when it has one, or 200 x 70 centred on the click as a box typed on the
+// page is (`addEmptyBox`). Never fitted to a balloon - a free line was typed
+// or drawn where it is, and there is no detected bubble to fit it to. A drawn
+// box is the user's rectangle, so the solver keeps it, as it keeps the
+// rectangle an edit gives (`addBoxAt`).
+function freeLineBox(p, ln, imgX, imgY, rect = ln.rect) {
+  const r = lineRect(rect);
+  const g = r
+    ? { x: r[0], y: r[1], w: r[2] - r[0], h: r[3] - r[1] }
+    : ontoPage(p, { x: imgX - 100, y: imgY - 35, w: 200, h: 70 });
+  const b = bornBox(p, ln, g.x + g.w / 2, g.y + g.h / 2, { fit: null, outline: null });
+  Object.assign(b, g);
+  b.style.balloon = false;
+  if (r && b.auto) Object.assign(b.auto.locks, { width: true, height: true, pos: true });
+  autoFitBox(b, p, { solve: true });
+  return b;
 }
 
 // A box placed for the AI's `add`: on page `p`, for line `lineN` (one not
@@ -5439,13 +5514,17 @@ export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, styl
   settleEdits();
   let ln;
   let free = false;
+  let freeLine = false;
   if (lineN != null) {
     ln = lineByN(p, lineN);
     if (!ln) return `page has no line ${lineN}`;
     // A line whose box was deleted stays marked placed, so the bulk placer
     // leaves it alone; asked for by name, it gets a box again.
-    if (isFreeLine(ln) || p.boxes.some((x) => x.lineN === ln.n)) return `line ${lineN} already has a box`;
-    ln.placed = true;
+    if (p.boxes.some((x) => x.lineN === ln.n)) return `line ${lineN} already has a box`;
+    // A free line with no box - one added by hand in the typing pane - is
+    // placed like a numbered one (see `placeActiveAt`).
+    freeLine = isFreeLine(ln);
+    if (!freeLine) ln.placed = true;
   } else {
     ln = { n: nextFreeLineN(p), type: 'dialogue', jp: '', en: text ?? '' };
     p.lines.push(ln);
@@ -5454,8 +5533,10 @@ export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, styl
   const activeBefore = p.activeLineN;
   const cx = rect ? rect[0] + rect[2] / 2 : x;
   const cy = rect ? rect[1] + rect[3] / 2 : y;
-  const b = bornBox(p, ln, cx, cy, rect ? { fit: null, outline: null } : undefined);
-  if (rect) {
+  const b = freeLine
+    ? freeLineBox(p, ln, cx, cy, rect ? [rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]] : ln.rect)
+    : bornBox(p, ln, cx, cy, rect ? { fit: null, outline: null } : undefined);
+  if (rect && !freeLine) {
     Object.assign(b, { x: rect[0], y: rect[1], w: rect[2], h: rect[3] });
     // Free text in the rectangle given: no balloon to fit to, and the solver
     // keeps the rectangle (`auto.locks`), as an edit's geometry does.
@@ -5488,7 +5569,10 @@ export function placeableDetectedLines(p) {
 }
 
 // The detected entry for a line whose block is a usable rectangle, or null.
+// A box the user drew for the line counts, as in `detectedEntryFor`.
 function detectedBlockOf(p, n) {
+  const drawn = lineRect(p?.lines?.find((l) => l.n === n)?.rect);
+  if (drawn) return { n, box: drawn };
   return (
     (p.detect?.boxes ?? []).find(
       (d) =>
@@ -6464,11 +6548,102 @@ export function addEmptyBox(imgX, imgY, target = null) {
 export function addQueueLine() {
   if (!app.pages.length) return null;
   const p = page();
+  // A burst of typing still open on another line is the older edit, so it is
+  // recorded first and an undo takes this line back before it.
+  settleEdits();
+  const activeBefore = p.activeLineN;
   const ln = { n: nextFreeLineN(p), type: 'dialogue', jp: '', en: '' };
   p.lines.push(ln);
   p.activeLineN = ln.n;
+  recordEdit({
+    t: 'lineAdd',
+    pageId: p.id,
+    line: $state.snapshot(ln),
+    lineIndex: p.lines.length - 1,
+    activeBefore,
+    activeAfter: ln.n,
+  });
   markUnsaved();
   return ln.n;
+}
+
+// The box drawn for line `n` (`lineRect`), or null to take it away. One
+// `lineRect` step. False when the line is not there or the rect is not one.
+export function setLineRect(p, n, rect) {
+  const ln = p ? lineByN(p, n) : null;
+  const next = rect == null ? null : lineRect(rect);
+  if (!ln || (rect != null && !next)) return false;
+  settleEdits();
+  const before = lineRect(ln.rect);
+  if (next) ln.rect = next;
+  else delete ln.rect;
+  recordEdit({ t: 'lineRect', pageId: p.id, lineN: n, before, after: next });
+  markUnsaved();
+  return true;
+}
+
+// ---------- deleting a line ----------
+// A line goes with everything that only exists because of it: its row, its
+// detected block and every box placed from it. A numbered line's later
+// neighbours move up one, through the same order step a drag in the queue
+// takes (`deleteOrder`), so the page is numbered 1..N-1 afterwards and the
+// numbers stay the joins the exporter and a re-import read. One `lineDelete`
+// step puts all of it back, the numbers and the active line included.
+export function deleteLine(n, p = page()) {
+  if (!p?.lines?.some((l) => l.n === n)) return false;
+  settleEdits();
+  const at = p.lines.findIndex((l) => l.n === n);
+  const activeBefore = p.activeLineN;
+  const entry = { t: 'lineDelete', pageId: p.id, activeBefore };
+  let gone = n;
+  const order = n > 0 ? deleteOrder(p, n) : null;
+  if (order) {
+    const step = $state.snapshot({ t: 'order', pageId: p.id, ...order });
+    try {
+      applyLineOrder(p, step);
+      Object.assign(entry, order);
+      gone = orderAfter(order, n);
+    } catch {
+      // A page whose numbers cannot be renumbered safely (`applyLineOrder`
+      // refuses an orphan join) still loses the line; it keeps a gap in its
+      // numbers instead, which is how it was numbered before.
+    }
+  }
+  const lineIndex = p.lines.findIndex((l) => l.n === gone);
+  entry.line = $state.snapshot(p.lines[lineIndex]);
+  entry.lineIndex = lineIndex;
+  // In stacking order, with each one's place, so the undo puts every box back
+  // under and over what it was.
+  entry.takenBoxes = [];
+  p.boxes.forEach((b, index) => {
+    if (b.lineN === gone) entry.takenBoxes.push({ index, box: $state.snapshot(b) });
+  });
+  entry.takenDetect = [];
+  (p.detect?.boxes ?? []).forEach((d, index) => {
+    if (d?.n === gone) entry.takenDetect.push({ index, d: $state.snapshot(d) });
+  });
+  takeLine(p, gone);
+  if (p.activeLineN === gone) {
+    const rows = p.lines;
+    p.activeLineN = rows.length ? rows[Math.min(at, rows.length - 1)].n : null;
+  }
+  entry.activeAfter = p.activeLineN;
+  recordEdit(entry);
+  markUnsaved();
+  return true;
+}
+const orderAfter = (order, n) => order.numbers.find(([was]) => was === n)?.[1] ?? n;
+
+// The removal half of a line's delete, shared with its redo: the row, its
+// detected blocks and its boxes, and the selection and the caret when they were
+// on one of those boxes.
+export function takeLine(p, n) {
+  const ids = new Set(p.boxes.filter((b) => b.lineN === n).map((b) => b.id));
+  p.lines = p.lines.filter((l) => l.n !== n);
+  if (ids.size) p.boxes = p.boxes.filter((b) => !ids.has(b.id));
+  if (p.detect?.boxes?.some((d) => d?.n === n)) p.detect.boxes = p.detect.boxes.filter((d) => d?.n !== n);
+  if (ids.has(app.selectedId)) app.selectedId = null;
+  if (ids.has(app.editingId)) app.editingId = null;
 }
 
 // ---------- a text box from the queue's Add button ----------
@@ -7887,11 +8062,8 @@ export function activateLine(n) {
     // and only from here, a line being chosen, never from the reader's own
     // scrolling moving the page index.
     if (isLongstrip()) {
-      const d = p.detect?.boxes?.find((b) => b.n === n);
-      if (Array.isArray(d?.box) && d.box.length === 4) {
-        const [x1, y1, x2, y2] = d.box;
-        revealRectInStrip({ x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) });
-      }
+      const r = lineRectOf(p, n);
+      if (r) revealRectInStrip({ x: r[0], y: r[1], w: r[2] - r[0], h: r[3] - r[1] });
     }
     return;
   }

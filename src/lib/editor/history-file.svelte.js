@@ -13,7 +13,7 @@ import { fsx } from '../fsx.js';
 import { normalizeStyle, plainStyle } from '../data.js';
 import { toast, toastError, DOC_SAVE_MS, rescalePageGeometry, rescaleStyle, rescaleAuto, scaleFit, lengthScale } from '../store.svelte.js';
 import { scaleStroke } from '../brush.js';
-import { remapLineStack } from '../reading-order.js';
+import { remapLineStack, isOrderStep } from '../reading-order.js';
 import {
   takeStack,
   peekStack,
@@ -62,7 +62,7 @@ export function mergeStack(doc, pageId, stack) {
 // is what makes the one thing worth testing here testable without a disk.
 export function appendEntry(doc, pageId, entry) {
   let cur = stackFrom(doc, pageId);
-  if (entry.t === 'order') cur = remapLineStack(cur, entry);
+  if (isOrderStep(entry)) cur = remapLineStack(cur, entry);
   return mergeStack(doc, pageId, { undo: [...cur.undo, entry].slice(-MAX_STEPS), redo: [] });
 }
 
@@ -83,7 +83,7 @@ export function graft(stored, live) {
   // A reading-order edit made while the file was being read has already moved
   // the page and the live entries. Move the older disk entries into that same
   // numbering before joining the stacks. Undone transitions have no effect.
-  for (const e of live.undo) if (e.t === 'order') stored = remapLineStack(stored, e);
+  for (const e of live.undo) if (isOrderStep(e)) stored = remapLineStack(stored, e);
   return { undo: [...stored.undo, ...live.undo].slice(-MAX_STEPS), redo: live.redo };
 }
 
@@ -314,17 +314,46 @@ const scaleRecordedBox = (b, sx, sy) => {
   return copy;
 };
 
+// A page rect `[x1, y1, x2, y2]`, as a line's drawn box and a detected block
+// are kept, and a recorded line carrying one.
+const scaleCorners = (r, sx, sy) =>
+  Array.isArray(r) && r.length === 4 ? [r[0] * sx, r[1] * sy, r[2] * sx, r[3] * sy] : r;
+const scaleRecordedLine = (l, sx, sy) => (l && Array.isArray(l.rect) ? { ...l, rect: scaleCorners(l.rect, sx, sy) } : l);
+
 export function rescaleEntry(entry, sx, sy) {
   if (!entry || typeof entry !== 'object') return entry;
   // A group's items are entries of their own (history.svelte.js `group`).
   if (entry.t === 'group') return { ...entry, items: (entry.items ?? []).map((it) => rescaleEntry(it, sx, sy)) };
-  // A revert's two sides are whole pages of boxes.
+  // A revert's two sides are whole pages of boxes, and of lines.
   if (entry.t === 'restore') {
-    const side = (v) => (v && Array.isArray(v.boxes) ? { ...v, boxes: v.boxes.map((b) => scaleRecordedBox(b, sx, sy)) } : v);
+    const side = (v) =>
+      v && Array.isArray(v.boxes)
+        ? {
+            ...v,
+            boxes: v.boxes.map((b) => scaleRecordedBox(b, sx, sy)),
+            ...(Array.isArray(v.lines) ? { lines: v.lines.map((l) => scaleRecordedLine(l, sx, sy)) } : null),
+          }
+        : v;
     return { ...entry, before: side(entry.before), after: side(entry.after) };
   }
   const e = { ...entry };
   if (e.box) e.box = scaleRecordedBox(e.box, sx, sy);
+  // The line a free box, an added line or a deleted one carries, and the box
+  // drawn for a line on either side of `lineRect`.
+  if (e.line) e.line = scaleRecordedLine(e.line, sx, sy);
+  if (e.t === 'lineRect') {
+    e.before = scaleCorners(e.before, sx, sy);
+    e.after = scaleCorners(e.after, sx, sy);
+  }
+  // What a line's delete took with it: whole boxes and detected blocks.
+  if (Array.isArray(e.takenBoxes)) e.takenBoxes = e.takenBoxes.map((it) => ({ ...it, box: scaleRecordedBox(it.box, sx, sy) }));
+  if (Array.isArray(e.takenDetect)) {
+    e.takenDetect = e.takenDetect.map((it) => {
+      const d = { ...it.d, box: scaleCorners(it.d?.box, sx, sy) };
+      if (Number.isFinite(d.font_size)) d.font_size *= sy;
+      return { ...it, d };
+    });
+  }
   if (e.t === 'move' || e.t === 'resize') {
     e.before = scaleGeom(e.before, sx, sy);
     e.after = scaleGeom(e.after, sx, sy);
