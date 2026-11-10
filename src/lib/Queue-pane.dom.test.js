@@ -4,7 +4,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import Queue from './Queue.svelte';
+import Queue, { drawLineBox } from './Queue.svelte';
+import { patternPick, startPatternPick, cancelPatternPick } from './pattern-pick.svelte.js';
 import BubbleNumbers from './editor/BubbleNumbers.svelte';
 import { pageRectPick } from './page-rect-pick.svelte.js';
 import {
@@ -16,6 +17,8 @@ import {
   isTranslateChapter,
   setTranslateTypeset,
   stepLine,
+  gotoPage,
+  setLineText,
 } from './store.svelte.js';
 import { initHistory, resetHistory } from './editor/history.svelte.js';
 import { setMacKeyboard, setCombo, resetAllCombos } from './shortcuts.svelte.js';
@@ -275,4 +278,66 @@ it('marks a line on the page by its drawn box, with the T label its row has', as
   await flush();
   const marks = [...view.container.querySelectorAll('.mark')].map((g) => [g.querySelector('text').textContent, g.querySelector('.area').getAttribute('x')]);
   expect(marks).toEqual([['1', '0'], ['T1', '100']]);
+});
+
+it('takes the toast’s Undo past typing still settling: that newer edit wins', async () => {
+  const view = render(Queue);
+  await flush();
+  key(english(view), { key: 'Escape' });
+  key(view.container.querySelector('.qrow.active'), { key: 'Delete' });
+  await flush();
+  const undoDelete = app.toast.action.run;
+  // An edit inside its settle window is not on the stack yet; the Undo must
+  // settle it first and then see it is not the delete any more.
+  setLineText(page(), 1, 'typed after');
+  undoDelete();
+  expect(page().lines.map((l) => [l.n, l.en])).toEqual([[1, 'typed after']]);
+  expect(app.toast.msg).toBe('Undo the newer edits first');
+});
+
+it('ends a line pick when the page turns, the chapter closes or the mode switches, and touches nothing', async () => {
+  const view = render(Queue);
+  await flush();
+  const arm = async () => {
+    await fireEvent.click(view.getByLabelText('Line 1 actions'));
+    await flush();
+    await fireEvent.click(document.querySelector('.row-menu [role="menuitem"]'));
+    await flush();
+    expect(pageRectPick.active).toBe(true);
+  };
+  await arm();
+  gotoPage(1);
+  expect(pageRectPick.active).toBe(false);
+  expect(app.pages[0].lines[0].rect).toBeUndefined();
+  gotoPage(0);
+  await flush();
+  await arm();
+  setTranslateTypeset(true);
+  expect(pageRectPick.active).toBe(false);
+  setTranslateTypeset(false);
+  await flush();
+  await arm();
+  const shown = page();
+  loadProjectPages([{ id: 9, w: 800, h: 1200, boxes: [], lines: [{ n: 1, en: 'other' }] }]);
+  expect(pageRectPick.active).toBe(false);
+  // A late drag with no pick waiting changes no page.
+  pageRectPick.finish(shown, 0, 0, 100, 100);
+  expect([shown.lines[0].rect, page().lines[0].rect]).toEqual([undefined, undefined]);
+});
+
+it('hands the layer over between the pattern pick and a line pick, both ways', async () => {
+  const view = render(Queue);
+  await flush();
+  english(view).blur();
+  startPatternPick(1, 'b1', 'pattern');
+  expect(drawLineBox(1)).toBe(true);
+  expect([patternPick.active, pageRectPick.hint]).toEqual([false, 'Drag a box for this line · Esc cancels']);
+  startPatternPick(1, 'b1', 'pattern');
+  expect([patternPick.active, pageRectPick.hint]).toEqual([true, 'Drag over the tone to take it · Esc to cancel']);
+  // The replaced line pick neither drew a box nor took the caret.
+  expect(page().lines[0].rect).toBeUndefined();
+  await flush();
+  expect(view.container.contains(document.activeElement)).toBe(false);
+  cancelPatternPick();
+  expect(pageRectPick.active).toBe(false);
 });

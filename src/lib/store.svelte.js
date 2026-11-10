@@ -1,6 +1,7 @@
 // ===== Central reactive store (Svelte 5 runes) =====
 import { untrack } from 'svelte';
 import { applyLineOrder, deleteOrder, lineLabels } from './reading-order.js';
+import { pageRectPick } from './page-rect-pick.svelte.js';
 import {
   PAGE_W,
   PAGE_H,
@@ -262,6 +263,8 @@ function givePlainWrap(b, p) {
 // `plain`: the chapter was laid out plain, and every box takes that wrap as its
 // own (`givePlainWrap`) before anything below measures it.
 export function loadProjectPages(rawPages, { plain = false } = {}) {
+  // A pick waiting on the pages being replaced has nothing left to land on.
+  pageRectPick.cancel('closed');
   const takenBoxes = new Set();
   const takenPages = new Set();
   let minted = 0;
@@ -497,8 +500,11 @@ export function lineRect(r) {
 export function lineRectOf(p, n) {
   const own = lineRect(p?.lines?.find((l) => l.n === n)?.rect);
   if (own) return own;
-  const d = (p?.detect?.boxes ?? []).find((x) => x?.n === n);
-  return lineRect(d?.box);
+  for (const d of p?.detect?.boxes ?? []) {
+    const r = d?.n === n ? lineRect(d.box) : null;
+    if (r) return r;
+  }
+  return null;
 }
 // What the pane and the page call a line (`lineLabels`): its number, or T1,
 // T2... for a free line.
@@ -3700,7 +3706,11 @@ export function gotoPage(i) {
   // Only when the page actually changed. A re-entry onto the page already on
   // screen would otherwise hand the live stack over and take it straight back,
   // scheduling a write of a document nothing has changed.
-  if (from !== p.id) pageSwitchHooks.notify(from, p.id);
+  if (from !== p.id) {
+    // A box being dragged for the page being left is not a box for this one.
+    pageRectPick.cancel('page');
+    pageSwitchHooks.notify(from, p.id);
+  }
 }
 export const nextPage = () => gotoPage(app.pageIndex + 1);
 export const prevPage = () => gotoPage(app.pageIndex - 1);
@@ -4218,6 +4228,9 @@ export function setTranslateTypeset(on) {
   if (!isTranslateChapter()) return false;
   on = !!on;
   if (app.translateTypeset === on) return true;
+  // The page under a waiting pick changes what it is for (a pattern needs the
+  // box it was asked from, which the hidden tools stop drawing).
+  pageRectPick.cancel('mode');
   if (!on) {
     settleEdits();
     deselect();
@@ -5565,7 +5578,9 @@ export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, styl
 export function placeableDetectedLines(p) {
   if (!p?.lines) return [];
   const placed = placedLineNs(p);
-  return p.lines.filter((l) => l && !isFreeLine(l) && !placed.has(l.n) && detectedBlockOf(p, l.n));
+  // A free line is placeable once a box has been drawn for it (`lineRect`):
+  // that is where it goes, as a detected block is for a numbered line.
+  return p.lines.filter((l) => l && !placed.has(l.n) && (isFreeLine(l) ? !!lineRect(l.rect) : detectedBlockOf(p, l.n)));
 }
 
 // The detected entry for a line whose block is a usable rectangle, or null.
@@ -5606,6 +5621,15 @@ function placeDetectedInto(p) {
   const activeBefore = p.activeLineN;
   const items = [];
   for (const ln of lines) {
+    // A free line goes in the box drawn for it exactly, as one placed by
+    // hand does (`freeLineBox`), and is placed by that box alone.
+    if (isFreeLine(ln)) {
+      const r = lineRect(ln.rect);
+      const b = freeLineBox(p, ln, (r[0] + r[2]) / 2, (r[1] + r[3]) / 2);
+      p.boxes.push(b);
+      items.push({ index: p.boxes.length - 1, box: $state.snapshot(b) });
+      continue;
+    }
     ln.placed = true;
     const det = detectedBlockOf(p, ln.n);
     const [x1, y1, x2, y2] = det.box;
@@ -5809,6 +5833,8 @@ const rasterOf = (p) => ({ detect: p.detect, file: p.cleanedFile ?? p.file, w: p
 // The blocks a chapter place will ask a fit for and has none stored.
 const unmeasuredBlocks = (p) =>
   placeableDetectedLines(p)
+    // A free line's drawn box is never fitted to a balloon (`freeLineBox`).
+    .filter((ln) => !isFreeLine(ln))
     .map((ln) => detectedBlockOf(p, ln.n))
     .filter((d) => d.fit === undefined);
 
@@ -6577,7 +6603,7 @@ export function setLineRect(p, n, rect) {
   const before = lineRect(ln.rect);
   if (next) ln.rect = next;
   else delete ln.rect;
-  recordEdit({ t: 'lineRect', pageId: p.id, lineN: n, before, after: next });
+  recordEdit({ t: 'lineRect', pageId: p.id, lineN: n, before, after: next, ...(n > 0 ? { jp: ln.jp ?? '' } : null) });
   markUnsaved();
   return true;
 }
@@ -7380,7 +7406,11 @@ export function deleteBox(id, p = page()) {
   // Taken before the removal, for the same reason as the three above: the line
   // has to come out with the box, and putting it back needs to know where in
   // `p.lines` it sat.
-  const freeLine = freeLineRecord(p, b);
+  // In a translate chapter a free line is the translator's own row - added by
+  // hand, typed, maybe drawn - and the box is only where it was placed, so
+  // the line stays, unplaced, with its text and its drawn box. A typeset
+  // chapter keeps the rule below: a box typed onto the page takes its line.
+  const freeLine = isTranslateChapter() ? {} : freeLineRecord(p, b);
   p.boxes = p.boxes.filter((x) => x.id !== id);
   // The line goes with the box. A free line exists only to be that box's queue
   // row - it holds the box's text and its tags and nothing else - so leaving it

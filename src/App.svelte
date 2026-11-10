@@ -31,7 +31,7 @@
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
   import { pageRectPick } from './lib/page-rect-pick.svelte.js';
-  import { initHistory, undo, redo, queueStepNext } from './lib/editor/history.svelte.js';
+  import { initHistory, stepHere } from './lib/editor/history.svelte.js';
   import { flushPanels, showPanel } from './lib/editor/panels.svelte.js';
   import { switchHistoryPage } from './lib/editor/history-file.svelte.js';
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
@@ -464,8 +464,7 @@
     },
 
     'edit.undo': () => {
-      if (noCanvasHistory('undo')) return;
-      undo();
+      stepHere('undo');
     },
     'edit.redo': redoShortcut,
     'edit.redoAlt': redoShortcut,
@@ -517,20 +516,9 @@
     if (!app.selectedId || isTranslateMode()) return false;
     deleteBox(app.selectedId);
   }
+  // Through the translate gate (`stepHere`), as the dock's buttons are.
   function redoShortcut() {
-    if (noCanvasHistory('redo')) return;
-    redo();
-  }
-  // A translate chapter with its typesetting tools hidden draws no boxes, but
-  // its page keeps one undo stack for both halves: box edits made while the
-  // tools were shown, and a tag that restyled a line's boxes, sit on it beside
-  // the queue's own edits. A step is let through only when the entry it would
-  // take is about the lines (`queueStepNext`), so an undo there can never
-  // move a box nobody can see; anything else is refused with this toast.
-  function noCanvasHistory(dir) {
-    if (!isTranslateMode() || queueStepNext(dir)) return false;
-    toast('Nothing to undo here: a translate chapter edits the queue, not the canvas');
-    return true;
+    stepHere('redo');
   }
 
   // Is the caret somewhere that owns the keyboard? Text fields and the canvas's
@@ -561,6 +549,7 @@
     // typing (the Cmd/Ctrl combos for modes, tabs and rotation) still fire, and
     // everything else stands down. The registry decides which is which.
     const typing = isTypingTarget(e.target) || !!app.editingId;
+    if (e.key === 'Escape' && pageRectPick.active) return void pageRectPick.cancel(); // a pick ends on Escape, typing or not
     if (!typing && e.key === 'Escape') {
       // Focus is in the palette's field nearly always, and the field takes its
       // own Escape; this is for the press that arrives with focus elsewhere.
@@ -586,8 +575,6 @@
       if (settingsView.open) return closeSettings();
       if (fontModalOpen) return (fontModalOpen = false);
       if (brushTool.manager) return closeBrushManager();
-      // A pattern pick or a line's box being drawn: one layer, one cancel.
-      if (pageRectPick.active) return pageRectPick.cancel();
       return deselect();
     }
     // Suppress global editor shortcuts while a modal overlay is open. Markup
