@@ -40,6 +40,33 @@ fn stage_gpu_libs() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let webgpu = env::var_os("CARGO_FEATURE_GPU_WEBGPU").is_some();
     let cuda = env::var_os("CARGO_FEATURE_GPU_CUDA").is_some();
+    // ort-sys's own variables, read the same way it reads them: when set, it
+    // links the ONNX Runtime in that directory instead of downloading pyke's.
+    // The x86_64 Linux release does this with a build that runs on CPUs
+    // without AVX (scripts/ci/build-onnxruntime-baseline.sh).
+    let ort_lib = ["ORT_LIB_PATH", "ORT_LIB_LOCATION"]
+        .map(|v| {
+            println!("cargo:rerun-if-env-changed={v}");
+            env::var_os(v)
+        })
+        .into_iter()
+        .flatten()
+        .next()
+        .map(PathBuf::from);
+    // With its own ONNX Runtime, ort-sys links libonnxruntime.a and nothing
+    // else, so the Dawn library pyke's flow links and copies is ours to do.
+    // --no-as-needed: this argument can land on the link line before the
+    // archive that needs Dawn, and as-needed would drop it there.
+    let src_dir = match &ort_lib {
+        Some(dir) => {
+            if target_os == "linux" && webgpu {
+                println!("cargo:rustc-link-search=native={}", dir.display());
+                println!("cargo:rustc-link-arg=-Wl,--push-state,--no-as-needed,-lwebgpu_dawn,--pop-state");
+            }
+            dir.as_path()
+        }
+        None => profile_dir,
+    };
     // Only the libraries THIS configuration's providers actually need. A
     // CPU-only Linux build wants none; a Windows build always wants all three,
     // because `ort`'s Windows target turns on CUDA and DirectML unconditionally
@@ -65,7 +92,7 @@ fn stage_gpu_libs() {
     // the cache pruned.
     let fatal = env::var("PROFILE").as_deref() == Ok("release");
     for (name, sub) in wanted {
-        let src = profile_dir.join(name);
+        let src = src_dir.join(name);
         // Loud, because every way this goes missing is silent downstream.
         // `DirectML.dll` is a load-time import of the executable on Windows
         // (ort-sys emits `rustc-link-lib=DirectML`), so a bundle without it
@@ -93,7 +120,7 @@ fn stage_gpu_libs() {
                  the executable. ort-sys puts the execution providers there, so a restored \
                  build cache that pruned its OUT_DIR is the usual cause: \
                  `cargo clean -p ort-sys`, or clear the CI cargo cache.",
-                profile_dir.display()
+                src_dir.display()
             );
             assert!(!fatal, "{msg}");
             println!("cargo:warning={msg}");

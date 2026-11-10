@@ -77,6 +77,10 @@ Grab the installer from **<https://typesetter.komiq.cc>**.
   - The x86_64 build uses WebGPU over Vulkan when a usable driver is there and
     the CPU when it is not. The ARM64 build is CPU-only because its prebuilt
     ONNX Runtime has no WebGPU or CUDA provider.
+  - The x86_64 build runs on any x86-64 CPU, including ones without AVX
+    (Pentium Silver, Celeron, older Atom). Its ONNX Runtime is built in CI at
+    the plain x86-64 baseline; the prebuilt one needs AVX2 and crashed at
+    start-up with `Illegal instruction` on those CPUs.
 
   `ldd --version` prints your glibc version.
 

@@ -1,0 +1,73 @@
+name: ONNX Runtime at the x86-64 baseline
+description: >
+  Builds (or restores from cache) the x86_64 Linux ONNX Runtime + Dawn that
+  runs on CPUs without AVX, proves it under qemu as a no-AVX CPU, and points
+  ORT_LIB_PATH at it for the cargo build. See
+  scripts/ci/build-onnxruntime-baseline.sh for why pyke's download cannot be
+  used on that lane.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache key
+      id: key
+      shell: bash
+      # The scripts pin every input (ONNX Runtime commit, pyke commit, flags),
+      # so their contents are the key. clang and deno come from floating
+      # channels; a cache hit keeps the library they built until a script
+      # changes.
+      run: echo "key=ort-baseline-x86_64-linux-webgpu-${{ hashFiles('scripts/ci/build-onnxruntime-baseline.sh') }}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore ONNX Runtime
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/ort-baseline
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Free disk for the ONNX Runtime build
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      # ONNX Runtime with Dawn needs more room than the runner leaves free.
+      # Same cleanup pyke's build runner does.
+      run: |
+        sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android
+        sudo docker image prune --all --force
+        df -h /
+
+    - uses: denoland/setup-deno@v2
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        deno-version: v2.x
+
+    - name: Build ONNX Runtime
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      # clang-21 because pyke's tool calls clang-21 by name on Linux; the
+      # stock 1.28.0 archive was built with the same compiler.
+      run: |
+        set -euo pipefail
+        sudo apt-get install -y ninja-build
+        wget -qO "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh
+        sudo bash "$RUNNER_TEMP/llvm.sh" 21
+        scripts/ci/build-onnxruntime-baseline.sh "$HOME/ort-baseline"
+
+    - name: Check it starts on a CPU without AVX
+      shell: bash
+      # Before the cache save, so a library that fails is never kept. Runs on
+      # a cache hit too: it is seconds, and it is the claim this lane makes.
+      run: |
+        set -euo pipefail
+        sudo apt-get install -y qemu-user
+        scripts/ci/check-ort-baseline.sh "$HOME/ort-baseline"
+
+    - name: Save ONNX Runtime
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/ort-baseline
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Use it for the cargo build
+      shell: bash
+      run: echo "ORT_LIB_PATH=$HOME/ort-baseline" >> "$GITHUB_ENV"

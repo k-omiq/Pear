@@ -38,7 +38,9 @@ opt-level = 2
 # `gpu-webgpu` and falls back to CPU on GPU-less machines. ARM64 is CPU-only:
 # pyke ships an aarch64 ONNX Runtime without a GPU provider, but no aarch64
 # WebGPU or CUDA distribution. build.rs prints a note when a Linux build has
-# neither feature.
+# neither feature. The x86_64 release lane sets ORT_LIB_PATH to an ONNX Runtime
+# CI builds without AVX (scripts/ci/build-onnxruntime-baseline.sh); pyke's
+# x86_64 download needs AVX2 and crashes at start-up on CPUs without it.
 gpu-webgpu = ["ort/webgpu"]
 gpu-cuda = ["ort/cuda"]
 
