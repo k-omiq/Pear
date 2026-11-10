@@ -313,9 +313,10 @@
       }
       const pid = createdProject ? createdProject.id : target;
       // General use asks no layout, so a project it made from the library
-      // reads as pages until its first document's images say otherwise.
-      // Only while it is empty: a layout never moves under existing work.
-      if (!isComics() && !createdProject && !isPackage && guessedLayout && selectedProject && !selectedProject.chapters.length) {
+      // reads as pages until its first document's images say otherwise. Only
+      // a project marked so (`layoutGuessed`), and only while it is empty: a
+      // layout someone chose, or one under existing work, never moves.
+      if (!isComics() && !createdProject && !isPackage && guessedLayout && selectedProject?.layoutGuessed && !selectedProject.chapters.length) {
         await setEmptyProjectLayout(pid, guessedLayout);
       }
 

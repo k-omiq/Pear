@@ -15,7 +15,7 @@ const mock = vi.hoisted(() => ({
 vi.mock('../library.svelte.js', () => ({
   library: { projects: [
     { id: 'ja', name: 'Japanese', layout: 'pages', ocrLanguage: 'ja', chapters: [{ number: 4 }] },
-    { id: 'ko', name: 'Korean', layout: 'pages', ocrLanguage: 'ko', chapters: [] },
+    { id: 'ko', name: 'Korean', layout: 'pages', ocrLanguage: 'ko', chapters: [], layoutGuessed: true },
     { id: 'strip', name: 'Webtoon', layout: 'longstrip', ocrLanguage: 'ko', chapters: [] },
   ] },
   createChapter: mock.createChapter, createProject: mock.createProject, setEmptyProjectLayout: mock.setEmptyProjectLayout,
@@ -340,6 +340,16 @@ describe('general use', () => {
     expect(mock.setEmptyProjectLayout).toHaveBeenCalledWith('ko', 'longstrip');
     cleanup();
     vi.clearAllMocks();
+    // 'strip' was made with Longstrip picked by hand (no marker), say under
+    // comics before a switch to general use: portrait pages leave it alone.
+    mock.pickChapterSource.mockResolvedValue({ images: [png('1.png', 800, 1200)] });
+    view = await mount('strip');
+    await pick(view);
+    await create(view);
+    expect(mock.setEmptyProjectLayout).not.toHaveBeenCalled();
+    cleanup();
+    vi.clearAllMocks();
+    mock.pickChapterSource.mockResolvedValue({ images: [png('1.png', 800, 4000)] });
     // 'ja' already holds a chapter: its layout stays.
     view = await mount('ja');
     await pick(view);

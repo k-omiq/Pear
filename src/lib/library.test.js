@@ -3570,14 +3570,41 @@ describe('the OCR language belongs to one project', () => {
     expect(projectById(p.id).ocrLanguage).toBe('ko');
   });
 
-  it('lets an empty project take a layout once, and never one that holds a chapter', async () => {
-    const p = await createProject('Empty', { layout: 'pages' });
-    await setEmptyProjectLayout(p.id, 'longstrip');
+  it('lets a project made with no layout asked take one from its first document, once', async () => {
+    const p = await createProject('Guessed', { layout: 'pages', layoutGuessed: true });
+    expect(projectJson(p.slug).layoutGuessed).toBe(true);
+    expect(await setEmptyProjectLayout(p.id, 'longstrip')).toBe(true);
     expect(p.layout).toBe('longstrip');
     expect(projectJson(p.slug).layout).toBe('longstrip');
-    await createChapter({ projectId: p.id, number: 1, title: '', files: [fakeFile('a.png', 1)] });
-    await expect(setEmptyProjectLayout(p.id, 'pages')).rejects.toThrow(/keeps its layout/);
+    // The marker goes with the write: the layout is now a choice.
+    expect(p.layoutGuessed).toBe(false);
+    expect('layoutGuessed' in projectJson(p.slug)).toBe(false);
+    expect(await setEmptyProjectLayout(p.id, 'pages')).toBe(false);
     expect(projectJson(p.slug).layout).toBe('longstrip');
+    await scanLibrary();
+    expect(projectById(p.id).layoutGuessed).toBe(false);
+  });
+
+  it('never touches a layout someone chose, even after a switch to general use', async () => {
+    // Made under comics, Longstrip picked by hand: no marker.
+    const p = await createProject('Chosen', { layout: 'longstrip' });
+    expect('layoutGuessed' in projectJson(p.slug)).toBe(false);
+    expect(await setEmptyProjectLayout(p.id, 'pages')).toBe(false);
+    expect(p.layout).toBe('longstrip');
+    expect(projectJson(p.slug).layout).toBe('longstrip');
+  });
+
+  it('refuses once the project holds a chapter, in memory or only on disk', async () => {
+    const p = await createProject('Busy', { layout: 'pages', layoutGuessed: true });
+    // Another window added a chapter this window has not scanned yet.
+    fsx._tree.dirs.add(`${p.dir}/001`);
+    fsx._tree.files.set(`${p.dir}/001/chapter.json`, CHAPTER('c-other', 1, []));
+    expect(p.chapters).toHaveLength(0);
+    expect(await setEmptyProjectLayout(p.id, 'longstrip')).toBe(false);
+    expect(projectJson(p.slug).layout).toBe('pages');
+    await createChapter({ projectId: p.id, number: 2, title: '', files: [fakeFile('a.png', 1)] });
+    await expect(setEmptyProjectLayout(p.id, 'longstrip')).rejects.toThrow(/keeps its layout/);
+    expect(projectJson(p.slug).layout).toBe('pages');
   });
 
   it('survives a whole project.json rewrite when a chapter is added', async () => {
