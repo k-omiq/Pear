@@ -341,3 +341,27 @@ it('hands the layer over between the pattern pick and a line pick, both ways', a
   cancelPatternPick();
   expect(pageRectPick.active).toBe(false);
 });
+
+it('marks a line by its first good block when a malformed one comes ahead of it', async () => {
+  page().detect = { panels: [], boxes: [{ n: 1, box: [0, 0, 'x', 50] }, { n: 1, box: [10, 20, 60, 70] }, { n: 2, box: null }] };
+  const view = render(BubbleNumbers, { pg: page() });
+  await flush();
+  const marks = [...view.container.querySelectorAll('.mark')].map((g) => [g.querySelector('text').textContent, g.querySelector('.area').getAttribute('x')]);
+  expect(marks).toEqual([['1', '10']]);
+});
+
+it('keeps only the part of a drag on the page, and refuses it when that part is under 8 px', async () => {
+  const view = render(Queue);
+  await flush();
+  await fireEvent.click(view.getByText('Add line'));
+  await flush();
+  const draw = () => fireEvent.click(view.container.querySelector('.qrow.active .badge-draw'));
+  // 100 px wide as dragged, 5 px of it on the page.
+  await draw();
+  pageRectPick.finish(page(), 795, 100, 895, 200);
+  expect(page().lines.at(-1).rect).toBeUndefined();
+  expect(app.toast.msg).toBe('Drag a larger box for the line');
+  await draw();
+  pageRectPick.finish(page(), 700, -50, 900, 100);
+  expect(page().lines.at(-1).rect).toEqual([700, 0, 800, 100]);
+});

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../library.svelte.js', async (orig) => ({ ...(await orig()), chapterOpenSeq: () => 1 }));
 
 const { app, loadProjectPages, pageById, settleEdits, lineByN } = await import('../../store.svelte.js');
-const { initHistory, resetHistory, undo } = await import('../../editor/history.svelte.js');
+const { initHistory, resetHistory, undo, stepHere } = await import('../../editor/history.svelte.js');
 const { callContext, revertRun, __resetRun } = await import('../run.svelte.js');
 const { callTool } = await import('../registry.js');
 const { defaultStyle } = await import('../../data.js');
@@ -143,7 +143,7 @@ describe('the queue tools', () => {
     const was = snap();
     const r = await call('delete_line', { page: 1, line: 2 });
     expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(r.result).toMatchObject({ deleted: { n: 2, en: { untrusted: 'BOOM' } }, renumbered: 'numbered lines after 2 moved up by one', lines: [1, 2] });
+    expect(r.result).toMatchObject({ deleted: { n: 2, en: { untrusted: 'BOOM' } }, renumbered: { 3: 2 }, lines: [1, 2] });
     expect(lineByN(pageById(1), 2).jp).toBe('まだ');
     expect(pageById(1).boxes.map((b) => b.id)).toEqual(['a']);
     settleEdits();
@@ -155,7 +155,7 @@ describe('the queue tools', () => {
     await call('add_line', { page: 1 });
     const r = await call('delete_line', { page: 1, line: -1 });
     expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(r.result.renumbered).toBeUndefined();
+    expect(r.result.renumbered).toEqual({});
     expect(ns()).toEqual([1, 2, 3]);
   });
 
@@ -186,6 +186,41 @@ describe('the queue tools', () => {
       const a = await call('add_line', { page: 1, box });
       expect(a.ok).toBe(false);
     }
+    expect(snap()).toBe(was);
+  });
+
+  it('maps nothing when the last numbered line goes', async () => {
+    const r = await call('delete_line', { page: 1, line: 3 });
+    expect(r.result).toMatchObject({ renumbered: {}, lines: [1, 2] });
+  });
+
+  it('refuses a page or line that is not a whole number', async () => {
+    for (const [name, args] of [
+      ['add_line', { page: 1.5 }],
+      ['add_line', { page: '1' }],
+      ['delete_line', { page: 1, line: 2.5 }],
+      ['delete_line', { page: 1, line: '2' }],
+      ['set_line_box', { page: 1, line: 1.5, box: null }],
+    ]) {
+      const r = await call(name, args);
+      expect(r.ok, JSON.stringify(args)).toBe(false);
+    }
+    expect(ns()).toEqual([1, 2, 3]);
+  });
+
+  it('lets the user undo the agent\'s line changes in translate mode, through the gate', async () => {
+    const was = snap();
+    await call('add_line', { page: 1, en: 'x', box: [0, 0, 50, 50] });
+    settleEdits();
+    expect(stepHere('undo')).toBe(true);
+    expect(snap()).toBe(was);
+    await call('add_line', { page: 1 });
+    await call('set_line_box', { page: 1, line: -1, box: [0, 0, 60, 60] });
+    await call('text', { ops: [{ page: 1, line: 3, en: 'Not yet.' }] });
+    await call('delete_line', { page: 1, line: -1 });
+    settleEdits();
+    // The run folded its steps on the page into one group of line steps.
+    expect(stepHere('undo')).toBe(true);
     expect(snap()).toBe(was);
   });
 
