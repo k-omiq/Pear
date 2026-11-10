@@ -26,6 +26,10 @@
   --edge:0 1px 1px rgba(42,38,32,.05), 0 5px 14px rgba(42,38,32,.07);
   --edge-soft:0 1px 2px rgba(42,38,32,.05);
   --scrim:rgba(42,38,32,.28);
+  /* Discord's own colours, for the invite card and nowhere else: the one hue
+     the chrome allows (DESIGN.md). Brand colours, so every theme carries the
+     same values. */
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   /* Mirrored by RAIL_W in src/lib/editor/RailTools.svelte - see the note there. */
   --rail-w:44px;
   /* The height of the top-left pill band: `.pill-row` at top:12px, 32px tall,
@@ -61,6 +65,7 @@
   --edge:0 0 0 1px rgba(255,255,255,.05), 0 6px 20px rgba(0,0,0,.42);
   --edge-soft:0 0 0 1px rgba(255,255,255,.05);
   --scrim:rgba(0,0,0,.6);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   /* Geometry, so identical to light: see the note above. */
   --chrome-top:52px;
   /* Geometry, so identical to light: see the note above. */
@@ -85,6 +90,7 @@
   --edge:0 1px 1px rgba(84,40,54,.05), 0 5px 14px rgba(84,40,54,.08);
   --edge-soft:0 1px 2px rgba(84,40,54,.06);
   --scrim:rgba(84,40,54,.28);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:light;
 }
 /* Jade: dark, green-black field, a pale jade accent. */
@@ -100,6 +106,7 @@
   --edge:0 0 0 1px rgba(214,245,230,.05), 0 6px 20px rgba(0,0,0,.45);
   --edge-soft:0 0 0 1px rgba(214,245,230,.05);
   --scrim:rgba(0,0,0,.6);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:dark;
 }
 /* Ocean: navy surfaces, a clear sea-blue accent. */
@@ -115,6 +122,7 @@
   --edge:0 0 0 1px rgba(222,239,255,.07), 0 6px 20px rgba(4,15,28,.25);
   --edge-soft:0 0 0 1px rgba(222,239,255,.07);
   --scrim:rgba(4,15,28,.55);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:dark;
 }
 

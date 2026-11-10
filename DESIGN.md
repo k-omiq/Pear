@@ -221,6 +221,8 @@ A single warm-grey family, tinted toward brown (hue of rgb 42,38,32), with the a
 ### Named Rules
 **The Page Owns Colour Rule.** Chrome is greyscale. The only hues in the UI are the rust warning and the page-status pair (done green #1f9d55, check amber #e08a00), and the status pair is scoped to the pager and page list, where it mirrors the Regions view.
 
+**The Discord Exception.** Discord's blurple (`--discord-blurple`, `--discord-hover`, `--discord-soft`, `--discord-white`, the same in every theme) is allowed on the Discord invite card only: the setup's last step and the end of Settings ▸ About.
+
 **The Paper Does Not Invert Rule.** Anything drawn over the page (outlines, handles, the review flag, source pills) uses page-tint, page-tintline or the flag rust, never accent, because accent goes near-white in dark mode and would vanish on paper.
 
 **The Theme Token Rule.** Every colour comes from a custom property with a value in each [data-theme] block (light, dark, sakura, jade, ocean). A new surface adds no literal colours.

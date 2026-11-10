@@ -46,7 +46,8 @@ let legacyTypeset = 'plain';
 //      a default saved by an older build takes today's fields.
 //   4  2026-11-10: the first-run setup. An install from before it is already
 //      set up and is a comics install, so it never sees the setup and keeps
-//      every comic tool and word.
+//      every comic tool and word. New chapters start as Translate on a new
+//      install; one from before keeps Typeset, which is what it always did.
 const DEFAULTS_REV = 4;
 // The engine a build starts on: the Rust engine, unless the build says
 // otherwise (`VITE_MT_TEXT_ENGINE=browser`; the test lanes do, and measure
@@ -150,8 +151,11 @@ export const prefs = $state({
   // What the person said they use the app for: 'comics' keeps every comic tool
   // and word, 'general' hides the comic tools (`isComics`, words.js).
   usage: 'comics',
-  // The mode a new chapter starts in.
-  defaultChapterMode: 'typeset',
+  // The mode a new chapter starts in. Translate for a new comics install (the
+  // owner's choice, 2026-11-10); an install from before revision 4 keeps
+  // Typeset (`load`). General use never starts a translate chapter, whatever
+  // this says.
+  defaultChapterMode: 'translate',
   // The source language a new series starts with. The codes are the ones a
   // project stores (`OCR_LANGUAGES` in store.svelte.js).
   defaultOcrLanguage: 'ja',
@@ -374,6 +378,7 @@ function load() {
   if (saved && !(saved.defaultsRev >= 4)) {
     prefs.onboarded = true;
     prefs.usage = 'comics';
+    prefs.defaultChapterMode = 'typeset';
   }
   // No blob at all is either a fresh install or an old one from before the app
   // wrote preferences; the library root, the theme and the tag list tell them
@@ -393,6 +398,7 @@ function load() {
     if (existing) {
       prefs.onboarded = true;
       prefs.usage = 'comics';
+      prefs.defaultChapterMode = 'typeset';
     } else {
       freshInstall = true;
     }

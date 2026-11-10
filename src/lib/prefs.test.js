@@ -138,6 +138,7 @@ describe('first-run setup and usage', () => {
     const { prefs } = await import('./prefs.svelte.js');
     expect(prefs.onboarded).toBe(false);
     expect(prefs.usage).toBe('comics');
+    expect(prefs.defaultChapterMode).toBe('translate');
     const blob = JSON.parse(storage['mt.prefs']);
     expect(blob.defaultsRev).toBe(4);
     expect(blob.onboarded).toBe(false);
@@ -148,6 +149,8 @@ describe('first-run setup and usage', () => {
     const { prefs } = await import('./prefs.svelte.js');
     expect(prefs.onboarded).toBe(true);
     expect(prefs.usage).toBe('comics');
+    // It keeps starting chapters as it always did.
+    expect(prefs.defaultChapterMode).toBe('typeset');
   });
 
   it.each([['mt.libraryRoot'], ['mt.theme'], ['mt.tags']])('no blob but %s present is an existing install', async (key) => {
@@ -155,6 +158,7 @@ describe('first-run setup and usage', () => {
     const { prefs } = await import('./prefs.svelte.js');
     expect(prefs.onboarded).toBe(true);
     expect(prefs.usage).toBe('comics');
+    expect(prefs.defaultChapterMode).toBe('typeset');
     expect(storage['mt.prefs']).toBeUndefined();
   });
 
@@ -177,7 +181,7 @@ describe('first-run setup and usage', () => {
   it.each([
     ['onboarded', true],
     ['usage', 'general'],
-    ['defaultChapterMode', 'translate'],
+    ['defaultChapterMode', 'typeset'],
     ['defaultOcrLanguage', 'ko'],
   ])('%s survives a restart', async (key, value) => {
     const { setPref } = await import('./prefs.svelte.js');
@@ -193,7 +197,7 @@ describe('first-run setup and usage', () => {
     });
     const { prefs } = await import('./prefs.svelte.js');
     expect(prefs.usage).toBe('comics');
-    expect(prefs.defaultChapterMode).toBe('typeset');
+    expect(prefs.defaultChapterMode).toBe('translate');
     expect(prefs.defaultOcrLanguage).toBe('ja');
   });
 

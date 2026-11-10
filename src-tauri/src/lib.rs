@@ -51,6 +51,7 @@ pub fn run() {
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_opener::init())
     // In-process ONNX engine for detection and OCR.
     .manage(detect::engine::DetectEngine::new(detect::engine::default_models_dir()))
     .invoke_handler(tauri::generate_handler![

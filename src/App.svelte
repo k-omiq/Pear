@@ -20,6 +20,8 @@
   import NewChapterDialog from './lib/home/NewChapterDialog.svelte';
   import ChapterSourcesSheet from './lib/home/ChapterSourcesSheet.svelte';
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
+  import Onboarding from './lib/onboarding/Onboarding.svelte';
+  import { onboarding, offerOnboardingAtBoot, finishOnboarding } from './lib/onboarding/onboarding.svelte.js';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, setTranslateTypeset, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
@@ -107,6 +109,10 @@
       if (h && !role.agent) toast(`Detection ready · ${h.device}`);
     });
     await roleRead;
+    // The first-run setup, decided once the library is read (`booted`) and
+    // the window's role is known: never in an agent's window, and never for an
+    // install that is already set up.
+    offerOnboardingAtBoot(role);
     if (role.agent) {
       await initChapterWindowDoor(role.label);
       await openAgentChapter(role.chapter);
@@ -558,6 +564,10 @@
     // everything else stands down. The registry decides which is which.
     const typing = isTypingTarget(e.target) || !!app.editingId;
     if (!typing && e.key === 'Escape') {
+      // The setup sits over everything else, so it goes first. Its own screen
+      // takes the Escape that arrives with focus inside it; this is for one
+      // that arrives with focus lost to the page.
+      if (onboarding.open) return finishOnboarding();
       // Focus is in the palette's field nearly always, and the field takes its
       // own Escape; this is for the press that arrives with focus elsewhere.
       if (paletteOpen) return (paletteOpen = false);
@@ -589,9 +599,10 @@
     // contract, relied on by this query: every app modal renders a root
     // `.modal-overlay` element and carries the `open` class only while it is
     // showing (FontModal, ExportDialog do; so must any modal added later, or
-    // this line has to be taught about it). Settings is a full-window screen,
-    // `.settings-screen`, mounted only while open.
-    if (typeof document !== 'undefined' && document.querySelector('.modal-overlay.open, .settings-screen')) return;
+    // this line has to be taught about it). Settings and the first-run setup
+    // are full-window screens, `.settings-screen` and `.onboarding-screen`,
+    // mounted only while open.
+    if (typeof document !== 'undefined' && document.querySelector('.modal-overlay.open, .settings-screen, .onboarding-screen')) return;
     if (route.name !== 'editor') return;
     // Every named shortcut, in one line: undo, redo, duplicate, delete, the
     // style clipboard, the three modes, the Inspector's tabs and the rotation
@@ -745,4 +756,7 @@
 <ExportDialog />
 <DrawReadModal />
 <CommandPalette bind:open={paletteOpen} />
+<!-- Over the route rather than in place of it, as Settings is, so running
+     the setup again from the editor keeps the chapter mounted. -->
+{#if onboarding.open}<Onboarding />{/if}
 <Toast />
