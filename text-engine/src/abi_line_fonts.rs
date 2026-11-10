@@ -77,3 +77,57 @@ pub unsafe extern "C" fn mt_line_fonts(
         parts.len() as i32
     })
 }
+
+/// `u32`s read per span by [`mt_advance_spans`]: font id, flags (as every
+/// measuring export takes them: synth bits, chain above bit 8), and the first
+/// and one-past-last UTF-16 unit of the text it covers.
+pub const SPAN_FIELDS: usize = 4;
+
+/// The advance in pixels of `text` set as one line in several faces, without
+/// letter spacing: `Engine::advance_spans`, the measure the painter's cut of
+/// a line into faces agrees with. `spans` holds `count` spans of
+/// [`SPAN_FIELDS`] `u32`s, in order and covering the text end to end, all at
+/// `size`. NaN for an unknown font or chain, text that is not UTF-8, or spans
+/// that do not cover the text.
+///
+/// # Safety
+///
+/// `text` must be valid for reads of `text_len` bytes and `spans` for reads of
+/// `count * SPAN_FIELDS` `u32`s (neither need be aligned), or either may be
+/// null with a zero length.
+#[no_mangle]
+pub unsafe extern "C" fn mt_advance_spans(
+    size: f64,
+    text: *const u8,
+    text_len: usize,
+    spans: *const u32,
+    count: usize,
+) -> f64 {
+    let bytes: &[u8] = if text.is_null() || text_len == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller's promise above.
+        unsafe { core::slice::from_raw_parts(text, text_len) }
+    };
+    let Ok(text) = core::str::from_utf8(bytes) else {
+        return f64::NAN;
+    };
+    if spans.is_null() && count > 0 {
+        return f64::NAN;
+    }
+    let list: Vec<(Face, core::ops::Range<u32>)> = (0..count)
+        .map(|i| {
+            // SAFETY: `i * SPAN_FIELDS + k` is below `count * SPAN_FIELDS`.
+            let at = |k: usize| unsafe { spans.add(i * SPAN_FIELDS + k).read_unaligned() };
+            let flags = at(1);
+            let face = Face {
+                font: at(0),
+                size,
+                synth: Synth::from_bits(flags),
+                chain: flags >> 8,
+            };
+            (face, at(2)..at(3))
+        })
+        .collect();
+    with_engine(|engine| engine.advance_spans(&list, text).unwrap_or(f64::NAN))
+}

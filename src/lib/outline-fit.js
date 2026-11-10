@@ -28,7 +28,7 @@
 // width would make the breaker choose them. Pure over its arguments and the
 // metrics measure.js reads.
 
-import { applyCase, lineWidth, textInset, breaksFor, brokenLines, withFamiliesHeld } from './measure.js';
+import { applyCase, casedRuns, lineWidth, sliceWidth, withSpans, textInset, breaksFor, brokenLines, withFamiliesHeld } from './measure.js';
 import { fitPolygon, visualCentre, polyBounds, roomOver, turnPolygon, isRectOutline } from './outline-geom.js';
 import { ovalProfile, neededHeight, balanceCandidates } from './typeset.js';
 import { placeBlock, containBox, inkHeight, linesInkRect, REVIEW_REASONS } from './contain.js';
@@ -146,6 +146,9 @@ function bestAxis(ctx, top, n) {
 // The exact search: the breaking of `words` into `L` lines that is nearest the
 // targets, every line inside its room (or, `soft`, priced for what it is not).
 // Null when there is none.
+//
+// With a measure by offset (a text with runs: `measureIn`), the lines carry
+// their offsets, as a layout's do.
 function breakInto(ctx, words, L, rooms, targets, measure, soft) {
   const N = words.length;
   if (L > N) return null;
@@ -160,7 +163,7 @@ function breakInto(ctx, words, L, rooms, targets, measure, soft) {
       for (let j = i - 1; j >= k - 1; j--) {
         if (words[j].para !== words[i - 1].para) break;
         if (cost[k - 1][j] === INF) continue;
-        const w = measure(ctx.text.slice(words[j].s, words[i - 1].e));
+        const w = measure.span ? measure.span(words[j].s, words[i - 1].e, false) : measure(ctx.text.slice(words[j].s, words[i - 1].e));
         let c = ((w - target) / target) ** 2;
         if (w > room + 0.5) {
           if (!soft) {
@@ -180,18 +183,26 @@ function breakInto(ctx, words, L, rooms, targets, measure, soft) {
   }
   if (cost[L][N] === INF) return null;
   const lines = [];
+  const spans = [];
   for (let k = L, i = N; k > 0; k--) {
     const j = from[k][i];
     lines.unshift(ctx.text.slice(words[j].s, words[i - 1].e));
+    spans.unshift([words[j].s, words[i - 1].e]);
     i = j;
   }
-  return lines;
+  return measure.span ? withSpans(lines, spans, ctx.text, ctx.runs) : lines;
+}
+
+// Line `i` of `lines` through `measure`: by its offsets when it has them.
+function widthIn(measure, lines, i) {
+  const sp = lines.spans?.[i];
+  return sp ? measure.span(sp[0], sp[1], lines[i].length > sp[1] - sp[0]) : measure(lines[i]);
 }
 
 // The whole-block score of `lines` at `size` (lower is better), with each
 // line's room.
 function score(ctx, lines, size, rooms, measure, axisOf) {
-  const ws = lines.map(measure);
+  const ws = lines.spans ? lines.map((_, i) => widthIn(measure, lines, i)) : lines.map(measure);
   const L = lines.length;
   let s = (W.size * (ctx.ref - size)) / ctx.ref;
   const sh = shapeOf(ws);
@@ -239,7 +250,7 @@ function candidatesAt(ctx, size, { soft = false, hyphens = false } = {}) {
   const lineH = size * ctx.lh;
   const pad = Math.max(0, (lineH - size) / 2);
   const c = { ...ctx, lineH, pad, size, m: ctx.marginEm * size };
-  const measure = (str) => lineWidth(str, st, size);
+  const measure = measureIn(ctx, st, size);
   const out = [];
   const nMax = Math.max(1, Math.min(ctx.words.length, Math.floor((ctx.height + 2 * c.m) / lineH)));
   const fixed = ctx.fixedLines;
@@ -251,7 +262,7 @@ function candidatesAt(ctx, size, { soft = false, hyphens = false } = {}) {
     if (!soft && rooms.some((w) => !(w > 0))) continue;
     const take = (lines) => {
       if (!lines || lines.length !== L) return;
-      if (!soft && lines.some((ln, i) => measure(ln) > rooms[i] + 0.5)) return;
+      if (!soft && lines.some((ln, i) => (lines.spans ? widthIn(measure, lines, i) : measure(ln)) > rooms[i] + 0.5)) return;
       // One entry per breaking: the axis that scores it best.
       const key = lines.join('\n');
       const cand = { size, lines, axis, top, rooms, L, score: score(c, lines, size, rooms, measure, axis) };
@@ -268,7 +279,7 @@ function candidatesAt(ctx, size, { soft = false, hyphens = false } = {}) {
     if (ctx.words.length <= OUTLINE_FIT.maxWords) {
       const prof = L <= 2 || !ctx.round ? new Array(L).fill(1) : ovalProfile(L).map((v, _, a) => v / Math.max(...a));
       const widest = Math.max(...rooms);
-      const total = measure(ctx.text.replace(/\s+/g, ' ').trim());
+      const total = ctx.runs ? measure.span(0, ctx.text.length, false) : measure(ctx.text.replace(/\s+/g, ' ').trim());
       const natural = total / prof.reduce((s, v) => s + v, 0);
       const scales = new Set([1, 0.9, 0.8, 0.7, 0.6, 0.5].map((k) => k * widest));
       for (const k of [0.85, 1, 1.15]) scales.add(Math.min(widest, natural * k));
@@ -280,11 +291,22 @@ function candidatesAt(ctx, size, { soft = false, hyphens = false } = {}) {
     }
     if (hyphens || ctx.words.length > OUTLINE_FIT.maxWords) {
       const fn = (n) => (n === L ? rooms.map((w) => Math.max(1, w)) : roomsAt(ctx.pts, ctx.cy - (n * lineH) / 2, lineH, n, axis, c.m, pad).map((w) => Math.max(1, w)));
-      for (const cand of balanceCandidates(ctx.text, fn, measure, { hyphenate: hyphens, minOrphan: ctx.minOrphan, maxLines: nMax })) take(cand.lines);
+      for (const cand of balanceCandidates(ctx.text, fn, measure, { hyphenate: hyphens, minOrphan: ctx.minOrphan, maxLines: nMax })) {
+        take(cand.spans ? withSpans(cand.lines, cand.spans, ctx.text, ctx.runs) : cand.lines);
+      }
     }
     }
   }
   return out;
+}
+
+// How `candidatesAt` measures at one size: by string, as it always has, and
+// for a text with runs by offset too (`span`, into the cased text), in the
+// faces.
+function measureIn(ctx, st, size) {
+  const fn = (str) => lineWidth(str, st, size);
+  if (ctx.runs) fn.span = (a, b, hyphen) => sliceWidth(ctx.text, ctx.runs, st, size, a, b, hyphen);
+  return fn;
 }
 
 // The box for a candidate: as wide as its widest line and its inset, on its
@@ -293,14 +315,14 @@ function candidatesAt(ctx, size, { soft = false, hyphens = false } = {}) {
 function boxFor(ctx, cand) {
   const st = { ...ctx.style, size: cand.size };
   const ti = textInset(st);
-  const widest = Math.max(...cand.lines.map((l) => lineWidth(l, st, cand.size)));
+  const widest = Math.max(...(cand.lines.spans ? cand.lines.map((_, i) => widthIn(measureIn(ctx, st, cand.size), cand.lines, i)) : cand.lines.map((l) => lineWidth(l, st, cand.size))));
   let w = ctx.lk.width ? ctx.box.w : Math.max(ctx.minW, Math.ceil(widest + 2 * ti + 1));
   let h = ctx.lk.height ? ctx.box.h : Math.max(ctx.minH, neededHeight(cand.lines.length, st, ti));
   const cy = ctx.cy;
   let x = cand.axis - w / 2;
   let y = cy - h / 2;
-  const breaks = breaksFor(ctx.text, st, cand.size, cand.lines);
-  let c = { x, y, w, h, style: st, text: ctx.raw, fit: ctx.fit, breaks };
+  const breaks = breaksFor(ctx.text, st, cand.size, cand.lines, ctx.runs);
+  let c = { x, y, w, h, style: st, text: ctx.raw, runs: ctx.rawRuns, fit: ctx.fit, breaks };
   let place = placeBlock(c, { cache: false });
   if (!place || place.isCurve) return null;
   let v = containBox(c, place);
@@ -337,7 +359,7 @@ function boxFor(ctx, cand) {
 }
 
 // The report on a placed candidate, as the check will read it.
-const reportOf = (ctx, c) => fitReport({ ...c, auto: { breaks: c.breaks } }, ctx.raw);
+const reportOf = (ctx, c) => fitReport({ ...c, auto: { breaks: c.breaks } }, ctx.raw, undefined, ctx.rawRuns);
 
 function result(c, status, reasons = []) {
   const place = placeBlock(c, { cache: false });
@@ -364,7 +386,8 @@ export function solveOutline(args) {
   return withFamiliesHeld(() => solve(args));
 }
 
-function solve({ text, style, refSize, region, locks, opts = {} }) {
+// `runs` are the faces of `text` (runs.js), null for none.
+function solve({ text, style, refSize, region, locks, opts = {}, runs: rawRuns = null }) {
   const ref = Number(refSize) > 0 ? Number(refSize) : Number(style?.size);
   if (!style || !(ref > 0)) return null;
   const raw = String(text ?? '');
@@ -387,12 +410,16 @@ function solve({ text, style, refSize, region, locks, opts = {} }) {
   const [cx, cy] = lk.pos ? [box.x + box.w / 2, box.y + box.h / 2] : visualCentre(pts);
   const b = polyBounds(pts);
   const cased = applyCase(raw, style);
+  // The faces in the case the box draws them in, or none (`casedRuns`).
+  const runs = rawRuns?.length ? casedRuns(raw, rawRuns, style).runs : null;
   const marginEm = Number.isFinite(Number(style.margin)) ? Math.max(0, Number(style.margin)) : OUTLINE_FIT.margin;
   // The outline's own aspect, for the block to follow: its widest interior
   // over its height, both less the air.
   const ctx = {
     raw,
     text: cased,
+    runs,
+    rawRuns: runs ? rawRuns : null,
     style: { ...style },
     ref,
     fit: region,
@@ -422,7 +449,7 @@ function solve({ text, style, refSize, region, locks, opts = {} }) {
   }));
   ctx.aspect = (widestRoom - 2 * marginEm * ref) / Math.max(1, b.h - 2 * marginEm * ref);
   // Held lines are the ones the box draws now, at the size it stands at.
-  if (lk.breaks && opts.breaks) ctx.fixedLines = brokenLines(cased, style, style.size, opts.breaks);
+  if (lk.breaks && opts.breaks) ctx.fixedLines = brokenLines(cased, style, style.size, opts.breaks, runs);
   const step = OUTLINE_FIT.step;
   const floor = lk.size ? ref : Math.min(ref, Math.max(step, upToGrid(Number(opts.minSize) || 0, step)));
   const sizes = [];

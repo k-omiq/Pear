@@ -1,5 +1,5 @@
 // Native-resolution raster export via canvas 2D. PNG is lossless.
-import { app, page, toast, toastError, boxText, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
+import { app, page, toast, toastError, boxText, boxRuns, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
 import { faceFor, textInset, contentWidth, glyphInk } from './measure.js';
 import { glyphPainter, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
 import { encodesPages, encodePage } from '../../text-engine/js/encode.mjs';
@@ -222,7 +222,10 @@ function layoutBox(box, p) {
   // statement; it was lifted out whole so that "the text fits its box" is
   // decided about exactly the block this file paints, rather than about a second
   // implementation that agrees with it today.
-  const place = placeBlock(boxCandidate(box, boxText(box, p)));
+  // With the faces of its words (runs.js), so the lines break where the editor
+  // breaks them. They are painted in the box face for now: the painter takes
+  // no runs yet (C3), so a bold run is the right width and the wrong weight.
+  const place = placeBlock(boxCandidate(box, boxText(box, p), boxRuns(box, p)));
   const lineH = s.size * (s.lineHeight > 0 ? s.lineHeight : 1);
   // How far past the glyphs the ink can reach, on every edge. Each term is one
   // thing that draws outside the letters: the outermost stroke (drawn at twice

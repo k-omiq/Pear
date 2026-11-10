@@ -13,7 +13,7 @@ import { selectBoxes } from '../select.js';
 import { withPagePixels } from '../render.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
-import { applyCase, breaksFor } from '../../measure.js';
+import { applyCase, breaksFor, casedRuns } from '../../measure.js';
 import { normalizeAuto, normalizeStrokeEffect } from '../../data.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
@@ -43,6 +43,7 @@ import {
   markUnsaved,
   lineByN,
   boxText,
+  boxRuns,
   isTranslateMode,
   withStyleOrder,
   setLineSpeaker,
@@ -440,7 +441,9 @@ function writeSet(set, matches) {
         } else {
           if (b.style.margin == null) b.style.margin = OUTLINE_FIT.margin;
           const st = b.style;
-          const brk = breaksFor(applyCase(boxText(b, p), st), st, st.size, set.breaks.map((t) => applyCase(t, st)));
+          // Keyed with the faces of the words (runs.js), as the box lays them out.
+          const cased = casedRuns(boxText(b, p), boxRuns(b, p), st);
+          const brk = breaksFor(cased.text, st, st.size, set.breaks.map((t) => applyCase(t, st)), cased.runs);
           if (brk) {
             b.auto.breaks = brk;
             b.auto.locks.breaks = true;
@@ -807,7 +810,7 @@ function runOp(c) {
 
 // The lines a box draws now, as every renderer breaks them.
 export function shownLines(b, p) {
-  const place = placeBlock(boxCandidate(b, boxText(b, p)), { cache: false });
+  const place = placeBlock(boxCandidate(b, boxText(b, p), boxRuns(b, p)), { cache: false });
   return place && !place.isCurve ? [...place.lines] : [];
 }
 const lineKey = (t) => String(t).trim().replace(/-$/, '').toLowerCase();

@@ -80,11 +80,15 @@ export function linePens(engine, face, line, letterSpacing) {
  * engine does (a size that is no number, or one its pens overflow at); the
  * caller takes that as null.
  */
-export function typeModel(box, text) {
+//
+// `runs`, the faces of `text` (runs.js), break the lines as the box breaks
+// them; the carets are still the box face's, as the painter still draws the
+// box face (C3 moves both).
+export function typeModel(box, text, runs = null) {
   const engine = textEngine();
   if (typeof engine?.lineCarets !== 'function') return null;
   const raw = String(text ?? '');
-  const place = placeBlock(boxCandidate(box, raw));
+  const place = placeBlock(boxCandidate(box, raw, runs));
   if (!place) return null;
   const s = place.s;
   const cased = place.text;

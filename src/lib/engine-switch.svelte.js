@@ -45,7 +45,7 @@
 // Not imported by anything on the measuring path (store, measure.js,
 // fonts.js): prefs.svelte.js applies the preference through here, and the UI
 // reads `engineSwitch`.
-import { app, setFontSource, noteFontsChanged, toast, toastError, boxText } from './store.svelte.js';
+import { app, setFontSource, noteFontsChanged, toast, toastError, boxText, boxRuns } from './store.svelte.js';
 import { watchUserFaces, fontsBooted, loadedFaceRecords } from './fonts.js';
 import { faceFor, applyCase } from './measure.js';
 import { boxCandidate, placeBlock, curvedStyle } from './contain.js';
@@ -488,7 +488,7 @@ export function boxLetters(b, p) {
   // Curves shape each glyph separately, even if the whole string composes
   // successfully in the primary font (for example, = + combining slash).
   if (!curvedStyle(b.style) && (!letters.borrowed.length || letters.pending.length)) return letters;
-  const placed = placeBlock(boxCandidate(b, text));
+  const placed = placeBlock(boxCandidate(b, text, boxRuns(b, p)));
   const runs = placed.isCurve ? placed.layout.map((g) => g.ch) : placed.lines;
   // Each painted run starts its own fallback choice, including a soft wrap.
   return lettersInRuns(b.style, runs);
