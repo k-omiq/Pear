@@ -6571,9 +6571,10 @@ export function addEmptyBox(imgX, imgY, target = null) {
   return b.id;
 }
 
-export function addQueueLine() {
-  if (!app.pages.length) return null;
-  const p = page();
+// A new free line at the end of page `p`'s queue, made the active one there.
+// The pane adds to the page shown; the agent's add_line names any page.
+export function addQueueLine(p = page()) {
+  if (!app.pages.length || !p) return null;
   // A burst of typing still open on another line is the older edit, so it is
   // recorded first and an undo takes this line back before it.
   settleEdits();
