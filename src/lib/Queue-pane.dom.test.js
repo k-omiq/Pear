@@ -5,6 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Queue from './Queue.svelte';
+import BubbleNumbers from './editor/BubbleNumbers.svelte';
+import { pageRectPick } from './page-rect-pick.svelte.js';
 import {
   app,
   loadProjectPages,
@@ -43,6 +45,7 @@ beforeEach(() => {
   resetHistory();
 });
 afterEach(() => {
+  pageRectPick.cancel();
   cleanup();
   settleEdits();
   resetHistory();
@@ -167,4 +170,109 @@ it('follows the keys as the user rebound them', async () => {
   expect(key(english(view), { key: '¡', code: 'Digit1', altKey: true }).defaultPrevented).toBe(false);
   key(english(view), { key: '1', code: 'Digit1', ctrlKey: true });
   expect(page().lines[1].tags).toEqual([]);
+});
+
+// ---------- lines added, deleted and drawn (plan section 3) ----------
+
+it('deletes a focused row with Delete, says so with an Undo, and leaves a field’s Delete alone', async () => {
+  const view = render(Queue);
+  await flush();
+  // In the English field Delete edits the text.
+  expect(key(english(view), { key: 'Delete' }).defaultPrevented).toBe(false);
+  expect(page().lines).toHaveLength(2);
+  key(english(view), { key: 'Escape' });
+  const row = view.container.querySelector('.qrow.active');
+  expect(key(row, { key: 'Delete' }).defaultPrevented).toBe(true);
+  await flush();
+  expect(page().lines.map((l) => [l.n, l.en])).toEqual([[1, '']]);
+  expect(app.toast.msg).toBe('Deleted line 1');
+  expect(app.toast.action.label).toBe('Undo');
+  app.toast.action.run();
+  await flush();
+  expect(page().lines.map((l) => [l.n, l.en])).toEqual([[1, 'alpha'], [2, '']]);
+  // A second press of a stale Undo does nothing.
+  const stale = { ...app.toast };
+  stale.action?.run?.();
+  expect(page().lines).toHaveLength(2);
+});
+
+it('takes Backspace on a row too, but not on a button inside it', async () => {
+  const view = render(Queue);
+  await flush();
+  key(english(view), { key: 'Escape' });
+  const chip = view.container.querySelector('.qrow.active .qtag');
+  key(chip, { key: 'Backspace' });
+  expect(page().lines).toHaveLength(2);
+  key(view.container.querySelector('.qrow.active'), { key: 'Backspace' });
+  expect(page().lines).toHaveLength(1);
+});
+
+it('asks a hand-added line for its box, draws it, and goes back to the English', async () => {
+  const view = render(Queue);
+  await flush();
+  await fireEvent.click(view.getByText('Add line'));
+  await flush();
+  const draw = view.container.querySelector('.qrow.active .badge-draw');
+  expect(draw.title).toBe("Draw this line's box on the page");
+  await fireEvent.click(draw);
+  expect(pageRectPick.active).toBe(true);
+  expect(pageRectPick.hint).toBe('Drag a box for this line · Esc cancels');
+  // Focus moves away while the user drags; the done puts it back.
+  draw.focus();
+  pageRectPick.finish(page(), 300, 200, 100, 150);
+  await flush();
+  expect(page().lines.at(-1).rect).toEqual([100, 150, 300, 200]);
+  expect(view.container.querySelector('.qrow.active .badge').textContent).toBe('T1');
+  expect(document.activeElement).toBe(english(view));
+  expect(view.container.querySelector('.qrow.active .badge-draw')).toBe(null);
+});
+
+it('cancels a drag under 8 px, and Esc, without drawing anything', async () => {
+  const view = render(Queue);
+  await flush();
+  await fireEvent.click(view.getByText('Add line'));
+  await flush();
+  await fireEvent.click(view.container.querySelector('.qrow.active .badge-draw'));
+  pageRectPick.finish(page(), 100, 100, 105, 160);
+  expect(pageRectPick.active).toBe(false);
+  expect(page().lines.at(-1).rect).toBeUndefined();
+  expect(app.toast.msg).toBe('Drag a larger box for the line');
+  await fireEvent.click(view.container.querySelector('.qrow.active .badge-draw'));
+  expect(pageRectPick.cancel()).toBe(true);
+  expect(page().lines.at(-1).rect).toBeUndefined();
+});
+
+it('keeps Draw or Redraw and Delete in the row menu', async () => {
+  page().detect = { panels: [], boxes: [{ n: 1, box: [0, 0, 50, 50] }] };
+  const view = render(Queue);
+  await flush();
+  const menuFor = async (n) => {
+    const btn = view.getByLabelText(`Line ${n} actions`);
+    await fireEvent.click(btn);
+    await flush();
+    return [...document.querySelectorAll('.row-menu [role="menuitem"]')];
+  };
+  let items = await menuFor(1);
+  expect(items.map((b) => b.textContent)).toEqual(['Redraw box on page', 'Delete line']);
+  expect(items[1].classList.contains('danger')).toBe(true);
+  await fireEvent.click(items[0]);
+  await flush();
+  expect(pageRectPick.active).toBe(true);
+  pageRectPick.cancel();
+  items = await menuFor(2);
+  expect(items[0].textContent).toBe('Draw box on page');
+  await fireEvent.click(items[1]);
+  await flush();
+  expect(page().lines.map((l) => l.n)).toEqual([1]);
+  expect(app.toast.msg).toBe('Deleted line 2');
+});
+
+it('marks a line on the page by its drawn box, with the T label its row has', async () => {
+  page().detect = { panels: [], boxes: [{ n: 1, box: [0, 0, 50, 50] }] };
+  page().lines.push({ n: -1, type: 'dialogue', jp: '', en: '', rect: [100, 100, 200, 160] });
+  page().lines.push({ n: -2, type: 'dialogue', jp: '', en: '' });
+  const view = render(BubbleNumbers, { pg: page() });
+  await flush();
+  const marks = [...view.container.querySelectorAll('.mark')].map((g) => [g.querySelector('text').textContent, g.querySelector('.area').getAttribute('x')]);
+  expect(marks).toEqual([['1', '0'], ['T1', '100']]);
 });
