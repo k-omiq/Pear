@@ -4362,9 +4362,13 @@ export function applyDetection(result, target = null) {
   //         has no opinion about them - it never saw them and cannot renumber
   //         them, since its numbers start at 1. `carryTagsForward` appends them
   //         untouched, exactly as it does on a re-import.
-  // Typing still settling names a line about to be replaced: it is recorded
-  // now, so the drop below takes it with every other step about these lines.
-  settleEdits();
+  // Typing in the queue still settling names a line about to be replaced: it
+  // is recorded now, so the drop below takes it with every other step about
+  // these lines. Only the queue's typing - a box being typed into, and a box
+  // still pending, are cleared with the wipe below, not settled (see there):
+  // a step for a box the wipe removes would be an undo that can only fail.
+  settleLine();
+  settleSource();
   const before = new Map(p.lines.map((l) => [l.n, l]));
   p.lines = carryTagsForward(
     p.lines,
@@ -6638,6 +6642,10 @@ export function deleteLine(n, p = page()) {
   const entry = { t: 'lineDelete', pageId: p.id, activeBefore };
   let gone = n;
   const order = n > 0 ? deleteOrder(p, n) : null;
+  // No renumber needed: the line was the last of a page numbered 1..n. Said
+  // on the entry, because a delete whose renumber was refused (below) has no
+  // numbers either and keeps a gap, and its undo must not read it as this.
+  if (n > 0 && !order) entry.last = true;
   if (order) {
     const step = $state.snapshot({ t: 'order', pageId: p.id, ...order });
     try {
@@ -7412,6 +7420,12 @@ export function deleteBox(id, p = page()) {
   if (isTranslateMode()) return;
   const b = p?.boxes.find((x) => x.id === id);
   if (!b || refuseLocked(b)) return;
+  const hasWords = (ln) => !!ln && (!!lineText(ln).trim() || !!(ln.jp ?? '').trim());
+  // A placeholder still pending whose line already has words is recorded
+  // first (its `place`, which may shrink it to its text - hence before the
+  // snapshot below), so the delete is an undo step like any other: words are
+  // never dropped with nothing to bring them back.
+  if (pendingPlace?.id === id && hasWords(lineByN(p, b.lineN))) settlePending();
   // All three taken before the removal: the undo has to put the box back where
   // it was in the stacking order, not on the end, and take its line back out of
   // the queue.
@@ -7428,8 +7442,7 @@ export function deleteBox(id, p = page()) {
   // left without typing) is never recorded, so its blank line would be a row
   // no undo takes back. A typeset chapter keeps the rule below: a box typed
   // onto the page takes its line.
-  const keepLine = (ln) =>
-    !!ln && pendingPlace?.id !== id && (!!lineText(ln).trim() || !!(ln.jp ?? '').trim() || !!lineRect(ln.rect));
+  const keepLine = (ln) => !!ln && pendingPlace?.id !== id && (hasWords(ln) || !!lineRect(ln.rect));
   const freeLine = isTranslateChapter() && keepLine(lineByN(p, b.lineN)) ? {} : freeLineRecord(p, b);
   p.boxes = p.boxes.filter((x) => x.id !== id);
   // The line goes with the box. A free line exists only to be that box's queue

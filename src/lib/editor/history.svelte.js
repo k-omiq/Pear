@@ -461,8 +461,7 @@ const KINDS = {
   // after putting them back and before taking them out.
   lineDelete: {
     label: 'that line deletion',
-    // (A numbered line deleted with no renumber was the last one: see
-    // `lastSlotFree` below the kinds.)
+    // (A delete with no renumber: see `lastSlotFree` below the kinds.)
     apply(e, dir) {
       const p = pageById(e.pageId);
       if (!p) throw new Error('the page is gone');
@@ -482,7 +481,7 @@ const KINDS = {
           lines.splice(Math.min(e.lineIndex ?? lines.length, lines.length), 0, e.line);
           const refs = [...lineRefs(p), ...boxes.map((b) => b.lineN), ...(e.takenDetect ?? []).map((it) => it.d?.n)];
           if (lineOrderProblem(lines, refs, e, 'undo')) throw new Error(replaced);
-        } else if (n > 0 && !lastSlotFree(p, n)) throw new Error(replaced);
+        } else if (e.last ? !lastSlotFree(p, n) : n > 0 && numberInUse(p, n)) throw new Error(replaced);
         p.lines.splice(Math.min(e.lineIndex ?? p.lines.length, p.lines.length), 0, structuredClone(e.line));
         if (e.takenDetect?.length) {
           p.detect ??= { panels: [], boxes: [] };
@@ -501,7 +500,7 @@ const KINDS = {
         const now = e.numbers?.find(([, to]) => to === n)?.[0] ?? n;
         if (!p.lines.some((l) => l.n === now)) throw new Error('the queue line is gone');
         if (e.numbers && lineOrderProblem(p.lines, lineRefs(p), e, 'redo')) throw new Error(replaced);
-        if (!e.numbers && n > 0 && !lastSlotFree(p, n, true)) throw new Error(replaced);
+        if (e.last && !lastSlotFree(p, n, true)) throw new Error(replaced);
         if (e.numbers) {
           applyLineOrder(p, e, 'redo');
           remapOrder(e, 'redo');
@@ -602,17 +601,20 @@ const KINDS = {
   },
 };
 
-// A numbered line deleted with no renumber was the last numbered line, so it
-// goes back only onto a page numbered 1..n-1 with nothing else - a box, a
-// detected block - using n; and is taken again only while it is still the last
-// one (`taken`: the page is numbered 1..n). Anything else means the lines were
-// replaced under the entry.
+// A line, box or detected block already using number `n`.
+const numberInUse = (p, n) =>
+  p.lines.some((l) => l.n === n) || p.boxes.some((b) => b.lineN === n) || (p.detect?.boxes ?? []).some((d) => d?.n === n);
+// A delete marked `last` took the last line of a page numbered 1..n, so it
+// goes back only onto a page numbered 1..n-1 with nothing else using n; and is
+// taken again only while it is still the last one (`taken`: the page is
+// numbered 1..n). Anything else means the lines were replaced under the entry.
+// A delete whose renumber was refused kept a gap and has no mark: its undo
+// only needs n free (`numberInUse`).
 function lastSlotFree(p, n, taken = false) {
   const nums = p.lines.filter((l) => l.n > 0).map((l) => l.n);
   const want = taken ? n : n - 1;
   if (nums.length !== want || new Set(nums).size !== want || nums.some((k) => k > want)) return false;
-  if (taken) return true;
-  return !p.boxes.some((b) => b.lineN === n) && !(p.detect?.boxes ?? []).some((d) => d?.n === n);
+  return taken || !numberInUse(p, n);
 }
 
 // What a group may hold. An `order` entry remaps the whole stack around it,
@@ -1138,10 +1140,12 @@ export function initHistory() {
 // one - names lines that are gone, so it is dropped; box steps stay. The page's
 // stacks live in memory when it is the page shown and in the history file when
 // it is not (the off-screen amender), so both are reached.
-const aboutLines = (pageId) => (e) =>
-  e?.pageId === pageId && (QUEUE_KINDS.has(e.t) || (e.t === 'group' && (e.items ?? []).some((it) => QUEUE_KINDS.has(it?.t))));
+// A step about lines: a queue kind, or a group holding one. Shared with the
+// history file, which filters a stack it read from disk the same way.
+export const aboutLines = (e) =>
+  !!e && (QUEUE_KINDS.has(e.t) || (e.t === 'group' && (e.items ?? []).some((it) => QUEUE_KINDS.has(it?.t))));
 export function forgetLineHistory(pageId) {
-  const gone = aboutLines(pageId);
+  const gone = (e) => e?.pageId === pageId && aboutLines(e);
   const drop = (list) => {
     const keep = list.filter((e) => !gone(e));
     if (keep.length === list.length) return false;
