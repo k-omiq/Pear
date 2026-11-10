@@ -44,7 +44,7 @@
     stripScrollTopForBox,
   } from './strip.js';
   import { publishStripScroll, stripReveal } from './strip-sync.svelte.js';
-  import { patternPick, finishPatternPick } from '../pattern-pick.svelte.js';
+  import { pageRectPick } from '../page-rect-pick.svelte.js';
   import { showPanel, setHidden } from './panels.svelte.js';
   import { sfxAsk } from '../sfx-live.svelte.js';
   import { releaseLeavingImages } from '../release-image.js';
@@ -524,10 +524,11 @@
   // read a point in page coordinates, and a click 200px out in the grey would
   // otherwise land a box off the paper - so their branch below still demands a
   // press that landed on `.boxlayer` or a page frame.
-  // ---------- pattern from page ----------
-  // The drag of a pick, in the layer's own px; the page under its first
-  // point is the page it reads, and both corners go to page px through
-  // `frameCoords` as a click's do.
+  // ---------- a rectangle dragged on the page ----------
+  // The one-shot pick (page-rect-pick.svelte.js): a pattern from the page, a
+  // box drawn for a line. The drag is kept in the layer's own px; the page
+  // under its first point is the page it lands on, and both corners go to
+  // page px through `frameCoords` as a click's do.
   let pickEl = $state(null);
   let pickDrag = $state(null);
   function pickPoint(e) {
@@ -559,7 +560,7 @@
     // crosses a seam reads the first page up to its edge.
     const bx = end && end.pg === a.pg ? end.x : a.x + (d.x1 - d.x0) / app.zoom;
     const by = end && end.pg === a.pg ? end.y : a.y + (d.y1 - d.y0) / app.zoom;
-    void finishPatternPick(a.pg.id, { x0: a.x, y0: a.y, x1: bx, y1: by });
+    pageRectPick.finish(a.pg, a.x, a.y, bx, by);
   }
 
   function onStagePointerDown(e) {
@@ -1364,10 +1365,10 @@
   </div>
 </div>
 
-{#if patternPick.active}
-  <!-- Pattern from page: one drag over the page, then the layer goes
-       (pattern-pick.svelte.js). Laid over the whole canvas so a press on a
-       box picks too; Escape ends it (App.svelte). -->
+{#if pageRectPick.active}
+  <!-- One drag over the page, then the layer goes (page-rect-pick.svelte.js).
+       Laid over the whole canvas so a press on a box picks too, and in a
+       translate chapter as in a typeset one; Escape ends it (App.svelte). -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="pick-layer"
@@ -1377,7 +1378,7 @@
     onpointerup={onPickUp}
     onpointercancel={() => (pickDrag = null)}
   >
-    <div class="pick-hint">Drag over the tone to take it · Esc to cancel</div>
+    <div class="pick-hint">{pageRectPick.hint}</div>
     {#if pickDrag}
       <div
         class="pick-rect"

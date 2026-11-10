@@ -224,7 +224,9 @@ describe('the registry itself', () => {
     expect(new Set(ids).size).toBe(ids.length);
     // Two keys may share a combo only when they are never heard in the same
     // place: the typing pane's Enter in a field and Enter on a row.
-    const share = (a, b) => !a.ctx || !b.ctx || a.ctx === b.ctx;
+    // A key heard everywhere that yields to a place is not heard there.
+    const yieldsTo = (a, b) => !a.ctx && !!b.ctx && a.yields === b.ctx;
+    const share = (a, b) => (!a.ctx || !b.ctx || a.ctx === b.ctx) && !yieldsTo(a, b) && !yieldsTo(b, a);
     const clashes = [];
     for (const [i, a] of SHORTCUTS.entries()) {
       for (const b of SHORTCUTS.slice(i + 1)) if (a.combo && a.combo === b.combo && share(a, b)) clashes.push(`${a.id} / ${b.id}`);

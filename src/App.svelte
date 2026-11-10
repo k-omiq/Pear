@@ -30,8 +30,8 @@
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
-  import { patternPick, cancelPatternPick } from './lib/pattern-pick.svelte.js';
-  import { initHistory, undo, redo } from './lib/editor/history.svelte.js';
+  import { pageRectPick } from './lib/page-rect-pick.svelte.js';
+  import { initHistory, undo, redo, queueStepNext } from './lib/editor/history.svelte.js';
   import { flushPanels, showPanel } from './lib/editor/panels.svelte.js';
   import { switchHistoryPage } from './lib/editor/history-file.svelte.js';
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
@@ -464,7 +464,7 @@
     },
 
     'edit.undo': () => {
-      if (noCanvasHistory()) return;
+      if (noCanvasHistory('undo')) return;
       undo();
     },
     'edit.redo': redoShortcut,
@@ -518,13 +518,17 @@
     deleteBox(app.selectedId);
   }
   function redoShortcut() {
-    if (noCanvasHistory()) return;
+    if (noCanvasHistory('redo')) return;
     redo();
   }
-  // Translate chapters edit the queue, not the canvas, and the undo stack they
-  // would walk is empty. Say so rather than doing nothing.
-  function noCanvasHistory() {
-    if (!isTranslateMode()) return false;
+  // A translate chapter with its typesetting tools hidden draws no boxes, but
+  // its page keeps one undo stack for both halves: box edits made while the
+  // tools were shown, and a tag that restyled a line's boxes, sit on it beside
+  // the queue's own edits. A step is let through only when the entry it would
+  // take is about the lines (`queueStepNext`), so an undo there can never
+  // move a box nobody can see; anything else is refused with this toast.
+  function noCanvasHistory(dir) {
+    if (!isTranslateMode() || queueStepNext(dir)) return false;
     toast('Nothing to undo here: a translate chapter edits the queue, not the canvas');
     return true;
   }
@@ -582,7 +586,8 @@
       if (settingsView.open) return closeSettings();
       if (fontModalOpen) return (fontModalOpen = false);
       if (brushTool.manager) return closeBrushManager();
-      if (patternPick.active) return cancelPatternPick();
+      // A pattern pick or a line's box being drawn: one layer, one cancel.
+      if (pageRectPick.active) return pageRectPick.cancel();
       return deselect();
     }
     // Suppress global editor shortcuts while a modal overlay is open. Markup

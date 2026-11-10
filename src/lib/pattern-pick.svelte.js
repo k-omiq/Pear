@@ -13,7 +13,8 @@
 //   4. the box's pattern becomes that tile, one style step in the history.
 //
 // It is not a rail tool: it ends after one drag, and Escape ends it early
-// (shortcuts.svelte.js, ahead of its other uses of the key).
+// (App.svelte, ahead of its other uses of the key). The drag itself is the
+// page's one-shot rectangle (page-rect-pick.svelte.js); this is one caller.
 import { pageById, cloneStyle, boxEdited, toast } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
 import { chapterOpenSeq } from './library.svelte.js';
@@ -21,6 +22,7 @@ import { pageRasterSrc } from './page-pixels.js';
 import { glyphPainter } from './text-engine/index.js';
 import { extractsTiles, extractTile } from '../../text-engine/js/pattern.mjs';
 import { savePickedTile } from './pattern-tiles.svelte.js';
+import { pageRectPick } from './page-rect-pick.svelte.js';
 
 // The largest crop handed to the engine, a side. A bigger rectangle gives its
 // centre: a tone is the same all over, and the engine's limit is this.
@@ -49,6 +51,16 @@ export function canPickPattern() {
 
 export function startPatternPick(pageId, boxId, target = 'pattern') {
   if (patternPick.busy) return;
+  // Before `active` is raised: a pick already waiting is told it was replaced,
+  // and when that pick is this one its cancel must not lower the new flag.
+  pageRectPick.start({
+    hint: 'Drag over the tone to take it · Esc to cancel',
+    onDone: (r, pg) => void finishPatternPick(pg.id, { x0: r[0], y0: r[1], x1: r[2], y1: r[3] }),
+    onCancel: (why) => {
+      patternPick.active = false;
+      if (why === 'small') toast('Drag a larger region to take a pattern from', 'warn');
+    },
+  });
   patternPick.active = true;
   patternPick.pageId = pageId;
   patternPick.boxId = boxId;
@@ -66,6 +78,7 @@ export function patternAtPath(style, target) {
 }
 
 export function cancelPatternPick() {
+  if (patternPick.active) pageRectPick.cancel();
   patternPick.active = false;
 }
 

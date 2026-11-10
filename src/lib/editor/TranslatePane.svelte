@@ -143,6 +143,7 @@
     ['Step lines, outside a field', [k('translate.lineDown'), k('translate.lineUp')]],
     ['Back into the line, outside a field', [k('translate.edit')]],
     ['Turn the page, outside a field', [k('translate.pagePrev'), k('translate.pageNext')]],
+    ['Delete the line, outside a field', [k('line.delete')]],
     ['Toggle tag 1 to 9', [tagRange()]],
     ['Find or add a tag', [k('translate.tagPicker')]],
     ['Clear the line’s tags', [k('translate.clearTags')]],

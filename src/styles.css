@@ -2065,6 +2065,22 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .tpane .qrow.sfx.done .badge{ background:var(--text); color:var(--panel); }
 .tpane .qrow.active .badge{ background:#d4572a; color:#fff; box-shadow:none; }
 .tpane .qrow .preview{ font-size:13px; line-height:1.4; }
+/* A label past two characters (T10, 120) grows the badge into a pill. */
+.tpane .qrow .badge.wide{ width:auto; min-width:24px; padding:0 6px; border-radius:12px; }
+/* A line added by hand with no box on the page yet: the badge asks for one. */
+.tpane .qrow .badge-draw{
+  border:0; padding:0; font:inherit; cursor:pointer; color:var(--t2);
+  background:transparent; box-shadow:none;
+}
+.tpane .qrow .badge-draw:hover{ background:var(--panel2); color:var(--text); }
+.tpane .qrow.active .badge-draw{ background:transparent; color:var(--text); box-shadow:none; }
+.tpane .qrow .badge-draw:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+/* The row "…" menu: there on hover, on focus and while open, never in the way
+   of reading the rows otherwise. It keeps its room while hidden, so a row
+   never shifts as the pointer crosses it. */
+.tpane .qrow-more{ flex:none; align-self:flex-start; opacity:0; transition:opacity .12s; }
+.tpane .qrow:hover .qrow-more, .tpane .qrow:focus-within .qrow-more, .tpane .qrow-more:has(.open){ opacity:1; }
+@media (prefers-reduced-motion: reduce){ .tpane .qrow-more{ transition:none; } }
 .tpane .qrow:not(.done) .preview:empty::before{ content:'Not translated yet'; color:var(--t3); font-style:italic; }
 .tpane .qrow .qjp{ font-size:11.5px; line-height:1.45; }
 .tpane .qrow.editing .qcol{ gap:7px; }
