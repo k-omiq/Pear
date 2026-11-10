@@ -135,6 +135,7 @@ const {
   scanLibrary,
   createProject,
   setProjectOcrLanguage,
+  setEmptyProjectLayout,
   deleteProject,
   deleteChapter,
   projectById,
@@ -3567,6 +3568,16 @@ describe('the OCR language belongs to one project', () => {
     expect(projectJson(p.slug).ocrLanguage).toBe('ko');
     await scanLibrary();
     expect(projectById(p.id).ocrLanguage).toBe('ko');
+  });
+
+  it('lets an empty project take a layout once, and never one that holds a chapter', async () => {
+    const p = await createProject('Empty', { layout: 'pages' });
+    await setEmptyProjectLayout(p.id, 'longstrip');
+    expect(p.layout).toBe('longstrip');
+    expect(projectJson(p.slug).layout).toBe('longstrip');
+    await createChapter({ projectId: p.id, number: 1, title: '', files: [fakeFile('a.png', 1)] });
+    await expect(setEmptyProjectLayout(p.id, 'pages')).rejects.toThrow(/keeps its layout/);
+    expect(projectJson(p.slug).layout).toBe('longstrip');
   });
 
   it('survives a whole project.json rewrite when a chapter is added', async () => {

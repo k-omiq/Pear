@@ -874,6 +874,28 @@ export async function setProjectOcrLanguage(projectId, language) {
   return next;
 }
 
+// A project's layout is fixed once it holds a chapter: every chapter in it
+// was cut and placed for that layout. A general-use project made from the
+// library has no images to guess one from, so its first document's images
+// set it (NewChapterDialog). This refuses once there is a chapter, so the
+// layout can never move under existing work.
+export async function setEmptyProjectLayout(projectId, layout) {
+  const p = projectById(projectId);
+  if (!p || p.unreadable) throw new Error('No such readable project');
+  if (p.chapters.length) throw new Error('A project with chapters keeps its layout');
+  const next = normalizeLayout(layout);
+  if (normalizeLayout(p.layout) === next) return next;
+  const run = recordWrite.then(async () => {
+    const record = await writeProjectRecord(p, { layout: next });
+    p.layout = next;
+    p.updatedAt = record.updatedAt;
+  });
+  // The chain goes on past a failure; the caller is the one told of it.
+  recordWrite = run.catch(() => {});
+  await run;
+  return next;
+}
+
 export const deleteChapter = guarded(async function deleteChapter(projectId, chapterId) {
   const p = projectById(projectId);
   const c = p?.chapters.find((x) => x.id === chapterId);

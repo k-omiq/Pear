@@ -17,7 +17,7 @@ const mock = vi.hoisted(() => ({
 }));
 vi.mock('../library.svelte.js', () => ({
   projectById: () => mock.project, deleteChapter: vi.fn(), setChapterMode: mock.setChapterMode,
-  setProjectOcrLanguage: vi.fn(), lastToCheck: () => 0,
+  setProjectOcrLanguage: vi.fn(), lastToCheck: () => 4,
 }));
 vi.mock('../route.svelte.js', () => ({ route: { projectId: 'p' }, goLibrary: vi.fn(), goEditor: mock.goEditor }));
 vi.mock('../package-flow.js', () => ({ exportChapterPackage: vi.fn(), stayingNote: () => '' }));
@@ -58,8 +58,9 @@ describe('the project screen', () => {
     const view = await mount();
     expect(view.queryByText('Translate')).toBeNull();
     expect(view.queryByLabelText('Source language')).toBeNull();
+    // A translate chapter made under comics use keeps its way out.
     const items = await menuOf(view, 1, 'Document');
-    expect(items).not.toContain('Switch to typesetting');
+    expect(items).toContain('Switch to typesetting');
     expect(items).not.toContain('Cleaned pages and translations…');
     expect(items).toContain('Export package…');
     await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
@@ -77,6 +78,7 @@ describe('the project screen', () => {
     expect(view.getByText('Chapter 1')).toBeTruthy();
     expect(view.getByText('2 chapters')).toBeTruthy();
     expect(view.getByText('Raws only')).toBeTruthy();
+    expect(view.getByText('2 pages · 4 to check')).toBeTruthy();
     cleanup();
     setPref('usage', 'general');
     view = await mount();
@@ -85,8 +87,13 @@ describe('the project screen', () => {
     expect(view.getByText('Document 1')).toBeTruthy();
     expect(view.getByText('2 documents')).toBeTruthy();
     expect(view.getByText('Images only')).toBeTruthy();
+    expect(view.getByText('Text added')).toBeTruthy();
+    // The check list is a comic tool.
+    expect(view.queryByText(/to check/)).toBeNull();
     const items = await menuOf(view, 2, 'Document');
     expect(items).toContain('Delete document…');
+    // Never offered a way into translate mode.
+    expect(items).not.toContain('Switch to translating');
   });
 
   it('says what an empty project holds in the usage\'s words', async () => {

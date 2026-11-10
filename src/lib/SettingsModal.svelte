@@ -398,7 +398,9 @@
     if (open) {
       confirmClear = false;
       confirmResetPanels = false;
-      checkSidecar();
+      // The engine's state is for the Detection tab; general use has none,
+      // and asking would start the engine.
+      if (isComics()) checkSidecar();
       loadCache();
     }
   });

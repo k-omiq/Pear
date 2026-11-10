@@ -4,7 +4,7 @@ version = "0.3.1"
 description = "Lettering for scanlation, without Photoshop"
 authors = ["k-omiq"]
 license = "MIT"
-repository = "https://github.com/komiq-cc/manga-typesetter"
+repository = "https://github.com/k-omiq/Pear"
 edition = "2021"
 # 1.85 since `wuff` (WOFF decoding, see below), an edition-2024 crate.
 rust-version = "1.85"
