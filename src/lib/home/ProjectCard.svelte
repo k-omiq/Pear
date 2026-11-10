@@ -3,13 +3,14 @@
   import { relativeTime, plural } from '../format.js';
   import { joinPath } from '../paths.js';
   import RowMenu from './RowMenu.svelte';
+  import { word } from '../words.js';
 
   // One series on the home screen: its cover opens it, and the "…" beside its
   // name holds the rest. Deleting asks first, on the card itself.
   let { project, confirming = false, pages = 0, onOpen, onAskDelete, onCancelDelete, onDelete } = $props();
 
   const thumb = $derived(convertFileSrc(joinPath(project.dir, 'thumb.png')));
-  const chapterLine = $derived(plural(project.chapters.length, 'chapter'));
+  const chapterLine = $derived(plural(project.chapters.length, word('chapter').toLowerCase()));
   // Format chapter count and relative timestamp.
   const touched = $derived(relativeTime(project.updatedAt));
 

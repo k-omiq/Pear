@@ -37,8 +37,8 @@ async function mount() {
   await tick();
   return view;
 }
-async function menuOf(view, n) {
-  await fireEvent.click(view.getByRole('button', { name: `Chapter ${n} actions` }));
+async function menuOf(view, n, noun = 'Chapter') {
+  await fireEvent.click(view.getByRole('button', { name: `${noun} ${n} actions` }));
   await tick();
   return view.getAllByRole('menuitem').map((m) => m.textContent.trim());
 }
@@ -58,7 +58,7 @@ describe('the project screen', () => {
     const view = await mount();
     expect(view.queryByText('Translate')).toBeNull();
     expect(view.queryByLabelText('Source language')).toBeNull();
-    const items = await menuOf(view, 1);
+    const items = await menuOf(view, 1, 'Document');
     expect(items).not.toContain('Switch to typesetting');
     expect(items).not.toContain('Cleaned pages and translations…');
     expect(items).toContain('Export package…');
@@ -68,5 +68,39 @@ describe('the project screen', () => {
     // Switching usage changed nothing stored on the chapter.
     expect(mock.project.chapters[0].mode).toBe('translate');
     expect(mock.setChapterMode).not.toHaveBeenCalled();
+  });
+
+  it('names what it lists by the usage', async () => {
+    let view = await mount();
+    expect(view.getByRole('heading', { name: 'CHAPTERS' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'New chapter' })).toBeTruthy();
+    expect(view.getByText('Chapter 1')).toBeTruthy();
+    expect(view.getByText('2 chapters')).toBeTruthy();
+    expect(view.getByText('Raws only')).toBeTruthy();
+    cleanup();
+    setPref('usage', 'general');
+    view = await mount();
+    expect(view.getByRole('heading', { name: 'DOCUMENTS' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'New document' })).toBeTruthy();
+    expect(view.getByText('Document 1')).toBeTruthy();
+    expect(view.getByText('2 documents')).toBeTruthy();
+    expect(view.getByText('Images only')).toBeTruthy();
+    const items = await menuOf(view, 2, 'Document');
+    expect(items).toContain('Delete document…');
+  });
+
+  it('says what an empty project holds in the usage\'s words', async () => {
+    const chapters = mock.project.chapters;
+    mock.project.chapters = [];
+    try {
+      let view = await mount();
+      expect(view.getByText('No chapters yet. New chapter copies your raws into this series.')).toBeTruthy();
+      cleanup();
+      setPref('usage', 'general');
+      view = await mount();
+      expect(view.getByText('No documents yet. New document copies your images into this project.')).toBeTruthy();
+    } finally {
+      mock.project.chapters = chapters;
+    }
   });
 });

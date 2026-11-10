@@ -85,7 +85,7 @@ describe('page preparation in new chapter import', () => {
   it('uses the language chosen for a new project', async () => {
     const view = await mount();
     await fireEvent.change(view.getByRole('combobox'), { target: { value: '__new__' } });
-    await fireEvent.input(view.getByLabelText('Project name'), { target: { value: 'New' } });
+    await fireEvent.input(view.getByLabelText('Series name'), { target: { value: 'New' } });
     await fireEvent.click(view.getByRole('button', { name: 'Chinese', exact: true }));
     await pickRaw(view);
     await fireEvent.click(view.getByRole('checkbox', { name: 'Split spreads' }));
@@ -133,7 +133,7 @@ describe('page preparation in new chapter import', () => {
   it('reports preparation errors before creating an empty new project', async () => {
     const view = await mount();
     await fireEvent.change(view.getByRole('combobox'), { target: { value: '__new__' } });
-    await fireEvent.input(view.getByLabelText('Project name'), { target: { value: 'New' } });
+    await fireEvent.input(view.getByLabelText('Series name'), { target: { value: 'New' } });
     await pickRaw(view);
     await fireEvent.click(view.getByRole('checkbox', { name: 'Auto-align' }));
     mock.preparePageFiles.mockRejectedValueOnce(new Error('Page is too large'));
@@ -159,8 +159,12 @@ describe('usage', () => {
     expect(view.queryByText('Mode')).toBeNull();
     expect(view.queryByText('Cleaned pages')).toBeNull();
     expect(view.queryByText('Translations')).toBeNull();
+    expect(view.getByText('New document')).toBeTruthy();
+    expect(view.getByText('Images')).toBeTruthy();
+    expect(view.getByText('Document number')).toBeTruthy();
     await pickRaw(view);
     await create(view);
     expect(mock.createChapter.mock.calls[0][0]).toMatchObject({ mode: 'typeset', cleanedFiles: [], translations: null });
+    expect(mock.toast).toHaveBeenCalledWith(expect.stringMatching(/^Created document 1 · /));
   });
 });

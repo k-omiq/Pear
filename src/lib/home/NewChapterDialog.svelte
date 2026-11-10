@@ -16,6 +16,7 @@
   import { SLICE_H_MIN } from '../editor/strip-cuts.js';
   import { preparePageFiles } from '../page-prep.js';
   import { isComics, startMode } from '../prefs.svelte.js';
+  import { word } from '../words.js';
 
   // In-flight creation blocks dismissal.
   let { open = $bindable(), busy = $bindable(false), projectId = null } = $props();
@@ -166,7 +167,7 @@
       let head = plural(sm.pageCount, 'page');
       if (sm.cleanedCount) head += ` · ${sm.cleanedCount} cleaned`;
       if (sm.boxCount) head += ` · ${plural(sm.boxCount, 'box', 'boxes')}`;
-      head += ` · ${sm.mode} chapter`;
+      head += ` · ${sm.mode} ${word('chapter').toLowerCase()}`;
       notes.push({ text: head, warn: false });
       const by = (st) => sm.fonts.filter((f) => f.status === st);
       const bits = [];
@@ -205,7 +206,7 @@
       return notes;
     }
     if (!files.length) return [];
-    const notes = [{ text: `${plural(files.length, 'page')} in this chapter.`, warn: false }];
+    const notes = [{ text: `${plural(files.length, 'page')} in this ${word('chapter').toLowerCase()}.`, warn: false }];
 
     if (!cleaned.length) {
       notes.push({ text: 'No cleaned pages - every page typesets on its raw.', warn: false });
@@ -250,7 +251,7 @@
       return;
     }
     if (!isPackage && !files.length) {
-      error = 'Pick at least one raw page.';
+      error = `Pick at least one ${word('raw').toLowerCase()}.`;
       return;
     }
     if (target === '__new__' && !newProjectName.trim()) {
@@ -259,7 +260,7 @@
     }
     const n = number === null || number === undefined || number === '' ? 1 : Number(number);
     if (!Number.isFinite(n) || n < 0) {
-      error = 'Enter a valid chapter number.';
+      error = `Enter a valid ${word('chapter').toLowerCase()} number.`;
       return;
     }
     busy = true;
@@ -314,14 +315,14 @@
         if (cleaned.length) note += ` · ${Math.min(cleaned.length, files.length)} cleaned`;
       }
       open = false;
-      toast(`Created chapter ${chapter.number} · ${note}`);
+      toast(`Created ${word('chapter').toLowerCase()} ${chapter.number} · ${note}`);
       await goEditor(pid, chapter.id);
     } catch (e) {
 
       const orphan = createdProject
         ? ` The project "${createdProject.name}" was created and is now empty.`
         : '';
-      error = `Could not create the chapter: ${e?.message ?? e}.${orphan}`;
+      error = `Could not create the ${word('chapter').toLowerCase()}: ${e?.message ?? e}.${orphan}`;
 
       toastError(error);
     } finally {
@@ -337,7 +338,7 @@
     onclick={(e) => e.target.classList.contains('modal-overlay') && !busy && (open = false)}
   >
     <div class="modal dialog-narrow">
-      <div class="modal-head">New chapter</div>
+      <div class="modal-head">{word('newChapter')}</div>
 
       <div class="field">
         <span>Source</span>
@@ -368,8 +369,8 @@
 
       {#if target === '__new__'}
         <label class="field">
-          <span>Project name</span>
-          <input bind:value={newProjectName} placeholder="Series name" />
+          <span>{word('seriesName')}</span>
+          <input bind:value={newProjectName} placeholder={word('seriesName')} />
         </label>
 
         <div class="field">
@@ -391,7 +392,7 @@
       {/if}
 
       <label class="field">
-        <span>Chapter number</span>
+        <span>{word('chapter')} number</span>
         <input type="number" min="0" bind:value={number} />
       </label>
 
@@ -415,7 +416,7 @@
         {/if}
 
         <div class="field">
-          <span>Raw pages</span>
+          <span>{word('rawPages')}</span>
           <button class="soft-btn" onclick={pickRaws} disabled={busy}>
             {files.length ? `${files.length} selected - change` : 'Choose files…'}
           </button>

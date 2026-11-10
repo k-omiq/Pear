@@ -6,6 +6,7 @@
   import { exportChapterPackage, stayingNote } from '../package-flow.js';
   import RowMenu from './RowMenu.svelte';
   import { isComics } from '../prefs.svelte.js';
+  import { word } from '../words.js';
 
   let { onNewChapter, onSources, onVersions } = $props();
 
@@ -13,7 +14,7 @@
   // typeset.
   function status(c) {
     if (!c.pageCount) return { kind: 'empty', label: 'No pages' };
-    if (!c.typeset) return { kind: 'raws', label: 'Raws only' };
+    if (!c.typeset) return { kind: 'raws', label: `${word('raw')}s only` };
     return { kind: 'typeset', label: 'Typeset' };
   }
 
@@ -54,7 +55,7 @@
       ...(comics ? [{ id: 'sources', label: 'Cleaned pages and translations…' }] : []),
       { id: 'versions', label: 'Earlier versions…' },
       { separator: true },
-      { id: 'delete', label: 'Delete chapter…', danger: true },
+      { id: 'delete', label: `Delete ${word('chapter').toLowerCase()}…`, danger: true },
     ];
   }
 
@@ -144,7 +145,7 @@
     confirmingId = null;
     try {
       await deleteChapter(project.id, chapter.id);
-      toast(`Deleted chapter ${chapter.number}`);
+      toast(`Deleted ${word('chapter').toLowerCase()} ${chapter.number}`);
     } catch (e) {
       toastError(`Could not delete: ${e?.message ?? e}`);
     }
@@ -162,7 +163,7 @@
     <div class="project-title">
       <h1 class="project-name">{project.name}</h1>
       <div class="project-meta">
-        <span>{plural(project.chapters.length, 'chapter')}</span>
+        <span>{plural(project.chapters.length, word('chapter').toLowerCase())}</span>
         <span>{plural(pageTotal, 'page')}</span>
         <span>{project.layout === 'longstrip' ? 'Longstrip' : 'Pages'}</span>
         <!-- What Detect reads: general use has no Detect, so no language. -->
@@ -178,10 +179,10 @@
         {/if}
       </div>
     </div>
-    <button class="accent-btn narrow" onclick={() => onNewChapter(project.id)}>New chapter</button>
+    <button class="accent-btn narrow" onclick={() => onNewChapter(project.id)}>{word('newChapter')}</button>
   </div>
 
-  <h2 class="section-label spaced">CHAPTERS</h2>
+  <h2 class="section-label spaced">{word('chapters').toUpperCase()}</h2>
 
   <ul class="chapter-table">
     {#each project.chapters as c (c.id)}
@@ -209,15 +210,15 @@
           <span class="chapter-num">{c.unreadable ? '-' : c.number}</span>
           <span class="chapter-title">
             {#if c.duplicate}
-              <span class="chapter-name warn">Same chapter as another folder</span>
+              <span class="chapter-name warn">Same {word('chapter').toLowerCase()} as another folder</span>
               <span class="chapter-sub">{c.slug} - rename or remove the copy</span>
             {:else if c.unreadable}
-              <span class="chapter-name warn">Unreadable chapter</span>
+              <span class="chapter-name warn">Unreadable {word('chapter').toLowerCase()}</span>
               <span class="chapter-sub">{c.slug} - check this folder</span>
             {:else}
               <!-- The number is already in its own column, so a chapter with no
                    title of its own does not say "Chapter 12" beside "12". -->
-              <span class="chapter-name" class:untitled={!c.title}>{c.title || `Chapter ${c.number}`}</span>
+              <span class="chapter-name" class:untitled={!c.title}>{c.title || `${word('chapter')} ${c.number}`}</span>
               <span class="chapter-sub">{facts(c).join(' · ')}</span>
             {/if}
           </span>
@@ -241,20 +242,20 @@
           <span class="chapter-time">{c.unreadable ? '' : relativeTime(c.updatedAt)}</span>
         </button>
         {#if c.unreadable}
-          <button class="chapter-del" onclick={() => (confirmingId = c.id)} title="Delete chapter">Delete</button>
+          <button class="chapter-del" onclick={() => (confirmingId = c.id)} title="Delete {word('chapter').toLowerCase()}">Delete</button>
         {:else}
-          <RowMenu bind:this={menus[c.id]} label="Chapter {c.number} actions" items={menuItems(c)} onpick={(id) => onMenu(c, id)} />
+          <RowMenu bind:this={menus[c.id]} label="{word('chapter')} {c.number} actions" items={menuItems(c)} onpick={(id) => onMenu(c, id)} />
         {/if}
       </li>
       {#if confirmingId === c.id}
         <li class="confirm-row" role="alert">
-          <span>Move chapter {c.number} and its {plural(c.pageCount, 'copied raw')} to the trash?</span>
+          <span>Move {word('chapter').toLowerCase()} {c.number} and its {plural(c.pageCount, `copied ${word('raw').toLowerCase()}`)} to the trash?</span>
           <button class="soft-btn" onclick={() => (confirmingId = null)}>Cancel</button>
           <button class="soft-btn danger" onclick={() => onDelete(c)}>Move to trash</button>
         </li>
       {/if}
     {:else}
-      <li class="home-empty">No chapters yet. New chapter copies your raws into this series.</li>
+      <li class="home-empty">No {word('chapters').toLowerCase()} yet. {word('newChapter')} copies your {word('raw').toLowerCase()}s into this {word('series').toLowerCase()}.</li>
     {/each}
   </ul>
 </div>
