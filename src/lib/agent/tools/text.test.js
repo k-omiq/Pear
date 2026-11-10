@@ -7,7 +7,7 @@ vi.mock('../../library.svelte.js', async (orig) => ({ ...(await orig()), chapter
 
 const { app, loadProjectPages, pageById, settleEdits, lineByN } = await import('../../store.svelte.js');
 const { initHistory, resetHistory, undo } = await import('../../editor/history.svelte.js');
-const { callContext, __resetRun } = await import('../run.svelte.js');
+const { callContext, revertRun, __resetRun } = await import('../run.svelte.js');
 const { callTool } = await import('../registry.js');
 const { defaultStyle } = await import('../../data.js');
 await import('./index.js');
@@ -113,5 +113,104 @@ describe('edit set.text', () => {
     expect(r.result.ops[0].changed).toEqual(['a']);
     expect(lineByN(pageById(1), 1).en).toBe('Hi there');
     expect(pageById(1).boxes.find((b) => b.id === 'a').text).toBeNull();
+  });
+});
+
+// add_line, delete_line and set_line_box: a translate chapter's queue itself,
+// through the typing pane's own store calls and history.
+describe('the queue tools', () => {
+  const ns = () => pageById(1).lines.map((l) => l.n);
+  const snap = () => JSON.stringify({ lines: pageById(1).lines, boxes: pageById(1).boxes.map((b) => b.id) });
+  beforeEach(() => {
+    app.chapterMode = 'translate';
+  });
+
+  it('adds a free line with its words and box, as one undo step', async () => {
+    const was = snap();
+    const r = await call('add_line', { page: 1, en: 'Psst.', jp: 'ねえ', box: [100, 200, 300, 260] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.line).toMatchObject({ n: -1, label: 'T1', en: { untrusted: 'Psst.' }, jp: { untrusted: 'ねえ' }, box: [100, 200, 300, 260] });
+    expect(pageById(1).activeLineN).toBe(-1);
+    // lines reads it back with its label and box.
+    const read = await call('lines', {});
+    expect(read.result.pages[0].lines.at(-1)).toMatchObject({ n: -1, label: 'T1', box: [100, 200, 300, 260] });
+    settleEdits();
+    expect(undo()).toBe(true);
+    expect(snap()).toBe(was);
+  });
+
+  it('deletes a numbered line, renumbers the rest and its boxes go with it; undo puts it all back', async () => {
+    const was = snap();
+    const r = await call('delete_line', { page: 1, line: 2 });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result).toMatchObject({ deleted: { n: 2, en: { untrusted: 'BOOM' } }, renumbered: 'numbered lines after 2 moved up by one', lines: [1, 2] });
+    expect(lineByN(pageById(1), 2).jp).toBe('まだ');
+    expect(pageById(1).boxes.map((b) => b.id)).toEqual(['a']);
+    settleEdits();
+    expect(undo()).toBe(true);
+    expect(snap()).toBe(was);
+  });
+
+  it('deletes a free line without renumbering anything', async () => {
+    await call('add_line', { page: 1 });
+    const r = await call('delete_line', { page: 1, line: -1 });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result.renumbered).toBeUndefined();
+    expect(ns()).toEqual([1, 2, 3]);
+  });
+
+  it('draws, redraws and takes away a line\'s box', async () => {
+    let r = await call('set_line_box', { page: 1, line: 3, box: [10, 20, 110, 70] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result).toMatchObject({ before: null, outcome: 'changed', line: { n: 3, box: [10, 20, 110, 70] } });
+    r = await call('set_line_box', { page: 1, line: 3, box: [10, 20, 110, 70] });
+    expect(r.result.outcome).toBe('nothing needed');
+    r = await call('set_line_box', { page: 1, line: 3, box: null });
+    expect(r.result).toMatchObject({ before: [10, 20, 110, 70], outcome: 'changed' });
+    expect(lineByN(pageById(1), 3).rect).toBeUndefined();
+  });
+
+  it('refuses a box off the page, under 8 px or not four numbers, and changes nothing', async () => {
+    const was = snap();
+    const bad = [
+      [[700, 0, 900, 50], /outside the page/],
+      [[-1, 0, 50, 50], /outside the page/],
+      [[0, 0, 7, 50], /under 8 px/],
+      [[50, 50, 10, 10], /x1 < x2/],
+      [[0, 0, 50], /four numbers/],
+    ];
+    for (const [box, msg] of bad) {
+      const r = await call('set_line_box', { page: 1, line: 1, box });
+      expect(r.ok, JSON.stringify(box)).toBe(false);
+      expect(r.error).toMatch(msg);
+      const a = await call('add_line', { page: 1, box });
+      expect(a.ok).toBe(false);
+    }
+    expect(snap()).toBe(was);
+  });
+
+  it('refuses a missing line, a locked one, and a typeset chapter', async () => {
+    let r = await call('delete_line', { page: 1, line: 9 });
+    expect([r.ok, r.error]).toEqual([false, 'page 1 has no line 9']);
+    pageById(1).boxes.find((b) => b.id === 'a').locked = true;
+    r = await call('delete_line', { page: 1, line: 1 });
+    expect(r.error).toMatch(/locked/);
+    r = await call('add_line', { page: 2 });
+    expect(r.error).toMatch(/page must be a page 1-1/);
+    app.chapterMode = 'typeset';
+    for (const [name, args] of [['add_line', { page: 1 }], ['delete_line', { page: 1, line: 2 }], ['set_line_box', { page: 1, line: 2, box: null }]]) {
+      r = await call(name, args);
+      expect(r.error).toBe('this is not a translate chapter');
+    }
+    expect(ns()).toEqual([1, 2, 3]);
+  });
+
+  it('Revert takes back every queue change of the run', async () => {
+    const was = snap();
+    await call('add_line', { page: 1, en: 'x', box: [0, 0, 50, 50] });
+    await call('delete_line', { page: 1, line: 1 });
+    await call('set_line_box', { page: 1, line: 1, box: [0, 0, 60, 60] });
+    revertRun();
+    expect(snap()).toBe(was);
   });
 });
