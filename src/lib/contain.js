@@ -76,9 +76,11 @@
 
 import {
   applyCase,
+  casedRuns,
   layoutLines,
   brokenLines,
   lineWidth,
+  lineWidthAt,
   balloonWidthsFor,
   lineIndents,
   blockYFor,
@@ -128,9 +130,11 @@ export const keptBreaks = (box) => (box?.style?.margin != null || box?.auto?.bre
 // wide for it widens the box or shrinks the type.
 export const breaksWords = (box) => box?.auto?.locks?.width === true;
 
-// A box as the functions below take it.
-export function boxCandidate(box, text) {
-  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: keptBreaks(box), breakWords: breaksWords(box) };
+// A box as the functions below take it. `runs` are the faces of `text`
+// (runs.js: `boxRuns` in the store reads them where `boxText` reads the
+// words), null for none.
+export function boxCandidate(box, text, runs = null) {
+  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, runs: runs?.length ? runs : null, fit: box.fit ?? null, breaks: keptBreaks(box), breakWords: breaksWords(box) };
 }
 
 // Glyph-by-glyph text - SFX lettering, the bezier path, the closed ring, the arc
@@ -223,7 +227,12 @@ export function manualReason(cand) {
 export function placeBlock(cand, opts) {
   const s = cand.style;
   const size = s.size;
-  const text = applyCase(String(cand.text ?? ''), s);
+  let text = applyCase(String(cand.text ?? ''), s);
+  // A text in several faces is cased with its runs carried through the case
+  // change (`casedRuns`); one whose runs all say the box face is plain text.
+  // Curves are laid out in the box face: their glyph layouts take no runs yet.
+  let runs = null;
+  if (cand.runs) ({ text, runs } = casedRuns(String(cand.text ?? ''), cand.runs, s));
   const blank = text.trim() === '';
   // SFX first. An engine that would not lay the letters out (`sfxLayout` says
   // [] for it) leaves the box what the rest of its style makes it, rather than
@@ -244,9 +253,10 @@ export function placeBlock(cand, opts) {
   // the field is one line height to every reader rather than 0 to one of them.
   const lineH = size * (s.lineHeight > 0 ? s.lineHeight : 1);
   const rows = balloonWidthsFor(cand, s, size);
+  const lopts = cand.breakWords ? { ...opts, breakWords: true } : opts;
   const lines =
-    brokenLines(text, s, size, cand.breaks) ??
-    layoutLines(text, s, size, contentWidth(cand.w, s), rows, cand.breakWords ? { ...opts, breakWords: true } : opts);
+    brokenLines(text, s, size, cand.breaks, runs) ??
+    layoutLines(text, s, size, contentWidth(cand.w, s), rows, runs ? { ...lopts, runs } : lopts);
   if (lines === null) return null;
   const { inks, shift } = blockInk(lines, s, size);
   const blockH = lines.length * lineH;
@@ -285,7 +295,7 @@ export function blockRect(place) {
   let x0 = Infinity;
   let x1 = -Infinity;
   place.lines.forEach((ln, i) => {
-    const w = lineWidth(ln, s, s.size);
+    const w = place.lines.spans ? lineWidthAt(place.lines, i, s, s.size) : lineWidth(ln, s, s.size);
     const x = s.align === 'center' ? place.lineX[i] - w / 2 : s.align === 'right' ? place.lineX[i] - w : place.lineX[i];
     x0 = Math.min(x0, x);
     x1 = Math.max(x1, x + w);
@@ -970,9 +980,11 @@ function fitsAtAll(cand, size, limit, locked) {
 function hasWideWord(cand, place) {
   if (place.isCurve) return false;
   const room = contentWidth(cand.w, place.s) + GROW_EPS;
-  return place.lines.some((line) => {
+  return place.lines.some((line, i) => {
     const word = line.trim();
-    return word !== '' && !/\s/.test(word) && lineWidth(word, place.s, place.s.size) > room;
+    if (word === '' || /\s/.test(word)) return false;
+    // A line with offsets is the word itself, measured in its faces.
+    return (place.lines.spans ? lineWidthAt(place.lines, i, place.s, place.s.size) : lineWidth(word, place.s, place.s.size)) > room;
   });
 }
 

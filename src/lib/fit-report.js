@@ -131,11 +131,12 @@ export function lineInks(b, place) {
   return out;
 }
 
-export function fitReport(b, text, rules = FIT_RULES) {
+// `runs` are the faces of `text` (runs.js), null for none.
+export function fitReport(b, text, rules = FIT_RULES, runs = null) {
   if (!b?.style || !b.fit || !canMeasure()) return null;
   const raw = fitPolygon(b.fit);
   if (!raw) return null;
-  const place = placeBlock(boxCandidate(b, text), { cache: false });
+  const place = placeBlock(boxCandidate(b, text, runs), { cache: false });
   if (!place || place.isCurve) return null;
   const s = place.s;
   const size = s.size;

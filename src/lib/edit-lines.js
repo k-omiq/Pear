@@ -36,7 +36,9 @@
 const WS = /\s/;
 
 // `text` is the raw text, `cased` is `applyCase(text, style)` - what the lines
-// were broken from - and `lines` is what `layoutLines` returned for it.
+// were broken from - and `lines` is what `layoutLines` returned for it. A
+// layout with runs says where each line is (`lines.spans`), and those offsets
+// are used as they are rather than found again by searching.
 export function editLines(text, cased, lines) {
   const raw = String(text ?? '');
   // The breaker sees a tab as a space (`layoutLines`), and so does this.
@@ -49,7 +51,13 @@ export function editLines(text, cased, lines) {
     let pos;
     let body;
     let hyphen = false;
-    if (line === '') {
+    const sp = lines.spans?.[i];
+    if (sp) {
+      pos = sp[0];
+      body = t.slice(sp[0], sp[1]);
+      hyphen = line.length > body.length;
+      if (pos < c || (hyphen ? body + '-' : body) !== line) return null;
+    } else if (line === '') {
       // A blank paragraph: it starts after the newline that ends the one
       // before it. The first line is only blank when the whole text is.
       if (i === 0) pos = 0;

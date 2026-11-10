@@ -17,6 +17,16 @@ export function createBrowserTextEngine() {
       _ctx.font = face.key;
       return _ctx.measureText(text).width;
     },
+    // A text in several faces: each span measured alone in its face, summed,
+    // so no kerning reaches across a change of face - as the Rust engine.
+    advanceRuns(faces, text, spans) {
+      let w = 0;
+      spans.forEach((s, i) => {
+        _ctx.font = faces[i].key;
+        w += _ctx.measureText(text.slice(s.start, s.end)).width;
+      });
+      return w;
+    },
     fontBox(face) {
       _ctx.font = face.key;
       const m = _ctx.measureText('Hg');

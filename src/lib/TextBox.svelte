@@ -51,7 +51,7 @@
   } from './editor/field-undo.svelte.js';
   import { copyRuns } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
-  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
+  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
     strokeBands,
     rgba,
@@ -145,7 +145,9 @@
     // is not reactive: this is what says they changed.
     app.fontsVersion;
     try {
-      return typeModel(box, composeText ?? text);
+      // A composition is laid out in the box face: its runs are for the
+      // words before it.
+      return typeModel(box, composeText ?? text, composeText == null ? runs : null);
     } catch {
       return null;
     }
@@ -308,6 +310,8 @@
   const bulkTarget = $derived(isBulkTarget(box.id));
   const s = $derived(box.style);
   const text = $derived(boxText(box, pg));
+  // The faces of those words (runs.js), from where `boxText` read them.
+  const runs = $derived(boxRuns(box, pg));
 
   const line = $derived(box.lineN != null ? lineByN(pg, box.lineN) : null);
   const jp = $derived(line?.jp ?? '');
@@ -1520,10 +1524,18 @@
     // The lines an outline fit chose, while they are this text's, face's and
     // size's (`brokenLines`); otherwise line breaking from the box's
     // dimensions and balloon fit.
-    const cased = applyCase(text, s);
+    const opts = breaksWords(box) ? { breakWords: true } : undefined;
+    if (!runs) {
+      const cased = applyCase(text, s);
+      return brokenLines(cased, s, s.size, keptBreaks(box)) ?? layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), opts);
+    }
+    // Words in several faces: broken by the faces' widths (`casedRuns`). The
+    // lines below are still drawn in the box face, here and in the picture,
+    // until the painter sets each run in its own (C3).
+    const c = casedRuns(text, runs, s);
     return (
-      brokenLines(cased, s, s.size, keptBreaks(box)) ??
-      layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), breaksWords(box) ? { breakWords: true } : undefined)
+      brokenLines(c.text, s, s.size, keptBreaks(box), c.runs) ??
+      layoutLines(c.text, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), { ...opts, runs: c.runs })
     );
   });
 
@@ -1596,7 +1608,7 @@
     // font picker has the keys, and placing the block again costs a frame.
     if (!hitsOn || !shaped || fontPreviewing(box.id)) return null;
     app.fontsVersion;
-    const r = blockReach(placeBlock(boxCandidate(box, text)));
+    const r = blockReach(placeBlock(boxCandidate(box, text, runs)));
     if (!r || !(r.x1 > r.x0) || (r.x0 >= 0 && r.y0 >= 0 && r.x1 <= box.w && r.y1 <= box.h)) return null;
     return r;
   });

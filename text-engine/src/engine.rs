@@ -483,8 +483,72 @@ impl Engine {
         self.parts.clear();
         self.line.clear();
         self.run.clear();
+        self.measure_part(face, text, 0, mode)
+    }
+
+    /// Shapes a line set in several faces and leaves it in `self.line` as
+    /// parts, as [`Engine::measure_line`] does for one: the line is cut at
+    /// every span first - each `(face, start..end)`, UTF-16 units of `text`,
+    /// in order and end to end - and each span is then cut where coverage
+    /// changes, as a line of its face is. So there is no kerning across a
+    /// change of face either, and a span measures what it would alone.
+    ///
+    /// `BadSpec` for spans that do not cover the text in order, or that cut
+    /// a UTF-16 surrogate pair.
+    pub(crate) fn measure_spans(
+        &mut self,
+        spans: &[(Face, Range<u32>)],
+        text: &str,
+        mode: ShapeMode,
+    ) -> Result<(), Error> {
+        self.parts.clear();
+        self.line.clear();
+        self.run.clear();
+        // Each span's byte range, from one walk of the text.
+        let mut bytes = Vec::with_capacity(spans.len());
+        let mut chars = text.char_indices();
+        let (mut at16, mut at8) = (0u32, 0usize);
+        for (_, range) in spans {
+            if range.start != at16 || range.end < range.start {
+                return Err(Error::BadSpec);
+            }
+            let from = at8;
+            while at16 < range.end {
+                let Some((i, ch)) = chars.next() else {
+                    return Err(Error::BadSpec);
+                };
+                at16 += ch.len_utf16() as u32;
+                at8 = i + ch.len_utf8();
+            }
+            if at16 != range.end {
+                return Err(Error::BadSpec);
+            }
+            bytes.push(from..at8);
+        }
+        if at8 != text.len() {
+            return Err(Error::BadSpec);
+        }
+        for ((face, range), b) in spans.iter().zip(bytes) {
+            if !b.is_empty() {
+                self.measure_part(*face, &text[b], range.start, mode)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One stretch of a line in one face, appended to `self.line` and
+    /// `self.parts`: its glyphs and parts as [`Engine::measure_line`]
+    /// describes them, with clusters and text ranges counted from `base`,
+    /// the stretch's first UTF-16 unit in the line.
+    fn measure_part(
+        &mut self,
+        face: Face,
+        text: &str,
+        base: u32,
+        mode: ShapeMode,
+    ) -> Result<(), Error> {
         self.check_chain(face.chain)?;
-        self.shape_mode(face.font, text, 0, mode)?;
+        self.shape_mode(face.font, text, base, mode)?;
         let chain = match face.chain {
             0 => None,
             id => self
@@ -495,12 +559,19 @@ impl Engine {
         };
         let whole = chain.is_none() || self.run.iter().all(|g| g.id != 0);
         if whole {
-            std::mem::swap(&mut self.line, &mut self.run);
+            let from = self.line.len();
+            // A line of one stretch takes the shaped run as it is, as it
+            // always has; a later stretch is added after the ones before it.
+            if from == 0 {
+                std::mem::swap(&mut self.line, &mut self.run);
+            } else {
+                self.line.extend_from_slice(&self.run);
+            }
             self.parts.push(Part {
                 font: face.font,
                 synth: face.synth,
-                glyphs: 0..self.line.len(),
-                text: 0..text.encode_utf16().count() as u32,
+                glyphs: from..self.line.len(),
+                text: base..base + text.encode_utf16().count() as u32,
             });
             return Ok(());
         }
@@ -555,17 +626,17 @@ impl Engine {
             }
             at16 += len16;
         }
-        for (range, base16, i) in cuts {
+        for (range, at, i) in cuts {
             let (font, synth) = fonts[i];
             let len16 = text[range.clone()].encode_utf16().count() as u32;
-            self.shape_mode(font, &text[range], base16, mode)?;
+            self.shape_mode(font, &text[range], base + at, mode)?;
             let from = self.line.len();
             self.line.extend_from_slice(&self.run);
             self.parts.push(Part {
                 font,
                 synth,
                 glyphs: from..self.line.len(),
-                text: base16..base16 + len16,
+                text: base + at..base + at + len16,
             });
         }
         Ok(())
@@ -601,6 +672,19 @@ impl Engine {
     pub fn advance(&mut self, face: Face, text: &str) -> Result<f64, Error> {
         self.measure_line(face, text, ShapeMode::MEASURE)?;
         self.line_advance(face.size)
+    }
+
+    /// Advance of `text` in pixels, without letter spacing, as a line set in
+    /// the faces of `spans` (see [`Engine::measure_spans`]): what each span
+    /// measures alone, summed in order. The faces share one size, the first
+    /// span's.
+    pub fn advance_spans(&mut self, spans: &[(Face, Range<u32>)], text: &str) -> Result<f64, Error> {
+        let Some((first, _)) = spans.first() else {
+            return if text.is_empty() { Ok(0.0) } else { Err(Error::BadSpec) };
+        };
+        let size = first.size;
+        self.measure_spans(spans, text, ShapeMode::MEASURE)?;
+        self.line_advance(size)
     }
 
     /// The parts of the last measured line.
