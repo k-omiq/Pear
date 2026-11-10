@@ -11,7 +11,7 @@ import { identityMesh } from '../lib/warp.js';
 // outlines unless a case gives them.
 export const INK_W = 260;
 export const INK_H = 130;
-export const inkStyle = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 48, strokes: [], autoHeight: false, ...over });
+export const inkStyle = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 48, strokeEffects: [], autoHeight: false, ...over });
 export const inkBox = (over = {}, text = 'INK') => ({ id: 'b', lineN: null, text, x: 120, y: 110, w: INK_W, h: INK_H, style: inkStyle(over) });
 export const inkPage = (box) => ({ id: 1, w: 600, h: 400, lines: [], boxes: [box] });
 

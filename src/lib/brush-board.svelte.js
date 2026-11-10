@@ -29,17 +29,26 @@ export const BOARD_UNDO_MAX = 50;
 // tip's own reach.
 export const PLACE_PAD = 4;
 
-export const board = $state({
-  strokes: [],
+// The stroke list is RAW state: reactive when it is replaced, never proxied.
+// Every edit here replaces it (the identity contract below), so nothing needs
+// a deep proxy, and a deep one cost the board twice over on every move of a
+// liquify or width drag: once to read every point through it in the edit,
+// and once to read them again in the repaint (measured in WKWebView,
+// 2026-11-10: 9 ms against under 1 for the edit, 85 against 45 for the paint
+// of 40 strokes). It also keeps an untouched stroke the very object it was,
+// which is what the board's per-stroke picture cache is keyed by.
+class Board {
+  strokes = $state.raw([]);
   // Bumped on every change to the list; the canvas repaints off it.
-  rev: 0,
-  canUndo: false,
-  canRedo: false,
+  rev = $state(0);
+  canUndo = $state(false);
+  canRedo = $state(false);
   // Set while the strokes on the board came out of a box: which box, and the
   // translation that centred them here, so Apply can put them back where they
   // were.
-  editing: null,
-});
+  editing = $state(null);
+}
+export const board = new Board();
 
 let undoStack = [];
 let redoStack = [];

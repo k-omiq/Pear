@@ -67,14 +67,14 @@ describe("an effect's defaults menu", () => {
     const { view, box } = mounted({ shadows: [newShadow({ angle: 120 })] }, 'shadow');
     const size = () => view.getByLabelText('Shadow 1 size');
     await fireEvent.keyDown(size());
-    await fireEvent.change(size(), { target: { value: '20' } });
+    await fireEvent.input(size(), { target: { value: '20' } });
     expect(box().style.shadows[0].size).toBe(20);
     await pick(view, 'Shadow 1 defaults', 'Make default');
     expect(prefs.fxDefaults.dropShadow).toMatchObject({ size: 20, useGlobalLight: true, distance: 5 });
     expect(prefs.fxDefaults.dropShadow).not.toHaveProperty('x');
 
     await fireEvent.keyDown(size());
-    await fireEvent.change(size(), { target: { value: '40' } });
+    await fireEvent.input(size(), { target: { value: '40' } });
     expect(box().style.shadows[0].size).toBe(40);
     await pick(view, 'Shadow 1 defaults', 'Reset to default');
     expect(box().style.shadows[0].size).toBe(20);

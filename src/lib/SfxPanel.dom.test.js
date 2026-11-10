@@ -204,7 +204,7 @@ describe('the types', () => {
   });
 
   it('a type resets the letter edits, the paths, every layout number and the dials, and never the look', async () => {
-    const { view, box } = mounted({ over: { color: '#123456', font: 'Comic Neue', strokes: [{ color: '#abcdef', width: 5, opacity: 1 }] } });
+    const { view, box } = mounted({ over: { color: '#123456', font: 'Comic Neue', strokeEffects: [{ color: '#abcdef', size: 5, opacity: 1 }] } });
     await fireEvent.click(card(view, 'impact'));
     Object.assign(box.style.sfx, {
       paths: [{ a: [-2, 0], b: [2, 1], bend: 0.2 }],
@@ -221,7 +221,7 @@ describe('the types', () => {
     expect([s.power, s.rough, s.momentum]).toEqual([50, 50, 50]);
     expect(box.style.color).toBe('#123456');
     expect(box.style.font).toBe('Comic Neue');
-    expect(plain(box.style.strokes)).toEqual([{ color: '#abcdef', width: 5, opacity: 1 }]);
+    expect(plain(box.style.strokeEffects).map((k) => [k.color, k.size, k.opacity])).toEqual([['#abcdef', 5, 1]]);
   });
 
   it('Auto pick applies the first pick and sets the three dials from the sound', async () => {
@@ -375,7 +375,7 @@ describe('with a type on', () => {
   });
 
   it('Remove SFX, last in the pane, puts the box back as it was and goes away', async () => {
-    const m = mounted({ over: { curve: 30, color: '#123456', strokes: [{ color: '#abcdef', width: 5, opacity: 1 }] } });
+    const m = mounted({ over: { curve: 30, color: '#123456', strokeEffects: [{ color: '#abcdef', size: 5, opacity: 1 }] } });
     const was = plain(m.box.style);
     // Two types in a row: what comes back is the box, not the first type.
     await fireEvent.click(card(m.view, 'impact'));
@@ -388,7 +388,7 @@ describe('with a type on', () => {
     expect(m.box.style.sfx.on).toBe(false);
     expect(m.box.style.curve).toBe(30);
     expect(m.box.style.color).toBe('#123456');
-    expect(plain(m.box.style.strokes)).toEqual(was.strokes);
+    expect(plain(m.box.style.strokeEffects)).toEqual(was.strokeEffects);
     expect(m.touch).toHaveBeenCalledTimes(1);
     await tick();
     expect(m.view.queryByRole('button', { name: 'Remove SFX' })).toBe(null);

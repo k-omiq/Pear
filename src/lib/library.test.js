@@ -971,6 +971,8 @@ describe('the chapter text the outside-change check compares with', () => {
 });
 
 const { tags, createTag, findTag, rememberTagSize, tagSize } = await import('./tags.svelte.js');
+const { normalizeStrokeEffect } = await import('./data.js');
+const blackOutline = normalizeStrokeEffect({ size: 5, position: 'outside', color: '#000000', opacity: 1 });
 
 describe('tag registry per project', () => {
   const projectJson = (p) => JSON.parse(fsx._tree.files.get(`${p.dir}/project.json`));
@@ -981,11 +983,11 @@ describe('tag registry per project', () => {
     const a = await createProject('Series A');
     const ca = await chapterIn(a);
     await openChapter(a.id, ca.id);
-    createTag('sfx', { style: { font: 'Bangers', strokes: [{ color: '#000000', width: 5, opacity: 1 }] } });
+    createTag('sfx', { style: { font: 'Bangers', strokeEffects: [blackOutline] } });
     rememberTagSize('sfx', 60);
     // Let the chained project.json write land.
     await new Promise((r) => setTimeout(r, 0));
-    expect(projectJson(a).tags).toEqual([{ name: 'sfx', style: { font: 'Bangers', strokes: [{ color: '#000000', width: 5, opacity: 1 }] }, size: null, minSize: null }]);
+    expect(projectJson(a).tags).toEqual([{ name: 'sfx', style: { font: 'Bangers', strokeEffects: [blackOutline] }, size: null, minSize: null }]);
     expect(projectJson(a).tagSizes).toEqual({ sfx: 60 });
     closeChapter();
     expect(tags.list).toEqual([]);
@@ -2334,7 +2336,7 @@ describe('a cleaned page brings its own coordinate space', () => {
             y: 20,
             w: 30,
             h: 40,
-            style: { size: 26, letterSpacing: 4, strokes: [{ color: '#fff', width: 3 }] },
+            style: { size: 26, letterSpacing: 4, strokeEffects: [{ size: 3, position: 'outside', color: '#fff' }] },
           },
         },
       ]);
@@ -2346,7 +2348,7 @@ describe('a cleaned page brings its own coordinate space', () => {
       // A uniform 2x, so every length doubles - the type included, which is the
       // half that used to be left behind on the boxes as well.
       expect(box.style).toMatchObject({ size: 52, letterSpacing: 8 });
-      expect(box.style.strokes[0].width).toBe(6);
+      expect(box.style.strokeEffects[0].size).toBe(6);
     });
 
     it('leaves the stacks of pages nobody replaced exactly as they were', async () => {

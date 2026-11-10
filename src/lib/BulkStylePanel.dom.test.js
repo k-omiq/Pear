@@ -146,17 +146,22 @@ describe('the pattern', () => {
   it('is edited with the shared pattern editor, and an edit ticks its row', async () => {
     const view = render(BulkStylePanel);
     await tick();
-    app.bulk.mask.pattern = false;
+    app.bulk.mask.patternOverlay = false;
+    // The swatches are the Inspector's; the list is the panel's narrower form.
+    await fireEvent.click(view.getByLabelText('Pattern'));
+    expect(app.bulk.style.patternOverlay.on).toBe(true);
+    expect(app.bulk.mask.patternOverlay).toBe(true);
+    app.bulk.mask.patternOverlay = false;
     const kind = view.getByLabelText('Pattern kind');
     kind.value = 'stripes';
     await fireEvent.change(kind);
-    expect(app.bulk.style.pattern.kind).toBe('stripes');
-    expect(app.bulk.mask.pattern).toBe(true);
-    app.bulk.mask.pattern = false;
+    expect(app.bulk.style.patternOverlay.pattern.kind).toBe('stripes');
+    expect(app.bulk.mask.patternOverlay).toBe(true);
+    app.bulk.mask.patternOverlay = false;
     const scale = view.getByLabelText('Pattern scale, percent');
     scale.value = '200';
     await fireEvent.change(scale);
-    expect(app.bulk.style.pattern.scale).toBe(2);
-    expect(app.bulk.mask.pattern).toBe(true);
+    expect(app.bulk.style.patternOverlay.pattern.scale).toBe(2);
+    expect(app.bulk.mask.patternOverlay).toBe(true);
   });
 });

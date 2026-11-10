@@ -61,9 +61,9 @@ describe('a shadow', () => {
     expect(s).toMatchObject({ size: 250, spread: 1, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false });
   });
 
-  it('is added as Photoshop adds one: Multiply, 75%, thrown 5 from the light, knocked out', () => {
+  it('is added at Normal, 75%, thrown 5 from the light, knocked out', () => {
     const s = newShadow({ angle: 120 });
-    expect(s).toMatchObject({ size: 5, opacity: 0.75, blend: 'multiply', knockout: true, useGlobalLight: true });
+    expect(s).toMatchObject({ size: 5, opacity: 0.75, blend: 'normal', knockout: true, useGlobalLight: true });
     expect(Math.hypot(s.x, s.y)).toBeCloseTo(5, 1);
     // From the upper left, so down and to the right.
     expect(s.x).toBeGreaterThan(0);
@@ -126,7 +126,7 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(17);
+    expect(BOX_WIRE_VERSION).toBe(18);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header (the grain's corner
@@ -368,7 +368,7 @@ describe('a bevel in the style', () => {
     // Depth 0 shapes nothing.
     expect(boxEffects({ bevel: { ...bevel, texture: { ...bevel.texture, on: true, depth: 0 } } })[0].texture).toBeUndefined();
     // Last in the list: the top of Photoshop's stack.
-    const many = boxEffects({ bevel, satin: normalizeSatin({ on: true }), strokeEffects: [{ size: 2, position: 'outside', opacity: 1, blend: 'normal', fill: 'color', color: '#000000' }] });
+    const many = boxEffects({ bevel, satin: normalizeSatin({ on: true }), strokeEffects: [{ size: 2, position: 'inside', opacity: 1, blend: 'normal', fill: 'color', color: '#000000' }] });
     expect(many.map((fx) => fx.kind)).toEqual(['satin', 'stroke', 'bevel']);
   });
 

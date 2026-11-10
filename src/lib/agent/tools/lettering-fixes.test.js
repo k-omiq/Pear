@@ -19,7 +19,7 @@ const { initHistory, resetHistory, undo } = await import('../../editor/history.s
 const { callContext, __resetRun } = await import('../run.svelte.js');
 const { callTool } = await import('../registry.js');
 const { bindTags, unbindTags } = await import('../../tags.svelte.js');
-const { defaultStyle } = await import('../../data.js');
+const { defaultStyle, normalizeStrokeEffect } = await import('../../data.js');
 const { layOutNew } = await import('./place.js');
 await import('./footprint.js');
 
@@ -153,7 +153,7 @@ describe('an SFX is drawn over its original', () => {
     expect(s.style.rotation).toBeLessThanOrEqual(-18);
     // Exactly the original's colours: its near-black, and no outline, as it had none.
     expect(s.style.color).toBe('#000000');
-    expect(s.style.strokes).toEqual([]);
+    expect(s.style.strokeEffects).toEqual([]);
     expect(s.style.gradient.on).toBe(false);
     // PLINK runs the bar's ~118 px at 118 / 2.75, no taller than its 24.
     expect(s.auto.refSize).toBe(24);
@@ -168,13 +168,13 @@ describe('an SFX is drawn over its original', () => {
     await import('./check.js');
     const check = () => callTool('check', { where: { ids: ['s'] } }, callContext('mcp'));
     const s = () => pageById(1).boxes.find((b) => b.id === 's');
-    Object.assign(s().style, { color: '#ffd400', strokes: [{ color: '#ffffff', width: 3, opacity: 1 }] });
+    Object.assign(s().style, { color: '#ffd400', strokeEffects: [normalizeStrokeEffect({ size: 3, position: 'outside', color: '#ffffff', opacity: 1 })] });
     let r = await check();
     const issue = r.result.problems[0]?.issues.find((i) => i.kind === 'sfx_colour');
     expect(issue?.detail).toEqual({ fill: { want: '#ffffff', got: '#ffd400' }, outline: { want: '#000000', got: ['#ffffff'] } });
     await call({ ops: [{ where: { ids: ['s'] }, do: 'match_original' }] });
     expect(s().style.color).toBe('#ffffff');
-    expect(s().style.strokes[0].color).toBe('#000000');
+    expect(s().style.strokeEffects[0].color).toBe('#000000');
     r = await check();
     expect(r.result.problems.flatMap((p) => p.issues).some((i) => i.kind === 'sfx_colour')).toBe(false);
   });

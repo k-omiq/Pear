@@ -6,13 +6,14 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // The two paints are the real ones, on the lane's stand-in canvas, wrapped so
-// a case can count them; and the roughening's phase, which a browser measures
+// a case can count them, and so is the showing of a kept picture
+// (`presentPicture`), which a zoom does instead of a paint; and the roughening's phase, which a browser measures
 // once per session, is a promise the case holds.
 const real = vi.hoisted(() => ({}));
 vi.mock('./editor/box-picture.js', async (original) => {
   const mod = await original();
   real.paintBoxPicture = mod.paintBoxPicture;
-  return { ...mod, paintBoxPicture: vi.fn(mod.paintBoxPicture), paintPictureTexture: vi.fn(mod.paintPictureTexture) };
+  return { ...mod, paintBoxPicture: vi.fn(mod.paintBoxPicture), paintPictureTexture: vi.fn(mod.paintPictureTexture), presentPicture: vi.fn(mod.presentPicture) };
 });
 vi.mock('./exporter.js', async (original) => {
   const mod = await original();
@@ -29,7 +30,7 @@ import TextBox from './TextBox.svelte';
 import { app, loadProjectPages, page, selectBox, deselect, beginEdit, endEdit, setZoom, setZoomLive, moveBoxTo, moveGeom, noteFontsChanged } from './store.svelte.js';
 import { engineSwitch } from './engine-switch.svelte.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
-import { paintBoxPicture, PICTURE_DRAG_PX, PICTURE_MAX_PX, TURNED_OVERSAMPLE } from './editor/box-picture.js';
+import { paintBoxPicture, presentPicture, PICTURE_DRAG_PX, PICTURE_MAX_PX, PICTURE_SCALE, TURNED_OVERSAMPLE } from './editor/box-picture.js';
 import { paintWarpedBox, renderBoxTexture } from './exporter.js';
 import { _setDisplayScale } from './editor/display-scale.svelte.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo, textInset } from './measure.js';
@@ -52,7 +53,7 @@ const box = (id, over = {}, geom = {}) => ({ id, lineN: null, text: 'WAIT FOR ME
 const KINDS = {
   straight: box('straight'),
   finish: box('finish', {
-    strokes: [{ color: '#ffffff', width: 3, opacity: 1 }, { color: '#000000', width: 2, opacity: 0.5 }],
+    strokeEffects: [{ size: 3, color: '#ffffff', opacity: 1 }, { size: 5, color: '#000000', opacity: 0.5 }],
     shadows: [{ x: 3, y: 4, size: 9, color: '#112233', opacity: 0.6 }], // Size 9 reaches a whole 10 px, as blur 5 did.
     gradient: { on: true, kind: 'linear', angle: 90, scope: 'line', stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 1 }] },
     blur: 2,
@@ -103,6 +104,7 @@ beforeEach(() => {
   _setDisplayScale(1);
   noise.gate = null;
   paintBoxPicture.mockClear();
+  presentPicture.mockClear();
   paintWarpedBox.mockClear();
 });
 afterEach(() => {
@@ -125,14 +127,25 @@ async function mounted(id, { zoom = 1, props = {} } = {}) {
   const view = render(TextBox, { box: b, pageFrameEl: document.createElement('div'), pg, ...props });
   await tick();
   const root = view.container.querySelector('.tbox');
-  return { view, root, box: b, pg, canvas: () => root.querySelector('canvas'), reach: () => root.querySelector('.reach'), paints: () => paintBoxPicture.mock.calls.length };
+  return { view, root, box: b, pg, canvas: () => root.querySelector('canvas'), reach: () => root.querySelector('.reach'), paints: () => paintBoxPicture.mock.calls.length, shows: () => presentPicture.mock.calls.length };
 }
-// A turned box is painted at twice the display's scale (TURNED_OVERSAMPLE).
+// The picture the box keeps: what its last paint made (`paintBoxPicture`'s
+// result), held at its own resolution off screen. The canvas on screen is
+// that picture shown at the zoom (`presentPicture`).
+const kept = () => paintBoxPicture.mock.results.at(-1)?.value;
+const keptPx = () => kept().canvas.width * kept().canvas.height;
+// A turned box is painted, and shown, at twice the scale (TURNED_OVERSAMPLE).
 const turned = (b) => ((b.style.rotation || 0) % 90 ? TURNED_OVERSAMPLE : 1);
 // What the exporter says the box's footprint is, in page px.
 const footprint = (b, pg) => {
   const r = renderBoxTexture(b, pg, null, 1);
   return { cw: r.canvas.width, ch: r.canvas.height, ox: r.ox, oy: r.oy };
+};
+// The pixels the box keeps at rest: its footprint at the picture's scale,
+// within the budget, by the function the paint itself goes through.
+const atRest = (m) => {
+  const r = renderBoxTexture(m.box, m.pg, null, PICTURE_SCALE, PICTURE_MAX_PX);
+  return r.canvas.width * r.canvas.height;
 };
 const css = (el) => ({ left: parseFloat(el.style.left), top: parseFloat(el.style.top), width: parseFloat(el.style.width), height: parseFloat(el.style.height) });
 
@@ -195,14 +208,19 @@ describe('what a box is, with the engine drawing', () => {
     _setDisplayScale(2);
     const m = await mounted('warped', { zoom: 1.5 });
     const el = m.canvas();
+    // 150% on a 2x display is past the picture's own resolution, so the
+    // canvas holds the kept picture's own pixels: painted at 2.
     const at2 = el.width;
+    expect(at2).toBe(kept().canvas.width);
     engineSwitch.painting = false;
     await tick();
     expect(m.canvas()).toBe(el);
     expect(el.dataset.painter).toBeUndefined();
     expect(paintWarpedBox).toHaveBeenCalledTimes(1);
     expect(el.width).toBe(Math.round(parseFloat(el.style.width)));
-    expect(at2).toBeGreaterThan(el.width * 1.9);
+    // One canvas px per CSS px at 150% against two per page px: the old
+    // paint knows nothing of the display.
+    expect(at2).toBeGreaterThan(el.width * 1.3);
   });
 });
 
@@ -213,66 +231,101 @@ describe('the scale the picture is painted at', () => {
     const f = footprint(m.box, m.pg);
     const el = m.canvas();
     const upright = css(el);
-    // Padded to whole CSS px (`show` in box-picture.js): 2 texels each at 2x.
-    const whole = (n, unit) => Math.ceil(n / unit) * unit;
-    expect(el.width).toBe(whole(Math.ceil(f.cw * 3), 2));
+    expect(paintBoxPicture.mock.calls[0][2]).toBe(PICTURE_SCALE);
+    // 150% on a 2x display is past the picture's resolution: the canvas is
+    // the kept picture's own pixels, stretched over the footprint.
+    expect(el.width).toBe(f.cw * PICTURE_SCALE);
     // The first degree repaints, once: the picture has to be made finer.
     m.box.style.rotation = 7;
     await tick();
     expect(m.paints()).toBe(2);
-    expect(paintBoxPicture.mock.calls[1][3]).toBeCloseTo(3 * TURNED_OVERSAMPLE, 9);
-    expect(el.width).toBe(whole(Math.ceil(f.cw * 3 * TURNED_OVERSAMPLE), 2 * TURNED_OVERSAMPLE));
-    // The same size within the padding: under a CSS px each way.
-    expect(Math.abs(css(el).width - upright.width)).toBeLessThan(1);
-    expect(Math.abs(css(el).height - upright.height)).toBeLessThan(1);
+    expect(paintBoxPicture.mock.calls[1][2]).toBe(PICTURE_SCALE * TURNED_OVERSAMPLE);
+    expect(el.width).toBe(f.cw * PICTURE_SCALE * TURNED_OVERSAMPLE);
+    // The same size: both are the footprint.
+    expect(css(el).width).toBeCloseTo(upright.width, 6);
+    expect(css(el).height).toBeCloseTo(upright.height, 6);
     // The rest of the turn is CSS's.
     for (const deg of [8, 21, -40, 179]) {
       m.box.style.rotation = deg;
       await tick();
     }
     expect(m.paints()).toBe(2);
-    // A quarter turn lands texel on pixel and needs no more than the screen has.
+    // A quarter turn lands texel on pixel and needs no more than the export has.
     m.box.style.rotation = 90;
     await tick();
     expect(m.paints()).toBe(3);
-    expect(el.width).toBe(whole(Math.ceil(f.cw * 3), 2));
+    expect(el.width).toBe(f.cw * PICTURE_SCALE);
     m.box.style.rotation = 270;
     await tick();
     expect(m.paints()).toBe(3);
   });
 
+  // Painted at the export's scale whatever the view; shown one canvas pixel
+  // to one device pixel up to that scale (100% on a 2x display, 200% on a 1x
+  // one), and its own pixels stretched past it.
   for (const [zoom, dpr] of [[1, 1], [1, 2], [0.5, 2], [3, 1], [3, 2], [0.37, 2]]) {
-    it(`zoom ${zoom} on a ${dpr}x display: one texture pixel per device pixel`, async () => {
+    const under = zoom * dpr <= PICTURE_SCALE;
+    it(`zoom ${zoom} on a ${dpr}x display: painted at the picture's scale, ${under ? 'one canvas pixel per device pixel' : 'its own pixels stretched'}`, async () => {
       _setDisplayScale(dpr);
       const m = await mounted('straight', { zoom });
       const f = footprint(m.box, m.pg);
       const el = m.canvas();
-      // The footprint's pixels, padded to whole CSS px: WebKit paints a canvas
-      // into a rect rounded to whole CSS px, so a fraction of one would stretch.
-      expect(el.width).toBe(Math.ceil(Math.ceil(f.cw * zoom * dpr) / dpr) * dpr);
-      expect(el.height).toBe(Math.ceil(Math.ceil(f.ch * zoom * dpr) / dpr) * dpr);
-      // The CSS box is the canvas over the pixel ratio, a whole number of CSS
-      // px: nothing is stretched.
+      expect(m.paints()).toBe(1);
+      expect(paintBoxPicture.mock.calls[0][2]).toBe(PICTURE_SCALE);
+      expect([kept().canvas.width, kept().canvas.height]).toEqual([f.cw * PICTURE_SCALE, f.ch * PICTURE_SCALE]);
       const c = css(el);
-      expect(c.width * dpr).toBeCloseTo(el.width, 6);
-      expect(c.height * dpr).toBeCloseTo(el.height, 6);
-      expect(c.width).toBeCloseTo(Math.round(c.width), 6);
-      expect(c.height).toBeCloseTo(Math.round(c.height), 6);
-      expect(paintBoxPicture.mock.calls[0][3]).toBeCloseTo(zoom * dpr, 9);
+      if (under) {
+        const dev = zoom * dpr;
+        // The footprint's device pixels, and the fraction of one its corner
+        // falls inside, padded to whole CSS px: WebKit paints a canvas into a
+        // rect rounded to whole CSS px, so a fraction of one would stretch.
+        expect(el.width).toBeGreaterThanOrEqual(f.cw * dev);
+        expect(el.width).toBeLessThan(f.cw * dev + 1 + dpr);
+        expect(el.height).toBeGreaterThanOrEqual(f.ch * dev);
+        expect(el.height).toBeLessThan(f.ch * dev + 1 + dpr);
+        // The CSS box is the canvas over the pixel ratio, a whole number of
+        // CSS px: nothing is stretched.
+        expect(c.width * dpr).toBeCloseTo(el.width, 6);
+        expect(c.height * dpr).toBeCloseTo(el.height, 6);
+        expect(c.width).toBeCloseTo(Math.round(c.width), 6);
+        expect(c.height).toBeCloseTo(Math.round(c.height), 6);
+      } else {
+        // Past the picture's resolution: its own pixels over the footprint.
+        expect([el.width, el.height]).toEqual([kept().canvas.width, kept().canvas.height]);
+        expect(c.width).toBeCloseTo(f.cw * zoom, 6);
+        expect(c.height).toBeCloseTo(f.ch * zoom, 6);
+      }
     });
   }
 
-  it('sits where the footprint says, on a whole device pixel', async () => {
+  it('shown under its own resolution, sits on a whole device pixel with its letters where the footprint says', async () => {
+    _setDisplayScale(2);
+    const z = 0.685;
+    const m = await mounted('straight', { zoom: z });
+    const f = footprint(m.box, m.pg);
+    const c = css(m.canvas());
+    // The page's corner is at the viewport's (the frame here is not laid
+    // out), so the footprint's corner is this far into the screen, device px.
+    const X = (m.box.x - f.ox) * z * 2;
+    const Y = (m.box.y - f.oy) * z * 2;
+    // The canvas starts on the device pixel the corner falls inside, and the
+    // picture is drawn into it by the rest (`presentPicture`'s fx and fy).
+    expect((m.box.x * z + c.left) * 2).toBeCloseTo(Math.floor(X), 6);
+    expect((m.box.y * z + c.top) * 2).toBeCloseTo(Math.floor(Y), 6);
+    const g = presentPicture.mock.results.at(-1).value;
+    expect(g.aligned).toBe(true);
+    expect(g.fx).toBeCloseTo(X - Math.floor(X), 9);
+    expect(g.fy).toBeCloseTo(Y - Math.floor(Y), 9);
+  });
+
+  it('past its own resolution, is stretched over the footprint exactly', async () => {
     _setDisplayScale(2);
     const m = await mounted('straight', { zoom: 1.37 });
     const f = footprint(m.box, m.pg);
     const c = css(m.canvas());
-    // Within half a device pixel of the footprint's corner...
-    expect(Math.abs(c.left - -f.ox * 1.37)).toBeLessThanOrEqual(0.25 + 1e-9);
-    expect(Math.abs(c.top - -f.oy * 1.37)).toBeLessThanOrEqual(0.25 + 1e-9);
-    // ...and, with the box's own offset, on the device grid.
-    const dev = (m.box.x * 1.37 + c.left) * 2;
-    expect(Math.abs(dev - Math.round(dev))).toBeLessThan(1e-6);
+    expect(c.left).toBeCloseTo(-f.ox * 1.37, 9);
+    expect(c.top).toBeCloseTo(-f.oy * 1.37, 9);
+    expect(c.width).toBeCloseTo(f.cw * 1.37, 9);
   });
 
   it('is not snapped for a turned or mirrored box, whose corner is the footprint exactly', async () => {
@@ -289,12 +342,14 @@ describe('the scale the picture is painted at', () => {
     // (Canvas.svelte), so the flag moves nothing here: the picture stays on
     // the device grid it was set on.
     _setDisplayScale(2);
-    const m = await mounted('straight', { zoom: 1.37 });
+    const m = await mounted('straight', { zoom: 0.685 });
     const before = css(m.canvas());
+    const shows = m.shows();
     setZoomLive(true);
     flushSync();
     expect(css(m.canvas())).toEqual(before);
-    const dev = (m.box.x * 1.37 + before.left) * 2;
+    expect(m.shows()).toBe(shows);
+    const dev = (m.box.x * 0.685 + before.left) * 2;
     expect(Math.abs(dev - Math.round(dev))).toBeLessThan(1e-6);
     setZoomLive(false);
   });
@@ -304,8 +359,12 @@ describe('the scale the picture is painted at', () => {
     const m = await mounted('huge', { zoom: 2 });
     const f = footprint(m.box, m.pg);
     const el = m.canvas();
-    // Uncapped this box would be 1600 x 2300 x 16: 59 MP.
-    expect(f.cw * f.ch * 16).toBeGreaterThan(PICTURE_MAX_PX * 5);
+    // Uncapped this box would be 1600 x 2300 x 4: 14.7 MP.
+    expect(f.cw * f.ch * PICTURE_SCALE ** 2).toBeGreaterThan(PICTURE_MAX_PX * 1.5);
+    expect(kept().ss).toBeLessThan(PICTURE_SCALE);
+    // 200% on a 2x display is past the picture's resolution: the canvas is
+    // the kept picture, stretched.
+    expect([el.width, el.height]).toEqual([kept().canvas.width, kept().canvas.height]);
     expect(el.width * el.height).toBeLessThanOrEqual(PICTURE_MAX_PX + el.width + el.height);
     expect(el.width * el.height).toBeGreaterThan(PICTURE_MAX_PX * 0.95);
     const c = css(el);
@@ -317,29 +376,40 @@ describe('the scale the picture is painted at', () => {
     _setDisplayScale(2);
     const m = await mounted('straight', { zoom: 2 });
     const f = footprint(m.box, m.pg);
-    expect(m.canvas().width).toBe(f.cw * 4);
+    expect(kept().ss).toBe(PICTURE_SCALE);
+    expect(m.canvas().width).toBe(f.cw * PICTURE_SCALE);
   });
 
-  it('repaints when the window moves to a display of another density', async () => {
+  it('a window moved to a display of another density shows the kept picture again and paints nothing', async () => {
     const m = await mounted('straight');
-    const w1 = m.canvas().width;
+    const f = footprint(m.box, m.pg);
+    const pic = kept();
+    // One canvas px per device px on the 1x display: the footprint and the
+    // fraction of a pixel its corner is in.
+    expect(m.canvas().width - f.cw).toBeGreaterThanOrEqual(0);
+    expect(m.canvas().width - f.cw).toBeLessThanOrEqual(1);
+    const shows = m.shows();
     _setDisplayScale(2);
     await tick();
-    expect(m.paints()).toBe(2);
-    expect(m.canvas().width).toBe(w1 * 2);
+    expect(m.paints()).toBe(1);
+    expect(m.shows()).toBe(shows + 1);
+    // 100% on a 2x display is the picture's own resolution: its pixels, one to one.
+    expect(kept()).toBe(pic);
+    expect(m.canvas().width).toBe(f.cw * PICTURE_SCALE);
+    expect(css(m.canvas()).width).toBe(f.cw);
   });
 });
 
 describe('while a handle is resizing the box', () => {
   // A resize repaints the picture every frame of the drag, and a frame of a
-  // page-sized box at the display's scale is many megapixels. So the drag
+  // page-sized box at the picture's scale is many megapixels. So the drag
   // paints it within a smaller budget, and the full picture comes back once,
   // when the handle is let go.
   const ev = (type, x) => new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: 300 });
   // What the paint was asked for: the scale, which a drag does not change,
   // and the budget, which it does.
-  const scaleOf = (call) => call[3];
-  const budgetOf = (call) => call[5];
+  const scaleOf = (call) => call[2];
+  const budgetOf = (call) => call[4];
   async function grabbed(id, opts) {
     const m = await mounted(id, opts);
     selectBox(id);
@@ -350,21 +420,24 @@ describe('while a handle is resizing the box', () => {
   }
 
   it('a box over the drag\'s budget is painted within it on every move, and shown at its size', async () => {
-    // 1600 x 2300 page px at 100%: 3.7 megapixels at rest.
+    // 1600 x 2300 page px: the 8 megapixel budget at rest.
     const m = await grabbed('huge');
-    const rest = { paints: m.paints(), px: m.canvas().width * m.canvas().height };
+    const rest = { paints: m.paints(), px: keptPx() };
     expect(rest.px).toBeGreaterThan(PICTURE_DRAG_PX * 3);
     for (const [i, x] of [510, 520, 530].entries()) {
       document.dispatchEvent(ev('pointermove', x));
       await tick();
       expect(m.paints(), `move ${i + 1}`).toBe(rest.paints + i + 1);
       const el = m.canvas();
-      expect(scaleOf(paintBoxPicture.mock.calls.at(-1))).toBe(1);
+      expect(scaleOf(paintBoxPicture.mock.calls.at(-1))).toBe(PICTURE_SCALE);
       expect(budgetOf(paintBoxPicture.mock.calls.at(-1))).toBe(PICTURE_DRAG_PX);
       // The whole of what is painted is what is budgeted, give or take the
       // row and column a canvas of whole pixels rounds up by.
-      expect(el.width * el.height).toBeLessThanOrEqual(PICTURE_DRAG_PX + el.width + el.height);
-      expect(el.width * el.height).toBeGreaterThan(PICTURE_DRAG_PX * 0.9);
+      expect(keptPx()).toBeLessThanOrEqual(PICTURE_DRAG_PX + kept().canvas.width + kept().canvas.height);
+      expect(keptPx()).toBeGreaterThan(PICTURE_DRAG_PX * 0.9);
+      // Under 100% of the page on a 1x display, so shown as it is: its own
+      // pixels, stretched.
+      expect([el.width, el.height]).toEqual([kept().canvas.width, kept().canvas.height]);
       // Shown at the footprint's size, to within the one texel a canvas of
       // whole pixels rounds up by - about two page px at this scale.
       const f = footprint(m.box, m.pg);
@@ -385,11 +458,17 @@ describe('while a handle is resizing the box', () => {
     document.dispatchEvent(ev('pointerup', 520));
     await tick();
     expect(m.paints()).toBe(dragging + 1);
-    expect(scaleOf(paintBoxPicture.mock.calls.at(-1))).toBe(1);
+    expect(scaleOf(paintBoxPicture.mock.calls.at(-1))).toBe(PICTURE_SCALE);
     expect(budgetOf(paintBoxPicture.mock.calls.at(-1))).toBe(PICTURE_MAX_PX);
+    expect(keptPx()).toBe(atRest(m));
+    // Shown at 100% on a 1x display, under the picture's resolution: one
+    // canvas px per device px, the footprint and the fraction of a pixel
+    // its corner is in.
     const f = footprint(m.box, m.pg);
-    expect(m.canvas().width).toBe(f.cw);
-    expect(m.canvas().height).toBe(f.ch);
+    expect(m.canvas().width - f.cw).toBeGreaterThanOrEqual(0);
+    expect(m.canvas().width - f.cw).toBeLessThanOrEqual(1);
+    expect(m.canvas().height - f.ch).toBeGreaterThanOrEqual(0);
+    expect(m.canvas().height - f.ch).toBeLessThanOrEqual(1);
     // And nothing after that: the next change is painted in full.
     await tick();
     expect(m.paints()).toBe(dragging + 1);
@@ -408,16 +487,19 @@ describe('while a handle is resizing the box', () => {
     const m = await grabbed('straight');
     document.dispatchEvent(ev('pointermove', 520));
     await tick();
-    expect(scaleOf(paintBoxPicture.mock.calls.at(-1))).toBe(2);
-    expect(m.canvas().width).toBe(footprint(m.box, m.pg).cw * 2);
+    expect(scaleOf(paintBoxPicture.mock.calls.at(-1))).toBe(PICTURE_SCALE);
+    expect(kept().ss).toBe(PICTURE_SCALE);
+    expect(m.canvas().width).toBe(footprint(m.box, m.pg).cw * PICTURE_SCALE);
     const dragging = m.paints();
     document.dispatchEvent(ev('pointerup', 520));
     await tick();
     expect(m.paints()).toBe(dragging);
   });
 
-  // The outside review's box: 100 x 100, and twenty lines of W at size 80
-  // running far below it. The frame is tiny; what is painted is not.
+  // The outside review's box: 100 x 100, and lines of W at size 80 running
+  // far below it. The frame is tiny; what is painted is not. (Eighty lines:
+  // the review's twenty were several megapixels at 300% on a 2x display, and
+  // the picture is no longer painted at the zoom.)
   it('the budget is of what is painted, not of the box\'s frame: lines that overflow a small box are inside it too', async () => {
     _setDisplayScale(2);
     const m = await mounted('straight', { zoom: 3 });
@@ -426,27 +508,27 @@ describe('while a handle is resizing the box', () => {
     m.box.style.size = 80;
     m.box.w = 100;
     m.box.h = 100;
-    m.box.text = Array.from({ length: 20 }, () => 'W').join('\n');
+    m.box.text = Array.from({ length: 80 }, () => 'W').join('\n');
     await tick();
     const f = footprint(m.box, m.pg);
-    // A frame of 0.36 megapixels at this scale, a picture of several.
-    expect(m.box.w * m.box.h * 36).toBeLessThan(PICTURE_DRAG_PX);
-    expect(f.cw * f.ch * 36).toBeGreaterThan(PICTURE_DRAG_PX * 4);
-    const rest = m.canvas().width * m.canvas().height;
-    expect(rest).toBeGreaterThan(PICTURE_DRAG_PX * 4);
+    // A frame of 0.04 megapixels at the picture's scale, a picture of several.
+    const ss2 = PICTURE_SCALE ** 2;
+    expect(m.box.w * m.box.h * ss2).toBeLessThan(PICTURE_DRAG_PX);
+    expect(f.cw * f.ch * ss2).toBeGreaterThan(PICTURE_DRAG_PX * 2);
+    expect(keptPx()).toBeGreaterThan(PICTURE_DRAG_PX * 2);
     selectBox('straight');
     await tick();
     m.root.querySelector('.handle.side.e').dispatchEvent(ev('pointerdown', 500));
     document.dispatchEvent(ev('pointermove', 503));
     await tick();
-    const el = m.canvas();
+    const c = kept().canvas;
     // Inside the budget, give or take the row and column a canvas rounds up by.
-    expect(el.width * el.height).toBeLessThanOrEqual(PICTURE_DRAG_PX + el.width + el.height);
-    expect(el.width * el.height).toBeGreaterThan(PICTURE_DRAG_PX * 0.9);
+    expect(c.width * c.height).toBeLessThanOrEqual(PICTURE_DRAG_PX + c.width + c.height);
+    expect(c.width * c.height).toBeGreaterThan(PICTURE_DRAG_PX * 0.9);
     document.dispatchEvent(ev('pointerup', 503));
     await tick();
     const after = footprint(m.box, m.pg);
-    expect(m.canvas().width * m.canvas().height).toBe(after.cw * 6 * after.ch * 6);
+    expect(keptPx()).toBe(after.cw * PICTURE_SCALE * after.ch * PICTURE_SCALE);
   });
 
   // ---- every way a drag ends ----
@@ -454,11 +536,9 @@ describe('while a handle is resizing the box', () => {
   // coming - and not all of the ways are a pointer coming up over the
   // document - the box must be back at the scale it has at rest, and the
   // next thing that repaints it must paint it in full.
-  const full = (m) => {
-    const f = footprint(m.box, m.pg);
-    return f.cw * f.ch;
-  };
-  const px = (m) => m.canvas().width * m.canvas().height;
+  // What the box keeps at rest, and what it keeps now.
+  const full = (m) => atRest(m);
+  const px = () => keptPx();
   async function dragging(id = 'huge') {
     const m = await grabbed(id);
     document.dispatchEvent(ev('pointermove', 520));
@@ -597,7 +677,7 @@ describe('what repaints the picture, and what does not', () => {
   it('the text does', () => loud('text', (m) => (m.box.text = 'SOMETHING ELSE')));
   it('the colour does', () => loud('colour', (m) => (m.box.style.color = '#ff00ff')));
   it('the size does', () => loud('size', (m) => (m.box.style.size = 22)));
-  it('a stroke does', () => loud('stroke', (m) => (m.box.style.strokes[0].width = 6)));
+  it('a stroke does', () => loud('stroke', (m) => (m.box.style.strokeEffects[0].size = 6)));
   it('a shadow does', () => loud('shadow', (m) => (m.box.style.shadows[0].x = 9)));
   it('the blur does', () => loud('blur', (m) => (m.box.style.blur = 5)));
   it('the mask does', () => loud('mask', (m) => (m.box.style.clip.shapes = [...m.box.style.clip.shapes, { kind: 'ellipse', cx: 10, cy: 10, rx: 5, ry: 5 }]), 'masked'));
@@ -606,15 +686,31 @@ describe('what repaints the picture, and what does not', () => {
   it('the mesh does', () => loud('mesh', (m) => (m.box.style.warp.pts = [[0, 0], [260, 30], [-6, 96], [240, 90]]), 'warped'));
   it('the ink does', () => loud('ink', (m) => (m.box.style.ink.strokes[0].color = '#ff0000'), 'inked'));
   it('a font arriving does', () => loud('fonts', () => noteFontsChanged()));
-  it('a zoom that is not a gesture does', async () => {
-    const m = await loud('zoom', () => setZoom(2));
-    expect(m.canvas().width).toBe(Math.ceil(footprint(m.box, m.pg).cw * 2 * turned(m.box)));
+  // A zoom repaints nothing: the picture is painted at the export's scale and
+  // kept, and only shown again at the new size (`presentPicture`).
+  it('a zoom that is not a gesture shows the kept picture again and paints nothing', async () => {
+    let shows = 0;
+    const m = await quiet('zoom', (m) => {
+      shows = m.shows();
+      setZoom(2);
+    });
+    const f = footprint(m.box, m.pg);
+    // Turned, so shown TURNED_OVERSAMPLE times finer than the screen, and
+    // never finer than the picture: at 200% that is the picture's own pixels.
+    expect(m.shows()).toBe(shows + 1);
+    expect(m.canvas().width).toBe(kept().canvas.width);
+    expect(m.canvas().width).toBe(f.cw * PICTURE_SCALE * turned(m.box));
+    expect(css(m.canvas()).width).toBeCloseTo(f.cw * 2, 6);
   });
 
-  it('a zoom gesture does not, until it settles, and then once', async () => {
+  it('a zoom gesture shows nothing new until it settles, and then shows the kept picture once, painting nothing', async () => {
     const m = await mounted('finish');
     const f = footprint(m.box, m.pg);
     const el = m.canvas();
+    const pic = kept();
+    // At 100% on a 1x display, twice the screen for a turned box.
+    expect(el.width).toBe(f.cw * turned(m.box));
+    const shows = m.shows();
     setZoomLive(true);
     for (const z of [1.1, 1.3, 1.7, 2.2]) {
       setZoom(z);
@@ -622,19 +718,22 @@ describe('what repaints the picture, and what does not', () => {
     }
     // The bitmap that is there, stretched by the browser to the new CSS box.
     expect(m.paints()).toBe(1);
+    expect(m.shows()).toBe(shows);
     expect(el.width).toBe(f.cw * turned(m.box));
     expect(css(el).width).toBeCloseTo(f.cw * 2.2, 6);
     setZoomLive(false);
     await tick();
-    expect(m.paints()).toBe(2);
-    // Padded to whole CSS px (`show`'s unit: TURNED_OVERSAMPLE device px per
-    // CSS px here). Since the per-side pads of review F19 this footprint's
-    // width at 2.2 no longer happens to land on one.
-    const t = turned(m.box);
-    expect(el.width).toBe(Math.ceil(Math.ceil(f.cw * 2.2 * t) / t) * t);
+    expect(m.paints()).toBe(1);
+    expect(m.shows()).toBe(shows + 1);
+    // At 220% the turned box would be shown at 4.4 texels a page px, and the
+    // picture has 4: its own pixels, stretched.
+    expect(kept()).toBe(pic);
+    expect(el.width).toBe(pic.canvas.width);
+    expect(el.width).toBe(f.cw * PICTURE_SCALE * turned(m.box));
     // Nothing more is owed.
     await tick();
-    expect(m.paints()).toBe(2);
+    expect(m.paints()).toBe(1);
+    expect(m.shows()).toBe(shows + 1);
   });
 
   it('a box that mounts in the middle of a gesture still paints its first frame', async () => {
@@ -649,12 +748,15 @@ describe('what repaints the picture, and what does not', () => {
 });
 
 describe('when the pixels are handed back', () => {
-  it('on unmount', async () => {
+  it('on unmount, the kept picture with them', async () => {
     const m = await mounted('finish');
     const el = m.canvas();
+    const pic = kept().canvas;
     expect(el.width * el.height).toBeGreaterThan(0);
+    expect(pic.width * pic.height).toBeGreaterThan(0);
     m.view.unmount();
     expect([el.width, el.height]).toEqual([0, 0]);
+    expect([pic.width, pic.height]).toEqual([0, 0]);
   });
 
   // The engine in this file has no `lineCarets`, so a box typed into cannot
@@ -714,10 +816,12 @@ describe('when the pixels are handed back', () => {
     await tick();
     expect(m.paints()).toBe(1);
     expect(el.width * el.height).toBeGreaterThan(0);
-    // And hidden again, the pixels go back.
+    // And hidden again, the pixels go back, the kept picture's too.
+    const pic = kept().canvas;
     await m.view.rerender({ shown: false });
     await tick();
     expect([el.width, el.height]).toEqual([0, 0]);
+    expect([pic.width, pic.height]).toEqual([0, 0]);
     expect(m.paints()).toBe(1);
   });
 });
@@ -734,9 +838,12 @@ describe('a box nobody can see', () => {
     say(m.reach(), true);
     await tick();
     expect(m.paints()).toBe(1);
+    const pic = kept().canvas;
     say(m.reach(), false);
     await tick();
     expect([el.width, el.height]).toEqual([0, 0]);
+    // Nothing is kept off screen either: a box far away holds no pixels.
+    expect([pic.width, pic.height]).toEqual([0, 0]);
     expect(m.paints()).toBe(1);
     say(m.reach(), true);
     await tick();
@@ -1503,7 +1610,7 @@ describe('the display, as a browser tells of it', () => {
     await tick();
   };
 
-  it('paints at the window\'s own ratio with nobody having said what it is', async () => {
+  it('shows the picture at the window\'s own ratio with nobody having said what it is', async () => {
     density(2);
     const m = await mounted('straight');
     expect(m.paints()).toBe(1);
@@ -1511,21 +1618,31 @@ describe('the display, as a browser tells of it', () => {
     expect(queries.at(-1).text).toBe('(resolution: 2dppx)');
   });
 
-  it('repaints when the display changes, and listens for the next change', async () => {
+  it('shows the kept picture again when the display changes, paints nothing, and listens for the next change', async () => {
     density(1);
     const m = await mounted('straight');
     const f = footprint(m.box, m.pg);
-    expect(m.canvas().width).toBe(f.cw);
+    // One canvas px per device px under the picture's resolution: the
+    // footprint, and the fraction of a pixel its corner is in.
+    const near = (w, want) => {
+      expect(w).toBeGreaterThanOrEqual(want);
+      expect(w).toBeLessThanOrEqual(Math.ceil(want) + 1);
+    };
+    near(m.canvas().width, f.cw);
+    const shows = m.shows();
     await moveTo(2);
-    expect(m.paints()).toBe(2);
+    expect(m.paints()).toBe(1);
+    expect(m.shows()).toBe(shows + 1);
     expect(m.canvas().width).toBe(f.cw * 2);
     expect(queries.at(-1).text).toBe('(resolution: 2dppx)');
     await moveTo(1.5);
-    expect(m.paints()).toBe(3);
-    expect(m.canvas().width).toBe(Math.ceil(f.cw * 1.5));
+    expect(m.paints()).toBe(1);
+    expect(m.shows()).toBe(shows + 2);
+    near(m.canvas().width, f.cw * 1.5);
     await moveTo(1);
-    expect(m.paints()).toBe(4);
-    expect(m.canvas().width).toBe(f.cw);
+    expect(m.paints()).toBe(1);
+    expect(m.shows()).toBe(shows + 3);
+    near(m.canvas().width, f.cw);
   });
 
   it('stops listening when the last picture is gone', async () => {

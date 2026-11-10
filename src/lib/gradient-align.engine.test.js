@@ -70,7 +70,7 @@ const boxOf = (over = {}, align = false) => ({
   y: 20.3,
   w: 80,
   h: 60,
-  style: normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 56, color: '#ff0000', strokes: [], autoHeight: false, gradientOverlays: [ramp(align)], ...over }),
+  style: normalizeStyle({ ...defaultStyle(), strokeEffects: [], font: 'Bangers', size: 56, color: '#ff0000', strokes: [], autoHeight: false, gradientOverlays: [ramp(align)], ...over }),
 });
 const pageOf = (box) => ({ id: 1, w: W, h: H, lines: [], boxes: [box] });
 const want = (x, px) => 255 * Math.min(1, Math.max(0, (x - 100 - px / 2) / 20 + 0.5));
@@ -95,7 +95,7 @@ function exported(box) {
 // The editor's picture at `ss`: painted upright in the box's own frame and
 // set on the page by CSS, turned and mirrored about the box's centre.
 function editor(box, ss = 2) {
-  const t = pictureTexture(box, pageOf(box), null, ss, undefined, false, null, null, { w: W, h: H });
+  const t = pictureTexture(box, pageOf(box), null, ss, undefined, false, null, { w: W, h: H });
   const im = t.canvas.getContext('2d').getImageData(0, 0, t.canvas.width, t.canvas.height);
   const s = box.style;
   const r = ((s.rotation || 0) * Math.PI) / 180;
@@ -159,7 +159,7 @@ describe('a gradient with Align with Layer off', () => {
   it('takes a page up to MAX_PAGE tall and paints Align on past it', () => {
     const tall = (align) => ({ ...boxOf({ gradientOverlays: [normalizeGradientOverlay({ gradient: { style: 'linear', angle: 90, scale: 1, align, stops: [{ color: '#000000', pos: 0 }, { color: '#ffffff', pos: 1 }] } })] }, align) });
     const values = (box, h) => {
-      const t = pictureTexture(box, { ...pageOf(box), h }, null, 1, undefined, false, null, null, { w: W, h });
+      const t = pictureTexture(box, { ...pageOf(box), h }, null, 1, undefined, false, null, { w: W, h });
       const im = t.canvas.getContext('2d').getImageData(0, 0, t.canvas.width, t.canvas.height);
       const v = [];
       for (let i = 0; i < im.data.length; i += 4) if (im.data[i + 3] === 255) v.push(im.data[i]);

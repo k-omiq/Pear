@@ -25,7 +25,7 @@
 // which also makes the whole model testable in node. The store imports *this*,
 // for the one thing that has to happen inside placement.
 
-import { defaultStyle, normalizeStyle } from './data.js';
+import { defaultStyle, normalizeStyle, strokesFromBands } from './data.js';
 import { ROLE_TAGS } from './lettering.js';
 
 // Every write here is a discrete click - created a tag, edited a tag, applied a
@@ -93,6 +93,9 @@ function sanitizeTagStyle(style) {
   if (!isPatch(style)) return {};
   const picked = {};
   for (const k of TAG_STYLE_KEYS) if (Object.hasOwn(style, k)) picked[k] = $state.snapshot(style[k]);
+  // A tag saved before 2026-11-10 set its outline as bands (`strokes`): the
+  // strokes they make (`strokesFromBands`), as `normalizeStyle` reads a box's.
+  if (Array.isArray(style.strokes) && !Object.hasOwn(picked, 'strokeEffects')) picked.strokeEffects = strokesFromBands($state.snapshot(style.strokes));
   const vetted = normalizeStyle({ ...defaultStyle(), ...picked });
   return Object.fromEntries(Object.keys(picked).map((k) => [k, vetted[k]]));
 }
@@ -118,7 +121,7 @@ export function sanitizeTagEntry(e) {
     if (typeof e?.font === 'string' && e.font !== '') style.font = e.font;
     if (e?.outline != null || e?.outlineWidth != null) {
       const width = e.outlineWidth ?? 3;
-      style.strokes = width <= 0 ? [] : [{ color: e.outline ?? '#ffffff', width, opacity: 1 }];
+      style.strokeEffects = width <= 0 ? [] : strokesFromBands([{ color: e.outline ?? '#ffffff', width, opacity: 1 }]);
     }
   }
   const kind = kindFor(name, e?.kind);
@@ -386,16 +389,16 @@ export function deleteTag(name) {
 // outline"); saving writes the list or removes it.
 export function tagFormFields(t) {
   const style = t?.style ?? {};
-  const stroke = style.strokes?.[0];
+  const stroke = style.strokeEffects?.[0];
   return {
-    outlineOn: Object.hasOwn(style, 'strokes'),
+    outlineOn: Object.hasOwn(style, 'strokeEffects'),
     font: style.font ?? '',
     outline: stroke?.color ?? '#ffffff',
-    outlineWidth: stroke?.width ?? (style.strokes?.length === 0 ? 0 : 3),
+    outlineWidth: stroke?.size ?? (style.strokeEffects?.length === 0 ? 0 : 3),
     // '' is an unset size, shown as an empty field.
     size: t?.size ?? '',
     minSize: t?.minSize ?? '',
-    extra: Object.keys(style).filter((k) => k !== 'font' && k !== 'strokes').length,
+    extra: Object.keys(style).filter((k) => k !== 'font' && k !== 'strokeEffects').length,
     // The kind a user's tag sits under; '' for none.
     kind: t?.kind ?? '',
     // The patch the form was opened on, which a save starts from.
@@ -406,15 +409,17 @@ export function tagFormFields(t) {
 // The patch with only what the form edits left in it: the form's "Clear the
 // rest" button, for a tag whose saved box style is no longer wanted.
 export const formOnlyStyle = (style) =>
-  Object.fromEntries(Object.entries(style ?? {}).filter(([k]) => k === 'font' || k === 'strokes'));
+  Object.fromEntries(Object.entries(style ?? {}).filter(([k]) => k === 'font' || k === 'strokeEffects'));
 
 export function tagFormDefaults(f, prevStyle = f.style ?? {}) {
   const style = { ...$state.snapshot(prevStyle ?? {}) };
   if (f.font === '' || f.font == null) delete style.font;
   else style.font = f.font;
   if (f.outlineOn) {
-    style.strokes = +f.outlineWidth <= 0 ? [] : [{ color: f.outline, width: +f.outlineWidth, opacity: 1 }];
-  } else delete style.strokes;
+    // The form's one outline is the first stroke; the strokes under it stay.
+    const under = (Array.isArray(style.strokeEffects) ? style.strokeEffects : []).slice(1);
+    style.strokeEffects = +f.outlineWidth <= 0 ? [] : [...strokesFromBands([{ color: f.outline, width: +f.outlineWidth, opacity: 1 }]), ...under];
+  } else delete style.strokeEffects;
   return {
     style: sanitizeTagStyle(style),
     size: f.size === '' || f.size == null ? null : +f.size,

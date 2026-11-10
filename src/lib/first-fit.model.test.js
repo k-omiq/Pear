@@ -280,7 +280,7 @@ function fakePlain(width, text, limit) {
 // the machine's (Zapfino), whose file the model holds back: a box set in it
 // waits, and an edit to that box has its fit held.
 const SIZE = 20;
-const style = (font) => ({ ...defaultStyle(), font, size: SIZE, lineHeight: 1.1, valign: 'top', strokes: [], shadows: [] });
+const style = (font) => ({ ...defaultStyle(), font, size: SIZE, lineHeight: 1.1, valign: 'top', strokeEffects: [], shadows: [] });
 const INSET = 100 - contentWidth(100, style('AnimeAce'));
 const box = (id, font, text, content, y) => ({ id, lineN: null, text, x: 100, y, w: content + INSET, h: 20, style: style(font), fit: null });
 const BOXES = () => [

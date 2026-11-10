@@ -11,7 +11,7 @@ import { pageGradients } from './text-paint.js';
 import { pageGradientKey, pageSheet, pictureKey } from './editor/box-picture.js';
 import { pagePsdDocument, reconstructForeign, textLayerFor, turnedGradientPlacement, writePagePsd, needsGradientFrames, RASTER_MARK } from './psd.js';
 
-const plain = { ...defaultStyle(), strokes: [], shadows: [] };
+const plain = { ...defaultStyle(), strokeEffects: [], shadows: [] };
 const off = (o = {}) => normalizeGradientOverlay({ gradient: { angle: 30, scale: 0.8, offset: [0.1, -0.2], align: false, ...o } });
 const offStroke = () => normalizeStrokeEffect({ size: 4, position: 'outside', fill: 'gradient', gradient: { angle: 0, align: false } });
 

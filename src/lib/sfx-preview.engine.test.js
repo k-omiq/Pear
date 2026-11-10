@@ -184,7 +184,7 @@ describe('a type card', () => {
     expect(st.sfx.kind).toBe('explosion');
     expect(st.sfx.seed).toBe(7);
     expect(st.color).toBe('#ff0000');
-    expect(st.strokes[0].color).toBe('#00ff00');
+    expect(st.strokeEffects[0].color).toBe('#00ff00');
   });
 
   it('is the type as a click leaves the box: no paths, no hand edits, the numbers and dials the type gives', () => {

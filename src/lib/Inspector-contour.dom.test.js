@@ -12,6 +12,7 @@ import { initHistory, resetHistory, undo, redo } from './editor/history.svelte.j
 import { defaultStyle, normalizeStyle, newShadow, CONTOUR_MAX_POINTS } from './data.js';
 import { CONTOUR_PRESET_POINTS } from './contour-presets.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
+import { openFxFolds } from '../test/inspector-folds.js';
 
 let restoreCanvas;
 beforeAll(() => {
@@ -72,6 +73,7 @@ describe('the contour menus', () => {
   it('lists Custom and an Edit button for every effect contour', async () => {
     const { view } = mounted({ ...shadow(), innerShadows: [{ ...newShadow({ angle: 120 }) }] });
     await tick();
+    await openFxFolds(view);
     for (const name of ['Shadow 1 contour', 'Inner shadow 1 contour']) {
       expect([...view.getByLabelText(name).options].map((o) => o.value)).toContain('custom');
       expect(view.getByLabelText(`${name}: edit the curve`)).toBeTruthy();
@@ -79,16 +81,19 @@ describe('the contour menus', () => {
     cleanup();
     const glow = mounted({ outerGlow: { on: true }, innerGlow: { on: true }, satin: { on: true } }, 'glow').view;
     await tick();
+    await openFxFolds(glow);
     for (const name of ['Outer glow contour', 'Inner glow contour', 'Satin contour']) expect(glow.getByLabelText(`${name}: edit the curve`).disabled).toBe(false);
     cleanup();
     const bevel = mounted({ bevel: { on: true, contour: { on: true } } }, 'bevel').view;
     await tick();
+    await openFxFolds(bevel);
     for (const name of ['Bevel gloss contour', 'Bevel contour curve']) expect(bevel.getByLabelText(`${name}: edit the curve`)).toBeTruthy();
   });
 
   it('turns a preset into a custom curve through its own points, as one undo step', async () => {
     const { view, box } = mounted({ shadows: [{ ...newShadow({ angle: 120 }), contour: { preset: 'cone', aa: true } }] });
     await tick();
+    await openFxFolds(view);
     await edit(view.getByLabelText('Shadow 1 contour'), 'change', 'custom');
     const c = box().style.shadows[0].contour;
     expect(c).toMatchObject({ preset: 'custom', aa: true });
@@ -105,6 +110,7 @@ describe('the contour editor', () => {
   it('adds a point where the square is clicked, and the drag moves it, one step', async () => {
     const { view, box } = mounted(shadow());
     await tick();
+    await openFxFolds(view);
     await press(view.getByLabelText('Shadow 1 contour: edit the curve'));
     await tick();
     const svg = plotOf(view, 'Shadow 1 contour');
@@ -135,6 +141,7 @@ describe('the contour editor', () => {
   it('edits the chosen point by its fields, makes it a corner, and deletes it', async () => {
     const { view, box } = mounted({ shadows: [{ ...newShadow({ angle: 120 }), contour: { preset: 'custom', pts: [[0, 0], [128, 64], [255, 255]] } }] });
     await tick();
+    await openFxFolds(view);
     await press(view.getByLabelText('Shadow 1 contour: edit the curve'));
     await tick();
     const svg = plotOf(view, 'Shadow 1 contour');
@@ -176,6 +183,7 @@ describe('the contour editor', () => {
     const many = Array.from({ length: CONTOUR_MAX_POINTS }, (_, i) => [i * 4, (i * 37) % 256]);
     const { view, box } = mounted({ shadows: [{ ...newShadow({ angle: 120 }), contour: { preset: 'custom', pts: many } }] });
     await tick();
+    await openFxFolds(view);
     await press(view.getByLabelText('Shadow 1 contour: edit the curve'));
     await tick();
     const svg = plotOf(view, 'Shadow 1 contour');
@@ -195,6 +203,7 @@ describe('the contour editor', () => {
   it('edits a bevel gloss contour and closes on Done', async () => {
     const { view, box } = mounted({ bevel: { on: true } }, 'bevel');
     await tick();
+    await openFxFolds(view);
     await press(view.getByLabelText('Bevel gloss contour: edit the curve'));
     await tick();
     const svg = plotOf(view, 'Bevel gloss contour');

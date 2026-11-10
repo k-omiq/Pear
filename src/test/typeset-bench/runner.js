@@ -428,7 +428,7 @@ export async function runCase(c, { layout = storeLayout, setPixels, approved = {
   // inset the lines are broken to (`textInset`), so without it the exporter
   // would break the block differently and this would measure some other
   // layout's glyphs.
-  const glyphs = inkOf({ ...box, style: { ...s, strokes: (s.strokes ?? []).map((k) => ({ ...k, opacity: 0 })) } }, p, null);
+  const glyphs = inkOf({ ...box, style: { ...s, strokeEffects: (s.strokeEffects ?? []).map((k) => ({ ...k, opacity: 0 })) } }, p, null);
   const sig = signatureOf(out);
 
   const result = {

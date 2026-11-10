@@ -14,6 +14,7 @@ import { setInspectorTab, setEffectsSubTab } from './inspector-tabs.svelte.js';
 import { initHistory, resetHistory, undo, peekStack } from './editor/history.svelte.js';
 import { defaultStyle, normalizeStyle, newStrokeEffect } from './data.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
+import { openFxFolds } from '../test/inspector-folds.js';
 
 let restoreCanvas;
 beforeAll(() => {
@@ -56,18 +57,19 @@ describe('Photoshop stroke Overprint', () => {
   it('stores Overprint on, keeps it through another edit, drops the key when off, and undoes each step', async () => {
     const { view, stroke } = mounted();
     await tick();
-    const box = view.getByLabelText('Photoshop stroke 1 overprint');
+    await openFxFolds(view);
+    const box = view.getByLabelText('Stroke 1 overprint');
     expect(box.checked).toBe(false);
     expect('overprint' in stroke()).toBe(false);
     const base = records();
 
     await click(box);
     expect(stroke().overprint).toBe(true);
-    expect(view.getByLabelText('Photoshop stroke 1 overprint').checked).toBe(true);
+    expect(view.getByLabelText('Stroke 1 overprint').checked).toBe(true);
     expect(records()).toBe(base + 1);
 
     // Editing another setting keeps Overprint.
-    const size = view.getByLabelText('Photoshop stroke 1 size');
+    const size = view.getByLabelText('Stroke 1 size, page px');
     await fireEvent.pointerDown(size);
     await fireEvent.change(size, { target: { value: '7' } });
     settleEdits();
@@ -76,9 +78,9 @@ describe('Photoshop stroke Overprint', () => {
     expect(stroke().overprint).toBe(true);
     expect(records()).toBe(base + 2);
 
-    await click(view.getByLabelText('Photoshop stroke 1 overprint'));
+    await click(view.getByLabelText('Stroke 1 overprint'));
     expect('overprint' in stroke()).toBe(false);
-    expect(view.getByLabelText('Photoshop stroke 1 overprint').checked).toBe(false);
+    expect(view.getByLabelText('Stroke 1 overprint').checked).toBe(false);
     expect(records()).toBe(base + 3);
 
     undo();
@@ -88,10 +90,10 @@ describe('Photoshop stroke Overprint', () => {
     undo();
     await tick();
     expect(stroke().overprint).toBe(true);
-    expect(stroke().size).toBe(1);
+    expect(stroke().size).toBe(3);
     undo();
     await tick();
     expect('overprint' in stroke()).toBe(false);
-    expect(view.getByLabelText('Photoshop stroke 1 overprint').checked).toBe(false);
+    expect(view.getByLabelText('Stroke 1 overprint').checked).toBe(false);
   });
 });

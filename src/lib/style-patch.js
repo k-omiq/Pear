@@ -7,7 +7,9 @@
 //   numbers   `12`, or relative to the box's own value: "+2", "-2", "*1.1"
 //   objects   merged field by field: `{ gradient: { angle: 90 } }`
 //   arrays    an array replaces the list whole; an object of indexes patches
-//             items in place: `{ strokes: { 0: { width: "+2" } } }`
+//             items in place: `{ strokeEffects: { 0: { size: "+2" } } }`
+//   strokes   the outline bands of before 2026-11-10 (inner first, each its
+//             visible width): read as the whole stroke list they make
 //
 // A colour or a stroke set here is set by hand, so the bubble stops picking
 // the text colour (`autoContrast`, LET-3) unless the patch says otherwise.
@@ -15,7 +17,7 @@
 // Pure: the caller hands over a plain style (`$state.snapshot` or `cloneStyle`)
 // and gets a new one back. Nothing half-applies: a patch with any bad relative
 // value changes nothing and says why.
-import { normalizeStyle } from './data.js';
+import { normalizeStyle, strokesFromBands } from './data.js';
 
 const REL = /^([+\-*])(\d+(?:\.\d+)?)$/;
 const isPlain = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
@@ -79,8 +81,12 @@ export function applyStylePatch(style, patch) {
   const errors = [];
   const base = normalizeStyle(copy(style));
   if (!isPlain(patch)) return { style: base, errors: patch == null ? [] : [{ path: '', error: 'a style patch is an object' }] };
+  if (Array.isArray(patch.strokes) && !('strokeEffects' in patch)) {
+    const { strokes, ...rest } = patch;
+    patch = { ...rest, strokeEffects: strokesFromBands(strokes) };
+  }
   const merged = merge(base, patch, '', errors);
   if (errors.length) return { style: base, errors };
-  if (('color' in patch || 'strokes' in patch) && !('autoContrast' in patch)) merged.autoContrast = false;
+  if (('color' in patch || 'strokeEffects' in patch) && !('autoContrast' in patch)) merged.autoContrast = false;
   return { style: normalizeStyle(merged), errors };
 }

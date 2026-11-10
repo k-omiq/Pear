@@ -699,6 +699,34 @@
             </p>
           </div>
         </section>
+
+        <!-- How letter edges sit on the page's pixels in the export and the
+             editor (text-edges.svelte.js). The Rust engine paints it; with the
+             browser measuring and painting it does nothing, and says so. -->
+        <section class="settings-section" data-section="text-edges">
+          <h3 class="settings-title">Letter edges <span class="set-badge warn">Experimental</span></h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Crisp letter edges</span>
+              {@render toggle(
+                'textEdges',
+                'Crisp letter edges',
+                prefs.textEdges === 'crisp',
+                !(engineSwitch.available && prefs.textEngine === 'rust'),
+                (on) => setPref('textEdges', on ? 'crisp' : 'smooth'),
+              )}
+            </div>
+            <p class="set-desc">
+              {#if !(engineSwitch.available && prefs.textEngine === 'rust')}
+                Needs the Rust engine.
+              {:else if prefs.textEdges === 'crisp'}
+                On. Each line's baseline and letter heights sit on whole pixels, so flat tops and bottoms are one sharp row. Letters move or stretch by under a pixel. Upright boxes only.
+              {:else}
+                Off: letters are painted exactly where their outlines fall. On, flat tops and bottoms of letters are sharper in the export.
+              {/if}
+            </p>
+          </div>
+        </section>
       {/if}
 
       {#if tab === 'detection'}

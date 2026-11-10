@@ -11,7 +11,7 @@ beforeAll(() => setTypesetEnabled(true));
 beforeEach(() => clearLayoutMemo());
 
 const oval = { kind: 'poly', pts: fitPolygon({ kind: 'ellipse', cx: 200, cy: 200, rx: 110, ry: 80 }) };
-const style = normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', bold: false, size: 18, align: 'center', valign: 'middle', strokes: [] });
+const style = normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', bold: false, size: 18, align: 'center', valign: 'middle', strokeEffects: [] });
 const TEXT = 'WE CAN STILL CATCH THE LAST TRAIN';
 
 describe('fitReport with a real face', () => {

@@ -59,7 +59,7 @@ function hold(src, tile) {
 }
 
 // PNG bytes to straight RGBA, through the browser's own decoder.
-async function decodePng(bytes) {
+export async function decodePng(bytes) {
   const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }), {
     premultiplyAlpha: 'none',
     colorSpaceConversion: 'none',

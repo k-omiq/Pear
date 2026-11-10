@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { solveLayout } from './auto-layout.js';
 import { setTypesetEnabled, clearLayoutMemo } from './measure.js';
-import { defaultStyle, normalizeStyle } from './data.js';
+import { defaultStyle, normalizeStyle, strokesFromBands } from './data.js';
 
 // ===========================================================================
 // The solver's answers, pinned
@@ -67,7 +67,7 @@ const GROUPS = [
   ['oval left', typed(LATIN, 23), style({ align: 'left' }), OVAL],
   ['oval right top', typed(LATIN, 29), style({ align: 'right', valign: 'top' }), OVAL],
   ['oval bottom caps', typed(LATIN, 29), style({ valign: 'bottom', uppercase: true }), OVAL],
-  ['small oval outline', typed(LATIN, 31), style({ strokes: [{ color: '#fff', width: 6, opacity: 1 }] }), SMALL],
+  ['small oval outline', typed(LATIN, 31), style({ strokeEffects: strokesFromBands([{ color: '#fff', width: 6, opacity: 1 }]) }), SMALL],
   ['rect', typed(LATIN, 23), style(), RECT],
   ['oval silhouette', typed(LATIN, 37), style({ shape: 'oval' }), OVAL],
   ['rect silhouette, tight leading', typed(LATIN, 37), style({ shape: 'rect', lineHeight: 0.9 }), OVAL],

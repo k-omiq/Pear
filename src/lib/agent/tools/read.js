@@ -196,7 +196,7 @@ defineTool({
   run: () => ({
     presets: presets.list.map((p) => ({
       id: p.id, name: p.name,
-      summary: { font: p.style.font, size: p.style.size, color: p.style.color, bold: p.style.bold, italic: p.style.italic, strokes: p.style.strokes.length },
+      summary: { font: p.style.font, size: p.style.size, color: p.style.color, bold: p.style.bold, italic: p.style.italic, strokes: p.style.strokeEffects.length },
     })),
     ...(presets.list.length ? null : { note: NO_PRESETS }),
   }),

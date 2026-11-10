@@ -25,7 +25,7 @@ import { initHistory, resetHistory, loadStack, undo, redo } from './editor/histo
 
 const box = (id, lineN = 1) => ({
   id, lineN, x: 100, y: 100, w: 100, h: 40,
-  style: { ...defaultStyle(), shape: 'off', strokes: [], size: 40 },
+  style: { ...defaultStyle(), shape: 'off', strokeEffects: [], size: 40 },
 });
 const doc = () => [1, 2].map((id) => ({
   id, w: 800, h: 1200,
@@ -118,8 +118,8 @@ describe('explicit tag style commands', () => {
     expect(log).toEqual([]);
     expect(writes).toHaveLength(1);
     expect(app.saved).toBe(true);
-    entry.style.strokes.push({ color: '#ffffff', width: 4, opacity: 1 });
-    expect(b.style.strokes).toEqual([]);
+    entry.style.strokeEffects.push({ size: 4, position: 'outside', color: '#ffffff', opacity: 1 });
+    expect(b.style.strokeEffects).toEqual([]);
   });
 
   it('admits a primary tag known only to the chapter and rejects an untagged line', () => {

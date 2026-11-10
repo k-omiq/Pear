@@ -109,7 +109,7 @@ describe('a pointer drag of a box whose picture follows its place on the page', 
       await tick();
       expect(m.paints()).toBe(before + 1);
       // Painted at the new place: the box the paint was handed stands there.
-      const painted = paintBoxPicture.mock.calls.at(-1)[1];
+      const painted = paintBoxPicture.mock.calls.at(-1)[0];
       expect([painted.x, painted.y]).toEqual([190, 260]);
       // And nothing more after it settles.
       await tick();

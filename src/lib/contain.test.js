@@ -103,7 +103,7 @@ const contain = await import('./contain.js');
 const store = await import('./store.svelte.js');
 const hist = await import('./editor/history.svelte.js');
 const psd = await import('./psd.js');
-const { defaultStyle, normalizeStyle, normalizeReview, REVIEW_REASONS } = await import('./data.js');
+const { defaultStyle, normalizeStyle, normalizeReview, REVIEW_REASONS, strokesFromBands } = await import('./data.js');
 const { neededHeight } = await import('./typeset.js');
 const paint = await import('./text-paint.js');
 const { meshMap, identityMesh, affineFromTriangle } = await import('./warp.js');
@@ -140,7 +140,7 @@ setTypesetEnabled(true);
 
 const S = 20;
 const ADV = 0.55 * S;
-const style = (extra = {}) => normalizeStyle({ ...defaultStyle(), size: S, bold: false, strokes: [], ...extra });
+const style = (extra = {}) => normalizeStyle({ ...defaultStyle(), size: S, bold: false, strokeEffects: [], ...extra });
 const cand = (over = {}) => ({ x: 100, y: 100, w: 200, h: 100, text: 'HELLO', fit: null, ...over, style: over.style ?? style() });
 
 // A page with the boxes given, loaded the way a saved chapter is.
@@ -196,7 +196,7 @@ describe('boxInkRect', () => {
   // whole with its outline (see the text inset below), so the two rectangles
   // are the same block, stroked and not.
   it('counts the default 3px outline on every side', () => {
-    const stroked = style({ strokes: [{ color: '#fff', width: 3, opacity: 1 }] });
+    const stroked = style({ strokeEffects: strokesFromBands([{ color: '#fff', width: 3, opacity: 1 }]) });
     const w = 9 * ADV + textInset(stroked) * 2 + 0.01;
     const bare = boxInkRect(cand({ text: FULL, w, h: 40, style: style() }));
     const c = cand({ text: FULL, w, h: 40, style: stroked });
@@ -227,7 +227,7 @@ describe('boxInkRect', () => {
     // Cast from the stroked silhouette, not from the bare glyphs.
     const both = boxInkRect({
       ...base,
-      style: style({ strokes: [{ color: '#fff', width: 3, opacity: 1 }], shadows: [{ color: '#000', x: 4, y: 0, blur: 0, opacity: 1 }] }),
+      style: style({ strokeEffects: strokesFromBands([{ color: '#fff', width: 3, opacity: 1 }]), shadows: [{ color: '#000', x: 4, y: 0, blur: 0, opacity: 1 }] }),
     });
     expect(both.x + both.w).toBeCloseTo(plain.x + plain.w + 3 + 4, 6);
     expect(both.x).toBeCloseTo(plain.x - 3, 6);
@@ -294,14 +294,14 @@ describe('boxInkRect', () => {
 // can reach it.
 describe('the text inset', () => {
   const FULL = 'WAIT WHAT';
-  const outline = (width, extra = {}) => style({ strokes: [{ color: '#fff', width, opacity: 1 }], ...extra });
+  const outline = (width, extra = {}) => style({ strokeEffects: strokesFromBands([{ color: '#fff', width, opacity: 1 }]), ...extra });
 
   it('is the padding plus the outline, rounded up to a whole pixel', () => {
     expect(textInset(style())).toBe(BOX_PAD);
     expect(textInset(outline(3))).toBe(BOX_PAD + 3);
     // Every band counts - the reach is the outermost band's outer edge - and a
     // fraction rounds up rather than leaving a sliver of outline on the edge.
-    expect(textInset(style({ strokes: [{ color: '#fff', width: 2.5, opacity: 1 }, { color: '#000', width: 1.2, opacity: 1 }] }))).toBe(
+    expect(textInset(style({ strokeEffects: strokesFromBands([{ color: '#fff', width: 2.5, opacity: 1 }, { color: '#000', width: 1.2, opacity: 1 }]) }))).toBe(
       BOX_PAD + 4,
     );
     expect(textInset(normalizeStyle({}))).toBe(BOX_PAD + 3);
@@ -535,7 +535,7 @@ describe('boxInkRect, every effect the export paints', () => {
     // right are blurred with the glyphs: three sigma past all of it.
     const lit = withFx({
       blur: 2,
-      strokes: [{ color: '#fff', width: 3, opacity: 1 }],
+      strokeEffects: strokesFromBands([{ color: '#fff', width: 3, opacity: 1 }]),
       shadows: [{ color: '#000', x: 4, y: 0, blur: 0, opacity: 1 }],
     });
     expectEdges(lit, grownBy(P, 3 + 6, 3 + 6, 3 + 4 + 6, 3 + 6));
@@ -584,7 +584,7 @@ describe('boxInkRect, every effect the export paints', () => {
         text: '',
         style: style({
           ink,
-          strokes: [{ color: '#fff', width: 3, opacity: 1 }],
+          strokeEffects: strokesFromBands([{ color: '#fff', width: 3, opacity: 1 }]),
           shadows: [{ color: '#000', x: 5, y: 6, size: 1, opacity: 1 }],
         }),
       }),
@@ -757,7 +757,7 @@ describe('the ladder, on an auto box', () => {
   // growing the width is not, so an italic's lean waits for an edit to run the
   // ladder.
   it('grows the height for an accent above a tight leading on opening, and the width for an italic on an edit', () => {
-    const outlined = { strokes: [{ color: '#fff', width: 3, opacity: 1 }] };
+    const outlined = { strokeEffects: strokesFromBands([{ color: '#fff', width: 3, opacity: 1 }]) };
     const p = load([
       // Accented capitals at lineHeight 0.9, outlined as the default style is:
       // the accent clears the line box, the ink-centring takes it back down
@@ -936,7 +936,7 @@ describe('the ladder, on an auto box', () => {
     // less W's overhang behind the pen).
     const s = style({
       align: 'left',
-      strokes: [{ color: '#fff', width: 3, opacity: 1 }],
+      strokeEffects: strokesFromBands([{ color: '#fff', width: 3, opacity: 1 }]),
       shadows: [{ color: '#000', x: -8, y: 0, blur: 0, opacity: 1 }],
     });
     const p = load([{ id: 'b1', lineN: null, text: 'WAIT', x: 100, y: 100, w: 200, h: 40, style: s }]);
@@ -1575,7 +1575,7 @@ describe('the invariant, over random boxes', () => {
       italic: r() < 0.3,
       uppercase: r() < 0.3,
       letterSpacing: Math.round(r() * 8 - 2),
-      strokes,
+      strokeEffects: strokesFromBands(strokes),
       shadows,
       flipH: r() < 0.15,
       flipV: r() < 0.15,

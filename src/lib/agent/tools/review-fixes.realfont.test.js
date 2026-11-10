@@ -17,7 +17,7 @@ const { checksFor } = await import('./check.js');
 await import('./index.js');
 
 // Fixed, as a series whose boxes are born Fixed has them.
-const style = normalizeStyle({ font: 'Comic Neue', size: 24, align: 'center', valign: 'middle', strokes: [], margin: 0.5, autoHeight: false });
+const style = normalizeStyle({ font: 'Comic Neue', size: 24, align: 'center', valign: 'middle', strokeEffects: [], margin: 0.5, autoHeight: false });
 const call = async (name, args) => {
   const r = await callTool(name, args, callContext('mcp'));
   expect(r.ok, JSON.stringify(r)).toBe(true);

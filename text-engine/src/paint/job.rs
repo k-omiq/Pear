@@ -151,6 +151,16 @@ pub struct Effects {
     /// this share of y in the glyph's own frame, about its baseline origin.
     /// Added to the oblique's own. 0 for none.
     pub slant: f64,
+    /// Crisp: each straight line's baseline, x-height and cap height are
+    /// moved onto whole pixels of the page (one job unit), so the flat
+    /// bottoms and tops of letters are one solid row of pixels instead of two
+    /// grey ones. Only where the transform keeps job y as device y (no turn,
+    /// no vertical mirror) and nothing bends the outlines afterwards. The
+    /// point is where a corner of a page pixel is, in device pixels: the
+    /// grid is counted from it, because a surface cut a whole device pixel
+    /// in from the picture's corner puts the page's pixel rows on odd device
+    /// rows at a scale of two. `None` paints exactly.
+    pub crisp: Option<Pt>,
 }
 
 impl Default for Effects {
@@ -162,6 +172,7 @@ impl Default for Effects {
             grow: 0.0,
             embolden: 0.0,
             slant: 0.0,
+            crisp: None,
         }
     }
 }
@@ -276,7 +287,7 @@ pub struct Request {
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 10;
+pub const WIRE_VERSION: u32 = 11;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -493,11 +504,12 @@ impl<'a> Reader<'a> {
 /// f64 x 6 transform (a, b, c, d, e, f)
 /// f64 weight (device pixels, 0 to 64)
 /// u32 flags (1 curved, 2 silhouette, 4 no fill, 8 letter by letter,
-///     16 negative), u32 align (0 left, 1 centre, 2 right)
+///     16 negative, 32 crisp, v11), u32 align (0 left, 1 centre, 2 right)
 /// f64 letter spacing
 /// rgba silhouette
 /// u32 join (0 round, 1 mitre), rgba negative colour, f64 negative grow
 /// f64 embolden (0 to 8 synthesised bolds), f64 slant (within 1.5)
+/// with flag 32 (v11): f64 x, y, a page pixel's corner in device pixels
 /// u32 band count, then per band: rgba colour, f64 opacity, f64 line
 /// fill (the job's)
 /// mesh
@@ -590,6 +602,15 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     if !(0.0..=MAX_EMBOLDEN).contains(&embolden) || !(-MAX_SLANT..=MAX_SLANT).contains(&slant) {
         return Err(Error::BadSpec);
     }
+    let crisp = if flags & 32 != 0 {
+        let at = Pt::new(r.f64()?, r.f64()?);
+        if !(at.x.is_finite() && at.y.is_finite()) {
+            return Err(Error::BadSpec);
+        }
+        Some(at)
+    } else {
+        None
+    };
     let bands = super::budget::collect((0..r.count(20)?).map(|_| {
         Ok(Band {
             color: r.rgba()?,
@@ -661,6 +682,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
                 grow: 0.0,
                 embolden,
                 slant,
+                crisp,
             },
             runs,
         },

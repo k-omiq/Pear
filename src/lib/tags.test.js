@@ -32,7 +32,10 @@ import {
   tagsOfKinds,
 } from './tags.svelte.js';
 import { app, loadProjectPages, placeActiveAt, byId } from './store.svelte.js';
-import { defaultStyle, normalizeStyle } from './data.js';
+import { defaultStyle, normalizeStyle, normalizeStrokeEffect } from './data.js';
+
+// A tag's outline: an Outside colour stroke, as the registry stores it.
+const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, position: 'outside', color, opacity });
 
 // The registry is a module singleton that persists across cases, exactly as it
 // persists across chapters in the app. Every case starts from a known one by
@@ -87,7 +90,7 @@ describe('stored registry', () => {
   });
   it('vets each default on its own, so one bad field costs a field', () => {
     const [t] = sanitizeTags({ list: [{ name: 'sfx', font: 'Bangers', outline: 5, outlineWidth: 'fat' }] });
-    expect(t).toEqual({ name: 'sfx', style: { font: 'Bangers', strokes: [{ color: '#ffffff', width: 3, opacity: 1 }] }, size: null, minSize: null });
+    expect(t).toEqual({ name: 'sfx', style: { font: 'Bangers', strokeEffects: [outside('#ffffff', 3, 1)] }, size: null, minSize: null });
   });
   it('collapses duplicate names to the first spelling of them', () => {
     const list = sanitizeTags({ list: [{ name: 'SFX', font: 'Bangers' }, { name: 'sfx', font: 'Nunito' }] });
@@ -104,7 +107,7 @@ describe('stored registry', () => {
   });
 
   it('vets only the picked keys through the stored style schema', () => {
-    const patch = { blur: -7, align: 'sideways', autoContrast: 'yes', gradient: { radius: -4 }, strokes: [{ width: -2 }] };
+    const patch = { blur: -7, align: 'sideways', autoContrast: 'yes', gradient: { radius: -4 }, strokeEffects: [{ size: -2 }] };
     const expected = normalizeStyle({ ...defaultStyle(), ...patch });
     const t = sanitizeTagEntry({ name: 'test', style: patch });
     expect(t.style).toEqual(Object.fromEntries(Object.keys(patch).map((k) => [k, expected[k]])));
@@ -116,9 +119,13 @@ describe('stored registry', () => {
 
   it('ignores legacy defaults whenever the entry already has a style patch', () => {
     expect(sanitizeTagEntry({ name: 'sfx', style: {}, font: 'Bangers', outlineWidth: 7 }).style).toEqual({});
-    expect(sanitizeTagEntry({ name: 'sfx', outlineWidth: 0 }).style).toEqual({ strokes: [] });
-    expect(sanitizeTagEntry({ name: 'sfx', outline: '#ff0000' }).style).toEqual({ strokes: [{ color: '#ff0000', width: 3, opacity: 1 }] });
-    expect(sanitizeTagEntry({ name: 'sfx', outlineWidth: 4 }).style).toEqual({ strokes: [{ color: '#ffffff', width: 4, opacity: 1 }] });
+    expect(sanitizeTagEntry({ name: 'sfx', outlineWidth: 0 }).style).toEqual({ strokeEffects: [] });
+    // A patch saved with outline bands (`strokes`) reads as the strokes they make.
+    expect(sanitizeTagEntry({ name: 'sfx', style: { strokes: [{ color: '#ff0000', width: 2 }, { color: '#000000', width: 3 }] } }).style).toEqual({
+      strokeEffects: [outside('#ff0000', 2), outside('#000000', 5)],
+    });
+    expect(sanitizeTagEntry({ name: 'sfx', outline: '#ff0000' }).style).toEqual({ strokeEffects: [outside('#ff0000', 3, 1)] });
+    expect(sanitizeTagEntry({ name: 'sfx', outlineWidth: 4 }).style).toEqual({ strokeEffects: [outside('#ffffff', 4, 1)] });
   });
 
   it('migrates on read without writing or mutating the stored entry', () => {
@@ -131,9 +138,9 @@ describe('stored registry', () => {
   });
 
   it('round-trips through the saver', () => {
-    createTag('sfx', { style: { font: 'Bangers', strokes: [{ color: '#000000', width: 5, opacity: 1 }] } });
+    createTag('sfx', { style: { font: 'Bangers', strokeEffects: [outside('#000000', 5, 1)] } });
     bindTags(saved);
-    expect(findTag('sfx')).toEqual({ name: 'sfx', style: { font: 'Bangers', strokes: [{ color: '#000000', width: 5, opacity: 1 }] }, size: null, minSize: null });
+    expect(findTag('sfx')).toEqual({ name: 'sfx', style: { font: 'Bangers', strokeEffects: [outside('#000000', 5, 1)] }, size: null, minSize: null });
   });
 });
 
@@ -188,8 +195,8 @@ describe('saving a tag’s settings', () => {
   it('updates the entry the registry already holds, in place', () => {
     createTag('sign');
     createTag('sfx', { style: { font: 'Bangers' } });
-    saveTagDefaults('sfx', { style: { font: 'Nunito', strokes: [{ color: '#000000', width: 4, opacity: 1 }] } });
-    expect(findTag('sfx')).toEqual({ name: 'sfx', style: { font: 'Nunito', strokes: [{ color: '#000000', width: 4, opacity: 1 }] }, size: null, minSize: null });
+    saveTagDefaults('sfx', { style: { font: 'Nunito', strokeEffects: [outside('#000000', 4, 1)] } });
+    expect(findTag('sfx')).toEqual({ name: 'sfx', style: { font: 'Nunito', strokeEffects: [outside('#000000', 4, 1)] }, size: null, minSize: null });
     // Configuring a tag is not using it, so it does not move.
     expect(tags.list.map((t) => t.name)).toEqual(['sfx', 'sign']);
   });
@@ -299,11 +306,11 @@ describe('the settings form’s round trip', () => {
     const f = tagFormFields(t);
     expect(f.outlineOn).toBe(true);
     expect(f.outline).toBe('#ffffff');
-    expect(tagFormDefaults(f).style.strokes).toEqual([{ color: '#ffffff', width: 6, opacity: 1 }]);
+    expect(tagFormDefaults(f).style.strokeEffects).toEqual([outside('#ffffff', 6, 1)]);
   });
 
   it('round-trips font and strokes while keeping the rest of the patch', () => {
-    createTag('sfx', { style: { font: 'Bangers', strokes: [{ color: '#000000', width: 5, opacity: 1 }], italic: true, color: '#123456' }, minSize: 24 });
+    createTag('sfx', { style: { font: 'Bangers', strokeEffects: [outside('#000000', 5, 1)], italic: true, color: '#123456' }, minSize: 24 });
     const t = findTag('sfx');
     const f = tagFormFields(t);
     expect(f.extra).toBe(2);
@@ -321,11 +328,11 @@ describe('the settings form’s round trip', () => {
   });
 
   it('keeps an explicit no-outline patch through the form', () => {
-    const t = { style: { strokes: [] } };
+    const t = { style: { strokeEffects: [] } };
     const f = tagFormFields(t);
     expect(f.outlineOn).toBe(true);
     expect(f.outlineWidth).toBe(0);
-    expect(tagFormDefaults(f, t.style).style).toEqual({ strokes: [] });
+    expect(tagFormDefaults(f, t.style).style).toEqual({ strokeEffects: [] });
   });
 
   it('keeps the rest of a saved style through a form save, and clears it on request', () => {
@@ -533,49 +540,44 @@ describe('defaults reaching a style', () => {
     createTag('sfx', { style: { font: 'Bangers' } });
     const s = styleForLine({ n: 1, type: 'sfx' }, base());
     expect(s.font).toBe('Bangers');
-    expect(s.strokes).toEqual(base().strokes);
+    expect(s.strokeEffects).toEqual(base().strokeEffects);
   });
   it('lets the leftmost tag win and a later one only fill the gaps', () => {
     createTag('sfx', { style: { font: 'Bangers' } });
-    createTag('sign', { style: { font: 'Nunito', strokes: [{ color: '#ff0000', width: 8, opacity: 1 }] } });
+    createTag('sign', { style: { font: 'Nunito', strokeEffects: [outside('#ff0000', 8, 1)] } });
     const line = { n: 1, tags: ['sfx', 'sign'] };
     const s = styleForLine(line, base());
     expect(s.font).toBe('Bangers'); // the primary tag
     // sfx left the outline unset, so sign fills it - and a tag that defines an
     // outline defines THE outline, so it stands as the box's whole stroke list.
-    expect(s.strokes).toEqual([{ color: '#ff0000', width: 8, opacity: 1 }]);
+    expect(s.strokeEffects).toEqual([outside('#ff0000', 8, 1)]);
   });
 
   it('treats strokes as one key even when later tags name other strokes', () => {
-    createTag('sfx', { style: { strokes: [], italic: false, color: '#123456' } });
-    createTag('sign', { style: { strokes: [{ color: '#ff0000', width: 9, opacity: 0.5 }], italic: true, color: '#abcdef', bold: true } });
+    createTag('sfx', { style: { strokeEffects: [], italic: false, color: '#123456' } });
+    createTag('sign', { style: { strokeEffects: [outside('#ff0000', 9, 0.5)], italic: true, color: '#abcdef', bold: true } });
     const s = styleForLine({ tags: ['sfx', 'sign'] }, base());
-    expect(s).toMatchObject({ strokes: [], italic: false, color: '#123456', bold: true });
+    expect(s).toMatchObject({ strokeEffects: [], italic: false, color: '#123456', bold: true });
   });
 
   it('copies nested values out of reactive entries', () => {
-    createTag('sign', { style: { strokes: [{ color: '#ff0000', width: 4, opacity: 1 }], gradient: { on: true } } });
+    createTag('sign', { style: { strokeEffects: [outside('#ff0000', 4, 1)], gradient: { on: true } } });
     const s = styleForLine({ tags: ['sign'] }, base());
-    s.strokes[0].width = 10;
+    s.strokeEffects[0].size = 10;
     s.gradient.stops[0].color = '#123456';
-    expect(findTag('sign').style.strokes[0].width).toBe(4);
+    expect(findTag('sign').style.strokeEffects[0].size).toBe(4);
     expect(findTag('sign').style.gradient.stops[0].color).toBe('#ffffff');
-    updateTag('sign', { style: { strokes: [] } });
-    expect(s.strokes).toHaveLength(1);
+    updateTag('sign', { style: { strokeEffects: [] } });
+    expect(s.strokeEffects).toHaveLength(1);
   });
 
   it('replaces a whole stack of strokes rather than adding to it', () => {
-    createTag('sign', { style: { strokes: [{ color: '#ff0000', width: 4, opacity: 1 }] } });
+    createTag('sign', { style: { strokeEffects: [outside('#ff0000', 4, 1)] } });
     const style = {
       ...base(),
-      strokes: [
-        { color: '#ffffff', width: 3, opacity: 1 },
-        { color: '#000000', width: 2, opacity: 1 },
-      ],
+      strokeEffects: [outside('#ffffff', 3), outside('#000000', 5)],
     };
-    expect(styleForLine({ n: 1, tags: ['sign'] }, style).strokes).toEqual([
-      { color: '#ff0000', width: 4, opacity: 1 },
-    ]);
+    expect(styleForLine({ n: 1, tags: ['sign'] }, style).strokeEffects).toEqual([outside('#ff0000', 4)]);
   });
   it('ignores a tag the registry has never heard of', () => {
     expect(styleForLine({ n: 1, tags: ['ghost'] }, base())).toEqual(base());
@@ -598,24 +600,24 @@ describe('editing a tag is not retroactive', () => {
     ]);
 
   it('leaves a box already carrying the tag with the style it was placed with', () => {
-    createTag('sfx', { style: { font: 'Bangers', strokes: [{ color: '#000000', width: 6, opacity: 1 }] } });
+    createTag('sfx', { style: { font: 'Bangers', strokeEffects: [outside('#000000', 6, 1)] } });
     chapter();
     placeActiveAt(100, 100); // line 1, with Bangers
     const first = app.pages[0].boxes[0].id;
     expect(byId(first).style.font).toBe('Bangers');
 
-    updateTag('sfx', { style: { font: 'Nunito', strokes: [{ color: '#ff0000', width: 2, opacity: 1 }] } });
+    updateTag('sfx', { style: { font: 'Nunito', strokeEffects: [outside('#ff0000', 2, 1)] } });
 
     // The box placed before the edit is untouched - the whole point.
     expect(byId(first).style.font).toBe('Bangers');
-    expect(byId(first).style.strokes).toEqual([{ color: '#000000', width: 6, opacity: 1 }]);
+    expect(byId(first).style.strokeEffects).toEqual([outside('#000000', 6, 1)]);
 
     // And the next placement takes the new defaults, which is the other half of
     // "applies to future uses only".
     placeActiveAt(200, 200); // line 2
     const second = app.pages[0].boxes[1].id;
     expect(byId(second).style.font).toBe('Nunito');
-    expect(byId(second).style.strokes).toEqual([{ color: '#ff0000', width: 2, opacity: 1 }]);
+    expect(byId(second).style.strokeEffects).toEqual([outside('#ff0000', 2, 1)]);
   });
 
   it('does not reach back when the tag gains a default it never had', () => {

@@ -118,21 +118,29 @@ describe('normalizeStyle effects schema', () => {
 });
 
 describe('defaultPathPts', () => {
-  it('shapes default anchors and handles for w=200, h=100', () => {
+  it('is a straight line across the middle through three smooth anchors', () => {
     const pts = defaultPathPts(200, 100);
-    expect(pts).toEqual([
-      { x: 0, y: 50, ix: 0, iy: 0, ox: 0, oy: 0 },
-      { x: 100, y: 50, ix: -50, iy: 0, ox: 50, oy: 0 },
-      { x: 200, y: 50, ix: 0, iy: 0, ox: 0, oy: 0 },
+    expect(pts.map((p) => [p.x, p.y, p.auto])).toEqual([
+      [0, 50, true],
+      [100, 50, true],
+      [200, 50, true],
     ]);
+    // The middle anchor's handles lie along the line, a third of the way to
+    // each neighbour; the ends aim at the middle's near control points.
+    expect(pts[1].ix).toBeCloseTo(-100 / 3);
+    expect(pts[1].ox).toBeCloseTo(100 / 3);
+    expect([pts[1].iy, pts[1].oy]).toEqual([0, 0]);
+    expect(pts[0].ox).toBeCloseTo(100 / 3);
+    expect(pts[2].ix).toBeCloseTo(-100 / 3);
   });
 
-  it('clamps handle span to a minimum of 10 for a tiny box', () => {
-    const pts = defaultPathPts(20, 40);
-    expect(pts).toEqual([
-      { x: 0, y: 20, ix: 0, iy: 0, ox: 0, oy: 0 },
-      { x: 10, y: 20, ix: -10, iy: 0, ox: 10, oy: 0 },
-      { x: 20, y: 20, ix: 0, iy: 0, ox: 0, oy: 0 },
+  it('survives normalizeStyle with the smooth flag, and a saved corner keeps no flag', () => {
+    const pts = normalizeStyle({ path: { on: true, pts: defaultPathPts(200, 100) } }).path.pts;
+    expect(pts.every((p) => p.auto === true)).toBe(true);
+    const old = normalizeStyle({ path: { on: true, pts: [{ x: 0, y: 0, ox: 5 }, { x: 9, y: 0 }] } }).path.pts;
+    expect(old).toEqual([
+      { x: 0, y: 0, ix: 0, iy: 0, ox: 5, oy: 0 },
+      { x: 9, y: 0, ix: 0, iy: 0, ox: 0, oy: 0 },
     ]);
   });
 });

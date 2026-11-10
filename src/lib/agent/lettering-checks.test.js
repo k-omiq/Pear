@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { letteringIssues, luminance, emphasisIssue } from './lettering-checks.js';
 
 const ellipse = { kind: 'ellipse', cx: 50, cy: 50, rx: 40, ry: 30 };
-const box = (style, fit = ellipse) => ({ id: 'b1', fit, style: { font: 'A', color: '#000000', strokes: [], balloon: true, ...style } });
+const box = (style, fit = ellipse) => ({ id: 'b1', fit, style: { font: 'A', color: '#000000', strokeEffects: [], balloon: true, ...style } });
 
 describe('luminance', () => {
   it('reads #rgb and #rrggbb, and nothing else', () => {
@@ -35,13 +35,13 @@ describe('contrast', () => {
 
   it('passes text in the tone its balloon asks for, or carried by an outline of the other tone', () => {
     expect(letteringIssues(box({ color: '#ffffff' }), { ink: '#ffffff' })).toEqual([]);
-    expect(letteringIssues(box({ color: '#000000', strokes: [{ color: '#ffffff', width: 3, opacity: 1 }] }), { ink: '#ffffff' })).toEqual([]);
+    expect(letteringIssues(box({ color: '#000000', strokeEffects: [{ size: 3, position: 'outside', color: '#ffffff', opacity: 1 }] }), { ink: '#ffffff' })).toEqual([]);
     // A hairline does not carry it.
-    expect(letteringIssues(box({ color: '#000000', strokes: [{ color: '#ffffff', width: 1, opacity: 1 }] }), { ink: '#ffffff' })).toHaveLength(1);
+    expect(letteringIssues(box({ color: '#000000', strokeEffects: [{ size: 1, position: 'outside', color: '#ffffff', opacity: 1 }] }), { ink: '#ffffff' })).toHaveLength(1);
   });
 
   it('reads hollow letters by their outline and a gradient by its stops', () => {
-    expect(letteringIssues(box({ noFill: true, strokes: [{ color: '#000000', width: 6 }] }), { ink: '#ffffff' })).toHaveLength(1);
+    expect(letteringIssues(box({ noFill: true, strokeEffects: [{ size: 6, position: 'outside', color: '#000000' }] }), { ink: '#ffffff' })).toHaveLength(1);
     const grad = { on: true, stops: [{ color: '#ffffff' }, { color: '#dddddd' }] };
     expect(letteringIssues(box({ gradient: grad }), { ink: '#000000' })).toHaveLength(1);
   });

@@ -19,7 +19,7 @@ import {
 } from './measure.js';
 import { renderBox, renderBoxTexture } from './exporter.js';
 import { systemFontEntry } from './fonts.js';
-import { defaultStyle, normalizeStyle, REVIEW_REASONS } from './data.js';
+import { defaultStyle, normalizeStyle, REVIEW_REASONS, strokesFromBands } from './data.js';
 import { neededHeight } from './typeset.js';
 import { fitBalloonShape } from './balloon.js';
 
@@ -230,7 +230,7 @@ describe('real glyph ink stays inside the box', () => {
       },
     ]);
     // Glyphs only: outlines have their own test below.
-    app.lastStyle = styleFor(font, { strokes: [] });
+    app.lastStyle = styleFor(font, { strokeEffects: [] });
     expect(placeDetectedOnPage()).toBe(1);
     const p = page();
     const box = p.boxes[0];
@@ -276,11 +276,11 @@ describe('real glyph ink stays inside the box', () => {
   // Pins down the fixtures the two containment tests below use, so those are
   // known to be about containment and nothing else.
   it('a full-width Comic Neue line, glyphs only', () => {
-    const { box, p, lines } = fullWidthBox('Comic Neue', { strokes: [] });
+    const { box, p, lines } = fullWidthBox('Comic Neue', { strokeEffects: [] });
     expect(lines).toEqual([FULL]);
     expect(inkPastBox(box, p).worst).toBeLessThanOrEqual(TOLERANCE);
-    expect(fullWidthBox('Bangers', { strokes: [] }).lines).toEqual([FULL]);
-    expect(styleFor('Comic Neue').strokes).toEqual([{ color: '#ffffff', width: 3, opacity: 1 }]);
+    expect(fullWidthBox('Bangers', { strokeEffects: [] }).lines).toEqual([FULL]);
+    expect(styleFor('Comic Neue').strokeEffects).toEqual(strokesFromBands([{ color: '#ffffff', width: 3, opacity: 1 }]));
   });
 
   // The containment contract (OVF-2, contain.js): a box's painted ink is inside
@@ -358,7 +358,7 @@ describe('real glyph ink stays inside the box', () => {
   // face. So a full-width Bangers line's GLYPHS sit outside the box with no
   // outline at all - and the containment check, which reads the ink, sees it.
   it('a full-width Bangers line, glyphs only: inside, or flagged', () => {
-    const { box, p } = fullWidthBox('Bangers', { strokes: [] });
+    const { box, p } = fullWidthBox('Bangers', { strokeEffects: [] });
     const past = containedOrFlagged(box, p);
     expect(past).toBeGreaterThan(TOLERANCE);
     expect(box.review.overflow.r).toBeGreaterThanOrEqual(Math.floor(past));
@@ -374,7 +374,7 @@ describe('real glyph ink stays inside the box', () => {
   // by the lean.
   it('a full-width DejaVu Sans Oblique line at 60px: flagged on opening, widened by the ladder', () => {
     const text = 'WAIT';
-    const s = styleFor('DejaVu Sans', { italic: true, align: 'left', strokes: [], size: 60 });
+    const s = styleFor('DejaVu Sans', { italic: true, align: 'left', strokeEffects: [], size: 60 });
     const w = lineWidth(text, s, 60) + textInset(s) * 2 + 0.01;
     loadProjectPages([
       {
@@ -604,10 +604,10 @@ describe('boxInkRect is the ink the exporter paints', () => {
   const CASES = [
     ['Comic Neue', { align: 'center' }],
     ['Comic Neue', { align: 'left', valign: 'top' }],
-    ['Bangers', { align: 'right', valign: 'bottom', strokes: [] }],
+    ['Bangers', { align: 'right', valign: 'bottom', strokeEffects: [] }],
     ['Bangers', { align: 'center', letterSpacing: 3 }],
-    ['DejaVu Sans', { align: 'left', italic: true, strokes: [] }],
-    ['DejaVu Sans', { align: 'center', lineHeight: 0.9, strokes: [{ color: '#ffffff', width: 5, opacity: 1 }] }],
+    ['DejaVu Sans', { align: 'left', italic: true, strokeEffects: [] }],
+    ['DejaVu Sans', { align: 'center', lineHeight: 0.9, strokeEffects: strokesFromBands([{ color: '#ffffff', width: 5, opacity: 1 }]) }],
     ['Comic Neue', { align: 'center', shadows: [{ color: '#000000', x: 6, y: 4, blur: 0, opacity: 1 }] }],
   ];
 
@@ -735,7 +735,7 @@ describe('boxInkRect is the ink the exporter paints', () => {
   // replaced stood 0.75 em out from every anchor.
   const CURVES = [
     ['Comic Neue', { curve: 60 }],
-    ['DejaVu Sans', { curve: -45, italic: true, strokes: [] }],
+    ['DejaVu Sans', { curve: -45, italic: true, strokeEffects: [] }],
     ['Bangers', { circle: { on: true, angle: 20 } }],
     ['Comic Neue', { circle: { on: true, inside: true, r: 60 } }],
     ['DejaVu Sans', { path: { on: true, pts: [{ x: 10, y: 160, ox: 60, oy: -120 }, { x: 230, y: 160, ix: -60, iy: -120 }] } }],
@@ -793,21 +793,21 @@ describe('boxInkRect is the ink the exporter paints', () => {
   };
   const PERSPECTIVE = { on: true, cols: 1, rows: 1, pts: [[0, 0], [170, 0], [0, 100], [230, 140]] };
   const EFFECTS = [
-    ['a blur', 'WAVE', { blur: 4, strokes: [] }, 1.5 * 4],
-    ['a smear along x', 'WAVE', { strokes: [], motionBlur: { on: true, x: 2, y: 0, amount: 4 } }, 0],
-    ['a diagonal smear', 'WAVE', { strokes: [], motionBlur: { on: true, x: 1, y: -1.5, amount: 3 } }, 0],
-    ['a crumple', 'WAVE', { strokes: [], roughen: { on: true, amount: 8, detail: 0.05, seed: 7 } }, 8 / 2],
+    ['a blur', 'WAVE', { blur: 4, strokeEffects: [] }, 1.5 * 4],
+    ['a smear along x', 'WAVE', { strokeEffects: [], motionBlur: { on: true, x: 2, y: 0, amount: 4 } }, 0],
+    ['a diagonal smear', 'WAVE', { strokeEffects: [], motionBlur: { on: true, x: 1, y: -1.5, amount: 3 } }, 0],
+    ['a crumple', 'WAVE', { strokeEffects: [], roughen: { on: true, amount: 8, detail: 0.05, seed: 7 } }, 8 / 2],
     [
       'an include mask',
       'WAVE WAVE',
-      { strokes: [], clip: { on: true, mode: 'include', shapes: [{ kind: 'ellipse', cx: 85, cy: 50, rx: 20, ry: 10 }] } },
+      { strokeEffects: [], clip: { on: true, mode: 'include', shapes: [{ kind: 'ellipse', cx: 85, cy: 50, rx: 20, ry: 10 }] } },
       3,
     ],
     [
       'an outline, a shadow, a blur and a smear together',
       'WAVE',
       {
-        strokes: [{ color: '#ffffff', width: 3, opacity: 1 }],
+        strokeEffects: strokesFromBands([{ color: '#ffffff', width: 3, opacity: 1 }]),
         shadows: [{ color: '#000000', x: 5, y: 4, blur: 1, opacity: 1 }],
         blur: 1.5,
         motionBlur: { on: true, x: 0, y: 2, amount: 2 },
@@ -816,14 +816,14 @@ describe('boxInkRect is the ink the exporter paints', () => {
       // twice its blur - and the smear's faint outer taps dim them further.
       1.5 * 1.5 + 2 * 1,
     ],
-    ['ink past every edge', null, { strokes: [], shadows: [], ink: INK_OUT }, 0],
+    ['ink past every edge', null, { strokeEffects: [], shadows: [], ink: INK_OUT }, 0],
     [
       'ink past every edge, with text, an outline and a shadow',
       'WAVE',
-      { ink: INK_OUT, strokes: [{ color: '#ffffff', width: 4, opacity: 1 }], shadows: [{ color: '#000000', x: 4, y: 6, blur: 0, opacity: 1 }] },
+      { ink: INK_OUT, strokeEffects: strokesFromBands([{ color: '#ffffff', width: 4, opacity: 1 }]), shadows: [{ color: '#000000', x: 4, y: 6, blur: 0, opacity: 1 }] },
       0,
     ],
-    ['a perspective drag', 'WAVE', { strokes: [], warp: PERSPECTIVE }, 0],
+    ['a perspective drag', 'WAVE', { strokeEffects: [], warp: PERSPECTIVE }, 0],
   ];
 
   it.each(EFFECTS)('%s', (label, text, extra, loose) => {

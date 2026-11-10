@@ -3,8 +3,8 @@ import { fontCssFor, measuredFontFor } from './store.svelte.js';
 import { balanceLines, neededHeight, balancedBlockSize, BALANCED_DEFAULTS, ovalProfile } from './typeset.js';
 import { interiorLineWidths, safetyInset, layoutShape } from './balloon.js';
 import { fitPolygon, roomOver, turnPolygon } from './outline-geom.js';
-import { normalizeFit } from './data.js';
-import { strokeExtent } from './text-paint.js';
+import { normalizeFit, strokeExtentOf } from './data.js';
+import { splitPath, smoothPath } from './bezier-path.js';
 import { textEngine, setTextEngine, onTextEngineChange } from './text-engine/index.js';
 import { createBrowserTextEngine, browserPlainBreaker } from './text-engine/browser.js';
 
@@ -56,7 +56,7 @@ export const BOX_PAD = 2;
 //   the exports    the raster exporter through `placeBlock`, and the PSD type
 //                  layer's origin and frame - with its importer undoing it.
 export function textInset(style) {
-  return BOX_PAD + Math.ceil(strokeExtent(style?.strokes));
+  return BOX_PAD + Math.ceil(strokeExtentOf(style));
 }
 export function contentWidth(boxW, style) {
   return Math.max(1, boxW - textInset(style) * 2);
@@ -500,7 +500,7 @@ function pathAt(baked, s) {
 }
 
 // Split the path's longest segment in half and return a NEW pts array with an
-// anchor at the split. De Casteljau at t = 0.5, so the curve through the new
+// anchor at the split (`splitPath`). De Casteljau at t = 0.5, so the curve through the new
 // anchor is byte-for-byte the curve that was there - the anchor adds control,
 // never a kink. "Longest" is measured on the baked polyline, which is the
 // length the eye sees.
@@ -516,31 +516,7 @@ export function insertPathAnchor(pts) {
       best = i;
     }
   }
-  const a = pts[best];
-  const b = pts[best + 1];
-  const p0 = [a.x, a.y];
-  const c1 = [a.x + a.ox, a.y + a.oy];
-  const c2 = [b.x + b.ix, b.y + b.iy];
-  const p3 = [b.x, b.y];
-  const mid = (u, v) => [(u[0] + v[0]) / 2, (u[1] + v[1]) / 2];
-  const q0 = mid(p0, c1);
-  const q1 = mid(c1, c2);
-  const q2 = mid(c2, p3);
-  const r0 = mid(q0, q1);
-  const r1 = mid(q1, q2);
-  const m = mid(r0, r1);
-  const out = pts.map((p) => ({ ...p }));
-  out[best] = { ...out[best], ox: q0[0] - a.x, oy: q0[1] - a.y };
-  out[best + 1] = { ...out[best + 1], ix: q2[0] - b.x, iy: q2[1] - b.y };
-  out.splice(best + 1, 0, {
-    x: m[0],
-    y: m[1],
-    ix: r0[0] - m[0],
-    iy: r0[1] - m[1],
-    ox: r1[0] - m[0],
-    oy: r1[1] - m[1],
-  });
-  return out;
+  return splitPath(pts, best, 0.5).pts;
 }
 
 // Remove one anchor, keeping at least two so the path stays a path.
@@ -548,7 +524,8 @@ export function removePathAnchor(pts, i) {
   if (!Array.isArray(pts) || pts.length <= 2 || i < 0 || i >= pts.length) return pts;
   const out = pts.map((p) => ({ ...p }));
   out.splice(i, 1);
-  return out;
+  // Smooth anchors were shaped by the one just taken out; they re-fit.
+  return smoothPath(out);
 }
 
 // The baked path as a flat point list, for the editor's gizmo polyline.

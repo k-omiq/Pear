@@ -12,8 +12,8 @@ const record = {
       { n: 4, en: 'BAM', tags: ['sfx-soft'] },
     ],
     boxes: [
-      { id: 's1', lineN: 1, style: { font: 'Arial', size: 30, bold: true, color: '#111111', strokes: [{ color: '#ffffff', width: 3 }] }, auto: { refSize: 32 } },
-      { id: 's2', lineN: 2, style: { font: 'Arial', size: 28, bold: true, color: '#111111', strokes: [{ color: '#ffffff', width: 3 }] } },
+      { id: 's1', lineN: 1, style: { font: 'Arial', size: 30, bold: true, color: '#111111', strokeEffects: [{ size: 3, position: 'outside', color: '#ffffff' }] }, auto: { refSize: 32 } },
+      { id: 's2', lineN: 2, style: { font: 'Arial', size: 28, bold: true, color: '#111111', strokeEffects: [{ size: 3, position: 'outside', color: '#ffffff' }] } },
       { id: 's3', lineN: 3, style: { font: 'Gone Font', size: 40, bold: false, color: '#111111' } },
       { id: 'x1', lineN: 4, style: { font: 'Gone Font', size: 60, color: '#ff0000', sfx: { on: true, kind: 'impact' } } },
     ],
@@ -72,7 +72,7 @@ const call = (args) => callTool('copy_look', args, callContext('mcp'));
 describe('looksOf', () => {
   it('takes the commonest of each look key and the median size aimed for, per first tag', () => {
     const [speech, sfx] = looksOf(record.pages);
-    expect(speech).toMatchObject({ tag: 'speech', boxes: 3, size: 32, style: { font: 'Arial', bold: true, color: '#111111', strokes: [{ color: '#ffffff', width: 3 }] } });
+    expect(speech).toMatchObject({ tag: 'speech', boxes: 3, size: 32, style: { font: 'Arial', bold: true, color: '#111111', strokeEffects: [{ size: 3, position: 'outside', color: '#ffffff' }] } });
     expect(sfx).toMatchObject({ tag: 'sfx-soft', sfxKinds: ['impact'] });
   });
 });

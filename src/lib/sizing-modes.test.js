@@ -5,7 +5,7 @@ import { initHistory, resetHistory } from './editor/history.svelte.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo, textInset, layoutLines, contentWidth } from './measure.js';
 import { neededHeight } from './typeset.js';
-import { sizingOf, normalizeStyle } from './data.js';
+import { sizingOf, normalizeStyle, strokesFromBands } from './data.js';
 
 // ===========================================================================
 // The three sizing modes: what you set is what you get
@@ -32,7 +32,7 @@ function fakeEngine() {
 const SHORT = 'HI THERE';
 const LONG = 'THE WORDS THAT WERE SET IN THE FACE AND THEN SOME MORE OF THEM';
 const open = (over = {}) => {
-  const style = normalizeStyle({ font: 'Wild Words', size: 20, lineHeight: 1.1, valign: 'middle', strokes: [], ...over.style });
+  const style = normalizeStyle({ font: 'Wild Words', size: 20, lineHeight: 1.1, valign: 'middle', strokeEffects: [], ...over.style });
   loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [], boxes: [{ id: 'b1', lineN: null, text: SHORT, x: 100, y: 300, w: 200, h: 400, ...over, style }] }]);
   const b = page().boxes[0];
   selectBox(b.id);
@@ -150,14 +150,14 @@ describe('switching modes', () => {
 
 describe('a scale', () => {
   it('changes the box and every length drawn in it by one factor', () => {
-    const b = open({ style: { strokes: [{ color: '#fff', width: 4 }] } });
+    const b = open({ style: { strokeEffects: strokesFromBands([{ color: '#fff', width: 4 }]) } });
     const base = { w: b.w, h: b.h, style: JSON.parse(JSON.stringify(b.style)) };
     resizeBox(1, 'b1', { w: 300, h: 600, scale: 1.5 }, base);
     expect(b.style.size).toBe(30);
-    expect(b.style.strokes[0].width).toBe(6);
+    expect(b.style.strokeEffects[0].size).toBe(6);
     // Each step scales from the start, so a drag's steps do not compound.
     resizeBox(1, 'b1', { w: 400, h: 800, scale: 2 }, base);
     expect(b.style.size).toBe(40);
-    expect(b.style.strokes[0].width).toBe(8);
+    expect(b.style.strokeEffects[0].size).toBe(8);
   });
 });

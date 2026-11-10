@@ -274,6 +274,15 @@ impl GlyphPolys {
     }
 }
 
+/// A line's flat tops for Crisp mode ([`Glyphs::fit_to_grid`]): the cap
+/// height and the x-height, job units above the baseline, where the face has
+/// them.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Zones {
+    pub cap: Option<f64>,
+    pub x: Option<f64>,
+}
+
 /// The outlines of a job's glyphs, and the shapes made from them.
 #[derive(Default)]
 pub(crate) struct Glyphs {
@@ -349,6 +358,73 @@ impl Glyphs {
             )?;
         }
         Ok(())
+    }
+
+    /// Crisp: moves the glyphs `range` of one straight line, whose
+    /// baseline is at job y `baseline`, so that its baseline, its x-height
+    /// and its cap height (`zones`, job units above the baseline) fall on
+    /// whole pixels of the page - multiples of one job unit in device space,
+    /// counted from device y `origin`, a page pixel's edge. Vertical only, and piecewise linear: the part between baseline
+    /// and x-height is stretched or squeezed to land on whole pixels, then
+    /// the part between x-height and cap height; what is below the baseline
+    /// or above the cap height moves with its zone's edge. A letter stays the
+    /// letter it was, at most half a pixel taller or shorter in each zone.
+    ///
+    /// `transform` maps job space to device pixels and keeps job y as device
+    /// y (the caller checks: no turn, no vertical mirror).
+    pub(crate) fn fit_to_grid(
+        &mut self,
+        range: core::ops::Range<usize>,
+        baseline: f64,
+        zones: Zones,
+        transform: &Affine,
+        origin: f64,
+    ) {
+        let [_, _, _, d, _, f] = transform.0;
+        // One page pixel, in device pixels: one job unit.
+        let grid = d;
+        if !(grid > 0.0) || !baseline.is_finite() || !origin.is_finite() {
+            return;
+        }
+        let snap = |v: f64| ((v - origin) / grid).round() * grid + origin;
+        let b = d * baseline + f;
+        let b2 = snap(b);
+        // Zone heights in device px, each a whole number of pixels, at least
+        // one, and the cap height above the x-height.
+        let whole = |h: f64| ((h * d / grid).round().max(1.0)) * grid;
+        let cap = zones.cap.filter(|h| *h > 0.0);
+        let x = zones.x.filter(|h| *h > 0.0 && cap.is_none_or(|c| *h < c * 0.95));
+        let mut knots: [(f64, f64); 3] = [(b, b2); 3];
+        let mut n = 1;
+        if let Some(h) = x {
+            knots[n] = (b - d * h, b2 - whole(h));
+            n += 1;
+        }
+        if let Some(h) = cap {
+            let to = (b2 - whole(h)).min(knots[n - 1].1 - grid);
+            knots[n] = (b - d * h, to);
+            n += 1;
+        }
+        let knots = &knots[..n];
+        // Device y to its fitted device y. Knots run upwards (y decreasing).
+        let map = |y: f64| -> f64 {
+            if y >= knots[0].0 || n == 1 {
+                return y + (knots[0].1 - knots[0].0);
+            }
+            for w in knots.windows(2) {
+                let ((y0, t0), (y1, t1)) = (w[0], w[1]);
+                if y >= y1 {
+                    return t0 + (y - y0) * (t1 - t0) / (y1 - y0);
+                }
+            }
+            let (y1, t1) = knots[n - 1];
+            y + (t1 - y1)
+        };
+        for g in &mut self.items[range] {
+            for p in g.polys.pts.iter_mut() {
+                p.y = (map(d * p.y + f) - f) / d;
+            }
+        }
     }
 
     pub(crate) fn account(&mut self) -> Result<(), Error> {
@@ -780,6 +856,17 @@ fn paint_letters(
     {
         return Err(Error::BadSpec);
     }
+    // Crisp only where a job y is a device y (no turn, no vertical mirror)
+    // and nothing moves the outlines after they are fitted: a curved run's
+    // letters are turned one by one, and a mesh or a roughening bends them.
+    let crisp = job.effects.crisp.filter(|_| {
+        !job.curved
+        && job.mesh.is_none()
+        && job.roughen.is_none()
+        && transform.0[1] == 0.0
+        && transform.0[2] == 0.0
+        && transform.0[3] > 0.0
+    });
     // Every run's glyphs, and for each run the frame its fill is stated in.
     let mut glyphs = Glyphs::default();
     let mut runs = budget::Buffer::new();
@@ -828,6 +915,16 @@ fn paint_letters(
             job.effects.slant,
             tol,
         )?;
+        if let Some(grid) = crisp {
+            let entry = engine.font(face.font)?;
+            let per_unit = face.size / f64::from(entry.info.units_per_em);
+            let (cap, x) = entry.zones();
+            let zones = Zones {
+                cap: cap.map(|v| f64::from(v) * per_unit),
+                x: x.map(|v| f64::from(v) * per_unit),
+            };
+            glyphs.fit_to_grid(from..glyphs.len(), run.y, zones, transform, grid.y);
+        }
         budget::push(&mut runs, (from..glyphs.len(), frame))?;
     }
     let all = 0..glyphs.len();

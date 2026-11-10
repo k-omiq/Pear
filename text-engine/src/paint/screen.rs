@@ -13,7 +13,10 @@ use crate::Error;
 use core::f64::consts::{FRAC_1_SQRT_2, PI};
 
 /// Wire ids are positions in this list; picked tiles have a separate id.
-pub const KIND_NAMES: &str = "dots\nhalftone\nstripes\nhstripes\ndiagonal\ndiagonal-alt\ncrosshatch\nchecker\ngrid\nvlines\nhlines\nhalftone-fade\nsquare-dots\ndiamond-dots\nline-tone\nsand\nstipple\nspeed-lines\nburst\nrings\nwaves\nzigzag\nbricks\nscales\nhex\ntriangles\nplus\nstars\nhearts\nkakeami\nglitch\ndither\ndither-dots";
+pub const KIND_NAMES: &str = "dots\nhalftone\nstripes\nhstripes\ndiagonal\ndiagonal-alt\ncrosshatch\nchecker\ngrid\nvlines\nhlines\nhalftone-fade\nsquare-dots\ndiamond-dots\nline-tone\nsand\nstipple\nspeed-lines\nburst\nrings\nwaves\nzigzag\nbricks\nscales\nhex\ntriangles\nplus\nstars\nhearts\nkakeami\nglitch\ndither\ndither-dots\ncircles\ncrosses\nsparkles\nflowers\nbasket\nherringbone\nplaid\nchevron\nseigaiha\nshippo\ndashes\nconcentric";
+
+/// The last built-in screen's wire id.
+pub const LAST_KIND: u32 = 44;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Screen {
@@ -47,7 +50,7 @@ impl Screen {
     /// distance, a fade projection or a colour conversion.
     pub fn sound(&self) -> bool {
         let points = [self.a, self.b, self.origin, self.offset, self.centre];
-        (self.kind <= 32 || self.kind == 255)
+        (self.kind <= LAST_KIND || self.kind == 255)
             && self.mode <= 1
             && points.iter().all(|p| p.x.is_finite() && p.y.is_finite())
             && [self.angle, self.aspect, self.density, self.line, self.reach]
@@ -612,6 +615,131 @@ fn new_edge(s: &Screen, u: f64, v: f64, q: Pt, rays: f64, d: f64) -> Edge {
         30 => streaks(u, v, d, s.seed, true),
         31 => dither(u, v, d, false),
         32 => dither(u, v, d, true),
+        // Ring outlines, one a cell.
+        33 => adjust(outline(disk(p, 0.32), 0.05), d, 0.2, 0.05, 0.34),
+        // An X a cell: the plus turned by 45 degrees, its normal turned back.
+        34 => {
+            let q = Pt::new((p.x + p.y) * FRAC_1_SQRT_2, (p.y - p.x) * FRAC_1_SQRT_2);
+            let e = box_edge(q, 0.3, 0.07).min(box_edge(q, 0.07, 0.3));
+            let n = Pt::new((e.n.x - e.n.y) * FRAC_1_SQRT_2, (e.n.x + e.n.y) * FRAC_1_SQRT_2);
+            adjust(Edge { d: e.d, n }, d, 0.148, 0.07, 0.42)
+        }
+        // A four-point sparkle a cell, a small dot on the cell's corners.
+        35 => {
+            const SPARK: [Pt; 8] = [
+                Pt::new(0.0, -0.42),
+                Pt::new(0.07, -0.07),
+                Pt::new(0.42, 0.0),
+                Pt::new(0.07, 0.07),
+                Pt::new(0.0, 0.42),
+                Pt::new(-0.07, 0.07),
+                Pt::new(-0.42, 0.0),
+                Pt::new(-0.07, -0.07),
+            ];
+            let dot = disk(Pt::new(wrap(u), wrap(v)), 0.06);
+            adjust(polygon(p, &SPARK).min(dot), d, 0.13, 0.085, 0.45)
+        }
+        // Five round petals round an open middle.
+        36 => {
+            const PETALS: [Pt; 5] = [
+                Pt::new(0.0, -0.16),
+                Pt::new(-0.152169, -0.049443),
+                Pt::new(-0.094046, 0.129443),
+                Pt::new(0.094046, 0.129443),
+                Pt::new(0.152169, -0.049443),
+            ];
+            let mut e = field(f64::INFINITY, 1.0, 0.0);
+            for c in PETALS {
+                e = e.min(disk(p.minus(c), 0.11));
+            }
+            adjust(e, d, 0.17, 0.115, 0.5)
+        }
+        // Basket weave: the cell's quarters take three bands each, turned
+        // a quarter from their neighbours'.
+        37 => {
+            let w = share(d, 0.5);
+            if ((u * 2.0).floor() as i64 + (v * 2.0).floor() as i64) & 1 == 0 {
+                band(v * 6.0, w, Pt::new(0.0, 6.0))
+            } else {
+                band(u * 6.0, w, Pt::new(6.0, 0.0))
+            }
+        }
+        // Herringbone: half-cell columns of slanted bands, each column the
+        // mirror of the last, meeting in a V.
+        38 => {
+            let dir = if (u * 2.0).floor() as i64 & 1 == 0 { 1.0 } else { -1.0 };
+            band((v + dir * u) * 3.0, share(d, 0.5), Pt::new(dir * 3.0, 3.0))
+        }
+        // Plaid: a wide band and a thin one each way. `c` is one way's
+        // share, so the two ways together cover the share asked for.
+        39 => {
+            let c = 1.0 - (1.0 - share(d, 0.45)).sqrt();
+            let w = 0.75 * c;
+            let t = w / 3.0;
+            let y = Pt::new(0.0, 1.0);
+            band(u + w / 2.0, w, x)
+                .min(band(v + w / 2.0, w, y))
+                .min(band(u - 0.5 + t / 2.0, t, x))
+                .min(band(v - 0.5 + t / 2.0, t, y))
+        }
+        // Chevron: wide V bands, half ink.
+        40 => {
+            let t = u.rem_euclid(1.0);
+            let wave = 0.5 * (2.0 * t - 1.0).abs();
+            band(v - wave, share(d, 0.5), Pt::new(if t < 0.5 { 1.0 } else { -1.0 }, 1.0))
+        }
+        // Seigaiha: rows of round scales a quarter cell apart, each row half
+        // a scale along and in front of the row above. The front scale over
+        // the point draws its three rings and its middle.
+        41 => {
+            let base = (v * 4.0).floor();
+            let mut front = None;
+            for j in -3..=1 {
+                let r = base + j as f64;
+                let q = Pt::new(wrap(u - 0.5 - r.rem_euclid(2.0) * 0.5), v - (r + 1.0) * 0.25);
+                if q.x.hypot(q.y) <= 0.5 {
+                    front = Some(q);
+                }
+            }
+            match front {
+                Some(q) => {
+                    let e = outline(disk(q, 0.47), 0.03)
+                        .min(outline(disk(q, 0.33), 0.03))
+                        .min(outline(disk(q, 0.19), 0.03))
+                        .min(disk(q, 0.06));
+                    adjust(e, d, 0.4, 0.06, 0.06)
+                }
+                None => field(1.0, 1.0, 0.0),
+            }
+        }
+        // Shippo: rings on the lattice's points, each through its
+        // neighbours' middles, so they overlap in petals.
+        42 => {
+            let (cu, cv) = (u.round(), v.round());
+            let mut best = field(f64::INFINITY, 1.0, 0.0);
+            for j in -1..=1 {
+                for i in -1..=1 {
+                    let q = Pt::new(u - cu - i as f64, v - cv - j as f64);
+                    best = best.min(outline(disk(q, FRAC_1_SQRT_2), 0.03));
+                }
+            }
+            adjust(best, d, 0.25, 0.03, 0.2)
+        }
+        // Short dashes, four rows a cell, each row half a dash along.
+        43 => {
+            let y4 = v * 4.0;
+            let row = y4.floor();
+            let px = wrap(u * 2.0 - 0.5 - row.rem_euclid(2.0) * 0.5);
+            let py = y4 - row - 0.5;
+            adjust(box_edge(Pt::new(px / 2.0, py / 4.0), 0.15, 0.03), d, 0.144, 0.03, 0.15)
+        }
+        // Three squares one inside the other.
+        44 => {
+            let e = outline(box_edge(p, 0.4, 0.4), 0.03)
+                .min(outline(box_edge(p, 0.25, 0.25), 0.03))
+                .min(outline(box_edge(p, 0.1, 0.1), 0.03));
+            adjust(e, d, 0.36, 0.03, 0.1)
+        }
         _ => old_edge(s.kind, u, v, d, s.line.clamp(0.0, 1.0)),
     }
 }
@@ -663,8 +791,8 @@ impl<'a> ScreenShader<'a> {
         // a one-pixel filter can span both edges of a hairline at once.
         let frequency = match s.kind {
             31 | 32 => 8.0,
-            15 | 29 => 6.0,
-            14 | 17 | 30 => 4.0,
+            15 | 29 | 37 => 6.0,
+            14 | 17 | 30 | 38 | 41 | 43 | 44 => 4.0,
             16 => 2.0,
             _ => 1.0,
         };
@@ -1134,7 +1262,7 @@ mod tests {
     }
     #[test]
     fn new_kinds_have_detail_and_obey_density_at_every_step() {
-        for kind in 11..33 {
+        for kind in 11..=LAST_KIND {
             let mut s = screen(kind, 12.0);
             let designed = pixels(&s);
             let share = ink(&designed);

@@ -7,7 +7,7 @@
 // like - is answered here once, so a change lands on both at the same time.
 
 import { strokeStamps, strokeBounds, aaLevel, textureActive } from './brush.js';
-import { CANVAS_PATTERN_KINDS, blendIfActive, shadowOwnAngle, instanceOn } from './data.js';
+import { CANVAS_PATTERN_KINDS, blendIfActive, shadowOwnAngle, instanceOn, outlineRun, outlineBands } from './data.js';
 
 // A stroke's `width` is the VISIBLE band the user asked for, but neither a
 // canvas stroke nor `-webkit-text-stroke` can draw a band: both draw a line
@@ -1129,7 +1129,7 @@ const lum = (hex) => {
 // The darkest colour the letters are drawn in: a shake's copies are in it.
 function darkest(style) {
   let best = style?.color ?? '#000000';
-  for (const k of style?.strokes ?? []) if (k?.color && lum(k.color) < lum(best)) best = k.color;
+  for (const k of outlineBands(style)) if (k?.color && lum(k.color) < lum(best)) best = k.color;
   return best;
 }
 
@@ -1146,7 +1146,8 @@ export function effectShadows(style) {
   if (!(size > 0) || !style.sfx?.on) return { top, under };
   const shade = Number(style.strokeShade) || 0;
   if (shade > 0) {
-    const outer = style.strokes?.length ? style.strokes[style.strokes.length - 1].color : style.color;
+    const bands = outlineBands(style);
+    const outer = bands.length ? bands[bands.length - 1].color : style.color;
     const d = shade * 0.08 * size;
     top.push({ color: outer, opacity: 1, x: d * Math.SQRT1_2, y: d * Math.SQRT1_2, size: 0, grow: 0, exact: true });
   }
@@ -1377,9 +1378,12 @@ function glowGradientOf(g) {
   return g.fill === 'gradient' && g.gradient ? g.gradient : undefined;
 }
 
-// The Photoshop strokes that lay anything.
+// The strokes the Rust engine lays as effects, the ones that lay anything:
+// every stroke after the outline run, which the band painter lays
+// (`outlineRun`).
 function strokeEffectsOf(style) {
-  return (Array.isArray(style?.strokeEffects) ? style.strokeEffects : []).filter((k) => instanceOn(k) && k.opacity > 0 && k.size > 0);
+  const list = Array.isArray(style?.strokeEffects) ? style.strokeEffects : [];
+  return list.slice(outlineRun(style).n).filter((k) => instanceOn(k) && k.opacity > 0 && k.size > 0);
 }
 
 // What a stroke paints with. A pattern is the style's pattern record; the
@@ -1430,7 +1434,7 @@ export function bevelReach(fx) {
 // half as far again.
 export function strokeReach(style) {
   const neg = style?.sfx?.on && style.negative?.on ? Math.max(0, Number(style.negative.grow) || 0) * (Number(style.size) || 0) : 0;
-  return (strokeExtent(style?.strokes) + neg) * (style?.sfx?.on ? 1.5 : 1);
+  return (strokeExtent(outlineBands(style)) + neg) * (style?.sfx?.on ? 1.5 : 1);
 }
 
 // The box-local rectangle every stroke's ink reaches, or null for no ink. The
@@ -1463,10 +1467,11 @@ export function inkBounds(ink) {
 // strokes and an outline threading between them is not an outline.
 
 // The finish as the painter uses it: the bands in paint order and the shadows
-// as given, or null when there is nothing to draw. Takes the style itself, or
-// anything with `strokes` and `shadows` in the style's shape.
+// as given, or null when there is nothing to draw. Takes the style itself
+// (its outline run, `outlineBands`), or the brush's finish, which holds its
+// outline as bands (`strokes`, `normalizeFinish`) beside the shadows.
 function finishOf(f) {
-  const bands = strokeBands(f?.strokes);
+  const bands = strokeBands(Array.isArray(f?.strokeEffects) ? outlineBands(f) : f?.strokes);
   const shadows = Array.isArray(f?.shadows) ? resolveShadows(f.shadows) : [];
   return bands.length || shadows.length ? { bands, shadows } : null;
 }
@@ -2569,6 +2574,16 @@ function fadeStamps(lctx, stamps, stamp, k, t, scale, alloc) {
     lctx.restore();
   }
   releaseCanvas(scratch);
+}
+
+// What a painter with no layer effects (the browser engine, the canvas
+// passes) fills the letters with: a Pattern Overlay at Normal 100 % is laid
+// as the pattern fill it paints the same as (`foldPatternFill`), so the one
+// pattern tool shows there too. Any other style is itself.
+export function patternFillStyle(s) {
+  if (!s || s.pattern?.on || s.noFill) return s;
+  const po = s.patternOverlay;
+  return po?.on && po.blend === 'normal' && po.opacity >= 1 && po.pattern ? { ...s, pattern: { ...po.pattern, on: true } } : s;
 }
 
 // Which fill the style asks for. Pattern beats gradient when both are on, which

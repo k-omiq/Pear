@@ -13,6 +13,7 @@ import {
   normalizeOutline,
   normalizeInkStroke,
   normalizeFinish,
+  strokesFromBands,
   normalizeReview,
   normalizeTypesetting,
   normalizeLight,
@@ -2762,13 +2763,32 @@ export function applyChapterLight(light) {
   markUnsaved();
   return next;
 }
-export function setChapterLight(light) {
+// A drag of the light (a dial held down) is `live`: each move is laid at once
+// and none is recorded; the light it started from is kept, and the next
+// set that is not live (the drag's end: `setChapterLight({})`) records the
+// whole drag as one step.
+let lightFrom = null;
+export function setChapterLight(light, { live = false } = {}) {
   if (!app.chapterRef) return;
-  const was = app.typesetting.light ?? LIGHT_DEF;
-  const next = normalizeLight({ ...was, ...light });
-  if (next.angle === was.angle && next.altitude === was.altitude) return;
-  settleEdits();
-  applyChapterLight(next);
+  const cur = app.typesetting.light ?? LIGHT_DEF;
+  const next = normalizeLight({ ...cur, ...light });
+  if (live) {
+    if (!lightFrom) {
+      settleEdits();
+      lightFrom = { angle: cur.angle, altitude: cur.altitude };
+    }
+    if (next.angle !== cur.angle || next.altitude !== cur.altitude) applyChapterLight(next);
+    return;
+  }
+  const was = lightFrom ?? cur;
+  const dragged = !!lightFrom;
+  lightFrom = null;
+  const moved = next.angle !== cur.angle || next.altitude !== cur.altitude;
+  const changed = next.angle !== was.angle || next.altitude !== was.altitude;
+  if (!moved && !changed) return;
+  if (!dragged) settleEdits();
+  if (moved) applyChapterLight(next);
+  if (!changed) return;
   recordEdit({
     t: 'light',
     pageId: page().id,
@@ -3884,7 +3904,6 @@ export function rescaleStyle(st, sx, sy) {
   // `measure.js` and the exporter both scale against `size` in the same space.
   out.blur = len(st.blur);
   out.letterSpacing = len(st.letterSpacing);
-  if (Array.isArray(st.strokes)) out.strokes = st.strokes.map((k) => ({ ...k, width: len(k.width) }));
   if (Array.isArray(st.shadows)) {
     // A shadow's offset is a position with an axis, so it takes the axis factor
     // exactly; its size is a length and takes the mean, like every other length.
@@ -5959,7 +5978,7 @@ const refitGeom = (b) => ({
   // A refit can recolour the text (LET-3), so the entry carries the colours.
   colours: {
     color: b.style.color,
-    strokes: (b.style.strokes ?? []).map((k) => k.color),
+    strokes: (b.style.strokeEffects ?? []).map((k) => k.color),
     auto: !!b.style.autoContrast,
   },
 });
@@ -5989,7 +6008,7 @@ function applyBubbleInk(b, p) {
     b.style.color = ink;
     changed = true;
   }
-  const k = b.style.strokes?.[0];
+  const k = b.style.strokeEffects?.[0];
   if (k && k.color !== edge) {
     k.color = edge;
     changed = true;
@@ -6596,7 +6615,7 @@ export function addInkBox({ w, h, strokes, finish }, imgX, imgY, target = null) 
   // so they are the finish the board was showing and nothing else: a text
   // box's default outline is a text box's, and none was asked for here.
   const fin = normalizeFinish(finish);
-  style.strokes = fin.strokes;
+  style.strokeEffects = strokesFromBands(fin.strokes);
   style.shadows = fin.shadows;
   const b = {
     id: 'b' + boxSeq++,
@@ -7148,7 +7167,7 @@ export const BULK_PROPS = [
   'blending',
   'gradient',
   'pattern',
-  'strokes',
+  'strokeEffects',
   'shadows',
   'outerGlow',
   'innerGlow',
@@ -7158,7 +7177,6 @@ export const BULK_PROPS = [
   'patternOverlay',
   'satin',
   'bevel',
-  'strokeEffects',
   'blur',
   'motionBlur',
   // Warp & Edges
@@ -7195,7 +7213,7 @@ export const BULK_PROPS = [
 // comment on BULK_PROPS). Named once here because two places have to agree on
 // it: the style-leaf arithmetic that pins BULK_PROPS against `defaultStyle`
 // treats these as single leaves rather than groups of them.
-export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', 'blending', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'strokeEffects', 'motionBlur', 'clip', 'circle'];
+export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokeEffects', 'shadows', 'blending', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'motionBlur', 'clip', 'circle'];
 
 // How the panel rows group the mask's vocabulary for its tick-all headers.
 // Declared beside BULK_PROPS rather than inside the panel so there is one list
@@ -7204,8 +7222,8 @@ export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokes', 'shadows', '
 // together. Every key appears in exactly one group.
 export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
-  fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blending', 'blur', 'motionBlur', 'strokes', 'gradient', 'pattern'],
-  shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'strokeEffects'],
+  fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blending', 'blur', 'motionBlur', 'strokeEffects', 'gradient', 'pattern', 'colorOverlays', 'gradientOverlays', 'patternOverlay'],
+  shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'satin', 'bevel'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
   transform: ['rotation', 'flipH', 'flipV', 'autoHeight', 'fitText', 'fitMax'],

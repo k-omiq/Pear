@@ -11,7 +11,7 @@ const { setTypesetEnabled } = await import('../../measure.js');
 const { checksFor, fitsOf } = await import('./check.js');
 const { selectBoxes } = await import('../select.js');
 
-const style = normalizeStyle({ font: 'Comic Neue', size: 18, bold: false, align: 'center', valign: 'middle', strokes: [] });
+const style = normalizeStyle({ font: 'Comic Neue', size: 18, bold: false, align: 'center', valign: 'middle', strokeEffects: [] });
 const oval = { kind: 'ellipse', cx: 200, cy: 200, rx: 110, ry: 80 };
 const box = (id, y) => ({ id, lineN: null, text: 'WE CAN STILL CATCH THE LAST TRAIN', x: 120, y, w: 160, h: 80, style, fit: oval, outline: { source: 'ring', confidence: 1, approved: null } });
 

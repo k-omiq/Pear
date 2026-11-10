@@ -19,7 +19,7 @@ beforeEach(() => clearLayoutMemo());
 
 const TEXT = '...The Truth of the Sword... I shall bear witness...';
 const style = (extra = {}) =>
-  normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', bold: true, size: 20, align: 'center', valign: 'middle', strokes: [], ...extra });
+  normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', bold: true, size: 20, align: 'center', valign: 'middle', strokeEffects: [], ...extra });
 
 // A speech balloon set by outline fit (`style.margin`), which keeps the lines
 // it chooses on the box (`auto.breaks`) - or, with `fit: null`, a box on bare

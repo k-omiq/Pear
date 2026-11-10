@@ -2,6 +2,7 @@
 // Pages read right-to-left; text lines numbered in RTL reading order.
 
 import { FLIP_MODES, BLEND_MODES, aaLevel, normalizeTexture } from './brush.js';
+import { wavePath } from './bezier-path.js';
 
 // Default page dimensions until a real image sets them from its natural size.
 export const PAGE_W = 850;
@@ -379,13 +380,6 @@ export function defaultStyle() {
     // shadow. As Photoshop's Fill 0 %, the interior effects, the Photoshop
     // strokes and the bevel are still laid from the letters' shape (Rust).
     noFill: false,
-    // ---- strokes ----
-    // Ordered innermost first: strokes[0] sits right against the glyph,
-    // strokes[1] goes around strokes[0], and so on. Rendered outermost first so
-    // each inner one paints over the one outside it. `width` is the VISIBLE
-    // width of that band in page px (the renderer draws 2x centred and lets the
-    // fill / inner stroke cover the inside half). Empty array = no stroke.
-    strokes: [{ color: '#ffffff', width: 3, opacity: 1 }],
     // ---- shadows ----
     // Any number, painted in order under the text (shadows[0] on top of the
     // others). Empty array = no shadow. Each shadow uses the glyph outline plus
@@ -399,11 +393,9 @@ export function defaultStyle() {
     innerGlow: glowDefault(true),
     innerShadows: [],
     colorOverlays: [],
-    // Photoshop's Gradient Overlay (a list), Pattern Overlay (one) and Stroke
-    // (a list: `strokeEffects`, apart from `strokes`, the outlines above).
-    // `normalizeGradientOverlay`, `normalizePatternOverlay`,
-    // `normalizeStrokeEffect`. The Rust engine paints them; the browser
-    // engine does not.
+    // Photoshop's Gradient Overlay (a list) and Pattern Overlay (one),
+    // `normalizeGradientOverlay`, `normalizePatternOverlay`. The Rust engine
+    // paints them; the browser engine does not.
     gradientOverlays: [],
     patternOverlay: patternOverlayDefault(),
     // Photoshop's Satin (one, `normalizeSatin`). The Rust engine paints it;
@@ -412,7 +404,15 @@ export function defaultStyle() {
     // Photoshop's Bevel & Emboss (one, `normalizeBevel`). The Rust engine
     // paints it; the browser engine does not.
     bevel: bevelDefault(),
-    strokeEffects: [],
+    // ---- strokes ----
+    // Photoshop's Stroke, the one stroke there is (`normalizeStrokeEffect`):
+    // a list, the first on top. A run of plain ones at the head (Outside,
+    // a colour, Normal) is the outline the letters always had, laid by the
+    // band painter in both engines (`outlineRun`); the rest the Rust engine
+    // lays. Empty = no stroke. A style saved before held its outlines in
+    // `strokes` (bands, inner first, each its visible width); `normalizeStyle`
+    // turns them into strokes here (`strokesFromBands`).
+    strokeEffects: [strokeDefault('#ffffff', 3)],
     // How the outlines are laid: 'merged' (one shape under the fill) or
     // 'each' (letter by letter, a later letter's rim over an earlier
     // letter's fill), with 'round' or 'miter' corners. `strokeShade` (0..1)
@@ -598,11 +598,13 @@ export function steppedSize(v, d) {
 // Two old fields are migrated rather than merged, and this is the only place in
 // the app that still knows they existed:
 //
-//   outline + outlineWidth  ->  strokes[0]   (width 0 / missing -> no stroke)
+//   outline + outlineWidth  ->  strokeEffects[0]   (width 0 / missing -> no stroke)
+//   strokes (outline bands) ->  strokeEffects, at its head (`strokesFromBands`)
 //   shadow { on, ... }      ->  shadows      ([] when `on` was false)
 //
-// A style that already carries `strokes` / `shadows` is taken as written; the
-// legacy keys are then dropped so nothing downstream can read a stale copy.
+// A style that already carries `strokeEffects` / `shadows` is taken as
+// written; the legacy keys are then dropped so nothing downstream can read a
+// stale copy.
 const STROKE_DEF = { color: '#ffffff', width: 3, opacity: 1 };
 const BLOCK_SHAPES = ['auto', 'oval', 'rect', 'off'];
 const SHADOW_DEF = { x: 2, y: 2, size: 2.33, color: '#000000', opacity: 0.6 };
@@ -869,9 +871,11 @@ function shadowAngleField(x) {
 // Photoshop's Size and Distance limits.
 export const SHADOW_SIZE_MAX = 250;
 export const SHADOW_DISTANCE_MAX = 30000;
-// A shadow as Photoshop adds one: Multiply, 75%, the chapter's light, 5 away,
-// size 5, knocked out by the letters; or the person's own default for one
-// (`fxDefault`, Make Default), thrown from the same light.
+// A new shadow: Normal (Photoshop's Multiply looks the same over white paper
+// and leaves a letterer guessing what the mode does), black, 75%, the
+// chapter's light, 5 away, size 5, knocked out by the letters; or the
+// person's own default for one (`fxDefault`, Make Default), thrown from the
+// same light.
 export function newShadow(light = { angle: 120 }) {
   return newFx('dropShadow', light);
 }
@@ -884,7 +888,7 @@ function factoryShadow(light = { angle: 120 }) {
     size: 5,
     color: '#000000',
     opacity: 0.75,
-    blend: 'multiply',
+    blend: 'normal',
     knockout: true,
     useGlobalLight: true,
   });
@@ -903,14 +907,30 @@ function factoryShadow(light = { angle: 120 }) {
 //               contour is spread over (0.01..1)
 //   jitter      Quality > Jitter, 0..1: scatters each pixel's sample of the
 //               gradient (a colour glow ignores it)
-// The defaults are Photoshop's (PhotoCraft's `fresh_effect`): Screen, 75 %,
-// the pale yellow, Softer, size 5, range 50 %.
+// The defaults show on a manga page: Normal, 75 %, Softer, size 6, range
+// 50 %, an outer glow black (a halo round the letters and their outline on
+// white paper) and an inner glow white (a light rim inside black letters).
+// Photoshop's own (Screen, the pale yellow #ffffbe, size 5) is invisible on
+// white paper; a glow still at those values and off was never touched, so it
+// reads as the new default (`normalizeGlow`).
 function glowDefault(inner) {
-  const g = { on: false, blend: 'screen', opacity: 0.75, noise: 0, color: '#ffffbe', fill: 'color', gradient: glowGradient('#ffffbe'), technique: 'softer', spread: 0, size: 5, contour: { preset: 'linear', aa: false }, range: 0.5, jitter: 0 };
+  const color = inner ? '#ffffff' : '#000000';
+  const g = { on: false, blend: 'normal', opacity: 0.75, noise: 0, color, fill: 'color', gradient: glowGradient(color), technique: 'softer', spread: 0, size: 6, contour: { preset: 'linear', aa: false }, range: 0.5, jitter: 0 };
   if (inner) g.source = 'edge';
   return g;
 }
+// Photoshop's default glow, the one every glow was before 2026-11-10.
+function oldGlowDefault(inner) {
+  return { ...glowDefault(inner), blend: 'screen', color: '#ffffbe', gradient: glowGradient('#ffffbe'), size: 5 };
+}
 export function normalizeGlow(x, inner = false) {
+  const g = readGlow(x, inner);
+  if (!g.on && glowLook(g) === glowLook(readGlow(oldGlowDefault(inner), inner))) return readGlow(glowDefault(inner), inner);
+  return g;
+}
+// A glow's values but its gradient's noise seed (`fxStored` leaves it out too).
+const glowLook = (g) => JSON.stringify({ ...g, gradient: { ...g.gradient, noise: { ...g.gradient.noise, seed: 0 } } });
+function readGlow(x, inner) {
   const d = glowDefault(inner);
   const g = {
     on: x?.on === true,
@@ -1127,6 +1147,46 @@ export function normalizeGradientOverlay(x) {
 export function newGradientOverlay() {
   return newFx('gradientOverlay');
 }
+
+// The Fill tab's Tint (2026-11-10): the one thing Color and Gradient Overlay
+// do that the fill cannot, colour the fill in a blend mode. It lives on their
+// own data, so the engine, the PSD and old chapters keep one paint path: the
+// tint is the top colour overlay, or with none the top gradient overlay.
+// Every other overlay came from an older file; it paints as before and the
+// Inspector offers only to remove it (`olderOverlays`).
+export function tintOf(style) {
+  if (style?.colorOverlays?.length) return { kind: 'color', fx: style.colorOverlays[0] };
+  if (style?.gradientOverlays?.length) return { kind: 'gradient', fx: style.gradientOverlays[0] };
+  return null;
+}
+/** The overlays past the tint: `{ kind, i, fx }`, top first, colour then gradient. */
+export function olderOverlays(style) {
+  const t = tintOf(style);
+  const colour = (style?.colorOverlays ?? []).map((fx, i) => ({ kind: 'color', i, fx }));
+  const grads = (style?.gradientOverlays ?? []).map((fx, i) => ({ kind: 'gradient', i, fx }));
+  return [...colour, ...grads].filter((o) => !(t && o.kind === t.kind && o.i === 0));
+}
+/**
+ * Makes the tint a colour or a gradient, keeping its switch, mode and amount:
+ * a colour tint becomes a gradient from its colour to clear, a gradient one
+ * a colour of its first stop. Returns false when it already is that kind.
+ */
+export function setTintKind(style, kind) {
+  const t = tintOf(style);
+  if (!t || t.kind === kind) return false;
+  const keep = { ...instanceOff(t.fx), blend: t.fx.blend, opacity: t.fx.opacity };
+  if (kind === 'gradient') {
+    style.colorOverlays.splice(0, 1);
+    const g = newGradientOverlay();
+    const c = t.fx.color;
+    g.gradient = normalizeFxGradient({ ...g.gradient, stops: [{ color: c, pos: 0 }, { color: c, pos: 1 }], opacityStops: [{ opacity: 1, pos: 0 }, { opacity: 0, pos: 1 }] });
+    style.gradientOverlays.unshift({ ...g, ...keep });
+  } else {
+    style.gradientOverlays.splice(0, 1);
+    style.colorOverlays.unshift({ ...newOverlay(), color: t.fx.gradient?.stops?.[0]?.color ?? '#ff0000', ...keep });
+  }
+  return true;
+}
 // The Pattern Overlay: one of the fill's own patterns (`normalizePattern`)
 // over the letters' fill, in its own mode. Its tile follows the box's size
 // as the fill's does; `scale`, `angle` and `anchor` are the pattern's.
@@ -1279,14 +1339,16 @@ export function normalizeBevel(x) {
 //   fill       STROKE_FILLS: `color`, `gradient` (an effect gradient over the
 //              stroke's own frame) or `pattern` (as the fill's)
 // Of the list the first is on top: a higher stroke covers the ones under it.
-// The defaults are PhotoCraft's: 1 px, Inside, black, Normal, 100 %.
+// The defaults are a letterer's outline, not PhotoCraft's 1 px Inside: 3 px,
+// Outside, black, Normal, 100 %.
 export const STROKE_POSITIONS = ['outside', 'inside', 'center'];
 export const STROKE_FILLS = ['color', 'gradient', 'pattern'];
+const STROKE_SIZE_DEF = 3;
 export function normalizeStrokeEffect(x) {
   return {
     ...instanceOff(x),
-    size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, 1))),
-    position: STROKE_POSITIONS.includes(x?.position) ? x.position : 'inside',
+    size: Math.min(SHADOW_SIZE_MAX, Math.max(0, num(x?.size, STROKE_SIZE_DEF))),
+    position: STROKE_POSITIONS.includes(x?.position) ? x.position : 'outside',
     blend: blendMode(x?.blend, 'normal'),
     opacity: Math.min(1, Math.max(0, num(x?.opacity, 1))),
     ...(x?.overprint === true ? { overprint: true } : null),
@@ -1298,6 +1360,80 @@ export function normalizeStrokeEffect(x) {
 }
 export function newStrokeEffect() {
   return newFx('strokeEffect');
+}
+// A plain outline stroke: Outside, `color`, `size` page px, Normal, 100 %.
+function strokeDefault(color, size) {
+  return normalizeStrokeEffect({ color, size });
+}
+
+// The outline bands of a style saved before there was one stroke type
+// (`strokes`: inner first, each its visible width) as strokes: band i is an
+// Outside stroke as wide as the bands up to it, laid under the ones before
+// it. A band went round the one inside it, so the stack lays the same rings.
+export function strokesFromBands(bands) {
+  const out = [];
+  let cum = 0;
+  for (const k of Array.isArray(bands) ? bands : []) {
+    const b = normalizeStroke(k);
+    if (!(b.width > 0)) continue;
+    cum += b.width;
+    out.push(normalizeStrokeEffect({ size: cum, position: 'outside', blend: 'normal', fill: 'color', color: b.color, opacity: b.opacity }));
+  }
+  return out;
+}
+
+/**
+ * The outline run of a style: the strokes at the head of `strokeEffects`
+ * that the band painter lays (TextBox, the glyph job, the ink finish, the
+ * PSD's outlines), as bands inner first (`{ color, width, opacity }`, the
+ * shape `strokeBands` reads), and `n`, how many strokes of the list they
+ * take. A stroke is in the run while it is Outside, a colour, Normal and not
+ * Overprint, and wider than the one above it (a narrower one under a wider
+ * one is the Rust engine's to lay). An off one lays nothing and does not end
+ * the run. A Stroke Emboss bevels the Rust engine's strokes, so with one on
+ * there is no run. Every stroke after the run is laid by the Rust engine
+ * (`boxEffects`).
+ */
+export function outlineRun(style) {
+  const list = Array.isArray(style?.strokeEffects) ? style.strokeEffects : [];
+  const bands = [];
+  let n = 0;
+  if (style?.bevel?.on && style.bevel.style === 'stroke') return { bands, n };
+  let last = 0;
+  for (const k of list) {
+    if (!k || k.position !== 'outside' || (k.fill ?? 'color') !== 'color' || (k.blend ?? 'normal') !== 'normal' || k.overprint === true) break;
+    if (!instanceOn(k)) {
+      n++;
+      continue;
+    }
+    const size = Math.max(0, Number(k.size) || 0);
+    if (size <= last) {
+      if (size > 0) break;
+      n++;
+      continue;
+    }
+    bands.push({ color: k.color, width: size - last, opacity: Math.min(1, Math.max(0, num(k.opacity, 1))) });
+    last = size;
+    n++;
+  }
+  return { bands, n };
+}
+/** The outline run's bands alone (`outlineRun`). */
+export const outlineBands = (style) => outlineRun(style).bands;
+/**
+ * How far the strokes reach past the letters' edge, page px: an Outside
+ * stroke its size, a Center one half of it. Every stroke counts, on or off,
+ * the outline run's and the Rust engine's alike, so switching one or moving
+ * it between them (a new Position, say) never moves the text. For an outline run it is the sum of
+ * the bands' widths, as it always was.
+ */
+export function strokeExtentOf(style) {
+  let out = 0;
+  for (const k of Array.isArray(style?.strokeEffects) ? style.strokeEffects : []) {
+    const size = Math.max(0, Number(k?.size) || 0);
+    out = Math.max(out, k.position === 'outside' ? size : k.position === 'center' ? size / 2 : 0);
+  }
+  return out;
 }
 
 // ===== Make Default / Reset to Default (LAYER_STYLES_PLAN.md item 12) =====
@@ -1653,6 +1789,18 @@ export const PATTERN_KINDS = [
   'glitch',
   'dither',
   'dither-dots',
+  'circles',
+  'crosses',
+  'sparkles',
+  'flowers',
+  'basket',
+  'herringbone',
+  'plaid',
+  'chevron',
+  'seigaiha',
+  'shippo',
+  'dashes',
+  'concentric',
 ];
 export const CANVAS_PATTERN_KINDS = PATTERN_KINDS.slice(0, 11);
 // The kinds whose look a seed changes.
@@ -1950,14 +2098,19 @@ export function normalizePattern(p, d = defaultStyle().pattern) {
 export function normalizeStyle(s) {
   const d = defaultStyle();
   const src = s || {};
-  const { outline, outlineWidth, shadow, ...srcFlat } = src;
+  const { outline, outlineWidth, shadow, strokes: bands, ...srcFlat } = src;
 
-  let strokes;
-  if (Array.isArray(src.strokes)) strokes = src.strokes.map(normalizeStroke).filter((k) => k.width > 0);
+  // The strokes: the one list. An older style's outlines (`strokes`, or the
+  // oldest `outline` + `outlineWidth`) become its head, over the Photoshop
+  // strokes it had beside them, as they were laid.
+  let legacy = null;
+  if (Array.isArray(bands)) legacy = strokesFromBands(bands);
   else if (outline !== undefined || outlineWidth !== undefined) {
     const w = num(outlineWidth, STROKE_DEF.width);
-    strokes = w > 0 ? [normalizeStroke({ color: outline, width: w })] : [];
-  } else strokes = d.strokes;
+    legacy = w > 0 ? strokesFromBands([{ color: outline, width: w }]) : [];
+  }
+  const own = Array.isArray(src.strokeEffects) ? src.strokeEffects.map(normalizeStrokeEffect) : null;
+  const strokeEffects = legacy ? capped([...legacy, ...(own ?? [])]) : own ? capped(own) : d.strokeEffects;
 
   let shadows;
   if (Array.isArray(src.shadows)) shadows = capped(src.shadows.map(normalizeShadow));
@@ -2017,6 +2170,9 @@ export function normalizeStyle(s) {
         iy: num(p?.iy, 0),
         ox: num(p?.ox, 0),
         oy: num(p?.oy, 0),
+        // Smooth anchors (bezier-path.js) say so; a corner carries no key, so
+        // a path saved before smooth anchors existed reads back byte for byte.
+        ...(p?.auto === true ? { auto: true } : {}),
       });
     }
   }
@@ -2095,7 +2251,6 @@ export function normalizeStyle(s) {
     gradient: g,
     pattern: pat,
     noFill: src.noFill === true,
-    strokes,
     shadows,
     outerGlow: normalizeGlow(src.outerGlow),
     innerGlow: normalizeGlow(src.innerGlow, true),
@@ -2105,10 +2260,11 @@ export function normalizeStyle(s) {
     patternOverlay: normalizePatternOverlay(src.patternOverlay),
     satin: normalizeSatin(src.satin),
     bevel: normalizeBevel(src.bevel),
-    strokeEffects: Array.isArray(src.strokeEffects) ? capped(src.strokeEffects.map(normalizeStrokeEffect)) : [],
+    strokeEffects,
     roughen: { ...d.roughen, ...(src.roughen || {}) },
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
+  foldPatternFill(out);
   // A move-based SFX wrote the box's gaps over with its preset's: they go
   // back, and what it switched off stays in `before` for Remove SFX.
   const oldBefore = isOldSfx(src.sfx) && src.sfx.on === true ? src.sfx.before : null;
@@ -2120,6 +2276,36 @@ export function normalizeStyle(s) {
   return out;
 }
 
+// The panel has one pattern tool, the Pattern Overlay. A style with the old
+// pattern fill on moves its pattern there when the overlay paints the very
+// same: Normal at 100 % straight on the fill, under the satin, the glows and
+// the strokes, as the fill was. That holds while the tile is opaque (a full
+// ground, not a picked image that can be see-through), the fill is at full
+// Fill opacity and shown at all, and no overlay of its own is on. Any other
+// pattern fill stays as it was and is still painted; the panel offers to move
+// it. The gradient under it was never shown (the pattern beat it): it is
+// switched off, its stops kept.
+export function patternFillFolds(s) {
+  const p = s?.pattern;
+  return (
+    p?.on === true &&
+    s.noFill !== true &&
+    s.patternOverlay?.on !== true &&
+    (s.fillOpacity ?? 1) >= 1 &&
+    (p.bgOpacity ?? 1) >= 1 &&
+    !(p.kind === 'picked' && p.mode === 'image')
+  );
+}
+// The move itself, in place: `force` moves a pattern that does not paint the
+// same (the panel's button), replacing any overlay that is on.
+export function foldPatternFill(s, force = false) {
+  if (!(force ? s?.pattern?.on === true : patternFillFolds(s))) return false;
+  s.patternOverlay = { on: true, blend: 'normal', opacity: 1, pattern: { ...s.pattern, on: true } };
+  s.pattern = { ...s.pattern, on: false };
+  s.gradient = { ...s.gradient, on: false };
+  return true;
+}
+
 // Outline fit's air, in em, or null for the layout before it.
 export const MARGIN_MAX = 2;
 export function normalizeMargin(v) {
@@ -2129,16 +2315,10 @@ export function normalizeMargin(v) {
 }
 
 // The path a box starts with when the effect is switched on: a straight line
-// across the box's middle, whose centre anchor carries symmetric horizontal
-// handles so one drag bends it. In box-local page px, for a box `w` by `h`.
+// across the box's middle through three smooth anchors, so a drag on any of
+// them bends it (`wavePath`). In box-local page px, for a box `w` by `h`.
 export function defaultPathPts(w, h) {
-  const half = Math.max(10, Math.min(50, (Number(w) || 0) / 4));
-  const midY = (Number(h) || 0) / 2;
-  return [
-    { x: 0, y: midY, ix: 0, iy: 0, ox: 0, oy: 0 },
-    { x: (Number(w) || 0) / 2, y: midY, ix: -half, iy: 0, ox: half, oy: 0 },
-    { x: Number(w) || 0, y: midY, ix: 0, iy: 0, ox: 0, oy: 0 },
-  ];
+  return wavePath(w, h, 0);
 }
 
 // ---- the balloon a box was fitted to ----

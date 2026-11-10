@@ -23,7 +23,7 @@ import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/i
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
-import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch } from './data.js';
+import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch, outlineRun, outlineBands, strokesFromBands } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
 import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
 import { warpActive } from './warp.js';
@@ -1143,7 +1143,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
     const r = (((a - turn) % 360) + 540) % 360 - 180;
     return Math.round(r * 1e6) / 1e6;
   };
-  const bands = strokeBands(s.strokes);
+  const bands = strokeBands(outlineBands(s));
   if (bands.length) {
     effects.stroke = bands.map((band) => ({
       ...FX_ON,
@@ -1294,7 +1294,11 @@ export function textLayerFor(p, box, rendered, doc = null) {
   // what each paints with (a gradient or a pattern only when it has one).
   // One switched off is written unticked (`fxOn`) and does not count as
   // painting for a Stroke Emboss.
+  // An outline-run stroke switched off makes no band, so it goes here too,
+  // unticked, or the PSD would lose it.
+  const runN = outlineRun(s).n;
   const psdStrokes = (Array.isArray(s.strokeEffects) ? s.strokeEffects : [])
+    .filter((k, i) => i >= runN || !instanceOn(k))
     .filter((k) => k.opacity > 0 && k.size > 0)
     .map((k) => ({ ...k, fill: k.fill === 'gradient' && k.gradient ? 'gradient' : k.fill === 'pattern' && k.pattern ? 'pattern' : 'color' }));
   if (bv?.on && !(bv.style === 'stroke' && !psdStrokes.some(instanceOn))) {
@@ -1438,7 +1442,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
         // Photoshop's type style carries ONE stroke colour; the innermost stroke
         // is the one that sits against the glyph, so it is the one to name.
         // (`bands` is outermost-first - see strokeBands.)
-        strokeColor: hexToRgb(s.strokes?.[0]?.color ?? s.color),
+        strokeColor: hexToRgb(outlineBands(s)[0]?.color ?? s.color),
       },
       // The letters another family lent, each stretch in the font that drew it.
       ...(borrowed ? { styleRuns: borrowed } : null),
@@ -2122,7 +2126,7 @@ function blendingFromPsd(n) {
 
 /**
  * A foreign type layer's layer style as the box's style fields: its effects
- * (`n.effects`, ag-psd), its blending, and its outlines (`strokes`), every
+ * (`n.effects`, ag-psd), its blending, and its strokes, the outlines first, every
  * effect field stated so an absent one is off rather than the app's default.
  * `light` is the document's Global Light (`imageResources.globalAngle` and
  * `globalAltitude`).
@@ -2133,12 +2137,11 @@ export function styleFromPsdLayer(n, light = {}) {
   const list = (v) => all(v).filter(psdFxOn);
   const { outlines, strokes } = splitStrokes(list(fx.stroke));
   const style = {
-    strokes: strokesFromEffects(outlines),
+    strokeEffects: [...strokesFromBands(strokesFromEffects(outlines)), ...strokes],
     shadows: all(fx.dropShadow).map((e) => ({ ...psdOff(e), ...shadowFromPsd(e, light), spread: psdUnits(e.choke) / 100, knockout: e.layerConceals === true })),
     innerShadows: all(fx.innerShadow).map((e) => ({ ...psdOff(e), ...shadowFromPsd(e, light), choke: psdUnits(e.choke) / 100 })),
     colorOverlays: all(fx.solidFill).map((e) => ({ ...psdOff(e), color: e.color ? rgbHex(e.color) : '#000000', opacity: psdNum(e.opacity, 1), blend: blendFromPsd(e.blendMode) })),
     gradientOverlays: [],
-    strokeEffects: strokes,
     outerGlow: fx.outerGlow ? glowFromPsd(fx.outerGlow, false) : { on: false },
     innerGlow: fx.innerGlow ? glowFromPsd(fx.innerGlow, true) : { on: false },
     satin: { on: false },
@@ -2273,8 +2276,7 @@ export async function reconstructForeign(psd) {
         // Its layer style: the effects, the blending and the outlines
         // (`styleFromPsdLayer`); a Photoshop stroke is not an outline.
         const fxStyle = styleFromPsdLayer(n, light);
-        const strokes = fxStyle.strokes;
-        const inset = textInset({ strokes });
+        const inset = textInset({ strokeEffects: fxStyle.strokeEffects });
         let x = n.left ?? 0;
         let y = n.top ?? 0;
         let w = Math.max(40, (n.right ?? x + 200) - x);
@@ -2346,7 +2348,6 @@ export async function reconstructForeign(psd) {
             valign: 'top',
             color: st.fillColor ? rgbHex(st.fillColor) : '#000000',
             ...fxStyle,
-            strokes,
           },
         });
       }

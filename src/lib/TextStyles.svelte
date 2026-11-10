@@ -55,10 +55,10 @@
   function summary(t) {
     const bits = [];
     const st = t?.style ?? {};
-    if (Array.isArray(st.strokes)) bits.push(st.strokes.length ? `outline ${st.strokes[0].width}px` : 'no outline');
+    if (Array.isArray(st.strokeEffects)) bits.push(st.strokeEffects.length ? `outline ${st.strokeEffects[0].size}px` : 'no outline');
     if (t?.size) bits.push(`${t.size}px`);
     if (t?.minSize) bits.push(`min ${t.minSize}px`);
-    const more = Object.keys(st).filter((k) => k !== 'font' && k !== 'strokes').length;
+    const more = Object.keys(st).filter((k) => k !== 'font' && k !== 'strokeEffects').length;
     if (more) bits.push(`+${more} style`);
     return bits.join(' · ');
   }

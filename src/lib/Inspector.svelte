@@ -26,11 +26,14 @@
     boxLocked,
     setBoxLocked,
     setChapterLight,
+    toastError,
   } from './store.svelte.js';
 
   import { editBurst } from './edit-burst.js';
   import FontPicker from './FontPicker.svelte';
-  import { sizingOf, sizeSetting, setSizeSetting, steppedSize, SIZE_MIN, SIZE_MAX } from './data.js';
+  import { sizingOf, sizeSetting, setSizeSetting, steppedSize, SIZE_MIN, SIZE_MAX, foldPatternFill } from './data.js';
+  import { loadedPatterns, loadPatternLibrary, importPatterns, removePatternSet, useLoadedPattern } from './pattern-library.svelte.js';
+  import { isTauri, pickFilesTauri } from './importer.js';
   import { comboFor, formatCombo } from './shortcuts.svelte.js';
   import { modKey } from './format.js';
   import {
@@ -58,7 +61,9 @@
     newShadow,
     newInnerShadow,
     newOverlay,
-    newGradientOverlay,
+    tintOf,
+    olderOverlays,
+    setTintKind,
     newStrokeEffect,
     FX_GRADIENT_STYLES,
     FX_GRADIENT_METHODS,
@@ -80,13 +85,17 @@
     instanceOn,
     blendingSwitch,
     blendIfActive,
+    outlineRun,
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
+  import ValueSlider from './ValueSlider.svelte';
+  import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
   import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
   import { layoutShape } from './balloon.js';
   import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
+  import { wavePath } from './bezier-path.js';
   import { maskTool, setMaskTool } from './mask-tool.svelte.js';
   import { regridWarp } from './warp-gizmo.js';
   import { liquifyTool, setLiquifyMode, LIQUIFY_RADIUS_MIN, LIQUIFY_RADIUS_MAX } from './liquify-tool.svelte.js';
@@ -259,7 +268,7 @@
   // One per layer gradient (its title): an overlay's fold does not open a
   // stroke's.
   let gradMore = $state({});
-  const overlayCount = $derived(box ? box.style.colorOverlays.length + box.style.gradientOverlays.length + (box.style.patternOverlay.on ? 1 : 0) : 0);
+  const patternOn = $derived(!!box?.style.patternOverlay?.on);
   const blendTuned = $derived.by(() => {
     const b = box?.style.blending;
     if (!b) return false;
@@ -477,16 +486,23 @@
   }
 
   // ---- fill mode ----
-  // Four exclusive looks over three independent flags, because the renderer
-  // needs them all (no fill beats pattern beats gradient when more than one
-  // is on) and the user needs one choice.
+  // Three exclusive looks over independent flags, because the renderer needs
+  // them all (no fill beats pattern beats gradient when more than one is on)
+  // and the user needs one choice. A pattern is the Pattern Overlay's, the
+  // one pattern tool; 'pattern' here is an old pattern fill that could not
+  // move there by itself (`foldPatternFill`), offered a move.
   const fillMode = $derived(
     box ? (box.style.noFill ? 'none' : box.style.pattern.on ? 'pattern' : box.style.gradient.on ? 'gradient' : 'solid') : 'solid',
   );
   function setFillMode(m) {
     box.style.noFill = m === 'none';
     box.style.gradient.on = m === 'gradient';
-    box.style.pattern.on = m === 'pattern';
+    box.style.pattern.on = false;
+    touch();
+  }
+  function movePatternFill() {
+    if (!box || !foldPatternFill(box.style, true)) return;
+    overlaysOpen = true;
     touch();
   }
 
@@ -580,7 +596,7 @@
     // Painted again only for what the cards show: the pattern's look, never
     // which card is chosen. A press in the panel turns `editLive` on and off
     // and runs this again; with nothing changed it hands back what it has.
-    const pat = box?.style.pattern;
+    const pat = box?.style.patternOverlay?.pattern;
     const key = JSON.stringify([box?.id, rustPatterns, shownKinds, patternTiles.version, pat ? { ...$state.snapshot(pat), kind: '' } : null]);
     if (cardsKept?.key === key) return cardsKept.cards;
     const cards = paintPatternCards();
@@ -594,7 +610,7 @@
     if (e.button === 0 && !e.target.closest?.('select')) holdEditLive();
   }
   function paintPatternCards() {
-    const pat = box?.style.pattern;
+    const pat = box?.style.patternOverlay?.pattern;
     const fg = pat?.fg ?? '#000000';
     const bg = pat?.bg ?? '#ffffff';
     const out = {};
@@ -617,29 +633,87 @@
   }
   // Pattern from page: the next drag on the page is read (pattern-pick.svelte.js),
   // which records its own style step, so the panel's pending one lands first.
-  function pickFromPage(target = 'pattern') {
+  function pickFromPage(target = 'patternOverlay.pattern') {
     if (!box) return;
     settle();
     startPatternPick(page().id, box.id, target);
   }
-  // An effect's pattern takes the tile the fill already took from the page,
-  // at the page's own size and lie, as a pick does.
+  // An effect's pattern takes the tile the Pattern Overlay already has (from
+  // the page or a .pat), at its own size and lie, as a pick does.
   function usePickedTile(p, from) {
     Object.assign(p, { kind: 'picked', src: from.src, cell: [...from.cell], mode: from.mode, scale: 1, angle: 0, aspect: 1, density: 0.5, ox: 0, oy: 0 });
     touch();
   }
 
-  // ---- strokes ----
-  function addStroke() {
-    const ks = box.style.strokes;
-    // A new band goes OUTSIDE the ones already there (the array is innermost
-    // first), which is the only place a second stroke is ever wanted.
-    ks.push({ color: ks.length ? '#000000' : '#ffffff', width: 3, opacity: 1 });
+  // ---- loaded patterns (.pat) ----
+  // The person's own patterns, app-wide (pattern-library.svelte.js), offered
+  // under the built-in ones in the Pattern Overlay.
+  void loadPatternLibrary();
+  let patFileInput = $state(null);
+  async function loadPatFiles() {
+    try {
+      let files;
+      if (isTauri()) files = await pickFilesTauri({ name: 'Patterns', extensions: ['pat'], multiple: true });
+      else return patFileInput?.click();
+      if (files?.length) await takePatFiles(files);
+    } catch (e) {
+      toastError(`Couldn't load the patterns: ${e?.message ?? e}`);
+    }
+  }
+  async function takePatFiles(files) {
+    try {
+      const read = await Promise.all([...files].map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+      const { added, same, skipped } = await importPatterns(read);
+      const parts = [`${added} pattern${added === 1 ? '' : 's'} loaded`];
+      if (same) parts.push(`${same} already there`);
+      if (skipped) parts.push(`${skipped} could not be read`);
+      toast(parts.join(', ') + '.');
+    } catch (e) {
+      toastError(`Couldn't load the patterns: ${e?.message ?? e}`);
+    }
+  }
+  // A loaded pattern becomes the overlay's: its tile is copied into the
+  // chapter first, so the chapter keeps it whatever the library does.
+  async function pickLoaded(it) {
+    const id = box?.id;
+    if (!id) return;
+    try {
+      const fields = await useLoadedPattern(it);
+      if (box?.id !== id) return;
+      settle();
+      Object.assign(box.style.patternOverlay.pattern, fields);
+      touch();
+    } catch (e) {
+      toastError(`Couldn't use that pattern: ${e?.message ?? e}`);
+    }
+  }
+
+  // ---- the layer effects' sliders and folds ----
+  // A slider's value written as it is (ValueSlider clamps it), or a percent
+  // slider's as the fraction the style keeps.
+  function setVal(obj, key, v) {
+    obj[key] = v;
     touch();
   }
-  function removeStroke(i) {
-    box.style.strokes.splice(i, 1);
+  function setFrac(obj, key, v) {
+    obj[key] = clamp(v / 100, 0, 1);
     touch();
+  }
+  // Which effect's "More" fold is open, by the effect (`moreFold`): closed
+  // until asked, kept for the session as the tabs are.
+  let fxMore = $state({});
+  // A satin dark on dark letters lays nothing anyone can see: the default
+  // (black, Multiply) on the default letters (black) is just that.
+  function satinHidden(st) {
+    const sa = st?.satin;
+    if (!sa?.on || st.noFill || st.gradient?.on || st.patternOverlay?.on) return false;
+    return lumOf(sa.color) < 0.25 && lumOf(st.color) < 0.25;
+  }
+  function lumOf(hex) {
+    const h = String(hex ?? '#000000').replace('#', '');
+    const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const [r, g, b] = [0, 2, 4].map((i) => (parseInt(full.slice(i, i + 2), 16) || 0) / 255);
+    return 0.299 * r + 0.587 * g + 0.114 * b;
   }
 
   // ---- Make Default / Reset to Default (LAYER_STYLES_PLAN.md item 12) ----
@@ -724,30 +798,27 @@
     if (keep === undefined) delete sh.angle;
     else sh.angle = keep;
   }
-  function setShadowAngle(sh, e) {
-    const el = e.target;
-    let a = +el.value;
-    if (!Number.isFinite(a)) a = angleOf(sh);
+  // A dial held down on the chapter's light is laid live and recorded as one
+  // step when it lets go (`setChapterLight`).
+  function setShadowAngle(sh, a, live = false) {
+    if (!Number.isFinite(a)) return;
     a = clamp(a, -180, 180);
-    if (sh.useGlobalLight) setChapterLight({ angle: a });
+    if (sh.useGlobalLight) setChapterLight({ angle: a }, { live });
     else {
       Object.assign(sh, shadowOffset(a, shadowDistance(sh)));
       keepShadowAngle(sh, a);
       touch();
     }
-    el.value = String(angleOf(sh));
   }
-  function setShadowDistance(sh, e) {
-    const el = e.target;
-    let d = +el.value;
+  function setShadowDistance(sh, d) {
     if (!Number.isFinite(d)) d = 0;
     d = clamp(d, 0, SHADOW_DISTANCE_MAX);
     const a = angleOf(sh);
     Object.assign(sh, shadowOffset(a, d));
     if (!sh.useGlobalLight) keepShadowAngle(sh, a);
-    el.value = String(Math.round(shadowDistance(sh) * 100) / 100);
     touch();
   }
+  const endLightDrag = () => setChapterLight({});
   // Off the light, a shadow keeps the angle it had from it.
   function setShadowGlobal(sh, on) {
     const a = angleOf(sh);
@@ -797,17 +868,14 @@
   // own when not. Turning or raising one on the light turns or raises the
   // chapter's, as in Photoshop, and every shadow and bevel on it follows.
   const bevelLight = (bv) => (bv.useGlobalLight ? (app.typesetting.light ?? LIGHT_DEF) : bv);
-  function setBevelLight(bv, key, e, lo, hi) {
-    const el = e.target;
-    let v = +el.value;
-    if (!Number.isFinite(v)) v = bevelLight(bv)[key];
-    v = clamp(v, lo, hi);
-    if (bv.useGlobalLight) setChapterLight({ [key]: v });
+  // `next` is the light dial's { angle, altitude }.
+  function setBevelLight(bv, next, live = false) {
+    const v = { angle: clamp(next.angle, -180, 180), altitude: clamp(next.altitude, 0, 90) };
+    if (bv.useGlobalLight) setChapterLight(v, { live });
     else {
-      bv[key] = v;
+      Object.assign(bv, v);
       touch();
     }
-    el.value = String(bevelLight(bv)[key]);
   }
   // Off the light, a bevel keeps the angle and altitude it had from it.
   function setBevelGlobal(bv, on) {
@@ -817,16 +885,6 @@
       bv.altitude = l.altitude;
     }
     bv.useGlobalLight = on;
-    touch();
-  }
-  // A percent field over a fraction: Depth and the Texture's Scale and Depth.
-  function commitPct(obj, key, e, lo, hi) {
-    const el = e.target;
-    let v = +el.value;
-    if (!Number.isFinite(v)) v = obj[key] * 100;
-    v = clamp(v, lo, hi);
-    obj[key] = v / 100;
-    el.value = String(Math.round(v));
     touch();
   }
   function removeShadow(i) {
@@ -843,24 +901,23 @@
     box.style.innerShadows.splice(i, 1);
     touch();
   }
-  // Color Overlay.
-  function addOverlay() {
-    if (!roomFor(box.style.colorOverlays)) return;
+  // The Tint (Fill tab): the top colour overlay, or the top gradient one
+  // (`tintOf`). Off by default: no overlay. Switched off it is kept, as any
+  // effect instance is.
+  function setTint(on) {
+    const t = tintOf(box.style);
+    if (t) return setInstanceOn(t.fx, on);
+    if (!on) return;
     box.style.colorOverlays.push(newOverlay());
     touch();
   }
-  function removeOverlay(i) {
-    box.style.colorOverlays.splice(i, 1);
-    touch();
+  function pickTintKind(kind) {
+    if (setTintKind(box.style, kind)) touch();
   }
-  // Gradient Overlay, and Photoshop's Stroke effect: lists, first on top.
-  function addGradientOverlay() {
-    if (!roomFor(box.style.gradientOverlays)) return;
-    box.style.gradientOverlays.push(newGradientOverlay());
-    touch();
-  }
-  function removeGradientOverlay(i) {
-    box.style.gradientOverlays.splice(i, 1);
+  // An overlay from an older file (`olderOverlays`): it paints as before and
+  // can only be removed.
+  function removeOlderOverlay(o) {
+    (o.kind === 'color' ? box.style.colorOverlays : box.style.gradientOverlays).splice(o.i, 1);
     touch();
   }
   function addStrokeEffect() {
@@ -896,9 +953,11 @@
     n.seed = seed;
     touch();
   }
-  const POSITION_LABELS = { outside: 'Outside', inside: 'Inside', center: 'Center' };
   // A blend mode's name as Photoshop's menu shows it.
   const blendLabel = (m) => m.split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+  // The modes that only darken: over white paper they leave black letters as
+  // Normal paints them, which reads as "the mode does nothing".
+  const DARKEN_MODES = ['darken', 'multiply', 'color-burn', 'linear-burn', 'darker-color'];
 
   // ---- presets ----
   let presetId = $state('');
@@ -1042,467 +1101,419 @@
   {/if}
 {/snippet}
 
-{#snippet shadowRows(list, inner)}
-  {@const name = inner ? 'Inner shadow' : 'Shadow'}
-  <div class="insp-list k-shadow">
-    {#if list.length}
-      <div class="insp-cap"><span></span><span>Angle</span><span>Dist</span><span>Size</span><span>Op %</span><span></span><span></span></div>
-    {/if}
-    {#each list as sh, i (sh)}
-      <!-- The Global Light is read here so a turn of it shows. -->
-      {@const angle = (app.typesetting.light?.angle, angleOf(sh))}
-      {@const key = inner ? 'choke' : 'spread'}
-      <div class="insp-row" class:inst-off={!instanceOn(sh)}>
-        {@render swatchCell(sh, 'color', `${name} ${i + 1} colour`)}
-        <input type="number" min="-180" max="180" step="1" value={angle} aria-label="{name} {i + 1} angle" title={sh.useGlobalLight ? 'Angle of the chapter\'s light, degrees: turns every shadow on it' : 'Angle the light comes from, degrees'} onchange={(e) => setShadowAngle(sh, e)} />
-        <input type="number" min="0" max={SHADOW_DISTANCE_MAX} step="1" value={Math.round(shadowDistance(sh) * 100) / 100} aria-label="{name} {i + 1} distance" title="Distance, page px" onchange={(e) => setShadowDistance(sh, e)} />
-        <input type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={sh.size} aria-label="{name} {i + 1} size" title="Size: how far the soft edge reaches, page px" onchange={(e) => commitNum(sh, 'size', e, 0, SHADOW_SIZE_MAX)} />
-        <input type="number" min="0" max="100" step="1" value={pct(sh.opacity)} aria-label="{name} {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(sh, 'opacity', e.target.value)} />
-        <FxMenu kind={inner ? 'innerShadow' : 'dropShadow'} name="{name} {i + 1}" onpick={(id) => fxPick(inner ? 'innerShadow' : 'dropShadow', sh, `${name} ${i + 1}`, id)} />
-        {@render rmBtn(`${name.toLowerCase()} ${i + 1}`, () => (inner ? removeInnerShadow(i) : removeShadow(i)))}
-      </div>
-      {@render instanceBar(list, i, `${name} ${i + 1}`)}
-      <div class="sh-more">
-        <label class="sh-num" title="{inner ? 'Choke' : 'Spread'}: how much of the size is a hard edge, %">
-          <span>{inner ? 'Choke' : 'Spread'}</span>
-          <input type="number" min="0" max="100" step="1" value={pct(sh[key])} aria-label="{name} {i + 1} {key}, percent" onchange={(e) => commitAlpha(sh, key, e)} />
-        </label>
-        <label class="sh-num" title="Noise: grain in the shadow, %">
-          <span>Noise</span>
-          <input type="number" min="0" max="100" step="1" value={pct(sh.noise)} aria-label="{name} {i + 1} noise, percent" onchange={(e) => commitAlpha(sh, 'noise', e)} />
-        </label>
-        <label class="sh-contour" title="Contour: how the soft edge falls off">
-          <span>Contour</span>
-          <select value={sh.contour?.preset ?? 'linear'} aria-label="{name} {i + 1} contour" onchange={(e) => pickContour(sh, 'contour', e.target.value, `${name} ${i + 1} contour`)}>
-            {#each CONTOUR_PRESETS as id (id)}
-              <option value={id}>{CONTOUR_LABELS[id]}</option>
-            {/each}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          </select>
-          {@render contourEditBtn(`${name} ${i + 1} contour`, false)}
-        </label>
-        <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
-          <input type="checkbox" checked={sh.contour?.aa === true} aria-label="{name} {i + 1} contour anti-aliased" onchange={(e) => { sh.contour = { ...sh.contour, aa: e.target.checked }; touch(); }} />
-          <span>Anti-aliased</span>
-        </label>
-        {@render contourPanel(sh, 'contour', `${name} ${i + 1} contour`)}
-        <label class="sh-check" title="Use Global Light: the angle is the chapter's, shared by every shadow that uses it">
-          <input type="checkbox" checked={sh.useGlobalLight} aria-label="{name} {i + 1} uses the global light" onchange={(e) => setShadowGlobal(sh, e.target.checked)} />
-          <span>Global light</span>
-        </label>
-        {#if !inner}
-          <label class="sh-check" title="Layer Knocks Out Drop Shadow: the shadow does not show through see-through letters">
-            <input type="checkbox" checked={sh.knockout} aria-label="{name} {i + 1} knocked out by the letters" onchange={(e) => { sh.knockout = e.target.checked; touch(); }} />
-            <span>Knock out</span>
-          </label>
-        {/if}
-        <label class="sh-contour" title="Blend mode">
-          <span>Mode</span>
-          <select value={sh.blend} aria-label="{name} {i + 1} blend mode" onchange={(e) => { sh.blend = e.target.value; touch(); }}>
-            {#each LAYER_BLEND_MODES as m (m)}
-              <option value={m}>{blendLabel(m)}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-    {/each}
+<!-- ===== The layer effects (Effects tab) =====
+     One grammar with the Fill tab: a property row is its name on the left and
+     its control on the right (`.prow`). Numbers are sliders with their value
+     beside them (ValueSlider); an angle is a dial (AngleDial). What a plain
+     look never needs (noise, contours, Photoshop-only switches) waits in a
+     "More" fold under the effect, its badge saying when it holds anything. A
+     one-of effect shows its settings only while it is on. -->
+
+<!-- A row with a slider: `value` as shown, `set(v)` writes it. -->
+{#snippet sliderRow(label, title, value, set, opts)}
+  <div class="prow" {title}>
+    <span class="pl">{label}</span>
+    <div class="pc"><ValueSlider {value} min={opts.min ?? 0} max={opts.max} step={opts.step ?? 1} soft={opts.soft ?? null} unit={opts.unit ?? ''} exact={opts.exact === true} disabled={opts.disabled === true} label={opts.aria} oninput={set} /></div>
   </div>
 {/snippet}
-
-<!-- Outer Glow or Inner Glow, as Photoshop's dialog has it: Structure, then
-     Elements, then Quality. A colour, or a gradient run along the glow. -->
-{#snippet glowControls(g, title, inner)}
-  <div class="switch-row">
-    <button
-      type="button"
-      class="switch"
-      class:on={g.on}
-      role="switch"
-      aria-checked={g.on}
-      aria-label={title}
-      onclick={() => switchFx(inner ? 'innerGlow' : 'outerGlow', g)}
-    ><span class="knob"></span></button>
-    <span class="lbl2">{title}</span>
-    <span class="fx-menu-end"><FxMenu kind={inner ? 'innerGlow' : 'outerGlow'} name={title} onpick={(id) => fxPick(inner ? 'innerGlow' : 'outerGlow', g, title, id)} /></span>
-  </div>
-  <div class="insp-sub-body" class:disabled={!g.on} style="padding:0;border:none;gap:11px">
-    <div class="grp">
-      <span class="lbl">Fill</span>
-      <div class="seg">
-        <button type="button" class:on={g.fill !== 'gradient'} aria-pressed={g.fill !== 'gradient'} disabled={!g.on} onclick={() => { g.fill = 'color'; touch(); }}>Colour</button>
-        <button type="button" class:on={g.fill === 'gradient'} aria-pressed={g.fill === 'gradient'} disabled={!g.on} title="A gradient along the glow: its first stop at the letters' edge" onclick={() => { g.fill = 'gradient'; touch(); }}>Gradient</button>
-      </div>
-    </div>
-    {#if g.fill === 'gradient'}
-      {@render fxGradientControls(g.gradient, `${title} gradient`, false)}
-    {:else}
-      <div class="grp">
-        <span class="lbl">Colour</span>
-        {@render colorField(g, 'color', `${title} colour`)}
-      </div>
-    {/if}
-    <div class="grp">
-      <span class="lbl">Opacity</span>
-      <div class="slider-row">
-        <input type="range" min="0" max="100" step="1" value={pct(g.opacity)} disabled={!g.on} aria-label="{title} opacity" oninput={(e) => setAlpha(g, 'opacity', e.target.value)} />
-        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(g.opacity)} disabled={!g.on} title="Opacity, %" aria-label="{title} opacity, percent" onchange={(e) => commitAlpha(g, 'opacity', e)} />
-      </div>
-    </div>
-    <div class="grp">
-      <span class="lbl">Size</span>
-      <div class="slider-row">
-        <input type="range" min="0" max={SHADOW_SIZE_MAX} step="1" value={g.size} disabled={!g.on} aria-label="{title} size" oninput={(e) => setNum(g, 'size', e.target.value, 0, SHADOW_SIZE_MAX)} />
-        <input class="num-s" type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={g.size} disabled={!g.on} title="How far the glow reaches, page px" aria-label="{title} size, page px" onchange={(e) => commitNum(g, 'size', e, 0, SHADOW_SIZE_MAX)} />
-      </div>
-    </div>
-    <div class="sh-more" style="margin:0">
-      <label class="sh-num" title="{inner ? 'Choke' : 'Spread'}: how much of the size is solid, %">
-        <span>{inner ? 'Choke' : 'Spread'}</span>
-        <input type="number" min="0" max="100" step="1" value={pct(g.spread)} disabled={!g.on} aria-label="{title} {inner ? 'choke' : 'spread'}, percent" onchange={(e) => commitAlpha(g, 'spread', e)} />
-      </label>
-      <label class="sh-num" title="Range: how much of the falloff the contour spans, %">
-        <span>Range</span>
-        <input type="number" min="1" max="100" step="1" value={pct(g.range)} disabled={!g.on} aria-label="{title} range, percent" onchange={(e) => { commitAlpha(g, 'range', e); if (g.range < 0.01) { g.range = 0.01; e.target.value = '1'; } }} />
-      </label>
-      <label class="sh-num" title="Noise: grain in the glow, %">
-        <span>Noise</span>
-        <input type="number" min="0" max="100" step="1" value={pct(g.noise)} disabled={!g.on} aria-label="{title} noise, percent" onchange={(e) => commitAlpha(g, 'noise', e)} />
-      </label>
-      <label class="sh-num" title="Softer blurs the edge; Precise keeps its shape">
-        <span>Technique</span>
-        <select value={g.technique} disabled={!g.on} aria-label="{title} technique" onchange={(e) => { g.technique = e.target.value; touch(); }}>
-          <option value="softer">Softer</option>
-          <option value="precise">Precise</option>
-        </select>
-      </label>
-      {#if inner}
-        <label class="sh-num" title="Glow from the letters' edge, or from their centre out">
-          <span>Source</span>
-          <select value={g.source} disabled={!g.on} aria-label="{title} source" onchange={(e) => { g.source = e.target.value; touch(); }}>
-            <option value="edge">Edge</option>
-            <option value="center">Center</option>
-          </select>
-        </label>
-      {/if}
-      <label class="sh-contour" title="Blend mode">
-        <span>Mode</span>
-        <select value={g.blend} disabled={!g.on} aria-label="{title} blend mode" onchange={(e) => { g.blend = e.target.value; touch(); }}>
-          {#each LAYER_BLEND_MODES as m (m)}
-            <option value={m}>{blendLabel(m)}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="sh-contour" title="Contour: how the glow falls off">
-        <span>Contour</span>
-        <select value={g.contour?.preset ?? 'linear'} disabled={!g.on} aria-label="{title} contour" onchange={(e) => pickContour(g, 'contour', e.target.value, `${title} contour`)}>
-          {#each CONTOUR_PRESETS as id (id)}
-            <option value={id}>{CONTOUR_LABELS[id]}</option>
-          {/each}
-          <option value="custom">{CONTOUR_LABELS.custom}</option>
-        </select>
-        {@render contourEditBtn(`${title} contour`, !g.on)}
-      </label>
-      <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
-        <input type="checkbox" checked={g.contour?.aa === true} disabled={!g.on} aria-label="{title} contour anti-aliased" onchange={(e) => { g.contour = { ...g.contour, aa: e.target.checked }; touch(); }} />
-        <span>Anti-aliased</span>
-      </label>
-      {@render contourPanel(g, 'contour', `${title} contour`)}
-    </div>
-    <!-- Quality > Jitter: scatters each pixel's colour along the gradient, so
-         only a gradient glow has it (Photoshop greys it out on a colour). -->
-    <div class="grp" title="Jitter: scatters the gradient's colours pixel by pixel, %">
-      <span class="lbl">Jitter</span>
-      <div class="slider-row">
-        <input type="range" min="0" max="100" step="1" value={pct(g.jitter ?? 0)} disabled={!g.on || g.fill !== 'gradient'} aria-label="{title} jitter" oninput={(e) => setAlpha(g, 'jitter', e.target.value)} />
-        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(g.jitter ?? 0)} disabled={!g.on || g.fill !== 'gradient'} title="Jitter, % (gradient glows only)" aria-label="{title} jitter, percent" onchange={(e) => commitAlpha(g, 'jitter', e)} />
-      </div>
+<!-- A 0..1 field as a percent slider. -->
+{#snippet pctRow(label, title, obj, key, aria, disabled = false)}
+  {@render sliderRow(label, title, pct(obj[key]), (v) => setFrac(obj, key, v), { max: 100, unit: '%', aria, disabled })}
+{/snippet}
+<!-- A page-px length. `soft` is where the track ends (ValueSlider). -->
+{#snippet pxRow(label, title, obj, key, aria, max, soft, exact = false, step = 1)}
+  {@render sliderRow(label, title, obj[key], (v) => setVal(obj, key, v), { max, soft, unit: 'px', aria, exact, step })}
+{/snippet}
+<!-- An effect's blend mode. -->
+{#snippet modeRow(obj, aria, label = 'Mode')}
+  <div class="prow" title="Blend mode: how it mixes with what is under it">
+    <span class="pl">{label}</span>
+    <div class="pc">
+      <select value={obj.blend} aria-label={aria} onchange={(e) => { obj.blend = e.target.value; touch(); }}>
+        {#each LAYER_BLEND_MODES as m (m)}
+          <option value={m}>{blendLabel(m)}</option>
+        {/each}
+      </select>
     </div>
   </div>
 {/snippet}
-
-<!-- Photoshop's Satin, in its dialog's order: Blend Mode and colour,
-     Opacity, Angle (its own: no Global Light), Distance, Size, Contour with
-     Anti-aliased, Invert. The Rust engine paints it. -->
-{#snippet satinControls(sa)}
-  <div class="switch-row">
-    <button
-      type="button"
-      class="switch"
-      class:on={sa.on}
-      role="switch"
-      aria-checked={sa.on}
-      aria-label="Satin"
-      onclick={() => switchFx('satin', sa)}
-    ><span class="knob"></span></button>
-    <span class="lbl2">Satin</span>
-    <span class="fx-menu-end"><FxMenu kind="satin" name="Satin" onpick={(id) => fxPick('satin', sa, 'Satin', id)} /></span>
-  </div>
-  <div class="insp-sub-body" class:disabled={!sa.on} style="padding:0;border:none;gap:11px">
-    <div class="sh-more" style="margin:0">
-      <label class="sh-contour" title="Blend mode">
-        <span>Mode</span>
-        <select value={sa.blend} disabled={!sa.on} aria-label="Satin blend mode" onchange={(e) => { sa.blend = e.target.value; touch(); }}>
-          {#each LAYER_BLEND_MODES as m (m)}
-            <option value={m}>{blendLabel(m)}</option>
-          {/each}
-        </select>
-      </label>
-    </div>
-    <div class="grp">
-      <span class="lbl">Colour</span>
-      {@render colorField(sa, 'color', 'Satin colour')}
-    </div>
-    <div class="grp">
-      <span class="lbl">Opacity</span>
-      <div class="slider-row">
-        <input type="range" min="0" max="100" step="1" value={pct(sa.opacity)} disabled={!sa.on} aria-label="Satin opacity" oninput={(e) => setAlpha(sa, 'opacity', e.target.value)} />
-        <input class="num-s" type="number" min="0" max="100" step="1" value={pct(sa.opacity)} disabled={!sa.on} title="Opacity, %" aria-label="Satin opacity, percent" onchange={(e) => commitAlpha(sa, 'opacity', e)} />
-      </div>
-    </div>
-    <div class="grp">
-      <span class="lbl">Angle</span>
-      <div class="slider-row">
-        <input type="range" min="-180" max="180" step="1" value={sa.angle} disabled={!sa.on} aria-label="Satin angle" oninput={(e) => setNum(sa, 'angle', e.target.value, -180, 180)} />
-        <input class="num-s" type="number" min="-180" max="180" step="1" value={sa.angle} disabled={!sa.on} title="Angle the two copies are thrown along, degrees: the box's own, not the chapter's light" aria-label="Satin angle, degrees" onchange={(e) => commitNum(sa, 'angle', e, -180, 180)} />
-      </div>
-    </div>
-    <div class="grp">
-      <span class="lbl">Distance</span>
-      <div class="slider-row">
-        <input type="range" min="0" max={SATIN_DISTANCE_MAX} step="1" value={sa.distance} disabled={!sa.on} aria-label="Satin distance" oninput={(e) => setNum(sa, 'distance', e.target.value, 0, SATIN_DISTANCE_MAX)} />
-        <input class="num-s" type="number" min="0" max={SATIN_DISTANCE_MAX} step="1" value={sa.distance} disabled={!sa.on} title="How far each copy is thrown, page px (0 draws as 1, as Photoshop does)" aria-label="Satin distance, page px" onchange={(e) => commitNum(sa, 'distance', e, 0, SATIN_DISTANCE_MAX)} />
-      </div>
-    </div>
-    <div class="grp">
-      <span class="lbl">Size</span>
-      <div class="slider-row">
-        <input type="range" min="0" max={SHADOW_SIZE_MAX} step="1" value={sa.size} disabled={!sa.on} aria-label="Satin size" oninput={(e) => setNum(sa, 'size', e.target.value, 0, SHADOW_SIZE_MAX)} />
-        <input class="num-s" type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={sa.size} disabled={!sa.on} title="How soft the copies are, page px" aria-label="Satin size, page px" onchange={(e) => commitNum(sa, 'size', e, 0, SHADOW_SIZE_MAX)} />
-      </div>
-    </div>
-    <div class="sh-more" style="margin:0">
-      <label class="sh-contour" title="Contour: Satin reads it from its far end, as Photoshop does">
-        <span>Contour</span>
-        <select value={sa.contour?.preset ?? 'linear'} disabled={!sa.on} aria-label="Satin contour" onchange={(e) => pickContour(sa, 'contour', e.target.value, 'Satin contour')}>
-          {#each CONTOUR_PRESETS as id (id)}
-            <option value={id}>{CONTOUR_LABELS[id]}</option>
-          {/each}
-          <option value="custom">{CONTOUR_LABELS.custom}</option>
-        </select>
-        {@render contourEditBtn('Satin contour', !sa.on)}
-      </label>
-      <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
-        <input type="checkbox" checked={sa.contour?.aa === true} disabled={!sa.on} aria-label="Satin contour anti-aliased" onchange={(e) => { sa.contour = { ...sa.contour, aa: e.target.checked }; touch(); }} />
-        <span>Anti-aliased</span>
-      </label>
-      {@render contourPanel(sa, 'contour', 'Satin contour')}
-      <label class="sh-check" title="Invert: lay the inverse of the gap between the copies">
-        <input type="checkbox" checked={sa.invert} disabled={!sa.on} aria-label="Satin invert" onchange={(e) => { sa.invert = e.target.checked; touch(); }} />
-        <span>Invert</span>
-      </label>
+<!-- A contour: its curve from the menu or drawn (Edit), and Anti-aliased,
+     which Photoshop reads and the engine does not paint. -->
+{#snippet contourRow(owner, key, id, label = 'Contour', title = 'Contour: how the edge falls off')}
+  <div class="prow" {title}>
+    <span class="pl">{label}</span>
+    <div class="pc">
+      <select value={owner[key]?.preset ?? 'linear'} aria-label={id} onchange={(e) => pickContour(owner, key, e.target.value, id)}>
+        {#each CONTOUR_PRESETS as cid (cid)}
+          <option value={cid}>{CONTOUR_LABELS[cid]}</option>
+        {/each}
+        <option value="custom">{CONTOUR_LABELS.custom}</option>
+      </select>
+      {@render contourEditBtn(id, false)}
     </div>
   </div>
+  {@render contourPanel(owner, key, id)}
+  <label class="sh-check indent" title="Anti-aliased: written to the PSD for Photoshop; the engine does not paint it">
+    <input type="checkbox" checked={owner[key]?.aa === true} aria-label="{id} anti-aliased" onchange={(e) => { owner[key] = { ...owner[key], aa: e.target.checked }; touch(); }} />
+    <span>Anti-aliased (Photoshop only)</span>
+  </label>
 {/snippet}
-
-<!-- Photoshop's Bevel & Emboss, in its dialog's order: Structure (Style,
-     Technique, Depth, Direction, Size, Soften), Shading (Angle and Altitude,
-     on the Global Light or the box's own, Gloss Contour, Highlight and Shadow),
-     then the Contour and Texture elements, each with its own switch. The Rust
-     engine paints it. -->
-{#snippet bevelControls(bv)}
-  {@const lit = (app.typesetting.light, bevelLight(bv))}
-  <div class="switch-row">
-    <button
-      type="button"
-      class="switch"
-      class:on={bv.on}
-      role="switch"
-      aria-checked={bv.on}
-      aria-label="Bevel & Emboss"
-      onclick={() => switchFx('bevel', bv)}
-    ><span class="knob"></span></button>
-    <span class="lbl2">Bevel & Emboss</span>
-    <span class="fx-menu-end"><FxMenu kind="bevel" name="Bevel & Emboss" onpick={(id) => fxPick('bevel', bv, 'Bevel & Emboss', id)} /></span>
-  </div>
-  <div class="insp-sub-body" class:disabled={!bv.on} style="padding:0;border:none;gap:11px">
-    {@render secHead('Structure')}
-    <div class="sh-more" style="margin:0">
-      <label class="sh-contour" title="Style: where the bevel is laid">
-        <span>Style</span>
-        <select value={bv.style} disabled={!bv.on} aria-label="Bevel style" onchange={(e) => { bv.style = e.target.value; touch(); }}>
-          {#each BEVEL_STYLE_OPTIONS as [id, label] (id)}
-            <option value={id}>{label}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="sh-contour" title="Technique: a soft slope, or a cut edge">
-        <span>Technique</span>
-        <select value={bv.technique} disabled={!bv.on} aria-label="Bevel technique" onchange={(e) => { bv.technique = e.target.value; touch(); }}>
-          {#each BEVEL_TECHNIQUE_OPTIONS as [id, label] (id)}
-            <option value={id}>{label}</option>
-          {/each}
-        </select>
-      </label>
-    </div>
-    {#if bv.style === 'stroke' && !box.style.strokeEffects?.length}
-      <p class="nofill-note">Stroke Emboss bevels the Photoshop strokes (Stroke tab); this box has none.</p>
-    {/if}
-    <div class="grp">
-      <span class="lbl">Depth</span>
-      <div class="slider-row">
-        <input type="range" min="0" max={BEVEL_DEPTH_MAX * 100} step="1" value={pct(bv.depth)} disabled={!bv.on} aria-label="Bevel depth" oninput={(e) => setNum(bv, 'depth', e.target.value / 100, 0, BEVEL_DEPTH_MAX)} />
-        <input class="num-s" type="number" min="0" max={BEVEL_DEPTH_MAX * 100} step="1" value={pct(bv.depth)} disabled={!bv.on} title="Depth, %: how steep the slope is shaded" aria-label="Bevel depth, percent" onchange={(e) => commitPct(bv, 'depth', e, 0, BEVEL_DEPTH_MAX * 100)} />
-      </div>
-    </div>
-    <div class="grp" role="radiogroup" aria-label="Bevel direction">
-      <span class="lbl">Direction</span>
-      <div class="sh-more" style="margin:0">
-        {#each [['up', 'Up'], ['down', 'Down']] as [id, label] (id)}
-          <label class="sh-check" title="Direction: {label}, which side the light falls on">
-            <input type="radio" name="bevel-direction" value={id} checked={bv.direction === id} disabled={!bv.on} aria-label="Bevel direction {label}" onchange={() => { bv.direction = id; touch(); }} />
-            <span>{label}</span>
-          </label>
+<!-- A segmented choice row. -->
+{#snippet segRow(label, title, options, current, pick, aria)}
+  <div class="prow" {title}>
+    <span class="pl">{label}</span>
+    <div class="pc">
+      <div class="seg" role="group" aria-label={aria}>
+        {#each options as [id, text, hint] (id)}
+          <button type="button" class:on={current === id} aria-pressed={current === id} title={hint} onclick={() => pick(id)}>{text}</button>
         {/each}
       </div>
     </div>
-    <div class="grp">
-      <span class="lbl">Size</span>
-      <div class="slider-row">
-        <input type="range" min="0" max={SHADOW_SIZE_MAX} step="1" value={bv.size} disabled={!bv.on} aria-label="Bevel size" oninput={(e) => setNum(bv, 'size', e.target.value, 0, SHADOW_SIZE_MAX)} />
-        <input class="num-s" type="number" min="0" max={SHADOW_SIZE_MAX} step="1" value={bv.size} disabled={!bv.on} title="How wide the slope is, page px (0 draws as 1, as Photoshop does)" aria-label="Bevel size, page px" onchange={(e) => commitNum(bv, 'size', e, 0, SHADOW_SIZE_MAX)} />
-      </div>
-    </div>
-    <div class="grp">
-      <span class="lbl">Soften</span>
-      <div class="slider-row">
-        <input type="range" min="0" max={BEVEL_SOFTEN_MAX} step="1" value={bv.soften} disabled={!bv.on} aria-label="Bevel soften" oninput={(e) => setNum(bv, 'soften', e.target.value, 0, BEVEL_SOFTEN_MAX)} />
-        <input class="num-s" type="number" min="0" max={BEVEL_SOFTEN_MAX} step="1" value={bv.soften} disabled={!bv.on} title="Blurs the shading, page px" aria-label="Bevel soften, page px" onchange={(e) => commitNum(bv, 'soften', e, 0, BEVEL_SOFTEN_MAX)} />
-      </div>
-    </div>
+  </div>
+{/snippet}
+<!-- An effect's "More" fold, keyed in `fxMore`. -->
+{#snippet moreFold(id, label, tuned, hint)}
+  {@render foldHead(`${label} more options`, 'More', !!fxMore[id], () => (fxMore[id] = !fxMore[id]), tuned ? 'set' : '', hint, true)}
+{/snippet}
 
-    {@render secHead('Shading')}
-    <div class="sh-more" style="margin:0">
-      <label class="sh-num" title={bv.useGlobalLight ? "Angle of the chapter's light, degrees: turns every shadow and bevel on it" : 'Angle the light comes from, degrees'}>
-        <span>Angle</span>
-        <input type="number" min="-180" max="180" step="1" value={lit.angle} disabled={!bv.on} aria-label="Bevel angle" onchange={(e) => setBevelLight(bv, 'angle', e, -180, 180)} />
-      </label>
-      <label class="sh-num" title={bv.useGlobalLight ? "Altitude of the chapter's light, degrees" : 'How high the light is, degrees: 90 is straight above'}>
-        <span>Altitude</span>
-        <input type="number" min="0" max="90" step="1" value={lit.altitude} disabled={!bv.on} aria-label="Bevel altitude" onchange={(e) => setBevelLight(bv, 'altitude', e, 0, 90)} />
-      </label>
-      <label class="sh-check" title="Use Global Light: the angle and altitude are the chapter's, shared by every shadow and bevel that uses it">
-        <input type="checkbox" checked={bv.useGlobalLight} disabled={!bv.on} aria-label="Bevel uses the global light" onchange={(e) => setBevelGlobal(bv, e.target.checked)} />
-        <span>Global light</span>
-      </label>
-    </div>
-    <p class="nofill-note">The light turns with a turned or mirrored box, as the shadows do.</p>
-    <div class="sh-more" style="margin:0">
-      <label class="sh-contour" title="Gloss Contour: reshapes the shading">
-        <span>Gloss</span>
-        <select value={bv.gloss?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel gloss contour" onchange={(e) => pickContour(bv, 'gloss', e.target.value, 'Bevel gloss contour')}>
-          {#each CONTOUR_PRESETS as id (id)}
-            <option value={id}>{CONTOUR_LABELS[id]}</option>
-          {/each}
-          <option value="custom">{CONTOUR_LABELS.custom}</option>
-        </select>
-        {@render contourEditBtn('Bevel gloss contour', !bv.on)}
-      </label>
-      <label class="sh-check" title="Anti-aliased gloss: carried to Photoshop; the engine does not paint it">
-        <input type="checkbox" checked={bv.gloss?.aa === true} disabled={!bv.on} aria-label="Bevel gloss anti-aliased" onchange={(e) => { bv.gloss = { ...bv.gloss, aa: e.target.checked }; touch(); }} />
-        <span>Anti-aliased</span>
-      </label>
-      {@render contourPanel(bv, 'gloss', 'Bevel gloss contour')}
-    </div>
-    {#each [['highlight', 'Highlight'], ['shadow', 'Shadow']] as [key, label] (key)}
-      {@const sh = bv[key]}
-      <div class="insp-row k-goverlay">
-        {@render swatchCell(sh, 'color', `Bevel ${label.toLowerCase()} colour`)}
-        <select value={sh.blend} disabled={!bv.on} aria-label="Bevel {label.toLowerCase()} mode" title="{label} mode" onchange={(e) => { sh.blend = e.target.value; touch(); }}>
-          {#each LAYER_BLEND_MODES as m (m)}
-            <option value={m}>{blendLabel(m)}</option>
-          {/each}
-        </select>
-        <input type="number" min="0" max="100" step="1" value={pct(sh.opacity)} disabled={!bv.on} aria-label="Bevel {label.toLowerCase()} opacity" title="{label} opacity, %" onchange={(e) => commitAlpha(sh, 'opacity', e)} />
-      </div>
-    {/each}
+<!-- The head of one item of a multi effect: its switch, its name, then up,
+     down, duplicate, the defaults menu and remove. -->
+{#snippet fxItemHead(list, i, name, kind, onRemove)}
+  {@const item = list[i]}
+  <div class="fx-item-head">
+    <button
+      type="button"
+      class="switch"
+      class:on={instanceOn(item)}
+      role="switch"
+      aria-checked={instanceOn(item)}
+      aria-label="{name} on"
+      title="On: switched off, it is kept and paints nothing"
+      onclick={() => setInstanceOn(item, !instanceOn(item))}
+    ><span class="knob"></span></button>
+    <span class="fx-item-name">{name}</span>
+    <span class="fx-item-end">
+      <button type="button" class="inst-btn" title="Move up: paints over the one above" aria-label="Move {name} up" disabled={i === 0} onclick={() => moveInstance(list, i, -1)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6" /></svg>
+      </button>
+      <button type="button" class="inst-btn" title="Move down: paints under the one below" aria-label="Move {name} down" disabled={i >= list.length - 1} onclick={() => moveInstance(list, i, 1)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
+      </button>
+      <button type="button" class="inst-btn" title={roomFor(list) ? 'Duplicate: the copy goes over it' : `At most ${FX_INSTANCES_MAX} of a kind`} aria-label="Duplicate {name}" disabled={!roomFor(list)} onclick={() => duplicateInstance(list, i)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>
+      </button>
+      <FxMenu {kind} {name} onpick={(id) => fxPick(kind, item, name, id)} />
+      {@render rmBtn(name.toLowerCase(), onRemove)}
+    </span>
+  </div>
+{/snippet}
 
-    <div class="insp-rule"></div>
-    <div class="switch-row">
-      <button
-        type="button"
-        class="switch"
-        class:on={bv.contour.on}
-        role="switch"
-        aria-checked={bv.contour.on}
-        aria-label="Bevel contour"
-        disabled={!bv.on}
-        onclick={() => { bv.contour.on = !bv.contour.on; touch(); }}
-      ><span class="knob"></span></button>
-      <span class="lbl2">Contour</span>
-    </div>
-    {#if bv.contour.on}
-      <div class="sh-more" style="margin:0">
-        <label class="sh-contour" title="Contour: reshapes the bevel's slope">
-          <span>Contour</span>
-          <select value={bv.contour.curve?.preset ?? 'linear'} disabled={!bv.on} aria-label="Bevel contour curve" onchange={(e) => pickContour(bv.contour, 'curve', e.target.value, 'Bevel contour curve')}>
-            {#each CONTOUR_PRESETS as id (id)}
-              <option value={id}>{CONTOUR_LABELS[id]}</option>
-            {/each}
-            <option value="custom">{CONTOUR_LABELS.custom}</option>
-          </select>
-          {@render contourEditBtn('Bevel contour curve', !bv.on)}
-        </label>
-        <label class="sh-check" title="Anti-aliased: carried to Photoshop; the engine does not paint it">
-          <input type="checkbox" checked={bv.contour.curve?.aa === true} disabled={!bv.on} aria-label="Bevel contour anti-aliased" onchange={(e) => { bv.contour.curve = { ...bv.contour.curve, aa: e.target.checked }; touch(); }} />
-          <span>Anti-aliased</span>
-        </label>
-        {@render contourPanel(bv.contour, 'curve', 'Bevel contour curve')}
-        <label class="sh-num" title="Range, %: kept and written to Photoshop; the engine does not paint it yet">
-          <span>Range (not painted yet)</span>
-          <input type="number" min="0" max="100" step="1" value={pct(bv.contour.range)} disabled={!bv.on} aria-label="Bevel contour range, percent" onchange={(e) => commitAlpha(bv.contour, 'range', e)} />
-        </label>
+<!-- The head of a one-of effect: its switch, its name, the defaults menu. -->
+{#snippet fxSwitchHead(fx, kind, title)}
+  <div class="switch-row">
+    <button
+      type="button"
+      class="switch"
+      class:on={fx.on}
+      role="switch"
+      aria-checked={fx.on}
+      aria-label={title}
+      onclick={() => switchFx(kind, fx)}
+    ><span class="knob"></span></button>
+    <span class="lbl2">{title}</span>
+    <span class="fx-menu-end"><FxMenu {kind} name={title} onpick={(id) => fxPick(kind, fx, title, id)} /></span>
+  </div>
+{/snippet}
+
+<!-- One stroke: how wide, where it sits on the letters' edge, what it is
+     filled with, how it mixes. -->
+{#snippet strokeItem(k, i)}
+  {@const name = `Stroke ${i + 1}`}
+  {@const more = `stroke-${i}`}
+  <div class="fx-item" class:inst-off={!instanceOn(k)}>
+    {@render fxItemHead(box.style.strokeEffects, i, name, 'strokeEffect', () => removeStrokeEffect(i))}
+    {@render pxRow('Size', 'How wide the stroke is, from the letters\' edge, page px', k, 'size', `${name} size`, SHADOW_SIZE_MAX, 30, true, 0.5)}
+    {@render segRow('Position', 'Where the stroke sits on the letters\' edge', [['outside', 'Outside', 'Round the letters'], ['center', 'Centre', 'Half outside, half inside'], ['inside', 'Inside', 'Within the letters']], k.position, (v) => { k.position = v; touch(); }, `${name} position`)}
+    {@render segRow('Fill', 'What the stroke is filled with', [['color', 'Colour'], ['gradient', 'Gradient'], ['pattern', 'Pattern']], k.fill, (v) => { k.fill = v; touch(); }, `${name} fill`)}
+    {#if k.fill === 'gradient'}
+      {@render fxGradientControls(k.gradient, `${name} gradient`)}
+    {:else if k.fill === 'pattern'}
+      {@render patternEditor(k.pattern, `${name} pattern`, `strokeEffects.${i}.pattern`, false)}
+    {:else}
+      <div class="prow">
+        <span class="pl">Colour</span>
+        <div class="pc">{@render colorField(k, 'color', `${name} colour`)}</div>
       </div>
-      <p class="nofill-note">In a PSD this curve is not written (Photoshop shows Linear); Range and Anti-aliased are.</p>
     {/if}
+    {@render pctRow('Opacity', 'Opacity', k, 'opacity', `${name} opacity`)}
+    {@render modeRow(k, `${name} blend mode`)}
+    {@render moreFold(more, name, k.overprint === true, 'Overprint')}
+    {#if fxMore[more]}
+      <!-- Overprint is stored and written to the PSD, not painted: PhotoCraft
+           paints nothing for it and Photoshop states no rule. Off leaves no
+           key, so old files stay as they were. -->
+      <label class="sh-check" title="Overprint: a print setting written to the PSD for Photoshop. It changes nothing in how the stroke mixes with the page here">
+        <input type="checkbox" checked={k.overprint === true} aria-label="{name} overprint" onchange={(e) => { if (e.target.checked) k.overprint = true; else delete k.overprint; touch(); }} />
+        <span>Overprint (Photoshop only)</span>
+      </label>
+    {/if}
+  </div>
+{/snippet}
 
-    <div class="switch-row">
-      <button
-        type="button"
-        class="switch"
-        class:on={bv.texture.on}
-        role="switch"
-        aria-checked={bv.texture.on}
-        aria-label="Bevel texture"
-        disabled={!bv.on}
-        onclick={() => { bv.texture.on = !bv.texture.on; touch(); }}
-      ><span class="knob"></span></button>
-      <span class="lbl2">Texture</span>
+<!-- One Drop Shadow or Inner Shadow. The Global Light is read here so a turn
+     of it shows. -->
+{#snippet shadowItem(list, i, inner)}
+  {@const sh = list[i]}
+  {@const name = `${inner ? 'Inner shadow' : 'Shadow'} ${i + 1}`}
+  {@const kind = inner ? 'innerShadow' : 'dropShadow'}
+  {@const key = inner ? 'choke' : 'spread'}
+  {@const angle = (app.typesetting.light?.angle, angleOf(sh))}
+  {@const more = `${kind}-${i}`}
+  {@const tuned = sh[key] > 0 || sh.noise > 0 || (sh.contour?.preset ?? 'linear') !== 'linear' || (!inner && sh.knockout === false)}
+  <div class="fx-item" class:inst-off={!instanceOn(sh)}>
+    {@render fxItemHead(list, i, name, kind, () => (inner ? removeInnerShadow(i) : removeShadow(i)))}
+    <div class="prow">
+      <span class="pl">Colour</span>
+      <div class="pc">{@render colorField(sh, 'color', `${name} colour`)}</div>
     </div>
-    {#if bv.texture.on}
-      <div class="fx-block">
-        {@render patternEditor(bv.texture.pattern, 'Bevel texture pattern', 'bevel.texture.pattern', false)}
-        <div class="sh-more" style="margin:0">
-          <label class="sh-num" title="Scale, %: over the pattern's own">
-            <span>Scale</span>
-            <input type="number" min="1" max="1000" step="1" value={pct(bv.texture.scale)} disabled={!bv.on} aria-label="Bevel texture scale, percent" onchange={(e) => commitPct(bv.texture, 'scale', e, 1, 1000)} />
+    <div class="prow" title={sh.useGlobalLight ? "The chapter's light: turning it turns every shadow and bevel that uses it" : 'Where the light comes from'}>
+      <span class="pl">Angle</span>
+      <div class="pc">
+        <AngleDial {angle} label="{name} angle" oninput={(v, m) => setShadowAngle(sh, v.angle, m.live)} onend={endLightDrag} />
+        <label class="sh-check end" title="Use Global Light: the angle is the chapter's, shared by every shadow and bevel that uses it">
+          <input type="checkbox" checked={sh.useGlobalLight} aria-label="{name} uses the global light" onchange={(e) => setShadowGlobal(sh, e.target.checked)} />
+          <span>Global</span>
+        </label>
+      </div>
+    </div>
+    {@render sliderRow('Distance', 'How far the shadow is thrown, page px', Math.round(shadowDistance(sh) * 100) / 100, (v) => setShadowDistance(sh, v), { max: SHADOW_DISTANCE_MAX, soft: 50, unit: 'px', aria: `${name} distance`, exact: true })}
+    {@render pxRow('Size', 'Size: how far the soft edge reaches, page px', sh, 'size', `${name} size`, SHADOW_SIZE_MAX, 50)}
+    {@render pctRow('Opacity', 'Opacity', sh, 'opacity', `${name} opacity`)}
+    {@render modeRow(sh, `${name} blend mode`)}
+    {@render moreFold(more, name, tuned, inner ? 'Choke, noise and contour' : 'Spread, noise, contour and knock out')}
+    {#if fxMore[more]}
+      {@render pctRow(inner ? 'Choke' : 'Spread', `${inner ? 'Choke' : 'Spread'}: how much of the size is a hard edge`, sh, key, `${name} ${key}`)}
+      {@render pctRow('Noise', 'Noise: grain in the shadow', sh, 'noise', `${name} noise`)}
+      {@render contourRow(sh, 'contour', `${name} contour`)}
+      {#if !inner}
+        <label class="sh-check" title="Layer Knocks Out Drop Shadow: the shadow does not show through see-through letters">
+          <input type="checkbox" checked={sh.knockout} aria-label="{name} knocked out by the letters" onchange={(e) => { sh.knockout = e.target.checked; touch(); }} />
+          <span>Hidden behind see-through letters</span>
+        </label>
+      {/if}
+    {/if}
+  </div>
+{/snippet}
+
+<!-- Outer Glow or Inner Glow: a colour or a gradient run out from the
+     letters' edge. -->
+{#snippet glowControls(g, title, inner)}
+  {@const kind = inner ? 'innerGlow' : 'outerGlow'}
+  {@const tuned = g.technique === 'precise' || Math.abs(g.range - 0.5) > 1e-9 || g.noise > 0 || (g.jitter ?? 0) > 0 || (g.contour?.preset ?? 'linear') !== 'linear'}
+  {@render fxSwitchHead(g, kind, title)}
+  {#if g.on}
+    <div class="fx-body">
+      {@render segRow('Fill', 'A flat colour, or a gradient along the glow (its first stop at the letters\' edge)', [['color', 'Colour'], ['gradient', 'Gradient']], g.fill === 'gradient' ? 'gradient' : 'color', (v) => { g.fill = v; touch(); }, `${title} fill`)}
+      {#if g.fill === 'gradient'}
+        {@render fxGradientControls(g.gradient, `${title} gradient`, false)}
+      {:else}
+        <div class="prow">
+          <span class="pl">Colour</span>
+          <div class="pc">{@render colorField(g, 'color', `${title} colour`)}</div>
+        </div>
+      {/if}
+      {@render pxRow('Size', 'How far the glow reaches, page px', g, 'size', `${title} size`, SHADOW_SIZE_MAX, 50)}
+      {@render pctRow(inner ? 'Choke' : 'Spread', `${inner ? 'Choke' : 'Spread'}: how much of the size is solid`, g, 'spread', `${title} ${inner ? 'choke' : 'spread'}`)}
+      {@render pctRow('Opacity', 'Opacity', g, 'opacity', `${title} opacity`)}
+      {#if inner}
+        {@render segRow('From', 'Glow in from the letters\' edge, or out from their centre', [['edge', 'Edge'], ['center', 'Centre']], g.source, (v) => { g.source = v; touch(); }, `${title} source`)}
+      {/if}
+      {@render modeRow(g, `${title} blend mode`)}
+      {@render moreFold(kind, title, tuned, 'Technique, range, noise, jitter and contour')}
+      {#if fxMore[kind]}
+        {@render segRow('Technique', 'Softer blurs the edge; Precise keeps its shape', [['softer', 'Softer'], ['precise', 'Precise']], g.technique, (v) => { g.technique = v; touch(); }, `${title} technique`)}
+        {@render sliderRow('Range', 'Range: how much of the falloff the contour spans', pct(g.range), (v) => setFrac(g, 'range', Math.max(1, v)), { min: 1, max: 100, unit: '%', aria: `${title} range` })}
+        {@render pctRow('Noise', 'Noise: grain in the glow', g, 'noise', `${title} noise`)}
+        {#if g.fill === 'gradient'}
+          {@render pctRow('Jitter', "Jitter: scatters the gradient's colours pixel by pixel", g, 'jitter', `${title} jitter`)}
+        {/if}
+        {@render contourRow(g, 'contour', `${title} contour`)}
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+<!-- Photoshop's Satin: two soft copies of the letters thrown apart along its
+     angle, laid inside the letters where they do not overlap. A silky,
+     wavy shading inside the letters. The Rust engine paints it. -->
+{#snippet satinControls(sa)}
+  {@const tuned = (sa.contour?.preset ?? 'linear') !== 'linear' || sa.invert !== true}
+  {@render fxSwitchHead(sa, 'satin', 'Satin')}
+  {#if sa.on}
+    <div class="fx-body">
+      <div class="prow">
+        <span class="pl">Colour</span>
+        <div class="pc">{@render colorField(sa, 'color', 'Satin colour')}</div>
+      </div>
+      <div class="prow" title="The angle the two copies are thrown along: the box's own, not the chapter's light">
+        <span class="pl">Angle</span>
+        <div class="pc"><AngleDial angle={sa.angle} label="Satin angle" oninput={(v) => setVal(sa, 'angle', v.angle)} /></div>
+      </div>
+      {@render pxRow('Distance', 'How far each copy is thrown, page px (0 draws as 1, as Photoshop does)', sa, 'distance', 'Satin distance', SATIN_DISTANCE_MAX, 50)}
+      {@render pxRow('Size', 'How soft the copies are, page px', sa, 'size', 'Satin size', SHADOW_SIZE_MAX, 50)}
+      {@render pctRow('Opacity', 'Opacity', sa, 'opacity', 'Satin opacity')}
+      {@render modeRow(sa, 'Satin blend mode')}
+      {#if satinHidden(box.style)}
+        <p class="nofill-note">A dark satin does not show on dark letters. Pick a light colour, or use it on light letters.</p>
+      {/if}
+      {@render moreFold('satin', 'Satin', tuned, 'Contour and invert')}
+      {#if fxMore.satin}
+        {@render contourRow(sa, 'contour', 'Satin contour', 'Contour', 'Contour: Satin reads it from its far end, as Photoshop does')}
+        <label class="sh-check" title="Invert: lay the inverse of the gap between the copies">
+          <input type="checkbox" checked={sa.invert} aria-label="Satin invert" onchange={(e) => { sa.invert = e.target.checked; touch(); }} />
+          <span>Invert</span>
+        </label>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+<!-- Photoshop's Bevel & Emboss: Structure (the shape of the slope), then
+     Shading (where the light stands and the two colours it lays). The gloss
+     contour, the blend modes, the Contour and the Texture elements wait in
+     folds. The Rust engine paints it. -->
+{#snippet bevelControls(bv)}
+  {@const lit = (app.typesetting.light, bevelLight(bv))}
+  {@render fxSwitchHead(bv, 'bevel', 'Bevel & Emboss')}
+  {#if bv.on}
+    <div class="fx-body">
+      {@render secHead('Structure')}
+      <div class="prow" title="Style: where the bevel is laid">
+        <span class="pl">Style</span>
+        <div class="pc">
+          <select value={bv.style} aria-label="Bevel style" onchange={(e) => { bv.style = e.target.value; touch(); }}>
+            {#each BEVEL_STYLE_OPTIONS as [id, label] (id)}
+              <option value={id}>{label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      {#if bv.style === 'stroke' && !box.style.strokeEffects?.length}
+        <p class="nofill-note">Stroke Emboss bevels the strokes (Stroke tab); this box has none.</p>
+      {/if}
+      {@render segRow('Technique', 'A soft slope, or a cut edge', [['smooth', 'Smooth', 'Smooth'], ['chisel-hard', 'Hard', 'Chisel Hard: a sharp cut edge'], ['chisel-soft', 'Soft', 'Chisel Soft: a rough cut edge']], bv.technique, (v) => { bv.technique = v; touch(); }, 'Bevel technique')}
+      {@render segRow('Direction', 'Which side the light falls on', [['up', 'Up', 'Raised'], ['down', 'Down', 'Sunk']], bv.direction, (v) => { bv.direction = v; touch(); }, 'Bevel direction')}
+      {@render sliderRow('Depth', 'Depth: how steep the slope is shaded', pct(bv.depth), (v) => setVal(bv, 'depth', v / 100), { max: BEVEL_DEPTH_MAX * 100, soft: 300, unit: '%', aria: 'Bevel depth' })}
+      {@render pxRow('Size', 'How wide the slope is, page px (0 draws as 1, as Photoshop does)', bv, 'size', 'Bevel size', SHADOW_SIZE_MAX, 50)}
+      {@render pxRow('Soften', 'Blurs the shading, page px', bv, 'soften', 'Bevel soften', BEVEL_SOFTEN_MAX)}
+
+      {@render secHead('Shading')}
+      <div class="prow light-row" title={bv.useGlobalLight ? "The chapter's light: moving it moves every shadow and bevel that uses it. It turns with a turned or mirrored box" : 'Where the light stands: its direction, and how high it is (the centre is straight above)'}>
+        <span class="pl">Light</span>
+        <div class="pc">
+          <AngleDial angle={lit.angle} altitude={lit.altitude} label="Bevel light" oninput={(v, m) => setBevelLight(bv, v, m.live)} onend={endLightDrag} />
+          <label class="sh-check end" title="Use Global Light: the angle and altitude are the chapter's, shared by every shadow and bevel that uses it">
+            <input type="checkbox" checked={bv.useGlobalLight} aria-label="Bevel uses the global light" onchange={(e) => setBevelGlobal(bv, e.target.checked)} />
+            <span>Global</span>
           </label>
-          <label class="sh-num" title="Depth, %: how much the pattern raises the slope; below 0 it carves">
-            <span>Depth</span>
-            <input type="number" min={-BEVEL_DEPTH_MAX * 100} max={BEVEL_DEPTH_MAX * 100} step="1" value={pct(bv.texture.depth)} disabled={!bv.on} aria-label="Bevel texture depth, percent" onchange={(e) => commitPct(bv.texture, 'depth', e, -BEVEL_DEPTH_MAX * 100, BEVEL_DEPTH_MAX * 100)} />
-          </label>
+        </div>
+      </div>
+      {#each [['highlight', 'Highlight'], ['shadow', 'Shadow']] as [key, label] (key)}
+        {@const sh = bv[key]}
+        <div class="prow" title="{label}: its colour and opacity">
+          <span class="pl">{label}</span>
+          <div class="pc">
+            {@render swatchCell(sh, 'color', `Bevel ${label.toLowerCase()} colour`)}
+            <ValueSlider value={pct(sh.opacity)} max={100} unit="%" label="Bevel {label.toLowerCase()} opacity" oninput={(v) => setFrac(sh, 'opacity', v)} />
+          </div>
+        </div>
+      {/each}
+      {@render moreFold('bevel', 'Bevel shading', (bv.gloss?.preset ?? 'linear') !== 'linear' || bv.highlight.blend !== 'screen' || bv.shadow.blend !== 'multiply', 'Gloss contour and the blend modes')}
+      {#if fxMore.bevel}
+        {@render contourRow(bv, 'gloss', 'Bevel gloss contour', 'Gloss', 'Gloss Contour: reshapes the shading')}
+        {@render modeRow(bv.highlight, 'Bevel highlight mode', 'Highlight')}
+        {@render modeRow(bv.shadow, 'Bevel shadow mode', 'Shadow')}
+      {/if}
+
+      {@render foldHead('Bevel contour', 'Contour', !!fxMore.bevelContour, () => (fxMore.bevelContour = !fxMore.bevelContour), bv.contour.on ? 'on' : '', 'Reshapes the slope')}
+      {#if fxMore.bevelContour}
+        <div class="switch-row">
+          <button type="button" class="switch" class:on={bv.contour.on} role="switch" aria-checked={bv.contour.on} aria-label="Bevel contour" onclick={() => { bv.contour.on = !bv.contour.on; touch(); }}><span class="knob"></span></button>
+          <span class="lbl2">Contour</span>
+        </div>
+        {#if bv.contour.on}
+          {@render contourRow(bv.contour, 'curve', 'Bevel contour curve', 'Curve', "Contour: reshapes the bevel's slope")}
+          {@render sliderRow('Range', 'Range: kept and written to Photoshop; the engine does not paint it yet', pct(bv.contour.range), (v) => setFrac(bv.contour, 'range', v), { max: 100, unit: '%', aria: 'Bevel contour range' })}
+          <p class="nofill-note">Range is not painted yet. In a PSD the curve is not written (Photoshop shows Linear); Range and Anti-aliased are.</p>
+        {/if}
+      {/if}
+
+      {@render foldHead('Bevel texture', 'Texture', !!fxMore.bevelTexture, () => (fxMore.bevelTexture = !fxMore.bevelTexture), bv.texture.on ? 'on' : '', 'A pattern pressed into the slope')}
+      {#if fxMore.bevelTexture}
+        <div class="switch-row">
+          <button type="button" class="switch" class:on={bv.texture.on} role="switch" aria-checked={bv.texture.on} aria-label="Bevel texture" onclick={() => { bv.texture.on = !bv.texture.on; touch(); }}><span class="knob"></span></button>
+          <span class="lbl2">Texture</span>
+        </div>
+        {#if bv.texture.on}
+          {@render patternEditor(bv.texture.pattern, 'Bevel texture pattern', 'bevel.texture.pattern', false)}
+          {@render sliderRow('Scale', "Scale, over the pattern's own", pct(bv.texture.scale), (v) => setVal(bv.texture, 'scale', v / 100), { min: 1, max: 1000, soft: 200, unit: '%', aria: 'Bevel texture scale' })}
+          {@render sliderRow('Depth', 'Depth: how much the pattern raises the slope; below 0 it carves', pct(bv.texture.depth), (v) => setVal(bv.texture, 'depth', v / 100), { min: -BEVEL_DEPTH_MAX * 100, max: BEVEL_DEPTH_MAX * 100, unit: '%', aria: 'Bevel texture depth' })}
           <label class="sh-check" title="Invert: the pattern's light parts carve instead of raise">
-            <input type="checkbox" checked={bv.texture.invert} disabled={!bv.on} aria-label="Bevel texture invert" onchange={(e) => { bv.texture.invert = e.target.checked; touch(); }} />
+            <input type="checkbox" checked={bv.texture.invert} aria-label="Bevel texture invert" onchange={(e) => { bv.texture.invert = e.target.checked; touch(); }} />
             <span>Invert</span>
           </label>
           <label class="sh-check" title="Link with Layer: the pattern moves with the box; off, it is fixed to the page">
-            <input type="checkbox" checked={bv.texture.link} disabled={!bv.on} aria-label="Bevel texture linked with the box" onchange={(e) => { bv.texture.link = e.target.checked; touch(); }} />
-            <span>Link with layer</span>
+            <input type="checkbox" checked={bv.texture.link} aria-label="Bevel texture linked with the box" onchange={(e) => { bv.texture.link = e.target.checked; touch(); }} />
+            <span>Moves with the box</span>
           </label>
-        </div>
-        <p class="nofill-note">A textured bevel goes into a PSD as pixels: Photoshop's pattern table cannot be written.</p>
+          <p class="nofill-note">A textured bevel goes into a PSD as pixels: Photoshop's pattern table cannot be written.</p>
+        {/if}
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+<!-- The Tint (Fill tab): a colour or a gradient over the fill, in a blend
+     mode, on the box's top Color or Gradient Overlay (`tintOf`). Overlays
+     past it came from an older file: they still paint, and only their
+     remove button is offered. -->
+{#snippet tintControls(s)}
+  {@const tint = tintOf(s)}
+  {@const on = !!tint && instanceOn(tint.fx)}
+  {@const older = olderOverlays(s)}
+  <div class="switch-row" title="Tint: colours the fill in a blend mode (Photoshop's Color or Gradient Overlay)">
+    <button type="button" class="switch" class:on role="switch" aria-checked={on} aria-label="Tint" onclick={() => setTint(!on)}><span class="knob"></span></button>
+    <span class="lbl2">Tint</span>
+  </div>
+  {#if on}
+    <p class="nofill-note">Colours the fill: try Multiply or Color.</p>
+    {@render segRow('Kind', 'A flat colour or a gradient over the fill', [['color', 'Colour'], ['gradient', 'Gradient']], tint.kind, pickTintKind, 'Tint kind')}
+    {#if tint.kind === 'gradient'}
+      {@render fxGradientControls(tint.fx.gradient, 'Tint gradient')}
+    {:else}
+      <div class="prow">
+        <span class="pl">Colour</span>
+        <div class="pc">{@render colorField(tint.fx, 'color', 'Tint colour')}</div>
       </div>
     {/if}
-  </div>
+    {@render modeRow(tint.fx, 'Tint blend mode')}
+    {@render pctRow('Amount', 'How strong the tint is', tint.fx, 'opacity', 'Tint amount')}
+  {/if}
+  {#if older.length}
+    <div class="sub-head" title="Overlays from an older file. They paint as before; remove them to keep only the tint">
+      <span class="sub-name">From older file</span>
+    </div>
+    <div class="older-list">
+      {#each older as o (o.fx)}
+        {@const what = `${o.kind === 'color' ? 'colour' : 'gradient'} overlay ${o.i + 1}`}
+        <div class="older-row" class:inst-off={!instanceOn(o.fx)}>
+          <span class="older-chip" aria-hidden="true" style:background={o.kind === 'color' ? o.fx.color : `linear-gradient(90deg, ${o.fx.gradient.stops.map((st) => st.color).join(', ')})`}></span>
+          <span class="older-name">{o.kind === 'color' ? 'Colour' : 'Gradient'} · {blendLabel(o.fx.blend)} · {pct(o.fx.opacity)}%{instanceOn(o.fx) ? '' : ' · off'}</span>
+          {@render rmBtn(`older ${what}`, () => removeOlderOverlay(o))}
+        </div>
+      {/each}
+    </div>
+  {/if}
 {/snippet}
 
 <!-- An effect gradient, as Photoshop's Gradient Overlay and Stroke take one:
@@ -1669,23 +1680,15 @@
   </button>
 {/snippet}
 
-<!-- A list's own line inside a fold: its name, and the one thing to do to it. -->
-{#snippet subHead(name, addLabel, onAdd, canAdd, hint)}
-  <div class="sub-head" title={hint}>
-    <span class="sub-name">{name}</span>
-    <button type="button" class="link-btn" aria-label={addLabel} disabled={!canAdd} title={canAdd ? addLabel : `At most ${FX_INSTANCES_MAX} of a kind`} onclick={onAdd}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-      Add
-    </button>
-  </div>
-{/snippet}
-
 <!-- A pattern's tone from the page: the pick, and for an effect the tone the
      fill already took. While the pick waits for its drag, where it reads. -->
-{#snippet patActs(p, title, path, fromFill)}
+{#snippet patActs(p, title, path, fromOverlay, cards)}
   {@const picking = patternPick.active && patternPick.target === path}
-  {#if fromFill}
-    <button type="button" class="link-btn" title="Use the tone the fill took from the page" aria-label="{title} use the fill's tone" onclick={() => usePickedTile(p, box.style.pattern)}>Use the fill's tone</button>
+  {#if fromOverlay}
+    <button type="button" class="link-btn" title="Use the Pattern overlay's own tile" aria-label="{title} use the overlay's tile" onclick={() => usePickedTile(p, box.style.patternOverlay.pattern)}>Use the overlay's tile</button>
+  {/if}
+  {#if cards}
+    <button type="button" class="link-btn" title="Load Photoshop or GIMP pattern files (.pat). Colour patterns keep their colours" onclick={loadPatFiles}>Load .pat…</button>
   {/if}
   <button
     type="button"
@@ -1705,9 +1708,23 @@
      extras: the pick from the page, named by `path` (`patternPick.target`). -->
 {#snippet patternEditor(p, title, path, cards)}
   {@const hasTile = rustPatterns && !!p.src && p.cell?.length > 0}
-  {@const fromFill = !cards && !hasTile && !!box?.style.pattern?.src && box.style.pattern.cell?.length > 0}
-  <PatternEditor bind:p={() => p, () => {}} {title} rust={rustPatterns} full={!cards} onchange={() => touch()} oncolour={setColour} kinds={cards ? shownKinds : null} cards={cards ? patternCards : null} cardTile={CARD_TILE}>
-    {#snippet acts()}{@render patActs(p, title, path, fromFill)}{/snippet}
+  {@const po = box?.style.patternOverlay?.pattern}
+  {@const fromOverlay = !cards && !hasTile && po?.kind === 'picked' && !!po.src && po.cell?.length > 0}
+  <PatternEditor
+    bind:p={() => p, () => {}}
+    {title}
+    rust={rustPatterns}
+    full
+    onchange={() => touch()}
+    oncolour={setColour}
+    kinds={cards ? shownKinds : null}
+    cards={cards ? patternCards : null}
+    cardTile={CARD_TILE}
+    loaded={cards && rustPatterns ? loadedPatterns : null}
+    onloaded={pickLoaded}
+    onremoveset={(set) => void removePatternSet(set)}
+  >
+    {#snippet acts()}{@render patActs(p, title, path, fromOverlay, cards)}{/snippet}
     {#snippet note()}
       {#if patternPick.active && patternPick.target === path}
         <label class="sh-check" title="Cleaning often takes the tone away; the raw page still has it">
@@ -1717,67 +1734,6 @@
       {/if}
     {/snippet}
   </PatternEditor>
-{/snippet}
-
-<!-- One Photoshop Stroke effect: Size, Position, Mode, Opacity, and what it
-     is filled with. -->
-{#snippet strokeEffectRows(k, i)}
-  {@const name = `Photoshop stroke ${i + 1}`}
-  <div class="fx-block" class:inst-off={!instanceOn(k)}>
-    <div class="fx-head">
-      <span class="lbl">Stroke {i + 1}</span>
-      <span class="fx-head-end">
-        <FxMenu kind="strokeEffect" name={name} onpick={(id) => fxPick('strokeEffect', k, name, id)} />
-        {@render rmBtn(name.toLowerCase(), () => removeStrokeEffect(i))}
-      </span>
-    </div>
-    {@render instanceBar(box.style.strokeEffects, i, name, true)}
-    <div class="sh-more" style="margin:0">
-      <label class="sh-num" title="Size, page px">
-        <span>Size</span>
-        <input type="number" min="0" max={SHADOW_SIZE_MAX} step="0.5" value={k.size} aria-label="{name} size" onchange={(e) => commitNum(k, 'size', e, 0, SHADOW_SIZE_MAX)} />
-      </label>
-      <label class="sh-contour" title="Position: outside the letters' edge, inside it, or half and half">
-        <span>Position</span>
-        <select value={k.position} aria-label="{name} position" onchange={(e) => { k.position = e.target.value; touch(); }}>
-          {#each STROKE_POSITIONS as pos (pos)}
-            <option value={pos}>{POSITION_LABELS[pos]}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="sh-num" title="Opacity, %">
-        <span>Opacity</span>
-        <input type="number" min="0" max="100" step="1" value={pct(k.opacity)} aria-label="{name} opacity" oninput={(e) => setAlpha(k, 'opacity', e.target.value)} />
-      </label>
-      <label class="sh-contour" title="Blend mode">
-        <span>Mode</span>
-        <select value={k.blend} aria-label="{name} blend mode" onchange={(e) => { k.blend = e.target.value; touch(); }}>
-          {#each LAYER_BLEND_MODES as m (m)}
-            <option value={m}>{blendLabel(m)}</option>
-          {/each}
-        </select>
-      </label>
-      <!-- Overprint is stored and written to the PSD, not painted: PhotoCraft
-           paints nothing for it and Photoshop states no rule. Off leaves no
-           key, so old files stay as they were. -->
-      <label class="sh-check" title="Overprint: a print setting written to the PSD for Photoshop. It changes nothing in how the stroke mixes with the page here">
-        <input type="checkbox" checked={k.overprint === true} aria-label="{name} overprint" onchange={(e) => { if (e.target.checked) k.overprint = true; else delete k.overprint; touch(); }} />
-        <span>Overprint</span>
-      </label>
-    </div>
-    <div class="seg">
-      {#each [['color', 'Colour'], ['gradient', 'Gradient'], ['pattern', 'Pattern']] as [f, label] (f)}
-        <button type="button" class:on={k.fill === f} aria-pressed={k.fill === f} aria-label="{name} fill: {label}" onclick={() => { k.fill = f; touch(); }}>{label}</button>
-      {/each}
-    </div>
-    {#if k.fill === 'gradient'}
-      {@render fxGradientControls(k.gradient, `${name} gradient`)}
-    {:else if k.fill === 'pattern'}
-      {@render patternEditor(k.pattern, `${name} pattern`, `strokeEffects.${i}.pattern`, false)}
-    {:else}
-      {@render colorField(k, 'color', `${name} colour`)}
-    {/if}
-  </div>
 {/snippet}
 
 {#snippet secHead(title)}
@@ -1806,28 +1762,6 @@
   <button type="button" class="icon-btn" title="Remove {label}" aria-label="Remove {label}" disabled={!canRemove} onclick={onRemove}>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
   </button>
-{/snippet}
-
-<!-- One instance of a multi effect: its switch, then up, down and duplicate. -->
-{#snippet instanceBar(list, i, name, flush = false)}
-  {@const item = list[i]}
-  <div class="fx-inst" class:flush>
-    <label class="sh-check" title="On: switched off, it is kept and paints nothing">
-      <input type="checkbox" checked={instanceOn(item)} aria-label="{name} on" onchange={(e) => setInstanceOn(item, e.target.checked)} />
-      <span>On</span>
-    </label>
-    <span class="fx-inst-end">
-      <button type="button" class="inst-btn" title="Move up: paints over the one above" aria-label="Move {name} up" disabled={i === 0} onclick={() => moveInstance(list, i, -1)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6" /></svg>
-      </button>
-      <button type="button" class="inst-btn" title="Move down: paints under the one below" aria-label="Move {name} down" disabled={i >= list.length - 1} onclick={() => moveInstance(list, i, 1)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
-      </button>
-      <button type="button" class="inst-btn" title={roomFor(list) ? 'Duplicate: the copy goes over it' : `At most ${FX_INSTANCES_MAX} of a kind`} aria-label="Duplicate {name}" disabled={!roomFor(list)} onclick={() => duplicateInstance(list, i)}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>
-      </button>
-    </span>
-  </div>
 {/snippet}
 
 {#snippet addBtn(label, onAdd, canAdd = true)}
@@ -1991,13 +1925,16 @@
         {@render inkGapNote()}
         <div class="seg" role="group" aria-label="Fill">
           <button type="button" class="nofill" class:on={fillMode === 'none'} aria-pressed={fillMode === 'none'} title="No fill" aria-label="No fill" onclick={() => setFillMode('none')}>{@html iconNoFill}</button>
-          {#each [['solid', 'Solid'], ['gradient', 'Gradient'], ['pattern', 'Pattern']] as [m, label] (m)}
+          {#each [['solid', 'Solid'], ['gradient', 'Gradient']] as [m, label] (m)}
             <button type="button" class:on={fillMode === m} aria-pressed={fillMode === m} onclick={() => setFillMode(m)}>{label}</button>
           {/each}
         </div>
 
-        {#if fillMode === 'none'}
-          <p class="nofill-note">{s.strokes.length ? 'The letters are see-through: their outlines and layer effects show, as a Photoshop layer at Fill 0 % does.' : 'No fill and no stroke: only the layer effects show. Add a stroke or an effect.'}</p>
+        {#if fillMode === 'pattern'}
+          <p class="nofill-note">This box has an old pattern fill. Patterns are under Pattern now.</p>
+          <button type="button" class="link-btn" onclick={movePatternFill}>Move it to the Pattern overlay</button>
+        {:else if fillMode === 'none'}
+          <p class="nofill-note">{s.strokeEffects.length ? 'The letters are see-through: their outlines and layer effects show, as a Photoshop layer at Fill 0 % does.' : 'No fill and no stroke: only the layer effects show. Add a stroke or an effect.'}</p>
         {:else if fillMode === 'solid'}
           <div class="prow">
             <span class="pl">Colour</span>
@@ -2071,8 +2008,6 @@
               </div>
             </div>
           </div>
-        {:else}
-          {@render patternEditor(s.pattern, 'Pattern', 'pattern', true)}
         {/if}
 
         <!-- Photoshop's Fill Opacity: the fill fades, the strokes and the
@@ -2115,53 +2050,22 @@
           {#if usesBackdrop(s)}
             <p class="nofill-note">Blends with the page art.</p>
           {/if}
+          <!-- Black letters on white paper look the same in every darkening
+               mode: the maths, not a bug (effect-findings.engine.test.js). -->
+          {#if DARKEN_MODES.includes(s.blendMode)}
+            <p class="nofill-note">Black letters on white paper look the same as Normal in this mode. It shows over grey or coloured art.</p>
+          {/if}
         {:else}
           <p class="nofill-note">Fill opacity, blend modes and overlays need the Rust text engine (Settings).</p>
         {/if}
 
-        <!-- Photoshop's Color, Gradient and Pattern Overlay: laid over the
-             fill, each in its own mode, under the strokes. A plain box has
-             none, so they wait in a fold; its badge counts them. -->
-        {@render foldHead('Overlays', 'Overlays', overlaysOpen, () => (overlaysOpen = !overlaysOpen), overlayCount ? String(overlayCount) : '', 'Colour, gradient and pattern laid over the fill')}
+        <!-- The Tint, then the Pattern: what Photoshop's Color, Gradient and
+             Pattern Overlay add over the fill, under the strokes. -->
+        {@render tintControls(s)}
+        {@render foldHead('Pattern', 'Pattern', overlaysOpen, () => (overlaysOpen = !overlaysOpen), patternOn ? 'on' : '', 'A pattern laid over the fill')}
         {#if overlaysOpen}
           {@const po = s.patternOverlay}
-          {@render subHead('Colour', 'Add colour overlay', addOverlay, roomFor(s.colorOverlays), 'A flat colour over the fill. The first is on top')}
-          {#if s.colorOverlays.length}
-            <div class="insp-list k-overlay">
-              {#each s.colorOverlays as o, i (o)}
-                <div class="insp-row" class:inst-off={!instanceOn(o)}>
-                  {@render swatchCell(o, 'color', `Overlay ${i + 1} colour`)}
-                  <select value={o.blend} aria-label="Overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
-                    {#each LAYER_BLEND_MODES as m (m)}
-                      <option value={m}>{blendLabel(m)}</option>
-                    {/each}
-                  </select>
-                  <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Overlay {i + 1} opacity" title="Opacity, %" onchange={(e) => commitAlpha(o, 'opacity', e)} />
-                  <FxMenu kind="colorOverlay" name="Overlay {i + 1}" onpick={(id) => fxPick('colorOverlay', o, `Overlay ${i + 1}`, id)} />
-                  {@render rmBtn(`overlay ${i + 1}`, () => removeOverlay(i))}
-                </div>
-                {@render instanceBar(s.colorOverlays, i, `Overlay ${i + 1}`, true)}
-              {/each}
-            </div>
-          {/if}
-          {@render subHead('Gradient', 'Add gradient overlay', addGradientOverlay, roomFor(s.gradientOverlays), 'A gradient over the fill, under the colour overlays. The first is on top')}
-          {#each s.gradientOverlays as o, i (o)}
-            <div class="fx-block" class:inst-off={!instanceOn(o)}>
-              <div class="insp-row k-fxrow">
-                <select value={o.blend} aria-label="Gradient overlay {i + 1} blend mode" title="Blend mode" onchange={(e) => { o.blend = e.target.value; touch(); }}>
-                  {#each LAYER_BLEND_MODES as m (m)}
-                    <option value={m}>{blendLabel(m)}</option>
-                  {/each}
-                </select>
-                <input type="number" min="0" max="100" step="1" value={pct(o.opacity)} aria-label="Gradient overlay {i + 1} opacity" title="Opacity, %" onchange={(e) => commitAlpha(o, 'opacity', e)} />
-                <FxMenu kind="gradientOverlay" name="Gradient overlay {i + 1}" onpick={(id) => fxPick('gradientOverlay', o, `Gradient overlay ${i + 1}`, id)} />
-                {@render rmBtn(`gradient overlay ${i + 1}`, () => removeGradientOverlay(i))}
-              </div>
-              {@render instanceBar(s.gradientOverlays, i, `Gradient overlay ${i + 1}`, true)}
-              {@render fxGradientControls(o.gradient, `Gradient overlay ${i + 1}`)}
-            </div>
-          {/each}
-          <div class="sub-head" title="A pattern over the fill, under the gradient overlays">
+          <div class="sub-head" title="The box's pattern: over the fill, under the gradient overlays. At Normal 100 % it is the letters' fill">
             <span class="sub-name">Pattern</span>
             <span class="sub-end">
               <FxMenu kind="patternOverlay" name="Pattern overlay" onpick={(id) => fxPick('patternOverlay', po, 'Pattern overlay', id)} />
@@ -2186,7 +2090,9 @@
                 </select>
                 <input type="number" min="0" max="100" step="1" value={pct(po.opacity)} aria-label="Pattern overlay opacity" title="Opacity, %" onchange={(e) => commitAlpha(po, 'opacity', e)} />
               </div>
-              {@render patternEditor(po.pattern, 'Pattern overlay', 'patternOverlay.pattern', false)}
+              {@render patternEditor(po.pattern, 'Pattern overlay', 'patternOverlay.pattern', true)}
+              <!-- The browser preview's way to a .pat; the app opens its own dialog. -->
+              <input type="file" accept=".pat" multiple hidden bind:this={patFileInput} onchange={(e) => { void takePatFiles(e.target.files); e.target.value = ''; }} />
             </div>
           {/if}
         {/if}
@@ -2216,10 +2122,17 @@
               <input type="checkbox" checked={s.blending?.interior === true} disabled={!inner} aria-label="Blend interior effects as group" onchange={(e) => { s.blending = { ...s.blending, interior: e.target.checked }; touch(); }} />
               <span>Fill opacity fades the inner effects too</span>
             </label>
+            <!-- Said where it is set, so an unchanged page is not a mystery. -->
+            {#if s.blending?.interior === true && (!inner || (s.fillOpacity >= 1 && !s.noFill))}
+              <p class="nofill-note">{inner ? 'Changes nothing at Fill opacity 100 %.' : 'Changes nothing: no overlay, satin or inner glow is on.'}</p>
+            {/if}
             <label class="sh-check" title="Transparency Shapes Layer: off, a fill in Color Burn, Linear Burn, Color Dodge, Linear Dodge, Vivid Light, Linear Light, Hard Mix or Difference blends its own see-through edges as Fill does. Written to the PSD; in Photoshop the effects then cover the whole layer, here they stay on the letters">
               <input type="checkbox" checked={blendingSwitch(s.blending, 'transparencyShapes')} aria-label="Transparency shapes layer" onchange={(e) => setBlendingSwitch(s, 'transparencyShapes', e.target.checked)} />
               <span>Transparency shapes layer</span>
             </label>
+            {#if !blendingSwitch(s.blending, 'transparencyShapes') && !FILL_SPECIAL_MODES.includes(s.blendMode)}
+              <p class="nofill-note">Off changes nothing here in this blend mode, only in Color Burn, Linear Burn, Color Dodge, Linear Dodge, Vivid Light, Linear Light, Hard Mix and Difference.</p>
+            {/if}
             <div class="prow" title="Blend If: hide the box where its own colour, or the page art's under it, is outside the sliders">
               <span class="pl">Blend If</span>
               <div class="pc">
@@ -2288,43 +2201,23 @@
         </div>
 
         {#if effectsTab === 'stroke'}
-          <!-- Strokes: innermost first, which is also the order they are listed. -->
-          {@render secHead('Strokes · inner to outer')}
-          <div class="grp">
-            {#if !s.strokes.length}
-              <div class="insp-none">No stroke.</div>
-            {/if}
-            <div class="insp-list k-stroke">
-              {#if s.strokes.length}
-                <div class="insp-cap"><span></span><span class="left">Colour</span><span>Width</span><span>Op %</span><span></span></div>
-              {/if}
-              {#each s.strokes as k, i (k)}
-                <div class="insp-row">
-                  {@render swatchCell(k, 'color', `Stroke ${i + 1} colour`)}
-                  <input type="text" class="hex" value={k.color} aria-label="Stroke {i + 1} hex colour" oninput={hexInput} onchange={(e) => setHex(k, 'color', e.target.value, e.target)} />
-                  <input type="number" min="0.5" max="40" step="0.5" value={k.width} aria-label="Stroke {i + 1} width" title="Visible band width, page px" oninput={(e) => setNum(k, 'width', e.target.value, 0.5, 40)} />
-                  <input type="number" min="0" max="100" step="1" value={pct(k.opacity)} aria-label="Stroke {i + 1} opacity" title="Opacity, %" oninput={(e) => setAlpha(k, 'opacity', e.target.value)} />
-                  {@render rmBtn(`stroke ${i + 1}`, () => removeStroke(i))}
-                </div>
-              {/each}
-            </div>
-            {@render addBtn('Add stroke', addStroke)}
-          </div>
-          <!-- Photoshop's Stroke effect, under the outlines above: Outside,
-               Inside or Center, filled with a colour, a gradient or a
-               pattern. The Rust engine paints it. -->
-          {@render secHead('Photoshop strokes · first on top')}
+          <!-- The strokes: one list, the first on top. Plain ones at the head
+               (Outside, a colour, Normal) are the outline both engines lay;
+               the rest the Rust engine lays (`outlineRun`). -->
+          {@render secHead('Strokes · first on top')}
           <div class="grp">
             {#if !s.strokeEffects.length}
-              <div class="insp-none">No Photoshop stroke.</div>
+              <div class="insp-none">No stroke.</div>
             {/if}
-            {#each s.strokeEffects as k, i (k)}
-              {@render strokeEffectRows(k, i)}
-            {/each}
-            {#if s.strokeEffects.length && !rustBoxes}
-              <p class="nofill-note">Photoshop strokes need the Rust text engine (Settings).</p>
+            <div class="fx-list">
+              {#each s.strokeEffects as k, i (k)}
+                {@render strokeItem(k, i)}
+              {/each}
+            </div>
+            {#if !rustBoxes && s.strokeEffects.length > outlineRun(s).n}
+              <p class="nofill-note">Strokes that are not plain outlines (Outside, a colour, Normal, each wider than the one above) need the Rust text engine (Settings).</p>
             {/if}
-            {@render addBtn('Add Photoshop stroke', addStrokeEffect, roomFor(s.strokeEffects))}
+            {@render addBtn('Add stroke', addStrokeEffect, roomFor(s.strokeEffects))}
           </div>
         {/if}
 
@@ -2335,7 +2228,11 @@
             {#if !s.shadows.length}
               <div class="insp-none">No shadow.</div>
             {/if}
-            {@render shadowRows(s.shadows, false)}
+            <div class="fx-list">
+              {#each s.shadows as sh, i (sh)}
+                {@render shadowItem(s.shadows, i, false)}
+              {/each}
+            </div>
             {#if s.shadows.length && !rustBoxes}
               <p class="nofill-note">Spread, Noise, Contour and Knock out need the Rust text engine (Settings).</p>
             {/if}
@@ -2347,7 +2244,11 @@
             {#if !s.innerShadows.length}
               <div class="insp-none">No inner shadow.</div>
             {/if}
-            {@render shadowRows(s.innerShadows, true)}
+            <div class="fx-list">
+              {#each s.innerShadows as sh, i (sh)}
+                {@render shadowItem(s.innerShadows, i, true)}
+              {/each}
+            </div>
             {#if s.innerShadows.length && !rustBoxes}
               <p class="nofill-note">Inner shadows need the Rust text engine (Settings).</p>
             {/if}
@@ -2455,9 +2356,19 @@
             <span class="lbl2">Curve path</span>
           </div>
           {#if s.path.on}
-            <div class="insp-none">Drag the red anchors and square handles on the box. Right-click an anchor to remove it.</div>
-            {@render addBtn('Add anchor', () => { s.path.pts = insertPathAnchor(s.path.pts); touch(); })}
-            {@render addBtn('Reset path', () => { s.path.pts = defaultPathPts(box.w, box.h); touch(); })}
+            <!-- Ready-made shapes to start from; each is all smooth points, so a
+                 drag on any point keeps the curve flowing. The on-box gizmo does
+                 the rest: press the line to add a point and pull it. -->
+            <div class="grp">
+              <span class="lbl">Start from</span>
+              <div class="seg" role="group" aria-label="Path shape">
+                {#each [[0, 'Straight', 'A straight line through the middle'], [1, 'Arc', 'One arch'], [2, 'S-curve', 'Up, then down'], [3, 'Wave', 'Three bumps']] as [bumps, label, tip] (bumps)}
+                  <button type="button" title={tip} onclick={() => { s.path.pts = wavePath(box.w, box.h, bumps); touch(); }}>{label}</button>
+                {/each}
+              </div>
+            </div>
+            <div class="insp-none">Press the line to add a point, then drag it. Double-click a point to make it sharp or smooth. Right-click or Alt-click a point to remove it.</div>
+            {@render addBtn('Add point', () => { s.path.pts = insertPathAnchor(s.path.pts); touch(); })}
           {/if}
         {/if}
 
@@ -2930,19 +2841,19 @@
 
     </div>
 
-    <!-- The lock is offered on the first tab only. -->
-    <div class="insp-actions" class:pair={tab === 'text'}>
-      {#if tab === 'text'}
+    <!-- The lock and the delete are offered on the first tab only. -->
+    {#if tab === 'text'}
+      <div class="insp-actions pair">
         <button class="btn-lock" disabled={locked} title="Lock this box: nothing changes it until it is unlocked" onclick={() => setBoxLocked(box.id, true)}>
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>
           Lock box
         </button>
-      {/if}
-      <button class="btn-danger" disabled={locked} onclick={onDeleteBox}>
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>
-        Delete box
-      </button>
-    </div>
+        <button class="btn-danger" disabled={locked} onclick={onDeleteBox}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>
+          Delete box
+        </button>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -3246,15 +3157,6 @@
   .seg .nofill {
     flex: 0 0 34px;
   }
-  /* A drop shadow's Photoshop options, under its row. */
-  .sh-more {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px 10px;
-    margin: -2px 0 6px 30px;
-    font-size: 12px;
-    color: var(--t2);
-  }
   /* A contour's Edit button and its editor, across the row. */
   .ce-open {
     flex: 0 0 auto;
@@ -3267,45 +3169,7 @@
   .ce-span {
     grid-column: 1 / -1;
   }
-  .sh-more label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-  .sh-num span,
-  .sh-contour span {
-    flex: 0 0 auto;
-  }
-  .sh-num input,
-  .sh-num select {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .sh-contour {
-    grid-column: 1 / -1;
-  }
-  .sh-contour select {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  /* A multi effect instance's switch and its up, down and duplicate. */
-  .fx-inst {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin: -2px 0 2px 30px;
-    font-size: 12px;
-    color: var(--t2);
-  }
-  .fx-inst.flush {
-    margin-left: 0;
-  }
-  .fx-inst-end {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
+  /* A multi effect item's up, down and duplicate. */
   .inst-btn {
     display: inline-flex;
     align-items: center;
@@ -3338,6 +3202,61 @@
   /* A switched-off instance: kept, dimmed. */
   .inst-off {
     opacity: 0.55;
+  }
+  /* The layer effects: a list of items split by hairlines, never boxed
+     (the Rows Don't Float Rule); each item a head and its property rows. */
+  .fx-list {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .fx-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 0;
+    border-top: 1px solid var(--line);
+    min-width: 0;
+  }
+  .fx-item:first-child {
+    border-top: none;
+    padding-top: 2px;
+  }
+  /* Off, only the head says so: the rows under it dim, the switch does not. */
+  .fx-item.inst-off {
+    opacity: 1;
+  }
+  .fx-item.inst-off > :not(.fx-item-head) {
+    opacity: 0.5;
+  }
+  .fx-item-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 28px;
+  }
+  .fx-item-name {
+    font-size: 12px;
+    color: var(--text);
+  }
+  .fx-item-end {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .fx-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .sh-check.indent {
+    padding-left: 88px;
+  }
+  .sh-check.end {
+    margin-left: auto;
+    min-height: 0;
   }
   /* Advanced Blending: Channels on one row, Blend If's channel menu beside
      its heading, its two sliders under it. */
@@ -3402,6 +3321,39 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  /* Overlays from an older file under the Tint: one quiet line each, a chip
+     of what it lays, its mode and amount, and remove. */
+  .older-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .older-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+  }
+  .older-row.inst-off .older-chip,
+  .older-row.inst-off .older-name {
+    opacity: 0.5;
+  }
+  .older-chip {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    border-radius: var(--radius);
+    box-shadow: inset 0 0 0 1px var(--line2);
+  }
+  .older-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--t2);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* The heading of the part that is for the PSD only: a hairline apart. */
   .sub-apart {

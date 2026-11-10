@@ -50,7 +50,7 @@ afterAll(() => {
 });
 beforeEach(() => setGlyphPainter(whole));
 
-const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 48, strokes: [], autoHeight: false, ...over });
+const style = (over = {}) => normalizeStyle({ ...defaultStyle(), strokeEffects: [], font: 'Bangers', size: 48, strokes: [], autoHeight: false, ...over });
 const boxOf = (over = {}, text = 'WHOLE\nBOX') => ({ id: 'b', lineN: null, text, x: 120, y: 110, w: 260, h: 130, style: style(over) });
 const pageOf = (box) => ({ id: 1, w: 600, h: 400, lines: [], boxes: [box] });
 const SHADOW = { x: 6, y: 5, blur: 4, color: '#1d4ed8', opacity: 0.8 };

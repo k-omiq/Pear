@@ -18,7 +18,7 @@ import {
   import { tagsInUse, boxesWithTag } from './tags.svelte.js';
   import { modKey } from './format.js';
   import FontPicker from './FontPicker.svelte';
-  import { sizingOf, newShadow, SHADOW_SIZE_MAX, FX_INSTANCES_MAX, instanceOn } from './data.js';
+  import { sizingOf, newShadow, newStrokeEffect, newOverlay, tintOf, LAYER_BLEND_MODES, SHADOW_SIZE_MAX, FX_INSTANCES_MAX, instanceOn } from './data.js';
   import { GRADIENT_MAX_STOPS, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, letterSpacingRange } from './data.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { glyphPainter } from './text-engine/index.js';
@@ -215,24 +215,46 @@ import {
     set('fitMax', 0);
   }
 
+  // The Tint (`tintOf`): both overlay lists tick together, as the row moves
+  // them together.
+  const tint = $derived(tintOf(s));
+  const tintOn = $derived(!!tint && instanceOn(tint.fx));
+  function tickTint() {
+    tickBulkProp('colorOverlays');
+    tickBulkProp('gradientOverlays');
+  }
+  function setBulkTint(on) {
+    const t = tintOf(s);
+    if (t) {
+      if (on) delete t.fx.on;
+      else t.fx.on = false;
+    } else if (on) {
+      if (!Array.isArray(s.colorOverlays)) s.colorOverlays = [];
+      s.colorOverlays.push(newOverlay());
+    } else return;
+    tickTint();
+  }
+
   // Stroke helpers
+  // The strokes (`strokeEffects`, the one stroke list), the first on top.
   function addStroke() {
-    if (!Array.isArray(s.strokes)) s.strokes = [];
-    s.strokes.push({ color: '#ffffff', width: 3, opacity: 1 });
-    tickBulkProp('strokes');
+    if (!Array.isArray(s.strokeEffects)) s.strokeEffects = [];
+    if (s.strokeEffects.length >= FX_INSTANCES_MAX) return;
+    s.strokeEffects.push(newStrokeEffect());
+    tickBulkProp('strokeEffects');
   }
   function removeStroke(i) {
-    if (!Array.isArray(s.strokes)) return;
-    s.strokes.splice(i, 1);
-    tickBulkProp('strokes');
+    if (!Array.isArray(s.strokeEffects)) return;
+    s.strokeEffects.splice(i, 1);
+    tickBulkProp('strokeEffects');
   }
   function setStrokeHex(i, v, el) {
-    if (!s.strokes?.[i]) return;
+    if (!s.strokeEffects?.[i]) return;
     if (HEX.test(v)) {
-      s.strokes[i].color = v.startsWith('#') ? v : '#' + v;
-      tickBulkProp('strokes');
+      s.strokeEffects[i].color = v.startsWith('#') ? v : '#' + v;
+      tickBulkProp('strokeEffects');
     } else if (el) {
-      el.value = s.strokes[i].color;
+      el.value = s.strokeEffects[i].color;
     }
   }
 
@@ -596,28 +618,27 @@ import {
                 </div>
               </div>
             </div>
-            <div class="brow" class:off={!app.bulk.mask.strokes}>
-              {@render tick('strokes')}
+            <div class="brow" class:off={!app.bulk.mask.strokeEffects}>
+              {@render tick('strokeEffects')}
               <span class="lbl">Strokes</span>
               <div class="sub-list-block">
                 <div class="sub-list-head">
-                  <span class="sub-count">{s.strokes?.length ?? 0} stroke{s.strokes?.length === 1 ? '' : 's'}</span>
+                  <span class="sub-count">{s.strokeEffects?.length ?? 0} stroke{s.strokeEffects?.length === 1 ? '' : 's'}</span>
                   <button class="btn btn-sm" onclick={addStroke}>+ Add</button>
                 </div>
-                {#if s.strokes?.length}
+                {#if s.strokeEffects?.length}
                   <div class="sub-list">
-                    {#each s.strokes as st, i (i)}
+                    {#each s.strokeEffects as st, i (i)}
                       <div class="sub-row">
                         <div class="color-field">
-                          <ColorPicker value={st.color} label="Stroke colour" size={30} unclipped onchange={(hex) => { st.color = hex; tickBulkProp('strokes'); }} />
+                          <ColorPicker value={st.color} label="Stroke colour" size={30} unclipped onchange={(hex) => { st.color = hex; tickBulkProp('strokeEffects'); }} />
                           <input type="text" class="hex" value={st.color} aria-label="Stroke {i + 1} hex colour" onchange={(e) => setStrokeHex(i, e.currentTarget.value, e.currentTarget)} />
                         </div>
-                        <!-- Width floors at 0.5, not 0: the schema drops a
-                             zero-width stroke on normalise, so a 0 typed here
-                             would silently vanish from the template at apply. -->
-                        <input type="number" min="0.5" max="50" step="0.5" value={st.width} title="Width (px)" placeholder="W" onchange={(e) => { st.width = clamp(+e.target.value || 3, 0.5, 50); tickBulkProp('strokes'); }} />
+                        <!-- Size floors at 0.5, not 0: a stroke of size 0
+                             lays nothing. -->
+                        <input type="number" min="0.5" max={SHADOW_SIZE_MAX} step="0.5" value={st.size} title="Size (px)" aria-label="Stroke {i + 1} size" placeholder="Size" onchange={(e) => { st.size = clamp(+e.target.value || 3, 0.5, SHADOW_SIZE_MAX); tickBulkProp('strokeEffects'); }} />
                         <div class="slider-row" style="flex:1 1 70px; min-width:0">
-                          <input type="range" min="0" max="1" step="0.01" value={st.opacity} title="Opacity" oninput={(e) => { st.opacity = clamp(+e.target.value || 0, 0, 1); tickBulkProp('strokes'); }} />
+                          <input type="range" min="0" max="1" step="0.01" value={st.opacity} title="Opacity" aria-label="Stroke {i + 1} opacity" oninput={(e) => { st.opacity = clamp(+e.target.value || 0, 0, 1); tickBulkProp('strokeEffects'); }} />
                         </div>
                         <button class="sub-del" title="Remove stroke" onclick={() => removeStroke(i)}>×</button>
                       </div>
@@ -694,20 +715,44 @@ import {
                 {/if}
               </div>
             </div>
-            <div class="brow" class:off={!app.bulk.mask.pattern}>
-              {@render tick('pattern')}
+            <!-- The Tint, as in the Inspector: the top Color or Gradient
+                 Overlay (`tintOf`). Both overlay lists move whole, so a box
+                 takes the tint exactly, and drops overlays it had. -->
+            <div class="brow" class:off={!app.bulk.mask.colorOverlays}>
+              <input class="btick" type="checkbox" checked={!!app.bulk.mask.colorOverlays} onchange={(e) => { setBulkProp('colorOverlays', e.target.checked); setBulkProp('gradientOverlays', e.target.checked); }} title="Include this property in the bulk edit" />
+              <span class="lbl" title="Colours the fill: try Multiply or Color">Tint</span>
+              <div class="sub-list-block">
+                <div class="sub-list-head">
+                  <div class="switch" class:on={tintOn} role="switch" aria-checked={tintOn} aria-label="Tint" tabindex="0" onclick={() => setBulkTint(!tintOn)} onkeydown={(e) => e.key === 'Enter' && setBulkTint(!tintOn)}><span class="knob"></span></div>
+                  {#if tintOn && tint.kind === 'color'}
+                    <ColorPicker value={tint.fx.color} label="Tint colour" size={24} unclipped onchange={(hex) => { tint.fx.color = hex; tickTint(); }} />
+                  {:else}
+                    <span class="sub-count">{tintOn ? 'Gradient' : 'Off'}</span>
+                  {/if}
+                  {#if tintOn}
+                    <select aria-label="Tint blend mode" value={tint.fx.blend} onchange={(e) => { tint.fx.blend = e.target.value; tickTint(); }}>
+                      {#each LAYER_BLEND_MODES as m (m)}<option value={m}>{m.split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')}</option>{/each}
+                    </select>
+                  {/if}
+                </div>
+              </div>
+            </div>
+            <!-- The pattern is the Pattern Overlay's, as in the Inspector:
+                 the whole overlay moves, its switch, mode and opacity too. -->
+            <div class="brow" class:off={!app.bulk.mask.patternOverlay}>
+              {@render tick('patternOverlay')}
               <span class="lbl">Pattern</span>
               <div class="sub-list-block">
                 <div class="sub-list-head">
-                  <div class="switch" class:on={s.pattern.on} role="switch" aria-checked={s.pattern.on} aria-label="Pattern" tabindex="0" onclick={() => { s.pattern.on = !s.pattern.on; tickBulkProp('pattern'); }} onkeydown={(e) => e.key === 'Enter' && ((s.pattern.on = !s.pattern.on), tickBulkProp('pattern'))}><span class="knob"></span></div>
-                  <span class="sub-count">{s.pattern.on ? 'On' : 'Off'}</span>
+                  <div class="switch" class:on={s.patternOverlay.on} role="switch" aria-checked={s.patternOverlay.on} aria-label="Pattern" tabindex="0" onclick={() => { s.patternOverlay.on = !s.patternOverlay.on; tickBulkProp('patternOverlay'); }} onkeydown={(e) => e.key === 'Enter' && ((s.patternOverlay.on = !s.patternOverlay.on), tickBulkProp('patternOverlay'))}><span class="knob"></span></div>
+                  <span class="sub-count">{s.patternOverlay.on ? 'On' : 'Off'}</span>
                 </div>
               </div>
             </div>
             <!-- The same pattern editor as the Inspector's, under its row and
                  as wide as the pane: its sliders need the room. -->
-            <div class="bulk-pat" class:off={!app.bulk.mask.pattern}>
-              <PatternEditor bind:p={s.pattern} title="Pattern" rust={rustPatterns} onchange={() => tickBulkProp('pattern')} oncolour={(o, k, hex) => { o[k] = hex; tickBulkProp('pattern'); }} />
+            <div class="bulk-pat" class:off={!app.bulk.mask.patternOverlay}>
+              <PatternEditor bind:p={s.patternOverlay.pattern} title="Pattern" rust={rustPatterns} full onchange={() => tickBulkProp('patternOverlay')} oncolour={(o, k, hex) => { o[k] = hex; tickBulkProp('patternOverlay'); }} />
             </div>
           </div>
         </div>

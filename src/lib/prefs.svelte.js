@@ -18,6 +18,7 @@ import { app, setTool, setBrushToolAllowed, setSfxToolAllowed, setMinFontSize, s
 import { normalizeOcrModels } from './ocr-models.js';
 import { useTextEngine } from './engine-switch.svelte.js';
 import { setPaintWorkerAllowed } from './text-engine/paint-mirror.js';
+import { setTextEdges } from './text-edges.svelte.js';
 import { guide, onSeriesTypeset, SERIES_TYPESET_KEYS } from './guide.svelte.js';
 
 const KEY = 'mt.prefs';
@@ -131,6 +132,11 @@ export const prefs = $state({
   // before; read when the engine starts, and before each paint. No Settings
   // control: a way out without a rebuild.
   paintWorker: true,
+  // How letter edges sit on the pixel grid: 'smooth' exactly where the outline
+  // falls, 'crisp' with each line's baseline, x-height and cap height on whole
+  // page pixels (text-edges.svelte.js). Rust engine only. Per machine, like
+  // the engine switch.
+  textEdges: 'smooth',
   // The layer effects' own defaults (Photoshop's Make Default), one per kind
   // (`FX_KINDS` in data.js), in the stored form `fxStored` gives. Only the
   // kinds the person saved are here; the rest start from the factory. Per
@@ -147,7 +153,7 @@ const cleanNames = (v) =>
 // setter's validation and the loader's validation cannot drift apart.
 const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector', 'paintWorker'];
 const NUM_KEYS = { defaultMinOrphan: [1, 8], minFontSize: [4, 48] };
-const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'] };
+const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'], textEdges: ['smooth', 'crisp'] };
 
 // Push the box defaults to where a box is actually born. The store seeds a new
 // box's style through `applyBoxDefaults` in data.js, and data.js is a leaf - it
@@ -204,6 +210,7 @@ function persist() {
         secondDetector: prefs.secondDetector,
         textEngine: prefs.textEngine,
         paintWorker: prefs.paintWorker,
+        textEdges: prefs.textEdges,
         fxDefaults: $state.snapshot(prefs.fxDefaults),
         legacyTypeset,
         defaultsRev: DEFAULTS_REV,
@@ -264,6 +271,7 @@ export function setPref(key, value) {
   // the engine is swapped and every box laid out again once it is in.
   if (key === 'textEngine') useTextEngine(value);
   if (key === 'paintWorker') setPaintWorkerAllowed(value);
+  if (key === 'textEdges') setTextEdges(value);
   // Mirrored into data.js, where every new effect is made.
   if (key === 'fxDefaults') setFxDefaults(value);
   // No relayout for these: they are what the NEXT box is born with, and boxes
@@ -354,6 +362,7 @@ function load() {
   setInheritBoxStyle(prefs.inheritBoxStyle);
   // Before the engine starts: the worker starts with it, or not at all.
   setPaintWorkerAllowed(prefs.paintWorker);
+  setTextEdges(prefs.textEdges);
   // Here and not at first use: a chapter can open before anything asks, and
   // the engine has to be standing in the way of its first fit by then. A
   // no-op for 'browser', which is every install that never touched the switch.

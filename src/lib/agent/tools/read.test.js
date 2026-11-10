@@ -56,7 +56,7 @@ beforeEach(() => {
     rules: { dashes: 'ascii', ellipsis: 'dots' }, notes: payload,
   });
   bindTags({ list: [{ name: 'narration', style: { font: 'Anime Ace', bold: true }, size: 30, minSize: 16 }] });
-  presets.list = [{ id: 'pr1', name: 'Narrator', style: { font: 'Anime Ace', size: 30, color: '#112233', bold: true, italic: false, strokes: [{ width: 2 }] } }];
+  presets.list = [{ id: 'pr1', name: 'Narrator', style: { font: 'Anime Ace', size: 30, color: '#112233', bold: true, italic: false, strokeEffects: [{ size: 2 }] } }];
   setTextEngine(null);
   initHistory();
   resetHistory();
@@ -212,14 +212,14 @@ describe('box', () => {
       outline: { source: 'manual', approved: 'user', confidence: 0.8, note: { untrusted: payload } }, fit: 'rect', flags: [],
     });
     expect(Object.keys(result.style)).toEqual(Object.keys(app.pages[0].boxes[0].style));
-    const strokeCount = result.style.strokes.length;
-    result.style.strokes.push({ width: 9 });
+    const strokeCount = result.style.strokeEffects.length;
+    result.style.strokeEffects.push({ size: 9 });
     result.style.font = 'changed';
     result.outline.approved = 'ai';
     result.line.tags.push('changed');
     const again = await read('box', { id: 'b1' });
     expect(again.style.font).toBe('Anime Ace');
-    expect(again.style.strokes).toHaveLength(strokeCount);
+    expect(again.style.strokeEffects).toHaveLength(strokeCount);
     expect(again.outline.approved).toBe('user');
     expect(again.line.tags).toEqual(['narration']);
   });

@@ -7,16 +7,22 @@
 // painter and two destinations, which is the design `paintWarpedBox` set out
 // for a warped box and this makes the rule for every box.
 //
-// What differs from the export is only the resolution. The export paints at 2
-// and lets the composite scale it down; the editor paints at the scale the
-// picture is SHOWN at - the zoom times the display's pixel ratio, one texture
-// pixel per device pixel - because DOM text was sharp at every zoom and a
-// picture painted at 2 is soft above 200% and wasted below.
+// PAINTED ONCE, SHOWN AT ANY ZOOM. The picture is painted at one fixed
+// resolution, the export's own (`PICTURE_SCALE`: the 2 the export paints at
+// and scales down), and never at the zoom. A zoom does not repaint a box: the
+// painted picture is KEPT (TextBox.svelte's `warpPic`) and only shown again at
+// the new size (`presentPicture`), a resample of a finished bitmap that costs
+// about a millisecond where a repaint of a box with layer effects costs
+// hundreds. This is how a paint program treats its layers: the pixels are
+// made at the document's resolution once, and the view scales them.
 //
-// The canvas itself, its repaint key, its sequence counter and its release
-// are TextBox.svelte's, the same ones the warped box had; this file is the
-// arithmetic and the two paints, kept out of the component so they can be
-// tested without one.
+// The cost is above the picture's own resolution: past 100% on a 2x display
+// (past 200% on a 1x one) the picture is stretched and the letters go soft,
+// as a raster layer does in any paint program. The file is no sharper there.
+//
+// The canvas on screen, the kept picture, their keys and their release are
+// TextBox.svelte's; this file is the arithmetic and the paints, kept out of
+// the component so they can be tested without one.
 import { boxInJob, renderBoxTexture, warpTexture } from '../exporter.js';
 import { glyphPainter } from '../text-engine/index.js';
 import { paintWorkerAllowed } from '../text-engine/paint-mirror.js';
@@ -49,9 +55,6 @@ export const PICTURE_MAX_PX = 8 * 1024 * 1024;
 // (`renderBoxTexture`): the gizmo's drag, which holds one texture and re-runs
 // the mesh over it every frame.
 //
-// `at` is where the box's top-left lands on the screen in device px, for a
-// picture set on whole device pixels (`renderBoxTexture`'s `phase`).
-//
 // The texture says where its ink is (`ink`, canvas px, or null when the
 // painter could not say): the SFX panel's previews cut to it from there.
 //
@@ -61,10 +64,10 @@ export const PICTURE_MAX_PX = 8 * 1024 * 1024;
 // `sheet` is the page the box sits on, `{ w, h }` (`pageSheet`), for a
 // gradient with Align with Layer off; null paints it as Align on (an SFX card,
 // a page not measured yet).
-export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, at = null, under = null, sheet = null) {
+export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat = false, under = null, sheet = null) {
   // The editor's smear is the coarse one (`paintBoxJob`): this picture is
   // painted again at every edit.
-  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true, at, under, sheet);
+  return renderBoxTexture(box, p, tips, scale, maxPx, glyphPainter().maxSide ?? Infinity, flat, true, under, sheet);
 }
 
 // A turned box is painted finer than the screen. Its turn is CSS's, so the
@@ -78,9 +81,15 @@ export function pictureTexture(box, p, tips, scale, maxPx = PICTURE_MAX_PX, flat
 // Quarter turns are left alone: they land texel on pixel.
 export const TURNED_OVERSAMPLE = 2;
 
-/** Device px per page px a box is painted at when nothing caps it. */
-export function pictureScale(zoom, dpr, rotation = 0) {
-  return zoom * (dpr > 0 ? dpr : 1) * (rotation % 90 ? TURNED_OVERSAMPLE : 1);
+// Texture px per page px every box picture is painted at: the export's
+// supersample (`renderBox` paints at 2), so the editor's picture and the
+// file's are made from the same pixels, and the picture is one texel to the
+// device pixel at 100% on a 2x display.
+export const PICTURE_SCALE = 2;
+
+/** Texture px per page px a box is painted at when nothing caps it: the same at every zoom. */
+export function pictureScale(rotation = 0) {
+  return PICTURE_SCALE * (rotation % 90 ? TURNED_OVERSAMPLE : 1);
 }
 
 // The most pixels a box's picture holds while a handle is resizing the box:
@@ -133,92 +142,57 @@ export function pictureDragPx(msPerPx, cssPx = 0) {
   return Math.round(Math.min(PICTURE_DRAG_PX, Math.max(floor, PICTURE_FRAME_MS / msPerPx)));
 }
 
-// The finished bitmap onto the editor's canvas, pixel for pixel, and the
-// footprint back. 'copy' rather than a clear and a draw: the canvas then holds
-// exactly the bytes the painter made, which is what lets a test say the editor
-// and the export are the same picture and mean the same bytes.
+// The finished bitmap as the picture the box keeps, and its footprint.
 //
 // A mesh can carry a texture well past the footprint it was budgeted for
-// (warp-paint.js allows 64 MP), and this canvas is kept where the texture is
-// not - so a warped result over the budget is scaled down into it. Nothing
-// else comes in over: `renderBoxTexture` was handed the same budget, and the
-// row or column its rounding adds is the slack allowed here.
-//
-// `unit` is texture pixels per CSS px when the picture is shown one texel to
-// the device pixel. The canvas is then padded with transparent pixels to a
-// whole number of CSS px each way: WebKit paints a canvas into a rect rounded
-// to whole CSS px (two device px on a 2x display), so a canvas a fraction of a
-// CSS px wide was stretched by up to one CSS px and landed off its device
-// pixels - a letter jump at every zoom (`pictureCss`). 1 pads nothing.
-function show(el, r, maxPx, release, unit = 1) {
+// (warp-paint.js allows 64 MP), and the kept picture is held where the
+// texture is not - so a warped result over the budget is scaled down into a
+// canvas of its own. Nothing else comes in over: `renderBoxTexture` was handed
+// the same budget, and the row or column its rounding adds is the slack
+// allowed here. `release` hands the warped-from bitmap back when it is not the
+// one kept.
+function keep(r, maxPx, release) {
   let w = r.canvas.width;
   let h = r.canvas.height;
   const over = (w * h) / maxPx;
-  // How much of the bitmap's resolution the canvas keeps: all of it, or less.
-  let k = 1;
-  if (over > 1.02) {
-    k = 1 / Math.sqrt(over);
-    w = Math.max(1, Math.round(w * k));
-    h = Math.max(1, Math.round(h * k));
-  }
-  const pw = k === 1 && unit > 1 ? Math.ceil(w / unit) * unit : w;
-  const ph = k === 1 && unit > 1 ? Math.ceil(h / unit) * unit : h;
-  if (el.width !== pw) el.width = pw;
-  if (el.height !== ph) el.height = ph;
-  const ctx = el.getContext('2d');
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  // 'copy' replaces what the image covers; the padding is cleared by hand.
-  if (pw !== w || ph !== h) ctx.clearRect(0, 0, pw, ph);
-  ctx.globalCompositeOperation = 'copy';
-  // One to one there is nothing to smooth, and a canvas that filters anyway
-  // (Skia's 'high' is a cubic at any scale) would hand back other bytes.
-  const same = w === r.canvas.width && h === r.canvas.height;
-  ctx.imageSmoothingEnabled = !same;
+  if (!(over > 1.02)) return { canvas: r.canvas, ox: r.ox, oy: r.oy, cw: r.cw, ch: r.ch, k: 1 };
+  const k = 1 / Math.sqrt(over);
+  w = Math.max(1, Math.round(w * k));
+  h = Math.max(1, Math.round(h * k));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(r.canvas, 0, 0, w, h);
-  ctx.globalCompositeOperation = 'source-over';
   if (release) {
-    // The texture is on screen and nothing else holds it. A footprint at the
-    // display's scale is megapixels, and there is one of these per box.
     r.canvas.width = 0;
     r.canvas.height = 0;
   }
-  // The padding is page px too, at the bitmap's own page px per pixel.
-  return { ox: r.ox, oy: r.oy, cw: pw === w ? r.cw : (r.cw * pw) / w, ch: ph === h ? r.ch : (r.ch * ph) / h, k };
+  return { canvas, ox: r.ox, oy: r.oy, cw: r.cw, ch: r.ch, k };
 }
 
 /**
- * Paints `box` into the editor canvas `el` at `scale` device px per page px
- * (less for a box over the budget `maxPx`), mesh included. Returns where the
- * picture sits: `ox`/`oy` page px left of and above the box's own top-left,
- * and the `cw` x `ch` page px it spans - what `pictureCss` places the canvas
- * by - and `ss`, the device px per page px it was really painted at: `scale`
- * itself where no budget and no limit lowered it, and less where one did.
- *
- * `unit` is `scale` over the zoom - device px per CSS px, times the turned
- * box's oversample - and pads the canvas to whole CSS px (`show`). Only a
- * whole number pads, and only a picture painted at `scale`: one a budget
- * lowered is resampled on screen whatever its size.
- *
- * `corner` is where the box's top-left lands on the screen, device px, for a
- * box `pictureCss` sets on whole device pixels; the fraction of a pixel the
- * picture was painted moved by comes back as `phase` (undefined when none).
+ * Paints `box` at `scale` texture px per page px (less for a box over the
+ * budget `maxPx`), mesh included, and returns the picture to keep:
+ * `{ canvas, ox, oy, cw, ch, ss }` - the bitmap, `ox`/`oy` page px left of
+ * and above the box's own top-left, the `cw` x `ch` page px it spans, and
+ * `ss`, the texture px per page px it was really painted at: `scale` itself
+ * where no budget and no limit lowered it, and less where one did. The canvas
+ * is the caller's to show (`presentPicture`) and to let go.
  *
  * `under` is the page art for a box that blends with the page
  * (`pictureTexture`).
  */
-export function paintBoxPicture(el, box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null, sheet = null) {
-  return showTexture(el, pictureTexture(box, p, tips, scale, maxPx, false, corner, under, sheet), box, scale, maxPx, unit);
+export function paintBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, under = null, sheet = null) {
+  return keepTexture(pictureTexture(box, p, tips, scale, maxPx, false, under, sheet), box, maxPx);
 }
 
-// A finished texture of `box` onto `el`, and where it sits: the second half
-// of `paintBoxPicture`, shared with the worker's paint (`requestBoxPicture`).
-function showTexture(el, tex, box, scale, maxPx, unit) {
-  const ss = tex.ss;
-  const phase = tex.phase ?? null;
-  const whole = ss === scale && Math.abs(unit - Math.round(unit)) < 1e-9 ? Math.round(unit) : 1;
-  const { k, ...at } = show(el, warpTexture(tex, box), maxPx, true, whole);
-  return { ...at, ss: k === 1 ? ss : ss * k, phase: k === 1 && phase ? phase : undefined };
+// A finished texture of `box` as the picture to keep: the second half of
+// `paintBoxPicture`, shared with the worker's paint (`requestBoxPicture`).
+function keepTexture(tex, box, maxPx) {
+  const { k, ...pic } = keep(warpTexture(tex, box), maxPx, true);
+  return { ...pic, ss: tex.ss * k };
 }
 
 /**
@@ -312,19 +286,19 @@ export const _pictureSlots = () => ({ busy: slotsBusy, waiting: slotQueue.length
  *            when it cannot paint (paint the box synchronously then), or
  *            `{ closed: true }` when it was stopped on purpose (let go);
  *            rejects where the engine refused the job.
- *   apply(el, result)  the pixels onto the texture through the painter's own
- *            blit, and the texture onto `el`: what `paintBoxPicture` returns.
+ *   apply(result)  the pixels onto the texture through the painter's own
+ *            blit, and the picture to keep: what `paintBoxPicture` returns.
  *   cancel() lets go of the texture, for a result nobody wants.
  *   prepMs   what the main thread spent on it, for the drag budget.
  */
-export function requestBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, unit = 1, corner = null, under = null, sheet = null) {
+export function requestBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, under = null, sheet = null) {
   if (!pictureWorkerReady(box)) return null;
   const painter = glyphPainter();
   const worker = painter.worker;
   const t0 = performance.now();
   let cap;
   try {
-    cap = painter.capture(() => pictureTexture(box, p, tips, scale, maxPx, false, corner, under, sheet));
+    cap = painter.capture(() => pictureTexture(box, p, tips, scale, maxPx, false, under, sheet));
   } catch {
     // The synchronous paint will meet the same, and says it as it always has.
     return null;
@@ -343,13 +317,15 @@ export function requestBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, u
   return {
     promise: worker.paint(job.bytes),
     prepMs,
-    apply(el, result) {
+    apply(result) {
+      let pic = null;
       try {
         painter.finishCaptured(job, result?.raster ?? null);
-        return showTexture(el, tex, box, scale, maxPx, unit);
+        pic = keepTexture(tex, box, maxPx);
+        return pic;
       } finally {
-        // Shown (and let go by `show`), or not: the texture is nobody's now.
-        cancel();
+        // Kept, or not: a texture that is not the kept picture is nobody's now.
+        if (pic?.canvas !== tex.canvas) cancel();
       }
     },
     cancel,
@@ -359,48 +335,143 @@ export function requestBoxPicture(box, p, scale, tips, maxPx = PICTURE_MAX_PX, u
 /**
  * The same from a texture the caller is holding on to: the mesh gizmo's drag,
  * which paints the box once when the pointer goes down and then only re-runs
- * the mesh. The texture is the gesture's and is not released; the warped
- * bitmap this call made is.
+ * the mesh. The texture is the gesture's: the picture comes back `borrowed`
+ * when its canvas is that texture, and must not be let go by the one keeping
+ * it.
  */
-export function paintPictureTexture(el, tex, box, maxPx = PICTURE_MAX_PX) {
-  const r = warpTexture(tex, box, false);
-  const { k, ...at } = show(el, r, maxPx, r.canvas !== tex.canvas);
-  return at;
+//
+// `gpu` is the gesture's `meshWarper` over the texture (warp-paint.js), or
+// null. Its frame is drawn within `maxPx` and onto the warper's own canvas,
+// which comes back `borrowed` too: the next frame draws into it again.
+export function paintPictureTexture(tex, box, maxPx = PICTURE_MAX_PX, gpu = null) {
+  const r = warpTexture(tex, box, false, gpu, maxPx);
+  const { k, ...pic } = keep(r, maxPx, r.canvas !== tex.canvas && !r.shared);
+  return { ...pic, ss: (r.ss ?? tex.ss) * k, borrowed: pic.canvas === tex.canvas || (!!r.shared && pic.canvas === r.canvas) };
+}
+
+// THE KEPT PICTURE ON SCREEN. `presentPicture` draws the kept picture `pic`
+// into the canvas `el` at the size the zoom shows it, and says how `el` is
+// placed (`pictureCss`). It is a resample of a finished bitmap, never a paint:
+// what a zoom costs.
+//
+// An upright, unmirrored box (`at`, its page position, with `page`, where the
+// page's corner is on the screen) shown at or under the picture's own
+// resolution gets a canvas of exactly the device pixels it covers, set on
+// whole device pixels and drawn moved by the fraction of a pixel its corner
+// falls inside one (`fx`, `fy`): one canvas pixel to one device pixel, the
+// compositor resamples nothing, and the letters stay where they belong. At the
+// picture's own resolution (100% on a 2x display) the corner is moved to the
+// nearest device pixel instead - half a device pixel at most - and the bitmap
+// is copied byte for byte. The canvas is padded to whole CSS px each way:
+// WebKit paints a canvas into a rect rounded to whole CSS px, and one a
+// fraction of a CSS px wide was stretched and landed off its device pixels.
+//
+// Anything else - a turned or mirrored box, whose CSS transform resamples the
+// canvas whatever it holds, or a zoom past the picture's resolution - gets the
+// picture at the scale it is shown at (a turned box `TURNED_OVERSAMPLE` times
+// finer, so the turn's resample is an average), never finer than the picture
+// itself, and is stretched over its footprint by CSS.
+//
+// A shrink by more than half is made in halves, each an exact average of four
+// pixels: one bilinear step from far above samples the picture's pixels
+// rather than averaging them, and thin strokes break up at a distant zoom.
+export function presentPicture(el, pic, { z, dpr = 1, page = null, at = null, turned = false }) {
+  const d = dpr > 0 ? dpr : 1;
+  const dev = z * d;
+  const aligned = !!(at && page && !turned) && dev <= pic.ss + 1e-9;
+  const P = Math.min(pic.ss, dev * (turned ? TURNED_OVERSAMPLE : 1));
+  const same = Math.abs(P - pic.ss) < 1e-9;
+  let fx = 0;
+  let fy = 0;
+  let w;
+  let h;
+  if (aligned) {
+    const X = (page.x + (at.x - pic.ox) * z) * d;
+    const Y = (page.y + (at.y - pic.oy) * z) * d;
+    fx = same ? 0 : X - Math.floor(X);
+    fy = same ? 0 : Y - Math.floor(Y);
+    const unit = Math.abs(d - Math.round(d)) < 1e-9 && d >= 1 ? Math.round(d) : 1;
+    w = Math.ceil((fx + pic.cw * P - 1e-6) / unit) * unit;
+    h = Math.ceil((fy + pic.ch * P - 1e-6) / unit) * unit;
+    if (same) {
+      w = Math.max(w, Math.ceil(pic.canvas.width / unit) * unit);
+      h = Math.max(h, Math.ceil(pic.canvas.height / unit) * unit);
+    }
+  } else {
+    w = same ? pic.canvas.width : Math.max(1, Math.round(pic.cw * P));
+    h = same ? pic.canvas.height : Math.max(1, Math.round(pic.ch * P));
+  }
+  if (el.width !== w) el.width = w;
+  if (el.height !== h) el.height = h;
+  const ctx = el.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.clearRect(0, 0, w, h);
+  if (same) {
+    // One to one: the picture's own bytes, unfiltered.
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(pic.canvas, 0, 0);
+  } else {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    const src = halved(pic.canvas, P / pic.ss);
+    ctx.drawImage(src, fx, fy, pic.cw * P, pic.ch * P);
+    if (src !== pic.canvas) {
+      src.width = 0;
+      src.height = 0;
+    }
+  }
+  return { ox: pic.ox, oy: pic.oy, cw: pic.cw, ch: pic.ch, ss: pic.ss, aligned, fx, fy, pw: w, ph: h, page };
+}
+
+// `src` halved while the shrink still to go is under one half: the last step
+// is then a shrink of at most two. Each half is a new canvas, let go after
+// the next is made; the source is the caller's and is not.
+function halved(src, k) {
+  let c = src;
+  while (k < 0.5 && c.width > 1 && c.height > 1) {
+    const n = document.createElement('canvas');
+    n.width = Math.max(1, Math.round(c.width / 2));
+    n.height = Math.max(1, Math.round(c.height / 2));
+    const ctx = n.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(c, 0, 0, n.width, n.height);
+    if (c !== src) {
+      c.width = 0;
+      c.height = 0;
+    }
+    c = n;
+    k *= 2;
+  }
+  return c;
 }
 
 /**
  * The canvas's inline placement, in zoomed CSS px relative to the box's own
- * top-left (the clip wrapper's origin).
+ * top-left (the clip wrapper's origin), from what `presentPicture` made.
  *
- * `at` is the box's page position when the picture should be set on whole
- * device pixels, and null when it should not. A canvas painted one texture
- * pixel per device pixel is only shown that way if it also STARTS on a device
- * pixel; half a pixel off and the compositor resamples the whole of it, which
- * is the softness painting at the display's scale was for. So the corner is
- * moved to the nearest device pixel - at most half of one, a quarter of a CSS
- * px on a 2x display. Only for a box that is upright and unmirrored: a turned
- * picture is resampled whatever its corner does.
+ * A device-aligned canvas (`g.aligned`) is `g.pw` x `g.ph` device px and set
+ * on whole device pixels, its picture `g.fx`/`g.fy` device px in. `at` is the
+ * box's page position NOW: a box moved since the canvas was made is still
+ * set on whole device pixels, up to half of one from exact, until it is next
+ * presented. `g.page` is where the page's corner was on the screen when it
+ * was (`pageCorner`): a page centred in the viewport at 137% starts on a half,
+ * and without it the snap is to the page's grid, not the screen's.
  *
- * `g.page` is where the page's own corner is on the screen (`pageCorner`),
- * which is not a whole pixel either: a page centred in the viewport at 137%
- * starts on a half. Without it the snap is to the page's grid, not the
- * screen's.
+ * Anything else is stretched over its footprint.
  */
 export function pictureCss(g, z, dpr = 1, at = null) {
-  let left = -g.ox * z;
-  let top = -g.oy * z;
-  if (at && dpr > 0) {
-    const snap = (v) => Math.round(v * dpr) / dpr;
+  const d = dpr > 0 ? dpr : 1;
+  if (g.aligned && at) {
+    const snap = (v) => Math.round(v * d) / d;
     const px = g.page?.x ?? 0;
     const py = g.page?.y ?? 0;
-    // A picture painted moved by a fraction of a pixel (`phase`) is set that
-    // much earlier, so the letters - not the canvas - land where they belong.
-    const fx = (g.phase?.x ?? 0) / dpr;
-    const fy = (g.phase?.y ?? 0) / dpr;
-    left = snap(px + (at.x - g.ox) * z - fx) - px - at.x * z;
-    top = snap(py + (at.y - g.oy) * z - fy) - py - at.y * z;
+    const left = snap(px + (at.x - g.ox) * z - g.fx / d) - px - at.x * z;
+    const top = snap(py + (at.y - g.oy) * z - g.fy / d) - py - at.y * z;
+    return `left:${left}px;top:${top}px;width:${g.pw / d}px;height:${g.ph / d}px;`;
   }
-  return `left:${left}px;top:${top}px;width:${g.cw * z}px;height:${g.ch * z}px;`;
+  return `left:${-g.ox * z}px;top:${-g.oy * z}px;width:${g.cw * z}px;height:${g.ch * z}px;`;
 }
 
 // Where a page frame's content corner is in the viewport, CSS px. It is a
@@ -495,7 +566,7 @@ export const PICTURE_OFF = 'e|off';
  * The ink block is not stringified here - it is the heaviest part of a style
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
-export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '' }) {
+export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '', edges = '' }) {
   const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
@@ -507,6 +578,8 @@ export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, f
     (under ? `|B${under}` : '') +
     // A gradient laid over the page (Align with Layer off): where the box
     // stands on it, turned and mirrored (`pageGradientKey`).
-    (page ? `|P${page}` : '')
+    (page ? `|P${page}` : '') +
+    // Crisp letter edges (text-edges.svelte.js).
+    (edges ? `|E${edges}` : '')
   );
 }

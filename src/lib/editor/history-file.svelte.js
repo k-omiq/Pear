@@ -120,7 +120,8 @@ export function graft(stored, live) {
 const isCurrentStyle = (s) =>
   !!s &&
   typeof s === 'object' &&
-  Array.isArray(s.strokes) &&
+  // The outline bands of before 2026-11-10 (`strokes`) are strokes now.
+  !('strokes' in s) &&
   Array.isArray(s.shadows) &&
   // A shadow saved before Photoshop's Size has `blur` and no `size`.
   s.shadows.every((sh) => !!sh && typeof sh === 'object' && 'size' in sh) &&

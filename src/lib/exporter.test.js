@@ -14,7 +14,7 @@ import {
   sanitizeExportName,
   stripCleanBands,
 } from './exporter.js';
-import { PAGE_W, PAGE_H, normalizeStyle } from './data.js';
+import { PAGE_W, PAGE_H, normalizeStyle, normalizePattern, strokesFromBands } from './data.js';
 import { arcLayout, layoutLines, BOX_PAD, textInset, balloonWidthsFor, setTypesetEnabled, baselineInLine } from './measure.js';
 import { patternTilePx, TILE_SS } from './text-paint.js';
 import { neededHeight } from './typeset.js';
@@ -645,7 +645,7 @@ describe('shaped lines reach the page', () => {
   // - and the export has to draw what the editor shows, which is the point of
   // both of them asking that one function.
   it('draws neither the blank line above the text nor the one below it', async () => {
-    const box = boxWith({ size: 20, strokes: [] });
+    const box = boxWith({ size: 20, strokeEffects: [] });
     box.text = '\n\nONE\n\n';
     await renderPageCanvas({ id: 7, w: 800, h: 1200, lines: [], boxes: [box] });
     expect(painted).toEqual(['ONE']);
@@ -685,13 +685,13 @@ describe('strokes and shadows', () => {
     await render(
       boxWith({
         size: 20,
-        strokes: [
+        strokeEffects: strokesFromBands([
           { color: '#ff0000', width: 2, opacity: 1 },
           { color: '#00ff00', width: 3, opacity: 0.5 },
-        ],
+        ]),
       }),
     );
-    // strokes[0] is the innermost, so the green one - 2 + 3 wide - is painted
+    // The first band is the innermost, so the green one - 2 + 3 wide - is painted
     // first and the red one over it, leaving 2px of red showing and 3 of green.
     expect(stroked.map((k) => [k.color, k.width, k.alpha])).toEqual([
       ['#00ff00', 10, 0.5],
@@ -702,7 +702,7 @@ describe('strokes and shadows', () => {
   });
 
   it('draws nothing at all for an empty stroke list', async () => {
-    await render(boxWith({ size: 20, strokes: [] }));
+    await render(boxWith({ size: 20, strokeEffects: [] }));
     expect(stroked).toEqual([]);
     expect(painted).toEqual(['ONE']);
   });
@@ -711,7 +711,7 @@ describe('strokes and shadows', () => {
     await render(
       boxWith({
         size: 20,
-        strokes: [],
+        strokeEffects: [],
         shadows: [
           { x: 2, y: 3, size: 7, color: '#000000', opacity: 0.6 },
           { x: -5, y: 0, size: 0, color: '#ff0000', opacity: 1 },
@@ -730,7 +730,7 @@ describe('strokes and shadows', () => {
     await render(
       boxWith({
         size: 20,
-        strokes: [{ color: '#ffffff', width: 3, opacity: 1 }],
+        strokeEffects: strokesFromBands([{ color: '#ffffff', width: 3, opacity: 1 }]),
         shadows: [{ x: 2, y: 2, blur: 0, color: '#000000', opacity: 1 }],
       }),
     );
@@ -743,7 +743,7 @@ describe('strokes and shadows', () => {
   it('grows the footprint for the strokes, the shadows and the blur', async () => {
     // The bitmap's origin is the box corner less the overflow the paint needs,
     // so a box that paints further out composites further up and to the left.
-    await render(boxWith({ size: 20, strokes: [{ color: '#fff', width: 1, opacity: 1 }] }));
+    await render(boxWith({ size: 20, strokeEffects: strokesFromBands([{ color: '#fff', width: 1, opacity: 1 }]) }));
     // The last composite is the one onto the page; a blurred box composites
     // once more before it, into the canvas the blur is applied through.
     const tight = composited.at(-1);
@@ -751,7 +751,7 @@ describe('strokes and shadows', () => {
     await render(
       boxWith({
         size: 20,
-        strokes: [{ color: '#fff', width: 8, opacity: 1 }],
+        strokeEffects: strokesFromBands([{ color: '#fff', width: 8, opacity: 1 }]),
         shadows: [{ x: 20, y: 20, blur: 10, color: '#000', opacity: 1 }],
         blur: 4,
       }),
@@ -872,7 +872,7 @@ describe('roughened text', () => {
     y: 60,
     w: 400,
     h: 120,
-    style: normalizeStyle({ size: 24, strokes: [], roughen: { on, amount: 4, detail: 0.05, seed: 7 } }),
+    style: normalizeStyle({ size: 24, strokeEffects: [], roughen: { on, amount: 4, detail: 0.05, seed: 7 } }),
   });
   const render = (box) => renderPageCanvas({ id: 9, w: 800, h: 1200, lines: [], boxes: [box] });
 
@@ -1225,7 +1225,7 @@ describe('gradient stops reach the canvas', () => {
     y: 40,
     w: 360,
     h: 200,
-    style: normalizeStyle({ size: 20, strokes: [], shadows: [], gradient: { on: true, ...gradient } }),
+    style: normalizeStyle({ size: 20, strokeEffects: [], shadows: [], gradient: { on: true, ...gradient } }),
   });
   const render = (box) => renderPageCanvas({ id: 7, w: 800, h: 1200, lines: [], boxes: [box] });
 
@@ -1284,6 +1284,8 @@ describe('gradient stops reach the canvas', () => {
 // the stub answered null to `createPattern`, every patterned box quietly fell
 // through to `s.color`, and the tile's pitch and its anchor - the two numbers a
 // tiled fill is - went unread. Both are now recorded.
+const withPatternFill = (style, pattern) => ({ ...style, pattern: { ...normalizePattern({ ...pattern, on: true }), on: true } });
+
 describe('pattern fills reach the canvas', () => {
   const patBox = (pattern, over = {}) => ({
     id: 'p1',
@@ -1293,13 +1295,9 @@ describe('pattern fills reach the canvas', () => {
     y: 40,
     w: 360,
     h: 200,
-    style: normalizeStyle({
-      size: 20,
-      strokes: [],
-      shadows: [],
-      pattern: { on: true, kind: 'halftone', fg: '#000000', bg: '#ffffff', scale: 1, ...pattern },
-      ...over,
-    }),
+    // The old pattern fill, as one that could not move to the Pattern
+    // Overlay is kept: set past `normalizeStyle`, which would move it.
+    style: withPatternFill(normalizeStyle({ size: 20, strokeEffects: [], shadows: [], ...over }), { kind: 'halftone', fg: '#000000', bg: '#ffffff', scale: 1, ...pattern }),
   });
   const render = (box) => renderPageCanvas({ id: 7, w: 800, h: 1200, lines: [], boxes: [box] });
 
@@ -1364,7 +1362,7 @@ describe('curved text carries one fill across the letters', () => {
     y: 40,
     w: 360,
     h: 200,
-    style: normalizeStyle({ size: 20, curve: 60, strokes: [], shadows: [], ...fill }),
+    style: fill.pattern ? withPatternFill(normalizeStyle({ size: 20, curve: 60, strokeEffects: [], shadows: [] }), fill.pattern) : normalizeStyle({ size: 20, curve: 60, strokeEffects: [], shadows: [], ...fill }),
   });
   const render = (box) => renderPageCanvas({ id: 7, w: 800, h: 1200, lines: [], boxes: [box] });
 
@@ -1429,7 +1427,7 @@ describe('a box with every effect on at once', () => {
       h: 200,
       style: normalizeStyle({
         size: 20,
-        strokes: [{ color: '#ffffff', width: 3, opacity: 1 }],
+        strokeEffects: strokesFromBands([{ color: '#ffffff', width: 3, opacity: 1 }]),
         shadows: [{ x: 2, y: 3, size: 7, color: '#000000', opacity: 0.6 }],
         gradient: {
           on: true,
@@ -1504,7 +1502,7 @@ describe('a box with every effect on at once', () => {
       h: 200,
       style: normalizeStyle({
         size: 20,
-        strokes: [],
+        strokeEffects: [],
         shadows: [],
         blur: 3,
         roughen: { on: true, amount: 4, detail: 0.05, seed: 7 },

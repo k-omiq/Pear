@@ -11,6 +11,7 @@
     BOARD_SIZE,
     addBoardStroke,
     beginBoardGesture,
+    inBoardGesture,
     endBoardGesture,
     eraseBoardAt,
     widthBoardAt,
@@ -20,7 +21,7 @@
   } from './brush-board.svelte.js';
   import { brushTool } from './brush-tool.svelte.js';
   import { liquifySettings, liquifyTool } from './liquify-tool.svelte.js';
-  import { buildStroke } from './brush.js';
+  import { buildStroke, strokeBounds } from './brush.js';
   import { drawInk } from './text-paint.js';
   import { inkTipIds, settleTips } from './brush-tips.js';
 
@@ -75,7 +76,64 @@
   const finish = $derived(board.editing?.finish ?? brushTool.finish);
   const finishKey = $derived(JSON.stringify(finish));
 
-  function paintCache(W) {
+  // EACH STROKE'S OWN PICTURE, kept by the stroke object. The board's edits
+  // keep an untouched stroke the object it was (`applyLiquify`'s identity
+  // contract, and the eraser's and width tool's), so a liquify or width drag
+  // repaints only the strokes the tool reached and lays the rest down from
+  // here. Painting all of them every frame was the board's whole cost: 85 ms
+  // a frame for 40 strokes in WKWebView (2026-11-10), each stroke stamped
+  // into a layer the size of the board.
+  //
+  // Only for the frames of a drag (`inBoardGesture`), and only where the
+  // strokes are independent of each other: no finish (an outline around the
+  // whole of the ink is a reading of all of it) and no Compare density stroke
+  // (compared against the ink under it). Each picture is the stroke drawn by
+  // `drawInk` alone onto clear pixels, on the board's own pixel grid, laid
+  // down in order with source-over, as one `drawInk` of the list lays each
+  // stroke's layer. Not to the byte, though: WebKit antialiases a dab's edge a
+  // little differently in a canvas moved by whole pixels (up to 43 of 255 on
+  // a few edge pixels, measured), so when the pointer comes up the board is
+  // painted whole again and rests on exactly the picture it always had.
+  const strokePics = new Map();
+  let strokePicsKey = '';
+  function releaseStrokePics() {
+    for (const pic of strokePics.values()) {
+      if (!pic.canvas) continue;
+      pic.canvas.width = 0;
+      pic.canvas.height = 0;
+    }
+    strokePics.clear();
+  }
+  function strokePic(k, W, s) {
+    let pic = strokePics.get(k);
+    if (pic) return pic;
+    pic = { canvas: null, x: 0, y: 0 };
+    const b = strokeBounds(k);
+    if (b) {
+      // Past the stroke's own reach by a margin wider than any pass inside
+      // `drawInk` reads (the water edge's band and blur, two px of slack),
+      // so nothing it draws is cut. Cut only where the board ends, as there.
+      const rim = k.waterEdge === true ? Math.max(0, +k.waterEdgeWidth || 0) + Math.max(0, +k.waterEdgeBlur || 0) : 0;
+      const pad = rim * s + 4;
+      const x0 = Math.max(0, Math.floor(b.minX * s - pad));
+      const y0 = Math.max(0, Math.floor(b.minY * s - pad));
+      const x1 = Math.min(W, Math.ceil(b.maxX * s + pad));
+      const y1 = Math.min(W, Math.ceil(b.maxY * s + pad));
+      if (x1 > x0 && y1 > y0) {
+        const c = document.createElement('canvas');
+        c.width = x1 - x0;
+        c.height = y1 - y0;
+        const g = c.getContext('2d');
+        g.setTransform(s, 0, 0, s, -x0, -y0);
+        drawInk(g, { on: true, strokes: [k] }, undefined, tips);
+        pic = { canvas: c, x: x0, y: y0 };
+      }
+    }
+    strokePics.set(k, pic);
+    return pic;
+  }
+
+  function paintCache(W, live) {
     if (!cache) cache = document.createElement('canvas');
     if (cache.width !== W) cache.width = W;
     if (cache.height !== W) cache.height = W;
@@ -83,8 +141,34 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, W, W);
     const s = W / BOARD_SIZE;
-    ctx.scale(s, s);
-    drawInk(ctx, { on: true, strokes: board.strokes }, undefined, tips, $state.snapshot(finish));
+    const fx = $state.snapshot(finish);
+    const strokes = board.strokes;
+    const together = !live || fx?.strokes?.length || fx?.shadows?.length || strokes.some((k) => k?.blend === 'density');
+    if (together) {
+      releaseStrokePics();
+      ctx.scale(s, s);
+      drawInk(ctx, { on: true, strokes }, undefined, tips, fx);
+      return;
+    }
+    // A new size or new tips: every picture is out of date.
+    const key = `${W}|${tipVer}`;
+    if (key !== strokePicsKey) {
+      strokePicsKey = key;
+      releaseStrokePics();
+    }
+    const kept = new Set(strokes);
+    for (const [k, pic] of strokePics) {
+      if (kept.has(k)) continue;
+      if (pic.canvas) {
+        pic.canvas.width = 0;
+        pic.canvas.height = 0;
+      }
+      strokePics.delete(k);
+    }
+    for (const k of strokes) {
+      const pic = strokePic(k, W, s);
+      if (pic.canvas) ctx.drawImage(pic.canvas, pic.x, pic.y);
+    }
   }
 
   function paint() {
@@ -92,10 +176,13 @@
     const el = canvasEl;
     if (!el || !(cssSize > 1)) return;
     const W = devicePx();
-    const key = `${board.rev}|${W}|${tipVer}|${finishKey}`;
+    // Whether a drag is in flight is part of what the cache is: its frames
+    // are laid from the strokes' own pictures, the board at rest is not.
+    const live = inBoardGesture();
+    const key = `${board.rev}|${W}|${tipVer}|${finishKey}|${live ? 'live' : ''}`;
     if (key !== cacheKey) {
       cacheKey = key;
-      paintCache(W);
+      paintCache(W, live);
     }
     if (el.width !== W) el.width = W;
     if (el.height !== W) el.height = W;
@@ -165,6 +252,8 @@
       cache.height = 0;
       cache = null;
     }
+    releaseStrokePics();
+    strokePicsKey = '';
     tips = null;
     tipReq++;
   });
@@ -288,6 +377,9 @@
       live.delete(ac);
       ac.abort();
       endBoardGesture(keep);
+      // The last frames were laid from the strokes' own pictures; the board
+      // at rest is painted whole again (`paintCache`).
+      schedule();
     };
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
@@ -367,6 +459,7 @@
         schedule();
       }
       endBoardGesture(false);
+      schedule();
       ring = null;
     });
   });

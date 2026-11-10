@@ -21,7 +21,7 @@ import { defaultStyle, normalizeInnerShadow, normalizeOverlay, normalizeStyle } 
 // (`createPaintHandler`, the same function the worker queues its messages
 // through), and a box is painted both ways: synchronously on the main
 // instance (`paintBoxPicture`) and through the worker (`requestBoxPicture`).
-// The two canvases must be the same, pixel for pixel, and placed the same.
+// The two kept pictures must be the same, pixel for pixel, and placed the same.
 
 // The worker's side of the line, in-process: messages handled one at a time,
 // in order, replies delivered as the worker's would be.
@@ -101,20 +101,22 @@ function art() {
 
 const pixels = (el) => el.getContext('2d').getImageData(0, 0, el.width, el.height).data;
 
-// The box painted both ways at `scale`, compared.
-async function both(box, { scale = 2, under = null, corner = null } = {}) {
+// The box painted both ways at `scale`, compared: the picture each keeps.
+async function both(box, { scale = 2, under = null } = {}) {
   const p = pageOf(box);
   expect(boxInJob(box)).toBe(true);
-  const sync = createCanvas(1, 1);
-  const g = paintBoxPicture(sync, box, p, scale, null, PICTURE_MAX_PX, 1, corner, under);
+  const g = paintBoxPicture(box, p, scale, null, PICTURE_MAX_PX, under);
   forgetBackdrops();
-  const req = requestBoxPicture(box, p, scale, null, PICTURE_MAX_PX, 1, corner, under);
+  const req = requestBoxPicture(box, p, scale, null, PICTURE_MAX_PX, under);
   expect(req, 'the box goes to the worker').not.toBeNull();
   const res = await req.promise;
   expect(res.dead).toBeUndefined();
-  const off = createCanvas(1, 1);
-  const h = req.apply(off, res);
-  expect(h).toEqual(g);
+  const h = req.apply(res);
+  // Placed the same, at the same scale.
+  expect({ ...h, canvas: null }).toEqual({ ...g, canvas: null });
+  const sync = g.canvas;
+  const off = h.canvas;
+  expect(off).not.toBe(sync);
   expect([off.width, off.height]).toEqual([sync.width, sync.height]);
   const a = pixels(sync);
   const b = pixels(off);
@@ -135,8 +137,9 @@ describe('a box painted in the paint worker', () => {
     await both(boxOf());
   });
 
-  it('at a scale that is not whole, set on the pixel grid (a phase)', async () => {
-    await both(boxOf(), { scale: 1.37, corner: { x: 211.3, y: 97.6 } });
+  // As a budget lowers a picture to.
+  it('at a scale that is not whole', async () => {
+    await both(boxOf(), { scale: 1.37 });
   });
 
   it('a box with a stack of layer effects', async () => {

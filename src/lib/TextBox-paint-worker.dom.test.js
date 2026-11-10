@@ -38,7 +38,14 @@ vi.mock('./editor/box-picture.js', async (original) => {
           open.now--;
           fail(err);
         },
-        apply: vi.fn(() => ({ ox: 0, oy: 0, cw: 10, ch: 10, ss: 1 })),
+        // The picture to keep, as `requestBoxPicture`'s `apply` returns it:
+        // 10 x 10 page px at the picture's scale.
+        apply: vi.fn(() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 20;
+          canvas.height = 20;
+          return { canvas, ox: 0, oy: 0, cw: 10, ch: 10, ss: 2 };
+        }),
         cancel: vi.fn(),
       };
       requests.push(req);
@@ -115,7 +122,14 @@ describe('the full paint in the paint worker', () => {
     requests[0].answer();
     await settle();
     expect(requests[0].apply).toHaveBeenCalledTimes(1);
+    expect(requests[0].apply).toHaveBeenCalledWith({ raster: null, ms: 1 });
     expect(requests[0].cancel).not.toHaveBeenCalled();
+    // The picture it made is kept, and shown: at 100% on a 1x display, one
+    // canvas px per device px of its 10 x 10 page px.
+    const el = document.querySelector('canvas.warpl');
+    expect(el.width).toBeGreaterThanOrEqual(10);
+    expect(el.width).toBeLessThanOrEqual(11);
+    expect(requests[0].apply.mock.results[0].value.canvas.width).toBe(20);
   });
 
   it('a result for a picture the box no longer wants is let go, and only the newest is painted', async () => {

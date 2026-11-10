@@ -106,7 +106,7 @@ describe('boxPaintedStripSpan and effect reach', () => {
     // the ink from the box's corner and saw none of that.
     const style = {
       ink: { on: true, strokes: [inkLine([[100, 40], [100, 125]])] },
-      strokes: [{ width: 3 }],
+      strokeEffects: [{ size: 3, position: 'outside' }],
       shadows: [{ x: 0, y: 6, blur: 0 }],
     };
     const e = boxPaintReach({ y: 0, w: 200, h: 80, style });
@@ -155,7 +155,7 @@ describe('boxPaintedStripSpan and effect reach', () => {
     expect(boxPaintedStripSpan(b2, 500)).toEqual({ top: 536, bottom: 744 });
 
     // Box with effects padding
-    const b3 = { y: 100, w: 200, h: 80, style: { strokes: [{ width: 10 }] } };
+    const b3 = { y: 100, w: 200, h: 80, style: { strokeEffects: [{ size: 10, position: 'outside' }] } };
     expect(boxPaintedStripSpan(b3, 500)).toEqual({ top: 586, bottom: 694 });
   });
 });
