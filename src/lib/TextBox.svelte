@@ -74,7 +74,7 @@
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
   import { meshWarper } from './warp-paint.js';
-  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords } from './contain.js';
+  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull } from './contain.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
@@ -1267,9 +1267,19 @@
   // exactly where the exporter and the PSD writer anchor it, with room for its
   // outline inside the box.
   const pad = $derived(textInset(s) * z);
+  // The box as shown: the rectangle grown on each side the ink spills past
+  // (`boxHull`), as zoomed px for the outline, the handles and the badge to
+  // sit on (styles.css reads them as --hl/--ht/--hr/--hb). The rectangle
+  // itself is what the text is laid out in, so nothing inside moves.
+  const hull = $derived(boxHull(box));
+  const hullCss = $derived(
+    hull.l || hull.t || hull.r || hull.b
+      ? `--hl:${hull.l * z}px;--ht:${hull.t * z}px;--hr:${hull.r * z}px;--hb:${hull.b * z}px;`
+      : '',
+  );
   const boxStyle = $derived(
     `left:${box.x * z}px;top:${box.y * z}px;width:${box.w * z}px;height:${box.h * z}px;` +
-      `padding:${pad}px;` +
+      `padding:${pad}px;${hullCss}` +
       `transform:rotate(${s.rotation}deg);justify-content:${justify};align-items:${alignItems};` +
       `opacity:${s.opacity}`,
   );

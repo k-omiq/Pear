@@ -38,6 +38,8 @@ import {
   editBoxes,
   refuseLocked,
   lineByN,
+  snugSelectedBox,
+  snugPageBoxes,
 } from './store.svelte.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
 import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
@@ -124,6 +126,8 @@ const RUNS = {
   'fx.warp': { when: boxSelected, run: effect('warp') },
   'fx.motionBlur': { when: boxSelected, run: effect('motionBlur') },
   'fx.roughen': { when: boxSelected, run: effect('roughen') },
+  'box.snugWidth': { when: boxSelected, run: () => snugSelectedBox() },
+  'page.snugWidths': { when: () => typeset() && page()?.boxes?.length > 0, run: () => snugPageBoxes() },
   'box.showInQueue': { when: () => boxSelected() && byId(app.selectedId)?.lineN != null, run: showInQueue },
   'bulk.open': { when: () => typeset() && !app.bulk.active, run: () => openBulk() },
 
