@@ -44,3 +44,6 @@ gradient_overlay_diamond c599410579b73758
 gradient_overlay_shape_burst e919bc886174181f
 everything_at_zoom_2 33e42177c52b491e
 everything_turned_30 ac6da1432cc1c34e
+wobble 15109a1b5a85b3b0
+wobble_tilt_stroke_shadow 56a751b1da6960f9
+wobble_with_sfx_shake 0489468988283c80

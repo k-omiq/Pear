@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 11
+export const WIRE_VERSION = 12
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -371,14 +371,18 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   // 32 (v11): Crisp, each straight line's baseline, x-height and cap height
   // moved onto whole page pixels (the engine skips it where a turn, a mesh
   // or a roughening would undo it).
+  // 64 (v12): Wobble, each letter moved up or down and turned by numbers of
+  // its own (`wobble`, below).
   const negative = job.negative ?? null
+  const wobble = job.wobble ?? null
   u32(
     (job.curved ? 1 : 0) |
       (job.silhouette ? 2 : 0) |
       (job.noFill ? 4 : 0) |
       (job.strokeOrder === 'each' ? 8 : 0) |
       (negative ? 16 : 0) |
-      (job.crisp ? 32 : 0),
+      (job.crisp ? 32 : 0) |
+      (wobble ? 64 : 0),
   )
   // An alignment the canvas does not know leaves its `textAlign` at "start".
   u32(ALIGN[job.align] ?? 0)
@@ -405,6 +409,16 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
     if (!(Number.isFinite(at.x) && Number.isFinite(at.y))) throw new Error('mt-text: crisp needs a finite grid corner')
     f64(at.x)
     f64(at.y)
+  }
+  // With Wobble: the furthest a letter moves up or down, as a share of the
+  // size (0 to 1), the furthest it turns, degrees (0 to 90), and the seed.
+  if (wobble) {
+    if (!(wobble.amount >= 0 && wobble.amount <= 1)) throw new Error(`mt-text: wobble amount is 0 to 1, not ${wobble.amount}`)
+    if (!(wobble.tilt >= 0 && wobble.tilt <= 90)) throw new Error(`mt-text: wobble tilt is 0 to 90, not ${wobble.tilt}`)
+    if (!(Number.isInteger(wobble.seed) && wobble.seed >= 0 && wobble.seed <= 0xffffffff)) throw new Error(`mt-text: wobble seed is a u32, not ${wobble.seed}`)
+    f64(wobble.amount)
+    f64(wobble.tilt)
+    u32(wobble.seed)
   }
   u32(job.bands.length)
   for (const band of job.bands) {

@@ -385,10 +385,11 @@ describe('styleSchemaText', () => {
   // Layer and Vector Mask Hides Effects, and to 19000 for the effect
   // gradient's opacity stops, midpoints, Smoothness, Method and Dither,
   // and to 19100 for the Photoshop stroke's Overprint.
-  // To 19200 for the twelve pattern kinds of 2026-11-10.
-  it('describes every key, field and item in under 19200 characters', () => {
+  // To 19200 for the twelve pattern kinds of 2026-11-10, and to 19300 for
+  // the letters' Wobble the same day.
+  it('describes every key, field and item in under 19300 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(19200);
+    expect(text.length).toBeLessThan(19300);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.

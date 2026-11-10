@@ -65,6 +65,8 @@ export const request = {
     noFill: false,
     bands: [{ color: '#112233', opacity: 0.6875, line: 3.5 }],
     fill: { kind: 'solid', color: '#778899' },
+    // Wobble (glyph wire v12).
+    wobble: { amount: 0.1875, tilt: 7.5, seed: 4242 },
     runs: [
       { text: 'AB', x: 14.5, y: 21.5, rot: 0.375, sx: 1.125, sy: 0.875, skew: 0.0625, drip: 0.5, pen: 1.25, ghost: true, fill: { kind: 'solid', color: '#334455' } },
       { text: 'C', x: 33.5, y: 41.25, rot: -0.1875, sx: 0.9375, sy: 1.0625, skew: -0.03125, drip: 0.25, pen: 1.5 },

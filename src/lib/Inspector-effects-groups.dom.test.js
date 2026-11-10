@@ -50,7 +50,7 @@ describe('the Effects groups', () => {
     expect([...names(view, 'Effects groups')].map((b) => b.textContent)).toEqual(['Styles', 'Shape', 'Surface', 'Paint']);
     expect([...names(view, 'Effects options')].map((b) => b.textContent)).toEqual(['Stroke', 'Shadow', 'Glow', 'Bevel']);
     await fireEvent.click(view.getByRole('tab', { name: 'Shape' }));
-    expect([...names(view, 'Effects options')].map((b) => b.textContent)).toEqual(['Warp', 'Transform', 'Liquify']);
+    expect([...names(view, 'Effects options')].map((b) => b.textContent)).toEqual(['Warp', 'Transform', 'Liquify', 'Wobble']);
     expect(effectsSubTab.id).toBe('warp');
   });
 

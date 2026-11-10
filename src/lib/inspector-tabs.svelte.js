@@ -61,6 +61,8 @@ export const EFFECTS_TABS = [
   { id: 'warp', label: 'Warp', group: 'shape' },
   { id: 'transform', label: 'Transform', group: 'shape' },
   { id: 'liquify', label: 'Liquify', group: 'shape' },
+  // Wobble moves each letter on its own; the three above move the whole box.
+  { id: 'wobble', label: 'Wobble', group: 'shape' },
   { id: 'edges', label: 'Edges', group: 'surface' },
   { id: 'blur', label: 'Blur', group: 'surface' },
   { id: 'mask', label: 'Mask', group: 'paint' },

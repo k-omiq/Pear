@@ -441,6 +441,12 @@ export const STYLE_SCHEMA = {
     seed: number('distortion seed'),
     grit: number('fine tear in page px'),
   }),
+  wobble: object('letters sit high/low and tilt; not SFX shake', {
+    on: boolean('enable'),
+    amount: number('% of size', 0, 40),
+    tilt: number('degrees', 0, 20),
+    seed: integer('seed', 0, 999),
+  }),
   curve: number('arc: negative=frown, positive=smile'),
   shape: choice('line-breaking shape', ['auto', 'oval', 'rect', 'off']),
   minOrphan: number('minimum solo-word letters'),

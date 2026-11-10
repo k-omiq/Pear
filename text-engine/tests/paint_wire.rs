@@ -24,7 +24,7 @@ use mt_text::paint::fx::gradient_bake::Method;
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::{
     decode_box, Affine, Align, Band, Clip, ClipMode, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
-    BOX_WIRE_VERSION, MAX_PAGE,
+    Wobble, BOX_WIRE_VERSION, MAX_PAGE,
 };
 
 const HEX: &str = include_str!("data/box_wire_distinct.hex");
@@ -203,6 +203,14 @@ fn every_field_of_the_box_comes_back_as_itself() {
     assert!(!q.job.no_fill);
     assert_eq!(q.job.bands, vec![Band { color: rgb(0x112233), opacity: 0.6875, line: 3.5 }]);
     assert_eq!(q.job.fill, Some(Fill::Solid(rgb(0x778899))));
+    assert_eq!(
+        q.job.effects.wobble,
+        Some(Wobble {
+            amount: 0.1875,
+            tilt: 7.5,
+            seed: 4242,
+        })
+    );
     assert_eq!(q.job.runs.len(), 2);
     let (a, b) = (&q.job.runs[0], &q.job.runs[1]);
     assert_eq!((a.text.as_str(), a.x, a.y, a.rot), ("AB", 14.5, 21.5, 0.375));

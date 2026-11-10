@@ -324,6 +324,7 @@ const DEFS = [
   { id: 'fx.warp', label: 'Warp on or off', group: 'Box', combo: null, keywords: 'effect bend arc', ...T },
   { id: 'fx.motionBlur', label: 'Motion blur on or off', group: 'Box', combo: null, keywords: 'effect speed', ...T },
   { id: 'fx.roughen', label: 'Rough edges on or off', group: 'Box', combo: null, keywords: 'effect roughen grit', ...T },
+  { id: 'fx.wobble', label: 'Wobble', group: 'Box', combo: null, keywords: 'shake shaky bounce jitter letters', ...T },
   { id: 'box.snugWidth', label: 'Shrink box to text', group: 'Box', combo: 'Mod+Alt+w', keywords: 'narrow tighten width fit hug empty space', ...T },
   { id: 'page.snugWidths', label: 'Shrink all boxes on page to text', group: 'Box', combo: 'Mod+Alt+Shift+w', keywords: 'narrow tighten width fit hug empty space every', ...T },
   { id: 'box.showInQueue', label: 'Show in text queue', group: 'Box', combo: null, keywords: 'line find', ...T },

@@ -41,6 +41,8 @@ pub mod paint;
 #[cfg(feature = "paint")]
 pub mod pattern;
 #[cfg(feature = "paint")]
+pub mod seeded;
+#[cfg(feature = "paint")]
 pub mod sfx;
 mod wrap;
 

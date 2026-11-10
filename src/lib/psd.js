@@ -834,6 +834,8 @@ export function isRasterOnly(style) {
     warpActive(s) ||
     // ink
     s.roughen?.on ||
+    // A wobble moves and turns each letter on its own: no type layer says that.
+    s.wobble?.on ||
     clipActive(s.clip) ||
     // Hand-drawn strokes are not something Photoshop's type engine can
     // re-render, so a box carrying them ships as pixels or loses them.

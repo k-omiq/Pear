@@ -28,6 +28,9 @@ pub struct Placed {
     /// Font size in pixels.
     pub size: f64,
     pub synth: Synth,
+    /// The cluster the glyph belongs to: its first UTF-16 offset in the
+    /// run's text. Glyphs of one letter (a base and its marks) share it.
+    pub cluster: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -92,6 +95,7 @@ pub fn shape_run(
                     y: -f64::from(g.y_offset) * scale,
                     size: face.size,
                     synth: part.synth,
+                    cluster: g.cluster,
                 },
             )?;
             pen += i64::from(g.x_advance);

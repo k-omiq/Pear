@@ -100,6 +100,7 @@ import {
   inkBounds,
   clipActive,
   clipShapesBounds,
+  wobbleReach,
 } from './text-paint.js';
 import { warpActive, affineFromTriangle } from './warp.js';
 import { warpPlan } from './warp-paint.js';
@@ -413,6 +414,10 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
   } else {
     r = linesInkRect(place);
   }
+  // A wobble moves each letter up or down and turns it: the letters' own
+  // rectangle grows by how far, before the strokes are laid round them.
+  const wr = wobbleReach(s);
+  if (r && (wr.x > 0 || wr.y > 0)) r = grow(r, wr.x, wr.y);
   const ink = inkActive(s.ink) ? inkBounds(s.ink) : null;
   if (ink) r = unite(r, ink.minX, ink.minY, ink.maxX, ink.maxY);
   if (!r) return null;

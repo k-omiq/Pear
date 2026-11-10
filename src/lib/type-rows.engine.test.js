@@ -302,6 +302,20 @@ describe('in pixels: a glyph`s ink starts at the caret before it plus its own le
     wide.forEach((r, i) => expect(r.stop - tight[i].stop).toBeCloseTo(7 * i, 9));
   });
 
+  it('a wobble moves letters up and down only: the carets are the same, and each ink still starts at its caret', () => {
+    const wobble = { on: true, amount: 25, tilt: 0, seed: 7 };
+    const plain = typeModel(boxOf('WAVE ON'), 'WAVE ON');
+    expect(typeModel(boxOf('WAVE ON', { wobble }), 'WAVE ON')).toEqual(plain);
+    // The ink is painted moved: the picture is not the plain one.
+    const moved = painted(boxOf('WAVE', { wobble }));
+    const still = painted(boxOf('WAVE'));
+    expect(Array.from(moved.data).some((v, i) => v !== still.data[i]) || moved.h !== still.h).toBe(true);
+    // Each prefix paints its letters where the whole line does, so each
+    // letter's ink is found at the caret before it, as without a wobble.
+    const rows = expectInkAtCarets('WAVE', { wobble });
+    expectInkAtCarets('WAVE').forEach((r, i) => expect(rows[i].stop).toBeCloseTo(r.stop, 9));
+  });
+
   it('letter spacing breaks the ligature, and each letter has its own stop on its own ink', () => {
     const rows = expectInkAtCarets('afib', { font: 'DejaVu Sans', letterSpacing: 5 });
     expect(rows.map((r) => r.glyph)).toEqual(['a', 'f', 'i', 'b']);

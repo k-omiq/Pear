@@ -1485,6 +1485,20 @@ export function inkReach(style) {
   return inkExtent(style.ink) + Math.ceil(strokeReach(style) + shadowExtent(reachShadows(style)));
 }
 
+// How far a wobble can carry a letter's ink from where it was laid, page px
+// per axis (`Wobble` in the engine): up or down by `amount` percent of the
+// size, and a turn about the letter's middle of up to `tilt` degrees, which
+// moves no edge of a letter at most an em wide and high further than half
+// the size times the turn's sine. Zero for a box with no wobble on.
+export function wobbleReach(style) {
+  const w = style?.wobble;
+  if (!w?.on) return { x: 0, y: 0 };
+  const size = Math.max(0, Number(style.size) || 0);
+  const tilt = Math.min(90, Math.max(0, Number(w.tilt) || 0));
+  const turn = 0.5 * size * Math.sin((tilt * Math.PI) / 180);
+  return { x: turn, y: turn + (size * Math.max(0, Number(w.amount) || 0)) / 100 };
+}
+
 // The Euclidean distance from every pixel to the nearest one with alpha at or
 // over `T`, in px; 0 for those pixels themselves. Felzenszwalb and
 // Huttenlocher's transform: a lower envelope of parabolas along every row and

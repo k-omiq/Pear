@@ -509,6 +509,11 @@ export function defaultStyle() {
     // over the crumple, page px, drawn only by a painter that roughens the
     // outlines (the Rust engine's): moved pixels tear on their own.
     roughen: { on: false, amount: 4, detail: 0.05, seed: 7, grit: 0 },
+    // Wobble: each letter sits a little high or low and can tilt, by numbers
+    // of its own from `seed`. `amount` is a percent of the font size and
+    // `tilt` degrees, so neither needs a page rescale. Painted by the Rust
+    // engine only. Not the SFX `shake` above, which lays copies.
+    wobble: { on: false, amount: 8, tilt: 0, seed: 7 },
     // warp: per-character circular arc, -100..100 (negative = frown, positive = smile)
     curve: 0,
     // ---- typesetting (see typeset.js) ----
@@ -2262,6 +2267,12 @@ export function normalizeStyle(s) {
     bevel: normalizeBevel(src.bevel),
     strokeEffects,
     roughen: { ...d.roughen, ...(src.roughen || {}) },
+    wobble: {
+      on: src.wobble?.on === true,
+      amount: Math.min(40, Math.max(0, num(src.wobble?.amount, d.wobble.amount))),
+      tilt: Math.min(20, Math.max(0, num(src.wobble?.tilt, d.wobble.tilt))),
+      seed: Math.min(999, Math.max(0, Math.round(num(src.wobble?.seed, d.wobble.seed)))),
+    },
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
   foldPatternFill(out);

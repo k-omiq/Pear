@@ -31,6 +31,7 @@ import {
   strokeReach,
   drawInk,
   patternFillStyle,
+  wobbleReach,
 } from './text-paint.js';
 import { warpActive, meshMap } from './warp.js';
 import { findTag } from './tags.svelte.js';
@@ -237,7 +238,9 @@ function layoutBox(box, p) {
   // the tail of its gaussian: `paintShadows` blurs at sigma = blur/2, and a
   // gaussian is done at about three sigma, so 2x the named blur clears it with
   // room to spare where the old `+ blur` cut into it.
-  const strokeOut = strokeReach(s);
+  // A wobble moves the letters before the strokes are laid round them, so
+  // its reach adds to theirs.
+  const strokeOut = strokeReach(s) + wobbleReachMax(s);
   const pad0 = Math.ceil(
     Math.max(
       strokeOut,
@@ -720,6 +723,10 @@ export function glyphJob(box, L) {
   // Crisp letter edges (text-edges.svelte.js), for the Rust painter: each
   // straight line's baseline and zones on whole page pixels.
   if (crispFor(s)) job.crisp = true;
+  // A wobble, for a painter that moves the letters itself (`wobbleInJob`):
+  // the amount as a share of the size, the tilt in degrees. Every job of the
+  // box carries it, the silhouette a shadow is cast from included.
+  if (wobbleInJob({ style: s })) job.wobble = { amount: s.wobble.amount / 100, tilt: s.wobble.tilt, seed: s.wobble.seed };
   // The box's mesh, for a painter that bends the outlines itself (`meshInJob`).
   if (L.mesh) job.mesh = L.mesh;
   // And its roughening, for a painter that roughens them (`roughenInJob`):
@@ -1279,6 +1286,18 @@ export function roughenGrit(s) {
   const g = Number(s?.roughen?.grit);
   return s?.roughen?.on && g > 0 ? g : 0;
 }
+
+// Whether a box's wobble is painted: only by a painter that moves the letters
+// in the job (the Rust one). Under the browser engine the switch is shown
+// dimmed and nothing moves. Never true under the browser engine.
+export function wobbleInJob(box) {
+  return box.style.wobble?.on === true && engineDraws() && glyphPainter().wobble === true;
+}
+
+const wobbleReachMax = (s) => {
+  const r = wobbleReach(s);
+  return Math.max(r.x, r.y);
+};
 
 export function roughenInJob(box) {
   const s = box.style;
