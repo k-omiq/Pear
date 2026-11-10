@@ -415,6 +415,33 @@ describe('the file on disk', () => {
       }
     });
 
+    // A re-detect in that window drops its page's line steps from a stack that
+    // does not hold the stored ones yet; the load must not bring them back.
+    it('keeps the line steps a re-detect dropped while it was loading out of the stack it loads', async () => {
+      const lineStep = { t: 'line', pageId: 1, lineN: 1, before: 'a', after: 'b' };
+      const off2 = { t: 'lineAdd', pageId: 2, line: { n: -1, en: '' }, lineIndex: 0 };
+      await seed({ 1: { undo: [anEntry(1), lineStep], redo: [{ ...lineStep }] }, 2: { undo: [anEntry(2), off2], redo: [] } });
+      const { openHistory, switchHistoryPage } = await mod();
+      const { peekStack } = await hist();
+      const { loadProjectPages, applyDetection, app } = await store();
+      loadProjectPages([1, 2].map((id) => ({ id, w: 100, h: 100, boxes: [], lines: [{ n: 1, jp: 'x', en: 'b' }] })));
+      const read = await heldRead();
+      try {
+        const opening = openHistory(CH1, 1);
+        const detection = { img_width: 100, img_height: 100, panels: [], lines: [{ n: 1, jp: 'new', box: [0, 0, 10, 10] }] };
+        applyDetection(detection, app.pages[0]);
+        applyDetection(detection, app.pages[1]);
+        read.release();
+        await opening;
+        expect(peekStack()).toEqual({ undo: [anEntry(1)], redo: [] });
+        await switchHistoryPage(1, 2);
+        expect(peekStack()).toEqual({ undo: [anEntry(2)], redo: [] });
+      } finally {
+        read.restore();
+        loadProjectPages([]);
+      }
+    });
+
     // The same page merged into the document rather than the live stack - an
     // off-screen record filed while the read was in flight.
     it('keeps an off-screen record made while it was still loading', async () => {

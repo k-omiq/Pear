@@ -5111,6 +5111,51 @@ describe('lines added, deleted and drawn: the edges', () => {
     expect(peekStack().undo).toHaveLength(boxSteps);
   });
 
+  it('marks a delete of the last line, and puts back a delete that kept a gap, both ways', () => {
+    deleteLine(5);
+    expect(peekStack().undo.at(-1)).toMatchObject({ last: true });
+    expect(undo()).toBe(true);
+    resetHistory();
+    // An orphan block (3, with no line) makes the renumber refuse: the line
+    // goes and leaves a gap, and the entry has no numbers and no mark.
+    loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [1, 2, 4, 5].map((n) => ({ n, type: 'dialogue', jp: 'j' + n, en: 'e' + n })), detect: { panels: [], boxes: [{ n: 3, box: [0, 0, 50, 50] }] } }]);
+    const was = snap();
+    deleteLine(2);
+    const e = peekStack().undo.at(-1);
+    expect([e.numbers, e.last, page().lines.map((l) => l.n)]).toEqual([undefined, undefined, [1, 4, 5]]);
+    expect(stepHere('undo')).toBe(true);
+    expect(snap()).toBe(was);
+    expect(stepHere('redo')).toBe(true);
+    expect(page().lines.map((l) => l.n)).toEqual([1, 4, 5]);
+    expect(app.errors).toEqual([]);
+    // The gap's number taken by something else since: refused, page unchanged.
+    page().lines.push({ n: 2, type: 'dialogue', jp: 'other', en: '' });
+    expect(undo()).toBe(false);
+    expect(page().lines.map((l) => l.n)).toEqual([1, 4, 5, 2]);
+  });
+
+  it('leaves no failing step when a re-detect lands while a box is being typed into', () => {
+    app.chapterMode = 'typeset';
+    page().boxes.push({ id: 'typing', lineN: 1, text: 'own', x: 10, y: 10, w: 200, h: 80, style: normalizeStyle(defaultStyle()) });
+    beginEdit('typing');
+    byId('typing').text = 'changed';
+    redetect(5);
+    expect(page().boxes.some((b) => b.id === 'typing')).toBe(false);
+    while (peekStack().undo.length) undo();
+    expect(app.errors).toEqual([]);
+  });
+
+  it('records a pending placeholder whose line has words before deleting it, so undo brings the words back', () => {
+    app.translateTypeset = true;
+    addBoxAt(page(), { text: 'typed words', x: 200, y: 200 });
+    const b = page().boxes.at(-1);
+    deleteBox(b.id);
+    expect(lineByN(page(), b.lineN)).toMatchObject({ en: 'typed words' });
+    expect(peekStack().undo.map((e) => e.t)).toEqual(['place', 'delete']);
+    expect(undo()).toBe(true);
+    expect(page().boxes.some((x) => x.id === b.id)).toBe(true);
+  });
+
   it('still refuses, as a second guard, a deleted last line whose number came back with no re-detect', () => {
     deleteLine(5);
     // An import writes lines and records nothing, so nothing was dropped.

@@ -11,7 +11,7 @@
 // nothing on the document's own save path ever waits on this one.
 import { fsx } from '../fsx.js';
 import { normalizeStyle, plainStyle } from '../data.js';
-import { toast, toastError, DOC_SAVE_MS, rescalePageGeometry, rescaleStyle, rescaleAuto, scaleFit, lengthScale } from '../store.svelte.js';
+import { toast, toastError, DOC_SAVE_MS, rescalePageGeometry, rescaleStyle, rescaleAuto, scaleFit, lengthScale, setLinesReplacedHook } from '../store.svelte.js';
 import { scaleStroke } from '../brush.js';
 import { remapLineStack, isOrderStep } from '../reading-order.js';
 import {
@@ -23,6 +23,7 @@ import {
   setOffscreenSink,
   setOffscreenAmender,
   MAX_STEPS,
+  aboutLines,
 } from './history.svelte.js';
 
 export const emptyDoc = () => ({ version: 1, pages: {} });
@@ -490,6 +491,12 @@ setOffscreenSink((pageId, entry) => {
   return true;
 });
 
+// The pages whose lines a re-detect replaced in this chapter's session, so a
+// stored stack read in after it is cleaned of the steps it names (see
+// `openHistory`). Cleared with the chapter.
+const redetected = new Set();
+setLinesReplacedHook((pageId) => void redetected.add(String(pageId)));
+
 // The off-screen correction: a fit that landed for a box on a page other than
 // the live one (or a re-detect's drop of its line steps, which also amends the
 // redo side), whose edit is in that page's stored stack (see "a fit owed to
@@ -517,6 +524,7 @@ export function __setDir(d) {
   clearTimeout(saveT);
   dir = d;
   doc = emptyDoc();
+  redetected.clear();
   told = false;
   livePageId = null;
   onDisk = false;
@@ -557,6 +565,7 @@ export async function openHistory(chapterDir, pageId, { plain = false } = {}) {
   clearTimeout(saveT);
   dir = chapterDir;
   doc = emptyDoc();
+  redetected.clear();
   told = false;
   livePageId = pageId;
   onDisk = false;
@@ -605,6 +614,13 @@ export async function openHistory(chapterDir, pageId, { plain = false } = {}) {
     pages[key] = graft(stackFrom(loaded, key), live);
   }
   doc = { version: 1, pages };
+  // A re-detect that landed while the disk was answering dropped its page's
+  // line steps from a document that did not hold the stored ones yet; the
+  // graft just brought them back under the new lines. Dropped again here.
+  for (const key of redetected) {
+    const cur = stackFrom(doc, key);
+    doc = mergeStack(doc, key, { undo: cur.undo.filter((e) => !aboutLines(e)), redo: cur.redo.filter((e) => !aboutLines(e)) });
+  }
   if (found) onDisk = true;
   // The page on screen NOW, which is not necessarily the one this open was
   // called for. Whatever is in there is replayed optimistically: an entry that
@@ -748,6 +764,7 @@ export async function closeHistory(pageId) {
   session++;
   dir = null;
   doc = emptyDoc();
+  redetected.clear();
   onDisk = false;
   resetHistory();
 }
