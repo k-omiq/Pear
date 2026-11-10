@@ -203,12 +203,12 @@ fn every_field_of_the_box_comes_back_as_itself() {
     assert!(!q.job.no_fill);
     assert_eq!(q.job.bands, vec![Band { color: rgb(0x112233), opacity: 0.6875, line: 3.5 }]);
     assert_eq!(q.job.fill, Some(Fill::Solid(rgb(0x778899))));
+    // One afterimage and one letter: one copy behind each letter.
     assert_eq!(
         q.job.effects.wobble,
         Some(Wobble {
-            amount: 0.1875,
-            tilt: 7.5,
-            seed: 4242,
+            copies: 1,
+            ..Wobble::new(0.1875, 7.5, 4242)
         })
     );
     assert_eq!(q.job.runs.len(), 2);

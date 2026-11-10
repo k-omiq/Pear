@@ -2108,7 +2108,16 @@
   // polygon's corners so far; the shape the Move tool has picked (its index)
   // and how far a Move drag has carried it, or every shape when `idx` is null;
   // and where the pointer is, for the brush's ring.
-  const maskDraft = $state({ shape: null, poly: null, picked: null, moving: null, at: null });
+  // `pickedIn` is the shape list the pick was made in: a pick is an index,
+  // so once the list is another (an undo, a redo, an edit from elsewhere)
+  // the index may name another shape, and the pick is dropped.
+  const maskDraft = $state({ shape: null, poly: null, picked: null, pickedIn: null, moving: null, at: null });
+  $effect(() => {
+    const list = s.clip?.shapes;
+    untrack(() => {
+      if (maskDraft.picked !== null && list !== maskDraft.pickedIn) maskDraft.picked = null;
+    });
+  });
 
   // The tool is the selection's: it goes when this box stops being selected
   // (another box picked, the page left, the box deleted), so it is never left
@@ -2253,6 +2262,7 @@
       // until the pointer comes up, so a drag is one record and no repaint
       // per move: the overlay shows them carried meanwhile.
       maskDraft.picked = maskShapeAt(p);
+      maskDraft.pickedIn = s.clip.shapes;
       maskDraft.moving = { idx: maskDraft.picked, dx: 0, dy: 0 };
     } else if (kind === 'brush') maskDraft.shape = { kind: 'stroke', size: s.clip.brushSize, pts: [p] };
     else if (kind === 'rect') maskDraft.shape = { kind: 'poly', pts: rectPts(p, p) };
@@ -2289,6 +2299,8 @@
         // A press that did not travel moved nothing, and records nothing.
         if (ev.type === 'pointercancel' || Math.hypot(mv.dx, mv.dy) < 0.5) return;
         commitMaskShapes(s.clip.shapes.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
+        // The moved shape is still the one picked, in the list just made.
+        maskDraft.pickedIn = s.clip.shapes;
         return;
       }
       const sh = maskDraft.shape;
@@ -2462,15 +2474,16 @@
     // Delete and Backspace remove the shape the Move tool picked. Both are
     // taken in the capture phase and stopped there, because the window's own
     // handler reads Escape as "deselect" and Delete as "delete the box".
-    // A key pressed in a field is the field's.
+    // A key pressed in a field is the field's, and one pressed in an open
+    // popover or menu (a colour picker) is the popover's, which closes on it.
     const onKey = (e) => {
-      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="listbox"]')) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
         if (maskDraft.poly) maskDraft.poly = null;
         else clearDrawTool();
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null) {
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null && s.clip.shapes === maskDraft.pickedIn) {
         e.preventDefault();
         e.stopPropagation();
         const i = maskDraft.picked;

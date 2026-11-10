@@ -182,6 +182,25 @@ pub struct Wobble {
     pub amount: f64,
     pub tilt: f64,
     pub seed: u32,
+    /// How many afterimages of each letter an SFX trail lays (`Run::ghost`):
+    /// not on the wire, but read from the run list when it is decoded, so a
+    /// job of the afterimages alone still knows whose copy each one is and
+    /// wobbles it as its letter. The trail lays the same number behind every
+    /// letter, in the letters' order; zero when the runs do not divide that
+    /// way, and then no afterimage wobbles.
+    pub copies: u32,
+}
+
+impl Wobble {
+    /// A wobble of `amount` and `tilt` keyed by `seed`, with no afterimages.
+    pub fn new(amount: f64, tilt: f64, seed: u32) -> Self {
+        Self {
+            amount,
+            tilt,
+            seed,
+            copies: 0,
+        }
+    }
 }
 
 /// Most wobble accepted: a letter moved its whole size, or turned a right
@@ -646,7 +665,9 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         if !(0.0..=MAX_WOBBLE_AMOUNT).contains(&amount) || !(0.0..=MAX_WOBBLE_TILT).contains(&tilt) {
             return Err(Error::BadSpec);
         }
-        Some(Wobble { amount, tilt, seed })
+        // A wobble that moves nothing is no wobble, so Crisp stays on and the
+        // bytes are those of a box without one.
+        (amount > 0.0 || tilt > 0.0).then(|| Wobble::new(amount, tilt, seed))
     } else {
         None
     };
@@ -699,6 +720,16 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
             ghost: run_flags & 1 != 0,
         })
     }))?;
+    let wobble = wobble.map(|w| {
+        let ghosts = runs.iter().filter(|r| r.ghost).count();
+        let letters = runs.len() - ghosts;
+        let copies = if letters > 0 && ghosts % letters == 0 {
+            u32::try_from(ghosts / letters).unwrap_or(0)
+        } else {
+            0
+        };
+        Wobble { copies, ..w }
+    });
     let tiles = r.tiles()?;
     if r.at != bytes.len() {
         return Err(Error::BadSpec);

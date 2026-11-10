@@ -116,6 +116,53 @@ describe('the draw tool on a masked box', () => {
     expect(page().boxes[0].style.clip.shapes).toEqual([ELLIPSE, SQUARE]);
   });
 
+  it('a pick made before an undo is dropped, so Delete cannot take another shape', async () => {
+    const { b, capture, q } = await mount('move', [ELLIPSE, SQUARE]);
+    // A third shape, then it (index 2) picked; undo takes it away, and
+    // index 2 now names nothing (or, after more edits, another shape).
+    setDrawTool('mask', 'rect');
+    await tick();
+    await drag(capture(), [290, 260], [310, 280]);
+    expect(b.style.clip.shapes).toHaveLength(3);
+    setDrawTool('mask', 'move');
+    await tick();
+    await drag(capture(), [300, 270], [300, 270]);
+    expect(q('.mask-gizmo .picked')).not.toBeNull();
+    undo();
+    await tick();
+    expect(page().boxes[0].style.clip.shapes).toEqual([ELLIPSE, SQUARE]);
+    expect(q('.mask-gizmo .picked')).toBeNull();
+    // Nothing picked: the key is not the tool's.
+    expect(key('Delete').defaultPrevented).toBe(false);
+    expect(page().boxes[0].style.clip.shapes).toEqual([ELLIPSE, SQUARE]);
+  });
+
+  it('a picked shape that was just moved can still be deleted', async () => {
+    const { b, capture } = await mount('move', [ELLIPSE, SQUARE]);
+    await drag(capture(), [270, 230], [280, 240]);
+    expect(b.style.clip.shapes[1].pts[0]).toEqual([160, 20]);
+    expect(key('Delete').defaultPrevented).toBe(true);
+    await tick();
+    expect(b.style.clip.shapes).toEqual([ELLIPSE]);
+  });
+
+  it('Escape in an open popover is the popover\'s, and the tool stays armed', async () => {
+    await mount('ellipse');
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    document.body.appendChild(dialog);
+    try {
+      const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      let reached = false;
+      dialog.addEventListener('keydown', () => (reached = true));
+      dialog.dispatchEvent(e);
+      expect(reached).toBe(true);
+      expect(drawTool.target).toBe('mask');
+    } finally {
+      dialog.remove();
+    }
+  });
+
   it('Brush shows a ring of the brush size under the pointer', async () => {
     const { capture, q } = await mount('brush');
     capture().dispatchEvent(ev('pointermove', 150, 250));

@@ -1764,17 +1764,46 @@ fn wire_with_wobble(amount: f64, tilt: f64, seed: u32) -> Vec<u8> {
     b
 }
 
+/// `wire_with_wobble`'s one run laid `ghosts + letters` times, the first
+/// `ghosts` of them afterimages.
+fn wire_with_runs(ghosts: usize, letters: usize) -> Vec<u8> {
+    let b = wire_with_wobble(0.25, 4.0, 9);
+    let first = [100f64.to_le_bytes(), 40f64.to_le_bytes()].concat();
+    let start = b.windows(16).position(|w| w == first).unwrap();
+    // The run, up to the tile record (20 bytes) after it.
+    let record = b[start..b.len() - 20].to_vec();
+    let mut out = b[..start - 4].to_vec();
+    out.extend_from_slice(&((ghosts + letters) as u32).to_le_bytes());
+    for i in 0..ghosts + letters {
+        let mut r = record.clone();
+        // The run's flags follow its eight numbers.
+        r[64..68].copy_from_slice(&u32::from(i < ghosts).to_le_bytes());
+        out.extend_from_slice(&r);
+    }
+    out.extend_from_slice(&b[b.len() - 20..]);
+    out
+}
+
+#[test]
+fn a_wobble_counts_the_trail_copies_behind_each_letter_and_moving_nothing_is_none() {
+    let copies = |g, l| decode(&wire_with_runs(g, l)).unwrap().job.effects.wobble.unwrap().copies;
+    assert_eq!(copies(0, 1), 0);
+    assert_eq!(copies(4, 2), 2);
+    assert_eq!(copies(3, 3), 1);
+    // Copies that do not divide among the letters: none of them wobbles.
+    assert_eq!(copies(3, 2), 0);
+    // On with nothing to move: no wobble, so the job is one without.
+    assert_eq!(decode(&wire_with_wobble(0.0, 0.0, 5)).unwrap().job.effects.wobble, None);
+    assert!(decode(&wire_with_wobble(0.0, 1.0, 5)).unwrap().job.effects.wobble.is_some());
+}
+
 #[test]
 fn a_wobble_comes_off_the_wire_as_itself_and_out_of_range_is_refused() {
     assert_eq!(decode(&wire(1, "abc")).unwrap().job.effects.wobble, None);
     let r = decode(&wire_with_wobble(0.375, 12.5, 4_000_000_000)).unwrap();
     assert_eq!(
         r.job.effects.wobble,
-        Some(Wobble {
-            amount: 0.375,
-            tilt: 12.5,
-            seed: 4_000_000_000,
-        })
+        Some(Wobble::new(0.375, 12.5, 4_000_000_000))
     );
     // The rest of the job is read where it always was.
     assert_eq!(r.job.runs[0].text, "abc");
@@ -2726,11 +2755,7 @@ fn crisp_stands_down_for_a_wobble() {
         r.transform = Affine([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
         paint(e, &r)
     };
-    let w = Wobble {
-        amount: 0.1,
-        tilt: 5.0,
-        seed: 3,
-    };
+    let w = Wobble::new(0.1, 5.0, 3);
     let wobbled = paint_with(&mut e, false, Some(w));
     assert_eq!(paint_with(&mut e, true, Some(w)).data, wobbled.data);
     assert_ne!(paint_with(&mut e, false, None).data, wobbled.data);

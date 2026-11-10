@@ -104,12 +104,24 @@ describe('the Wobble panel', () => {
     expect(page().boxes[0].style.wobble.on).toBe(false);
   });
 
-  it('under the browser engine every control is dimmed and the group says why', async () => {
-    const { view } = mounted(false, { on: true });
+  it('under the browser engine the controls are dimmed and the group says why', async () => {
+    const { view } = mounted(false, { on: false });
     await tick();
     expect(view.getByRole('switch', { name: 'Wobble' }).disabled).toBe(true);
     expect(view.getByLabelText('Wobble seed').disabled).toBe(true);
-    expect(view.getByRole('button', { name: 'New wobble seed' }).disabled).toBe(true);
     expect(view.container.textContent).toContain('Wobble needs the Rust text engine (Settings).');
+  });
+
+  it('under the browser engine a wobble that is on can still be switched off', async () => {
+    const { view } = mounted(false, { on: true });
+    await tick();
+    const sw = view.getByRole('switch', { name: 'Wobble' });
+    expect(view.getByLabelText('Wobble seed').disabled).toBe(true);
+    expect(view.getByRole('button', { name: 'New wobble seed' }).disabled).toBe(true);
+    expect(sw.disabled).toBe(false);
+    await fireEvent.click(sw);
+    expect(page().boxes[0].style.wobble.on).toBe(false);
+    // Off, it cannot be put back on here.
+    expect(sw.disabled).toBe(true);
   });
 });

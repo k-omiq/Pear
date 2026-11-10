@@ -1,7 +1,7 @@
 // Native-resolution raster export via canvas 2D. PNG is lossless.
 import { app, page, toast, toastError, boxText, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
 import { faceFor, textInset, contentWidth, glyphInk } from './measure.js';
-import { glyphPainter, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
+import { glyphPainter, engineDraws, enginesNow, enginesAre, wobbleDrawn } from './text-engine/index.js';
 import { encodesPages, encodePage } from '../../text-engine/js/encode.mjs';
 import { crispFor } from './text-edges.svelte.js';
 import { boxCandidate, placeBlock, blockRect, linesInkRect, turnedInk } from './contain.js';
@@ -31,7 +31,6 @@ import {
   strokeReach,
   drawInk,
   patternFillStyle,
-  wobbleReach,
 } from './text-paint.js';
 import { warpActive, meshMap } from './warp.js';
 import { findTag } from './tags.svelte.js';
@@ -39,7 +38,7 @@ import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, I
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
 import { backdropPixels, boxToPage, BACKDROP_MAX_PX } from './backdrop.js';
-import { styleReach } from './paint-reach.js';
+import { styleReach, wobbleReach } from './paint-reach.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
@@ -238,13 +237,14 @@ function layoutBox(box, p) {
   // the tail of its gaussian: `paintShadows` blurs at sigma = blur/2, and a
   // gaussian is done at about three sigma, so 2x the named blur clears it with
   // room to spare where the old `+ blur` cut into it.
-  // A wobble moves the letters before the strokes are laid round them, so
-  // its reach adds to theirs.
-  const strokeOut = strokeReach(s) + wobbleReachMax(s);
+  // A wobble moves the letters before the strokes are laid round them and
+  // before roughening moves their edges again, so its reach adds to both.
+  const wob = wobbleReachMax(s);
+  const strokeOut = strokeReach(s) + wob;
   const pad0 = Math.ceil(
     Math.max(
       strokeOut,
-      s.roughen.on ? s.roughen.amount + roughenGrit(s) + 2 : 0,
+      s.roughen.on ? s.roughen.amount + roughenGrit(s) + 2 + wob : 0,
       // Ink is drawn in box-local px and may be drawn right over the box edge,
       // so its overhang has to be padded for like any other thing that paints
       // outside the letters - and the strokes and shadows wrap the ink too,
@@ -1287,11 +1287,10 @@ export function roughenGrit(s) {
   return s?.roughen?.on && g > 0 ? g : 0;
 }
 
-// Whether a box's wobble is painted: only by a painter that moves the letters
-// in the job (the Rust one). Under the browser engine the switch is shown
-// dimmed and nothing moves. Never true under the browser engine.
+// Whether a box's wobble goes in its jobs (`wobbleDrawn`): only for a painter
+// that moves the letters itself, and only for a wobble that moves something.
 export function wobbleInJob(box) {
-  return box.style.wobble?.on === true && engineDraws() && glyphPainter().wobble === true;
+  return wobbleDrawn(box.style);
 }
 
 const wobbleReachMax = (s) => {

@@ -100,8 +100,8 @@ import {
   inkBounds,
   clipActive,
   clipShapesBounds,
-  wobbleReach,
 } from './text-paint.js';
+import { wobbleReach } from './paint-reach.js';
 import { warpActive, affineFromTriangle } from './warp.js';
 import { warpPlan } from './warp-paint.js';
 import { shapeBounds } from './balloon.js';
@@ -401,23 +401,31 @@ const unite = (r, x0, y0, x1, y1) =>
 export function boxInkRect(cand, place = placeBlock(cand)) {
   const s = place.s;
   let r = null;
+  // How far a wobble carries a letter (`wobbleReach`). On a curve each letter
+  // is turned and scaled by its own frame, so the move can point any way and
+  // is as long as the frame's larger scale makes it.
+  const wr = wobbleReach(s);
+  let wx = wr.x;
+  let wy = wr.y;
   if (place.isCurve) {
     const cx = cand.w / 2;
     const cy = cand.h / 2;
+    let scale = 1;
     for (const g of place.layout) {
+      scale = Math.max(scale, Math.abs(g.sx ?? 1), Math.abs(g.sy ?? 1));
       const k = glyphInk(g.ch, s, s.size);
       if (!k) continue;
       // A drip pulls the placed letter's foot straight down the box (paint/mod.rs).
       const [x0, y0, x1, y1] = turnedInk(k, g.rot, cx + g.x, cy + g.y, g.sx, g.sy, g.skew);
       r = unite(r, x0, y0, x1, y1 + (g.drip > 0 ? g.drip : 0));
     }
+    wx = wy = Math.max(wr.x, wr.y) * scale;
   } else {
     r = linesInkRect(place);
   }
-  // A wobble moves each letter up or down and turns it: the letters' own
-  // rectangle grows by how far, before the strokes are laid round them.
-  const wr = wobbleReach(s);
-  if (r && (wr.x > 0 || wr.y > 0)) r = grow(r, wr.x, wr.y);
+  // The letters' own rectangle grows by the wobble before the strokes are
+  // laid round them.
+  if (r && (wx > 0 || wy > 0)) r = grow(r, wx, wy);
   const ink = inkActive(s.ink) ? inkBounds(s.ink) : null;
   if (ink) r = unite(r, ink.minX, ink.minY, ink.maxX, ink.maxY);
   if (!r) return null;
