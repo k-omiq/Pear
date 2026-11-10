@@ -34,6 +34,7 @@ import { inspectorTab, setInspectorTab } from './lib/inspector-tabs.svelte.js';
 import { defaultStyle, normalizeStyle } from './lib/data.js';
 import { resetRoute, setLeaveEditorHook, goEditor } from './lib/route.svelte.js';
 import { setPref } from './lib/prefs.svelte.js';
+import { onboarding, offerOnboarding } from './lib/onboarding/onboarding.svelte.js';
 async function settle() { for (let i = 0; i < 15; i++) { await Promise.resolve(); await tick(); } }
 
 // ===========================================================================
@@ -69,6 +70,7 @@ beforeEach(() => {
   setInspectorTab('text');
 });
 afterEach(async () => {
+  onboarding.open = false;
   await cleanup(); resetRoute(); app.chapterRef = null; app.selectedId = null; loadProjectPages([]);
   document.body.innerHTML = '';
 });
@@ -121,6 +123,42 @@ it('the Inspector tab strip takes its arrows without moving the selected box', a
   arrow(sub);
   await settle();
   expect(b.x).toBe(100);
+});
+
+// ===========================================================================
+// The first-run setup over the editor
+// ===========================================================================
+// Run again from Settings, the setup covers a mounted editor. While it is up
+// the editor's keys stand down, and Escape always reaches the setup, even
+// with a box left in edit under it and focus outside the screen.
+
+it('the editor\'s keys stand down while the setup is up', async () => {
+  const b = await openEditor();
+  offerOnboarding({ force: true }); await settle();
+  expect(document.querySelector('.onboarding-screen')).not.toBe(null);
+  const ev = arrow(document.body);
+  expect(ev.defaultPrevented).toBe(false);
+  expect(b.x).toBe(100);
+  const size = b.style.size;
+  const big = new KeyboardEvent('keydown', { code: 'Period', key: '>', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+  document.body.dispatchEvent(big);
+  expect(big.defaultPrevented).toBe(false);
+  expect(b.style.size).toBe(size);
+  onboarding.open = false; await settle();
+  arrow(document.body);
+  expect(b.x).toBe(101);
+});
+
+it('Escape closes the setup even while a box is being edited', async () => {
+  await openEditor();
+  offerOnboarding({ force: true }); await settle();
+  app.editingId = 'b';
+  document.body.focus();
+  document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await settle();
+  expect(onboarding.open).toBe(false);
+  expect(document.querySelector('.onboarding-screen')).toBe(null);
+  app.editingId = null;
 });
 
 // ===========================================================================

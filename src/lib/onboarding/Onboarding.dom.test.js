@@ -88,6 +88,30 @@ describe('when it is offered', () => {
     expect(prefs.onboarded).toBe(false);
   });
 
+  it('a first run quit after picking General use comes back with General picked', async () => {
+    // The pick is saved the moment it is made; the app then quits before
+    // Finish, so the next launch offers the setup again.
+    let view = open('usage');
+    await fireEvent.click(view.getByRole('radio', { name: /General use/ }));
+    cleanup();
+    onboarding.open = false;
+    onboarding.usage = null;
+
+    expect(offerOnboardingAtBoot({ label: 'main', agent: false })).toBe(true);
+    expect(onboarding.usage).toBe('general');
+    onboarding.step = 'usage';
+    view = render(Onboarding);
+    expect(/** @type {HTMLInputElement} */ (view.getByRole('radio', { name: /General use/ })).checked).toBe(true);
+    expect(/** @type {HTMLButtonElement} */ (view.getByRole('button', { name: 'Continue' })).disabled).toBe(false);
+    expect(view.getByRole('progressbar').getAttribute('aria-valuemax')).toBe('5');
+  });
+
+  it('a first run with the factory usage still waits for a pick', () => {
+    expect(prefs.usage).toBe('comics');
+    expect(offerOnboardingAtBoot({ label: 'main', agent: false })).toBe(true);
+    expect(onboarding.usage).toBeNull();
+  });
+
   it('run again, the usage on record starts picked', () => {
     setPref('usage', 'general');
     finishOnboarding();
@@ -165,6 +189,25 @@ describe('the two paths', () => {
   });
 });
 
+describe('the progress bar', () => {
+  it('counts the path again when the usage changes after Back', async () => {
+    const view = open('usage');
+    const total = () => view.getByRole('progressbar').getAttribute('aria-valuemax');
+    await fireEvent.click(view.getByRole('radio', { name: /^Comics/ }));
+    expect(total()).toBe('6');
+    await press(view, 'Continue');
+    expect(heading(view).textContent).toBe('Detection and OCR');
+    expect(view.getByRole('progressbar').getAttribute('aria-valuetext')).toBe('Step 5 of 6');
+    await press(view, 'Back');
+    await fireEvent.click(view.getByRole('radio', { name: /General use/ }));
+    expect(total()).toBe('5');
+    expect(view.getByRole('progressbar').getAttribute('aria-valuetext')).toBe('Step 4 of 5');
+    await fireEvent.click(view.getByRole('radio', { name: /^Comics/ }));
+    expect(total()).toBe('6');
+    expect(view.container.querySelectorAll('.ob-progress span, [role=progressbar] span').length).toBe(6);
+  });
+});
+
 describe('the steps', () => {
   it('applies a theme the moment it is picked', async () => {
     const view = open('theme');
@@ -175,7 +218,7 @@ describe('the steps', () => {
   it('opens each outside link through the opener', async () => {
     let view = open('welcome');
     await fireEvent.click(view.getByRole('link', { name: 'GitHub' }));
-    expect(openExternal).toHaveBeenLastCalledWith('https://github.com/komiq-cc/manga-typesetter');
+    expect(openExternal).toHaveBeenLastCalledWith('https://github.com/k-omiq/Pear');
     cleanup();
 
     view = open('scope');
@@ -198,9 +241,11 @@ describe('the keyboard', () => {
     await waitFor(() => expect(document.activeElement).toBe(heading(view)));
     expect(heading(view).textContent).toBe('Pick a theme');
 
-    // Not a repeat, not with a modifier, not while composing.
+    // Not a repeat, not with any modifier, not while an input method composes.
     await fireEvent.keyDown(heading(view), { key: 'Enter', repeat: true });
-    await fireEvent.keyDown(heading(view), { key: 'Enter', shiftKey: true });
+    for (const mod of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey']) {
+      await fireEvent.keyDown(heading(view), { key: 'Enter', [mod]: true });
+    }
     await fireEvent.keyDown(heading(view), { key: 'Enter', isComposing: true });
     expect(onboarding.step).toBe('theme');
   });

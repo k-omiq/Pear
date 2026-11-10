@@ -428,6 +428,34 @@ function load() {
   if (freshInstall) persist();
 }
 
+// Other windows (an agent's chapter window, a second main window) load the
+// blob once and write all of it back on their next change. Without this, a
+// window that loaded while the setup was open would write back
+// `onboarded: false` and the old usage over what the setup just chose. Only
+// the setup's four are adopted, each checked the way `load` checks it: the
+// rest are this window's own until it writes them. Nothing is persisted
+// here, so two windows cannot echo a change back and forth.
+const SHARED_KEYS = ['onboarded', 'usage', 'defaultChapterMode', 'defaultOcrLanguage'];
+export function adoptSharedPrefs(raw) {
+  let saved = null;
+  try {
+    saved = JSON.parse(raw ?? 'null');
+  } catch {
+    return;
+  }
+  if (!saved || typeof saved !== 'object') return;
+  for (const k of SHARED_KEYS) {
+    const v = saved[k];
+    const ok = BOOL_KEYS.includes(k) ? typeof v === 'boolean' : ENUM_KEYS[k].includes(v);
+    if (ok && prefs[k] !== v) prefs[k] = v;
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === KEY) adoptSharedPrefs(e.newValue);
+  });
+}
+
 // Make Default for one effect: `effect` is a plain copy (`$state.snapshot`),
 // stripped of what is the instance's own on the way in (`fxStored`).
 export function setFxDefault(kind, effect) {

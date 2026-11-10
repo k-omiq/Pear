@@ -6,7 +6,7 @@
   import { nextOnboardingStep } from './onboarding.svelte.js';
 
   // Also listed in the opener capability (src-tauri/capabilities/default.json).
-  const SOURCE_URL = 'https://github.com/komiq-cc/manga-typesetter';
+  const SOURCE_URL = 'https://github.com/k-omiq/Pear';
 
   function openSource(event) {
     event.preventDefault();
