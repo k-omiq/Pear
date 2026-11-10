@@ -10,12 +10,25 @@
   `full` shows every kind and control whatever the engine: a layer effect's
   pattern is kept and written to the PSD even while nothing paints it.
   `acts` and `note` are the caller's own extras (the pick from the page).
+  `loaded` is the person's own patterns from .pat files
+  (pattern-library.svelte.js), shown by set under the swatches; picking one
+  is the caller's (`onloaded`), as the tile must first reach the chapter.
 -->
 <script>
   import ColorPicker from './ColorPicker.svelte';
   import { PATTERN_KINDS, CANVAS_PATTERN_KINDS, SEEDED_PATTERN_KINDS, PATTERN_SCALE_MIN, PATTERN_SCALE_MAX } from './data.js';
 
-  let { p = $bindable(), title, rust = false, full = false, onchange, oncolour, kinds = null, cards = null, cardTile = 0, acts = null, note = null } = $props();
+  let { p = $bindable(), title, rust = false, full = false, onchange, oncolour, kinds = null, cards = null, cardTile = 0, acts = null, note = null, loaded = null, onloaded = null, onremoveset = null } = $props();
+
+  // The loaded patterns by the file they came from, in load order.
+  const loadedSets = $derived.by(() => {
+    const sets = new Map();
+    for (const it of loaded ?? []) {
+      if (!sets.has(it.set)) sets.set(it.set, []);
+      sets.get(it.set).push(it);
+    }
+    return [...sets];
+  });
 
   let moreOpen = $state(false);
 
@@ -56,6 +69,18 @@
     glitch: 'Glitch',
     dither: 'Dither',
     'dither-dots': 'Dither dots',
+    circles: 'Circles',
+    crosses: 'Crosses',
+    sparkles: 'Sparkles',
+    flowers: 'Flowers',
+    basket: 'Basket',
+    herringbone: 'Herringbone',
+    plaid: 'Plaid',
+    chevron: 'Chevron',
+    seigaiha: 'Seigaiha',
+    shippo: 'Shippo',
+    dashes: 'Dashes',
+    concentric: 'Nested squares',
     picked: 'From page',
   };
   const patLabel = (k) => PATTERN_LABELS[k] ?? k;
@@ -129,12 +154,12 @@
   <!-- The swatches carry no names: the one chosen is named above them, and
        each says its own on hover. Thirty-odd of them fit without a scroll. -->
   <div class="pat-head">
-    <span class="pat-now">{patLabel(p.kind)}</span>
+    <span class="pat-now">{p.kind === 'picked' ? (loaded?.find((it) => it.src === p.src)?.name ?? patLabel('picked')) : patLabel(p.kind)}</span>
     {#if rust && acts}<span class="pat-end">{@render acts()}</span>{/if}
   </div>
   <div class="pat-grid" role="radiogroup" aria-label="Pattern">
     {#if hasTile}
-      <button type="button" role="radio" aria-checked={p.kind === 'picked'} aria-label={patLabel('picked')} class="pat-card" class:on={p.kind === 'picked'} title="The tone taken from the page" style="background-image:url({cards.picked ?? ''});background-size:100% 100%" onclick={() => setKind('picked')}></button>
+      <button type="button" role="radio" aria-checked={p.kind === 'picked'} aria-label={patLabel('picked')} class="pat-card" class:on={p.kind === 'picked'} title="This box's own tile: from the page or a .pat" style="background-image:url({cards.picked ?? ''});background-size:100% 100%" onclick={() => setKind('picked')}></button>
     {/if}
     {#each kinds as k (k)}
       <button
@@ -150,6 +175,29 @@
       ></button>
     {/each}
   </div>
+  {#each loadedSets as [set, items] (set)}
+    <div class="pat-head pat-set">
+      <span class="pat-now" title="Loaded from {set}.pat">{set}</span>
+      {#if onremoveset}
+        <button type="button" class="link-btn" title="Take these patterns out of the app. Boxes that use one keep it" aria-label="Remove the {set} patterns" onclick={() => onremoveset(set)}>Remove</button>
+      {/if}
+    </div>
+    <div class="pat-grid" role="radiogroup" aria-label="{set} patterns">
+      {#each items as it (it.src)}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={p.kind === 'picked' && p.src === it.src}
+          aria-label={it.name}
+          class="pat-card"
+          class:on={p.kind === 'picked' && p.src === it.src}
+          title="{it.name} ({it.w} x {it.h})"
+          style="background-image:url({it.card});background-size:100% 100%"
+          onclick={() => onloaded?.(it)}
+        ></button>
+      {/each}
+    </div>
+  {/each}
   {#if !rust}
     <p class="nofill-note">More patterns and controls need the Rust text engine (Settings).</p>
   {/if}
@@ -344,6 +392,15 @@
   .pat-now {
     font-size: 12px;
     color: var(--text);
+  }
+  .pat-set {
+    margin-top: 6px;
+  }
+  .pat-set .pat-now {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--t2);
   }
   .pat-end,
   .pat-acts {

@@ -46,7 +46,7 @@ afterAll(() => {
   else delete globalThis.document;
 });
 
-const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', size: 30, strokes: [], ...over });
+const style = (over = {}) => normalizeStyle({ ...defaultStyle(), strokeEffects: [], font: 'Comic Neue', size: 30, strokes: [], ...over });
 const boxOf = (over = {}, text = 'SAME PICTURE\nAT ANY ZOOM') => ({ id: 'b', lineN: null, text, x: 100, y: 100, w: 260, h: 90, style: style(over) });
 const pageOf = (box) => ({ id: 1, w: 800, h: 1200, lines: [], boxes: [box] });
 const paint = (box, ...rest) => renderBoxTexture(box, pageOf(box), null, ...rest);

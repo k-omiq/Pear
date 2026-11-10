@@ -28,7 +28,7 @@ import { validateStylePatch } from './agent/style-schema.js';
 
 const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
 const rendered = { imageData: { width: 10, height: 6, data: new Uint8ClampedArray(10 * 6 * 4) }, left: 3, top: 4, right: 13, bottom: 10, opacity: 1 };
-const plain = { ...defaultStyle(), strokes: [], shadows: [] };
+const plain = { ...defaultStyle(), strokeEffects: [], shadows: [] };
 const layerFor = (style) => textLayerFor({ lines: [] }, { lineN: null, text: 'hi', x: 0, y: 0, w: 40, h: 20, style: normalizeStyle({ ...plain, ...style }) }, rendered);
 function roundTrip(layer) {
   const doc = pagePsdDocument({ w: 32, h: 32, textLayers: [layer], project: { v: 1 } });
@@ -82,7 +82,8 @@ describe('the multi effects in the style', () => {
       innerShadows: [normalizeInnerShadow({ on: false }), normalizeInnerShadow({ color: '#0000ff' })],
       colorOverlays: [normalizeOverlay({ on: false }), normalizeOverlay({ color: '#00ffff' })],
       gradientOverlays: [normalizeGradientOverlay({ on: false })],
-      strokeEffects: [normalizeStrokeEffect({ size: 3, on: false }), normalizeStrokeEffect({ size: 2, color: '#ff00ff' })],
+      // Inside, so neither is an outline band: both are the Rust engine's.
+      strokeEffects: [normalizeStrokeEffect({ size: 3, position: 'inside', on: false }), normalizeStrokeEffect({ size: 2, position: 'inside', color: '#ff00ff' })],
     });
     expect(boxShadows(style).map((sh) => sh.color)).toEqual(['#ff0000']);
     const fx = boxEffects(style);
@@ -131,7 +132,7 @@ describe('the PSD', () => {
       innerShadows: [normalizeInnerShadow({ on: false })],
       colorOverlays: [normalizeOverlay({ on: false }), normalizeOverlay({})],
       gradientOverlays: [normalizeGradientOverlay({ on: false })],
-      strokeEffects: [normalizeStrokeEffect({ size: 2, on: false })],
+      strokeEffects: [normalizeStrokeEffect({ size: 2, position: 'inside', on: false })],
     });
     const fx = layer.effects;
     expect(fx.dropShadow.map((e) => e.enabled)).toEqual([true, false]);
@@ -143,6 +144,16 @@ describe('the PSD', () => {
     expect(back.dropShadow.map((e) => e.enabled)).toEqual([true, false]);
     expect(back.solidFill.map((e) => e.enabled)).toEqual([false, true]);
     expect(back.stroke.map((e) => e.enabled)).toEqual([false]);
+  });
+
+  it('writes an Outside outline stroke switched off unticked too, after the outlines', () => {
+    // Off, it makes no outline band (`outlineRun`), so the writer takes it
+    // as a Photoshop stroke, unticked, rather than drop it.
+    const layer = layerFor({
+      strokeEffects: [normalizeStrokeEffect({ size: 4, color: '#000000', on: false }), normalizeStrokeEffect({ size: 6, color: '#ffffff' })],
+    });
+    expect(layer.effects.stroke.map((e) => [e.enabled, e.size.value])).toEqual([[true, 6], [false, 4]]);
+    expect(roundTrip(layer).effects.stroke.map((e) => e.enabled)).toEqual([true, false]);
   });
 
   it('writes Blend Clipped Layers as Group and Transparency Shapes Layer off, and nothing at the defaults', () => {

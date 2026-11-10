@@ -12,7 +12,7 @@ const { normalizeStyle } = await import('../../data.js');
 const { setTypesetEnabled } = await import('../../measure.js');
 await import('./edit.js');
 
-const style = normalizeStyle({ font: 'Comic Neue', size: 24, bold: false, align: 'center', valign: 'middle', strokes: [], margin: 0.5 });
+const style = normalizeStyle({ font: 'Comic Neue', size: 24, bold: false, align: 'center', valign: 'middle', strokeEffects: [], margin: 0.5 });
 const call = (args) => callTool('edit', args, callContext('mcp'));
 const a = () => pageById(1).boxes[0];
 

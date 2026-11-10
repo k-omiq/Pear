@@ -17,12 +17,12 @@ import { readPsd } from 'ag-psd';
 // stored and written to the PSD, not painted. The "does not paint" guard is
 // stroke-overprint.engine.test.js.
 import { pagePsdDocument, textLayerFor, writePagePsd, styleFromPsdLayer } from './psd.js';
-import { defaultStyle, normalizeStyle, normalizeStrokeEffect, newStrokeEffect } from './data.js';
+import { defaultStyle, normalizeStyle, normalizeStrokeEffect, newStrokeEffect, strokesFromBands, outlineBands } from './data.js';
 import { validateStylePatch } from './agent/style-schema.js';
 
 const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
 const rendered = { imageData: { width: 10, height: 6, data: new Uint8ClampedArray(10 * 6 * 4) }, left: 3, top: 4, right: 13, bottom: 10, opacity: 1 };
-const styleWith = (strokeEffects) => normalizeStyle({ ...defaultStyle(), strokes: [], shadows: [], strokeEffects });
+const styleWith = (strokeEffects) => normalizeStyle({ ...defaultStyle(), shadows: [], strokeEffects });
 const layerFor = (style) => textLayerFor({ lines: [] }, { lineN: null, text: 'hi', x: 0, y: 0, w: 40, h: 20, style }, rendered);
 function readBack(layer) {
   const psd = readPsd(writePagePsd(pagePsdDocument({ w: 32, h: 32, textLayers: [layer], project: { v: 1 } })), READ);
@@ -47,21 +47,26 @@ describe('Stroke Overprint in the PSD (PhotoCraft stroke_overprint_is_read_and_w
   });
 
   it('reads a stroke with no Overprint key as off', () => {
-    const { strokes, strokeEffects } = styleFromPsdLayer({ effects: { stroke: [psdStroke({ position: 'inside' })] } });
-    expect(strokes).toEqual([]);
+    const style = styleFromPsdLayer({ effects: { stroke: [psdStroke({ position: 'inside' })] } });
+    const { strokeEffects } = style;
+    expect('strokes' in style).toBe(false);
+    expect(outlineBands(style)).toEqual([]);
     expect(strokeEffects).toHaveLength(1);
     expect('overprint' in strokeEffects[0]).toBe(false);
   });
 
   it('keeps an outline-shaped stroke with Overprint on a Photoshop stroke, not an outline', () => {
     // Outside, a colour, Normal, the head of the list: with no key this is
-    // one of our outlines; the key (on or off) marks Photoshop's strokes.
+    // one of our outlines. Outlines and Photoshop strokes are one list now,
+    // and Overprint on is what keeps one out of the outline run.
     const noKey = styleFromPsdLayer({ effects: { stroke: [psdStroke({})] } });
-    expect(noKey.strokes).toEqual([{ color: '#000000', width: 3, opacity: 1 }]);
-    expect(noKey.strokeEffects).toEqual([]);
+    expect(outlineBands(noKey)).toEqual([{ color: '#000000', width: 3, opacity: 1 }]);
+    expect(noKey.strokeEffects).toEqual(strokesFromBands([{ color: '#000000', width: 3, opacity: 1 }]));
     for (const overprint of [true, false]) {
       const style = styleFromPsdLayer({ effects: { stroke: [psdStroke({ overprint })] } });
-      expect(style.strokes, String(overprint)).toEqual([]);
+      // Overprint off is stored as no key, so an Outside colour Normal stroke
+      // without it lays as an outline; with it on, it is the Rust engine's.
+      expect(outlineBands(style), String(overprint)).toHaveLength(overprint ? 0 : 1);
       expect(style.strokeEffects, String(overprint)).toHaveLength(1);
       expect(style.strokeEffects[0].position).toBe('outside');
       expect('overprint' in style.strokeEffects[0]).toBe(overprint);
@@ -69,13 +74,18 @@ describe('Stroke Overprint in the PSD (PhotoCraft stroke_overprint_is_read_and_w
   });
 
   it('leaves our own outlines without the key, so they still split as outlines', () => {
-    const style = normalizeStyle({ ...defaultStyle(), strokes: [{ color: '#ffffff', width: 3, opacity: 1 }], shadows: [], strokeEffects: [normalizeStrokeEffect({ size: 2, overprint: true })] });
+    const style = normalizeStyle({
+      ...defaultStyle(),
+      shadows: [],
+      strokeEffects: [...strokesFromBands([{ color: '#ffffff', width: 3, opacity: 1 }]), normalizeStrokeEffect({ size: 2, overprint: true })],
+    });
     const back = readBack(layerFor(style));
     expect(back.effects.stroke.map((e) => e.overprint)).toEqual([undefined, true]);
     const got = styleFromPsdLayer(back);
-    expect(got.strokes).toHaveLength(1);
-    expect(got.strokeEffects).toHaveLength(1);
-    expect(got.strokeEffects[0].overprint).toBe(true);
+    expect(outlineBands(got)).toHaveLength(1);
+    expect(got.strokeEffects).toHaveLength(2);
+    expect('overprint' in got.strokeEffects[0]).toBe(false);
+    expect(got.strokeEffects[1].overprint).toBe(true);
   });
 });
 

@@ -23,7 +23,7 @@ import { solverOwns, reportOf } from './edit.js';
 // (how it is laid out, not how it looks).
 // Photoshop Layer Styles: a hollow look is only its effects.
 const LAYER_KEYS = ['strokeEffects', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'blendMode', 'fillOpacity', 'blending'];
-export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'strokes', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin',
+export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin',
   ...LAYER_KEYS];
 
 const STYLE_DEFAULTS = defaultStyle();
@@ -143,7 +143,7 @@ defineTool({
   name: 'copy_look',
   description:
     'Copy another chapter\'s look, by tag ("letter it like chapter 14"). from: a chapter key (chapters lists them) or a chapter number of this series ("14"). ' +
-    'Reads that chapter\'s saved boxes and returns, per tag (a line\'s first tag), the look its boxes share - the most common font, bold, italic, colour, fill, outlines (strokes), shadows, gradient, Photoshop layer styles (stroke effects, glows, inner shadows, overlays, satin, bevel, blend mode, fill opacity, blending), case, line height and spacing - as a style patch, the size they aim for (the median), and the sound types its SFX used (sfxKinds: apply them with edit do "sfx_kind:<id>"). ' +
+    'Reads that chapter\'s saved boxes and returns, per tag (a line\'s first tag), the look its boxes share - the most common font, bold, italic, colour, fill, strokes (outlines), shadows, gradient, Photoshop layer styles (glows, inner shadows, overlays, satin, bevel, blend mode, fill opacity, blending), case, line height and spacing - as a style patch, the size they aim for (the median), and the sound types its SFX used (sfxKinds: apply them with edit do "sfx_kind:<id>"). ' +
     'tags limits it to these tags. apply: true also lays each look on this chapter\'s boxes of the same tag (the size as the size each aims for), laid out again by the solver; one undo step per page; a font this machine lacks is left out and named in skipped. ' +
     'It copies looks, not places, turns or SFX layouts. To make a look the default for new boxes too, save it on the tag with the tag tool. compact as edit.',
   input: {

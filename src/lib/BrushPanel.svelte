@@ -34,7 +34,7 @@
   } from './brush-board.svelte.js';
   import { DYN_SOURCES, TIP_ORDERS, FLIP_MODES, BLEND_MODES, AA_LEVELS, buildStroke, strokeBounds } from './brush.js';
   import { drawInk, inkActive } from './text-paint.js';
-  import { normalizeStroke, normalizeShadow } from './data.js';
+  import { normalizeStroke, normalizeShadow, outlineBands } from './data.js';
   import {
     BUILTIN_BRUSH,
     brushLibrary,
@@ -128,7 +128,7 @@
     const b = selectedBox;
     if (!b || !selectedHasInk) return;
     loadBoardFromBox(page().id, b.id, $state.snapshot(b.style.ink.strokes), {
-      strokes: $state.snapshot(b.style.strokes),
+      strokes: outlineBands(b.style),
       shadows: $state.snapshot(b.style.shadows),
     });
     setBrushMode('draw');

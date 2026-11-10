@@ -47,7 +47,7 @@ describe('footprintOf', () => {
     // Black ink on light paper, no outline: exactly that.
     expect(fp.ink.colour).toBe(false);
     expect(fp.under.tone).toBe('light');
-    expect(lookFor(fp, { outlineWidth: 3 })).toEqual({ color: '#000000', strokes: [], gradient: { on: false }, noFill: false });
+    expect(lookFor(fp, { outlineWidth: 3 })).toEqual({ color: '#000000', strokeEffects: [], gradient: { on: false }, noFill: false });
   });
 
   it('gives page px from a region drawn smaller than the page', () => {
@@ -69,7 +69,7 @@ describe('footprintOf', () => {
     const fp = footprintOf(raw, clean);
     expect(fp.weight).toBe('thin');
     expect(fp.under.tone).toBe('dark');
-    expect(lookFor(fp)).toMatchObject({ color: '#ffffff', strokes: [] });
+    expect(lookFor(fp)).toMatchObject({ color: '#ffffff', strokeEffects: [] });
   });
 
   it('takes a colour original\'s own colours', () => {
@@ -80,7 +80,7 @@ describe('footprintOf', () => {
     expect(fp.ink.colour).toBe(true);
     const look = lookFor(fp);
     expect(look.color).toBe('#dc1e1e');
-    expect(look.strokes).toEqual([{ color: '#3c0000', width: 5, opacity: 1 }]);
+    expect(look.strokeEffects).toEqual([{ color: '#3c0000', size: 5, opacity: 1 }]);
   });
 
   it('reads white letters in a black outline on grey art as exactly that', () => {
@@ -91,7 +91,7 @@ describe('footprintOf', () => {
     expect(fp.ink).toMatchObject({ fill: '#ffffff', outline: '#000000', colour: false });
     expect(fp.ink.outlineWidth).toBeGreaterThanOrEqual(6);
     expect(fp.ink.outlineWidth).toBeLessThanOrEqual(8);
-    expect(lookFor(fp).strokes[0].color).toBe('#000000');
+    expect(lookFor(fp).strokeEffects[0].color).toBe('#000000');
   });
 
   it('reads hollow letters over art as pale as their inside as a fill in an outline', () => {
@@ -144,27 +144,29 @@ describe('footprintOf', () => {
 });
 
 describe('colourMismatch', () => {
+  // An outline stroke: Outside, a colour, reaching `size` past the letters.
+  const out = (color, size) => ({ size, position: 'outside', color });
   const ink = { fill: '#dc1e1e', outline: '#3c0000' };
   it('passes the original\'s colours, read again', () => {
-    expect(colourMismatch({ color: '#da1f1d', strokes: [{ color: '#3a0101', width: 4 }] }, ink)).toBeNull();
+    expect(colourMismatch({ color: '#da1f1d', strokeEffects: [out('#3a0101', 4)] }, ink)).toBeNull();
   });
   it('names a fill and an outline that are not the original\'s', () => {
-    expect(colourMismatch({ color: '#ffffff', strokes: [{ color: '#000000', width: 3 }] }, ink)).toEqual({
+    expect(colourMismatch({ color: '#ffffff', strokeEffects: [out('#000000', 3)] }, ink)).toEqual({
       fill: { want: '#dc1e1e', got: '#ffffff' },
       outline: { want: '#3c0000', got: ['#000000'] },
     });
   });
   it('wants no outline where the original had none, and one where it had', () => {
-    expect(colourMismatch({ color: '#000', strokes: [{ color: '#ffffff', width: 3 }] }, { fill: '#000000', outline: null })).toEqual({ outline: { want: 'none', got: ['#ffffff'] } });
-    expect(colourMismatch({ color: '#dc1e1e', strokes: [] }, ink)).toEqual({ outline: { want: '#3c0000', got: 'none' } });
+    expect(colourMismatch({ color: '#000', strokeEffects: [out('#ffffff', 3)] }, { fill: '#000000', outline: null })).toEqual({ outline: { want: 'none', got: ['#ffffff'] } });
+    expect(colourMismatch({ color: '#dc1e1e', strokeEffects: [] }, ink)).toEqual({ outline: { want: '#3c0000', got: 'none' } });
   });
   it('reads hollow letters by their band, and a shade by its stops', () => {
-    expect(colourMismatch({ noFill: true, color: '#fff', strokes: [{ color: '#dc1e1e', width: 6 }, { color: '#3c0000', width: 2 }] }, ink)).toBeNull();
+    expect(colourMismatch({ noFill: true, color: '#fff', strokeEffects: [out('#dc1e1e', 6), out('#3c0000', 8)] }, ink)).toBeNull();
     const shade = { fill: '#e61e1e', outline: null, shade: ['#e61e1e', '#fadc14'] };
-    const grad = (stops) => ({ color: '#e61e1e', strokes: [], gradient: { on: true, stops: stops.map((color) => ({ color })) } });
+    const grad = (stops) => ({ color: '#e61e1e', strokeEffects: [], gradient: { on: true, stops: stops.map((color) => ({ color })) } });
     expect(colourMismatch(grad(['#e61e1e', '#fadc14']), shade)).toBeNull();
     expect(colourMismatch(grad(['#ffffff', '#fadc14']), shade)?.fill).toBeTruthy();
-    expect(colourMismatch({ color: '#e61e1e', strokes: [] }, shade)?.fill).toBeTruthy();
+    expect(colourMismatch({ color: '#e61e1e', strokeEffects: [] }, shade)?.fill).toBeTruthy();
   });
 });
 

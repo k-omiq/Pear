@@ -63,7 +63,7 @@ beforeEach(() => {
 const W = 600;
 const H = 400;
 const SCALE = 2;
-const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 72, color: '#808080', strokes: [], shadows: [], autoHeight: false, ...over });
+const style = (over = {}) => normalizeStyle({ ...defaultStyle(), strokeEffects: [], font: 'Bangers', size: 72, color: '#808080', strokes: [], shadows: [], autoHeight: false, ...over });
 const boxOf = (over = {}, at = {}) => ({ id: 'b', lineN: null, text: 'BLEND', x: 120, y: 110, w: 320, h: 110, style: style(over), ...at });
 const pageOf = (boxes, extra = {}) => ({ id: 1, w: W, h: H, lines: [], boxes, ...extra });
 
@@ -80,7 +80,7 @@ function flatArt(color) {
 // every pixel the letters cover whole.
 function shownInside(box, art, rgb) {
   const under = { image: flatArt(art), W, H, src: art };
-  const r = renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, null, under);
+  const r = renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, under);
   const { width, height } = r.canvas;
   const d = r.canvas.getContext('2d').getImageData(0, 0, width, height).data;
   const out = [];
@@ -183,7 +183,7 @@ describe('a box over the page art', () => {
     // A surface of about 1300 x 700 device px: a backdrop past the buffer's keep.
     const box = boxOf({ blendMode: 'multiply' }, { x: 0, y: 0, w: 600, h: 300 });
     const under = { image: flatArt('#8080c0'), W, H, src: 'big' };
-    renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, null, under);
+    renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, under);
     expect(asked.at(-1).bytes.length).toBeGreaterThan(1 << 20);
     expect(wireBytes()).toBeLessThanOrEqual(1 << 20);
   });
@@ -211,7 +211,7 @@ describe('a box over the page art', () => {
 // A box's texture over flat art, and its pixels.
 function texture(box, art) {
   const under = art ? { image: flatArt(art), W, H, src: art } : null;
-  const r = renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, null, under);
+  const r = renderBoxTexture(box, pageOf([box]), null, SCALE, Infinity, Infinity, false, false, under);
   const { width, height } = r.canvas;
   return { width, height, data: r.canvas.getContext('2d').getImageData(0, 0, width, height).data };
 }

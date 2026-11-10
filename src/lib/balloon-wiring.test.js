@@ -521,7 +521,7 @@ describe('balloonWidthsFor - the one helper the three layout sites share', () =>
     const g = fittedRect({ w: 1000, h: 1000 }, fit);
     expect(round2(g.w)).toBe(240);
     expect(round2(g.h)).toBe(round2(160 * Math.SQRT2));
-    const b = { ...boxWith(fit, { lineHeight: 1.5, strokes: [] }), ...g };
+    const b = { ...boxWith(fit, { lineHeight: 1.5, strokeEffects: [] }), ...g };
     const inset = textInset(b.style);
     expect(inset).toBe(2);
     const w = balloonWidthsFor(b, b.style, b.style.size)(6);
@@ -568,7 +568,7 @@ describe('balloonWidthsFor - the one helper the three layout sites share', () =>
   // GEO-2. The rows are the ones the block is drawn on, for the whole block.
   const tall = { kind: 'ellipse', cx: 250, cy: 250, rx: 134, ry: 174 };
   const onFrame = (style) => {
-    const s = normalizeStyle({ size: 20, lineHeight: 1.5, strokes: [], ...style });
+    const s = normalizeStyle({ size: 20, lineHeight: 1.5, strokeEffects: [], ...style });
     return { ...balloonFrame(tall), style: s, fit: tall };
   };
   const linesOf = (text, b) =>
@@ -2401,7 +2401,7 @@ describe('the text colour from the bubble (LET-3)', () => {
     expect(b.fit).not.toBe(null);
     expect(b.style.autoContrast).toBe(true);
     expect(b.style.color).toBe('#ffffff');
-    expect(b.style.strokes[0].color).toBe('#000000');
+    expect(b.style.strokeEffects[0].color).toBe('#000000');
     expect(b.outline.ink).toBe('#ffffff');
   });
 
@@ -2411,7 +2411,7 @@ describe('the text colour from the bubble (LET-3)', () => {
     placeActiveAt(250, 250);
     const b = page().boxes[0];
     expect(b.style.color).toBe('#000000');
-    expect(b.style.strokes[0].color).toBe('#ffffff');
+    expect(b.style.strokeEffects[0].color).toBe('#ffffff');
     expect(b.outline.ink).toBe('#000000');
   });
 
@@ -2423,10 +2423,10 @@ describe('the text colour from the bubble (LET-3)', () => {
     pixels = darkPage();
     expect(refitBalloon(b.id)).toBe(true);
     expect(b.style.color).toBe('#ffffff');
-    expect(b.style.strokes[0].color).toBe('#000000');
+    expect(b.style.strokeEffects[0].color).toBe('#000000');
     hist.undo();
     expect(b.style.color).toBe('#000000');
-    expect(b.style.strokes[0].color).toBe('#ffffff');
+    expect(b.style.strokeEffects[0].color).toBe('#ffffff');
     expect(b.outline.ink).toBe('#000000');
     hist.redo();
     expect(b.style.color).toBe('#ffffff');
@@ -2442,7 +2442,7 @@ describe('the text colour from the bubble (LET-3)', () => {
     pixels = darkPage();
     refitBalloon(b.id);
     expect(b.style.color).toBe('#c02020');
-    expect(b.style.strokes[0].color).toBe('#ffffff');
+    expect(b.style.strokeEffects[0].color).toBe('#ffffff');
   });
 
   it('does not pick for a box born in a colour somebody chose', () => {

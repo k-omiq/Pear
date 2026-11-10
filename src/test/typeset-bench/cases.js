@@ -229,7 +229,7 @@ export const CASES = [
     det: { box: [210, 500, 490, 580], vertical: false },
     text: 'STAY BEHIND ME!',
     tag: 'shout',
-    style: { font: BANGERS, size: 34, strokes: [{ color: '#ffffff', width: 6, opacity: 1 }] },
+    style: { font: BANGERS, size: 34, strokeEffects: [{ size: 6, position: 'outside', color: '#ffffff', opacity: 1 }] },
     refSize: 34,
   },
   {
@@ -243,9 +243,10 @@ export const CASES = [
     style: {
       font: COMIC,
       size: 26,
-      strokes: [
-        { color: '#ffffff', width: 4, opacity: 1 },
-        { color: '#1a1a1a', width: 2, opacity: 1 },
+      // Two bands, 4 white then 2 dark: Outside strokes as wide as the bands up to them.
+      strokeEffects: [
+        { size: 4, position: 'outside', color: '#ffffff', opacity: 1 },
+        { size: 6, position: 'outside', color: '#1a1a1a', opacity: 1 },
       ],
     },
     refSize: 26,

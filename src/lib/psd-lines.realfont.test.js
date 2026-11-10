@@ -22,7 +22,7 @@ import { textLayerFor } from './psd.js';
 // measure and not by the engine's is a box they break differently.
 
 const TEXT = 'WAIT FOR ME OVER THERE BY THE OLD BRIDGE';
-const style = { font: 'Comic Neue', size: 30, bold: true, italic: false, lineHeight: 1.1, align: 'center', valign: 'top', color: '#000000', strokes: [] };
+const style = { font: 'Comic Neue', size: 30, bold: true, italic: false, lineHeight: 1.1, align: 'center', valign: 'top', color: '#000000', strokeEffects: [] };
 const boxOf = (w) => ({ id: 'b', lineN: null, text: TEXT, x: 10, y: 10, w, h: 300, style });
 const linesOf = (w) => layoutLines(applyCase(TEXT, style), style, style.size, contentWidth(w, style));
 

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 // A multi effect's instances (Drop Shadow, Inner Shadow, Colour Overlay,
@@ -59,10 +59,13 @@ async function press(el) {
   settleEdits();
   await tick();
 }
+// A checkbox, or an item's switch (`fxItemHead`), turned to `on` by a press.
 async function tickBox(el, on) {
   await fireEvent.pointerDown(el);
-  el.checked = on;
-  await fireEvent.change(el);
+  if (el.type === 'checkbox') {
+    el.checked = on;
+    await fireEvent.change(el);
+  } else if ((el.getAttribute('aria-checked') === 'true') !== on) await fireEvent.click(el);
   settleEdits();
   await tick();
 }
@@ -81,8 +84,8 @@ describe('multi effect instances', () => {
   it('switches a shadow off and back as undo steps, storing on only when off', async () => {
     const { view, box } = mounted({ shadows: [shadow('#ff0000'), shadow('#00ff00')] }, 'effects', 'shadow');
     await tick();
-    const on = view.getByLabelText('Shadow 2 on');
-    expect(on.checked).toBe(true);
+    const on = view.getByRole('switch', { name: 'Shadow 2 on' });
+    expect(on.getAttribute('aria-checked')).toBe('true');
     await tickBox(on, false);
     expect(box().style.shadows[1].on).toBe(false);
     expect('on' in box().style.shadows[0]).toBe(false);
@@ -91,31 +94,54 @@ describe('multi effect instances', () => {
     redo();
     expect(box().style.shadows[1].on).toBe(false);
     await tick();
-    await tickBox(view.getByLabelText('Shadow 2 on'), true);
+    await tickBox(view.getByRole('switch', { name: 'Shadow 2 on' }), true);
     expect('on' in box().style.shadows[1]).toBe(false);
   });
 
-  it('moves an overlay up and down, first on top, and undoes the move', async () => {
+  it('keeps the top colour overlay as the Tint, lists the rest as from an older file, and removes one as an undo step', async () => {
     const { view, box } = mounted({ colorOverlays: [normalizeOverlay({ color: '#ff0000' }), normalizeOverlay({ color: '#0000ff' })] }, 'fill');
     await tick();
-    await openFold(view, 'Overlays');
     const colours = () => box().style.colorOverlays.map((o) => o.color);
-    expect(view.getByLabelText('Move Overlay 1 up').disabled).toBe(true);
-    expect(view.getByLabelText('Move Overlay 2 down').disabled).toBe(true);
-    await press(view.getByLabelText('Move Overlay 2 up'));
-    expect(colours()).toEqual(['#0000ff', '#ff0000']);
+    expect(view.getByRole('switch', { name: 'Tint' }).getAttribute('aria-checked')).toBe('true');
+    expect(view.getByLabelText('Tint colour hex').value).toBe('#ff0000');
+    expect(view.queryByLabelText('Remove older colour overlay 1')).toBeNull();
+    await press(view.getByLabelText('Remove older colour overlay 2'));
+    expect(colours()).toEqual(['#ff0000']);
     undo();
     expect(colours()).toEqual(['#ff0000', '#0000ff']);
+  });
+
+  it('switches the Tint on and off, keeps it when off, and makes it a gradient of its colour', async () => {
+    const { view, box } = mounted({ colorOverlays: [], gradientOverlays: [] }, 'fill');
     await tick();
-    await press(view.getByLabelText('Move Overlay 1 down'));
-    expect(colours()).toEqual(['#0000ff', '#ff0000']);
+    const tint = () => view.getByRole('switch', { name: 'Tint' });
+    expect(tint().getAttribute('aria-checked')).toBe('false');
+    expect(view.queryByLabelText('Tint blend mode')).toBeNull();
+    await press(tint());
+    expect(box().style.colorOverlays).toHaveLength(1);
+    await tick();
+    await fireEvent.change(view.getByLabelText('Tint blend mode'), { target: { value: 'multiply' } });
+    await press(tint());
+    expect(box().style.colorOverlays[0].on).toBe(false);
+    expect(box().style.colorOverlays[0].blend).toBe('multiply');
+    await press(tint());
+    await tick();
+    const c = box().style.colorOverlays[0].color;
+    await press(within(view.getByRole('group', { name: 'Tint kind' })).getByRole('button', { name: 'Gradient' }));
+    expect(box().style.colorOverlays).toHaveLength(0);
+    const g = box().style.gradientOverlays[0];
+    expect(g.blend).toBe('multiply');
+    expect(g.gradient.stops.map((k) => k.color)).toEqual([c, c]);
+    undo();
+    expect(box().style.colorOverlays).toHaveLength(1);
+    expect(box().style.gradientOverlays).toHaveLength(0);
   });
 
   it('duplicates a stroke in place, a copy and not the same object, up to the cap', async () => {
     const k = { ...newStrokeEffect(), size: 7, color: '#123456' };
     const { view, box } = mounted({ strokeEffects: [k] }, 'effects', 'stroke');
     await tick();
-    await press(view.getByLabelText('Duplicate Photoshop stroke 1'));
+    await press(view.getByLabelText('Duplicate Stroke 1'));
     const list = box().style.strokeEffects;
     expect(list.length).toBe(2);
     expect(list[0]).toEqual(list[1]);
@@ -125,9 +151,9 @@ describe('multi effect instances', () => {
     // At the cap the duplicate and the Add are off.
     box().style.strokeEffects = Array.from({ length: FX_INSTANCES_MAX }, () => ({ ...k }));
     await tick();
-    expect(view.getByLabelText('Duplicate Photoshop stroke 1').disabled).toBe(true);
-    expect(view.getByRole('button', { name: /Add Photoshop stroke/ }).disabled).toBe(true);
-    await press(view.getByLabelText('Duplicate Photoshop stroke 1'));
+    expect(view.getByLabelText('Duplicate Stroke 1').disabled).toBe(true);
+    expect(view.getByRole('button', { name: /Add stroke/ }).disabled).toBe(true);
+    await press(view.getByLabelText('Duplicate Stroke 1'));
     expect(box().style.strokeEffects.length).toBe(FX_INSTANCES_MAX);
   });
 });

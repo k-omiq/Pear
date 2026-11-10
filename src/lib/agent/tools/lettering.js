@@ -30,8 +30,8 @@ function lookOf(tag) {
   if (s.italic) bits.push('italic');
   if (s.uppercase) bits.push('caps');
   if (s.color) bits.push(`colour ${s.color}`);
-  if (Array.isArray(s.strokes)) bits.push(s.strokes.length ? `outline ${s.strokes.map((k) => `${k.color} ${k.width}px`).join(' + ')}` : 'no outline');
-  const rest = Object.keys(s).filter((k) => !['font', 'bold', 'italic', 'uppercase', 'color', 'strokes'].includes(k));
+  if (Array.isArray(s.strokeEffects)) bits.push(s.strokeEffects.length ? `stroke ${s.strokeEffects.map((k) => `${k.color} ${k.size}px`).join(' + ')}` : 'no stroke');
+  const rest = Object.keys(s).filter((k) => !['font', 'bold', 'italic', 'uppercase', 'color', 'strokeEffects'].includes(k));
   if (rest.length) bits.push(`also ${rest.join(', ')}`);
   return bits.length ? bits.join(', ') : null;
 }

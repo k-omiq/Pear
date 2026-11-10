@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import v8 from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import { defaultStyle, normalizeStyle, normalizeSfx, applyBoxDefaults, SFX_MAX_GROUPS } from './data.js';
+import { defaultStyle, normalizeStyle, normalizeSfx, applyBoxDefaults, SFX_MAX_GROUPS, strokesFromBands, outlineBands } from './data.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import { clearLayoutMemo } from './measure.js';
 import { placeBlock, curvedStyle, isAutoBox, manualReason, turnedInk, boxInkRect, REVIEW_REASONS } from './contain.js';
@@ -273,10 +273,10 @@ describe('the effects of a style', () => {
   });
 
   it('a negative reaches past the strokes, and an SFX box reaches half as far again', () => {
-    const s = sfxStyle({ size: 20, strokes: [{ color: '#fff', width: 4, opacity: 1 }], negative: { on: true, grow: 0.5, color: '#000000' } });
-    expect(strokeReach(s)).toBeCloseTo((strokeExtent(s.strokes) + 10) * 1.5);
+    const s = sfxStyle({ size: 20, strokeEffects: strokesFromBands([{ color: '#fff', width: 4, opacity: 1 }]), negative: { on: true, grow: 0.5, color: '#000000' } });
+    expect(strokeReach(s)).toBeCloseTo((strokeExtent(outlineBands(s)) + 10) * 1.5);
     s.sfx.on = false;
-    expect(strokeReach(s)).toBeCloseTo(strokeExtent(s.strokes));
+    expect(strokeReach(s)).toBeCloseTo(strokeExtent(outlineBands(s)));
   });
 });
 
@@ -311,8 +311,8 @@ describe('applying a sound type', () => {
   it('is a layout only: the font, the fill and the outlines stay the box’s own', () => {
     const s = defaultStyle();
     s.color = '#336699';
-    s.strokes = [{ color: '#ff0000', width: 3, opacity: 1 }];
-    const look = (st) => JSON.stringify([st.font, st.color, st.strokes, st.pattern, st.gradient, st.negative, st.strokeJoin, st.noFill]);
+    s.strokeEffects = strokesFromBands([{ color: '#ff0000', width: 3, opacity: 1 }]);
+    const look = (st) => JSON.stringify([st.font, st.color, st.strokeEffects, st.pattern, st.gradient, st.negative, st.strokeJoin, st.noFill]);
     const was = look(s);
     applySfxKind(s, 'impact');
     expect(look(s)).toBe(was);
@@ -621,7 +621,7 @@ describe('the ink of a scaled and leaned glyph', () => {
   });
 
   it('boxInkRect grows with a scaled glyph and is unchanged without', () => {
-    const s = { ...defaultStyle(), size: 20, strokes: [], shadows: [] };
+    const s = { ...defaultStyle(), size: 20, strokeEffects: [], shadows: [] };
     const c = cand(s);
     const plain = { s, text: 'A', isCurve: true, layout: [{ ch: 'A', x: 0, y: 0, rot: 0, w: 11 }] };
     const same = { ...plain, layout: [{ ...plain.layout[0], sx: 1, sy: 1, skew: 0 }] };

@@ -35,24 +35,28 @@ afterEach(() => {
 
 describe('applyStylePatch', () => {
   it('merges objects, resolves relative numbers and patches lists by index', () => {
-    const base = { ...defaultStyle(), size: 20, strokes: [{ color: '#ffffff', width: 3, opacity: 1 }] };
-    const { style, errors } = applyStylePatch(base, { size: '*1.5', gradient: { angle: 90 }, strokes: { 0: { width: '+2' } } });
+    const base = { ...defaultStyle(), size: 20 };
+    const { style, errors } = applyStylePatch(base, { size: '*1.5', gradient: { angle: 90 }, strokeEffects: { 0: { size: '+2' } } });
     expect(errors).toEqual([]);
     expect(style.size).toBe(30);
     expect(style.gradient.angle).toBe(90);
     expect(style.gradient.kind).toBe(base.gradient.kind);
-    expect(style.strokes).toEqual([{ color: '#ffffff', width: 5, opacity: 1 }]);
+    expect(style.strokeEffects).toEqual([{ ...base.strokeEffects[0], color: '#ffffff', size: 5 }]);
     expect(style.autoContrast).toBe(false);
   });
 
   it('replaces a list given whole', () => {
-    const { style } = applyStylePatch(defaultStyle(), { strokes: [{ width: 6, color: '#000000' }, { width: 2, color: '#ffffff' }] });
-    expect(style.strokes.map((s) => s.width)).toEqual([6, 2]);
+    const { style } = applyStylePatch(defaultStyle(), { strokeEffects: [{ size: 6, color: '#000000' }, { size: 2, color: '#ffffff' }] });
+    expect(style.strokeEffects.map((s) => s.size)).toEqual([6, 2]);
+    // An old patch's outline bands replace the list as the strokes they make.
+    const old = applyStylePatch(defaultStyle(), { strokes: [{ width: 6, color: '#000000' }, { width: 2, color: '#ffffff' }] }).style;
+    expect(old.strokeEffects.map((s) => [s.size, s.color])).toEqual([[6, '#000000'], [8, '#ffffff']]);
+    expect('strokes' in old).toBe(false);
   });
 
   it('changes nothing when any part is bad', () => {
     const base = defaultStyle();
-    const { style, errors } = applyStylePatch(base, { size: '+2', strokes: { 4: { width: 1 } } });
+    const { style, errors } = applyStylePatch(base, { size: '+2', strokeEffects: { 4: { size: 1 } } });
     expect(errors).toHaveLength(1);
     expect(style).toEqual(applyStylePatch(base, {}).style);
     expect(resolveRelative('+2', 'Comic Neue')).toEqual({ error: expect.any(String) });

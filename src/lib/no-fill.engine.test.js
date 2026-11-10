@@ -50,7 +50,7 @@ const STROKE = [{ color: BLUE, width: 4, opacity: 1 }];
 const SCALE = 2;
 const SHADOW = { x: 6, y: 5, blur: 0, color: '#00ff00', opacity: 1 };
 const style = (over = {}) =>
-  normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 64, color: RED, strokes: STROKE, shadows: [], autoHeight: false, ...over });
+  normalizeStyle({ ...defaultStyle(), strokeEffects: [], font: 'Bangers', size: 64, color: RED, strokes: STROKE, shadows: [], autoHeight: false, ...over });
 const boxOf = (over = {}) => ({ id: 'b', lineN: null, text: 'HOLLOW', x: 120, y: 110, w: 300, h: 110, style: style(over) });
 const pageOf = (box) => ({ id: 1, w: 600, h: 400, lines: [], boxes: [box] });
 

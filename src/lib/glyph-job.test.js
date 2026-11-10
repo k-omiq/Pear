@@ -14,7 +14,9 @@ afterEach(() => {
   setTypesetEnabled(defaultTypeset);
   vi.unstubAllGlobals();
 });
-const style = () => ({ ...defaultStyle(), size: 20, letterSpacing: 2, strokes: [] });
+const style = () => ({ ...defaultStyle(), size: 20, letterSpacing: 2, strokeEffects: [] });
+// An outline stroke: Outside, a colour, `size` the reach of the bands up to it.
+const out = (color, size, opacity) => ({ size, position: 'outside', color, ...(opacity == null ? null : { opacity }) });
 const box = { w: 100, h: 80 };
 const layout = (s, extra = {}) => ({
   s, ox: 10, oy: 20, blockY: 5, lineH: 24, baseY: 18,
@@ -29,7 +31,7 @@ const straightRuns = [{ text: 'AB', x: 12, y: 43 }, { text: 'CD', x: 18, y: 67 }
 
 describe('glyph jobs are plain data', () => {
   it('describes straight text and two stroke bands in paint order', () => {
-    const s = { ...style(), strokes: [{ color: '#fff', opacity: 0.7, width: 2 }, { color: '#000', opacity: 0.4, width: 3 }] };
+    const s = { ...style(), strokeEffects: [out('#fff', 2, 0.7), out('#000', 5, 0.4)] };
     expect(glyphJob(box, layout(s))).toEqual({
       face: faceFor(s, 20), curved: false, align: s.align, letterSpacing: 2,
       bands: [{ color: '#000', opacity: 0.4, line: 10 }, { color: '#fff', opacity: 0.7, line: 4 }],
@@ -85,7 +87,7 @@ describe('glyph jobs are plain data', () => {
   });
 
   it('describes the silhouette as one flat colour, without the real fill', () => {
-    const s = { ...style(), strokes: [{ color: '#fff', width: 2 }], gradient: gradient() };
+    const s = { ...style(), strokeEffects: [out('#fff', 2)], gradient: gradient() };
     const job = glyphJob(box, layout(s, { silhouette: '#777' }));
     expect(job.silhouette).toBe('#777');
     expect(job.fill).toBeNull();
@@ -136,7 +138,7 @@ function recordingContext(spacing = true, extra = {}) {
 }
 
 it('paints all strokes before creating the block gradient and filling, with the same state changes', () => {
-  const s = { ...style(), strokes: [{ color: '#fff', opacity: 0.7, width: 2 }, { color: '#000', opacity: 0.4, width: 3 }], gradient: gradient() };
+  const s = { ...style(), strokeEffects: [out('#fff', 2, 0.7), out('#000', 5, 0.4)], gradient: gradient() };
   const job = glyphJob(box, layout(s));
   const { ctx, calls } = recordingContext();
   createBrowserGlyphPainter().paint(ctx, job);
@@ -180,7 +182,7 @@ it('states no fill on the job and on no run, whatever fill the style has switche
 });
 
 it('with no fill, paints the bands on a canvas of its own and cuts the letters out of them', () => {
-  const s = { ...style(), noFill: true, strokes: [{ color: '#fff', opacity: 1, width: 2 }], gradient: gradient() };
+  const s = { ...style(), noFill: true, strokeEffects: [out('#fff', 2, 1)], gradient: gradient() };
   const job = glyphJob(box, layout(s));
   const own = recordingContext(true, { setTransform: (m) => own.calls.push(['setTransform', m]) });
   const cnv = { width: 0, height: 0, getContext: () => own.ctx };
@@ -231,7 +233,7 @@ it('with no fill and no stroke, paints nothing and makes no canvas', () => {
 });
 
 it('checks for letterSpacing support and paints a silhouette without save/restore or gradients', () => {
-  const s = { ...style(), strokes: [{ color: '#fff', width: 2 }], gradient: gradient() };
+  const s = { ...style(), strokeEffects: [out('#fff', 2)], gradient: gradient() };
   const job = glyphJob(box, layout(s, { silhouette: '#777' }));
   const { ctx, calls } = recordingContext(false);
   createBrowserGlyphPainter().paint(ctx, job);

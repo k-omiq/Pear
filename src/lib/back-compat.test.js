@@ -20,7 +20,11 @@
 // a partial or hand-edited group degrades to something both renderers can paint.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { normalizeStyle, defaultStyle, PATTERN_KINDS, openTypesetting, PLAIN_BREAKS, plainStyle, normalizeAuto } from './data.js';
+import { normalizeStyle, defaultStyle, PATTERN_KINDS, openTypesetting, PLAIN_BREAKS, plainStyle, normalizeAuto, normalizeStrokeEffect, outlineBands } from './data.js';
+
+// An old outline band as the stroke it migrates to: Outside, its colour, as
+// wide as the bands up to it (`strokesFromBands`).
+const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, position: 'outside', color, opacity });
 import { parsePresets } from './presets.svelte.js';
 import { normalizeTranslations } from './importer.js';
 import { migrateEntry, migrateDoc } from './editor/history-file.svelte.js';
@@ -265,7 +269,7 @@ const NOW_TRANSLATIONS = ERA2_TRANSLATIONS.replace(
 describe('a style written before strokes and shadows were lists', () => {
   it('keeps an era-2 outline as the innermost stroke, with its colour and width', () => {
     const s = normalizeStyle(JSON.parse(ERA2_STYLE));
-    expect(s.strokes).toEqual([{ color: '#ff0044', width: 5, opacity: 1 }]);
+    expect(s.strokeEffects).toEqual([outside('#ff0044', 5)]);
   });
 
   it('keeps an era-2 shadow, exactly where it was cast', () => {
@@ -282,13 +286,13 @@ describe('a style written before strokes and shadows were lists', () => {
 
   it('reads outlineWidth 0 as no outline, not as a default one', () => {
     const none = { ...JSON.parse(ERA2_STYLE), outlineWidth: 0 };
-    expect(normalizeStyle(none).strokes).toEqual([]);
+    expect(normalizeStyle(none).strokeEffects).toEqual([]);
   });
 
   it('migrates an era-1 style, whose keys stop well short of the schema', () => {
     const s = normalizeStyle(JSON.parse(ERA1_STYLE));
     const d = defaultStyle();
-    expect(s.strokes).toEqual([{ color: '#00ff88', width: 2, opacity: 1 }]);
+    expect(s.strokeEffects).toEqual([outside('#00ff88', 2)]);
     expect(s.shadows).toEqual([]);
     // Everything era 1 never heard of answers to today's default, so the
     // chapter opens with shaping, hyphenation and auto-height on.
@@ -357,10 +361,14 @@ describe('a style written before strokes and shadows were lists', () => {
       shadows: [],
     };
     const s = normalizeStyle(mixed);
-    expect(s.strokes).toEqual([
+    // The bands become strokes as wide as the bands up to them, and lay the
+    // same rings; the list has no `strokes` key left.
+    expect(s.strokeEffects).toEqual([outside('#000000', 1, 0.5), outside('#ffffff', 5)]);
+    expect(outlineBands(s)).toEqual([
       { color: '#000000', width: 1, opacity: 0.5 },
       { color: '#ffffff', width: 4, opacity: 1 },
     ]);
+    expect('strokes' in s).toBe(false);
     expect(s.shadows).toEqual([]);
   });
 
@@ -399,23 +407,28 @@ describe('a style written before strokes and shadows were lists', () => {
   // The pattern of the release before the Rust fill: five keys. Every new
   // field takes the default that paints what those five painted.
   it('gives a five-key pattern the new fields at their old look', () => {
+    // It is the Pattern Overlay's now, at Normal 100 %, which paints the
+    // same (`foldPatternFill`, pattern-fold.engine.test.js).
     const s = normalizeStyle(JSON.parse(`{"pattern": {"on": true, "kind": "halftone", "fg": "#112233", "bg": "#ffffff", "scale": 1.5}}`));
-    expect(s.pattern).toEqual({
+    expect(s.pattern.on).toBe(false);
+    expect(s.patternOverlay).toMatchObject({ on: true, blend: 'normal', opacity: 1 });
+    const p = s.patternOverlay.pattern;
+    expect(p).toEqual({
       ...defaultStyle().pattern,
       on: true,
       kind: 'halftone',
       fg: '#112233',
       scale: 1.5,
     });
-    expect(s.pattern.density).toBe(0.5);
-    expect(s.pattern.angle).toBe(0);
-    expect(s.pattern.aspect).toBe(1);
-    expect([s.pattern.ox, s.pattern.oy]).toEqual([0, 0]);
-    expect([s.pattern.fgOpacity, s.pattern.bgOpacity]).toEqual([1, 1]);
-    expect(s.pattern.fade.on).toBe(false);
-    expect(s.pattern.anchor).toBe('box');
-    expect(s.pattern.src).toBe('');
-    expect(s.pattern.cell).toEqual([]);
+    expect(p.density).toBe(0.5);
+    expect(p.angle).toBe(0);
+    expect(p.aspect).toBe(1);
+    expect([p.ox, p.oy]).toEqual([0, 0]);
+    expect([p.fgOpacity, p.bgOpacity]).toEqual([1, 1]);
+    expect(p.fade.on).toBe(false);
+    expect(p.anchor).toBe('box');
+    expect(p.src).toBe('');
+    expect(p.cell).toEqual([]);
   });
 
   it('clamps a hand-edited pattern and drops a picked tile it cannot find', () => {
@@ -553,15 +566,16 @@ describe('a whole chapter.json from the last release', () => {
   });
 
   it('migrates every box’s style on the way in, both eras at once', () => {
-    expect(byId('b1').style.strokes).toEqual([{ color: '#ff0044', width: 5, opacity: 1 }]);
+    expect(byId('b1').style.strokeEffects).toEqual([outside('#ff0044', 5)]);
     expect(byId('b1').style.shadows).toHaveLength(1);
-    expect(byId('b2').style.strokes).toEqual([{ color: '#00ff88', width: 2, opacity: 1 }]);
+    expect(byId('b2').style.strokeEffects).toEqual([outside('#00ff88', 2)]);
     // Every style the canvas will read has the groups it reads unguarded.
     for (const p of app.pages) {
       for (const b of p.boxes) {
         expect(b.style.gradient).toBeTruthy();
         expect(b.style.pattern).toBeTruthy();
-        expect(Array.isArray(b.style.strokes)).toBe(true);
+        expect(Array.isArray(b.style.strokeEffects)).toBe(true);
+        expect('strokes' in b.style).toBe(false);
         expect(Array.isArray(b.style.shadows)).toBe(true);
       }
     }
@@ -626,7 +640,7 @@ describe('an undo history written before the style schema moved', () => {
 
   it('migrates the style inside a place entry’s box', () => {
     const e = migrateEntry(parsed().pages['1'].undo[0]);
-    expect(e.box.style.strokes).toEqual([{ color: '#ff0044', width: 5, opacity: 1 }]);
+    expect(e.box.style.strokeEffects).toEqual([outside('#ff0044', 5)]);
     expect(e.box.style.gradient).toBeTruthy();
     expect(e.box.style.pattern).toBeTruthy();
     // Everything else about the record is untouched.
@@ -642,24 +656,25 @@ describe('an undo history written before the style schema moved', () => {
     const style = normalizeStyle({});
     style.pattern = JSON.parse('{"on": true, "kind": "grid", "fg": "#000000", "bg": "#ffffff", "scale": 2}');
     const e = migrateEntry({ t: 'place', index: 0, box: { id: 'b1', x: 0, y: 0, w: 50, h: 20, text: 'A', style } });
-    expect(e.box.style.pattern).toEqual({ ...defaultStyle().pattern, on: true, kind: 'grid', scale: 2 });
+    expect(e.box.style.pattern).toEqual({ ...defaultStyle().pattern, on: false, kind: 'grid', scale: 2 });
+    expect(e.box.style.patternOverlay.pattern).toEqual({ ...defaultStyle().pattern, on: true, kind: 'grid', scale: 2 });
   });
 
   it('migrates a delete entry’s box the same way', () => {
     const e = migrateEntry(parsed().pages['1'].redo[0]);
-    expect(e.box.style.strokes).toEqual([{ color: '#00ff88', width: 2, opacity: 1 }]);
+    expect(e.box.style.strokeEffects).toEqual([outside('#00ff88', 2)]);
   });
 
   it('migrates both halves of a style entry', () => {
     const e = migrateEntry(parsed().pages['1'].undo[4]);
-    expect(e.before.strokes).toEqual([{ color: '#00ff88', width: 2, opacity: 1 }]);
-    expect(e.after.strokes).toEqual([{ color: '#ff0044', width: 5, opacity: 1 }]);
+    expect(e.before.strokeEffects).toEqual([outside('#00ff88', 2)]);
+    expect(e.after.strokeEffects).toEqual([outside('#ff0044', 5)]);
   });
 
   it('migrates each item of a bulk entry, and leaves an absent lastStyle pair absent', () => {
     const e = migrateEntry(parsed().pages['2'].undo[0]);
-    expect(e.items[0].before.strokes).toEqual([{ color: '#00ff88', width: 2, opacity: 1 }]);
-    expect(e.items[0].after.strokes).toEqual([{ color: '#ff0044', width: 5, opacity: 1 }]);
+    expect(e.items[0].before.strokeEffects).toEqual([outside('#00ff88', 2)]);
+    expect(e.items[0].after.strokeEffects).toEqual([outside('#ff0044', 5)]);
     expect(e.items[0].boxId).toBe('b3');
     expect('lastStyleBefore' in e).toBe(false);
   });
@@ -695,9 +710,9 @@ describe('an undo history written before the style schema moved', () => {
 
   it('migrates every page’s stack, on both sides', () => {
     const doc = migrateDoc(parsed());
-    expect(doc.pages['1'].undo[0].box.style.strokes).toHaveLength(1);
-    expect(doc.pages['1'].redo[0].box.style.strokes).toHaveLength(1);
-    expect(doc.pages['2'].undo[0].items[0].after.strokes).toHaveLength(1);
+    expect(doc.pages['1'].undo[0].box.style.strokeEffects).toHaveLength(1);
+    expect(doc.pages['1'].redo[0].box.style.strokeEffects).toHaveLength(1);
+    expect(doc.pages['2'].undo[0].items[0].after.strokeEffects).toHaveLength(1);
   });
 });
 
@@ -732,7 +747,7 @@ describe('replaying an era-2 entry against today’s document', () => {
     expect(undo()).toBe(true);
     expect(pageById(1).boxes).toHaveLength(before);
     const s = byId('b2').style;
-    expect(s.strokes).toEqual([{ color: '#ff0044', width: 5, opacity: 1 }]);
+    expect(s.strokeEffects).toEqual([outside('#ff0044', 5)]);
     expect(s.gradient.on).toBe(false);
     expect(s.pattern.on).toBe(false);
     expect(s.shadows).toHaveLength(1);
@@ -752,7 +767,7 @@ describe('replaying an era-2 entry against today’s document', () => {
     };
     loadStack(1, { undo: [migrateEntry(e)], redo: [] });
     expect(undo()).toBe(true);
-    expect(byId('b1').style.strokes).toEqual([{ color: '#00ff88', width: 2, opacity: 1 }]);
+    expect(byId('b1').style.strokeEffects).toEqual([outside('#00ff88', 2)]);
     expect(byId('b1').style.pattern).toBeTruthy();
     expect(byId('b1').style.gradient).toBeTruthy();
   });
@@ -765,11 +780,11 @@ describe('replaying an era-2 entry against today’s document', () => {
       before: { x: 10, y: 20 },
       after: { x: 110, y: 130 },
     };
-    const strokes = structuredClone(byId('b1').style.strokes);
+    const strokes = structuredClone(byId('b1').style.strokeEffects);
     loadStack(1, { undo: [migrateEntry(e)], redo: [] });
     expect(undo()).toBe(true);
     expect([byId('b1').x, byId('b1').y]).toEqual([10, 20]);
-    expect(byId('b1').style.strokes).toEqual(strokes);
+    expect(byId('b1').style.strokeEffects).toEqual(strokes);
     expect(byId('b1').style.size).toBe(34);
   });
 });
@@ -871,9 +886,9 @@ describe('a presets blob from the last release', () => {
   it('migrates each preset’s style through the one seam every style goes through', () => {
     const list = parsePresets(ERA2_PRESETS);
     expect(list.map((p) => p.name)).toEqual(['Shout', 'Whisper']);
-    expect(list[0].style.strokes).toEqual([{ color: '#ff0044', width: 5, opacity: 1 }]);
+    expect(list[0].style.strokeEffects).toEqual([outside('#ff0044', 5)]);
     expect(list[0].style.shadows).toHaveLength(1);
-    expect(list[1].style.strokes).toEqual([{ color: '#00ff88', width: 2, opacity: 1 }]);
+    expect(list[1].style.strokeEffects).toEqual([outside('#00ff88', 2)]);
     for (const p of list) {
       expect(p.style.gradient).toBeTruthy();
       expect(p.style.pattern).toBeTruthy();
@@ -1155,7 +1170,7 @@ describe('a chapter laid out under the old chapter switch', () => {
     // fields is one from before them, and goes through normalizeStyle, so the
     // identity checks below need those fields to mean "left as recorded".
     const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {} };
-    const smart = { shape: 'auto', hyphenate: true, balloon: true, strokes: [], shadows: [], gradient: {}, pattern: { fade: {} }, ...layerStyles };
+    const smart = { shape: 'auto', hyphenate: true, balloon: true, shadows: [], gradient: {}, pattern: { fade: {} }, ...layerStyles };
     const entries = [
       { t: 'style', before: { ...smart, color: '#000' }, after: { ...smart, color: '#f00' } },
       { t: 'place', box: { id: 'b1', style: smart } },
@@ -1191,9 +1206,9 @@ describe('a tags blob from the last release', () => {
     const base = normalizeStyle(JSON.parse(ERA1_STYLE));
     const styled = tags.styleForLine({ n: 1, tags: ['shout'] }, base);
     expect(styled.font).toBe('Bangers');
-    expect(styled.strokes).toEqual([{ color: '#ff0000', width: 6, opacity: 1 }]);
+    expect(styled.strokeEffects).toEqual([outside('#ff0000', 6)]);
     // A tag that names nothing changes nothing.
-    expect(tags.styleForLine({ n: 2, tags: ['whisper'] }, base).strokes).toEqual(base.strokes);
+    expect(tags.styleForLine({ n: 2, tags: ['whisper'] }, base).strokeEffects).toEqual(base.strokeEffects);
   });
 });
 
@@ -1212,14 +1227,14 @@ describe('a project tag registry from before tag styles', () => {
     const { app, loadProjectPages, placeActiveAt } = await import('./store.svelte.js');
     bindTags(OLD_TAGS);
     expect(tags.list).toEqual([
-      { name: 'sfx', style: { font: 'Bangers', strokes: [{ color: '#ffffff', width: 4, opacity: 1 }] }, size: 60, minSize: null },
+      { name: 'sfx', style: { font: 'Bangers', strokeEffects: [outside('#ffffff', 4)] }, size: 60, minSize: null },
       { name: 'narration', style: {}, size: null, minSize: null },
     ]);
     app.chapterRef = null;
     app.lastStyle = defaultStyle();
     loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [{ n: 1, en: 'BOOM', tags: ['sfx'] }], boxes: [] }]);
     placeActiveAt(200, 200);
-    expect(app.pages[0].boxes[0].style).toMatchObject({ font: 'Bangers', strokes: [{ color: '#ffffff', width: 4, opacity: 1 }], size: 60 });
+    expect(app.pages[0].boxes[0].style).toMatchObject({ font: 'Bangers', strokeEffects: [outside('#ffffff', 4)], size: 60 });
   });
 
   it('places narration after sfx with its whole patch whatever the last box was', async () => {

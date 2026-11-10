@@ -12,7 +12,7 @@ import {
   reconstructForeign,
   psdSelfTest,
 } from './psd.js';
-import { PAGE_W, PAGE_H, emptyFaces, defaultStyle, normalizeStyle, normalizeBevel, normalizeBlending } from './data.js';
+import { PAGE_W, PAGE_H, emptyFaces, defaultStyle, normalizeStyle, normalizeBevel, normalizeBlending, strokesFromBands, outlineBands } from './data.js';
 import { BOX_PAD, textInset } from './measure.js';
 import { app } from './store.svelte.js';
 import { _setPostScriptNameFor, _clearPostScriptNames } from './fonts.js';
@@ -468,7 +468,7 @@ describe('textLayerFor', () => {
   it('attaches a stroke effect with the correct size, position, and color', () => {
     const layer = textLayerFor(
       page,
-      box({ ...baseStyle, strokes: [{ color: '#ff3300', width: 3, opacity: 1 }] }),
+      box({ ...baseStyle, strokeEffects: strokesFromBands([{ color: '#ff3300', width: 3, opacity: 1 }]) }),
       rendered,
     );
     expect(layer.effects).toBeDefined();
@@ -490,10 +490,10 @@ describe('textLayerFor', () => {
       page,
       box({
         ...baseStyle,
-        strokes: [
+        strokeEffects: strokesFromBands([
           { color: '#ffffff', width: 3, opacity: 1 },
           { color: '#000000', width: 2, opacity: 0.5 },
-        ],
+        ]),
       }),
       rendered,
     );
@@ -504,7 +504,7 @@ describe('textLayerFor', () => {
   });
 
   it('leaves stroke off when the box has no strokes', () => {
-    const layerZero = textLayerFor(page, box({ ...baseStyle, strokes: [] }), rendered);
+    const layerZero = textLayerFor(page, box({ ...baseStyle, strokeEffects: [] }), rendered);
     expect(layerZero.effects?.stroke).toBeUndefined();
     const layerNone = textLayerFor(page, box(baseStyle), rendered);
     expect(layerNone.effects?.stroke).toBeUndefined();
@@ -729,8 +729,7 @@ describe('textLayerFor', () => {
     const g = { style: 'radial', angle: 30, scale: 0.5, reverse: true, offset: [0.1, -0.2], stops: [{ color: '#ff0000', pos: 0, opacity: 1 }, { color: '#0000ff', pos: 1, opacity: 0.5 }] };
     const style = {
       ...baseStyle,
-      strokes: [{ color: '#ffffff', width: 4, opacity: 1 }],
-      strokeEffects: [{ size: 2, position: 'center', blend: 'multiply', opacity: 0.5, fill: 'gradient', color: '#000000', gradient: g }],
+      strokeEffects: [...strokesFromBands([{ color: '#ffffff', width: 4, opacity: 1 }]), { size: 2, position: 'center', blend: 'multiply', opacity: 0.5, fill: 'gradient', color: '#000000', gradient: g }],
       gradientOverlays: [{ blend: 'screen', opacity: 0.7, gradient: g }],
     };
     const fx = textLayerFor(page, box(style), rendered).effects;
@@ -744,7 +743,7 @@ describe('textLayerFor', () => {
     // A pattern overlay or a pattern stroke has no pattern table to name: pixels.
     const pattern = { on: true, kind: 'dots', fg: '#000000', bg: '#ffffff', scale: 1 };
     expect(isRasterOnly({ ...style, patternOverlay: { on: true, opacity: 1, pattern } })).toBe(true);
-    expect(isRasterOnly({ ...style, strokeEffects: [{ ...style.strokeEffects[0], fill: 'pattern', pattern }] })).toBe(true);
+    expect(isRasterOnly({ ...style, strokeEffects: [style.strokeEffects[0], { ...style.strokeEffects[1], fill: 'pattern', pattern }] })).toBe(true);
     expect(isRasterOnly(style)).toBe(false);
   });
 
@@ -775,7 +774,7 @@ describe('textLayerFor', () => {
   it('leaves raster-only layers (curve, roughen, flip) completely free of effects', () => {
     const styledWithEffects = {
       ...baseStyle,
-      strokes: [{ color: '#ffffff', width: 4, opacity: 1 }],
+      strokeEffects: strokesFromBands([{ color: '#ffffff', width: 4, opacity: 1 }]),
       shadows: [{ x: 3, y: 4, size: 5, color: '#000000', opacity: 0.8 }],
     };
 
@@ -880,11 +879,11 @@ describe('textLayerFor', () => {
     ];
     const layer = textLayerFor(
       page,
-      { lineN: null, text: 'hello', x: 100, y: 60, w: 160, h: 80, style: { ...baseStyle, rotation: 0, valign: 'top', strokes } },
+      { lineN: null, text: 'hello', x: 100, y: 60, w: 160, h: 80, style: { ...baseStyle, rotation: 0, valign: 'top', strokeEffects: strokesFromBands(strokes) } },
       rendered,
     );
     const inset = BOX_PAD + 3 + 2;
-    expect(textInset({ strokes })).toBe(inset);
+    expect(textInset({ strokeEffects: strokesFromBands(strokes) })).toBe(inset);
     expect(layer.text.boxBounds[2]).toBe(160 - inset * 2);
     expect(layer.text.transform[4]).toBeCloseTo(100 + inset, 6);
     expect(layer.text.transform[5]).toBeCloseTo(60 + inset, 6);
@@ -1241,7 +1240,7 @@ describe('writePagePsd', () => {
         align: 'center',
         size: 20,
         font: 'Comic Neue',
-        strokes: [{ color: '#ff0000', width: 3, opacity: 1 }],
+        strokeEffects: strokesFromBands([{ color: '#ff0000', width: 3, opacity: 1 }]),
         shadows: [{ x: 4, y: 5, size: 6, color: '#000000', opacity: 0.75 }],
       },
     };
@@ -1448,17 +1447,17 @@ describe('reconstructForeign', () => {
     ];
     // One line at lineHeight 1, in a box exactly as tall as it and its inset:
     // the height the importer recovers is the block's.
-    const style = normalizeStyle({ ...defaultStyle(), size: 24, lineHeight: 1, align: 'left', valign: 'top', strokes });
+    const style = normalizeStyle({ ...defaultStyle(), size: 24, lineHeight: 1, align: 'left', valign: 'top', strokeEffects: strokesFromBands(strokes) });
     const box = { lineN: null, text: 'hello', x: 100, y: 60, w: 160, h: 24 + textInset(style) * 2, style };
     const layer = textLayerFor({ lines: [] }, box, null);
-    const bare = textLayerFor({ lines: [] }, { ...box, style: { ...style, strokes: [] } }, null);
+    const bare = textLayerFor({ lines: [] }, { ...box, style: { ...style, strokeEffects: [] } }, null);
     delete bare.effects;
     const page = await reconstructForeign({ width: 800, height: 1200, children: [layer, bare] });
     const [b, plain] = page.boxes;
-    expect(b.style.strokes).toEqual(strokes);
+    expect(outlineBands(b.style)).toEqual(strokes);
     expect({ x: b.x, y: b.y, w: b.w, h: b.h }).toEqual({ x: 100, y: 60, w: 160, h: box.h });
     expect(b.style.align).toBe('left');
-    expect(plain.style.strokes).toEqual([]);
+    expect(plain.style.strokeEffects).toEqual([]);
     expect({ x: plain.x, y: plain.y, w: plain.w, h: plain.h }).toEqual({ x: 100, y: 60, w: 160, h: 24 + BOX_PAD * 2 });
   });
 
@@ -1468,7 +1467,7 @@ describe('reconstructForeign', () => {
   // width its widest line was broken to - and its aligned edge is where it
   // was, to the importer's own whole-pixel rounding.
   it('brings a box of fractional width back no narrower than it went out', async () => {
-    const style = normalizeStyle({ ...defaultStyle(), size: 24, lineHeight: 1.1, align: 'right', valign: 'top', strokes: [] });
+    const style = normalizeStyle({ ...defaultStyle(), size: 24, lineHeight: 1.1, align: 'right', valign: 'top', strokeEffects: [] });
     const box = { lineN: null, text: 'hello', x: 100.3, y: 60, w: 120.4, h: 40, style };
     const layer = textLayerFor({ lines: [] }, box, null);
     delete layer.effects;

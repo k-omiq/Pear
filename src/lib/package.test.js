@@ -9,8 +9,11 @@ import {
   PACKAGE_FORMAT,
   PACKAGE_VERSION,
 } from './package.js';
+import { normalizeStrokeEffect } from './data.js';
 
 const bytes = (...n) => new Uint8Array(n);
+// A tag's outline: one Outside stroke, as the registry stores it.
+const outline = (color, size) => normalizeStrokeEffect({ size, position: 'outside', color, opacity: 1 });
 
 function sampleRecord() {
   return {
@@ -60,7 +63,7 @@ function sampleInput() {
         },
       },
     ],
-    tags: [{ name: 'sfx', style: { font: 'Wild Words', strokes: [{ color: '#fff', width: 3, opacity: 1 }], italic: true }, size: 60, minSize: 30 }],
+    tags: [{ name: 'sfx', style: { font: 'Wild Words', strokeEffects: [outline('#ffffff', 3)], italic: true }, size: 60, minSize: 30 }],
     app: '0.1.1',
     exportedAt: '2026-08-22T00:00:00.000Z',
   };
@@ -98,7 +101,7 @@ describe('buildChapterPackage', () => {
         },
       },
     ]);
-    expect(manifest.tags).toEqual([{ name: 'sfx', style: { font: 'Wild Words', strokes: [{ color: '#fff', width: 3, opacity: 1 }], italic: true }, size: 60, minSize: 30 }]);
+    expect(manifest.tags).toEqual([{ name: 'sfx', style: { font: 'Wild Words', strokeEffects: [outline('#ffffff', 3)], italic: true }, size: 60, minSize: 30 }]);
     // Rasters are byte-for-byte.
     expect([...entries['raws/p1.png']]).toEqual([1, 2, 3]);
     expect([...entries['cleaned/p1-clean.png']]).toEqual([9, 9, 9, 9]);
@@ -141,7 +144,7 @@ describe('readChapterPackage', () => {
     expect([...pkg.fonts[0].faces.regular.data]).toEqual([7, 7]);
     expect([...pkg.fonts[0].faces.bold.data]).toEqual([8, 8, 8]);
     expect(pkg.fonts[0].faces.italic).toBeNull();
-    expect(pkg.tags).toEqual([{ name: 'sfx', style: { font: 'Wild Words', strokes: [{ color: '#fff', width: 3, opacity: 1 }], italic: true }, size: 60, minSize: 30 }]);
+    expect(pkg.tags).toEqual([{ name: 'sfx', style: { font: 'Wild Words', strokeEffects: [outline('#ffffff', 3)], italic: true }, size: 60, minSize: 30 }]);
   });
 
   it('migrates a legacy package tag through the same registry reader', () => {
@@ -150,7 +153,7 @@ describe('readChapterPackage', () => {
     manifest.tags = JSON.parse('[{"name":"SFX","font":"Bangers","outline":"#ffffff","outlineWidth":4},{"name":"empty","font":null,"outline":null,"outlineWidth":null}]');
     const pkg = readChapterPackage(zipSync({ ...entries, 'manifest.json': strToU8(JSON.stringify(manifest)) }));
     expect(pkg.tags).toEqual([
-      { name: 'sfx', style: { font: 'Bangers', strokes: [{ color: '#ffffff', width: 4, opacity: 1 }] }, size: null, minSize: null },
+      { name: 'sfx', style: { font: 'Bangers', strokeEffects: [outline('#ffffff', 4)] }, size: null, minSize: null },
       { name: 'empty', style: {}, size: null, minSize: null },
     ]);
     expect(fontFamiliesUsed([], pkg.tags)).toEqual(['Bangers']);

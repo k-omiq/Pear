@@ -1,6 +1,6 @@
 // data.js and its brush geometry dependency are pure: keep the frozen corpus
 // tied to the app's real schema without importing measurement or a host.
-import { defaultStyle, normalizeFit, CANVAS_PATTERN_KINDS } from '../../lib/data.js';
+import { defaultStyle, normalizeFit, CANVAS_PATTERN_KINDS, strokesFromBands } from '../../lib/data.js';
 
 export const sizes = [8, 11, 12, 14.5, 16, 18, 22, 22.5, 26, 30, 33.3, 40, 64, 96];
 const strings = [
@@ -80,7 +80,7 @@ export function layoutCases(list) {
     for (const align of ['left', 'center', 'right']) for (const valign of ['top', 'middle', 'bottom']) {
       for (let j = 0; j < Math.max(3, families.length); j++) {
         const c = boxCase(`l.matrix.${n}.${j}`, families[(n + j) % families.length], [14, 22, 40][(Math.floor(n / 3) + j) % 3], text, {
-          align, valign, strokes: [[], defaultStyle().strokes, [stroke(6)]][(Math.floor(n / 9) + j) % 3],
+          align, valign, strokeEffects: [[], defaultStyle().strokeEffects, strokesFromBands([stroke(6)])][(Math.floor(n / 9) + j) % 3],
         });
         c.box.w = w;
         c.mode = (n + j) % 2 ? 'plain' : 'smart';
@@ -127,13 +127,13 @@ export function pixelsCases(list) {
   const pixelTexts = ['AVATAR WAVE!', 'WAIT!\nCome back here.\nI won\'t let you!!'];
   familiesOf(list).forEach((font, i) => {
     for (const size of [14, 22, 40]) pixelTexts.forEach((text, t) => {
-      for (const align of ['left', 'center', 'right']) cases.push(boxCase(`p.base.${i}.${size}.${t}.${align}`, font, size, text, { align, strokes: [] }, { via: 'texture' }));
+      for (const align of ['left', 'center', 'right']) cases.push(boxCase(`p.base.${i}.${size}.${t}.${align}`, font, size, text, { align, strokeEffects: [] }, { via: 'texture' }));
     });
   });
   const sh = { x: 4, y: 3, blur: 0, color: '#333333', opacity: 1 };
   const effects = [
-    ...[1, 2, 3].map((n) => [`bands-${n}`, { strokes: Array.from({ length: n }, (_, i) => stroke(2, ['#ffffff', '#e22b2b', '#000000'][i])) }]),
-    ['band-alpha', { strokes: [stroke(3, '#000000', 0.5)] }],
+    ...[1, 2, 3].map((n) => [`bands-${n}`, { strokeEffects: strokesFromBands(Array.from({ length: n }, (_, i) => stroke(2, ['#ffffff', '#e22b2b', '#000000'][i]))) }]),
+    ['band-alpha', { strokeEffects: strokesFromBands([stroke(3, '#000000', 0.5)]) }],
     ...[0, 90].map((angle) => [`linear-${angle}`, { gradient: { on: true, angle } }]),
     ['radial', { gradient: { on: true, kind: 'radial' } }], ['line-gradient', { gradient: { on: true, scope: 'line' } }],
     ...CANVAS_PATTERN_KINDS.map((kind) => [`pattern-${kind}`, { pattern: { on: true, kind } }]),
@@ -151,7 +151,7 @@ export function pixelsCases(list) {
   ];
   const targets = [['Comic Neue', 22], ['Comic Neue', 40], ['Bangers', 40]].filter(([f]) => familiesOf(list).includes(f));
   targets.forEach(([font, size], i) => effects.forEach(([name, over, via = 'texture']) => {
-    pixelTexts.forEach((text, t) => cases.push(boxCase(`p.fx.${i}.${name}.${t}`, font, size, text, { strokes: [], ...over }, { via, tags: [name, ...faux(list, font, !!over.bold, !!over.italic)] })));
+    pixelTexts.forEach((text, t) => cases.push(boxCase(`p.fx.${i}.${name}.${t}`, font, size, text, { strokeEffects: [], ...over }, { via, tags: [name, ...faux(list, font, !!over.bold, !!over.italic)] })));
   }));
   return cases;
 }

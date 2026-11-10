@@ -60,7 +60,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 17;
+pub const BOX_WIRE_VERSION: u32 = 18;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -931,7 +931,8 @@ impl<'a> Reader<'a> {
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow,
 ///                              straight RGBA8 read as opaque: the page art
 ///                              under each surface pixel
-/// u32 job byte length, then a glyph job in its own wire form
+/// u32 job byte length, then a glyph job in its own wire form (v18: the
+///                              glyph job's v11, with flag 32, Crisp)
 ///
 /// paint record: u32 kind, then 0 rgba colour, 1 a gradient record, or 2 a
 ///   fill record as the glyph job writes one (its tile numbers are the job's)
@@ -1771,6 +1772,8 @@ fn paint_glyphs(
     } else {
         paint_fill(engine, request, rasterizer, keep)
     };
+    // Where the fill's piece lands in `out`, when it is laid as a piece.
+    let mut fill_piece = None;
     if let Some(mut r) = fill? {
         if inside {
             let place = Place {
@@ -1800,6 +1803,7 @@ fn paint_glyphs(
                 t.draw(&r);
             }
             drop(r);
+            fill_piece = Some(out.len());
             out.push(laid);
         } else if special {
             if let Some(t) = this.as_mut() {
@@ -1813,21 +1817,96 @@ fn paint_glyphs(
             for p in r.data.as_chunks_mut::<4>().0 {
                 p[3] = (f64::from(p[3]) * fade + 0.5) as u8;
             }
+            fill_piece = Some(out.len());
             out.push(r);
         }
     }
-    // The outlines, outside the letters.
+    // The outlines, outside the letters: with the fill's piece they make one
+    // (`add_pieces`).
     if let Some(r) = paint_rims(engine, request, rasterizer, keep)? {
         if let Some(t) = this.as_mut() {
             t.draw(&r);
         }
-        out.push(r);
+        match fill_piece {
+            Some(i) if i + 1 == out.len() => {
+                let f = out.pop().ok_or(Error::BadSpec)?;
+                out.push(add_pieces(f, r)?);
+            }
+            _ => out.push(r),
+        }
     }
     Ok(Glyphs {
         rasters: out,
         whole_fill,
         outside,
         bevels,
+    })
+}
+
+/// The letters' fill and their outlines cut to outside it (`paint_rims`)
+/// share no coverage: on the letters' edge a pixel is part one and part the
+/// other. Laid one over the other, that pixel would let the page through (a
+/// fill at alpha `a` under outlines at `1 - a` covers `1 - a + a * a`, three
+/// quarters at a half), a seam round every letter that the box painted in
+/// one job, fill over whole outlines, never had. So they are one piece:
+/// their premultiplied colours added, as one shape of two colours is. A
+/// pixel only one of them covers keeps its bytes.
+fn add_pieces(a: Raster, b: Raster) -> Result<Raster, Error> {
+    let bound = |r: &Raster| IBox {
+        x0: r.x,
+        y0: r.y,
+        x1: r.x + r.width as i32,
+        y1: r.y + r.height as i32,
+    };
+    let (ba, bb) = (bound(&a), bound(&b));
+    if bb.is_empty() {
+        return Ok(a);
+    }
+    if ba.is_empty() {
+        return Ok(b);
+    }
+    let u = ba.union(&bb);
+    let (w, h) = (u.width(), u.height());
+    let n = w.checked_mul(h).ok_or(Error::BadSpec)?;
+    if n > MAX_PIXELS {
+        return Err(Error::BadSpec);
+    }
+    let mut data = Vec::new();
+    super::budget::reserve_raw(&mut data, n * 4)?;
+    data.resize(n * 4, 0u8);
+    let copy = |data: &mut [u8], r: &Raster, add: bool| {
+        let rw = r.width as usize;
+        for y in 0..r.height as usize {
+            let row = (r.y - u.y0) as usize + y;
+            for x in 0..rw {
+                let s = &r.data[(y * rw + x) * 4..(y * rw + x) * 4 + 4];
+                if s[3] == 0 {
+                    continue;
+                }
+                let i = (row * w + (r.x - u.x0) as usize + x) * 4;
+                let d = &mut data[i..i + 4];
+                if !add || d[3] == 0 {
+                    d.copy_from_slice(s);
+                    continue;
+                }
+                let (da, sa) = (f32::from(d[3]) / 255.0, f32::from(s[3]) / 255.0);
+                let alpha = (da + sa).min(1.0);
+                for c in 0..3 {
+                    let v = (f32::from(d[c]) * da + f32::from(s[c]) * sa) / (da + sa);
+                    d[c] = (v + 0.5).clamp(0.0, 255.0) as u8;
+                }
+                d[3] = (alpha * 255.0 + 0.5) as u8;
+            }
+        }
+    };
+    copy(&mut data, &a, false);
+    copy(&mut data, &b, true);
+    Ok(Raster {
+        x: u.x0,
+        y: u.y0,
+        width: w as u32,
+        height: h as u32,
+        data,
     })
 }
 

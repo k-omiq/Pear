@@ -36,7 +36,7 @@
 
   import { untrack, flushSync } from 'svelte';
   import { resizeBoxMath } from './resize-math.js';
-  import { sizingOf, instanceOn } from './data.js';
+  import { sizingOf, instanceOn, stylePatterns, outlineBands } from './data.js';
   import { record } from './editor/history.svelte.js';
   import {
     createFieldUndo,
@@ -47,6 +47,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
+  import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
   import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
     strokeBands,
@@ -67,15 +68,17 @@
     resolveShadow,
     shadowSigma,
     usesBackdrop,
+    patternFillStyle,
   } from './text-paint.js';
   import { pageArtSrc, artImage, artReady } from './page-art.svelte.js';
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
+  import { meshWarper } from './warp-paint.js';
   import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords } from './contain.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
-  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, pictureDragPx, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture, requestBoxPicture, pictureWorkerReady, schedulePicture, unschedulePicture } from './editor/box-picture.js';
+  import { PICTURE_MAX_PX, PICTURE_DRAG_PX, pictureDragPx, PICTURE_OFF, pictureScale, pictureKey, pageUnderKey, pageSheet, pageGradientKey, pictureCss, pageCorner, paintBoxPicture, paintPictureTexture, pictureTexture, presentPicture, requestBoxPicture, pictureWorkerReady, schedulePicture, unschedulePicture } from './editor/box-picture.js';
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
@@ -84,6 +87,7 @@
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
   import { sfxLive } from './sfx-live.svelte.js';
+  import { crispFor } from './text-edges.svelte.js';
   import { editLive } from './edit-live.svelte.js';
   import { prefs } from './prefs.svelte.js';
   import LockChip from './LockChip.svelte';
@@ -166,10 +170,11 @@
   // and false the moment that picture's paint throws: the box is then its
   // text in the document, in the same editable, with the same caret.
   const typing = $derived(editing && engineShown && typed !== null);
-  // Device px per page px the picture is painted at: one texture pixel per
-  // device pixel at this zoom on this display (less for a box over the pixel
-  // budget - `PICTURE_MAX_PX`).
-  const pictureRes = $derived(enginePaints ? pictureScale(z, displayScale(), s.rotation) : 0);
+  // Texture px per page px the picture is painted at: the same at every zoom
+  // (`pictureScale`), so a zoom repaints nothing and only shows the kept
+  // picture again (`presentPic`). Less for a box over the pixel budget
+  // (`PICTURE_MAX_PX`).
+  const pictureRes = $derived(enginePaints ? pictureScale(s.rotation) : 0);
   // WHILE A HANDLE IS RESIZING THE BOX every frame of the drag is a repaint,
   // and a frame has no time for megapixels. So while moves are arriving
   // (`resizing`, set by the drag in `startTransform`) the picture is painted
@@ -495,7 +500,7 @@
   // blur, the smear and the roughening are run over it (see `paintInk`).
   const inkKey = $derived(
     inkActive(s.ink)
-      ? JSON.stringify([s.ink, s.strokes, s.shadows, s.blur, s.motionBlur, s.roughen, inkNoise]) +
+      ? JSON.stringify([s.ink, s.strokeEffects, s.shadows, s.blur, s.motionBlur, s.roughen, inkNoise]) +
           `|${box.w}|${box.h}|${z}|${lightKey}`
       : '',
   );
@@ -657,9 +662,9 @@
   //
   // With the Rust engine drawing, this is how EVERY box at rest is shown
   // (`engineShown`): the same canvas, the same effect, the same release. Two
-  // things differ, both in `paintWarp` and the key: the picture is painted at
-  // the display's scale rather than at 2 and stretched, and it is not painted
-  // at all for a box nobody can see (`pictureOn`).
+  // things differ, both in `paintWarp` and the key: the picture is painted
+  // once and kept, a zoom only shows it again (`presentPic`), and it is not
+  // painted at all for a box nobody can see (`pictureOn`).
   const warped = $derived(warpActive(s, box.w, box.h));
   const pictured = $derived((warped || engineShown) && !failed);
   let warpEl = $state(null);
@@ -708,11 +713,14 @@
   // the picture is painted from: a move, a turn or a mirror repaints it live.
   const gradientSheet = $derived(engineWanted ? pageSheet(box, pg, blendsPage ? artImage(artSrc) : null) : null);
   const pageGradLive = $derived(pageGradientKey(box, gradientSheet));
+  // Every pattern the box paints counts: the old fill's, the Pattern
+  // Overlay's, a pattern stroke's, the bevel's texture (`stylePatterns`).
   const patternTileLive = $derived.by(() => {
-    const p = s.pattern;
-    if (!p?.on) return '';
-    const tile = p.kind === 'picked' ? `t${patternTiles.version}` : '';
-    const at = p.anchor === 'page' ? `@${box.x},${box.y}` : '';
+    const pats = stylePatterns(s).filter((p) => p.on || p !== s.pattern);
+    const tile = pats.some((p) => p.kind === 'picked') ? `t${patternTiles.version}` : '';
+    // A bevel texture off Link with Layer is laid from the page's corner too.
+    const paged = pats.some((p) => p.anchor === 'page') || (s.bevel?.on && s.bevel.texture?.on && s.bevel.texture.link === false);
+    const at = paged ? `@${box.x},${box.y}` : '';
     return tile + at;
   });
   // A box dragged by the pointer keeps both until it is let go (`placeHeld`,
@@ -742,6 +750,8 @@
             fonts: app.fontsVersion,
             tiles: patternTileKey,
             light: lightKey,
+            // Crisp letter edges, which the painter reads from the setting.
+            edges: crispFor(s) ? 'crisp' : '',
             under: underKey,
             page: pageGradKey,
           })
@@ -768,14 +778,34 @@
   // What the last paint of this box's picture cost, ms a pixel painted (0
   // until one is timed): the next live paint's budget (`pictureDragPx`).
   let paintCost = 0;
-  // An upright box is set on whole device pixels (`pictureCss`), so it is
-  // painted moved by the fraction of a pixel its corner falls short of one:
-  // where the box's top-left lands on the screen now, device px.
-  function paintPlace() {
+
+  // THE KEPT PICTURE. What the last paint made, `{ canvas, ox, oy, cw, ch,
+  // ss }` (`paintBoxPicture`), held off screen at its own resolution so a zoom
+  // can show it again without painting (`presentPic`). Not state: nothing
+  // reads it but the two functions below and the paints. `borrowed` is the
+  // gizmo's texture, which the gizmo lets go of itself.
+  let warpPic = null;
+  function releasePic() {
+    if (warpPic && !warpPic.borrowed) {
+      warpPic.canvas.width = 0;
+      warpPic.canvas.height = 0;
+    }
+    warpPic = null;
+  }
+  // The kept picture onto the canvas on screen at this zoom, and where the
+  // canvas goes (`warpGeom`, which `pictureCss` places it by). An upright,
+  // unmirrored box is set on whole device pixels (`presentPicture`).
+  function presentPic(el) {
+    if (!warpPic || !el) return;
     const page = pageCorner(pageFrameEl);
-    const dpr = displayScale();
-    const corner = page && !s.rotation && !mirror ? { x: (page.x + box.x * z) * dpr, y: (page.y + box.y * z) * dpr } : null;
-    return { page, corner };
+    const at = !s.rotation && !mirror ? box : null;
+    warpGeom = presentPicture(el, warpPic, { z, dpr: displayScale(), page, at, turned: !!(s.rotation % 90) });
+    keepReach(warpGeom);
+  }
+  function keepPic(el, pic) {
+    if (warpPic && warpPic.canvas !== pic.canvas) releasePic();
+    warpPic = pic;
+    presentPic(el);
   }
   // An IME's text is not the box's until the composition ends, so the box
   // is painted with it standing in for its own.
@@ -786,6 +816,9 @@
   // not make.
   function paintWarp(el, tips, key = null, worker = true) {
     if (!engineShown) {
+      // The old paint draws straight into the canvas: the engine's kept
+      // picture, if there was one, is nobody's now.
+      releasePic();
       warpGeom = paintWarpedBox(el, box, pg, z, tips);
       return;
     }
@@ -807,17 +840,15 @@
     const shown = warpGeom ? warpGeom.cw * z * warpGeom.ch * z : 0;
     const budget = live || keying ? pictureDragPx(paintCost, shown) : PICTURE_MAX_PX;
     const of = paintedBox();
-    const { page, corner } = paintPlace();
     const t0 = performance.now();
-    const g = paintBoxPicture(el, of, pg, pictureRes, tips, budget, pictureRes / z, corner, pageUnder(), gradientSheet);
-    const painted = el.width * el.height;
+    const pic = paintBoxPicture(of, pg, pictureRes, tips, budget, pageUnder(), gradientSheet);
+    const painted = pic.canvas.width * pic.canvas.height;
     if (painted > 0) paintCost = (performance.now() - t0) / painted;
     // Lower than asked for under the drag's budget: to be painted again when
     // the drag settles (`settleResize`), or the keys do (`settleKeys`).
-    dragSoft = live && g.ss < pictureRes;
-    keySoft = keying && g.ss < pictureRes;
-    warpGeom = { ...g, page };
-    keepReach(warpGeom);
+    dragSoft = live && pic.ss < pictureRes;
+    keySoft = keying && pic.ss < pictureRes;
+    keepPic(el, pic);
   }
 
   // ---- the full paint, in the paint worker ----
@@ -851,8 +882,7 @@
   // go, or null when the slot is not needed.
   function sendFull(el, tips, key, seq) {
     if (!fullWanted(el, key, seq)) return null;
-    const { page, corner } = paintPlace();
-    const req = requestBoxPicture(paintedBox(), pg, pictureRes, tips, PICTURE_MAX_PX, pictureRes / z, corner, pageUnder(), gradientSheet);
+    const req = requestBoxPicture(paintedBox(), pg, pictureRes, tips, PICTURE_MAX_PX, pageUnder(), gradientSheet);
     if (!req) {
       // Not one for the worker after all (a caption, the worker gone).
       tryPaint(el, tips, key, false);
@@ -873,13 +903,12 @@
           tryPaint(el, tips, key, false);
         } else {
           try {
-            const g = req.apply(el, res);
-            const painted = el.width * el.height;
+            const pic = req.apply(res);
+            const painted = pic.canvas.width * pic.canvas.height;
             if (painted > 0) paintCost = (req.prepMs + (res.ms || 0)) / painted;
             dragSoft = false;
             keySoft = false;
-            warpGeom = { ...g, page };
-            keepReach(warpGeom);
+            keepPic(el, pic);
             failSaid = false;
           } catch (err) {
             paintFailedWith(el, key, err);
@@ -920,6 +949,7 @@
   function paintFailedWith(el, key, err) {
     el.width = 0;
     el.height = 0;
+    releasePic();
     warpGeom = null;
     warpTips = null;
     warpSeq++;
@@ -951,29 +981,53 @@
     warpTex.canvas.height = 0;
     warpTex = null;
   };
+  let warpGpu = null;
+  let warpFrameAsk = 0;
+  function paintWarpFrame() {
+    // No canvas yet on the first move of a mesh that was still identity when
+    // the pointer went down: the box only becomes a picture once the mesh
+    // deforms, and the effect below paints that first frame as it mounts.
+    if (!warpTex || !warpLive) return;
+    if (engineShown) keepPic(warpLive, paintPictureTexture(warpTex, box, undefined, warpGpu));
+    else warpGeom = paintWarpedTexture(warpLive, warpTex, box, z, warpGpu);
+  }
   const warpPainter = {
     begin() {
+      // The kept picture may be the last gesture's texture (`borrowed`).
+      if (warpPic?.borrowed) warpPic = null;
+      warpGpu?.release();
+      warpGpu = null;
       releaseWarpTex();
       // Unbent, even where the painter bends the letters itself: a frame of
       // the drag is then one texture warp (a few ms) and not a repaint of
       // every glyph and band. The bent letters are painted once, when the
       // drag ends (`end` forgets what was drawn).
       warpTex = engineShown
-        ? pictureTexture(box, pg, warpTips, pictureRes, undefined, true, null, null, gradientSheet)
+        ? pictureTexture(box, pg, warpTips, pictureRes, undefined, true, null, gradientSheet)
         : renderBoxTexture(box, pg, warpTips);
+      // The texture goes to the GPU once, and every frame of the drag is one
+      // draw call of the mesh over it (`meshWarper`); null where WebGL is not
+      // to be had, and the frames are drawn on the canvas as before.
+      warpGpu = warpTex && !warpTex.warped ? meshWarper(warpTex.canvas) : null;
       warpDragging = true;
     },
+    // A pointer can move several times in one frame (a 120 Hz digitiser, a
+    // busy main thread), and every move changes the mesh: the frame is drawn
+    // once, from the latest mesh, when the screen is next drawn.
     frame() {
-      // No canvas yet on the first move of a mesh that was still identity when
-      // the pointer went down: the box only becomes a picture once the mesh
-      // deforms, and the effect below paints that first frame as it mounts.
-      if (!warpTex || !warpLive) return;
-      warpGeom = engineShown
-        ? { ...paintPictureTexture(warpLive, warpTex, box), page: warpGeom?.page }
-        : paintWarpedTexture(warpLive, warpTex, box, z);
-      if (engineShown) keepReach(warpGeom);
+      if (warpFrameAsk) return;
+      if (typeof requestAnimationFrame !== 'function') return paintWarpFrame();
+      warpFrameAsk = requestAnimationFrame(() => {
+        warpFrameAsk = 0;
+        paintWarpFrame();
+      });
     },
     end() {
+      if (warpFrameAsk) cancelAnimationFrame(warpFrameAsk);
+      warpFrameAsk = 0;
+      if (warpPic?.borrowed) warpPic = null;
+      warpGpu?.release();
+      warpGpu = null;
       releaseWarpTex();
       // Forget what was drawn, so the effect repaints from the committed (or
       // cancelled) style rather than trusting the last frame of the drag.
@@ -1000,6 +1054,7 @@
         warpLive.height = 0;
         warpLive = null;
       }
+      releasePic();
       warpDrawn = '';
       warpGeom = null;
       warpTips = null;
@@ -1022,7 +1077,8 @@
     // one costs more, because the paint is the exporter's whole composite run
     // through the mesh. The key is NOT banked here, unlike the gizmo drag above:
     // nothing else is painting this canvas, so the settle has to find the key
-    // still stale and repaint.
+    // still stale and repaint. (The engine's picture is not in this: its key
+    // has no zoom in it, and the zoom only shows the kept picture again.)
     // Only a canvas that HOLDS a picture is left to be stretched: one that was
     // let go for being off screen has nothing to stretch, and zooming out is
     // exactly what brings it back into view.
@@ -1034,6 +1090,7 @@
       // pixels do not, and a settle still in flight must not paint them back.
       el.width = 0;
       el.height = 0;
+      releasePic();
       warpGeom = null;
       warpTips = null;
       warpSeq++;
@@ -1059,12 +1116,33 @@
       () => {},
     );
   });
+  // A ZOOM SETTLED, OR THE DISPLAY CHANGED: the kept picture shown again at
+  // the new size. A resample, never a paint (`presentPicture`). Not while a
+  // pinch is still moving: the page is scaled as one picture then
+  // (Canvas.svelte), and the box is shown again once, when it settles. A turn
+  // or a mirror, which CSS applies and which repaint nothing, changes how the
+  // canvas is set (on device pixels or stretched), so it shows it again too.
+  $effect(() => {
+    // Only with the engine's picture shown: with the switch off nothing
+    // listens to the display at all (display-scale.svelte.js).
+    if (!engineShown) return;
+    const zoom = z;
+    const dpr = displayScale();
+    s.rotation;
+    mirror;
+    const settling = app.zoomLive;
+    if (settling || !zoom || !dpr) return;
+    untrack(() => {
+      if (warpLive && warpPic && warpDrawn && warpDrawn !== PICTURE_OFF) presentPic(warpLive);
+    });
+  });
   $effect(() => () => {
     if (warpLive) {
       warpLive.width = 0;
       warpLive.height = 0;
       warpLive = null;
     }
+    releasePic();
     // A gesture's cached texture is a supersampled footprint; a box destroyed
     // mid-drag must not be the last thing holding one. The two flags go with
     // it: the gizmo's own teardown ends the gesture and calls `end()`, but this
@@ -1154,7 +1232,26 @@
   // last frame as far as the picture is concerned (`settleResize`).
   // A locked box has none: nothing on it moves until it is unlocked.
   const locked = $derived(boxLocked(box));
-  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn && !locked);
+  // ---- the curve path's handles ----
+  //
+  // The path is edited in its own mode: while the Warp sub-tab is in front and
+  // the path is on, its anchors and handles are the box's only controls. The
+  // resize handles stand down for it, as they do for the mesh (below): a path
+  // runs edge to edge, so its two end anchors sit exactly on the side handles,
+  // and two controls in one place is a coin toss over which one a press gets.
+  // The box still MOVES by its body.
+  const pathGizmoOn = $derived(
+    selected &&
+      !editing &&
+      !bulkOn &&
+      !brushArmed() &&
+      s.path?.on === true &&
+      (s.path.pts?.length ?? 0) >= 2 &&
+      inspectorTab.id === 'effects' &&
+      effectsSubTab.id === 'warp' &&
+      !boxLocked(box),
+  );
+  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn && !pathGizmoOn && !locked);
   // The end of the handle gesture in flight (`startTransform`), or null.
   let transformEnd = null;
   $effect(() => {
@@ -1216,7 +1313,7 @@
   // is why offsetting it cannot shift the layers stacked on it.
   const layers = $derived.by(() => {
     const out = [];
-    const bands = strokeBands(s.strokes);
+    const bands = strokeBands(outlineBands(s));
     const cut = !!s.noFill;
     // shadows[0] paints on top of shadows[1], so the list is walked backwards.
     for (let i = cast.length - 1; i >= 0; i--) {
@@ -1266,7 +1363,7 @@
   const hollowMatte = (line) => `color:#000;-webkit-text-stroke:${line * z}px #fff;paint-order:stroke fill;`;
   const hollowDefs = $derived.by(() => {
     if (!s.noFill || engineShown) return [];
-    const bands = strokeBands(s.strokes);
+    const bands = strokeBands(outlineBands(s));
     if (!bands.length) return [];
     return [
       ...bands.map((b, i) => ({ id: `${hollowId}-b${i}`, color: b.color, opacity: b.opacity })),
@@ -1294,11 +1391,11 @@
   // quantised to an eighth: the tile is a raster CSS resamples anyway, so a
   // hair's difference in the resolution it was drawn at cannot be seen.
   let tileMemo = { key: '', url: '' };
-  function patternTileUrl() {
+  function patternTileUrl(fs) {
     const qz = Math.max(0.125, Math.round(z * 8) / 8);
-    const key = JSON.stringify([s.pattern, s.size, qz]);
+    const key = JSON.stringify([fs.pattern, fs.size, qz]);
     if (tileMemo.key === key) return tileMemo.url;
-    const cnv = patternTileCanvas(s, TILE_SS * qz);
+    const cnv = patternTileCanvas(fs, TILE_SS * qz);
     const url = cnv ? cnv.toDataURL() : '';
     tileMemo = { key, url };
     return url;
@@ -1308,10 +1405,12 @@
     // No fill wins over both. The layer stays, because the first layer of the
     // stack is the one that gives the block its size.
     if (s.noFill) return { css: 'color:transparent;', arc: 'color:transparent;', line: '', bg: '' };
-    if (s.pattern.on) {
-      const tile = patternTileUrl();
+    // The DOM lays no layer effects: a plain Pattern Overlay is the fill here.
+    const fs = patternFillStyle(s);
+    if (fs.pattern.on) {
+      const tile = patternTileUrl(fs);
       if (tile) {
-        const px = patternTilePx(s) * z;
+        const px = patternTilePx(fs) * z;
         const bg = `background-image:url(${tile});background-repeat:repeat;${CLIP}`;
         return {
           css: `color:transparent;${bg}background-size:${px}px ${px}px;`,
@@ -1340,7 +1439,7 @@
   // editor shows the outermost stroke and the shadows as CSS can state them on a
   // single element and the full paint comes back the moment the edit ends.
   const editStyle = $derived.by(() => {
-    const bands = strokeBands(s.strokes);
+    const bands = strokeBands(outlineBands(s));
     // No fill is typed as its outermost stroke with nothing in it, and the
     // caret, which takes the text's colour, is given the one the fill had.
     // With no stroke either there would be nothing to see of what is typed,
@@ -1854,17 +1953,27 @@
 
   // Drag one bezier-path anchor or handle. `which` is 'a' (the anchor itself),
   // 'in' or 'out'. Dragging a handle mirrors its partner, keeping the curve
-  // smooth through the anchor in a single drag.
+  // smooth through the anchor in a single drag; with Alt held the partner stays
+  // put, which makes a cusp. A handle drag makes its anchor the user's own
+  // (`auto` off); smooth anchors (bezier-path.js) re-fit to every move.
+  // Alt-click on an anchor removes it, like the right button does.
   // The pointer delta is inverse-rotated into box space like a resize is, and
   // the gesture records one style edit at the end like the rotation handle.
   // Deltas rather than `maskLocal` points, so the drag needs no page frame.
-  function startPathDrag(e, i, which) {
+  // `styleBefore` is passed when the gesture began earlier - a press on the
+  // line adds the anchor and then drags it, as one undo step.
+  function startPathDrag(e, i, which, styleBefore = null) {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    if (which === 'a' && e.altKey && !styleBefore) {
+      removeAnchor(i);
+      return;
+    }
     e.currentTarget.setPointerCapture?.(e.pointerId);
     focusPage(pg);
     settleEdits();
+    pathActive = i;
     const zz = app.zoom;
     const pid = e.pointerId;
     const sx = e.clientX,
@@ -1872,11 +1981,13 @@
     const pt = s.path.pts[i];
     if (!pt) return;
     const o = { x: pt.x, y: pt.y, ix: pt.ix, iy: pt.iy, ox: pt.ox, oy: pt.oy };
-    const styleBefore = cloneStyle(box.style);
+    styleBefore ??= cloneStyle(box.style);
     const pageId = pg.id;
     const rad = (-(s.rotation || 0) * Math.PI) / 180;
     const cos = Math.cos(rad),
       sin = Math.sin(rad);
+    // The handle dragged and its partner, as [x key, y key] pairs.
+    const [own, other] = which === 'in' ? [['ix', 'iy'], ['ox', 'oy']] : [['ox', 'oy'], ['ix', 'iy']];
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
       const sdx = (ev.clientX - sx) / zz,
@@ -1885,20 +1996,22 @@
       // curve is drawn flipped (`overlayMirror`), so a step right on screen is
       // a step left in the path on a box flipped left-right.
       const [dx, dy] = flipDelta([sdx * cos - sdy * sin, sdx * sin + sdy * cos], s);
+      const pts = s.path.pts.map((p) => ({ ...p }));
+      const p = pts[i];
+      if (!p) return;
       if (which === 'a') {
-        pt.x = o.x + dx;
-        pt.y = o.y + dy;
-      } else if (which === 'in') {
-        pt.ix = o.ix + dx;
-        pt.iy = o.iy + dy;
-        pt.ox = -pt.ix;
-        pt.oy = -pt.iy;
+        p.x = o.x + dx;
+        p.y = o.y + dy;
       } else {
-        pt.ox = o.ox + dx;
-        pt.oy = o.oy + dy;
-        pt.ix = -pt.ox;
-        pt.iy = -pt.oy;
+        delete p.auto;
+        p[own[0]] = o[own[0]] + dx;
+        p[own[1]] = o[own[1]] + dy;
+        if (!ev.altKey) {
+          p[other[0]] = -p[own[0]];
+          p[other[1]] = -p[own[1]];
+        }
       }
+      s.path.pts = smoothPath(pts);
       markUnsaved();
     };
     const ac = new AbortController();
@@ -1906,19 +2019,66 @@
       if (ev.pointerId !== pid) return;
       live.delete(ac);
       ac.abort();
-      const after = cloneStyle(box.style);
-      if (JSON.stringify(after.path) !== JSON.stringify(styleBefore.path)) {
-        // The glyphs follow the curve, so where they land decides the flag -
-        // and nothing else asks: the fit effect does not read the path. Once,
-        // at the end, as the mesh gestures do.
-        reviewBox(box, pg);
-        record({ t: 'style', pageId, boxId: box.id, before: styleBefore, after });
-      }
+      commitPath(styleBefore, pageId);
     };
     live.add(ac);
     document.addEventListener('pointermove', move, { signal: ac.signal });
     document.addEventListener('pointerup', end, { signal: ac.signal });
     document.addEventListener('pointercancel', end, { signal: ac.signal });
+  }
+
+  // One path edit, recorded against the style it started from. Nothing is
+  // recorded when the path came back the same (a press with no drag).
+  function commitPath(styleBefore, pageId = pg.id) {
+    const after = cloneStyle(box.style);
+    if (JSON.stringify(after.path) === JSON.stringify(styleBefore.path)) return;
+    // The glyphs follow the curve, so where they land decides the flag - and
+    // nothing else asks: the fit effect does not read the path. Once, at the
+    // end, as the mesh gestures do.
+    reviewBox(box, pg);
+    record({ t: 'style', pageId, boxId: box.id, before: styleBefore, after });
+  }
+
+  // The anchor last pressed: its handles show even when it is smooth. Every
+  // corner and hand-set anchor shows its handles always; a smooth one's are
+  // worked out for it, so a wave of them stays a clean line of dots.
+  let pathActive = $state(-1);
+
+  // A press on the curve itself adds an anchor there - the curve does not move,
+  // the split is exact - and the same press drags it, so one gesture pulls a
+  // new bump out of the line.
+  function onPathLinePointerDown(e) {
+    if (e.button !== 0 || !pageFrameEl) return;
+    const [x, y] = maskLocal(e);
+    const hit = nearestOnPath(s.path.pts, x, y);
+    if (hit.seg < 0) return;
+    const styleBefore = cloneStyle(box.style);
+    const res = splitPath(s.path.pts, hit.seg, hit.t);
+    if (res.index < 0) return;
+    s.path.pts = res.pts;
+    markUnsaved();
+    startPathDrag(e, res.index, 'a', styleBefore);
+  }
+
+  // Double-click flips an anchor between smooth and a sharp corner.
+  function onAnchorDblClick(e, i) {
+    e.preventDefault();
+    e.stopPropagation();
+    const styleBefore = cloneStyle(box.style);
+    s.path.pts = toggleSmooth(s.path.pts, i);
+    markUnsaved();
+    commitPath(styleBefore);
+  }
+
+  // Remove one anchor (the path keeps at least two).
+  function removeAnchor(i) {
+    const next = removePathAnchor(s.path.pts, i);
+    if (next === s.path.pts) return;
+    const styleBefore = cloneStyle(box.style);
+    s.path.pts = next;
+    pathActive = -1;
+    markUnsaved();
+    commitPath(styleBefore);
   }
 
   // ---- mask drawing ----
@@ -2195,22 +2355,16 @@
     return out;
   });
 
-  // Right-click on a path anchor removes it (the path keeps at least two).
+  // Right-click on a path anchor removes it.
   function onAnchorContextMenu(e, i) {
     e.preventDefault();
     e.stopPropagation();
-    const next = removePathAnchor(s.path.pts, i);
-    if (next === s.path.pts) return;
-    const styleBefore = cloneStyle(box.style);
-    s.path.pts = next;
-    markUnsaved();
-    reviewBox(box, pg);
-    record({ t: 'style', pageId: pg.id, boxId: box.id, before: styleBefore, after: cloneStyle(box.style) });
+    removeAnchor(i);
   }
 
   // The gizmo's polyline, in zoomed box-local px.
   const gizmoLine = $derived.by(() => {
-    if (!(selected && !editing && !bulkOn && s.path?.on && (s.path.pts?.length ?? 0) >= 2)) return null;
+    if (!pathGizmoOn) return null;
     return pathPolyline(s.path.pts, z)
       .map((p) => `${p[0]},${p[1]}`)
       .join(' ');
@@ -3367,18 +3521,46 @@
   </div>
 
   {#if gizmoLine}
-    <!-- The path gizmo: the baked curve, an anchor dot per point and its two
-         handle dots, all draggable. Outside the clip wrapper on purpose - the
-         curve must stay visible where the clip has cropped the letters - and
-         so it carries the box's flip itself, as the curve the letters follow does. -->
+    <!-- The path gizmo: the baked curve and an anchor per point, round when
+         smooth and square when a corner, with the handles of corners, of
+         hand-set anchors and of the anchor last pressed. Every control has a
+         wide invisible hit shape over a small visible mark, and the curve
+         itself takes a press (add an anchor there). Outside the clip wrapper on
+         purpose - the curve must stay visible where the clip has cropped the
+         letters - and so it carries the box's flip itself, as the curve the
+         letters follow does. -->
     <svg class="path-gizmo" width={box.w * z} height={box.h * z} style={overlayMirror} aria-hidden="true">
-      <polyline points={gizmoLine} />
+      <polyline class="pline" points={gizmoLine} />
+      <polyline class="phit" points={gizmoLine} onpointerdown={onPathLinePointerDown} />
       {#each s.path.pts as p, i (i)}
-        <line x1={p.x * z} y1={p.y * z} x2={(p.x + p.ix) * z} y2={(p.y + p.iy) * z} />
-        <line x1={p.x * z} y1={p.y * z} x2={(p.x + p.ox) * z} y2={(p.y + p.oy) * z} />
-        <rect class="ph" x={(p.x + p.ix) * z - 4} y={(p.y + p.iy) * z - 4} width="8" height="8" onpointerdown={(e) => startPathDrag(e, i, 'in')} />
-        <rect class="ph" x={(p.x + p.ox) * z - 4} y={(p.y + p.oy) * z - 4} width="8" height="8" onpointerdown={(e) => startPathDrag(e, i, 'out')} />
-        <circle class="pa" cx={p.x * z} cy={p.y * z} r="5" onpointerdown={(e) => startPathDrag(e, i, 'a')} oncontextmenu={(e) => onAnchorContextMenu(e, i)} />
+        {#if !p.auto || i === pathActive}
+          {#if i > 0 && Math.hypot(p.ix, p.iy) * z > 1}
+            <line x1={p.x * z} y1={p.y * z} x2={(p.x + p.ix) * z} y2={(p.y + p.iy) * z} />
+            <circle class="ph" cx={(p.x + p.ix) * z} cy={(p.y + p.iy) * z} r="3.5" />
+            <circle class="hit" cx={(p.x + p.ix) * z} cy={(p.y + p.iy) * z} r="9" onpointerdown={(e) => startPathDrag(e, i, 'in')} />
+          {/if}
+          {#if i < s.path.pts.length - 1 && Math.hypot(p.ox, p.oy) * z > 1}
+            <line x1={p.x * z} y1={p.y * z} x2={(p.x + p.ox) * z} y2={(p.y + p.oy) * z} />
+            <circle class="ph" cx={(p.x + p.ox) * z} cy={(p.y + p.oy) * z} r="3.5" />
+            <circle class="hit" cx={(p.x + p.ox) * z} cy={(p.y + p.oy) * z} r="9" onpointerdown={(e) => startPathDrag(e, i, 'out')} />
+          {/if}
+        {/if}
+      {/each}
+      {#each s.path.pts as p, i (i)}
+        {#if p.auto}
+          <circle class="pa" class:active={i === pathActive} cx={p.x * z} cy={p.y * z} r="5" />
+        {:else}
+          <rect class="pa" class:active={i === pathActive} x={p.x * z - 4.5} y={p.y * z - 4.5} width="9" height="9" />
+        {/if}
+        <circle
+          class="hit anchor"
+          cx={p.x * z}
+          cy={p.y * z}
+          r="11"
+          onpointerdown={(e) => startPathDrag(e, i, 'a')}
+          ondblclick={(e) => onAnchorDblClick(e, i)}
+          oncontextmenu={(e) => onAnchorContextMenu(e, i)}
+        />
       {/each}
     </svg>
   {/if}
@@ -3550,14 +3732,19 @@
     pointer-events: none;
   }
   /* The path gizmo. The svg itself lets clicks through to the box; only the
-     anchors and handles take the pointer. High-contrast colours so the curve
-     and handles read well on both white pages and dark art. */
-  .path-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-  .path-gizmo polyline { fill: none; stroke: #00d5e0; stroke-width: 1.5; }
+     hit shapes take the pointer, and they are drawn wider than the marks under
+     them so a point is easy to catch at any zoom. High-contrast colours so the
+     curve and handles read on both white pages and dark art. On top of the box's
+     other overlays (z-index), and the resize handles stand down meanwhile. */
+  .path-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 5; }
+  .path-gizmo .pline { fill: none; stroke: #00d5e0; stroke-width: 1.5; }
+  .path-gizmo .phit { fill: none; stroke: transparent; stroke-width: 14; stroke-linecap: round; pointer-events: stroke; cursor: copy; }
   .path-gizmo line { stroke: #663399; stroke-width: 1; }
-  .path-gizmo .pa, .path-gizmo .ph { pointer-events: all; cursor: grab; }
-  .path-gizmo .pa { fill: #e33; stroke: #fff; stroke-width: 1; }
-  .path-gizmo .ph { fill: #fff; stroke: #663399; stroke-width: 1; }
+  .path-gizmo .hit { fill: transparent; pointer-events: all; cursor: grab; }
+  .path-gizmo .hit:active { cursor: grabbing; }
+  .path-gizmo .pa { fill: #e33; stroke: #fff; stroke-width: 1.5; }
+  .path-gizmo .pa.active { stroke: #00d5e0; stroke-width: 2.5; }
+  .path-gizmo .ph { fill: #fff; stroke: #663399; stroke-width: 1.5; }
   /* The mask overlay. Shape outlines are hints, not paint: red for exclusion
      (this ink goes away), teal for inclusion (this ink stays). The capture
      rect is the drawing surface while a tool is armed; it reaches past the

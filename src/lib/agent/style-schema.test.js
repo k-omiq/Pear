@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { defaultStyle, normalizeStyle, normalizeStroke, normalizeShadow, normalizeInnerShadow, normalizeOverlay, normalizeSfx, newGradientOverlay, newStrokeEffect } from '../data.js';
+import { defaultStyle, normalizeStyle, normalizeStrokeEffect, normalizeShadow, normalizeInnerShadow, normalizeOverlay, normalizeSfx, newGradientOverlay, newStrokeEffect, FX_INSTANCES_MAX } from '../data.js';
 import { STYLE_SCHEMA, validateStylePatch, styleSchemaText } from './style-schema.js';
 import { applyStylePatch } from '../style-patch.js';
 
@@ -45,7 +45,7 @@ function entries(fields, path = '') {
 
 const allEntries = entries(STYLE_SCHEMA);
 const numericEntries = allEntries.filter(([, e]) => e.type === 'number' || e.type === 'integer');
-const stroke = { color: '#fff', width: 3, opacity: 1 };
+const stroke = { color: '#fff', size: 3, position: 'outside', opacity: 1 };
 const shadow = { x: -2, y: 4, size: 3, color: '#1234', opacity: 0.5 };
 const stop = { color: '#fff', pos: 0, opacity: 1 };
 const anchor = { x: 10, y: 20, ix: -5, iy: 0, ox: 5, oy: 0 };
@@ -82,7 +82,7 @@ describe('STYLE_SCHEMA drift', () => {
 
   it('covers item fields even for arrays whose defaults are empty', () => {
     for (const [key, value] of [
-      ['strokes', normalizeStroke({})], ['shadows', normalizeShadow({})],
+      ['shadows', normalizeShadow({})],
       ['innerShadows', normalizeInnerShadow({})], ['colorOverlays', normalizeOverlay({})],
       ['gradientOverlays', newGradientOverlay()], ['strokeEffects', newStrokeEffect()],
       ['sfx.paths', normalizeSfx({ paths: [sfxPath] }).paths[0]],
@@ -196,8 +196,8 @@ describe('validateStylePatch', () => {
 
   it('accepts exactly the CSS hex lengths allowed by the normalizer', () => {
     for (const value of ['#abc', '#ABCD', '#012abc', '#0123abcd']) {
-      expect(validateStylePatch({ color: value, pattern: { fg: value }, strokes: { 0: { color: value } } })).toEqual([]);
-      expect(normalizeStroke({ color: value }).color).toBe(value);
+      expect(validateStylePatch({ color: value, pattern: { fg: value }, strokeEffects: { 0: { color: value } } })).toEqual([]);
+      expect(normalizeStrokeEffect({ color: value }).color).toBe(value);
     }
     for (const value of ['red', 'rgb(0,0,0)', 'abc', '#12', '#abcde', '#1234567', '#GGG', '', null, 123]) {
       expect(validateStylePatch({ color: value })[0]).toMatchObject({ path: 'color', error: expect.stringContaining('hex') });
@@ -225,11 +225,11 @@ describe('validateStylePatch', () => {
   });
 
   it('accepts full array replacements and partial index patches', () => {
-    expect(validateStylePatch({ strokes: [stroke], shadows: [shadow], gradient: { stops: [stop, { ...stop, pos: 1 }] } })).toEqual([]);
-    expect(validateStylePatch({ strokes: [], shadows: [], sfx: { paths: [] } })).toEqual([]);
-    expect(validateStylePatch({ strokes: { 0: { width: '+2' } }, shadows: { 2: { x: -10 } }, gradient: { stops: { 0: { pos: 0.2 } } } })).toEqual([]);
-    expect(validateStylePatch({ strokes: [{ ...stroke, width: -1 }] })[0].path).toBe('strokes[0].width');
-    expect(validateStylePatch({ strokes: [{ width: 2 }] })).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: [stroke], shadows: [shadow], gradient: { stops: [stop, { ...stop, pos: 1 }] } })).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: [], shadows: [], sfx: { paths: [] } })).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: { 0: { size: '+2' } }, shadows: { 2: { x: -10 } }, gradient: { stops: { 0: { pos: 0.2 } } } })).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: [{ ...stroke, size: -1 }] })[0].path).toBe('strokeEffects[0].size');
+    expect(validateStylePatch({ strokeEffects: [{ size: 2 }] })).toEqual([]);
     expect(validateStylePatch({ shadows: { 0: { sizee: 2 } } })[0]).toMatchObject({ path: 'shadows[0].sizee', hint: expect.stringContaining('size') });
   });
 
@@ -239,12 +239,14 @@ describe('validateStylePatch', () => {
     expect(validateStylePatch({ sfx: { paths: Array.from({ length: 5 }, () => sfxPath) } })[0].error).toContain('at most 4');
     expect(validateStylePatch({ gradient: { stops: { 7: { pos: 1 } } } })).toEqual([]);
     expect(validateStylePatch({ gradient: { stops: { 8: { pos: 1 } } } })[0].error).toContain('below 8');
-    // Strokes and shadows have no length cap in the normalizers.
-    expect(validateStylePatch({ strokes: Array.from({ length: 30 }, () => stroke) })).toEqual([]);
+    // The strokes are a Photoshop effect that comes more than once: at most
+    // FX_INSTANCES_MAX of them, as the normalizer keeps.
+    expect(validateStylePatch({ strokeEffects: Array.from({ length: FX_INSTANCES_MAX }, () => stroke) })).toEqual([]);
+    expect(validateStylePatch({ strokeEffects: Array.from({ length: FX_INSTANCES_MAX + 1 }, () => stroke) })[0].error).toContain(`at most ${FX_INSTANCES_MAX}`);
     for (const key of ['-1', '1.2', '01', 'word', '9007199254740992']) {
-      expect(validateStylePatch({ strokes: { [key]: { width: 2 } } })[0].error).toContain('non-negative integer');
+      expect(validateStylePatch({ strokeEffects: { [key]: { size: 2 } } })[0].error).toContain('non-negative integer');
     }
-    expect(validateStylePatch({ strokes: new Array(1) })).not.toEqual([]);
+    expect(validateStylePatch({ strokeEffects: new Array(1) })).not.toEqual([]);
   });
 
   it('refuses every read-only payload with its setting instructions', () => {
@@ -268,7 +270,7 @@ describe('validateStylePatch', () => {
       expect(() => { result = validateStylePatch(value); }).not.toThrow();
       expect(result.length).toBeGreaterThan(0);
     }
-    for (const value of [{ gradient: null }, { motionBlur: [] }, { strokes: 'bad' }, { shadows: { 0: null } }, { gradient: { stops: [null, 'bad'] } }]) {
+    for (const value of [{ gradient: null }, { motionBlur: [] }, { strokeEffects: 'bad' }, { shadows: { 0: null } }, { gradient: { stops: [null, 'bad'] } }]) {
       expect(() => validateStylePatch(value)).not.toThrow();
       expect(validateStylePatch(value).length).toBeGreaterThan(0);
     }
@@ -314,14 +316,7 @@ describe('normalizer numeric sanity', () => {
       // A shadow keeps its own angle only where x, y cannot say it (F48).
       if (/^(inner)?[sS]hadows\.0\.angle$/.test(path.join('.'))) Object.assign(target, { x: 0, y: 0, useGlobalLight: false });
       const normalized = normalizeStyle({ ...defaultStyle(), ...style });
-      // normalizeStroke preserves the 0 boundary; normalizeStyle then removes
-      // invisible bands. This intentional filtering is separate from clamping.
-      if (path.join('.') === 'strokes.0.width' && value === 0) {
-        expect(normalizeStroke(style.strokes[0]).width).toBe(0);
-        expect(normalized.strokes).toEqual([]);
-      } else {
-        expect(path.reduce((v, key) => v[key], normalized)).toBe(value);
-      }
+      expect(path.reduce((v, key) => v[key], normalized)).toBe(value);
     });
   }
 });
@@ -390,9 +385,10 @@ describe('styleSchemaText', () => {
   // Layer and Vector Mask Hides Effects, and to 19000 for the effect
   // gradient's opacity stops, midpoints, Smoothness, Method and Dither,
   // and to 19100 for the Photoshop stroke's Overprint.
-  it('describes every key, field and item in under 19100 characters', () => {
+  // To 19200 for the twelve pattern kinds of 2026-11-10.
+  it('describes every key, field and item in under 19200 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(19100);
+    expect(text.length).toBeLessThan(19200);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.
@@ -593,10 +589,10 @@ describe('review fixes round 2', () => {
   });
 
   it('appends an item at the index just past the end of a list', () => {
-    const base = normalizeStyle({ ...defaultStyle(), strokes: [{ color: '#000', width: 2 }] });
-    const r = applyStylePatch(base, { strokes: { 1: { color: '#fff', width: 3 } } });
+    const base = normalizeStyle({ ...defaultStyle(), strokeEffects: [{ color: '#000', size: 2 }] });
+    const r = applyStylePatch(base, { strokeEffects: { 1: { color: '#fff', size: 3 } } });
     expect(r.errors).toEqual([]);
-    expect(r.style.strokes).toHaveLength(2);
-    expect(applyStylePatch(base, { strokes: { 3: { width: 3 } } }).errors).toHaveLength(1);
+    expect(r.style.strokeEffects).toHaveLength(2);
+    expect(applyStylePatch(base, { strokeEffects: { 3: { size: 3 } } }).errors).toHaveLength(1);
   });
 });

@@ -94,7 +94,7 @@ beforeEach(() => {
   blits = [];
 });
 
-const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', size: 30, strokes: [], autoHeight: false, ...over });
+const style = (over = {}) => normalizeStyle({ ...defaultStyle(), strokeEffects: [], font: 'Comic Neue', size: 30, strokes: [], autoHeight: false, ...over });
 const boxOf = (over = {}, text = 'TEXT', geom = {}) => ({ id: 'b', lineN: null, text, x: 100, y: 100, w: 260, h: 90, ...geom, style: style(over) });
 const pageOf = (box) => ({ id: 1, w: 800, h: 1200, lines: [], boxes: [box] });
 const pixels = (c) => c.getContext('2d').getImageData(0, 0, c.width, c.height);
@@ -364,8 +364,7 @@ describe('everything that places the picture still places it where it was', () =
 
   it('the editor\'s picture: placed by the new corner, so the box\'s own corner is where it was on screen', () => {
     const box = J();
-    const el = createCanvas(1, 1);
-    const g = paintBoxPicture(el, box, pageOf(box), 3, null);
+    const g = paintBoxPicture(box, pageOf(box), 3, null);
     const now = painted(box, 3);
     expect([g.ox, g.oy]).toEqual([now.ox, now.oy]);
     const css = Object.fromEntries(pictureCss(g, 1.5).split(';').filter(Boolean).map((d) => d.split(':')).map(([k, v]) => [k, parseFloat(v)]));

@@ -51,12 +51,11 @@ async function openFold(view, name) {
 }
 
 describe('F43: No Fill keeps the overlay controls', () => {
-  it('shows the colour, gradient and pattern overlay sections on a No Fill box', async () => {
+  it('shows the Tint and the pattern overlay on a No Fill box', async () => {
     const { view } = mounted({ noFill: true });
     await tick();
-    await openFold(view, 'Overlays');
-    expect(view.getByRole('button', { name: 'Add colour overlay' })).toBeTruthy();
-    expect(view.getByRole('button', { name: 'Add gradient overlay' })).toBeTruthy();
+    await openFold(view, 'Pattern');
+    expect(view.getByRole('switch', { name: 'Tint' })).toBeTruthy();
     expect(view.getByRole('switch', { name: 'Pattern overlay' })).toBeTruthy();
   });
 });
@@ -67,7 +66,7 @@ describe('F44 and F48: shadow angle', () => {
     const { view } = mounted(style, 'effects', 'shadow');
     await tick();
     const was = app.typesetting.light?.angle ?? 120;
-    await fireEvent.change(view.getByLabelText('Shadow 1 angle'), { target: { value: '45' } });
+    await fireEvent.change(view.getByLabelText('Shadow 1 angle, degrees'), { target: { value: '45' } });
     expect(app.typesetting.light.angle).toBe(45);
     undo();
     expect(app.typesetting.light?.angle ?? 120).toBe(was);
@@ -80,9 +79,9 @@ describe('F44 and F48: shadow angle', () => {
     const sh = { ...newShadow({ angle: 120 }), useGlobalLight: false };
     const { view, box } = mounted({ shadows: [sh] }, 'effects', 'shadow');
     await tick();
-    await fireEvent.change(view.getByLabelText('Shadow 1 angle'), { target: { value: '45' } });
-    await fireEvent.change(view.getByLabelText('Shadow 1 distance'), { target: { value: '0' } });
-    await fireEvent.change(view.getByLabelText('Shadow 1 distance'), { target: { value: '10' } });
+    await fireEvent.change(view.getByLabelText('Shadow 1 angle, degrees'), { target: { value: '45' } });
+    await fireEvent.change(view.getByLabelText('Shadow 1 distance, page px'), { target: { value: '0' } });
+    await fireEvent.change(view.getByLabelText('Shadow 1 distance, page px'), { target: { value: '10' } });
     const s0 = box().style.shadows[0];
     expect(Math.round(Math.hypot(s0.x, s0.y))).toBe(10);
     expect(Math.round((Math.atan2(s0.y, -s0.x) * 180) / Math.PI)).toBe(45);
@@ -101,16 +100,16 @@ describe('F44 and F48: shadow angle', () => {
       await fireEvent.change(el, { target: { value } });
       settleEdits();
     };
-    await edit('Shadow 1 angle', '45');
+    await edit('Shadow 1 angle, degrees', '45');
     expect(box().style.shadows[0].angle).toBeUndefined(); // the offset says 45 itself
-    await edit('Shadow 1 distance', '0');
+    await edit('Shadow 1 distance, page px', '0');
     expect(box().style.shadows[0]).toMatchObject({ x: 0, y: 0, angle: 45 });
-    await edit('Shadow 1 distance', '10');
+    await edit('Shadow 1 distance, page px', '10');
     expect(box().style.shadows[0].angle).toBeUndefined();
     undo();
     await tick();
     expect(box().style.shadows[0]).toMatchObject({ x: 0, y: 0, angle: 45 });
-    expect(view.getByLabelText('Shadow 1 angle').value).toBe('45');
+    expect(view.getByLabelText('Shadow 1 angle, degrees').value).toBe('45');
     // Saved and read back: the angle is in the file.
     const saved = normalizeStyle(JSON.parse(JSON.stringify(box().style)));
     expect(saved.shadows[0].angle).toBe(45);
@@ -124,10 +123,10 @@ describe('F44 and F48: shadow angle', () => {
     const sh = { ...newInnerShadow({ angle: 120 }), useGlobalLight: false, x: 0, y: 0 };
     const { view, box } = mounted({ innerShadows: [sh] }, 'effects', 'shadow');
     await tick();
-    await fireEvent.change(view.getByLabelText('Inner shadow 1 angle'), { target: { value: '-30' } });
+    await fireEvent.change(view.getByLabelText('Inner shadow 1 angle, degrees'), { target: { value: '-30' } });
     expect(box().style.innerShadows[0]).toMatchObject({ x: 0, y: 0, angle: -30 });
-    expect(view.getByLabelText('Inner shadow 1 angle').value).toBe('-30');
-    await fireEvent.change(view.getByLabelText('Inner shadow 1 distance'), { target: { value: '8' } });
+    expect(view.getByLabelText('Inner shadow 1 angle, degrees').value).toBe('-30');
+    await fireEvent.change(view.getByLabelText('Inner shadow 1 distance, page px'), { target: { value: '8' } });
     const s0 = box().style.innerShadows[0];
     expect(Math.round((Math.atan2(s0.y, -s0.x) * 180) / Math.PI)).toBe(-30);
   });

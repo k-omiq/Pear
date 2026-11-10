@@ -11,7 +11,7 @@ beforeAll(() => setTypesetEnabled(true));
 beforeEach(() => clearLayoutMemo());
 
 const region = { kind: 'ellipse', cx: 200, cy: 200, rx: 95, ry: 120 };
-const style = normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', bold: true, size: 18, align: 'center', valign: 'middle', strokes: [], margin: 0.5 });
+const style = normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', bold: true, size: 18, align: 'center', valign: 'middle', strokeEffects: [], margin: 0.5 });
 
 function solved(text, s = style) {
   const r = solveLayout({ text, style: s, refSize: 18, region, locks: {}, opts: {} });

@@ -11,6 +11,7 @@ import {
   SEAM_OVERDRAW,
   MAX_DEVICE,
   MAX_DEVICE_AREA,
+  meshWarper,
 } from './warp-paint.js';
 import {
   identityMesh,
@@ -1168,3 +1169,102 @@ describe('warped parity: the editor canvas is the exported crop', () => {
     expect(warpGeom.ch - flatGeom.ch).toBeGreaterThanOrEqual(40);
   });
 }, HEAVY_MS);
+
+// ===========================================================================
+// The drag's GPU warper
+// ===========================================================================
+// Node has no WebGL, so the context is a recorder: what matters here is that
+// the warper draws the SAME plan into the SAME canvas extent as
+// `warpBoxCanvas`, every triangle once, in one draw call. Its pixels were
+// checked in WKWebView against the canvas path (2026-11-10): same size and
+// placement, differing only at the canvas path's antialiased seams.
+describe('meshWarper', () => {
+  function fakeGl({ lost = false, max = 16384 } = {}) {
+    const rec = { draws: [], verts: null, viewport: null, deleted: 0, lost: false, uploaded: null };
+    const gl = new Proxy(
+      {
+        getParameter: () => max,
+        getShaderParameter: () => true,
+        getProgramParameter: () => true,
+        createShader: () => ({}),
+        createProgram: () => ({}),
+        createTexture: () => ({}),
+        createBuffer: () => ({}),
+        getAttribLocation: (_, name) => (name === 'a_dst' ? 0 : 1),
+        getUniformLocation: () => ({}),
+        isContextLost: () => lost,
+        texImage2D: (...a) => (rec.uploaded = a.at(-1)),
+        viewport: (...a) => (rec.viewport = a),
+        bufferData: (_, data) => (rec.verts = Array.from(data)),
+        drawArrays: (_, first, count) => rec.draws.push([first, count]),
+        deleteTexture: () => rec.deleted++,
+        getExtension: () => ({ loseContext: () => (rec.lost = true) }),
+      },
+      { get: (t, k) => (k in t ? t[k] : typeof k === 'string' && /^[A-Z_0-9]+$/.test(k) ? k : () => {}) },
+    );
+    const canvas = { width: 1, height: 1, getContext: (kind) => (kind === 'webgl' ? gl : null) };
+    return { rec, make: () => canvas, canvas };
+  }
+
+  it('is null where there is no WebGL, and the caller draws on the canvas', () => {
+    expect(meshWarper(null)).toBeNull();
+    expect(meshWarper(flatTexture(), () => ({ width: 1, height: 1, getContext: () => null }))).toBeNull();
+    expect(meshWarper(flatTexture(), () => ({ width: 1, height: 1, getContext: () => { throw new Error('no'); } }))).toBeNull();
+    // A texture past the GPU's limit is not uploaded at all.
+    const big = fakeGl({ max: 8 });
+    expect(meshWarper(flatTexture(), big.make)).toBeNull();
+    expect(big.rec.uploaded).toBeNull();
+    expect(big.rec.lost).toBe(true);
+  });
+
+  it('draws the plan warpBoxCanvas draws, onto the same extent, in one call', () => {
+    const src = flatTexture(2);
+    const { rec, make, canvas } = fakeGl();
+    const gpu = meshWarper(src, make);
+    expect(rec.uploaded).toBe(src);
+    const mesh = { on: true, cols: 2, rows: 2, pts: identityMesh(2, 2, W, H).map((p, i) => (i === 4 ? [p[0] + 14, p[1] - 9] : p)) };
+    const args = warpArgs(mesh, { ss: 2 });
+    const want = warpBoxCanvas(src, args);
+    const got = gpu.draw(args);
+    expect(got.canvas).toBe(canvas);
+    expect(got.shared).toBe(true);
+    expect([got.ox, got.oy, got.cw, got.ch, got.ss]).toEqual([want.ox, want.oy, want.cw, want.ch, 2]);
+    expect([canvas.width, canvas.height]).toEqual([want.canvas.width, want.canvas.height]);
+    expect(rec.viewport).toEqual([0, 0, canvas.width, canvas.height]);
+    const plan = warpPlan(mesh, W, H, { x: -PAD, y: -PAD, w: W + PAD * 2, h: H + PAD * 2 });
+    expect(rec.draws).toEqual([[0, plan.tris.length * 3]]);
+    // Every corner: its destination in canvas px, its source as a texture
+    // coordinate of the texture that spans (-ox, -oy) .. (cw - ox, ch - oy).
+    const k = 2;
+    plan.tris.forEach((tri, t) => {
+      for (let i = 0; i < 3; i++) {
+        const v = rec.verts.slice((t * 3 + i) * 4, (t * 3 + i) * 4 + 4);
+        expect(v[0]).toBeCloseTo((tri.dst[i][0] + want.ox) * k, 3);
+        expect(v[1]).toBeCloseTo((tri.dst[i][1] + want.oy) * k, 3);
+        expect(v[2]).toBeCloseTo((tri.src[i][0] + PAD) / (W + PAD * 2), 5);
+        expect(v[3]).toBeCloseTo((tri.src[i][1] + PAD) / (H + PAD * 2), 5);
+      }
+    });
+  });
+
+  it('keeps a frame inside its pixel budget, and hands back null for a mesh that does nothing', () => {
+    const { make, canvas } = fakeGl();
+    const gpu = meshWarper(flatTexture(2), make);
+    expect(gpu.draw(warpArgs({ on: true, cols: 2, rows: 2, pts: identityMesh(2, 2, W, H) }, { ss: 2 }))).toBeNull();
+    const got = gpu.draw(warpArgs(DRAG, { ss: 2, maxPx: 4000 }));
+    expect(canvas.width * canvas.height).toBeLessThanOrEqual(4000 * 1.01);
+    expect(got.ss).toBeLessThan(2);
+  });
+
+  it('lets go of the context and its pixels once, and draws nothing after', () => {
+    const { rec, make, canvas } = fakeGl();
+    const gpu = meshWarper(flatTexture(2), make);
+    gpu.draw(warpArgs(DRAG, { ss: 2 }));
+    gpu.release();
+    gpu.release();
+    expect(rec.deleted).toBe(1);
+    expect(rec.lost).toBe(true);
+    expect([canvas.width, canvas.height]).toEqual([0, 0]);
+    expect(gpu.draw(warpArgs(DRAG, { ss: 2 }))).toBeNull();
+  });
+});

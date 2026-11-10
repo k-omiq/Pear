@@ -190,13 +190,8 @@ export const STYLE_SCHEMA = {
       opacity: alpha('stop alpha'),
     }), { minItems: GRADIENT_MIN_STOPS, maxItems: GRADIENT_MAX_STOPS }),
   }),
-  pattern: shared('pattern', object('tiled fill beats gradient', patternFields())),
+  pattern: shared('pattern', object('old fill; use patternOverlay', patternFields())),
   noFill: boolean('hollow glyphs; overrides fills'),
-  strokes: array('bands, inner first', object('stroke', {
-    color: color('band colour'),
-    width: number('band px; 0=remove', 0),
-    opacity: alpha('band alpha'),
-  })),
   shadows: instances('drop shadows, top first (Photoshop Drop Shadow)', object('shadow', {
     on: instanceOn(),
     x: number('x offset px'),
@@ -212,7 +207,7 @@ export const STYLE_SCHEMA = {
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
     angle: shadowAngleField(),
   })),
-  gradientOverlays: instances('gradients over the fill, top first (Photoshop Gradient Overlay; Rust)', object('gradient overlay', {
+  gradientOverlays: instances('tint as a gradient, if no colorOverlays (Rust)', object('gradient overlay', {
     on: instanceOn(),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     opacity: alpha('overlay alpha'),
@@ -237,13 +232,13 @@ export const STYLE_SCHEMA = {
     useGlobalLight: boolean('angle follows the chapter light; x/y give the distance'),
     angle: shadowAngleField(),
   })),
-  colorOverlays: instances('flat colours over the fill, top first (Photoshop Color Overlay; Rust)', object('colour overlay', {
+  colorOverlays: instances('tint: [0] colours the fill in its blend (multiply, color); use one (Rust)', object('colour overlay', {
     on: instanceOn(),
     color: color('overlay colour'),
     opacity: alpha('overlay alpha'),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
   })),
-  patternOverlay: object('pattern over the fill (Photoshop Pattern Overlay; Rust)', {
+  patternOverlay: object('the pattern (Photoshop Pattern Overlay; Rust)', {
     on: boolean('enable overlay'),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     opacity: alpha('overlay alpha'),
@@ -288,9 +283,9 @@ export const STYLE_SCHEMA = {
       link: boolean('moves with the box'),
     }),
   }),
-  strokeEffects: instances('Photoshop Stroke effects, top first, apart from strokes (Rust)', object('stroke effect', {
+  strokeEffects: instances('strokes (outlines), top first; size is from the letters edge, so a stack of outlines grows down the list', object('stroke', {
     on: instanceOn(),
-    size: number('px', 0, SHADOW_SIZE_MAX),
+    size: number('px from the letters edge', 0, SHADOW_SIZE_MAX),
     position: choice('on the letters edge', STROKE_POSITIONS),
     blend: listed('BLEND', 'blend mode', LAYER_BLEND_MODES),
     opacity: alpha('stroke alpha'),

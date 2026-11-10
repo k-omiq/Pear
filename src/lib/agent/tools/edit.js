@@ -14,7 +14,7 @@ import { withPagePixels } from '../render.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
 import { applyCase, breaksFor } from '../../measure.js';
-import { normalizeAuto } from '../../data.js';
+import { normalizeAuto, normalizeStrokeEffect } from '../../data.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
 import { fitPolygon, intervalsAt } from '../../outline-geom.js';
@@ -669,7 +669,7 @@ function writeDo(d, matches) {
 
 // Boxes drawn over the art rather than set in a balloon (rule C): balloon fit
 // off and no outline, no air round the ink (margin 0), and what `at(box,
-// page)` gives each: { centre, rotation, size, color, strokes }, any of them.
+// page)` gives each: { centre, rotation, size, color, strokeEffects }, any of them.
 // A size is the size aimed for, held (a least size a little under it); a
 // centre is held where it is put. What `place` does with an SFX, a title or a
 // blocky word, and what "match_original" does over the original. Returns the
@@ -691,12 +691,19 @@ export function drawOverArt(matches, at) {
         b.style.color = a.color;
         b.style.autoContrast = false;
       }
-      if (Array.isArray(a.strokes)) b.style.strokes = a.strokes.map((k) => ({ ...k }));
+      if (Array.isArray(a.strokeEffects)) b.style.strokeEffects = a.strokeEffects.map(normalizeStrokeEffect);
       // The original's fill is the fill: its shade as a gradient or none, solid
-      // letters, no pattern over them.
+      // letters, no pattern or tint over them.
       if (a.gradient) b.style.gradient = { ...b.style.gradient, ...a.gradient, ...(a.gradient.stops ? { stops: a.gradient.stops.map((k) => ({ ...k })) } : null) };
       if (a.noFill === false) b.style.noFill = false;
       if (a.gradient && b.style.pattern?.on) b.style.pattern = { ...b.style.pattern, on: false };
+      if (a.gradient && b.style.patternOverlay?.on) b.style.patternOverlay = { ...b.style.patternOverlay, on: false };
+      // Nor a tint: the original's colours are the colours.
+      if (a.color || a.gradient) {
+        for (const k of ['colorOverlays', 'gradientOverlays']) {
+          if (b.style[k]?.some((o) => o.on !== false)) b.style[k] = b.style[k].map((o) => ({ ...o, on: false }));
+        }
+      }
       if (a.size > 0) {
         const size = Math.min(SIZE_RANGE[1], Math.max(SIZE_RANGE[0], a.size));
         b.style.size = size;

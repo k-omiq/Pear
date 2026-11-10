@@ -373,6 +373,37 @@ function planExtent(plan, pad) {
   return { left, top, outW: Math.max(1, right - left), outH: Math.max(1, bottom - top) };
 }
 
+// The destination canvas of a plan: its extent and `rs`, the device px per
+// page px it is rendered at, or null when no canvas may hold it.
+//
+// What a canvas may be. A mesh close to degenerate can ask for a footprint
+// orders of magnitude past the box - `SPAN_LIMIT` is the outer bound and it is
+// 32 times the source - and at the export's supersample that is a bitmap no
+// browser will hand out: `getContext` on an oversized canvas returns null in
+// some, throws in others, and silently gives back a blank one in the rest, so
+// every one of them ends in a box that vanished from the page.
+//
+// Resolution is what gives way first: the same picture, rendered at fewer
+// device px per page px, still lands in the right place at the right size.
+// Only a demand so far past the cap that even a quarter of a device pixel per
+// page pixel will not fit is refused, and a refusal here is the caller's
+// signal to draw the box UNWARPED - the one outcome that is bounded whatever
+// the mesh says. `maxArea` lowers the area cap for a caller with a budget of
+// its own (the live drag's `meshWarper`).
+function planCanvas(plan, pad, ss, maxArea = MAX_DEVICE_AREA) {
+  const { left, top, outW, outH } = planExtent(plan, pad);
+  const fit = Math.min(
+    1,
+    MAX_DEVICE / (outW * ss),
+    MAX_DEVICE / (outH * ss),
+    Math.sqrt(Math.min(MAX_DEVICE_AREA, maxArea) / (outW * ss * outH * ss)),
+  );
+  if (!(fit > 0)) return null;
+  const rs = ss * Math.min(1, fit);
+  if (rs < MIN_DEVICE_SCALE) return null;
+  return { left, top, outW, outH, rs };
+}
+
 /**
  * Where a texture lands once the mesh has carried it, without drawing it: the
  * `{ ox, oy, cw, ch }` `warpBoxCanvas` would hand back for the same options,
@@ -407,31 +438,9 @@ export function warpBoxCanvas(src, opts = {}) {
   const make = opts.makeCanvas ?? newCanvas;
   const plan = warpPlan(warp, w, h, { x: -ox, y: -oy, w: cw, h: ch }, { sub: opts.sub });
   if (!plan) return null;
-
-  const { left, top, outW, outH } = planExtent(plan, pad);
-
-  // What a canvas may be. A mesh close to degenerate can ask for a footprint
-  // orders of magnitude past the box - `SPAN_LIMIT` is the outer bound and it is
-  // 32 times the source - and at the export's supersample that is a bitmap no
-  // browser will hand out: `getContext` on an oversized canvas returns null in
-  // some, throws in others, and silently gives back a blank one in the rest, so
-  // every one of them ends in a box that vanished from the page.
-  //
-  // Resolution is what gives way first: the same picture, rendered at fewer
-  // device px per page px, still lands in the right place at the right size.
-  // Only a demand so far past the cap that even a quarter of a device pixel per
-  // page pixel will not fit is refused, and a refusal here is the caller's
-  // signal to draw the box UNWARPED - the one outcome that is bounded whatever
-  // the mesh says.
-  const fit = Math.min(
-    1,
-    MAX_DEVICE / (outW * ss),
-    MAX_DEVICE / (outH * ss),
-    Math.sqrt(MAX_DEVICE_AREA / (outW * ss * outH * ss)),
-  );
-  if (!(fit > 0)) return null;
-  const rs = ss * Math.min(1, fit);
-  if (rs < MIN_DEVICE_SCALE) return null;
+  const size = planCanvas(plan, pad, ss);
+  if (!size) return null;
+  const { left, top, outW, outH, rs } = size;
 
   const canvas = make(Math.max(1, Math.round(outW * rs)), Math.max(1, Math.round(outH * rs)));
   const ctx = canvas.getContext('2d');
@@ -473,4 +482,152 @@ export function warpBoxCanvas(src, opts = {}) {
     ctx.restore();
   }
   return { canvas, ox: -left, oy: -top, cw: outW, ch: outH };
+}
+
+// ===== The same mesh, drawn by the GPU, for a drag =====
+//
+// `warpBoxCanvas` draws one clipped `drawImage` of the whole texture per
+// triangle, and in WebKit each of those costs about 55 microseconds whatever
+// its size (measured in WKWebView, 2026-11-10): a liquify mesh is 280 to 500
+// triangles and more, so one frame of a drag was 15 to 28 ms of drawing before
+// anything else ran, and every pointer move paid it again. A live drag shows a
+// frame and throws it away, so it is drawn here instead: the texture is
+// uploaded to WebGL once, when the pointer goes down, and every frame after is
+// ONE draw call of the same plan's triangles - the same geometry, the same
+// canvas extent and resolution, the same `{ canvas, ox, oy, cw, ch }` back.
+//
+// It is a preview and nothing more. The pixels are not `warpBoxCanvas`'s
+// (bilinear sampling, and no antialiased clip edge at the joins, which the
+// GPU does not need: triangles sharing an edge rasterise without a gap or an
+// overlap), and the picture a drag leaves behind is painted the usual way
+// when the pointer comes up. Where the triangles of a folded mesh overlap,
+// each goes down over the ones before it, as `warpBoxCanvas`'s fold pass does.
+//
+// `meshWarper(src)` is null where WebGL is not to be had (no context, a
+// texture past the GPU's limit), and the caller draws the old way. The canvas
+// it draws into is its own and is reused every frame: a caller keeping it
+// must not let it go, and `release` hands the context and the pixels back.
+
+const VERT = `attribute vec2 a_dst; attribute vec2 a_uv; uniform vec2 u_size; varying vec2 v_uv;
+void main() { v_uv = a_uv; gl_Position = vec4(a_dst.x / u_size.x * 2.0 - 1.0, 1.0 - a_dst.y / u_size.y * 2.0, 0.0, 1.0); }`;
+const FRAG = `precision mediump float; uniform sampler2D u_tex; varying vec2 v_uv;
+void main() { gl_FragColor = texture2D(u_tex, v_uv); }`;
+
+function shader(gl, type, text) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, text);
+  gl.compileShader(sh);
+  return gl.getShaderParameter(sh, gl.COMPILE_STATUS) ? sh : null;
+}
+
+export function meshWarper(src, makeCanvas = newCanvas) {
+  if (!src?.width || !src?.height) return null;
+  const canvas = makeCanvas(1, 1);
+  let gl = null;
+  try {
+    gl = canvas.getContext?.('webgl', {
+      alpha: true,
+      premultipliedAlpha: true,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      preserveDrawingBuffer: true,
+    });
+  } catch {
+    gl = null;
+  }
+  if (!gl) return null;
+  const max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  const vs = shader(gl, gl.VERTEX_SHADER, VERT);
+  const fs = shader(gl, gl.FRAGMENT_SHADER, FRAG);
+  const prog = vs && fs && gl.createProgram();
+  if (prog) {
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+  }
+  const lose = () => {
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    canvas.width = 0;
+    canvas.height = 0;
+  };
+  if (!prog || !gl.getProgramParameter(prog, gl.LINK_STATUS) || src.width > max || src.height > max) {
+    lose();
+    return null;
+  }
+  gl.useProgram(prog);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // The 2D canvas holds premultiplied pixels and the drawing buffer is
+  // premultiplied: uploaded as they are, blended as they are.
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  const aDst = gl.getAttribLocation(prog, 'a_dst');
+  const aUv = gl.getAttribLocation(prog, 'a_uv');
+  gl.enableVertexAttribArray(aDst);
+  gl.enableVertexAttribArray(aUv);
+  gl.vertexAttribPointer(aDst, 2, gl.FLOAT, false, 16, 0);
+  gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+  gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
+  const uSize = gl.getUniformLocation(prog, 'u_size');
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.clearColor(0, 0, 0, 0);
+  let verts = new Float32Array(0);
+  let gone = false;
+
+  return {
+    canvas,
+    // `opts` is `warpBoxCanvas`'s, plus `maxPx`, the most device px the frame
+    // may hold. Null when the mesh does nothing or no canvas may hold it.
+    draw(opts = {}) {
+      if (gone || gl.isContextLost()) return null;
+      const { warp, w, h, ox, oy, cw, ch } = opts;
+      const ss = num(opts.ss, 1) || 1;
+      const plan = warpPlan(warp, w, h, { x: -ox, y: -oy, w: cw, h: ch }, { sub: opts.sub });
+      if (!plan) return null;
+      const size = planCanvas(plan, num(opts.pad ?? WARP_PAD), ss, num(opts.maxPx, MAX_DEVICE_AREA) || MAX_DEVICE_AREA);
+      if (!size) return null;
+      const { left, top, outW, outH, rs } = size;
+      const W = Math.max(1, Math.round(outW * rs));
+      const H = Math.max(1, Math.round(outH * rs));
+      if (W > max || H > max) return null;
+      if (canvas.width !== W) canvas.width = W;
+      if (canvas.height !== H) canvas.height = H;
+      const n = plan.tris.length * 3;
+      if (verts.length < n * 4) verts = new Float32Array(n * 4);
+      // Destination in canvas px, source as texture coordinates: the texture
+      // spans box-local (-ox, -oy) to (cw - ox, ch - oy).
+      let k = 0;
+      for (const tri of plan.tris) {
+        for (let i = 0; i < 3; i++) {
+          verts[k++] = (tri.dst[i][0] - left) * rs;
+          verts[k++] = (tri.dst[i][1] - top) * rs;
+          verts[k++] = (tri.src[i][0] + ox) / cw;
+          verts[k++] = (tri.src[i][1] + oy) / ch;
+        }
+      }
+      gl.viewport(0, 0, W, H);
+      gl.uniform2f(uSize, W, H);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bufferData(gl.ARRAY_BUFFER, verts.subarray(0, n * 4), gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, n);
+      return { canvas, ox: -left, oy: -top, cw: outW, ch: outH, ss: rs, shared: true };
+    },
+    release() {
+      if (gone) return;
+      gone = true;
+      gl.deleteBuffer(buf);
+      gl.deleteTexture(tex);
+      gl.deleteProgram(prog);
+      lose();
+    },
+  };
 }

@@ -10,10 +10,14 @@ description = "Text engine for manga-typesetter: font parsing, shaping, metrics 
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["paint"]
+default = ["paint", "encode"]
 # The painter is behind a feature so its size cost can be measured on its own.
 # It needs no crate the rest of the engine does not already use.
 paint = []
+# Page encoders for the export: JPEG with full-resolution colour (4:4:4) and
+# lossless WebP, where the webview's own encoders smear colour or cannot write
+# WebP at all (WebKit). Behind a feature so their size can be read off.
+encode = ["paint", "dep:jpeg-encoder", "dep:image-webp"]
 # The rasterisers the painter's own was measured against, each selectable at
 # run time through `mt_paint_rasterizer`. For `parity/raster.mjs` only; never
 # in a shipped build. One feature each so each one's size can be read off.
@@ -26,6 +30,8 @@ raster-compare = ["raster-tiny-skia", "raster-zeno", "raster-vello"]
 simd = ["tiny-skia?/simd"]
 
 [dependencies]
+image-webp = { version = "0.2.4", default-features = false, optional = true }
+jpeg-encoder = { version = "0.7.1", default-features = false, features = ["std"], optional = true }
 harfrust = { version = "0.14", default-features = false, features = ["std"] }
 skrifa = { version = "0.48", default-features = false, features = ["std"] }
 tiny-skia = { version = "0.12", default-features = false, features = ["std"], optional = true }

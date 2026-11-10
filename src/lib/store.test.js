@@ -111,7 +111,10 @@ import {
   SIDEBAR_MAX_SHARE,
   toggleBalloonFit,
 } from './store.svelte.js';
-import { defaultStyle, normalizeStyle, normalizeAuto, normalizeBevel, GRADIENT_MAX_STOPS } from './data.js';
+import { defaultStyle, normalizeStyle, normalizeAuto, normalizeBevel, GRADIENT_MAX_STOPS, normalizeStrokeEffect } from './data.js';
+
+// An Outside colour stroke, as a style holds an outline.
+const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, position: 'outside', color, opacity });
 import { setPref } from './prefs.svelte.js';
 import { bindTags, unbindTags, tags, lineTags, setLineTags } from './tags.svelte.js';
 import { initHistory, resetHistory, undo, redo } from './editor/history.svelte.js';
@@ -1059,13 +1062,13 @@ describe('zoom', () => {
 describe('the style schema migration', () => {
   it('turns an outline and its width into the first stroke', () => {
     const s = normalizeStyle({ outline: '#ff0000', outlineWidth: 5 });
-    expect(s.strokes).toEqual([{ color: '#ff0000', width: 5, opacity: 1 }]);
+    expect(s.strokeEffects).toEqual([outside('#ff0000', 5)]);
     expect('outline' in s).toBe(false);
     expect('outlineWidth' in s).toBe(false);
   });
 
   it('reads a width of zero as no stroke at all', () => {
-    expect(normalizeStyle({ outline: '#ff0000', outlineWidth: 0 }).strokes).toEqual([]);
+    expect(normalizeStyle({ outline: '#ff0000', outlineWidth: 0 }).strokeEffects).toEqual([]);
   });
 
   it('turns a shadow that was on into the shadow list, and one that was off into none', () => {
@@ -1076,11 +1079,8 @@ describe('the style schema migration', () => {
   });
 
   it('leaves a style already written in the new model as it stands', () => {
-    const strokes = [
-      { color: '#ffffff', width: 3, opacity: 1 },
-      { color: '#000000', width: 2, opacity: 0.5 },
-    ];
-    expect(normalizeStyle({ strokes, shadows: [] }).strokes).toEqual(strokes);
+    const strokeEffects = [outside('#ffffff', 3), outside('#000000', 5, 0.5)];
+    expect(normalizeStyle({ strokeEffects, shadows: [] }).strokeEffects).toEqual(strokeEffects);
   });
 
   // Per-stop alpha and a variable stop count arrived after chapters were
@@ -1124,7 +1124,7 @@ describe('the style schema migration', () => {
 
   it('gives a style that names neither the defaults', () => {
     const s = normalizeStyle({ size: 30 });
-    expect(s.strokes).toEqual(defaultStyle().strokes);
+    expect(s.strokeEffects).toEqual(defaultStyle().strokeEffects);
     expect(s.shadows).toEqual([]);
     expect(s.fillOpacity).toBe(1);
     expect(s.blur).toBe(0);
@@ -1147,14 +1147,14 @@ describe('the style schema migration', () => {
   // can paint.
   it('refuses a colour that is not 3, 4, 6 or 8 hex digits', () => {
     for (const bad of ['#12345', '#1234567', '#123456789', '123456']) {
-      expect(normalizeStyle({ strokes: [{ color: bad, width: 3 }] }).strokes[0].color, bad).toBe(
-        '#ffffff',
+      expect(normalizeStyle({ strokeEffects: [{ color: bad, size: 3 }] }).strokeEffects[0].color, bad).toBe(
+        '#000000',
       );
       expect(normalizeStyle({ shadows: [{ color: bad }] }).shadows[0].color, bad).toBe('#000000');
     }
     for (const good of ['#abc', '#abcd', '#abcdef', '#abcdef01', '#ABCDEF']) {
       // Case rides through untouched; only the digit count is vetted.
-      expect(normalizeStyle({ strokes: [{ color: good, width: 3 }] }).strokes[0].color, good).toBe(
+      expect(normalizeStyle({ strokeEffects: [{ color: good, size: 3 }] }).strokeEffects[0].color, good).toBe(
         good,
       );
     }
@@ -1206,7 +1206,6 @@ const BULK_VALUES = () => ({
     ],
   },
   pattern: { ...defaultStyle().pattern, on: true, kind: 'stripes', fg: '#010101', bg: '#020202', scale: 2 },
-  strokes: [{ color: '#abcdef', width: 9, opacity: 0.5 }],
   shadows: [{ x: 5, y: 6, blur: 7, color: '#0f0f0f', opacity: 0.8 }],
   outerGlow: { ...defaultStyle().outerGlow, on: true, size: 9, color: '#123456' },
   innerGlow: { ...defaultStyle().innerGlow, on: true, source: 'center' },
@@ -1366,15 +1365,12 @@ describe('the bulk edit mask', () => {
     const base = defaultStyle();
     const tpl = {
       ...defaultStyle(),
-      strokes: [
-        { color: '#ff0000', width: 2, opacity: 1 },
-        { color: '#00ff00', width: 4, opacity: 1 },
-      ],
+      strokeEffects: [outside('#ff0000', 2), outside('#00ff00', 6)],
     };
-    const out = mergeMasked(base, tpl, { strokes: true });
-    expect(out.strokes).toEqual(tpl.strokes);
-    expect(out.strokes).not.toBe(tpl.strokes);
-    expect(out.strokes[0]).not.toBe(tpl.strokes[0]);
+    const out = mergeMasked(base, tpl, { strokeEffects: true });
+    expect(out.strokeEffects).toEqual(tpl.strokeEffects);
+    expect(out.strokeEffects).not.toBe(tpl.strokeEffects);
+    expect(out.strokeEffects[0]).not.toBe(tpl.strokeEffects[0]);
   });
 
   it('changes nothing at all with an empty mask', () => {
@@ -1389,7 +1385,7 @@ describe('the bulk edit mask', () => {
     const out = mergeMasked(base, defaultStyle(), { 'roughen.amount': true });
     expect(out.gradient).not.toBe(base.gradient);
     expect(out.roughen).not.toBe(base.roughen);
-    expect(out.strokes).not.toBe(base.strokes);
+    expect(out.strokeEffects).not.toBe(base.strokeEffects);
   });
 
   // A template that has no opinion about a ticked field - a group missing the
@@ -1427,8 +1423,8 @@ describe('the bulk edit mask', () => {
     expect(out.font).toBe('Bangers');
     expect(out.roughen.amount).toBe(12);
     expect(out.roughen.seed).toBe(99);
-    out.strokes[0].color = '#000000';
-    expect(base.strokes[0].color).not.toBe('#000000');
+    out.strokeEffects[0].color = '#000000';
+    expect(base.strokeEffects[0].color).not.toBe('#000000');
   });
 
   it('leaves the unticked properties of a clicked target alone', () => {
@@ -2034,7 +2030,7 @@ describe('applying a tag to a line whose box is already placed', () => {
     expect(out).toMatchObject({ added: true, restyled: 1, tags: ['sfx'] });
     expect(b.style.font).toBe('Bangers');
     // A tag defines THE outline, so it replaces whatever stroke list the box had.
-    expect(b.style.strokes).toEqual([{ color: '#ff0000', width: 6, opacity: 1 }]);
+    expect(b.style.strokeEffects).toEqual([outside('#ff0000', 6)]);
   });
 
   // The rule, stated as the equality it is: tag-then-place and place-then-tag
@@ -2046,7 +2042,7 @@ describe('applying a tag to a line whose box is already placed', () => {
     toggleTagOnLine(2, 'sfx');
     const taggedThenPlaced = placeLine(2);
     expect(taggedThenPlaced.style.font).toBe(placedThenTagged.style.font);
-    expect(taggedThenPlaced.style.strokes).toEqual(placedThenTagged.style.strokes);
+    expect(taggedThenPlaced.style.strokeEffects).toEqual(placedThenTagged.style.strokeEffects);
   });
 
   // The rule for a box the user has styled by hand: the tag wins over the three
@@ -2290,7 +2286,7 @@ describe('the page coordinate space', () => {
           size: 26,
           blur: 4,
           letterSpacing: 5,
-          strokes: [{ color: '#ffffff', width: 3, opacity: 1 }],
+          strokeEffects: [outside('#ffffff', 3)],
           shadows: [{ x: 2, y: 4, blur: 6, color: '#000000', opacity: 0.6 }],
           ...over,
         },
@@ -2306,11 +2302,11 @@ describe('the page coordinate space', () => {
     expect(s.size).toBe(52);
     expect(s.blur).toBe(8);
     expect(s.letterSpacing).toBe(10);
-    expect(s.strokes[0].width).toBe(6);
+    expect(s.strokeEffects[0].size).toBe(6);
     // The old blur 6 reads as Size 7.5, and Size is a length.
     expect(s.shadows[0]).toMatchObject({ x: 4, y: 8, size: 15 });
     // Everything that is not a length is left exactly as it was.
-    expect(s.strokes[0].color).toBe('#ffffff');
+    expect(s.strokeEffects[0].color).toBe('#ffffff');
     expect(s.shadows[0].opacity).toBeCloseTo(0.6);
   });
 
@@ -2324,7 +2320,7 @@ describe('the page coordinate space', () => {
     expect(setPageDims(p, 1000, 3000)).toBe(true); // sx 2, sy 3
     const s = p.boxes[0].style;
     expect(s.size).toBeCloseTo(26 * Math.sqrt(6), 10);
-    expect(s.strokes[0].width).toBeCloseTo(3 * Math.sqrt(6), 10);
+    expect(s.strokeEffects[0].size).toBeCloseTo(3 * Math.sqrt(6), 10);
     expect(s.shadows[0].x).toBe(4);
     expect(s.shadows[0].y).toBe(12);
     expect(s.shadows[0].size).toBeCloseTo(7.5 * Math.sqrt(6), 10);
@@ -3983,7 +3979,7 @@ describe('optional previous-box style inheritance', () => {
     Object.assign(b.style, {
       font: 'Bangers', size: 48, rotation: 30, bold: true,
       color: '#123456', autoContrast: false, curve: 25, flipH: true,
-      strokes: [{ color: '#ff0000', width: 8, opacity: 1 }],
+      strokeEffects: [outside('#ff0000', 8)],
     });
     rememberStyle(b);
     return cloneStyle(b.style);
@@ -4022,7 +4018,7 @@ describe('optional previous-box style inheritance', () => {
     expect(s.font).toBe('Bangers');
     expect(s.size).toBe(64);
     expect(s.rotation).toBe(0);
-    expect(s.strokes).toEqual([{ color: '#abcdef', width: 5, opacity: 1 }]);
+    expect(s.strokeEffects).toEqual([outside('#abcdef', 5)]);
     expect(byId(addEmptyBox(500, 500)).style.size).toBe(defaultStyle().size);
   });
 
@@ -4097,11 +4093,12 @@ describe('a box born from the brush board', () => {
     // Not the text default's white outline: the strokes and shadows wrap the
     // ink, so an ink box gets exactly what the board was showing.
     const plain = byId(addInkBox(ink(), 400, 600));
-    expect(plain.style.strokes).toEqual([]);
+    expect(plain.style.strokeEffects).toEqual([]);
     expect(plain.style.shadows).toEqual([]);
     const finish = { strokes: [{ color: '#ff0000', width: 5 }, { width: 0 }], shadows: [{ x: 2, y: 3 }] };
     const b = byId(addInkBox({ ...ink(), finish }, 400, 600));
-    expect(b.style.strokes).toEqual([{ color: '#ff0000', width: 5, opacity: 1 }]);
+    // The finish's bands are the box's outline strokes (`strokesFromBands`).
+    expect(b.style.strokeEffects).toEqual([outside('#ff0000', 5)]);
     expect(b.style.shadows).toHaveLength(1);
     expect(b.style.shadows[0]).toMatchObject({ x: 2, y: 3 });
   });

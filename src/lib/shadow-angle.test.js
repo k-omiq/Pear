@@ -104,7 +104,7 @@ describe('rescaleStyle turns a kept angle with its axes', () => {
 describe('PSD export writes the kept angle', () => {
   const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
   const rendered = { imageData: { width: 10, height: 6, data: new Uint8ClampedArray(10 * 6 * 4) }, left: 3, top: 4, right: 13, bottom: 10, opacity: 1 };
-  const layerFor = (style) => textLayerFor({ lines: [] }, { lineN: null, text: 'hi', x: 0, y: 0, w: 40, h: 20, style: normalizeStyle({ ...defaultStyle(), strokes: [], ...style }) }, rendered);
+  const layerFor = (style) => textLayerFor({ lines: [] }, { lineN: null, text: 'hi', x: 0, y: 0, w: 40, h: 20, style: normalizeStyle({ ...defaultStyle(), strokeEffects: [], ...style }) }, rendered);
   const roundTrip = (layer) => {
     const psd = readPsd(writePagePsd(pagePsdDocument({ w: 32, h: 32, textLayers: [layer], project: { v: 1 } })), READ);
     return psd.children.find((c) => c.name === 'Text').children[0];

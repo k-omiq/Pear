@@ -62,16 +62,16 @@ describe('Align with Layer', () => {
   it('on a Gradient Overlay: off stores false, on leaves the key out, each an undo step', async () => {
     const view = mounted({ gradientOverlays: [newGradientOverlay()] });
     await tick();
-    await openFold(view, 'Overlays');
-    await openFold(view, 'Gradient overlay 1 more options');
+    await openFold(view, 'Pattern');
+    await openFold(view, 'Tint gradient more options');
     const g = () => style().gradientOverlays[0].gradient;
-    const box = view.getByLabelText('Gradient overlay 1 align with layer');
+    const box = view.getByLabelText('Tint gradient align with layer');
     expect(box.checked).toBe(true);
     expect('align' in g()).toBe(false);
     await toggle(box);
     expect(g().align).toBe(false);
-    expect(view.getByLabelText('Gradient overlay 1 align with layer').checked).toBe(false);
-    await toggle(view.getByLabelText('Gradient overlay 1 align with layer'));
+    expect(view.getByLabelText('Tint gradient align with layer').checked).toBe(false);
+    await toggle(view.getByLabelText('Tint gradient align with layer'));
     expect('align' in g()).toBe(false);
     undo();
     expect(g().align).toBe(false);
@@ -87,9 +87,9 @@ describe('Align with Layer', () => {
     setInspectorTab('effects');
     setEffectsSubTab('stroke');
     await tick();
-    await openFold(view, 'Photoshop stroke 1 gradient more options');
+    await openFold(view, 'Stroke 1 gradient more options');
     const g = () => style().strokeEffects[0].gradient;
-    await toggle(view.getByLabelText('Photoshop stroke 1 gradient align with layer'));
+    await toggle(view.getByLabelText('Stroke 1 gradient align with layer'));
     expect(g().align).toBe(false);
     undo();
     expect('align' in g()).toBe(false);
@@ -98,12 +98,12 @@ describe('Align with Layer', () => {
   it('keeps an off setting through Shape Burst, greyed, and back again', async () => {
     const view = mounted({ gradientOverlays: [newGradientOverlay()] });
     await tick();
-    await openFold(view, 'Overlays');
-    await openFold(view, 'Gradient overlay 1 more options');
+    await openFold(view, 'Pattern');
+    await openFold(view, 'Tint gradient more options');
     const g = () => style().gradientOverlays[0].gradient;
-    const box = () => view.getByLabelText('Gradient overlay 1 align with layer');
+    const box = () => view.getByLabelText('Tint gradient align with layer');
     const setStyle = async (v) => {
-      await fireEvent.change(view.getByLabelText('Gradient overlay 1 style'), { target: { value: v } });
+      await fireEvent.change(view.getByLabelText('Tint gradient style'), { target: { value: v } });
       settleEdits();
       await tick();
     };
@@ -128,9 +128,9 @@ describe('Align with Layer', () => {
   it('is greyed out for Shape Burst and missing from a glow', async () => {
     const view = mounted({ gradientOverlays: [{ ...newGradientOverlay(), gradient: { style: 'shapeburst' } }], outerGlow: { on: true, fill: 'gradient' } });
     await tick();
-    await openFold(view, 'Overlays');
-    await openFold(view, 'Gradient overlay 1 more options');
-    expect(view.getByLabelText('Gradient overlay 1 align with layer').disabled).toBe(true);
+    await openFold(view, 'Pattern');
+    await openFold(view, 'Tint gradient more options');
+    expect(view.getByLabelText('Tint gradient align with layer').disabled).toBe(true);
     setInspectorTab('effects');
     setEffectsSubTab('glow');
     await tick();

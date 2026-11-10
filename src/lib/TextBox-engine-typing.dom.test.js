@@ -17,7 +17,7 @@ import TextBox from './TextBox.svelte';
 import { app, loadProjectPages, page, beginEdit, endEdit, setZoom, boxText, relayoutAll } from './store.svelte.js';
 import { engineSwitch } from './engine-switch.svelte.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
-import { paintBoxPicture, PICTURE_MAX_PX, PICTURE_DRAG_PX } from './editor/box-picture.js';
+import { paintBoxPicture, PICTURE_MAX_PX, PICTURE_DRAG_PX, PICTURE_SCALE } from './editor/box-picture.js';
 import { _setDisplayScale } from './editor/display-scale.svelte.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
@@ -567,7 +567,7 @@ describe('an edit goes the way it goes with the switch off, and the picture foll
     expect(m.box.text).toBe('WAIT FOR ME\nOVER THERE');
     expect(m.paints()).toBe(2);
     // Painted from a stand-in that reads the composed text, not from the box.
-    const painted = paintBoxPicture.mock.calls.at(-1)[1];
+    const painted = paintBoxPicture.mock.calls.at(-1)[0];
     expect(painted).not.toBe(m.box);
     expect(painted.text).toBe('WAITに FOR ME\nOVER THERE');
     expect(painted.id).toBe('plain');
@@ -581,9 +581,9 @@ describe('an edit goes the way it goes with the switch off, and the picture foll
     expect(m.all('.tcomp')).toHaveLength(0);
     // Painted once more, from the box itself now that the text is its own.
     expect(m.paints()).toBe(3);
-    expect(paintBoxPicture.mock.calls.at(-1)[1].id).toBe('plain');
-    expect(paintBoxPicture.mock.calls.at(-1)[1].lineN).toBe(null);
-    expect(boxText(paintBoxPicture.mock.calls.at(-1)[1])).toBe('WAITに FOR ME\nOVER THERE');
+    expect(paintBoxPicture.mock.calls.at(-1)[0].id).toBe('plain');
+    expect(paintBoxPicture.mock.calls.at(-1)[0].lineN).toBe(null);
+    expect(boxText(paintBoxPicture.mock.calls.at(-1)[0])).toBe('WAITに FOR ME\nOVER THERE');
     expect(m.sel()).toEqual([5, 5]);
   });
 });
@@ -1290,7 +1290,7 @@ describe('a selection the browser moved itself starts again', () => {
 });
 
 describe('while keys are coming a large box is painted within a smaller budget', () => {
-  const last = () => ({ budget: paintBoxPicture.mock.calls.at(-1)[5], ss: paintBoxPicture.mock.results.at(-1).value.ss, box: paintBoxPicture.mock.calls.at(-1)[1] });
+  const last = () => ({ budget: paintBoxPicture.mock.calls.at(-1)[4], ss: paintBoxPicture.mock.results.at(-1).value.ss, box: paintBoxPicture.mock.calls.at(-1)[0] });
   // The timers set for the pause that have been neither cleared nor let run
   // (the one that runs clears itself: `settleKeys`). The app sets others of
   // its own for a key - the save, the undo - which are not these.
@@ -1321,15 +1321,17 @@ describe('while keys are coming a large box is painted within a smaller budget',
 
   it('and once in full, 150 ms after the last key; the marks do not move with it', async () => {
     const m = await caretIn('big');
-    // At rest it is painted in full: one texture pixel a device pixel.
+    // At rest it is painted in full, at the picture's scale.
     expect(m.paints()).toBe(1);
-    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: 1 });
+    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: PICTURE_SCALE });
     const full = m.canvas().width * m.canvas().height;
     expect(full).toBeGreaterThan(PICTURE_DRAG_PX);
     input(m, 'insertText', 'S');
     await tick();
     expect(m.paints()).toBe(2);
     expect(last().budget).toBe(PICTURE_DRAG_PX);
+    // Lowered past the screen's own pixels here (100% on a 1x display), so
+    // the canvas is the soft picture itself, stretched.
     expect(last().ss).toBeLessThan(1);
     expect(m.canvas().width * m.canvas().height).toBeLessThanOrEqual(PICTURE_DRAG_PX * 1.03);
     const caret = px(m.q('.tcaret'));
@@ -1347,7 +1349,7 @@ describe('while keys are coming a large box is painted within a smaller budget',
     vi.advanceTimersByTime(1);
     await tick();
     expect(m.paints()).toBe(4);
-    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: 1 });
+    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: PICTURE_SCALE });
     expect(boxText(last().box)).toBe('WAITSS FOR ME\nOVER THERE');
     expect(m.canvas().width * m.canvas().height).toBe(full);
     // The same place on the page, and the caret a letter on from where the
@@ -1372,7 +1374,7 @@ describe('while keys are coming a large box is painted within a smaller budget',
     input(m, 'insertText', 'S');
     await tick();
     expect(m.paints()).toBe(2);
-    expect(last().ss).toBe(1);
+    expect(last().ss).toBe(PICTURE_SCALE);
     expect([m.canvas().width, m.canvas().height]).toEqual(size);
     vi.advanceTimersByTime(1000);
     await tick();
@@ -1391,7 +1393,7 @@ describe('while keys are coming a large box is painted within a smaller budget',
     await tick();
     expect(waiting()).toHaveLength(0);
     expect(m.paints()).toBe(3);
-    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: 1 });
+    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: PICTURE_SCALE });
     vi.advanceTimersByTime(1000);
     await tick();
     expect(m.paints()).toBe(3);
@@ -1427,7 +1429,7 @@ describe('while keys are coming a large box is painted within a smaller budget',
     vi.advanceTimersByTime(150);
     await tick();
     expect(m.paints()).toBe(3);
-    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: 1 });
+    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: PICTURE_SCALE });
     expect(last().box.text).toBe('WAITに FOR ME\nOVER THERE');
     expect(m.box.text).toBe('WAIT FOR ME\nOVER THERE');
     expect(m.all('.tcomp')).toHaveLength(1);
@@ -1439,7 +1441,7 @@ describe('while keys are coming a large box is painted within a smaller budget',
     expect(last().budget).toBe(PICTURE_DRAG_PX);
     vi.advanceTimersByTime(150);
     await tick();
-    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: 1 });
+    expect(last()).toMatchObject({ budget: PICTURE_MAX_PX, ss: PICTURE_SCALE });
     const n = m.paints();
     key(m, 'z', { metaKey: true });
     await tick();

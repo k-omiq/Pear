@@ -65,14 +65,14 @@ describe('Layer Styles controls and undo', () => {
     const start = fx(box());
     const base = records();
 
-    await edit(view.getByLabelText('Photoshop stroke 1 size'), 'change', '9');
+    await edit(view.getByLabelText('Stroke 1 size, page px'), 'change', '9');
     expect(box().style.strokeEffects[0].size).toBe(9);
     expect(records()).toBe(base + 1);
     const afterStroke = fx(box());
 
     setEffectsSubTab('shadow');
     await tick();
-    await edit(view.getByLabelText('Inner shadow 1 size'), 'change', '13');
+    await edit(view.getByLabelText('Inner shadow 1 size'), 'input', '13');
     expect(box().style.innerShadows[0].size).toBe(13);
     expect(records()).toBe(base + 2);
     const afterShadow = fx(box());
@@ -80,8 +80,8 @@ describe('Layer Styles controls and undo', () => {
     setEffectsSubTab('fill');
     setInspectorTab('fill');
     await tick();
-    await openFold(view, 'Overlays');
-    await edit(view.getByLabelText('Overlay 1 opacity'), 'change', '33');
+    await openFold(view, 'Pattern');
+    await edit(view.getByLabelText('Tint amount'), 'input', '33');
     expect(box().style.colorOverlays[0].opacity).toBeCloseTo(0.33, 5);
     expect(records()).toBe(base + 3);
 

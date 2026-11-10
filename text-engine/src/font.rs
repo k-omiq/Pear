@@ -275,6 +275,28 @@ impl FontEntry {
         found
     }
 
+    /// The flat tops a line of this face is fitted to in Crisp mode
+    /// ([`crate::paint`]'s grid fit): the top of a capital (`H`) and of a
+    /// lowercase letter (`x`), font units y up, as drawn at this entry's
+    /// place on its axes. Measured from the outlines rather than read from
+    /// OS/2, whose `sCapHeight` and `sxHeight` are missing from old fonts,
+    /// often wrong in hand-made ones, and do not follow a variation axis.
+    /// `None` for a letter the face lacks or draws with no ink.
+    pub fn zones(&self) -> (Option<f32>, Option<f32>) {
+        let Some(font) = self.font_ref() else {
+            return (None, None);
+        };
+        let charmap = font.charmap();
+        let top = |c: char| {
+            charmap
+                .map(c)
+                .and_then(|g| self.glyph_bounds(g.to_u32(), false))
+                .map(|b| b.y_max)
+                .filter(|v| *v > 0.0)
+        };
+        (top('H'), top('x'))
+    }
+
     /// Bytes this entry holds beyond the font file itself. An estimate from
     /// container lengths, good enough to see growth.
     pub fn cache_bytes(&self) -> usize {

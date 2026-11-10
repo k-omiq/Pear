@@ -13,6 +13,7 @@
 // lays a box over what this finds.
 
 import { colorDistance, paletteOf, chromaOf, luminanceOf, hexOf } from './palette.js';
+import { outlineBands } from '../data.js';
 
 // A pixel the cleaner moved by more than this (redmean, 0..~765) is ink it
 // took away; less is scan noise and resampling.
@@ -411,7 +412,7 @@ export function lookFor(fp, { outlineWidth = 3 } = {}) {
   if (ink?.fill) {
     return {
       color: ink.fill,
-      strokes: ink.outline ? [{ color: ink.outline, width: ink.outlineWidth ?? outlineWidth, opacity: 1 }] : [],
+      strokeEffects: ink.outline ? [{ color: ink.outline, size: ink.outlineWidth ?? outlineWidth, opacity: 1 }] : [],
       gradient: ink.shade
         ? { on: true, kind: 'linear', angle: 180, scope: 'box', stops: ink.shade.map((color, i) => ({ color, pos: i / (ink.shade.length - 1), opacity: 1 })) }
         : { on: false },
@@ -420,8 +421,8 @@ export function lookFor(fp, { outlineWidth = 3 } = {}) {
   }
   const w = Math.max(1, Math.round(outlineWidth * 10) / 10);
   const tone = fp.under?.tone ?? 'light';
-  if (tone === 'dark') return { color: '#ffffff', strokes: fp.weight === 'thin' ? [] : [{ color: '#000000', width: w, opacity: 1 }] };
-  return { color: '#000000', strokes: [{ color: '#ffffff', width: w, opacity: 1 }] };
+  if (tone === 'dark') return { color: '#ffffff', strokeEffects: fp.weight === 'thin' ? [] : [{ color: '#000000', size: w, opacity: 1 }] };
+  return { color: '#000000', strokeEffects: [{ color: '#ffffff', size: w, opacity: 1 }] };
 }
 
 // How far (redmean) a box's colour may stand from the original's and still
@@ -440,12 +441,12 @@ export function colourMismatch(style, ink) {
     return !!x && !!y && colorDistance(x, y) <= COLOUR_MATCH;
   };
   const out = {};
-  const bands = (style.strokes ?? []).filter((k) => (Number(k?.width) || 0) > 0 && (k.opacity ?? 1) > 0);
+  const bands = outlineBands(style).filter((k) => (Number(k?.width) || 0) > 0 && (k.opacity ?? 1) > 0);
   const want = ink.shade ?? [ink.fill];
   if (style.noFill) {
     const got = bands[0]?.color ?? null;
     if (!near(got, ink.fill)) out.fill = { want: ink.fill, got: got ?? 'none (hollow, no band)' };
-  } else if (style.pattern?.on) {
+  } else if (style.pattern?.on || style.patternOverlay?.on) {
     out.fill = { want: want.length > 1 ? want : ink.fill, got: 'a pattern' };
   } else if (style.gradient?.on) {
     const stops = (style.gradient.stops ?? []).map((s) => s.color);

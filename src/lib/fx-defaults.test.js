@@ -43,10 +43,10 @@ const edited = {
 describe('the effect defaults', () => {
   it('start from the factory for every kind, and each new effect function says so', () => {
     for (const k of FX_KINDS) expect(fxDefault(k)).toBeNull();
-    expect(newShadow({ angle: 120 })).toMatchObject({ size: 5, opacity: 0.75, blend: 'multiply', knockout: true, useGlobalLight: true });
+    expect(newShadow({ angle: 120 })).toMatchObject({ size: 5, opacity: 0.75, blend: 'normal', knockout: true, useGlobalLight: true });
     expect(newOverlay()).toEqual({ color: '#ff0000', opacity: 1, blend: 'normal' });
     expect(newGradientOverlay().gradient.style).toBe('linear');
-    expect(newStrokeEffect()).toMatchObject({ size: 1, position: 'inside' });
+    expect(newStrokeEffect()).toMatchObject({ size: 3, position: 'outside' });
   });
 
   it('round-trip a stored default of every kind, normalised, whatever was handed in', () => {

@@ -23,7 +23,7 @@ import { sampleRamp } from './gradient-ramp.js';
 
 const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
 const rendered = { imageData: { width: 10, height: 6, data: new Uint8ClampedArray(10 * 6 * 4) }, left: 3, top: 4, right: 13, bottom: 10, opacity: 1 };
-const plain = { ...defaultStyle(), strokes: [], shadows: [] };
+const plain = { ...defaultStyle(), strokeEffects: [], shadows: [] };
 const layerFor = (style) => textLayerFor({ lines: [] }, { lineN: null, text: 'hi', x: 0, y: 0, w: 40, h: 20, style: normalizeStyle({ ...plain, ...style }) }, rendered);
 
 // The layer as Photoshop (ag-psd) reads it back from a written page.
@@ -134,8 +134,8 @@ describe('the PSD effects, written and read back', () => {
 
   it('the outlines and the Photoshop strokes, in colour and in a gradient', () => {
     const layer = layerFor({
-      strokes: [{ color: '#ffffff', width: 3, opacity: 1 }],
       strokeEffects: [
+        normalizeStrokeEffect({ size: 3, position: 'outside', color: '#ffffff' }),
         normalizeStrokeEffect({ size: 4, position: 'center', blend: 'multiply', opacity: 0.5, color: '#112233' }),
         normalizeStrokeEffect({ size: 2, position: 'outside', fill: 'gradient', gradient: { style: 'reflected' } }),
       ],
@@ -373,18 +373,24 @@ describe('the PSD export review fixes', () => {
 
   it('F33: a Stroke Emboss with no Photoshop stroke is left out', () => {
     const bevel = normalizeBevel({ on: true, style: 'stroke' });
-    const strokes = [{ color: '#ffffff', width: 3, opacity: 1 }];
-    const bare = layerFor({ strokes, bevel }).effects;
-    expect(bare.stroke).toHaveLength(1);
-    expect(bare.bevel).toBeUndefined();
-    const stroked = layerFor({ strokes, bevel, strokeEffects: [normalizeStrokeEffect({ size: 2 })] }).effects;
+    const outline = normalizeStrokeEffect({ size: 3, position: 'outside', color: '#ffffff' });
+    // No stroke at all: nothing to emboss, so no bevel.
+    expect(layerFor({ bevel }).effects?.bevel).toBeUndefined();
+    // Under a Stroke Emboss there is no outline run (`outlineRun`): the
+    // outline is a Photoshop stroke, written once, and embossed.
+    const stroked = layerFor({ strokeEffects: [outline], bevel }).effects;
+    expect(stroked.stroke).toHaveLength(1);
     expect(stroked.bevel.style).toBe('stroke emboss');
     // A stroke that paints nothing is neither written nor embossed.
-    const clear = layerFor({ strokes, bevel, strokeEffects: [normalizeStrokeEffect({ size: 2, opacity: 0 })] }).effects;
-    expect(clear.stroke).toHaveLength(1);
-    expect(clear.bevel).toBeUndefined();
-    // Another style keeps its bevel with no stroke at all.
-    expect(layerFor({ strokes, bevel: { ...bevel, style: 'inner' } }).effects.bevel.style).toBe('inner bevel');
+    const clear = layerFor({ strokeEffects: [normalizeStrokeEffect({ size: 2, opacity: 0 })], bevel }).effects;
+    expect(clear?.stroke).toBeUndefined();
+    expect(clear?.bevel).toBeUndefined();
+    // Another style keeps its bevel with no stroke at all, and the outline
+    // goes back to being an outline band.
+    const inner = layerFor({ strokeEffects: [outline], bevel: { ...bevel, style: 'inner' } }).effects;
+    expect(inner.bevel.style).toBe('inner bevel');
+    expect(inner.stroke).toHaveLength(1);
+    expect(layerFor({ bevel: { ...bevel, style: 'inner' } }).effects.bevel.style).toBe('inner bevel');
   });
 
   it('F34: a bevel with a curved Contour ships pixels', () => {
@@ -405,7 +411,7 @@ describe('the PSD export review fixes', () => {
     expect(isRasterOnly(normalizeStyle({ ...plain, patternOverlay: { on: true, opacity: 0 } }))).toBe(false);
     expect(isRasterOnly(normalizeStyle({ ...plain, patternOverlay: { on: true, opacity: 0.5 } }))).toBe(true);
     // The stroke that paints nothing is not written either.
-    expect(layerFor({ strokeEffects: [normalizeStrokeEffect({ size: 2, opacity: 0 })] }).effects).toBeUndefined();
+    expect(layerFor({ strokeEffects: [normalizeStrokeEffect({ size: 2, position: 'inside', opacity: 0 })] }).effects).toBeUndefined();
   });
 });
 

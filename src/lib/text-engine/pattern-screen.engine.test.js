@@ -21,10 +21,10 @@ const job = (fill) => ({ curved: false, align: 'left', bands: [], fill, runs: [{
 
 describe('procedural screen fills', () => {
   it('publishes the kinds in wire order and keeps the app’s first eleven ids', () => {
-    expect(WIRE_VERSION).toBe(10);
+    expect(WIRE_VERSION).toBe(11);
     expect(drawsScreens(engine)).toBe(true);
     expect(patternKinds(engine)).toEqual(names);
-    expect(patternKinds(engine)).toHaveLength(33);
+    expect(patternKinds(engine)).toHaveLength(45);
     expect(patternTile(engine, { kind: 'waves' }, 16, 0.12)).toBeNull();
     // The app's own list (data.js) is the engine's, in the same order.
     expect(patternKinds(engine)).toEqual(PATTERN_KINDS);

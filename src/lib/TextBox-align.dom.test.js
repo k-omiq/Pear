@@ -70,7 +70,7 @@ async function mounted(b) {
   const pg = page();
   const view = render(TextBox, { box: pg.boxes[0], pageFrameEl: document.createElement('div'), pg });
   await tick();
-  return { view, box: pg.boxes[0], pg, paints: () => paintBoxPicture.mock.calls.length, sheet: () => paintBoxPicture.mock.calls.at(-1)?.[9] };
+  return { view, box: pg.boxes[0], pg, paints: () => paintBoxPicture.mock.calls.length, sheet: () => paintBoxPicture.mock.calls.at(-1)?.[6] };
 }
 
 describe('a box whose gradient has Align with Layer off, in the editor', () => {
@@ -112,7 +112,7 @@ describe('a box whose gradient has Align with Layer off, in the editor', () => {
     expect(handle).toBeTruthy();
     await fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100, clientY: 200 });
     expect(pictureTexture).toHaveBeenCalled();
-    expect(pictureTexture.mock.calls.at(-1)[8]).toEqual(PAGE);
+    expect(pictureTexture.mock.calls.at(-1)[7]).toEqual(PAGE);
     await fireEvent.pointerUp(window, { pointerId: 1 });
   });
 });

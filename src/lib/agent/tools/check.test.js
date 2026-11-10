@@ -78,7 +78,7 @@ describe('check', () => {
       app.pages[0].lines = [{ n: 1, en: 'Long ago', tags: ['narration'] }];
       const b = app.pages[0].boxes[0];
       Object.assign(b, { lineN: 1, fit: { kind: 'rect', x: b.x, y: b.y, w: b.w, h: b.h }, outline: { source: 'ring', confidence: 1, ink: '#ffffff' } });
-      Object.assign(b.style, { font: 'Comic Sans', color: '#000000', strokes: [] });
+      Object.assign(b.style, { font: 'Comic Sans', color: '#000000', strokeEffects: [] });
       const issues = (await check({ ids: ['clean'] })).problems[0].issues;
       expect(issues).toEqual(expect.arrayContaining([
         { kind: 'role', detail: { want: 'Arial', have: 'Comic Sans', tag: 'narration' } },

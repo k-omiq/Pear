@@ -7,7 +7,10 @@ import {
   copyStyle,
   pasteStyle,
 } from './presets.svelte.js';
-import { defaultStyle, normalizeWarp } from './data.js';
+import { defaultStyle, normalizeWarp, normalizeStrokeEffect } from './data.js';
+
+// An Outside colour stroke, as a style holds its outline.
+const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, position: 'outside', color, opacity });
 import { applySfxKind, clearSfx } from './sfx.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
 import {
@@ -66,7 +69,7 @@ const doc = () => [
             ],
           },
           pattern: { on: true, kind: 'checker', fg: '#111', bg: '#eee', scale: 2 },
-          strokes: [{ color: '#00ff00', width: 4, opacity: 0.8 }],
+          strokeEffects: [outside('#00ff00', 4, 0.8)],
           shadows: [{ x: 3, y: 3, blur: 5, color: '#000000', opacity: 0.5 }],
         },
       },
@@ -85,7 +88,7 @@ const doc = () => [
           rotation: -15,
           flipH: false,
           flipV: true,
-          strokes: [],
+          strokeEffects: [],
           shadows: [],
         },
       },
@@ -189,7 +192,8 @@ describe('presets management and persistence', () => {
     expect(item.id).toBe('old_1');
     expect(item.name).toBe('Legacy Shout');
     expect(item.style.font).toBe('Bangers');
-    expect(item.style.strokes).toEqual([{ color: '#ff0000', width: 5, opacity: 1 }]);
+    expect(item.style.strokeEffects).toEqual([outside('#ff0000', 5)]);
+    expect('strokes' in item.style).toBe(false);
     expect(item.style.shadows).toEqual([{ x: 1, y: 2, size: 3.75, color: '#000000', opacity: 0.7, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
     expect('outline' in item.style).toBe(false);
     expect('outlineWidth' in item.style).toBe(false);
@@ -252,7 +256,9 @@ describe('style copy and paste', () => {
     // Target box b2 should receive all visual style properties from b1
     expect(b2.style.color).toBe('#ff0000');
     expect(b2.style.size).toBe(32);
-    expect(b2.style.gradient.on).toBe(true);
+    // b1's pattern fill hid its gradient: the pattern moved to the Pattern
+    // Overlay (`foldPatternFill`) and the gradient, still all there, is off.
+    expect(b2.style.gradient.on).toBe(false);
     expect(b2.style.gradient.angle).toBe(90);
     expect(b2.style.gradient.scope).toBe('line');
     // The whole stop list came across, length and per-stop alpha included -
@@ -263,17 +269,18 @@ describe('style copy and paste', () => {
       { color: '#0000ff', pos: 0.6, opacity: 0.25 },
       { color: '#ff0000', pos: 1, opacity: 1 },
     ]);
-    expect(b2.style.pattern.on).toBe(true);
-    expect(b2.style.pattern.kind).toBe('checker');
-    expect(b2.style.strokes).toEqual([{ color: '#00ff00', width: 4, opacity: 0.8 }]);
+    expect(b2.style.pattern.on).toBe(false);
+    expect(b2.style.patternOverlay.on).toBe(true);
+    expect(b2.style.patternOverlay.pattern.kind).toBe('checker');
+    expect(b2.style.strokeEffects).toEqual([outside('#00ff00', 4, 0.8)]);
     expect(b2.style.shadows).toEqual([{ x: 3, y: 3, size: 6.25, color: '#000000', opacity: 0.5, spread: 0, noise: 0, blend: 'normal', contour: { preset: 'linear', aa: false }, knockout: false, useGlobalLight: false }]);
 
     // Modifying target box styles afterwards should not affect the clipboard (no aliasing)
-    b2.style.strokes[0].color = '#000000';
+    b2.style.strokeEffects[0].color = '#000000';
     b2.style.gradient.stops[0].color = '#000000';
     const b3 = { ...b2, id: 'b3', style: { ...defaultStyle() } };
     pasteStyle(b3);
-    expect(b3.style.strokes[0].color).toBe('#00ff00');
+    expect(b3.style.strokeEffects[0].color).toBe('#00ff00');
     expect(b3.style.gradient.stops[0].color).toBe('#ffffff');
   });
 
@@ -372,12 +379,12 @@ describe('style copy and paste', () => {
     undo();
     expect(b2.style.color).toBe('#0000ff');
     expect(b2.style.size).toBe(20);
-    expect(b2.style.strokes).toEqual([]);
+    expect(b2.style.strokeEffects).toEqual([]);
 
     // Redo re-applies pasted style
     redo();
     expect(b2.style.color).toBe('#ff0000');
     expect(b2.style.size).toBe(32);
-    expect(b2.style.strokes).toEqual([{ color: '#00ff00', width: 4, opacity: 0.8 }]);
+    expect(b2.style.strokeEffects).toEqual([outside('#00ff00', 4, 0.8)]);
   });
 });

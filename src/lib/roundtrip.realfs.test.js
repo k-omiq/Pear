@@ -121,7 +121,7 @@ const { setPageSwitchHook, boxText, setChapterTypesetMode } = await import("./st
 await import("./prefs.svelte.js");
 const { typesetEnabled, setTypesetEnabled } = await import("./measure.js");
 const { boxCandidate, placeBlock } = await import("./contain.js");
-const { setLegacyTypeset } = await import("./data.js");
+const { setLegacyTypeset, strokesFromBands } = await import("./data.js");
 
 // ---------- fixtures ----------
 const crcTable = [...Array(256)].map((_, n) => {
@@ -546,10 +546,10 @@ describe("a style survives the trip to disk and back", () => {
         bg: "#fefdfc",
         scale: 2,
       },
-      strokes: [
+      strokeEffects: strokesFromBands([
         { color: "#000000", width: 2, opacity: 0.5 },
         { color: "#00ff00", width: 6, opacity: 1 },
-      ],
+      ]),
       shadows: [
         { x: 4, y: 5, blur: 6, color: "#123456", opacity: 0.25 },
         { x: -1, y: -2, blur: 0, color: "#654321", opacity: 1 },
@@ -572,7 +572,7 @@ describe("a style survives the trip to disk and back", () => {
     const id = addEmptyBox(100, 100);
     endEdit("bare");
     const b = byId(id);
-    b.style = cloneStyle({ ...b.style, strokes: [], shadows: [] });
+    b.style = cloneStyle({ ...b.style, strokeEffects: [], shadows: [] });
     settleEdits();
 
     expect(await flushBeforeLeaving("editor")).toBe(true);
@@ -580,7 +580,7 @@ describe("a style survives the trip to disk and back", () => {
     await openChapter(p.id, c.id);
     // The default style has one white stroke. A reopen that hands it back is a
     // reopen that undid the user's edit.
-    expect(app.pages[0].boxes[0].style.strokes).toEqual([]);
+    expect(app.pages[0].boxes[0].style.strokeEffects).toEqual([]);
     expect(app.pages[0].boxes[0].style.shadows).toEqual([]);
     closeChapter();
   });

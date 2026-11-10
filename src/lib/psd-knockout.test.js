@@ -29,7 +29,7 @@ import { defaultStyle, normalizeStyle, normalizeBlending } from './data.js';
 
 const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
 const rendered = { imageData: { width: 10, height: 6, data: new Uint8ClampedArray(10 * 6 * 4).fill(128) }, left: 3, top: 4, right: 13, bottom: 10, opacity: 1 };
-const plain = { ...defaultStyle(), strokes: [], shadows: [] };
+const plain = { ...defaultStyle(), strokeEffects: [], shadows: [] };
 const box = (text, knockout, extra = {}) => ({
   lineN: null,
   text,

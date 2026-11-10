@@ -22,6 +22,7 @@
 
 import { ART_SIZED_ROLES } from '../lettering.js';
 import { MAX_TURN } from './footprint.js';
+import { outlineBands } from '../data.js';
 
 // Tags whose boxes are drawn sounds, never held to a font.
 export const FREE_FONT_TAGS = ['sfx', 'sfx-sharp', 'sfx-soft'];
@@ -49,12 +50,12 @@ export function luminance(hex) {
 // The tone the reader sees as the text's body: its fill, or the gradient's
 // stops averaged, or - for hollow letters - the innermost outline.
 function bodyLuminance(style) {
-  if (style.noFill) return luminance(style.strokes?.[0]?.color);
+  if (style.noFill) return luminance(style.strokeEffects?.[0]?.color);
   if (style.gradient?.on && style.gradient.stops?.length) {
     const ls = style.gradient.stops.map((s) => luminance(s.color)).filter((l) => l != null);
     return ls.length ? ls.reduce((a, b) => a + b, 0) / ls.length : null;
   }
-  if (style.pattern?.on) return null;
+  if (style.pattern?.on || style.patternOverlay?.on) return null;
   return luminance(style.color);
 }
 
@@ -85,8 +86,8 @@ export function letteringIssues(box, { want = null, tags = [], ink = null } = {}
     const inside = ink === '#ffffff' ? 0 : 1; // white ink means a dark inside
     if (body != null && Math.abs(body - inside) < 0.35) {
       // An outline of the other tone, wide enough to read, carries the text.
-      const carried = (s.strokes ?? []).some((k) => k.width >= 2 && (k.opacity ?? 1) > 0.5 && Math.abs((luminance(k.color) ?? inside) - inside) >= 0.5);
-      if (!carried) out.push({ kind: 'contrast', detail: { fill: s.noFill ? s.strokes?.[0]?.color : s.color, balloon: ink === '#ffffff' ? 'dark' : 'light' } });
+      const carried = outlineBands(s).some((k) => k.width >= 2 && (k.opacity ?? 1) > 0.5 && Math.abs((luminance(k.color) ?? inside) - inside) >= 0.5);
+      if (!carried) out.push({ kind: 'contrast', detail: { fill: s.noFill ? s.strokeEffects?.[0]?.color : s.color, balloon: ink === '#ffffff' ? 'dark' : 'light' } });
     }
   }
   const turn = turnOf(s.rotation);

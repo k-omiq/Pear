@@ -85,7 +85,7 @@ const setFields = (b, from) => {
     else if (k === 'colours') {
       b.style.color = from.colours.color;
       from.colours.strokes.forEach((c, i) => {
-        if (b.style.strokes[i]) b.style.strokes[i].color = c;
+        if (b.style.strokeEffects[i]) b.style.strokeEffects[i].color = c;
       });
       b.style.autoContrast = from.colours.auto;
     }

@@ -5,7 +5,7 @@ import { readPsd } from 'ag-psd';
 // written by this app, read back by ag-psd as Photoshop would hand it over
 // with the embedded project gone, and imported, a style comes back as it was.
 import { pagePsdDocument, textLayerFor, writePagePsd, reconstructForeign, styleFromPsdLayer, FILL_GRADIENT_NAME } from './psd.js';
-import { defaultStyle, normalizeStyle } from './data.js';
+import { defaultStyle, normalizeStyle, strokesFromBands, outlineBands } from './data.js';
 import { setGlobalLight, resolveShadow } from './text-paint.js';
 
 const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
@@ -70,13 +70,14 @@ describe('a PSD layer style comes back through a foreign import', () => {
 
   it('gradient overlays, the fill gradient, Photoshop strokes and the outlines', async () => {
     const style = {
-      strokes: [{ color: '#ffffff', width: 3, opacity: 1 }, { color: '#000000', width: 2, opacity: 0.5 }],
       gradient: { on: true, angle: 180, stops: [{ color: '#000000', pos: 0, opacity: 1 }, { color: '#ffffff', pos: 1, opacity: 1 }] },
       gradientOverlays: [
         { blend: 'multiply', opacity: 0.5, gradient: { style: 'reflected', angle: 30, scale: 0.7, offset: [0.1, -0.2], reverse: true, stops } },
         { gradient: { style: 'linear', angle: -60, type: 'noise', noise: { seed: 42, roughness: 0.8, model: 'hsb', min: [0.1, 0.2, 0.3], max: [0.9, 0.8, 0.7], restrict: false, transparency: true } } },
       ],
       strokeEffects: [
+        // The outlines: two bands at the head of the list.
+        ...strokesFromBands([{ color: '#ffffff', width: 3, opacity: 1 }, { color: '#000000', width: 2, opacity: 0.5 }]),
         // The review's case: a 1 px Inside stroke, which used to vanish.
         { size: 1, position: 'inside', color: '#00ff00' },
         { size: 4, position: 'center', blend: 'multiply', opacity: 0.5, fill: 'gradient', gradient: { style: 'angle', angle: 10, scale: 1.2, stops } },
@@ -85,7 +86,8 @@ describe('a PSD layer style comes back through a foreign import', () => {
       ],
     };
     const { before, after } = await throughPsd(style);
-    expectSame(after.strokes, before.strokes);
+    expect(outlineBands(before)).toHaveLength(2);
+    expectSame(outlineBands(after), outlineBands(before));
     expectSame(after.gradient, { on: true, kind: 'linear', angle: 180, stops: before.gradient.stops });
     expectSame(after.gradientOverlays, before.gradientOverlays);
     expectSame(after.strokeEffects.map(({ pattern, ...k }) => k), before.strokeEffects.map(({ pattern, ...k }) => k));
@@ -125,8 +127,8 @@ describe('a PSD layer style comes back through a foreign import', () => {
   });
 
   it('a layer with no effects comes back with none, not the defaults', async () => {
-    const { after } = await throughPsd({ strokes: [], shadows: [] });
-    expect(after.strokes).toEqual([]);
+    const { after } = await throughPsd({ strokeEffects: [], shadows: [] });
+    expect(outlineBands(after)).toEqual([]);
     expect(after.shadows).toEqual([]);
     expect(after.strokeEffects).toEqual([]);
     expect(after.outerGlow.on).toBe(false);
@@ -143,12 +145,14 @@ describe('a Photoshop file', () => {
         dropShadow: [{ enabled: false, size: { value: 5 } }],
       },
     });
-    expect(style.strokes).toEqual([]);
+    expect('strokes' in style).toBe(false);
     expect(style.strokeEffects.map((k) => [k.position, k.size])).toEqual([['outside', 3], ['inside', 1]]);
     // An unticked shadow comes in switched off, not dropped (`instanceOn`).
     expect(style.shadows.map((sh) => [sh.on, sh.size])).toEqual([[false, 5]]);
     // With no Overprint flag (an older writer), an Outside colour stroke is an outline.
-    expect(styleFromPsdLayer({ effects: { stroke: [stroke({ overprint: undefined })] } }).strokes).toEqual([{ color: '#000000', width: 3, opacity: 1 }]);
+    expect(styleFromPsdLayer({ effects: { stroke: [stroke({ overprint: undefined })] } })).toEqual(
+      expect.objectContaining({ strokeEffects: strokesFromBands([{ color: '#000000', width: 3, opacity: 1 }]) }),
+    );
   });
 
   // A foreign overlay that leaves out its mode, scale and offset, as the

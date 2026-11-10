@@ -1747,7 +1747,7 @@ fn a_runs_scale_and_skew_are_read_and_their_range_is_checked() {
     let mut old = good.clone();
     old[4] = 9;
     assert_eq!(decode(&old).err(), Some(Error::BadSpec));
-    assert_eq!(WIRE_VERSION, 10);
+    assert_eq!(WIRE_VERSION, 11);
 }
 
 #[test]
@@ -2618,4 +2618,58 @@ fn a_mesh_that_enlarges_the_letters_flattens_them_as_finely_as_a_transform_would
     j.mesh = Some(m);
     let got = paint(&mut e, &request(j, face));
     assert_eq!(difference(&got, &want), (0, 0));
+}
+
+/// Crisp (`Effects::crisp`): a straight line's baseline and cap height land on
+/// whole page pixels - one job unit, two device pixels at this transform - so
+/// the foot and the top of an `H` stem are one sharp row each, where the same
+/// line painted exactly has a grey row at both.
+#[test]
+fn crisp_puts_the_baseline_and_cap_height_on_whole_page_pixels() {
+    let mut e = Engine::new();
+    let font = load(&mut e, "DejaVuSans.ttf");
+    let paint_at = |e: &mut Engine, crisp: bool| {
+        let mut j = job(vec![run("HH", 4.0, 40.37)]);
+        j.effects.crisp = crisp.then_some(Pt::new(0.0, 0.0));
+        let mut r = request(j, Face::new(font, 31.0));
+        r.transform = Affine([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
+        paint(e, &r)
+    };
+    let exact = paint_at(&mut e, false);
+    let crisp = paint_at(&mut e, true);
+    // A column through the first stem, found halfway up it.
+    let stem = (0..200).find(|&x| px(&crisp, x, 60)[3] == 255).expect("a stem");
+    let stem = stem + 1;
+    let alpha = |r: &Raster, y: i32| px(r, stem, y)[3];
+    // Exactly: the baseline is at device 80.74, so row 80 is three quarters ink.
+    assert!((150..=230).contains(&alpha(&exact, 80)), "exact foot row {}", alpha(&exact, 80));
+    // Crisp: the baseline is on 80, a whole page pixel (two device pixels).
+    assert_eq!(alpha(&crisp, 79), 255);
+    assert_eq!(alpha(&crisp, 80), 0);
+    // The cap height is a whole number of page pixels above it.
+    let top = (0..80).find(|&y| alpha(&crisp, y) > 0).unwrap();
+    assert_eq!(alpha(&crisp, top), 255, "the top row is solid");
+    assert_eq!((80 - top) % 2, 0, "cap height {} device px is whole page pixels", 80 - top);
+    // Off a whole page pixel by a turn, Crisp does nothing.
+    let turned = |e: &mut Engine, crisp: bool| {
+        let mut j = job(vec![run("HH", 4.0, 40.37)]);
+        j.effects.crisp = crisp.then_some(Pt::new(0.0, 0.0));
+        let mut r = request(j, Face::new(font, 31.0));
+        let (s, c) = 0.1f64.sin_cos();
+        r.transform = Affine([2.0 * c, 2.0 * s, -2.0 * s, 2.0 * c, 20.0, 0.0]);
+        paint(e, &r)
+    };
+    assert_eq!(turned(&mut e, true).data, turned(&mut e, false).data);
+    // A surface cut one device pixel down from the picture's corner: the
+    // page's pixel edges are on odd rows of it, and the fit follows them.
+    let mut j = job(vec![run("HH", 4.0, 40.37)]);
+    j.effects.crisp = Some(Pt::new(0.0, -1.0));
+    let mut r = request(j, Face::new(font, 31.0));
+    r.transform = Affine([2.0, 0.0, 0.0, 2.0, 0.0, -1.0]);
+    let moved = paint(&mut e, &r);
+    assert_eq!(alpha(&moved, 78), 255);
+    assert_eq!(alpha(&moved, 79), 0);
+    let top = (0..79).find(|&y| alpha(&moved, y) > 0).unwrap();
+    assert_eq!(alpha(&moved, top), 255, "the top row is solid");
+    assert_eq!((79 - top) % 2, 0);
 }

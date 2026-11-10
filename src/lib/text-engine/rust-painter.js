@@ -80,10 +80,13 @@ export function createRustGlyphPainter(rust, options = {}) {
 
   // A job as the engine is asked for it: the face it names, resolved, and
   // what only this painter knows.
-  function request(job, transform) {
+  // `corner` is where the canvas's own corner is on the surface the
+  // transform paints, device px: a Crisp job's page pixel grid is counted
+  // from it (the canvas is a box's picture, set on whole page pixels).
+  function request(job, transform, corner = [0, 0]) {
     const face = rust.handle(job.face);
     return {
-      job,
+      job: job.crisp ? { ...job, crisp: { x: corner[0], y: corner[1] } } : job,
       font: face.font,
       size: face.size,
       synth: face.flags,
@@ -168,7 +171,7 @@ export function createRustGlyphPainter(rust, options = {}) {
   // The box job as the engine is asked for it, on the surface `surfaceOf` cut.
   function boxRequest(spec, { m, x0, y0, width, height }) {
     return {
-      ...request(spec.job, [m.a, m.b, m.c, m.d, m.e - x0, m.f - y0]),
+      ...request(spec.job, [m.a, m.b, m.c, m.d, m.e - x0, m.f - y0], [-x0, -y0]),
       width,
       height,
       grain: grainOrigin(spec.toPage, m, x0, y0),

@@ -20,6 +20,8 @@
 pub mod abi;
 // Reaches the shared engine through `abi::with_engine`, which exists with the
 // painter only; see the note at the top of the file.
+#[cfg(feature = "encode")]
+pub mod abi_encode;
 #[cfg(feature = "paint")]
 pub mod abi_instance;
 #[cfg(feature = "paint")]

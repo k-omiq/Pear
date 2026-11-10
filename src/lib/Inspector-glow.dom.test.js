@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 
 // A glow's Quality > Jitter in the Inspector's Glow sub-tab: a slider and a
 // percent field, open only on a gradient glow (Photoshop greys it out on a
@@ -10,6 +11,7 @@ import { setInspectorTab, setEffectsSubTab } from './inspector-tabs.svelte.js';
 import { initHistory, resetHistory } from './editor/history.svelte.js';
 import { defaultStyle, normalizeStyle } from './data.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
+import { openFxFolds } from '../test/inspector-folds.js';
 
 let restoreCanvas;
 beforeAll(() => {
@@ -40,19 +42,20 @@ function mounted(style) {
 }
 
 describe("a glow's Jitter", () => {
-  it('is open on a gradient glow and writes the style, in percent', async () => {
+  it('is under More on a gradient glow and writes the style, in percent', async () => {
     const { view, box } = mounted({ outerGlow: { on: true, fill: 'gradient' }, innerGlow: { on: true, fill: 'gradient' } });
-    const field = view.getByLabelText('Outer glow jitter, percent');
-    expect(field.disabled).toBe(false);
-    await fireEvent.change(field, { target: { value: '60' } });
+    await tick();
+    await openFxFolds(view);
+    await fireEvent.input(view.getByRole('slider', { name: 'Outer glow jitter' }), { target: { value: '60' } });
     expect(box().style.outerGlow.jitter).toBe(0.6);
-    await fireEvent.input(view.getByLabelText('Inner glow jitter'), { target: { value: '25' } });
+    await fireEvent.input(view.getByRole('slider', { name: 'Inner glow jitter' }), { target: { value: '25' } });
     expect(box().style.innerGlow.jitter).toBe(0.25);
   });
 
-  it('is shut on a colour glow', () => {
+  it('is not shown on a colour glow, which has no gradient to scatter', async () => {
     const { view } = mounted({ outerGlow: { on: true, fill: 'color' } });
-    expect(view.getByLabelText('Outer glow jitter').disabled).toBe(true);
-    expect(view.getByLabelText('Outer glow jitter, percent').disabled).toBe(true);
+    await tick();
+    await openFxFolds(view);
+    expect(view.queryByLabelText('Outer glow jitter')).toBeNull();
   });
 });

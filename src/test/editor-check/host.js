@@ -22,7 +22,7 @@ import { textEngine, glyphPainter } from '../../lib/text-engine/index.js';
 import { flipTestPaint } from './refuse.js';
 import { renderPageCanvas, warpTexture } from '../../lib/exporter.js';
 import { pictureScale, pictureTexture, PICTURE_MAX_PX, PICTURE_DRAG_PX } from '../../lib/editor/box-picture.js';
-import { defaultStyle, normalizeStyle } from '../../lib/data.js';
+import { defaultStyle, normalizeStyle, strokesFromBands } from '../../lib/data.js';
 import { boxText } from '../../lib/store.svelte.js';
 import { typeModel } from '../../lib/type-rows.js';
 import { rawOffset, domPoint } from '../../lib/edit-lines.js';
@@ -56,15 +56,15 @@ const COMIC = 'Check Comic';
 const BANGERS = 'Check Bangers';
 const SANS = 'Aaa Sans';
 const WORDS = 'WAIT FOR ME\nOVER THERE!';
-const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: COMIC, size: 30, strokes: [], ...over });
+const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: COMIC, size: 30, strokeEffects: [], ...over });
 const KINDS = [
   ['plain', {}],
-  ['stroked', { strokes: [{ color: '#d02020', width: 3, opacity: 1 }] }],
+  ['stroked', { strokeEffects: strokesFromBands([{ color: '#d02020', width: 3, opacity: 1 }]) }],
   ['gradient-line', { size: 34, gradient: { on: true, kind: 'linear', angle: 180, scope: 'line', stops: [{ color: '#ff2a00', pos: 0, opacity: 1 }, { color: '#1b3cff', pos: 1, opacity: 1 }] } }],
   ['gradient-radial', { size: 34, font: BANGERS, gradient: { on: true, kind: 'radial', cx: 0.5, cy: 0.5, radius: 1, scope: 'box', stops: [{ color: '#ffd000', pos: 0, opacity: 1 }, { color: '#c00030', pos: 1, opacity: 1 }] } }],
-  ['pattern', { size: 40, font: BANGERS, pattern: { on: true, kind: 'dots', fg: '#000000', bg: '#ffb000', scale: 1 }, strokes: [{ color: '#000000', width: 2, opacity: 1 }] }],
-  ['bands', { strokes: [{ color: '#ffffff', width: 2, opacity: 1 }, { color: '#000000', width: 2, opacity: 1 }, { color: '#00a0ff', width: 4, opacity: 0.5 }] }],
-  ['shadows', { strokes: [{ color: '#ffffff', width: 2, opacity: 1 }], shadows: [{ x: 4, y: 4, blur: 6, color: '#000000', opacity: 0.6 }, { x: -6, y: 8, blur: 0, color: '#ff0060', opacity: 0.5 }] }],
+  ['pattern', { size: 40, font: BANGERS, pattern: { on: true, kind: 'dots', fg: '#000000', bg: '#ffb000', scale: 1 }, strokeEffects: strokesFromBands([{ color: '#000000', width: 2, opacity: 1 }]) }],
+  ['bands', { strokeEffects: strokesFromBands([{ color: '#ffffff', width: 2, opacity: 1 }, { color: '#000000', width: 2, opacity: 1 }, { color: '#00a0ff', width: 4, opacity: 0.5 }]) }],
+  ['shadows', { strokeEffects: strokesFromBands([{ color: '#ffffff', width: 2, opacity: 1 }]), shadows: [{ x: 4, y: 4, blur: 6, color: '#000000', opacity: 0.6 }, { x: -6, y: 8, blur: 0, color: '#ff0060', opacity: 0.5 }] }],
   ['blur', { blur: 2 }],
   ['smear', { motionBlur: { on: true, x: 2, y: 0, amount: 6 } }],
   ['roughen', { size: 36, font: BANGERS, roughen: { on: true, amount: 5, detail: 0.06, seed: 7 } }],
@@ -74,11 +74,11 @@ const KINDS = [
   ['arc', { curve: 45 }, 'ALONG AN ARC WE GO'],
   ['circle', { size: 20, circle: { on: true, angle: 0, inside: false, r: 0 } }, 'ROUND AND ROUND IT GOES '],
   ['path', { size: 24, path: { on: true, pts: [{ x: 6, y: 80, ix: -40, iy: 0, ox: 50, oy: -70 }, { x: 214, y: 40, ix: -50, iy: 70, ox: 40, oy: 0 }] } }, 'DOWN A BEZIER PATH'],
-  ['flipped', { flipH: true, strokes: [{ color: '#d02020', width: 3, opacity: 1 }] }],
+  ['flipped', { flipH: true, strokeEffects: strokesFromBands([{ color: '#d02020', width: 3, opacity: 1 }]) }],
   ['rot7', { rotation: 7 }],
   ['rot90', { rotation: 90 }, 'TURNED\nA QUARTER'],
   ['rot7-shadow', { rotation: 7, shadows: [{ x: 4, y: 4, blur: 4, color: '#000000', opacity: 0.6 }] }],
-  ['opacity', { opacity: 0.5, strokes: [{ color: '#d02020', width: 3, opacity: 1 }] }],
+  ['opacity', { opacity: 0.5, strokeEffects: strokesFromBands([{ color: '#d02020', width: 3, opacity: 1 }]) }],
   ['faux-bold', { bold: true }],
   ['faux-italic', { italic: true }],
   ['real-italic', { font: SANS, size: 24, italic: true }],
@@ -275,7 +275,7 @@ window.__ec = {
   sameAsExporter() {
     const pg = page();
     return pg.boxes.map((b) => {
-      const scale = pictureScale(app.zoom, devicePixelRatio, b.style.rotation);
+      const scale = pictureScale(b.style.rotation);
       const cnv = boxEl(b.id)?.querySelector('canvas.warpl[data-painter="engine"]');
       if (!cnv) return { id: b.id, canvas: false };
       if (!cnv.width) return { id: b.id, canvas: true, painted: false };
@@ -916,7 +916,7 @@ window.__ec = {
     if (!cnv.width) return { id, canvas: true, painted: false };
     const held = el.querySelector('.txt.editable')?.textContent;
     const of = held != null && held !== boxText(b, pg) ? { ...b, text: held } : b;
-    const scale = pictureScale(app.zoom, devicePixelRatio, b.style.rotation);
+    const scale = pictureScale(b.style.rotation);
     const tex = pictureTexture(of, pg, null, scale);
     const r = warpTexture(tex, of);
     const out = { id, canvas: true, painted: true, editor: [cnv.width, cnv.height], exporter: [r.canvas.width, r.canvas.height], composing: of !== b };
@@ -959,7 +959,7 @@ window.__ec = {
   timePaint(id, n = 7) {
     const b = boxOf(id);
     const pg = page();
-    const scale = pictureScale(app.zoom, devicePixelRatio, b.style.rotation);
+    const scale = pictureScale(b.style.rotation);
     const out = {};
     const ms = { full: [], key: [] };
     for (let i = 0; i < n; i++) {
@@ -1252,7 +1252,7 @@ const TYPE_SPEC = { pages: [{ w: 1560, h: 760, boxes: [
   { id: 'centre', x: 40, y: 60, w: 240, h: 120 },
   { id: 'left', x: 340, y: 60, w: 240, h: 120, over: { align: 'left', valign: 'top', size: 24 } },
   { id: 'right', x: 640, y: 60, w: 240, h: 120, over: { align: 'right', valign: 'bottom', size: 24, letterSpacing: 2 } },
-  { id: 'stroke-gradient', x: 940, y: 60, w: 240, h: 120, over: { size: 32, strokes: [{ color: '#101010', width: 3, opacity: 1 }], gradient: { on: true, kind: 'linear', angle: 180, scope: 'line', stops: [{ color: '#ff2a00', pos: 0, opacity: 1 }, { color: '#1b3cff', pos: 1, opacity: 1 }] } } },
+  { id: 'stroke-gradient', x: 940, y: 60, w: 240, h: 120, over: { size: 32, strokeEffects: strokesFromBands([{ color: '#101010', width: 3, opacity: 1 }]), gradient: { on: true, kind: 'linear', angle: 180, scope: 'line', stops: [{ color: '#ff2a00', pos: 0, opacity: 1 }, { color: '#1b3cff', pos: 1, opacity: 1 }] } } },
   { id: 'bold', x: 1240, y: 60, w: 260, h: 120, over: { bold: true } },
   { id: 'italic', x: 40, y: 300, w: 240, h: 120, over: { font: SANS, size: 24, italic: true }, text: 'Wait for me\noffice affix' },
   { id: 'upper', x: 340, y: 300, w: 240, h: 120, over: { uppercase: true, size: 26 }, text: 'Wait for me\nStraße over' },
@@ -1260,7 +1260,7 @@ const TYPE_SPEC = { pages: [{ w: 1560, h: 760, boxes: [
   { id: 'returns', x: 940, y: 300, w: 240, h: 150, over: { size: 26, valign: 'top' }, text: 'AFTER ME\nTHE END\n\n' },
   { id: 'fallback', x: 1240, y: 300, w: 260, h: 120, over: { size: 26 }, text: 'HAVE Ω Ж\nLACK あ' },
   { id: 'rot30', x: 80, y: 560, w: 240, h: 120, over: { rotation: 30 } },
-  { id: 'flipped', x: 440, y: 560, w: 240, h: 120, over: { flipH: true, strokes: [{ color: '#d02020', width: 3, opacity: 1 }] } },
+  { id: 'flipped', x: 440, y: 560, w: 240, h: 120, over: { flipH: true, strokeEffects: strokesFromBands([{ color: '#d02020', width: 3, opacity: 1 }]) } },
   { id: 'arc', x: 800, y: 580, w: 260, h: 120, over: { curve: 45 }, text: 'ALONG AN ARC WE GO' },
 ] }] };
 // The typing check's odd ones: nothing to draw, nothing but spaces, a word
@@ -1285,7 +1285,7 @@ const TYPE2_SPEC = { pages: [{ w: 1560, h: 900, boxes: [
   { id: 'upper-arc', x: 480, y: 90, w: 320, h: 140, over: { curve: 45, uppercase: true }, text: 'straße über uns' },
   { id: 'small', x: 900, y: 60, w: 220, h: 110 },
   { id: 'bold', x: 1200, y: 60, w: 300, h: 120, over: { bold: true } },
-  { id: 'big', x: 60, y: 340, w: 640, h: 440, over: { size: 90, strokes: [{ color: '#d02020', width: 4, opacity: 1 }], shadows: [{ x: 4, y: 4, blur: 6, color: '#000000', opacity: 0.6 }], blur: 1 } },
+  { id: 'big', x: 60, y: 340, w: 640, h: 440, over: { size: 90, strokeEffects: strokesFromBands([{ color: '#d02020', width: 4, opacity: 1 }]), shadows: [{ x: 4, y: 4, blur: 6, color: '#000000', opacity: 0.6 }], blur: 1 } },
   // Text that runs out of its frame, straight and on a curve: where the
   // editable under the picture is not.
   { id: 'spill', x: 1240, y: 320, w: 80, h: 40, text: 'OVERFLOWING\nSIDEWAYS\nAND\nDOWN' },
@@ -1296,8 +1296,8 @@ const LONG_LINE = 'A'.repeat(20000);
 // The three sizes of box the cost of a keystroke is taken on.
 const TYPE_COST_SPEC = { pages: [{ w: 1400, h: 1700, boxes: [
   { id: 'balloon', x: 60, y: 60, w: 220, h: 110 },
-  { id: 'effect', x: 60, y: 260, w: 600, h: 400, over: { size: 90, strokes: [{ color: '#d02020', width: 4, opacity: 1 }], shadows: [{ x: 4, y: 4, blur: 6, color: '#000000', opacity: 0.6 }], blur: 1 } },
-  { id: 'page-wide', x: 60, y: 760, w: 1100, h: 800, over: { size: 150, strokes: [{ color: '#d02020', width: 6, opacity: 1 }], shadows: [{ x: 6, y: 6, blur: 8, color: '#000000', opacity: 0.6 }] } },
+  { id: 'effect', x: 60, y: 260, w: 600, h: 400, over: { size: 90, strokeEffects: strokesFromBands([{ color: '#d02020', width: 4, opacity: 1 }]), shadows: [{ x: 4, y: 4, blur: 6, color: '#000000', opacity: 0.6 }], blur: 1 } },
+  { id: 'page-wide', x: 60, y: 760, w: 1100, h: 800, over: { size: 150, strokeEffects: strokesFromBands([{ color: '#d02020', width: 6, opacity: 1 }]), shadows: [{ x: 6, y: 6, blur: 8, color: '#000000', opacity: 0.6 }] } },
   // One word of twenty thousand letters: the breaker keeps a word whole, so
   // it is one line, and one row of twenty thousand stops.
   { id: 'long-line', x: 60, y: 1600, w: 1100, h: 60, over: { size: 20, align: 'left', valign: 'top' }, text: LONG_LINE },

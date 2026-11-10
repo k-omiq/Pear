@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 10
+export const WIRE_VERSION = 11
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -368,13 +368,17 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   // silhouette, which is then the widest band's outer half alone).
   // 8: bands and fill letter by letter (`strokeOrder: 'each'`). 16: a
   // negative, the letters grown into one blob the bands go round.
+  // 32 (v11): Crisp, each straight line's baseline, x-height and cap height
+  // moved onto whole page pixels (the engine skips it where a turn, a mesh
+  // or a roughening would undo it).
   const negative = job.negative ?? null
   u32(
     (job.curved ? 1 : 0) |
       (job.silhouette ? 2 : 0) |
       (job.noFill ? 4 : 0) |
       (job.strokeOrder === 'each' ? 8 : 0) |
-      (negative ? 16 : 0),
+      (negative ? 16 : 0) |
+      (job.crisp ? 32 : 0),
   )
   // An alignment the canvas does not know leaves its `textAlign` at "start".
   u32(ALIGN[job.align] ?? 0)
@@ -394,6 +398,14 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   if (!(Math.abs(slant) <= 1.5)) throw new Error(`mt-text: slant is within 1.5, not ${slant}`)
   f64(embolden)
   f64(slant)
+  // With Crisp: where a page pixel's corner is, in the transform's device
+  // pixels (`true` is the device origin).
+  if (job.crisp) {
+    const at = job.crisp === true ? { x: 0, y: 0 } : job.crisp
+    if (!(Number.isFinite(at.x) && Number.isFinite(at.y))) throw new Error('mt-text: crisp needs a finite grid corner')
+    f64(at.x)
+    f64(at.y)
+  }
   u32(job.bands.length)
   for (const band of job.bands) {
     rgba(band.color)
@@ -437,7 +449,8 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // without a bump, so an early v11 wasm refuses every SFX copy's shadow.
 // v17 is a changed meaning with no new byte: the glyph job's mesh and
 // roughening now bend the box's brush ink too (a v16 wasm left it unbent).
-export const BOX_WIRE_VERSION = 17
+// v18: the glyph job inside it is v11 (job flag 32, Crisp).
+export const BOX_WIRE_VERSION = 18
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
@@ -1090,6 +1103,18 @@ const PATTERN_KIND = {
   glitch: 30,
   dither: 31,
   'dither-dots': 32,
+  circles: 33,
+  crosses: 34,
+  sparkles: 35,
+  flowers: 36,
+  basket: 37,
+  herringbone: 38,
+  plaid: 39,
+  chevron: 40,
+  seigaiha: 41,
+  shippo: 42,
+  dashes: 43,
+  concentric: 44,
   picked: 255,
 }
 

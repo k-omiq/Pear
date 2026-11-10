@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { inkOverhang, styleReach } from './paint-reach.js';
 import { inkReach } from './text-paint.js';
 import { boxInkRect } from './contain.js';
-import { defaultStyle, normalizeStyle } from './data.js';
+import { defaultStyle, normalizeStyle, strokesFromBands } from './data.js';
 
 const inkLine = (pts, size = 10) => ({ pts: pts.map(([x, y]) => [x, y, 1]), size, color: '#000000' });
 const inkOf = (...strokes) => ({ on: true, strokes });
-const style = (extra = {}) => normalizeStyle({ ...defaultStyle(), strokes: [], ...extra });
+const style = (extra = {}) => normalizeStyle({ ...defaultStyle(), strokeEffects: [], ...extra });
 const W = 200;
 const H = 100;
 // A box with no text: all it paints is its ink, so the containment check's
@@ -32,7 +32,7 @@ describe("the editor's ink canvas (OVF-7 follow-up)", () => {
   it('holds the outline and the shadows wrapped around the ink, on every side', () => {
     const s = style({
       ink: inkOf(inkLine([[-12, 20], [230, 20]]), inkLine([[100, -8], [100, 140]])),
-      strokes: [{ width: 3, color: '#ffffff' }, { width: 2, color: '#000000' }],
+      strokeEffects: strokesFromBands([{ width: 3, color: '#ffffff' }, { width: 2, color: '#000000' }]),
       shadows: [{ x: 6, y: 9, blur: 2, color: '#000000', opacity: 1 }],
     });
     const pad = inkOverhang(s, W, H);
@@ -78,13 +78,13 @@ describe('what a style paints past the box, without a layout (strip seams)', () 
     const ink = inkOf(inkLine([[150, 60], [245, 125]]), inkLine([[-20, 10], [40, 10]]));
     const dressed = [
       {},
-      { strokes: [{ width: 4, color: '#ffffff' }] },
+      { strokeEffects: strokesFromBands([{ width: 4, color: '#ffffff' }]) },
       { shadows: [{ x: -9, y: 14, blur: 3, color: '#000000', opacity: 1 }] },
       { blur: 2 },
       { motionBlur: { on: true, x: 6, y: -3, amount: 4 } },
       { roughen: { on: true, amount: 8, detail: 0.05, seed: 1 } },
       { flipH: true, shadows: [{ x: 12, y: 0, blur: 0, color: '#000000', opacity: 1 }] },
-      { flipV: true, strokes: [{ width: 2, color: '#ffffff' }], blur: 1 },
+      { flipV: true, strokeEffects: strokesFromBands([{ width: 2, color: '#ffffff' }]), blur: 1 },
     ];
     for (const extra of dressed) {
       const s = style({ ink, ...extra, roughen: { ...defaultStyle().roughen, ...extra.roughen } });

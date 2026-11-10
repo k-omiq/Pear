@@ -57,7 +57,7 @@ afterAll(() => {
   }
 });
 
-const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', size: 60, strokes: [], autoHeight: false, shape: 'off', ...over });
+const style = (over = {}) => normalizeStyle({ ...defaultStyle(), strokeEffects: [], font: 'Comic Neue', size: 60, strokes: [], autoHeight: false, shape: 'off', ...over });
 const boxOf = (text, over = {}, geom = {}) => ({ id: 'b', lineN: null, text, x: 40, y: 40, w: 900, h: 120, ...geom, style: style({ align: 'left', valign: 'top', ...over }) });
 const pageOf = (box) => ({ id: 1, w: 1600, h: 1200, lines: [], boxes: [box] });
 

@@ -2,6 +2,8 @@
 import { app, page, toast, toastError, boxText, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
 import { faceFor, textInset, contentWidth, glyphInk } from './measure.js';
 import { glyphPainter, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
+import { encodesPages, encodePage } from '../../text-engine/js/encode.mjs';
+import { crispFor } from './text-edges.svelte.js';
 import { boxCandidate, placeBlock, blockRect, linesInkRect, turnedInk } from './contain.js';
 import {
   strokeBands,
@@ -28,10 +30,11 @@ import {
   usesBackdrop,
   strokeReach,
   drawInk,
+  patternFillStyle,
 } from './text-paint.js';
 import { warpActive, meshMap } from './warp.js';
 import { findTag } from './tags.svelte.js';
-import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, ITALIC_ANGLE_DEF } from './data.js';
+import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, ITALIC_ANGLE_DEF, BLEND_IF_CHANNELS, BLEND_RANGE_FULL, outlineBands } from './data.js';
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
 import { backdropPixels, boxToPage, BACKDROP_MAX_PX } from './backdrop.js';
@@ -665,14 +668,26 @@ export function leanOf(s) {
   return { embolden, slant };
 }
 
+// Whether a Blend If This Layer slider is off its ends (`blending.blendIf`).
+function thisLayerGated(blending) {
+  const bi = blending?.blendIf;
+  return BLEND_IF_CHANNELS.some((c) => {
+    const q = bi?.[c]?.this;
+    return Array.isArray(q) && q.some((v, i) => v !== BLEND_RANGE_FULL[i]);
+  });
+}
+
 export function glyphJob(box, L) {
   const s = L.s;
+  // The fill the runs take: outside the engine's box job no overlay is
+  // laid, so a plain Pattern Overlay is the fill (`patternFillStyle`).
+  const fs = boxInJob(box) ? s : patternFillStyle(s);
   const job = {
     face: faceFor(s, s.size),
     curved: !!L.isCurve,
     align: s.align,
     letterSpacing: s.letterSpacing,
-    bands: strokeBands(s.strokes).map(({ color, opacity, line }) => ({ color, opacity, line })),
+    bands: strokeBands(outlineBands(s)).map(({ color, opacity, line }) => ({ color, opacity, line })),
     silhouette: L.silhouette || null,
     fill: null,
     runs: [],
@@ -687,15 +702,24 @@ export function glyphJob(box, L) {
   // No fill: no run and no job carries one, and the painter cuts the letters
   // out of the bands instead of filling them. Every job of the box says so,
   // the silhouette a shadow is cast from included, so a hollow letter throws
-  // a hollow shadow.
+  // a hollow shadow. But for Blend If's This Layer: it judges the box by the
+  // fill No Fill hides (user decision 2026-11-09, No Fill reads as Fill 0 %:
+  // `own_content` in boxjob.rs), so with a This Layer slider off its ends
+  // the fill is sent all the same. The engine paints no fill for a job with
+  // no fill; it only reads it for This Layer. Sent nothing, This Layer saw
+  // nothing inside the letters and an overlay laid there was never hidden.
   const hollow = !!s.noFill;
   if (hollow) job.noFill = true;
+  const fillless = hollow && !thisLayerGated(s.blending);
   // A heavier bold and an italic leant further or back, for the Rust painter:
   // more synthesised bolds on each letter, and more shear on it (x by a share
   // of y) than the face draws. A box at the defaults sends neither.
   const lean = leanOf(s);
   if (lean.embolden > 0) job.embolden = lean.embolden;
   if (lean.slant !== 0) job.slant = lean.slant;
+  // Crisp letter edges (text-edges.svelte.js), for the Rust painter: each
+  // straight line's baseline and zones on whole page pixels.
+  if (crispFor(s)) job.crisp = true;
   // The box's mesh, for a painter that bends the outlines itself (`meshInJob`).
   if (L.mesh) job.mesh = L.mesh;
   // And its roughening, for a painter that roughens them (`roughenInJob`):
@@ -741,7 +765,7 @@ export function glyphJob(box, L) {
       // fixed in box space - a different picture from the one the canvas
       // shows, and most visible on the letters furthest around the arc.
       // The silhouette pass wants one flat colour, not the real fill.
-      if (!L.silhouette && !hollow) run.fill = runFill(s, rect, (px, py) => [px - x, py - y], page);
+      if (!L.silhouette && !fillless) run.fill = runFill(fs, rect, (px, py) => [px - x, py - y], page);
       if (trail && g.ch && g.dir && g.em > 0) {
         for (let k = 1; k <= trail.count; k++) {
           const d = trail.dist * g.em * k;
@@ -771,11 +795,11 @@ export function glyphJob(box, L) {
     const startY = L.oy + L.blockY;
     // Gradient scope 'line' restarts the gradient on every wrapped line, so the
     // fill style is chosen per line rather than once for the block.
-    const perLine = !L.silhouette && !hollow && s.gradient?.on && s.gradient.scope === 'line';
-    if (!L.silhouette && !hollow && !perLine) job.fill = runFill(s, fillRect(box, L), null, page);
+    const perLine = !L.silhouette && !fillless && s.gradient?.on && s.gradient.scope === 'line';
+    if (!L.silhouette && !fillless && !perLine) job.fill = runFill(fs, fillRect(box, L), null, page);
     job.runs = L.lines.map((ln, i) => {
       const run = { text: ln, x: L.ox + L.lineX[i], y: startY + i * L.lineH + L.baseY };
-      if (perLine) run.fill = runFill(s, fillRect(box, L, i));
+      if (perLine) run.fill = runFill(fs, fillRect(box, L, i));
       return run;
     });
   }
@@ -905,7 +929,7 @@ export function renderBox(box, p, tips, under = null, sheet = null) {
   // A box that blends with the page keeps its surface within the backdrop's
   // guard, so the page always arrives (a larger one is painted at a lower scale).
   const cap = under?.image && usesBackdrop(box.style) ? Math.min(MAX_DEVICE_AREA, BACKDROP_MAX_PX) : MAX_DEVICE_AREA;
-  return warpTexture(renderBoxTexture(box, p, tips, 2, cap, glyphPainter().maxSide ?? Infinity, false, false, null, under, sheet), box);
+  return warpTexture(renderBoxTexture(box, p, tips, 2, cap, glyphPainter().maxSide ?? Infinity, false, false, under, sheet), box);
 }
 
 // Everything `renderBox` does EXCEPT the mesh - the finished, unwarped picture
@@ -1125,15 +1149,6 @@ function inkUnion(rects, canvas) {
 }
 
 //
-// `at` is for the editor's picture alone: where the box's top-left lands on
-// the screen, in device px, when the picture is to be set on whole device
-// pixels (`pictureCss`). The picture is then painted moved by the fraction of
-// a pixel its corner falls short of one (`phase`), so a canvas set on the
-// pixel grid shows the letters exactly where they belong rather than up to
-// half a pixel off - a different half at every zoom. Only for a box the
-// painter paints whole and that no texture warp resamples afterwards, and
-// only at the scale asked for; null paints at the corner, as the export does.
-//
 // `ink` in the result is where the picture's pixels are, in the canvas's own
 // pixels (`{ x, y, w, h }`, all zero for an empty picture): the painter's
 // rasters are cut to what they ink, so it costs nothing to know. Null where
@@ -1142,7 +1157,7 @@ function inkUnion(rects, canvas) {
 //
 // `under` is the page art the box is shown over, for a box that blends with
 // the page (`paintBoxJob`); only the engine's whole-box paint takes it.
-export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, at = null, under = null, sheet = null) {
+export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxSide = Infinity, flat = false, coarse = false, under = null, sheet = null) {
   const { L, F, foot } = boxPlan(box, p, flat);
   const s = L.s;
   let SS = textureScale(foot.cw, foot.ch, scale, maxPx, maxSide);
@@ -1155,19 +1170,14 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
     while (surf(SS) > BACKDROP_MAX_PX && SS > 1e-3) SS *= 1 - 1e-4;
   }
   const job = boxInJob(box);
-  const phased = !!at && job && SS === scale && (!!F || !warpActive(s, box.w, box.h));
-  const frac = (v) => v - Math.floor(v);
-  const fx = phased ? frac(at.x - foot.ox * SS) : 0;
-  const fy = phased ? frac(at.y - foot.oy * SS) : 0;
   const cnv = document.createElement('canvas');
   // Whole pixels, outwards: at a scale that is not a whole number the footprint
   // does not land on one, and a canvas cut short would lose its last row.
-  const pw = Math.ceil(foot.cw * SS + fx);
-  const ph = Math.ceil(foot.ch * SS + fy);
+  const pw = Math.ceil(foot.cw * SS);
+  const ph = Math.ceil(foot.ch * SS);
   cnv.width = pw;
   cnv.height = ph;
   const ctx = cnv.getContext('2d');
-  if (phased) ctx.translate(fx, fy);
   ctx.scale(SS, SS); // all drawing stays in native units; SS handled here
   // The bent footprint's corner is not the layout's: the job is stated in the
   // layout's coordinates and moved to where the box sits in this canvas.
@@ -1191,7 +1201,7 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
     };
     const on = sheet?.snap ? { ...sheet, at: { x: snap(box.x, foot.ox, s.flipH), y: snap(box.y, foot.oy, s.flipV) } } : sheet;
     const ink = paintBoxJob(ctx, box, L, foot, coarse, !F && warpActive(s, box.w, box.h) ? null : page, tips, on);
-    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, phase: phased ? { x: fx, y: fy } : null, ink };
+    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, ink };
   }
   paintShadows(ctx, box, L, SS, foot);
   paintBox(ctx, box, L);
@@ -1330,13 +1340,19 @@ function meshFootprint(box, L) {
 // warped canvas, which is what every one-shot render wants and is what this did
 // when it was part of `renderBox`. The gizmo's drag passes false, because the
 // texture it just paid for is the one the NEXT frame draws from too.
-export function warpTexture(tex, box, release = true) {
+//
+// `gpu` is the drag's `meshWarper` over this texture, or null: a live frame
+// drawn by the GPU, in one call, onto the warper's own canvas (`shared` on the
+// result: it is the gesture's and is not let go here). Where it cannot draw the
+// frame the canvas path below does. `maxPx` is the frame's pixel budget, for
+// the GPU's canvas only; the canvas path's caller applies its own.
+export function warpTexture(tex, box, release = true, gpu = null, maxPx = Infinity) {
   const s = box.style;
   const keep = { canvas: tex.canvas, ox: tex.ox, oy: tex.oy, cw: tex.cw, ch: tex.ch };
   // Bent already, by the painter (`renderBoxTexture`).
   if (tex.warped) return keep;
   if (!warpActive(s, box.w, box.h)) return keep;
-  const warped = warpBoxCanvas(tex.canvas, {
+  const opts = {
     warp: s.warp,
     w: box.w,
     h: box.h,
@@ -1345,7 +1361,10 @@ export function warpTexture(tex, box, release = true) {
     cw: tex.cw,
     ch: tex.ch,
     ss: tex.ss,
-  });
+  };
+  const live = gpu?.draw({ ...opts, maxPx });
+  if (live) return live;
+  const warped = warpBoxCanvas(tex.canvas, opts);
   // Null means the mesh does nothing (or cannot be drawn), and the texture
   // already in hand is the answer - unwarped output stays byte for byte what it
   // was before this pass existed.
@@ -1399,11 +1418,12 @@ export function paintWarpedBox(el, box, p, z, tips) {
 // drag, which renders the box once when the pointer goes down and then only
 // re-runs the mesh. The texture is NOT released - it belongs to the gesture -
 // but the warped bitmap this call made is, exactly as above.
-export function paintWarpedTexture(el, tex, box, z) {
-  const r = warpTexture(tex, box, false);
+export function paintWarpedTexture(el, tex, box, z, gpu = null) {
+  const r = warpTexture(tex, box, false, gpu);
   // A mesh that does nothing hands the texture straight back, and THAT canvas
-  // must survive the blit - it is the gesture's, not this frame's.
-  return blitWarped(el, r, z, r.canvas !== tex.canvas);
+  // must survive the blit - it is the gesture's, not this frame's. So must the
+  // GPU warper's (`shared`), which the next frame draws into again.
+  return blitWarped(el, r, z, r.canvas !== tex.canvas && !r.shared);
 }
 
 // The bitmap onto the editor's canvas at the zoom, and the footprint back.
@@ -1436,6 +1456,44 @@ const MIME = {
 };
 const EXT = { PNG: 'png', JPG: 'jpg', WebP: 'webp', PSD: 'psd', JSON: 'json' };
 const QUALITY = { PNG: undefined, JPG: 0.95, WebP: 0.92, PSD: undefined };
+
+const canvasBlob = (canvas, type, quality) => new Promise((res) => canvas.toBlob(res, type, quality));
+
+// Whether the webview writes WebP itself. WebKit does not: asked for one,
+// `toBlob` hands back a PNG, which used to be saved under a .webp name. Asked
+// once, on a one-pixel canvas.
+let webpNative = null;
+async function writesWebp() {
+  if (webpNative === null) {
+    const c = document.createElement('canvas');
+    c.width = 1;
+    c.height = 1;
+    webpNative = (await canvasBlob(c, 'image/webp', 0.9))?.type === 'image/webp';
+  }
+  return webpNative;
+}
+
+// A finished page or slice as the file for `fmt`, or null when it could not
+// be made (the caller says so). PNG is the canvas's own: lossless either way.
+// JPG is the engine's where there is one (`encodePage`): a canvas's JPEG keeps
+// colour at half resolution each way (4:2:0), and a one-pixel red outline came
+// back pink-grey; the engine's keeps it whole (4:4:4) from the same pixels.
+// WebP is the webview's where it can write one (lossy, at its quality), and
+// otherwise the engine's lossless WebP. Without an engine, or for a page the
+// engine will not encode, the canvas's own encoder is used as before.
+async function encodeCanvas(canvas, fmt) {
+  const engine = glyphPainter()?.engine?.low;
+  const ours = fmt === 'JPG' ? 'jpeg' : fmt === 'WebP' && !(await writesWebp()) ? 'webp-lossless' : null;
+  if (ours && encodesPages(engine) && canvas.width > 0 && canvas.height > 0) {
+    try {
+      const { width, height, data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+      return new Blob([encodePage(engine, { width, height, data }, ours, QUALITY[fmt])], { type: MIME[fmt] });
+    } catch (err) {
+      console.warn(`the engine could not encode this ${fmt}; the webview's encoder is used`, err);
+    }
+  }
+  return canvasBlob(canvas, MIME[fmt], QUALITY[fmt]);
+}
 
 // Render one page to a canvas: white base + cleaned image (if any) + all text
 // boxes composited exactly as the editor shows them. Split out from
@@ -1793,7 +1851,7 @@ export function watchDraws(ctx) {
 // Render one page to a Blob in the requested raster format (native resolution).
 async function renderPageBlob(p, fmt) {
   const canvas = await renderPageCanvas(p);
-  const blob = await new Promise((res) => canvas.toBlob(res, MIME[fmt], QUALITY[fmt]));
+  const blob = await encodeCanvas(canvas, fmt);
   // Hand the page's pixels back before the caller allocates the next page's.
   // Same reasoning as the strip exporter: a local canvas is collectable, but
   // "eventually" is not a budget when a batch export renders one per loop turn.
@@ -2034,7 +2092,7 @@ async function renderStripPageBlob(p, fmt, column, check) {
   const { tops } = await measureStrip(pages, check);
   const top = idx >= 0 ? tops[idx] ?? 0 : 0;
   const canvas = await renderStripSliceCanvas(pages, tops, top, top + (p.h || PAGE_H), 1, check);
-  const blob = await new Promise((res) => canvas.toBlob(res, MIME[fmt], QUALITY[fmt]));
+  const blob = await encodeCanvas(canvas, fmt);
   canvas.width = 0;
   canvas.height = 0;
   if (!blob) {
@@ -2079,7 +2137,7 @@ async function exportStripImages(fmt, held, chapter, pages) {
       const same = () => chapterHeld(chapter, written);
       same();
       const canvas = await renderStripSliceCanvas(pages, tops, cuts[i], cuts[i + 1], 1, same);
-      const blob = await new Promise((res) => canvas.toBlob(res, MIME[fmt], QUALITY[fmt]));
+      const blob = await encodeCanvas(canvas, fmt);
       // Hand the slice's pixels back before the next one is allocated. A canvas
       // held only by a local is collectable anyway, but "eventually" is not a
       // memory budget when the next line asks for another few hundred megapixels.

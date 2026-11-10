@@ -14,7 +14,7 @@ import {
 } from './measure.js';
 import { interiorLineWidths } from './balloon.js';
 import { systemFontEntry } from './fonts.js';
-import { defaultStyle, normalizeStyle } from './data.js';
+import { defaultStyle, normalizeStyle, strokesFromBands } from './data.js';
 
 // ===========================================================================
 // The auto-layout solver, with real faces
@@ -76,7 +76,7 @@ describe('solveLayout with real fonts', () => {
   });
 
   it('keeps a heavy outline inside the box', () => {
-    const s = styleFor('Bangers', { strokes: [{ color: '#ffffff', width: 6, opacity: 1 }] });
+    const s = styleFor('Bangers', { strokeEffects: strokesFromBands([{ color: '#ffffff', width: 6, opacity: 1 }]) });
     const rect = { kind: 'rect', x: 80, y: 60, w: 420, h: 120 };
     const text = 'Meanwhile, far beneath the city, something stirred.';
     const r = solveLayout({ text, style: s, refSize: 34, region: rect, opts: { minSize: 12 } });
@@ -88,7 +88,7 @@ describe('solveLayout with real fonts', () => {
   // ink. Hugged to the advances, the outline was past the sides at every width,
   // and the search shrank the font instead: 34 came back 29.
   it('hugs the ink of a heavy outline without shrinking the text for it', () => {
-    const s = styleFor('Bangers', { strokes: [{ color: '#ffffff', width: 6, opacity: 1 }] });
+    const s = styleFor('Bangers', { strokeEffects: strokesFromBands([{ color: '#ffffff', width: 6, opacity: 1 }]) });
     const text = 'STAY BEHIND ME!';
     const r = solveLayout({ text, style: s, refSize: 34, region: { kind: 'hint', x: 350, y: 540, w: 0, h: 0 } });
     expect(r.status).toBe('no-region');
