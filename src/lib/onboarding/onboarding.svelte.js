@@ -30,7 +30,11 @@ export function offerOnboarding({ force = false } = {}) {
   if (!force && prefs.onboarded) return false;
   onboarding.step = 'welcome';
   // A second run has a usage on record already, so that row starts picked.
-  onboarding.usage = force ? prefs.usage : null;
+  // So does a first run that was quit after picking General use: 'general'
+  // is never a default, so it can only be a pick, and it is already in
+  // effect. Without this the row would show nothing picked while the app
+  // hides the comic tools, and Skip would keep that choice unseen.
+  onboarding.usage = force || prefs.usage === 'general' ? prefs.usage : null;
   onboarding.open = true;
   return true;
 }

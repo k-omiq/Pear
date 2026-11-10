@@ -28,7 +28,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         { "url": "https://discord.gg/3ueKc9PaX7" },
-        { "url": "https://github.com/komiq-cc/manga-typesetter" },
+        { "url": "https://github.com/k-omiq/Pear" },
         { "url": "https://cleaner.komiq.cc" }
       ]
     },

@@ -562,12 +562,13 @@
     // keys look dead. What survives is: the shortcuts that cannot be part of
     // typing (the Cmd/Ctrl combos for modes, tabs and rotation) still fire, and
     // everything else stands down. The registry decides which is which.
+    // The setup sits over everything else, so its Escape goes first and
+    // before the typing gate: a box left in edit under the screen must not
+    // keep the way out shut. Its own screen takes the Escape that arrives with
+    // focus inside it; this is for one that arrives with focus outside.
+    if (e.key === 'Escape' && onboarding.open) return finishOnboarding();
     const typing = isTypingTarget(e.target) || !!app.editingId;
     if (!typing && e.key === 'Escape') {
-      // The setup sits over everything else, so it goes first. Its own screen
-      // takes the Escape that arrives with focus inside it; this is for one
-      // that arrives with focus lost to the page.
-      if (onboarding.open) return finishOnboarding();
       // Focus is in the palette's field nearly always, and the field takes its
       // own Escape; this is for the press that arrives with focus elsewhere.
       if (paletteOpen) return (paletteOpen = false);
