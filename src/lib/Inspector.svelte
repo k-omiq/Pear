@@ -3,6 +3,7 @@
     app,
     byId,
     boxText,
+    boxRuns,
     deleteBox,
     beginEdit,
     cloneStyle,
@@ -139,9 +140,11 @@
     resyncField,
     undoField,
     redoField,
+    fieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
+  import { copyRuns } from './runs.js';
   import { onDestroy } from 'svelte';
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
@@ -415,8 +418,9 @@
   // The text alone, then `touch`, whose `boxEdited` fits the box for it. With
   // `setBoxText`'s own fit as well, every keystroke here solved the box twice,
   // the second time to the answer the first had just written.
-  function setText(v) {
-    setBoxText(box, v, page(), { fit: false });
+  // `runs`, for a step of the field's own undo: the faces that step had.
+  function setText(v, runs) {
+    setBoxText(box, v, page(), { fit: false, runs });
     touch();
   }
 
@@ -431,12 +435,13 @@
     const v = box ? boxText(box) : '';
     if (id === fieldOwner && v === fieldUndo.stack[fieldUndo.i]) return;
     fieldOwner = id;
-    resyncField(fieldUndo, v);
+    resyncField(fieldUndo, v, box ? copyRuns(boxRuns(box)) : null);
   });
 
+  // Recorded after the write, so the step holds the faces the write left.
   function onTextInput(e) {
-    recordFieldEdit(fieldUndo, e.target.value, { atomic: isAtomicInput(e.inputType) });
     setText(e.target.value);
+    recordFieldEdit(fieldUndo, e.target.value, { atomic: isAtomicInput(e.inputType), faces: copyRuns(boxRuns(box)) });
   }
 
   function onTextKey(e) {
@@ -451,7 +456,7 @@
     el.value = next;
     el.setSelectionRange(caret, caret);
 
-    setText(next);
+    setText(next, fieldFaces(fieldUndo));
   }
 
   // Validate CSS hex color strings.

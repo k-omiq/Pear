@@ -246,5 +246,7 @@ export function rawEdit(v, [a, b], t, data) {
       else b = stepChar(v, a, 1);
     }
   } else return null;
-  return { v: v.slice(0, a) + ins + v.slice(b), caret: a + ins.length };
+  // `span` is the range of `v` the edit replaced, so the faces of the text
+  // (runs.js) are shifted through this exact edit rather than a guess at it.
+  return { v: v.slice(0, a) + ins + v.slice(b), caret: a + ins.length, span: [a, b] };
 }

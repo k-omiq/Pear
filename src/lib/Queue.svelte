@@ -59,9 +59,11 @@
     recordFieldEdit,
     undoField,
     redoField,
+    fieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
+  import { copyRuns } from './runs.js';
   import { modKey } from './format.js';
   import { comboFor, defaultCombo, formatCombo, isMacKeyboard, pressed } from './shortcuts.svelte.js';
   import ReviewList from './ReviewList.svelte';
@@ -211,7 +213,7 @@
     const v = activeLine?.en ?? '';
     if (key === fieldOwner && v === fieldUndo.stack[fieldUndo.i]) return;
     fieldOwner = key;
-    resyncField(fieldUndo, v);
+    resyncField(fieldUndo, v, copyRuns(activeLine?.runs));
   });
 
   $effect(() => {
@@ -229,7 +231,9 @@
     const v = e.currentTarget.value;
     if (field === 'jp') setLineSource(p, line.n, v);
     else setLineText(p, line.n, v);
-    recordFieldEdit(field === 'jp' ? sourceUndo : fieldUndo, v, { atomic: isAtomicInput(e.inputType) });
+    // The faces the write left beside the English (runs.js), for a step back.
+    const faces = field === 'jp' ? null : copyRuns(line.runs);
+    recordFieldEdit(field === 'jp' ? sourceUndo : fieldUndo, v, { atomic: isAtomicInput(e.inputType), faces });
   }
 
   function onTextareaKey(e, line, field = 'en') {
@@ -244,7 +248,7 @@
     el.value = next;
     el.setSelectionRange(caret, caret);
     if (field === 'jp') setLineSource(p, line.n, next);
-    else setLineText(p, line.n, next);
+    else setLineText(p, line.n, next, { runs: fieldFaces(u) });
   }
 
   // Translate mode disables canvas box placement and status indicators.

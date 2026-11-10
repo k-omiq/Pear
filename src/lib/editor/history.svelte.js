@@ -26,6 +26,7 @@ import {
   applyChapterLight,
 } from '../store.svelte.js';
 import { applyLineOrder, remapLineStack } from '../reading-order.js';
+import { putText } from '../runs.js';
 
 // About thirty steps a page (UND-1). Entries are deltas of tens of bytes, the
 // live stack is one page's, and the rest spill to `logs/history.json`, so the
@@ -366,7 +367,10 @@ const KINDS = {
       // recorded, not derived, and a fit run first - a ladder that can widen the
       // box and shrink its font - would only be written over by the record, or,
       // for a record older than the ladder that carries y/h alone, survive it.
-      setBoxText(b, dir === 'undo' ? e.before : e.after, p, { fit: false });
+      // With its faces as they were on that side (runs.js): an entry with no
+      // `runsBefore`/`runsAfter` was words with no faces on either side.
+      const runs = (dir === 'undo' ? e.runsBefore : e.runsAfter) ?? null;
+      setBoxText(b, dir === 'undo' ? e.before : e.after, p, { fit: false, runs });
       restoreFit(b, e, dir, p);
     },
   },
@@ -399,7 +403,8 @@ const KINDS = {
         ln.jp = v;
         return;
       }
-      ln.en = v;
+      // The faces as they were on that side, as the `text` kind puts them.
+      putText(ln, 'en', v, { runs: (dir === 'undo' ? e.runsBefore : e.runsAfter) ?? null });
       // A writer that recorded the bound boxes' geometry on both sides of the
       // edit (`boxes: [{ boxId, geomBefore, geomAfter }]`) gets it put back, as
       // the `text` kind does. One that did not - every entry written so far -
