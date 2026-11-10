@@ -5,6 +5,7 @@
   import { relativeTime, plural } from '../format.js';
   import { exportChapterPackage, stayingNote } from '../package-flow.js';
   import RowMenu from './RowMenu.svelte';
+  import { isComics } from '../prefs.svelte.js';
 
   let { onNewChapter, onSources, onVersions } = $props();
 
@@ -40,13 +41,17 @@
 
   // What the row's menu offers. The mode is a choice of how the chapter opens,
   // so the item says what it changes it to.
+  // General use has no translate chapters and no cleaned-page or translation
+  // imports (plan 2.1), so those two items are not offered there. A chapter
+  // made translate under comics use still opens as one: only the menu changes.
   function menuItems(c) {
+    const comics = isComics();
     return [
       { id: 'open', label: 'Open' },
-      { id: 'mode', label: c.mode === 'translate' ? 'Switch to typesetting' : 'Switch to translating', disabled: switchingId === c.id },
+      ...(comics ? [{ id: 'mode', label: c.mode === 'translate' ? 'Switch to typesetting' : 'Switch to translating', disabled: switchingId === c.id }] : []),
       { separator: true },
       { id: 'export', label: exportingId === c.id ? 'Exporting…' : 'Export package…', disabled: !!exportingId },
-      { id: 'sources', label: 'Cleaned pages and translations…' },
+      ...(comics ? [{ id: 'sources', label: 'Cleaned pages and translations…' }] : []),
       { id: 'versions', label: 'Earlier versions…' },
       { separator: true },
       { id: 'delete', label: 'Delete chapter…', danger: true },
@@ -160,6 +165,8 @@
         <span>{plural(project.chapters.length, 'chapter')}</span>
         <span>{plural(pageTotal, 'page')}</span>
         <span>{project.layout === 'longstrip' ? 'Longstrip' : 'Pages'}</span>
+        <!-- What Detect reads: general use has no Detect, so no language. -->
+        {#if isComics()}
         <label class="project-language">
           <span class="sr-only">Source language</span>
           <select value={project.ocrLanguage} onchange={onLanguageChange} disabled={changingLanguage} title="What Detect reads on this series' pages, and which way it numbers the bubbles">
@@ -168,6 +175,7 @@
             <option value="ko">Korean source · reads left to right</option>
           </select>
         </label>
+        {/if}
       </div>
     </div>
     <button class="accent-btn narrow" onclick={() => onNewChapter(project.id)}>New chapter</button>
@@ -214,7 +222,7 @@
             {/if}
           </span>
           <span class="chapter-mode">
-            {#if !c.unreadable && c.mode === 'translate'}
+            {#if !c.unreadable && c.mode === 'translate' && isComics()}
               <span class="mode-chip" title="Opens as the page and the typing pane">
                 <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4h6M5.5 2.5V4M4 4c.4 2.6 2 4.4 4 5.5M7 4c-.5 2.4-2.2 4.6-4.5 6" /><path d="M8.5 13.5l2.8-7 2.8 7M9.6 11h3.4" /></svg>
                 Translate

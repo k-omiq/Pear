@@ -6,6 +6,12 @@ const mock = vi.hoisted(() => ({
   createChapter: vi.fn(), createProject: vi.fn(), goEditor: vi.fn(),
   pickImageFiles: vi.fn(), pickJsonFile: vi.fn(), readTranslations: vi.fn(),
   preparePageFiles: vi.fn(), resliceStripFiles: vi.fn(), toast: vi.fn(), toastError: vi.fn(),
+  usage: 'comics', chapterMode: 'translate',
+}));
+// The usage gate as prefs.svelte.js has it, with the usage set per test.
+vi.mock('../prefs.svelte.js', () => ({
+  isComics: () => mock.usage !== 'general',
+  startMode: () => (mock.usage !== 'general' ? mock.chapterMode : 'typeset'),
 }));
 vi.mock('../library.svelte.js', () => ({
   library: { projects: [
@@ -29,6 +35,8 @@ let raw;
 let prepared;
 beforeEach(() => {
   vi.resetAllMocks();
+  mock.usage = 'comics';
+  mock.chapterMode = 'translate';
   raw = new File(['raw'], 'raw.jpg');
   prepared = new File(['png'], '001.png');
   mock.pickImageFiles.mockResolvedValue([raw]);
@@ -133,5 +141,26 @@ describe('page preparation in new chapter import', () => {
     await waitFor(() => expect(view.getByText(/Could not create the chapter: Page is too large/)).toBeTruthy());
     expect(mock.createProject).not.toHaveBeenCalled();
     expect(mock.createChapter).not.toHaveBeenCalled();
+  });
+});
+
+describe('usage', () => {
+  it('starts a comics chapter in the mode Settings names', async () => {
+    const view = await mount();
+    expect(view.getByRole('button', { name: 'Translate', exact: true }).classList.contains('on')).toBe(true);
+    await pickRaw(view);
+    await create(view);
+    expect(mock.createChapter.mock.calls[0][0].mode).toBe('translate');
+  });
+
+  it('asks general use for no mode and no sources, and always makes a typeset chapter', async () => {
+    mock.usage = 'general';
+    const view = await mount();
+    expect(view.queryByText('Mode')).toBeNull();
+    expect(view.queryByText('Cleaned pages')).toBeNull();
+    expect(view.queryByText('Translations')).toBeNull();
+    await pickRaw(view);
+    await create(view);
+    expect(mock.createChapter.mock.calls[0][0]).toMatchObject({ mode: 'typeset', cleanedFiles: [], translations: null });
   });
 });

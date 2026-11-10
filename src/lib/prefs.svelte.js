@@ -164,6 +164,27 @@ export const prefs = $state({
 // One gate for every comic-only tool and word.
 export function isComics() { return prefs.usage !== 'general'; }
 
+// The mode a new chapter starts in, and the only reader of
+// `defaultChapterMode`: general use has no translate chapters to start, so it
+// is always typeset there whatever the stored pref says.
+export function startMode() { return isComics() ? prefs.defaultChapterMode : 'typeset'; }
+
+// The SFX tool is a comic tool: general use treats it as off without
+// changing the stored switch, so switching back to comics brings it back.
+export function sfxToolOn() { return prefs.sfxTool && isComics(); }
+
+// What the usage changes outside this module, applied at load and on every
+// change of usage or of the SFX switch. Only what is shown and which tool is
+// in hand: no chapter, box or setting is touched. General use starts on the
+// Text tool, since the Place tool places detected lines it does not have.
+// That switch is made only when the usage itself is new (`usageNew`), so a
+// general user who picks the Place tool keeps it when some other pref changes.
+function applyUsage(usageNew) {
+  setSfxToolAllowed(sfxToolOn());
+  if (app.tool === 'sfx' && !sfxToolOn()) setTool(isComics() ? 'place' : 'text');
+  if (usageNew && !isComics() && app.tool === 'place') setTool('text');
+}
+
 // The two font lists are string arrays; anything else in them is dropped.
 const NAME_LIST_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts', 'recentFonts'];
 const cleanNames = (v) =>
@@ -284,12 +305,9 @@ export function setPref(key, value) {
       setTool('pan');
     }
   }
-  // The same for the SFX tool, falling back to Place: a drag with the tool
-  // that is gone must not still draw a sound.
-  if (key === 'sfxTool') {
-    setSfxToolAllowed(!!value);
-    if (!value && app.tool === 'sfx') setTool('place');
-  }
+  // The same for the SFX tool and the usage (`applyUsage`): a drag with a
+  // tool that is gone must not still draw a sound.
+  if (key === 'sfxTool' || key === 'usage') applyUsage(key === 'usage');
   // Mirrored into the store the way the box defaults are mirrored into data.js.
   // No relayout: it bounds what the next fit may do, and moves nothing already
   // on the page.
@@ -416,7 +434,7 @@ function load() {
   applyBoxDefaults();
   setMinFontSize(prefs.minFontSize);
   setBrushToolAllowed(prefs.brushTool);
-  setSfxToolAllowed(prefs.sfxTool);
+  applyUsage(true);
   setInheritBoxStyle(prefs.inheritBoxStyle);
   // Before the engine starts: the worker starts with it, or not at all.
   setPaintWorkerAllowed(prefs.paintWorker);
@@ -444,11 +462,13 @@ export function adoptSharedPrefs(raw) {
     return;
   }
   if (!saved || typeof saved !== 'object') return;
+  const usageWas = prefs.usage;
   for (const k of SHARED_KEYS) {
     const v = saved[k];
     const ok = BOOL_KEYS.includes(k) ? typeof v === 'boolean' : ENUM_KEYS[k].includes(v);
     if (ok && prefs[k] !== v) prefs[k] = v;
   }
+  applyUsage(prefs.usage !== usageWas);
 }
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
