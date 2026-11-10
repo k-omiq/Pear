@@ -126,6 +126,7 @@ const RUNS = {
   'fx.warp': { when: boxSelected, run: effect('warp') },
   'fx.motionBlur': { when: boxSelected, run: effect('motionBlur') },
   'fx.roughen': { when: boxSelected, run: effect('roughen') },
+  'fx.wobble': { when: boxSelected, run: effect('wobble') },
   'box.snugWidth': { when: boxSelected, run: () => snugSelectedBox() },
   'page.snugWidths': { when: () => typeset() && page()?.boxes?.length > 0, run: () => snugPageBoxes() },
   'box.showInQueue': { when: () => boxSelected() && byId(app.selectedId)?.lineN != null, run: showInQueue },

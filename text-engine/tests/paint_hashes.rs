@@ -39,7 +39,7 @@ use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
     paint_box, paint_box_kept, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
-    Fill, Job, Pt, Raster, Request, Rgba, Run, Shadow, Tap,
+    Fill, Job, Pt, Raster, Request, Rgba, Run, Shadow, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -534,6 +534,44 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
                 stroke(3.0, Position::Outside, Paint::Color(BLACK)),
                 Effect::Bevel(bevel(BevelStyle::Inner, BevelTechnique::Smooth)),
             ];
+        }),
+    ));
+    // Wobble (v12): each letter up or down and turned by numbers of its own.
+    // Every pass follows the moved letters, a stroke and a shadow included.
+    let wobble = Wobble {
+        amount: 0.15,
+        tilt: 12.0,
+        seed: 7,
+    };
+    rows.push((
+        "wobble",
+        Box::new(move |b| {
+            b.request.job.effects.wobble = Some(Wobble { tilt: 0.0, ..wobble })
+        }),
+    ));
+    rows.push((
+        "wobble_tilt_stroke_shadow",
+        Box::new(move |b| {
+            b.request.job.effects.wobble = Some(wobble);
+            b.shadows = vec![shadow(4.0, 5.0)];
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    // With the SFX shake, which is copies of the silhouette laid at an exact
+    // throw (`effectShadows`, text-paint.js): the copies are of the wobbled
+    // letters.
+    rows.push((
+        "wobble_with_sfx_shake",
+        Box::new(move |b| {
+            b.request.job.effects.wobble = Some(wobble);
+            b.shadows = [1.0, -1.0]
+                .iter()
+                .map(|s| Shadow {
+                    opacity: 0.45,
+                    exact: true,
+                    ..shadow(s * 2.4, 0.0)
+                })
+                .collect();
         }),
     ));
     rows

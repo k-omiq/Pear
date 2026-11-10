@@ -161,7 +161,33 @@ pub struct Effects {
     /// in from the picture's corner puts the page's pixel rows on odd device
     /// rows at a scale of two. `None` paints exactly.
     pub crisp: Option<Pt>,
+    /// Wobble: each letter moved up or down and turned about its middle by
+    /// numbers of its own (`Wobble`). `None` leaves every letter where the
+    /// shaper put it.
+    pub wobble: Option<Wobble>,
 }
+
+/// Letters that jump about: each letter is moved up or down by up to
+/// `amount` of its size and turned either way by up to `tilt` degrees,
+/// about its own middle. Never moved along the line, so a caret between two
+/// letters stays where the shaper put it.
+///
+/// Which numbers a letter gets is keyed by the seed and the letter's place
+/// among the job's letters, counted across its runs and skipping spaces and
+/// hyphens (`Glyphs::add_run`): a line broken somewhere else moves only
+/// spaces and hyphens, so no letter is given new numbers when its box is
+/// resized, and typing at the end leaves the letters before it still.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wobble {
+    pub amount: f64,
+    pub tilt: f64,
+    pub seed: u32,
+}
+
+/// Most wobble accepted: a letter moved its whole size, or turned a right
+/// angle. Guards, not design limits (the panel stops at 0.4 and 20).
+pub const MAX_WOBBLE_AMOUNT: f64 = 1.0;
+pub const MAX_WOBBLE_TILT: f64 = 90.0;
 
 impl Default for Effects {
     fn default() -> Self {
@@ -173,6 +199,7 @@ impl Default for Effects {
             embolden: 0.0,
             slant: 0.0,
             crisp: None,
+            wobble: None,
         }
     }
 }
@@ -287,7 +314,7 @@ pub struct Request {
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 11;
+pub const WIRE_VERSION: u32 = 12;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -504,12 +531,15 @@ impl<'a> Reader<'a> {
 /// f64 x 6 transform (a, b, c, d, e, f)
 /// f64 weight (device pixels, 0 to 64)
 /// u32 flags (1 curved, 2 silhouette, 4 no fill, 8 letter by letter,
-///     16 negative, 32 crisp, v11), u32 align (0 left, 1 centre, 2 right)
+///     16 negative, 32 crisp v11, 64 wobble v12), u32 align (0 left,
+///     1 centre, 2 right)
 /// f64 letter spacing
 /// rgba silhouette
 /// u32 join (0 round, 1 mitre), rgba negative colour, f64 negative grow
 /// f64 embolden (0 to 8 synthesised bolds), f64 slant (within 1.5)
 /// with flag 32 (v11): f64 x, y, a page pixel's corner in device pixels
+/// with flag 64 (v12): f64 amount (a share of the size, 0 to 1), f64 tilt
+///     (degrees, 0 to 90), u32 seed
 /// u32 band count, then per band: rgba colour, f64 opacity, f64 line
 /// fill (the job's)
 /// mesh
@@ -611,6 +641,15 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     } else {
         None
     };
+    let wobble = if flags & 64 != 0 {
+        let (amount, tilt, seed) = (r.f64()?, r.f64()?, r.u32()?);
+        if !(0.0..=MAX_WOBBLE_AMOUNT).contains(&amount) || !(0.0..=MAX_WOBBLE_TILT).contains(&tilt) {
+            return Err(Error::BadSpec);
+        }
+        Some(Wobble { amount, tilt, seed })
+    } else {
+        None
+    };
     let bands = super::budget::collect((0..r.count(20)?).map(|_| {
         Ok(Band {
             color: r.rgba()?,
@@ -683,6 +722,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
                 embolden,
                 slant,
                 crisp,
+                wobble,
             },
             runs,
         },

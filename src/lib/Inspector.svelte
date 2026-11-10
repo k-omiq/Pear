@@ -223,6 +223,15 @@
     move: 'Drag a shape to move it, or empty space to move all. Delete removes the picked shape.',
   };
 
+  // A new seed for a seeded effect, never the one it has: a press that
+  // changed nothing would look like a broken button.
+  function newSeed(obj, max) {
+    let seed = obj.seed;
+    while (seed === obj.seed) seed = Math.floor(Math.random() * (max + 1));
+    obj.seed = seed;
+    touch();
+  }
+
   function clamp(v, a, b) {
     return Math.max(a, Math.min(b, v));
   }
@@ -553,6 +562,8 @@
   // The engine paints whole boxes: Fill Opacity, and a shadow's Spread,
   // Contour, Noise and knockout (the browser engine paints none of them).
   const rustBoxes = $derived(engineSwitch.painting && glyphPainter().box === true);
+  // Whether the painter moves letters on its own (`wobbleInJob`).
+  const wobblePaints = $derived(engineSwitch.painting && glyphPainter().wobble === true);
   // The ink note: a box whose brush ink the engine's box job cannot take yet
   // (`inkJobGap`) is painted by the canvas, with none of its layer effects,
   // Fill Opacity, blend mode, Channels or Blend If. The controls stay (the
@@ -2225,6 +2236,9 @@
         {#if !rustBoxes && effectsGroup === 'styles'}
           <p class="nofill-note">Glow, Satin, Bevel, inner shadows, most shadow settings and strokes that are not plain outlines need the Rust text engine (Settings).</p>
         {/if}
+        {#if !wobblePaints && effectsGroup === 'shape'}
+          <p class="nofill-note">Wobble needs the Rust text engine (Settings).</p>
+        {/if}
 
         {#if effectsTab === 'stroke'}
           <!-- The strokes: one list, the first on top. Plain ones at the head
@@ -2537,6 +2551,40 @@
                 touch();
               }}
             >Reset mesh</button>
+          </div>
+        {/if}
+
+        {#if effectsTab === 'wobble'}
+          <!-- Each letter moved up or down and turned by numbers of its own.
+               Only the Rust engine paints it, so under the browser engine
+               every control is dimmed and the group's note says why. -->
+          {@const wb = s.wobble}
+          {@const off = !wb.on || !wobblePaints}
+          <div class="switch-row" title="Each letter sits a little high or low and can tilt, like a shaky hand">
+            <button
+              type="button"
+              class="switch"
+              class:on={wb.on}
+              role="switch"
+              aria-checked={wb.on}
+              aria-label="Wobble"
+              disabled={!wobblePaints}
+              onclick={() => { wb.on = !wb.on; touch(); }}
+            ><span class="knob"></span></button>
+            <span class="lbl2">Wobble</span>
+          </div>
+          <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+            {@render sliderRow('Amount', 'How far a letter sits high or low, percent of the font size', wb.amount, (v) => setVal(wb, 'amount', v), { max: 40, unit: '%', aria: 'Wobble amount', disabled: off })}
+            {@render sliderRow('Tilt', 'How far a letter can turn either way, degrees', wb.tilt, (v) => setVal(wb, 'tilt', v), { max: 20, unit: '°', aria: 'Wobble tilt', disabled: off })}
+            <div class="prow" title="Which letters go which way. The same seed gives the same wobble">
+              <span class="pl">Seed</span>
+              <div class="pc seed-pc">
+                <input type="number" min="0" max="999" step="1" value={wb.seed} disabled={off} aria-label="Wobble seed" onchange={(e) => commitNum(wb, 'seed', e, 0, 999, true)} />
+                <button type="button" class="dice" disabled={off} aria-label="New wobble seed" title="A new seed: the letters go other ways" onclick={() => newSeed(wb, 999)}>
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.5" y="3.5" width="13" height="13" rx="2.5" /><circle cx="7.2" cy="7.2" r="1" fill="currentColor" stroke="none" /><circle cx="12.8" cy="12.8" r="1" fill="currentColor" stroke="none" /><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none" /></svg>
+                </button>
+              </div>
+            </div>
           </div>
         {/if}
 
@@ -3414,6 +3462,36 @@
   .fx-group:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+  }
+  .seed-pc {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .dice {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t2);
+    cursor: pointer;
+  }
+  .dice svg {
+    width: 15px;
+    height: 15px;
+  }
+  .dice:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--accent-soft);
+  }
+  .dice:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .sub-tabs {
     display: flex;

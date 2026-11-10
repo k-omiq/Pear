@@ -7313,6 +7313,9 @@ export const BULK_PROPS = [
   'roughen.detail',
   'roughen.seed',
   'roughen.grit',
+  // Only the switch: a wobble's numbers are tuned by eye on one box, and a
+  // bulk edit turns that look on or off across the rest.
+  'wobble.on',
   'clip',
   // `path`, `ink` and `warp` are deliberately absent: anchors, hand-drawn
   // strokes and mesh control points are all box-local geometry in THIS box's
@@ -7350,7 +7353,7 @@ export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
   fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blending', 'blur', 'motionBlur', 'strokeEffects', 'gradient', 'pattern', 'colorOverlays', 'gradientOverlays', 'patternOverlay'],
   shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'satin', 'bevel'],
-  warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'clip'],
+  warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'wobble.on', 'clip'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
   transform: ['rotation', 'flipH', 'flipV', 'autoHeight', 'fitText', 'fitMax'],
 };

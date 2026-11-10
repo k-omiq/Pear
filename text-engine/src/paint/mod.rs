@@ -57,8 +57,8 @@ pub use boxjob::{
 use geom::positive;
 pub use geom::{Affine, IBox, Polys, Pt};
 pub use job::{
-    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, Stop,
-    Tile, MAGIC, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
+    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, Wobble,
+    Stop, Tile, MAGIC, MAX_WOBBLE_AMOUNT, MAX_WOBBLE_TILT, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
 };
 pub(crate) use outline::glyph_polys;
 pub use outline::FLATTEN_TOLERANCE;
@@ -283,6 +283,41 @@ pub(crate) struct Zones {
     pub x: Option<f64>,
 }
 
+/// What [`Glyphs::add_run`] wobbles a run's letters by: the job's wobble, the
+/// run's text (to tell its letters from its spaces and hyphens), and the
+/// count of letters in the job's runs before it, which the run adds its own
+/// to.
+pub(crate) struct Wobbling<'a> {
+    pub wobble: Wobble,
+    pub text: &'a str,
+    pub letters: &'a mut usize,
+}
+
+/// Whether the cluster at UTF-16 offset `at` of `text` is a letter that
+/// wobbles: not a space and not a hyphen. A line broken somewhere else moves
+/// only those, so leaving them out of the count is what keeps every letter's
+/// numbers when a box is resized. `from` is where the last answer was found,
+/// (UTF-16 offset, byte offset), so a run's clusters, which come in order,
+/// are read in one pass over its text.
+fn wobbles_at(text: &str, at: u32, from: &mut (u32, usize)) -> bool {
+    if at < from.0 {
+        *from = (0, 0);
+    }
+    let (mut u, mut b) = *from;
+    for c in text[b..].chars() {
+        if u == at {
+            *from = (u, b);
+            return !(c.is_whitespace() || matches!(c, '-' | '\u{00ad}' | '\u{2010}' | '\u{2011}'));
+        }
+        if u > at {
+            break;
+        }
+        u += c.len_utf16() as u32;
+        b += c.len_utf8();
+    }
+    false
+}
+
 /// The outlines of a job's glyphs, and the shapes made from them.
 #[derive(Default)]
 pub(crate) struct Glyphs {
@@ -295,7 +330,9 @@ impl Glyphs {
     /// pulls the lower half of every glyph of the run down by that many job
     /// units: from the middle of the glyph's own height, as it stands in job
     /// space, to its foot. Zero for none. `pen` is the run's (`Run::pen`).
-    /// `embolden` and `slant` are the job's ([`job::Effects`]).
+    /// `embolden` and `slant` are the job's ([`job::Effects`]). `wobbling`
+    /// moves each letter up or down and turns it about its middle
+    /// ([`job::Wobble`]); `None` places every glyph as the shaper did.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_run(
         &mut self,
@@ -308,8 +345,36 @@ impl Glyphs {
         embolden: f64,
         slant: f64,
         tol: f64,
+        mut wobbling: Option<Wobbling<'_>>,
     ) -> Result<(), Error> {
+        // The cluster the last glyph was of, its letter's place in the job
+        // (`None` for a space or a hyphen), and where in the text it was.
+        let mut cluster = None;
+        let mut letter = None;
+        let mut read = (0u32, 0usize);
         for g in &run.glyphs {
+            let (dy, turn) = match wobbling.as_mut() {
+                Some(w) => {
+                    if cluster != Some(g.cluster) {
+                        cluster = Some(g.cluster);
+                        letter = wobbles_at(w.text, g.cluster, &mut read).then(|| {
+                            *w.letters += 1;
+                            *w.letters - 1
+                        });
+                    }
+                    match letter {
+                        Some(n) => {
+                            let k = &w.wobble;
+                            (
+                                k.amount * g.size * crate::seeded::noise(k.seed, 0, n, 0),
+                                k.tilt.to_radians() * crate::seeded::noise(k.seed, 0, n, 1),
+                            )
+                        }
+                        None => (0.0, 0.0),
+                    }
+                }
+                None => (0.0, 0.0),
+            };
             let entry = engine.font(g.font)?;
             let per_unit = g.size / f64::from(entry.info.units_per_em);
             let skew = slant
@@ -319,11 +384,26 @@ impl Glyphs {
                     0.0
                 };
             let mut polys = Polys::default();
-            let place = frame.after(&Affine::translate(g.x, g.y));
+            let place = frame.after(&Affine::translate(g.x, g.y + dy));
             outline::glyph_polys(entry, g.glyph, &place, per_unit, skew, tol, &mut polys);
             budget::check()?;
             if polys.is_empty() {
                 continue;
+            }
+            // A wobbled letter turns about the middle of its own ink, so it
+            // stays over the place it was given. The outline is turned after
+            // it is flattened: a turn moves no point off its curve.
+            if turn != 0.0 {
+                if let Some((l, t, r, b)) = polys.bounds() {
+                    let (sin, cos) = turn.sin_cos();
+                    let (cx, cy) = ((l + r) / 2.0, (t + b) / 2.0);
+                    let m = Affine::translate(cx, cy)
+                        .after(&Affine::rotate(cos, sin))
+                        .after(&Affine::translate(-cx, -cy));
+                    for p in polys.pts.iter_mut() {
+                        *p = m.apply(*p);
+                    }
+                }
             }
             let (face_bold, smear) = match (g.synth.bold, bold_draw) {
                 (false, _) => (0.0, None),
@@ -858,11 +938,13 @@ fn paint_letters(
     }
     // Crisp only where a job y is a device y (no turn, no vertical mirror)
     // and nothing moves the outlines after they are fitted: a curved run's
-    // letters are turned one by one, and a mesh or a roughening bends them.
+    // letters are turned one by one, a mesh or a roughening bends them, and
+    // a wobble moves and turns each letter on its own.
     let crisp = job.effects.crisp.filter(|_| {
         !job.curved
         && job.mesh.is_none()
         && job.roughen.is_none()
+        && job.effects.wobble.is_none()
         && transform.0[1] == 0.0
         && transform.0[2] == 0.0
         && transform.0[3] > 0.0
@@ -871,6 +953,10 @@ fn paint_letters(
     let mut glyphs = Glyphs::default();
     let mut runs = budget::Buffer::new();
     budget::reserve(&mut runs, job.runs.len())?;
+    // The letters of the job's runs so far, which a wobble counts across
+    // them (`Wobbling`). Afterimages are not counted and do not wobble: a
+    // trail's copies of a letter are not letters of the text.
+    let mut letters = 0usize;
     for run in &job.runs {
         let spacing = if job.curved { 0.0 } else { job.letter_spacing };
         let shaped = shape_run(engine, face, &run.text, spacing)?;
@@ -914,6 +1000,14 @@ fn paint_letters(
             job.effects.embolden,
             job.effects.slant,
             tol,
+            job.effects
+                .wobble
+                .filter(|_| !run.ghost)
+                .map(|wobble| Wobbling {
+                    wobble,
+                    text: &run.text,
+                    letters: &mut letters,
+                }),
         )?;
         if let Some(grid) = crisp {
             let entry = engine.font(face.font)?;
@@ -1065,7 +1159,8 @@ mod hardening_tests {
                     1.0,
                     0.0,
                     0.0,
-                    FLATTEN_TOLERANCE
+                    FLATTEN_TOLERANCE,
+                    None
                 ),
                 Err(Error::BadSpec)
             );
@@ -1283,6 +1378,108 @@ mod bends_tests {
                 };
                 assert_eq!(new, old, "rough {r}, mesh {ms}, drip {with_drip}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod wobble_tests {
+    use super::*;
+    use crate::FontId;
+
+    fn bangers() -> (Engine, FontId) {
+        let path = format!(
+            "{}/../src/test/fonts/Bangers-Regular.ttf",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut engine = Engine::new();
+        let font = engine
+            .add_font_bytes(std::fs::read(path).unwrap(), 0)
+            .unwrap();
+        (engine, font)
+    }
+
+    const WOBBLE: Wobble = Wobble {
+        amount: 0.2,
+        tilt: 15.0,
+        seed: 7,
+    };
+
+    /// How far the wobble moved each glyph's ink, as the four edges of its
+    /// bounds less the same glyph's unwobbled ones, for `lines` laid as the
+    /// runs of one job. A move is the same wherever the line puts the glyph.
+    fn moves(lines: &[&str]) -> Vec<[f64; 4]> {
+        let (mut engine, font) = bangers();
+        let face = Face::new(font, 40.0);
+        let mut plain = Glyphs::default();
+        let mut wobbled = Glyphs::default();
+        let mut letters = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            let run = shape_run(&mut engine, face, line, 0.0).unwrap();
+            let at = Affine::translate(3.0 * i as f64, 60.0 * i as f64);
+            let tol = FLATTEN_TOLERANCE;
+            plain
+                .add_run(&engine, &run, &at, BoldDraw::Outset, 0.0, 1.0, 0.0, 0.0, tol, None)
+                .unwrap();
+            let w = Some(Wobbling {
+                wobble: WOBBLE,
+                text: line,
+                letters: &mut letters,
+            });
+            wobbled
+                .add_run(&engine, &run, &at, BoldDraw::Outset, 0.0, 1.0, 0.0, 0.0, tol, w)
+                .unwrap();
+        }
+        plain
+            .items
+            .iter()
+            .zip(wobbled.items.iter())
+            .map(|(p, w)| {
+                let (a, b) = (p.polys.bounds().unwrap(), w.polys.bounds().unwrap());
+                [b.0 - a.0, b.1 - a.1, b.2 - a.2, b.3 - a.3]
+            })
+            .collect()
+    }
+
+    fn same(a: &[[f64; 4]], b: &[[f64; 4]]) {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            for k in 0..4 {
+                assert!((x[k] - y[k]).abs() < 1e-6, "letter {i}: {x:?} against {y:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_rewrap_gives_every_letter_the_move_it_had() {
+        let one = moves(&["WOBBLE THESE LETTERS ABOUT"]);
+        // Every letter moves, and not all by the same.
+        assert!(one.iter().all(|m| m.iter().any(|v| v.abs() > 1e-3)));
+        assert!(one.windows(2).any(|w| (w[0][1] - w[1][1]).abs() > 0.5));
+        same(&one, &moves(&["WOBBLE THESE", "LETTERS ABOUT"]));
+        same(&one, &moves(&["WOBBLE", "THESE LETTERS", "ABOUT"]));
+        // A word hyphenated across two lines: the hyphen is no letter and
+        // does not move, and the letters after it keep their numbers.
+        let mut cut = moves(&["WOBBLE THESE LET-", "TERS ABOUT"]);
+        let hyphen = cut.remove(14);
+        assert_eq!(hyphen, [0.0; 4]);
+        same(&one, &cut);
+    }
+
+    #[test]
+    fn typing_at_the_end_leaves_the_letters_before_it_still() {
+        let short = moves(&["WOBBLE THES"]);
+        let long = moves(&["WOBBLE THESE LETTERS"]);
+        same(&short, &long[..short.len()]);
+    }
+
+    #[test]
+    fn a_letter_moves_no_further_than_the_amount_and_the_tilt_allow() {
+        // Up or down by at most a fifth of 40, plus what a 15 degree turn
+        // about its middle adds to a letter at most 40 high.
+        let reach = 0.2 * 40.0 + 20.0 * 15f64.to_radians().sin() + 1e-6;
+        for m in moves(&["WOBBLE THESE LETTERS ABOUT"]) {
+            assert!(m.iter().all(|v| v.abs() <= reach), "{m:?}");
         }
     }
 }

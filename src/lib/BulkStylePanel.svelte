@@ -880,6 +880,12 @@ import {
               <span class="lbl">Seed</span>
               <input type="number" aria-label="Roughen seed" min="0" max="999" value={s.roughen.seed} onchange={(e) => set('roughen.seed', Math.round(clamp(+e.target.value || 0, 0, 999)))} />
             </div>
+            <!-- The switch alone: a wobble's numbers are tuned on one box. -->
+            <div class="brow" class:off={!app.bulk.mask['wobble.on']}>
+              {@render tick('wobble.on')}
+              <span class="lbl">Wobble</span>
+              <div class="switch" class:on={s.wobble.on} role="switch" aria-checked={s.wobble.on} aria-label="Wobble" tabindex="0" onclick={() => set('wobble.on', !s.wobble.on)} onkeydown={(e) => e.key === 'Enter' && set('wobble.on', !s.wobble.on)}><span class="knob"></span></div>
+            </div>
             <!-- Shapes and brushSize are box-local geometry, not surfaced in the bulk panel. -->
             <div class="brow" class:off={!app.bulk.mask.clip}>
               {@render tick('clip')}

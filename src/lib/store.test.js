@@ -1226,6 +1226,7 @@ const BULK_VALUES = () => ({
   'roughen.detail': 0.11,
   'roughen.seed': 42,
   'roughen.grit': 1.5,
+  'wobble.on': true,
   shape: 'off',
   minOrphan: 6,
   hyphenate: false,
@@ -1302,11 +1303,15 @@ describe('the bulk edit mask', () => {
       'path', 'ink', 'warp', 'sfx', 'autoContrast',
       'strokeOrder', 'strokeJoin', 'strokeShade', 'negative', 'extrude', 'shake', 'trail',
     ]);
+    // A wobble moves by its switch alone: its numbers are tuned by eye on
+    // one box (plan 5.1).
+    const SWITCH_ONLY = new Set(['wobble.amount', 'wobble.tilt', 'wobble.seed']);
     const leaves = Object.entries(defaultStyle())
       .filter(([k]) => !NOT_BULK.has(k))
       .flatMap(([k, v]) =>
         v && typeof v === 'object' && !WHOLE.has(k) ? Object.keys(v).map((f) => `${k}.${f}`) : [k],
-      );
+      )
+      .filter((k) => !SWITCH_ONLY.has(k));
     expect([...BULK_PROPS].sort()).toEqual(leaves.sort());
     for (const geom of ['x', 'y', 'w', 'h', 'path', 'ink', 'warp']) {
       expect(BULK_PROPS).not.toContain(geom);

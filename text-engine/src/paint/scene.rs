@@ -89,6 +89,7 @@ impl Scene {
             0.0,
             0.0,
             tol,
+            None,
         );
         if result.is_err() {
             self.glyphs.truncate(before);
