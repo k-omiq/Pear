@@ -993,7 +993,7 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
     expect(old.prefs.defaultBalloon).toBe(false);
     expect(old.prefs.textEngine).toBe('rust');
     old.setPref('defaultBalloon', true);
-    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(3);
+    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(4);
     const since = await withStorage(old.map.get('mt.prefs'));
     expect(since.prefs.defaultBalloon).toBe(true);
     expect(since.prefs.textEngine).toBe('rust');
