@@ -105,7 +105,7 @@ describe('the layer effects\' defaults (Make Default)', () => {
     const data = await import('./data.js');
     setFxDefault('dropShadow', { ...data.newShadow({ angle: 120 }), size: 17, opacity: 0.3 });
     const blob = JSON.parse(storage['mt.prefs']);
-    expect(blob.defaultsRev).toBe(3);
+    expect(blob.defaultsRev).toBe(4);
     expect(blob.fxDefaults.dropShadow).toMatchObject({ size: 17, opacity: 0.3, distance: 5, useGlobalLight: true });
     expect(blob.fxDefaults.dropShadow).not.toHaveProperty('x');
     expect(data.newShadow({ angle: 120 }).size).toBe(17);
@@ -130,5 +130,77 @@ describe('the layer effects\' defaults (Make Default)', () => {
     expect(fxDefault('satin').size).toBe(3);
     expect(fxDefault('outerGlow')).toBeNull();
     expect(newShadow({ angle: 120 }).size).toBe(5);
+  });
+});
+
+describe('first-run setup and usage', () => {
+  it('a fresh install is not onboarded, is comics, and writes its blob at once', async () => {
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs.onboarded).toBe(false);
+    expect(prefs.usage).toBe('comics');
+    const blob = JSON.parse(storage['mt.prefs']);
+    expect(blob.defaultsRev).toBe(4);
+    expect(blob.onboarded).toBe(false);
+  });
+
+  it('a blob from before revision 4 is an install that is already set up', async () => {
+    storage['mt.prefs'] = JSON.stringify({ defaultsRev: 3, usage: 'general', onboarded: false });
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs.onboarded).toBe(true);
+    expect(prefs.usage).toBe('comics');
+  });
+
+  it.each([['mt.libraryRoot'], ['mt.theme'], ['mt.tags']])('no blob but %s present is an existing install', async (key) => {
+    storage[key] = 'x';
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs.onboarded).toBe(true);
+    expect(prefs.usage).toBe('comics');
+    expect(storage['mt.prefs']).toBeUndefined();
+  });
+
+  it('a revision 4 blob loads as written, so a person who quit halfway sees the setup again', async () => {
+    storage['mt.prefs'] = JSON.stringify({ defaultsRev: 4, onboarded: false, usage: 'general' });
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs.onboarded).toBe(false);
+    expect(prefs.usage).toBe('general');
+  });
+
+  it('a storage that throws counts as a fresh install and does not throw', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => { throw new Error('blocked'); },
+      setItem: () => { throw new Error('blocked'); },
+    });
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs.onboarded).toBe(false);
+  });
+
+  it.each([
+    ['onboarded', true],
+    ['usage', 'general'],
+    ['defaultChapterMode', 'translate'],
+    ['defaultOcrLanguage', 'ko'],
+  ])('%s survives a restart', async (key, value) => {
+    const { setPref } = await import('./prefs.svelte.js');
+    setPref(key, value);
+    vi.resetModules();
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs[key]).toBe(value);
+  });
+
+  it('a bad enum value in the blob leaves the default', async () => {
+    storage['mt.prefs'] = JSON.stringify({
+      defaultsRev: 4, usage: 'banana', defaultChapterMode: 'x', defaultOcrLanguage: 'fr',
+    });
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs.usage).toBe('comics');
+    expect(prefs.defaultChapterMode).toBe('typeset');
+    expect(prefs.defaultOcrLanguage).toBe('ja');
+  });
+
+  it('isComics is true for comics and false for general', async () => {
+    const { setPref, isComics } = await import('./prefs.svelte.js');
+    expect(isComics()).toBe(true);
+    setPref('usage', 'general');
+    expect(isComics()).toBe(false);
   });
 });
