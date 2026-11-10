@@ -1,7 +1,9 @@
 <script>
   import { app, saveExportPrefs, isLongstrip, checks, openCheck } from './store.svelte.js';
-  import { exportImages, exportPreflight } from './exporter.js';
+  import { exportImages, exportPreflight, scaleBlock } from './exporter.js';
   import { SLICE_H_MIN, SLICE_H_MAX, SLICE_H_DEFAULT } from './editor/strip-cuts.js';
+  import { maxPageWidth } from './editor/strip.js';
+  import { projectById, normalizeExportScale, setProjectExportScale } from './library.svelte.js';
 
   const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 
@@ -9,6 +11,29 @@
   const isJson = $derived(app.fmt === 'JSON');
   // Longstrip raster export re-cuts column for non-PSD/JSON formats.
   const isStrip = $derived(isLongstrip() && !isJson && app.fmt !== 'PSD');
+
+  // Size: the series' own choice (project.json), Original unless it says 2x.
+  const project = $derived(projectById(app.chapterRef?.projectId));
+  const stored = $derived(normalizeExportScale(project?.exportScale));
+  // Why 2x cannot be written for this chapter in this format, judged on the
+  // pages whose size is known (the export measures the rest and asks again).
+  // A strip re-cut is judged as the slices it will be cut into.
+  const block2x = $derived(
+    scaleBlock(app.pages, app.fmt, 2, isLongstrip() && !isJson && app.fmt !== 'PSD' ? { strip: { width: maxPageWidth(app.pages), sliceH: app.stripSliceH || SLICE_H_DEFAULT } } : {}),
+  );
+  // What the export is made at: the stored choice where it can be, else the
+  // page's own size. JSON has no pixels.
+  const scale = $derived(isJson || block2x ? 1 : stored);
+  let sizeError = $state('');
+  async function onSize(v) {
+    if (!project || v === stored) return;
+    sizeError = '';
+    try {
+      await setProjectExportScale(project.id, v);
+    } catch (e) {
+      sizeError = `Could not save the size: ${e?.message ?? e}`;
+    }
+  }
 
   let preflight = $state(null);
   let checkError = $state('');
@@ -63,7 +88,7 @@
   async function go(scope) {
     close();
 
-    await exportImages(app.fmt, scope);
+    await exportImages(app.fmt, scope, scale);
   }
 </script>
 
@@ -84,6 +109,22 @@
         <select id="exp-fmt" bind:value={app.fmt}>
           <option>PNG</option><option>JPG</option><option>WebP</option><option>PSD</option><option>JSON</option>
         </select>
+      </div>
+
+      <div class="grp">
+        <span class="lbl" id="exp-size">Size</span>
+        <div class="seg" role="group" aria-labelledby="exp-size">
+          <button class:on={scale === 1} disabled={isJson || !project} onclick={() => onSize(1)}>Original</button>
+          <button class:on={scale === 2} disabled={isJson || !project || !!block2x} onclick={() => onSize(2)}>2x</button>
+        </div>
+        {#if isJson}
+          <div class="exp-sub">JSON has text only, no pictures.</div>
+        {:else if block2x}
+          <div class="exp-sub">{block2x}.</div>
+        {:else if scale === 2}
+          <div class="exp-sub">Text is sharper. The page is enlarged, not redrawn. Files are about 4 times larger.</div>
+        {/if}
+        {#if sizeError}<div class="exp-sub">{sizeError}</div>{/if}
       </div>
 
       <div class="grp">

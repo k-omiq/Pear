@@ -135,6 +135,7 @@ const {
   scanLibrary,
   createProject,
   setProjectOcrLanguage,
+  setProjectExportScale,
   deleteProject,
   deleteChapter,
   projectById,
@@ -3602,6 +3603,45 @@ describe('the OCR language belongs to one project', () => {
     expect(app.projectOcrLanguage).toBe('ja');
     closeChapter();
     expect(app.projectOcrLanguage).toBe('ja');
+  });
+});
+
+// The export dialog's Size is the series' (project.json), not the app's.
+describe('a series keeps its export size', () => {
+  const projectJson = (slug) => JSON.parse(fsx._tree.files.get(`/lib/${slug}/project.json`));
+  const sized = (id, name, exportScale) => JSON.stringify({ ...JSON.parse(PROJECT(id, name)), exportScale });
+  it('is Original unless the series says 2x, and anything else reads as Original', async () => {
+    seedProject('no-size', PROJECT('p-no-size', 'No size'));
+    seedProject('odd-size', sized('p-odd-size', 'Odd size', 3));
+    seedProject('sharp', sized('p-sharp', 'Sharp', 2));
+    await scanLibrary();
+    expect(projectById('p-no-size').exportScale).toBe(1);
+    expect(projectById('p-odd-size').exportScale).toBe(1);
+    expect(projectById('p-sharp').exportScale).toBe(2);
+  });
+
+  it('is written to project.json, survives a rescan and a chapter write, and goes back', async () => {
+    const p = await createProject('Sharp Pages');
+    await setProjectExportScale(p.id, 2);
+    expect(p.exportScale).toBe(2);
+    expect(projectJson(p.slug).exportScale).toBe(2);
+    await createChapter({ projectId: p.id, number: 1, title: '', files: [fakeFile('a.png', 1)] });
+    expect(projectJson(p.slug).exportScale).toBe(2);
+    await scanLibrary();
+    expect(projectById(p.id).exportScale).toBe(2);
+    await setProjectExportScale(p.id, 1);
+    expect(projectJson(p.slug).exportScale).toBe(1);
+    await scanLibrary();
+    expect(projectById(p.id).exportScale).toBe(1);
+  });
+
+  it('belongs to its own series only', async () => {
+    const a = await createProject('Series A');
+    const b = await createProject('Series B');
+    await setProjectExportScale(a.id, 2);
+    await scanLibrary();
+    expect(projectById(a.id).exportScale).toBe(2);
+    expect(projectById(b.id).exportScale).toBe(1);
   });
 });
 
