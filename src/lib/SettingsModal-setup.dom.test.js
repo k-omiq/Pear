@@ -7,12 +7,24 @@ import { tick } from 'svelte';
 // the Discord card at the end of About.
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: async () => '0.0.0' }));
 vi.mock('./open-external.js', () => ({ openExternal: vi.fn(async () => {}) }));
+const probe = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('./sidecar.js', async (original) => ({
+  ...(await original()),
+  checkSidecar: async () => { probe.calls++; return null; },
+}));
+// One series, so the series tabs (Guide among them) are there with a chapter open.
+vi.mock('./library.svelte.js', async (original) => {
+  const real = await original();
+  const series = { id: 'p', name: 'Series', layout: 'pages', ocrLanguage: 'ja', chapters: [] };
+  return { ...real, projectById: (id) => (id === 'p' ? series : real.projectById(id)) };
+});
 
 const { default: SettingsModal } = await import('./SettingsModal.svelte');
 const { prefs, setPref } = await import('./prefs.svelte.js');
 const { onboarding } = await import('./onboarding/onboarding.svelte.js');
 const { settingsView, openSettings, closeSettings } = await import('./settings-tabs.svelte.js');
 const { openExternal } = await import('./open-external.js');
+const { app } = await import('./store.svelte.js');
 
 beforeEach(() => {
   setPref('onboarded', true);
@@ -116,5 +128,32 @@ describe('Settings under general use', () => {
     setPref('usage', 'general');
     const view = await settings('detection');
     expect(view.getByRole('tab', { selected: true }).textContent.trim()).toBe('General');
+  });
+
+  it('does not start the detection engine when opened, and comics use does', async () => {
+    setPref('usage', 'general');
+    probe.calls = 0;
+    await settings();
+    expect(probe.calls).toBe(0);
+    cleanup();
+    closeSettings();
+    setPref('usage', 'comics');
+    await settings();
+    expect(probe.calls).toBe(1);
+  });
+
+  it('leaves the Guide tab for General when general use is picked with it open', async () => {
+    app.chapterRef = { projectId: 'p', chapterId: 'c' };
+    try {
+      const view = await settings('guide');
+      expect(view.getByRole('tab', { selected: true }).textContent.trim()).toBe('Guide');
+      setPref('usage', 'general');
+      await tick();
+      expect(view.getByRole('tab', { selected: true }).textContent.trim()).toBe('General');
+      expect(tabNames(view)).not.toContain('Guide');
+      expect(tabNames(view)).toContain('Text styles');
+    } finally {
+      app.chapterRef = null;
+    }
   });
 });

@@ -356,7 +356,9 @@ export async function inspectPackage(file, projectId = null) {
 // load is counted and does not stop the import: the chapter still renders on
 // the fallback, and the user can add the face by hand.
 // Returns { chapter, fontsInstalled, fontsFailed, tagsAdded }.
-export async function importChapterPackage({ pkg, projectId, number, title }) {
+// `mode` overrides the package's own: general use has no translate chapters,
+// so it imports every package as typeset.
+export async function importChapterPackage({ pkg, projectId, number, title, mode = null }) {
   let fontsInstalled = 0;
   let fontsFailed = 0;
   for (const f of pkg.fonts) {
@@ -378,7 +380,7 @@ export async function importChapterPackage({ pkg, projectId, number, title }) {
     title: title ?? pkg.record.title ?? '',
     pages: packagePagesForImport(pkg),
     patterns: pkg.patterns,
-    mode: pkg.record.mode === 'translate' ? 'translate' : 'typeset',
+    mode: mode ?? (pkg.record.mode === 'translate' ? 'translate' : 'typeset'),
     // The chapter's own, absent reading as plain - never this machine's default.
     typesetting: pkg.record.typesetting ?? null,
   });

@@ -6,7 +6,7 @@ import { tick } from 'svelte';
 // number for comics, the new project's fields, and one closed fold for the
 // rest, under each usage.
 const mock = vi.hoisted(() => ({
-  createChapter: vi.fn(), createProject: vi.fn(), goEditor: vi.fn(),
+  createChapter: vi.fn(), createProject: vi.fn(), goEditor: vi.fn(), setEmptyProjectLayout: vi.fn(),
   pickChapterSource: vi.fn(), inspectPackage: vi.fn(), importChapterPackage: vi.fn(),
   pickImageFiles: vi.fn(), pickJsonFile: vi.fn(), readTranslations: vi.fn(),
   preparePageFiles: vi.fn(), resliceStripFiles: vi.fn(), toast: vi.fn(), toastError: vi.fn(),
@@ -18,7 +18,7 @@ vi.mock('../library.svelte.js', () => ({
     { id: 'ko', name: 'Korean', layout: 'pages', ocrLanguage: 'ko', chapters: [] },
     { id: 'strip', name: 'Webtoon', layout: 'longstrip', ocrLanguage: 'ko', chapters: [] },
   ] },
-  createChapter: mock.createChapter, createProject: mock.createProject,
+  createChapter: mock.createChapter, createProject: mock.createProject, setEmptyProjectLayout: mock.setEmptyProjectLayout,
 }));
 // The usage gate as prefs.svelte.js has it, with the usage set per test.
 vi.mock('../prefs.svelte.js', () => ({
@@ -200,6 +200,19 @@ describe('a new project', () => {
     expect(mock.createProject).toHaveBeenCalledWith('New', expect.objectContaining({ layout: 'pages' }));
   });
 
+  it('keeps a layout picked by hand when images are picked after it', async () => {
+    mock.pickChapterSource.mockResolvedValue({ images: [png('1.png', 800, 4000)] });
+    const view = await mount();
+    await newProject(view);
+    await fireEvent.click(view.getByRole('button', { name: 'Pages' }));
+    await pick(view);
+    await tick();
+    expect(view.getByRole('button', { name: 'Pages' }).getAttribute('aria-pressed')).toBe('true');
+    await fireEvent.input(view.getByLabelText('Series name'), { target: { value: 'New' } });
+    await create(view);
+    expect(mock.createProject).toHaveBeenCalledWith('New', expect.objectContaining({ layout: 'pages' }));
+  });
+
   it('reports a preparation error before making an empty project', async () => {
     const view = await mount();
     await newProject(view);
@@ -215,7 +228,54 @@ describe('a new project', () => {
   });
 });
 
+function translatePackage() {
+  mock.pickChapterSource.mockResolvedValue({ package: new File(['zip'], 'ch7.mtchapter') });
+  mock.inspectPackage.mockResolvedValue({
+    pkg: { record: {} },
+    summary: { number: 7, title: 'Seven', projectName: 'Theirs', layout: 'longstrip', ocrLanguage: 'ja', mode: 'translate',
+      pageCount: 3, cleanedCount: 0, boxCount: 0, fonts: [], tags: [] },
+  });
+  mock.importChapterPackage.mockResolvedValue({ chapter: { id: 'pkg', number: 7 } });
+}
+const choose = async (view, label) => {
+  await fireEvent.click(view.getByRole('button', { name: label }));
+  await waitFor(() => expect(view.getByRole('button', { name: /- change$/ })).toBeTruthy());
+};
+
 describe('a picked package', () => {
+  it('keeps its own translate mode under comics use', async () => {
+    translatePackage();
+    const view = await mount();
+    await choose(view, 'Choose images…');
+    expect(view.getByText('3 pages · translate chapter')).toBeTruthy();
+    await create(view, mock.importChapterPackage);
+    expect(mock.importChapterPackage.mock.calls[0][0].mode).toBe(null);
+  });
+
+  it('comes in as typeset under general use, and its note names no mode', async () => {
+    mock.usage = 'general';
+    translatePackage();
+    const view = await mount();
+    await choose(view, 'Choose images…');
+    expect(view.getByText('3 pages · document')).toBeTruthy();
+    await create(view, mock.importChapterPackage);
+    expect(mock.importChapterPackage.mock.calls[0][0].mode).toBe('typeset');
+  });
+
+  it('leaves no title, name or number behind when images are picked instead', async () => {
+    translatePackage();
+    const view = await mount();
+    await newProject(view);
+    await choose(view, 'Choose images…');
+    expect(view.getByLabelText('Title').value).toBe('Seven');
+    expect(view.getByLabelText('Series name').value).toBe('Theirs');
+    mock.pickChapterSource.mockResolvedValue({ images: [raw] });
+    await choose(view, 'ch7.mtchapter - change');
+    await waitFor(() => expect(view.getByLabelText('Title').value).toBe(''));
+    expect(view.getByLabelText('Series name').value).toBe('');
+    expect(view.getByLabelText('Chapter number').value).toBe('1');
+  });
+
   it('is told apart from images, fills in what it knows and imports whole', async () => {
     const file = new File(['zip'], 'ch7.mtchapter');
     mock.pickChapterSource.mockResolvedValue({ package: file });
@@ -270,5 +330,30 @@ describe('general use', () => {
     await pick(view);
     await create(view);
     expect(mock.createProject).toHaveBeenCalledWith('Mine', { layout: 'longstrip', ocrLanguage: 'ko' });
+  });
+
+  it('lets the first document of an empty project set its layout, and no later one', async () => {
+    mock.pickChapterSource.mockResolvedValue({ images: [png('1.png', 800, 4000)] });
+    let view = await mount('ko');
+    await pick(view);
+    await create(view);
+    expect(mock.setEmptyProjectLayout).toHaveBeenCalledWith('ko', 'longstrip');
+    cleanup();
+    vi.clearAllMocks();
+    // 'ja' already holds a chapter: its layout stays.
+    view = await mount('ja');
+    await pick(view);
+    await create(view);
+    expect(mock.setEmptyProjectLayout).not.toHaveBeenCalled();
+  });
+});
+
+describe('comics use and an empty project', () => {
+  it('never changes the project\'s layout from the images', async () => {
+    mock.pickChapterSource.mockResolvedValue({ images: [png('1.png', 800, 4000)] });
+    const view = await mount('ko');
+    await pick(view);
+    await create(view);
+    expect(mock.setEmptyProjectLayout).not.toHaveBeenCalled();
   });
 });

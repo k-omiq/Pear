@@ -9,7 +9,7 @@
   // PSD import (chapterPagesFromPsdFiles / pickPsdFiles in psd.js) is parked
   // for now: the code stays, the dialog no longer offers it.
   import { untrack } from 'svelte';
-  import { library, createProject, createChapter } from '../library.svelte.js';
+  import { library, createProject, createChapter, setEmptyProjectLayout } from '../library.svelte.js';
   import { goEditor } from '../route.svelte.js';
   import { pickImageFiles, pickJsonFile, readTranslations } from '../importer.js';
   import { pickChapterSource, inspectPackage, importChapterPackage } from '../package-flow.js';
@@ -37,6 +37,11 @@
   let pkgSummary = $state(null);
   let pkgName = $state('');
   let reading = $state(false);
+  // The layout the picked images read as, and whether the person chose a
+  // layout by hand. A layout is permanent, so a guess never overrides a
+  // choice; it only fills in until one is made.
+  let guessedLayout = $state(null);
+  let layoutTouched = $state(false);
   let error = $state('');
   // Behind "More options", which starts closed every time.
   let more = $state(false);
@@ -89,6 +94,8 @@
       newProjectLayout = 'pages';
       newProjectOcrLanguage = prefs.defaultOcrLanguage;
       more = false;
+      guessedLayout = null;
+      layoutTouched = false;
       workflow = startMode();
       cleaned = [];
       translations = null;
@@ -115,6 +122,7 @@
   // The one picker. Images become the chapter's pages and preselect the new
   // project's layout; a package fills in what it knows - number, title, and
   // for a new project its name, layout and language - all still editable.
+  // Neither overrides a layout the person picked by hand.
   async function pickSource() {
     error = '';
     reading = true;
@@ -130,15 +138,22 @@
         number = read.summary.number;
         title = read.summary.title;
         if (!newProjectName.trim()) newProjectName = read.summary.projectName ?? '';
-        newProjectLayout = read.summary.layout;
+        guessedLayout = null;
+        if (!layoutTouched) newProjectLayout = read.summary.layout;
         newProjectOcrLanguage = read.summary.ocrLanguage;
       } else {
-        if (isPackage) number = nextNumberFor(target);
+        // Images after a package: what the package filled in is not theirs.
+        if (pkgSummary) {
+          number = nextNumberFor(target);
+          if (title === pkgSummary.title) title = '';
+          if (newProjectName === (pkgSummary.projectName ?? '')) newProjectName = '';
+        }
         pkg = null;
         pkgSummary = null;
         pkgName = '';
         files = got.images;
-        newProjectLayout = await guessLayout(got.images);
+        guessedLayout = await guessLayout(got.images);
+        if (!layoutTouched) newProjectLayout = guessedLayout;
       }
     } catch (e) {
       error = `Could not read those files: ${e?.message ?? e}`;
@@ -179,7 +194,8 @@
       let head = plural(sm.pageCount, 'page');
       if (sm.cleanedCount) head += ` · ${sm.cleanedCount} cleaned`;
       if (sm.boxCount) head += ` · ${plural(sm.boxCount, 'box', 'boxes')}`;
-      head += ` · ${sm.mode} ${word('chapter').toLowerCase()}`;
+      // General use imports every package as typeset, so it names no mode.
+      head += isComics() ? ` · ${sm.mode} ${word('chapter').toLowerCase()}` : ` · ${word('chapter').toLowerCase()}`;
       notes.push({ text: head, warn: false });
       const by = (st) => sm.fonts.filter((f) => f.status === st);
       const bits = [];
@@ -296,11 +312,17 @@
         });
       }
       const pid = createdProject ? createdProject.id : target;
+      // General use asks no layout, so a project it made from the library
+      // reads as pages until its first document's images say otherwise.
+      // Only while it is empty: a layout never moves under existing work.
+      if (!isComics() && !createdProject && !isPackage && guessedLayout && selectedProject && !selectedProject.chapters.length) {
+        await setEmptyProjectLayout(pid, guessedLayout);
+      }
 
       let chapter;
       let note;
       if (isPackage) {
-        const r = await importChapterPackage({ pkg, projectId: pid, number: n, title });
+        const r = await importChapterPackage({ pkg, projectId: pid, number: n, title, mode: isComics() ? null : 'typeset' });
         chapter = r.chapter;
         const parts = [plural(pkgSummary.pageCount, 'page')];
         if (r.fontsInstalled) parts.push(`${plural(r.fontsInstalled, 'font')} installed`);
@@ -362,7 +384,7 @@
       </label>
 
       {#if target === '__new__'}
-        <ProjectFields bind:name={newProjectName} bind:layout={newProjectLayout} bind:language={newProjectOcrLanguage} disabled={busy} />
+        <ProjectFields bind:name={newProjectName} bind:layout={newProjectLayout} bind:language={newProjectOcrLanguage} disabled={busy} onpicklayout={() => (layoutTouched = true)} />
       {/if}
 
       {#if isComics()}

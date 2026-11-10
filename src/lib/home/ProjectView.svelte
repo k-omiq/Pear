@@ -15,7 +15,7 @@
   function status(c) {
     if (!c.pageCount) return { kind: 'empty', label: 'No pages' };
     if (!c.typeset) return { kind: 'raws', label: `${word('raw')}s only` };
-    return { kind: 'typeset', label: 'Typeset' };
+    return { kind: 'typeset', label: isComics() ? 'Typeset' : 'Text added' };
   }
 
   // How far through the chapter is, in the unit its mode counts: lines placed
@@ -34,7 +34,8 @@
   // chapter, while nothing has touched it since (`lastToCheck`).
   function facts(c) {
     const list = [plural(c.pageCount, 'page')];
-    const left = c.mode === 'translate' ? 0 : lastToCheck(c);
+    // The check list is a comic tool (plan 2.1), so general use counts none.
+    const left = c.mode === 'translate' || !isComics() ? 0 : lastToCheck(c);
     if (left) list.push(`${left} to check`);
     if (exportingId === c.id) list.push('exporting…');
     return list;
@@ -43,13 +44,15 @@
   // What the row's menu offers. The mode is a choice of how the chapter opens,
   // so the item says what it changes it to.
   // General use has no translate chapters and no cleaned-page or translation
-  // imports (plan 2.1), so those two items are not offered there. A chapter
-  // made translate under comics use still opens as one: only the menu changes.
+  // imports (plan 2.1), so it is never offered "Switch to translating" or the
+  // sources. A chapter made translate under comics use still opens as one,
+  // and keeps "Switch to typesetting" as its way out.
   function menuItems(c) {
     const comics = isComics();
+    const mode = comics || c.mode === 'translate';
     return [
       { id: 'open', label: 'Open' },
-      ...(comics ? [{ id: 'mode', label: c.mode === 'translate' ? 'Switch to typesetting' : 'Switch to translating', disabled: switchingId === c.id }] : []),
+      ...(mode ? [{ id: 'mode', label: c.mode === 'translate' ? 'Switch to typesetting' : 'Switch to translating', disabled: switchingId === c.id }] : []),
       { separator: true },
       { id: 'export', label: exportingId === c.id ? 'Exporting…' : 'Export package…', disabled: !!exportingId },
       ...(comics ? [{ id: 'sources', label: 'Cleaned pages and translations…' }] : []),

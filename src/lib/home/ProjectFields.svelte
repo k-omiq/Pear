@@ -14,7 +14,14 @@
     language = $bindable('ja'),
     disabled = false,
     autofocus = false,
+    // Told when the person picks a layout by hand, so a caller that guesses
+    // one stops guessing.
+    onpicklayout = () => {},
   } = $props();
+  const pickLayout = (l) => {
+    layout = l;
+    onpicklayout(l);
+  };
 
   const LANGUAGES = [['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean']];
   // The library form and the dialog can both be mounted, so the labels' ids
@@ -32,8 +39,8 @@
   <div class="field">
     <span id="{uid}-layout">Layout</span>
     <div class="seg" role="group" aria-labelledby="{uid}-layout">
-      <button type="button" class:on={layout === 'pages'} aria-pressed={layout === 'pages'} onclick={() => (layout = 'pages')} {disabled}>Pages</button>
-      <button type="button" class:on={layout === 'longstrip'} aria-pressed={layout === 'longstrip'} onclick={() => (layout = 'longstrip')} {disabled}>Longstrip</button>
+      <button type="button" class:on={layout === 'pages'} aria-pressed={layout === 'pages'} onclick={() => pickLayout('pages')} {disabled}>Pages</button>
+      <button type="button" class:on={layout === 'longstrip'} aria-pressed={layout === 'longstrip'} onclick={() => pickLayout('longstrip')} {disabled}>Longstrip</button>
     </div>
   </div>
 
