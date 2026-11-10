@@ -23,7 +23,7 @@
   import { untrack } from 'svelte';
   import { app, page, lineByN, boxLocked, isTranslateMode } from '../store.svelte.js';
   import { hasCopiedStyle } from '../presets.svelte.js';
-  import { runShortcut, hasShortcutHandler, comboFor, formatCombo } from '../shortcuts.svelte.js';
+  import { runShortcut, hasShortcutHandler, comboFor, formatCombo, actionOff } from '../shortcuts.svelte.js';
   import { anchoredOverlay } from '../anchored-overlay.svelte.js';
 
   // Clear of the window's edges by this much when the menu has to be pushed
@@ -91,7 +91,7 @@
     const locked = boxLocked(b);
     const line = b.lineN != null ? lineByN(page(), b.lineN) : null;
     const keyed = (id, label, ok = true, extra = {}) => ({ id, label, key: keyOf(id), ok: ok && hasShortcutHandler(id), run: () => runShortcut(id), ...extra });
-    return [
+    const items = [
       keyed('box.retypeset', 'Refit', !locked),
       keyed('box.layoutLock', 'Lock', true, { checked: locked }),
       keyed('box.approveOutline', 'Approve outline', !!b.fit && b.outline?.approved !== 'user'),
@@ -105,6 +105,10 @@
       { sep: true },
       keyed('box.delete', 'Delete', !locked),
     ];
+    // The bubble items are comic tools: under general use they are not there
+    // at all, and a separator left with nothing before it goes with them.
+    const kept = items.filter((it) => it.sep || !actionOff(it.id));
+    return kept.filter((it, i) => !it.sep || (i > 0 && !kept[i - 1].sep));
   }
 
   // Closed first, then run: the action may toast, delete the box or open

@@ -91,3 +91,30 @@ describe('Settings ▸ About', () => {
     expect(openExternal).toHaveBeenCalledWith('https://discord.gg/3ueKc9PaX7');
   });
 });
+
+describe('Settings under general use', () => {
+  const tabNames = (view) => view.getAllByRole('tab').map((t) => t.textContent.trim());
+
+  it('has no Detection tab, no SFX row and no balloon fit, and comics use brings them back', async () => {
+    const view = await settings();
+    expect(tabNames(view)).toContain('Detection');
+    expect(view.container.textContent).toContain('SFX tool');
+    setPref('usage', 'general');
+    await tick();
+    expect(tabNames(view)).not.toContain('Detection');
+    expect(view.container.textContent).not.toContain('SFX tool');
+    settingsView.tab = 'typesetting';
+    await tick();
+    expect(view.container.textContent).not.toContain('Fit text to balloon');
+    setPref('usage', 'comics');
+    await tick();
+    expect(view.container.textContent).toContain('Fit text to balloon');
+    expect(tabNames(view)).toContain('Detection');
+  });
+
+  it('opens on General when asked for the Detection tab it does not have', async () => {
+    setPref('usage', 'general');
+    const view = await settings('detection');
+    expect(view.getByRole('tab', { selected: true }).textContent.trim()).toBe('General');
+  });
+});

@@ -91,7 +91,7 @@
   import ValueSlider from './ValueSlider.svelte';
   import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
-  import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
+  import { setFxDefault, clearFxDefault, isComics } from './prefs.svelte.js';
   import { layoutShape } from './balloon.js';
   import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
@@ -2816,6 +2816,8 @@
              the orphan threshold - are defaults, set once in Settings ›
              Typesetting, and overridable per box from the Bulk style panel.
              None of them said anything about the box you had selected. -->
+        <!-- Bubble outlines are a comic tool: general use has none. -->
+        {#if isComics()}
         <div class="insp-rule"></div>
         {@render secHead('Typeset')}
         <div class="grp">
@@ -2836,6 +2838,7 @@
             <button type="button" class="rbtn" title="Approve every outline on this page that nobody approved yet" onclick={() => approvePageOutlines()}>Approve page</button>
           </div>
         </div>
+        {/if}
       </div>
     {/if}
 

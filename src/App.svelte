@@ -42,9 +42,9 @@
   import { initDoor, initChapterWindowDoor, closeDoorForQuit } from './lib/agent/door.svelte.js';
   import { windowRole, parseChapterKey, agentWindowReady, closeAgentWindows } from './lib/agent/windows.js';
   import { initTheme } from './lib/theme.svelte.js';
-  // Side-effect import: reading the stored preferences also applies them, and
-  // the typesetting switch has to be applied before the first line is measured.
-  import './lib/prefs.svelte.js';
+  // Importing the preferences also reads and applies them, and the
+  // typesetting switch has to be applied before the first line is measured.
+  import { isComics } from './lib/prefs.svelte.js';
   import { library, initRoot, scanLibrary, openChapter, flushBeforeLeaving, leaveApprovalCurrent, checkOutsideChange, watchProjectRecords } from './lib/library.svelte.js';
   import { route, goBack, goEditor } from './lib/route.svelte.js';
   import { watchFontLoads, installContextMenuGuard, isReloadKey, isEditableTarget, ownsArrowKeys } from './lib/shell-guards.js';
@@ -72,6 +72,19 @@
   // Read once at boot; until it answers this is the main window.
   let role = { label: 'main', agent: false, chapter: null };
   const roleRead = windowRole().then((r) => (role = r));
+
+  // The detection engine is probed (Tauri only) once the library is read,
+  // and only for comics use: general use has no detection, so starting the
+  // engine would cost memory for nothing. Switching to comics later starts it
+  // then, once.
+  let sidecarProbed = false;
+  $effect(() => {
+    if (!booted || sidecarProbed || !isComics()) return;
+    sidecarProbed = true;
+    checkSidecar().then((h) => {
+      if (h && !role.agent) toast(`Detection ready · ${h.device}`);
+    });
+  });
 
   onMount(async () => {
     initTheme();
@@ -104,10 +117,6 @@
     // Recompute measurements when web fonts finish loading.
     document.fonts?.ready.then(() => noteFontsChanged());
     armQuitFlush();
-    // Probe detection engine (Tauri only).
-    checkSidecar().then((h) => {
-      if (h && !role.agent) toast(`Detection ready · ${h.device}`);
-    });
     await roleRead;
     // The first-run setup, decided once the library is read (`booted`) and
     // the window's role is known: never in an agent's window, and never for an

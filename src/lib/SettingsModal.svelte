@@ -63,10 +63,18 @@
   // there is one: everything in it is that project's, and with no chapter open
   // there is no single project for it to mean.
   const project = $derived(app.chapterRef ? (projectById(app.chapterRef.projectId) ?? null) : null);
-  const tabs = $derived(project ? [...APP_TABS, ...SERIES_TABS] : APP_TABS);
+  // General use has no detection and no series guide (plan 2.1), so those two
+  // tabs are not there; asked for, Settings opens on General instead.
+  const COMICS_TABS = ['detection', 'guide'];
+  const appTabs = $derived(isComics() ? APP_TABS : APP_TABS.filter((t) => !COMICS_TABS.includes(t.id)));
+  const seriesTabs = $derived(isComics() ? SERIES_TABS : SERIES_TABS.filter((t) => !COMICS_TABS.includes(t.id)));
+  const tabs = $derived(project ? [...appTabs, ...seriesTabs] : appTabs);
   // Which section is open lives in `settings-tabs.svelte.js`, so the command
   // palette and the panes that send the user here can choose it.
-  const tab = $derived(shownSettingsTab(!!project));
+  const tab = $derived.by(() => {
+    const id = shownSettingsTab(!!project);
+    return tabs.some((t) => t.id === id) ? id : 'general';
+  });
   const current = $derived(tabs.find((t) => t.id === tab) ?? APP_TABS[0]);
   const inSeries = $derived(SERIES_TABS.some((t) => t.id === tab));
 
@@ -479,6 +487,7 @@
         </div>
       </div>
     </div>
+    {#if isComics()}
     <div class="set-item">
       <div class="set-line">
         <span class="set-label">Fit text to balloon <span class="set-badge">Beta</span></span>
@@ -486,6 +495,7 @@
       </div>
       <p class="set-desc">Breaks lines to the balloon’s curve instead of the box’s straight sides.</p>
     </div>
+    {/if}
     <div class="set-item">
       <div class="set-line">
         <label class="set-label" for="ts-orphan">Shortest word left alone on a line</label>
@@ -543,7 +553,7 @@
     {/snippet}
 
     <div class="set-tabs" role="tablist" aria-orientation="vertical" aria-label="App settings, saved on this computer">
-      {#each APP_TABS as t (t.id)}{@render tabButton(t)}{/each}
+      {#each appTabs as t (t.id)}{@render tabButton(t)}{/each}
     </div>
 
     {#if project}
@@ -552,7 +562,7 @@
         <div class="set-group-note">Saved with the series</div>
       </div>
       <div class="set-tabs" role="tablist" aria-orientation="vertical" aria-labelledby="set-group-series">
-        {#each SERIES_TABS as t (t.id)}{@render tabButton(t)}{/each}
+        {#each seriesTabs as t (t.id)}{@render tabButton(t)}{/each}
       </div>
     {/if}
   </nav>
@@ -633,6 +643,7 @@
             </div>
             <p class="set-desc">Unfinished, and hidden until you turn it on.</p>
           </div>
+          {#if isComics()}
           <div class="set-item">
             <div class="set-line">
               <span class="set-label">SFX tool <span class="set-badge">Beta</span></span>
@@ -640,6 +651,7 @@
             </div>
             <p class="set-desc">Draw sound effects on the page, and pick their type in Effects &gt; SFX.</p>
           </div>
+          {/if}
         </section>
 
         <section class="settings-section">

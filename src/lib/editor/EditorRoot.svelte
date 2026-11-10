@@ -20,7 +20,7 @@
   import FloatingPanel from './FloatingPanel.svelte';
   import Inspector from '../Inspector.svelte';
   import SfxWindow from '../SfxWindow.svelte';
-  import { prefs } from '../prefs.svelte.js';
+  import { sfxToolOn, isComics } from '../prefs.svelte.js';
   import Queue from '../Queue.svelte';
   import BulkStylePanel from '../BulkStylePanel.svelte';
   import BoxMenu from './BoxMenu.svelte';
@@ -204,7 +204,7 @@
     <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'} rightInset={canvasRight}>
       <Inspector />
     </FloatingPanel>
-    {#if prefs.sfxTool}
+    {#if sfxToolOn()}
       <FloatingPanel id="sfx" title="SFX" rightInset={canvasRight}>
         <SfxWindow {onSettings} />
       </FloatingPanel>
@@ -213,7 +213,8 @@
   {#if split}
     <TranslatePane bind:width={paneWidth} />
   {:else}
-    <FloatingPanel id="queue" title="Text queue" count={`${placed} / ${total} placed`}>
+    <!-- General use has no detected lines queued for placing, only its text. -->
+    <FloatingPanel id="queue" title={isComics() ? 'Text queue' : 'Text list'} count={`${placed} / ${total} placed`}>
       <Queue />
     </FloatingPanel>
   {/if}

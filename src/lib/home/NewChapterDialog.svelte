@@ -15,6 +15,7 @@
   import { resliceStripFiles, resliceWarning, RESLICE_H_DEFAULT, RESLICE_H_MAX, clampResliceHeight } from '../strip-reslice.js';
   import { SLICE_H_MIN } from '../editor/strip-cuts.js';
   import { preparePageFiles } from '../page-prep.js';
+  import { isComics, startMode } from '../prefs.svelte.js';
 
   // In-flight creation blocks dismissal.
   let { open = $bindable(), busy = $bindable(false), projectId = null } = $props();
@@ -35,7 +36,7 @@
   let pkgName = $state('');
   let reading = $state(false);
   let error = $state('');
-  let workflow = $state('typeset');
+  let workflow = $state(startMode());
   let newProjectLayout = $state('pages');
   let newProjectOcrLanguage = $state('ja');
   let recut = $state(false);
@@ -84,7 +85,7 @@
       newProjectName = '';
       newProjectLayout = 'pages';
       newProjectOcrLanguage = 'ja';
-      workflow = 'typeset';
+      workflow = startMode();
       recut = false;
       resliceH = RESLICE_H_DEFAULT;
       splitSpreads = false;
@@ -303,9 +304,11 @@
           number: n,
           title,
           files: importFiles,
-          cleanedFiles: cleaned,
-          translations: translations?.pages ?? null,
-          mode: workflow,
+          // General use has no mode choice and no sources to import, so
+          // nothing left over from a comics pick can reach the chapter.
+          cleanedFiles: isComics() ? cleaned : [],
+          translations: isComics() ? translations?.pages ?? null : null,
+          mode: isComics() ? workflow : 'typeset',
         });
         note = `${plural(importFiles.length, 'page')} copied`;
         if (cleaned.length) note += ` · ${Math.min(cleaned.length, files.length)} cleaned`;
@@ -401,6 +404,7 @@
         <!-- everything a package carries is described in the notes below -->
       {:else}
 
+        {#if isComics()}
         <div class="field">
           <span>Mode</span>
           <div class="seg">
@@ -408,6 +412,7 @@
             <button class:on={workflow === 'translate'} onclick={() => (workflow = 'translate')} disabled={busy}>Translate</button>
           </div>
         </div>
+        {/if}
 
         <div class="field">
           <span>Raw pages</span>
@@ -416,6 +421,7 @@
           </button>
         </div>
 
+        {#if isComics()}
         <div class="field">
           <span>Cleaned pages</span>
           <button class="soft-btn" onclick={pickCleaned} disabled={busy}>
@@ -435,6 +441,7 @@
             <button class="soft-btn slim" onclick={() => (translations = null)} disabled={busy}>Clear</button>
           {/if}
         </div>
+        {/if}
 
         {#if importLayout === 'longstrip'}
           <label class="pair-note prep-option">

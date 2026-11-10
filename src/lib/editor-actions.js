@@ -42,8 +42,8 @@ import {
   snugPageBoxes,
 } from './store.svelte.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
-import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
-import { prefs } from './prefs.svelte.js';
+import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut, actionOff } from './shortcuts.svelte.js';
+import { sfxToolOn } from './prefs.svelte.js';
 import { jobs } from './jobs.svelte.js';
 import { startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
 import { drawRead } from './draw-read.svelte.js';
@@ -144,7 +144,7 @@ const RUNS = {
   'view.raw': { when: typeset, run: toggleRaw },
   'panel.options': { when: typeset, run: () => togglePanel('options') },
   'panel.queue': { when: typeset, run: () => togglePanel('queue') },
-  'panel.sfx': { when: () => typeset() && prefs.sfxTool, run: () => togglePanel('sfx') },
+  'panel.sfx': { when: () => typeset() && sfxToolOn(), run: () => togglePanel('sfx') },
 
   'detect.page': { when: canDetect, run: () => detectCurrentPage() },
   'detect.chapter': { when: canDetect, run: () => detectAllPages() },
@@ -181,10 +181,11 @@ export function editorActionHandlers() {
 // offering what would be refused.
 const BOX_PREFIXES = ['box.', 'style.'];
 function shortcutWhen(id) {
+  // A tool switched off, or one the usage does not have, first: it is not
+  // offered whatever its own condition says.
+  if (actionOff(id)) return false;
   const r = RUNS[id];
   if (r) return r.when();
-  if (id === 'tool.brush' && !prefs.brushTool) return false;
-  if (id === 'tool.sfx' && !prefs.sfxTool) return false;
   if (id === 'box.paste') return typeset() && hasCopiedBox();
   if (id === 'fonts.open') return !isTranslateMode();
   if (BOX_PREFIXES.some((p) => id.startsWith(p))) return boxSelected();

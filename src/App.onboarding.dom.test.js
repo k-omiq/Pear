@@ -7,7 +7,7 @@ import { tick } from 'svelte';
 // screen with focus going back to what opened Settings.
 const calls = vi.hoisted(() => {
   HTMLCanvasElement.prototype.getContext = () => null;
-  return { role: null };
+  return { role: null, probes: 0 };
 });
 vi.mock('./lib/library.svelte.js', async (original) => ({
   ...(await original()),
@@ -17,7 +17,7 @@ vi.mock('./lib/library.svelte.js', async (original) => ({
 }));
 vi.mock('./lib/fonts.js', async (original) => ({ ...await original(), restoreFonts: async () => {}, scanSystemFonts: async () => {} }));
 vi.mock('./lib/importer.js', async (original) => ({ ...await original(), isTauri: () => false }));
-vi.mock('./lib/sidecar.js', () => ({ checkSidecar: async () => null, modelsCacheInfo: async () => null, clearModelsCache: async () => null }));
+vi.mock('./lib/sidecar.js', () => ({ checkSidecar: async () => { calls.probes++; return null; }, modelsCacheInfo: async () => null, clearModelsCache: async () => null }));
 // The role answers when the test says so, as the Rust side does at boot.
 vi.mock('./lib/agent/windows.js', async (original) => ({
   ...await original(),
@@ -48,6 +48,7 @@ const screen = () => document.querySelector('.onboarding-screen');
 beforeEach(() => {
   resetRoute();
   calls.role = null;
+  calls.probes = 0;
   setPref('onboarded', false);
   setPref('usage', 'comics');
 });
@@ -102,4 +103,17 @@ it('Run setup again hands focus back to what opened Settings when the setup clos
   await fireEvent.keyDown(document.activeElement, { key: 'Escape' }); await settle();
   expect(screen()).toBe(null);
   expect(document.activeElement).toBe(gear);
+});
+
+it('probes the detection engine at boot for comics use only, and once comics is picked later', async () => {
+  setPref('onboarded', true);
+  setPref('usage', 'general');
+  render(App); await settle();
+  calls.role({ label: 'main', agent: false, chapter: null }); await settle();
+  expect(calls.probes).toBe(0);
+  setPref('usage', 'comics'); await settle();
+  expect(calls.probes).toBe(1);
+  setPref('usage', 'general'); await settle();
+  setPref('usage', 'comics'); await settle();
+  expect(calls.probes).toBe(1);
 });
