@@ -15,6 +15,7 @@
     rememberStyle,
     settleEdits,
     setBoxText,
+    boxRuns,
     refitBox,
     autoFitBoxTo,
     fitGeom,
@@ -44,9 +45,11 @@
     resyncField,
     undoField,
     redoField,
+    fieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
+  import { copyRuns } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
   import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
@@ -2640,7 +2643,7 @@
       untrack(() => {
         if (first) {
           first = false;
-          resyncField(fieldUndo, text);
+          resyncField(fieldUndo, text, copyRuns(boxRuns(box)));
           node.focus();
           drawEdit(node, null);
         } else {
@@ -2694,20 +2697,21 @@
     return a == null || b == null ? null : [Math.min(a, b), Math.max(a, b)];
   }
 
-  // setBoxText routes text to line for free-typed boxes.
-  function commitEdit(v, caret, inputType) {
+  // setBoxText routes text to line for free-typed boxes. `at` is the range
+  // the edit replaced, when it is known, so the faces move with this edit.
+  function commitEdit(v, caret, inputType, at) {
     if (v === text) return;
     keyed();
     caretNext = caret;
-    setBoxText(box, v);
-    recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(inputType) });
+    setBoxText(box, v, page(), { span: at });
+    recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(inputType), faces: copyRuns(boxRuns(box)) });
     markUnsaved();
   }
 
   function applyEdit(node, span, inputType, data) {
     if (typeFlat && !composing) span = editStops(node.textContent, span);
     const r = rawEdit(node.textContent, span, inputType, data);
-    if (r) commitEdit(r.v, r.caret, inputType);
+    if (r) commitEdit(r.v, r.caret, inputType, r.span);
   }
 
   function onEditBeforeInput(e) {
@@ -2837,7 +2841,7 @@
     if (next == null) return;
     keyed();
     caretNext = caretAfter(node.textContent, next);
-    setBoxText(box, next);
+    setBoxText(box, next, page(), { runs: fieldFaces(fieldUndo) });
     markUnsaved();
   }
 

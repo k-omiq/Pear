@@ -5,6 +5,7 @@ import {
   resyncField,
   undoField,
   redoField,
+  fieldFaces,
   diffText,
   caretAfter,
   isAtomicInput,
@@ -225,5 +226,22 @@ describe('isAtomicInput', () => {
   it('leaves ordinary typing alone', () => {
     for (const t of ['insertText', 'deleteContentBackward', 'insertLineBreak', undefined])
       expect(isAtomicInput(t)).toBe(false);
+  });
+});
+
+// The face runs beside each step (runs.js) come back with the step, so a step
+// back puts the bold back with the words.
+describe('the faces beside each step', () => {
+  it('are the faces of the step stood on, after an undo and a redo', () => {
+    const bold = [{ start: 0, end: 2, bold: true, italic: false }];
+    const u = createFieldUndo('ab', bold);
+    recordFieldEdit(u, 'ab cd', { now: 0, faces: null });
+    expect(fieldFaces(u)).toBe(null);
+    expect(undoField(u)).toBe('ab');
+    expect(fieldFaces(u)).toBe(bold);
+    expect(redoField(u)).toBe('ab cd');
+    expect(fieldFaces(u)).toBe(null);
+    resyncField(u, 'x', bold);
+    expect(fieldFaces(u)).toBe(bold);
   });
 });

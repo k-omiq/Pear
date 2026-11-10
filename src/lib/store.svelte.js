@@ -136,6 +136,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
+import { putText, copyRuns, normalizeRuns, runsField, runsKey } from './runs.js';
 import { sfxAvailable, sfxActive, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
 
 export { PAGE_W, PAGE_H };
@@ -205,6 +206,11 @@ function detectMaskField(m) {
 function sanitizeLine(l) {
   const out = { ...l };
   if (l?.placed) out.placed = true;
+  // The faces of the English (runs.js), which they index: off disk they are
+  // only trusted once normalised against it, and none is no key at all.
+  const runs = normalizeRuns(l?.runs, typeof out.en === 'string' ? out.en : '');
+  if (runs) out.runs = runs;
+  else delete out.runs;
   if (out.jp != null && typeof out.jp !== 'string') delete out.jp;
   if (typeof out.jp2 !== 'string' || !out.jp2) delete out.jp2;
   if (typeof out.speaker !== 'string' || !out.speaker) delete out.speaker;
@@ -340,15 +346,19 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
         const id = keep ? b.id : 'b' + boxSeq++;
         takenBoxes.add(id);
         if (!keep) minted++;
+        const style = normalizeStyle(b.style);
         return {
           id,
           lineN: b.lineN,
           text: b.text ?? null,
+          // The faces of the box's own words (runs.js), only beside words it
+          // owns: a box reading its line reads the line's.
+          ...(typeof b.text === 'string' ? runsField(b.runs, b.text, style) : null),
           x: b.x,
           y: b.y,
           w: b.w,
           h: b.h,
-          style: normalizeStyle(b.style),
+          style,
           // The balloon this box was fitted to, in page coordinates. Through
           // `normalizeFit` for the same reason the style goes through
           // `normalizeStyle`: what is on disk was written by some build, and a
@@ -744,24 +754,45 @@ export function boxOwnText(b, p = page()) {
   if (b?.lineN != null && b.lineN < 0) return lineByN(p ?? page(), b.lineN)?.en ?? null;
   return b?.text ?? null;
 }
+
+// The faces of the text a box shows (runs.js), read where `boxText` reads the
+// text: the box's own beside its own words, else its line's. Null for none.
+export function boxRuns(b, p = page()) {
+  if (!b) return null;
+  if (b.text != null) return b.runs ?? null;
+  return lineByN(p ?? page(), b.lineN)?.runs ?? null;
+}
+// The faces beside `boxOwnText`, from the same field.
+export function boxOwnRuns(b, p = page()) {
+  if (b?.lineN != null && b.lineN < 0) return lineByN(p ?? page(), b.lineN)?.runs ?? null;
+  return b?.text != null ? (b.runs ?? null) : null;
+}
 // `opts.fit: false` writes the text and fits nothing - for the history, which
 // puts back the geometry it recorded rather than deriving one (see `restoreFit`
 // in history.svelte.js). A fit run first would be a ladder that can move, widen
 // and shrink the box, overwritten a moment later by the record.
+//
+// The faces go with the words (`putText` in runs.js): shifted through the
+// edit, by `opts.span` - the range of the old text the edit replaced, which
+// typing knows exactly - or by the common prefix and suffix; or, for a caller
+// putting back a recorded state, set to `opts.runs` outright.
 export function setBoxText(b, v, p = page(), opts) {
   if (!b) return;
   const fit = opts?.fit !== false;
+  const how = { span: opts?.span, runs: opts?.runs };
   if (b.lineN != null && b.lineN < 0) {
     const ln = lineByN(p ?? page(), b.lineN);
     // A free box whose line has gone is a document that has already lost the
     // text; writing `b.text` here would resurrect it as an override nothing
     // else in the app knows how to reach.
-    if (ln) ln.en = v ?? '';
+    if (ln) putText(ln, 'en', v ?? '', how);
     // Same reason as below: the text changed, so the box may no longer fit it.
     if (fit) autoFitBox(b, p);
     return;
   }
-  b.text = v;
+  // From what the box showed: a queue-placed box writing its first override
+  // starts from its line's words and faces.
+  putText(b, 'text', v, { ...how, from: { text: boxText(b, p), runs: boxRuns(b, p) } });
   if (fit) autoFitBox(b, p);
 }
 function clamp(v, a, b) {
@@ -786,6 +817,7 @@ export function boxEdited(b, p = page()) {
 export const boxSnap = (b, p = page()) => ({
   style: cloneStyle(b.style),
   text: boxOwnText(b, p),
+  runs: copyRuns(boxOwnRuns(b, p)),
   x: b.x,
   y: b.y,
   w: b.w,
@@ -819,7 +851,7 @@ export function boxEditRecords(key, before, after, geom) {
   };
   const fit = { geomBefore: fitOf(before), geomAfter: fitOf(after) };
   const moved = geom && ['x', 'y', 'w', 'h'].some((k) => before[k] !== after[k]);
-  const typed = before.text !== after.text;
+  const typed = before.text !== after.text || runsKey(before.runs) !== runsKey(after.runs);
   const look = (st, ink) => JSON.stringify({ ...st, size: null, ...(ink ? { ink: null } : null) });
   const same = (ink) => look(before.style, ink) === look(after.style, ink);
   const carried = (moved && same(true)) || (typed && same(false));
@@ -827,7 +859,7 @@ export function boxEditRecords(key, before, after, geom) {
     out.push({ t: 'style', ...key, before: before.style, after: after.style, ...fit });
   }
   if (moved) out.push({ t: 'resize', ...key, before: geomOf(before), after: geomOf(after) });
-  if (typed) out.push({ t: 'text', ...key, before: before.text ?? null, after: after.text, ...fit });
+  if (typed) out.push({ t: 'text', ...key, before: before.text ?? null, after: after.text, ...runsRecord(before.runs, after.runs), ...fit });
   // A change to what the solver aims for and nothing else - the size aimed
   // for, the least size, a lock, held lines - is an edit too, and the entry's
   // geometry carries the record back on an undo. Not a solve's own bookkeeping
@@ -905,13 +937,15 @@ export function editBoxes(targets, mutate, { always = false, solve = false, ...e
 const LINE_SETTLE_MS = 400;
 let linePending = null; // { pageId, lineN, before, geoms }
 let lineT = null;
-export function setLineText(p, n, v) {
+// `opts.span` / `opts.runs` say how the faces go with the words, as for
+// `setBoxText`.
+export function setLineText(p, n, v, opts) {
   const ln = p ? lineByN(p, n) : null;
   if (!ln) return;
   settleSource();
   if (linePending && (linePending.lineN !== n || linePending.pageId !== p.id)) settleLine();
-  linePending ??= { pageId: p.id, lineN: n, before: ln.en ?? '', geoms: lineBoxGeoms(p, n) };
-  ln.en = v;
+  linePending ??= { pageId: p.id, lineN: n, before: ln.en ?? '', runsBefore: copyRuns(ln.runs), geoms: lineBoxGeoms(p, n) };
+  putText(ln, 'en', v, { span: opts?.span, runs: opts?.runs });
   fitLineBoxes(p, n);
   markUnsaved();
   clearTimeout(lineT);
@@ -1017,12 +1051,18 @@ function settleLine() {
   const ln = pg ? lineByN(pg, pend.lineN) : null;
   if (!ln) return;
   const after = ln.en ?? '';
-  if (after === pend.before) return;
+  if (after === pend.before && runsKey(ln.runs) === runsKey(pend.runsBefore)) return;
   const now = new Map(lineBoxGeoms(pg, pend.lineN).map((g) => [g.boxId, g.geom]));
   const boxes = pend.geoms
     .filter((g) => now.has(g.boxId))
     .map((g) => ({ boxId: g.boxId, geomBefore: g.geom, geomAfter: now.get(g.boxId) }));
-  recordEdit({ t: 'line', pageId: pend.pageId, lineN: pend.lineN, before: pend.before, after, boxes });
+  recordEdit({ t: 'line', pageId: pend.pageId, lineN: pend.lineN, before: pend.before, after, ...runsRecord(pend.runsBefore, ln.runs), boxes });
+}
+// The faces on either side of a `text` or `line` entry, only when either side
+// has any: an entry for words with no faces is written as it always was, and
+// the history reads a missing side as none.
+export function runsRecord(before, after) {
+  return before?.length || after?.length ? { runsBefore: copyRuns(before), runsAfter: copyRuns(after) } : null;
 }
 function fitLineBoxes(p, n) {
   for (const b of p?.boxes ?? []) if (b.lineN === n) autoFitBox(b, p);
@@ -3462,6 +3502,8 @@ let pendingPlace = null;
 // typing is only possible while somebody still remembers the text it started
 // from.
 let editBefore = undefined;
+// And the faces beside that text (runs.js), so the entry puts them back too.
+let editRunsBefore = null;
 // And the box's fitted geometry at that same moment, for the same span of the
 // session. Typing is the commonest way a box grows, so a `text` entry has to
 // carry the height either side of it or an undo hands back the short text in the
@@ -3559,8 +3601,10 @@ function freeLineRecord(p, b) {
 function settleText() {
   const id = app.editingId;
   const before = editBefore;
+  const runsBefore = editRunsBefore;
   if (id == null) {
     editBefore = undefined;
+    editRunsBefore = null;
     return;
   }
   const b = byId(id);
@@ -3575,17 +3619,19 @@ function settleText() {
   // record nothing.
   const geomBefore = editGeomBefore;
   editBefore = b ? boxOwnText(b) : undefined;
+  editRunsBefore = b ? copyRuns(boxOwnRuns(b)) : null;
   editGeomBefore = b ? fitGeom(b) : null;
   if (before === undefined) return;
   if (pendingPlace?.id === id) return;
   const now = b ? boxOwnText(b) : null;
-  if (!b || now === before) return;
+  if (!b || (now === before && runsKey(editRunsBefore) === runsKey(runsBefore))) return;
   recordEdit({
     t: 'text',
     pageId: page().id,
     boxId: id,
     before: before ?? null,
     after: now,
+    ...runsRecord(runsBefore, editRunsBefore),
     geomBefore,
     geomAfter: fitGeom(b),
   });
@@ -3738,6 +3784,7 @@ export function beginEdit(id, opts) {
   if (!already) {
     const b = byId(id);
     editBefore = boxOwnText(b);
+    editRunsBefore = copyRuns(boxOwnRuns(b));
     editGeomBefore = b ? fitGeom(b) : null;
   }
 }
@@ -3753,6 +3800,8 @@ export function endEdit(commitText, beforeText) {
   // has already ended the edit must not clear the before-text of an edit that
   // has since begun. Whoever ended it took this with them.
   editBefore = undefined;
+  const runsBefore = editRunsBefore;
+  editRunsBefore = null;
   // Taken before the commit below, because that is what grows the box.
   const geomBefore = editGeomBefore;
   editGeomBefore = null;
@@ -3798,13 +3847,15 @@ export function endEdit(commitText, beforeText) {
     settlePending();
     return;
   }
-  if (before !== undefined && commitText != null && commitText !== before) {
+  const runsAfter = boxOwnRuns(b);
+  if (before !== undefined && commitText != null && (commitText !== before || runsKey(runsAfter) !== runsKey(runsBefore))) {
     recordEdit({
       t: 'text',
       pageId: page().id,
       boxId: id,
       before: before ?? null,
       after: commitText,
+      ...runsRecord(runsBefore, runsAfter),
       // Null when the caller supplied its own before-text without ever having
       // opened an edit session here (`endEdit('hi', '')`), which is a caller
       // that knows the text and cannot know the geometry. The history falls back
@@ -4304,11 +4355,14 @@ export function applyDetection(result, target = null) {
     result.lines.map((l) => {
       const jp = l.jp ?? '';
       const was = before.get(l.n);
+      const keeps = !!was && (was.jp ?? '') === jp;
       return {
         n: l.n,
         type: l.type,
         jp,
-        en: was && (was.jp ?? '') === jp ? (was.en ?? '') : '',
+        en: keeps ? (was.en ?? '') : '',
+        // The kept English keeps its faces (runs.js); new words have none.
+        ...(keeps && was.runs?.length ? { runs: copyRuns(was.runs) } : null),
         // A second reader that disagreed (OCR-1); detect-post.js drops it
         // when the two readings agree.
         ...(typeof l.jp2 === 'string' && l.jp2 ? { jp2: l.jp2 } : {}),
@@ -6603,6 +6657,9 @@ function boxSnapshot(src, p) {
       // override its line with `box.text`, and a legacy free box has no line at
       // all, so `boxText` is the only reader that answers for every case.
       en: text,
+      // The faces of those words (runs.js), from where `boxText` read them:
+      // a copy is the box with its words, and its words with their faces.
+      ...(boxRuns(src, p) ? { runs: copyRuns(boxRuns(src, p)) } : null),
       ...(tags.length ? { tags: [...tags] } : null),
     },
   };
@@ -6613,6 +6670,8 @@ function boxSnapshot(src, p) {
 function placeSnapshot(p, snap, x, y, select = true) {
   const ln = { n: nextFreeLineN(p), ...snap.line };
   if (ln.tags) ln.tags = [...ln.tags];
+  // Copied again for the reason the tags are: one clipboard pasted twice.
+  if (ln.runs) ln.runs = copyRuns(ln.runs);
   p.lines.push(ln);
   const src = snap.box;
   const b = {

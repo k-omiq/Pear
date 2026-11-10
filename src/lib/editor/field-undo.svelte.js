@@ -36,17 +36,24 @@ export const MAX_FIELD_STEPS = 50;
 const ATOMIC_INPUT = /^(insertFrom|deleteBy|insertReplacement|history)/;
 export const isAtomicInput = (inputType) => ATOMIC_INPUT.test(inputType ?? '');
 
-export function createFieldUndo(value = '') {
-  const u = { stack: [value], i: 0, at: 0, kind: null, tip: value.length, wall: true };
+// `faces` beside each step is the face runs its text was set in (runs.js -
+// not the typing runs this file gathers steps into), so a step back puts the
+// bold and italic back with the words. Null for none.
+export function createFieldUndo(value = '', faces = null) {
+  const u = { stack: [value], faces: [faces], i: 0, at: 0, kind: null, tip: value.length, wall: true };
   return u;
 }
+
+// The face runs of the step the field is on, for the caller writing it back.
+export const fieldFaces = (u) => u.faces?.[u.i] ?? null;
 
 // The field is showing something this stack did not put there - another box
 // selected, an edit made on the canvas, the editor history rewinding the box's
 // text. Undoing back through a run that no longer describes the field's content
 // would restore text from a different box, so the stack starts again.
-export function resyncField(u, value) {
+export function resyncField(u, value, faces = null) {
   u.stack = [value];
+  u.faces = [faces];
   u.i = 0;
   u.at = 0;
   u.kind = null;
@@ -92,7 +99,7 @@ export function caretAfter(from, to) {
 // silent one: same arity at the call site, entirely different meaning. This is
 // the half that moved because every one of its call sites is in those two
 // components, while the store's name is reached from across the app.
-export function recordFieldEdit(u, value, { now = Date.now(), atomic = false } = {}) {
+export function recordFieldEdit(u, value, { now = Date.now(), atomic = false, faces = null } = {}) {
   const cur = u.stack[u.i];
   if (value === cur) return false;
   const d = diffText(cur, value);
@@ -108,16 +115,21 @@ export function recordFieldEdit(u, value, { now = Date.now(), atomic = false } =
       : d.at + d.removed.length === u.tip || d.at === u.tip;
   const coalesce =
     !atomic && !u.wall && u.i > 0 && u.kind === kind && adjacent && now - u.at <= COALESCE_MS;
+  u.faces ??= [];
   if (coalesce) {
     u.stack[u.i] = value;
+    u.faces[u.i] = faces;
   } else {
     // A fresh edit forfeits the redo tail, the same bargain every undo stack
     // makes: the branch the user walked back out of is no longer reachable.
     u.stack.length = u.i + 1;
+    u.faces.length = u.i + 1;
     u.stack.push(value);
+    u.faces.push(faces);
     u.i = u.stack.length - 1;
     if (u.stack.length > MAX_FIELD_STEPS) {
       u.stack.shift();
+      u.faces.shift();
       u.i--;
     }
   }
