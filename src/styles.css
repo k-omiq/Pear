@@ -929,6 +929,14 @@ input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; he
   box-shadow:var(--edge);
 }
 .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+/* A toast with an action takes the pointer while it shows, for its button. */
+.toast.show.has-action{ pointer-events:auto; display:flex; align-items:center; gap:12px; padding-right:8px; }
+.toast-act{
+  border:1px solid currentColor; background:transparent; color:inherit; border-radius:6px;
+  padding:3px 9px; font:inherit; font-weight:600; cursor:pointer;
+}
+.toast-act:hover{ background:var(--accent-fg); color:var(--accent); }
+.toast-act:focus-visible{ outline:2px solid var(--accent-fg); outline-offset:2px; }
 .toast-errors{
   position:fixed; bottom:38px; right:16px; z-index:301; display:flex; flex-direction:column; gap:6px;
   max-width:min(420px, calc(100vw - 32px));

@@ -24,8 +24,9 @@ import {
   payHeldFit,
   setFitLander,
   applyChapterLight,
+  takeLine,
 } from '../store.svelte.js';
-import { applyLineOrder, remapLineStack } from '../reading-order.js';
+import { applyLineOrder, remapLineStack, isOrderStep } from '../reading-order.js';
 
 // About thirty steps a page (UND-1). Entries are deltas of tens of bytes, the
 // live stack is one page's, and the rest spill to `logs/history.json`, so the
@@ -413,6 +414,73 @@ const KINDS = {
       }
     },
   },
+  // A line added in the typing pane (`addQueueLine`): the line as it was born
+  // and where it sat. Whatever was typed into it since is a `line` entry above
+  // this one, walked first, so the line taken back is the one this put there.
+  lineAdd: {
+    label: 'that new line',
+    apply(e, dir) {
+      const p = pageById(e.pageId);
+      if (!p) throw new Error('the page is gone');
+      if (dir === 'undo') dropLine(p, e);
+      else restoreLine(p, e);
+      setActive(p, dir === 'undo' ? e.activeBefore : e.activeAfter);
+    },
+  },
+  // The box drawn for a line (`setLineRect`), null for none on either side.
+  lineRect: {
+    label: 'that line box',
+    apply(e, dir) {
+      const p = pageById(e.pageId);
+      if (!p) throw new Error('the page is gone');
+      const ln = p.lines.find((l) => l.n === e.lineN);
+      if (!ln) throw new Error('the queue line is gone');
+      const r = dir === 'undo' ? e.before : e.after;
+      if (r) ln.rect = r.slice();
+      else delete ln.rect;
+    },
+  },
+  // A line deleted with everything bound to it (`deleteLine`). A numbered one
+  // was first carried to the end of the order (`numbers`/`before`, as an
+  // `order` entry has them), so the line, its boxes and its blocks are
+  // recorded under the number it had at the end, and the order is crossed
+  // after putting them back and before taking them out.
+  lineDelete: {
+    label: 'that line deletion',
+    apply(e, dir) {
+      const p = pageById(e.pageId);
+      if (!p) throw new Error('the page is gone');
+      const n = e.line?.n;
+      if (dir === 'undo') {
+        if (p.lines.some((l) => l.n === n)) throw new Error('the queue line is back already');
+        p.lines.splice(Math.min(e.lineIndex ?? p.lines.length, p.lines.length), 0, structuredClone(e.line));
+        if (e.takenDetect?.length) {
+          p.detect ??= { panels: [], boxes: [] };
+          p.detect.boxes ??= [];
+          for (const it of e.takenDetect) p.detect.boxes.splice(Math.min(it.index, p.detect.boxes.length), 0, structuredClone(it.d));
+        }
+        for (const it of e.takenBoxes ?? []) p.boxes.splice(Math.min(it.index, p.boxes.length), 0, structuredClone(it.box));
+        recheck(p, (e.takenBoxes ?? []).map((it) => it.box));
+        if (e.numbers) {
+          applyLineOrder(p, e, 'undo');
+          remapOrder(e, 'undo');
+        }
+        setActive(p, e.activeBefore);
+      } else {
+        // Asked under the number the line has now, before the order moves it:
+        // a redo that renumbered the page and then found nothing to take would
+        // leave the page renumbered by a step that was refused.
+        const now = e.numbers?.find(([, to]) => to === n)?.[0] ?? n;
+        if (!p.lines.some((l) => l.n === now)) throw new Error('the queue line is gone');
+        if (e.numbers) {
+          applyLineOrder(p, e, 'redo');
+          remapOrder(e, 'redo');
+        }
+        takeLine(p, n);
+        setActive(p, e.activeAfter);
+      }
+    },
+  },
   bulk: {
     label: 'that bulk style',
     apply(e, dir) {
@@ -506,7 +574,7 @@ const KINDS = {
 
 // What a group may hold. An `order` entry remaps the whole stack around it,
 // which only works from the top level.
-const GROUPABLE = (e) => e && e.t !== 'group' && e.t !== 'order' && !!KINDS[e.t];
+const GROUPABLE = (e) => e && e.t !== 'group' && !isOrderStep(e) && !!KINDS[e.t];
 
 // ---------- a fit owed to an entry ----------
 // An entry carries its box's geometry on both sides of the edit, fit included,
@@ -795,7 +863,7 @@ export function record(entry) {
     const owed = p ? boxesOf(flat).filter((id) => fitHeld(p.boxes.find((b) => b.id === id))) : [];
     if (owed.length) flat.fitOwed = owed;
   }
-  if (groupRun != null && flat.pageId != null && flat.t !== 'order') {
+  if (groupRun != null && flat.pageId != null && !isOrderStep(flat)) {
     // Into the run's open group on that page, wherever its stack lives.
     let folded = false;
     const offscreenPage = offscreenAmend?.(flat.pageId, (undo) => (folded = foldInto(undo, flat)));
@@ -825,7 +893,7 @@ export function record(entry) {
   // this module alone - nothing routes and the live stack takes everything,
   // which is what it did before.
   if (flat.pageId != null && offscreen?.(flat.pageId, flat)) return;
-  if (flat.t === 'order') remapOrder(flat);
+  if (isOrderStep(flat)) remapOrder(flat);
   undoStack.push(flat);
   if (undoStack.length > MAX_STEPS) undoStack.shift();
   redoStack = [];
@@ -921,6 +989,20 @@ export const redo = () => {
   settleEdits();
   return step(redoStack, 'redo');
 };
+
+// The kinds a translate chapter with its typesetting tools hidden may step:
+// the ones about its lines. Anything else on the stack is an edit to boxes the
+// canvas is not drawing (made while the tools were shown, or a tag that
+// restyled a line's boxes), and walking it there would change what nobody can
+// see.
+export const QUEUE_KINDS = new Set(['line', 'lineAdd', 'lineDelete', 'order', 'lineRect']);
+// Whether the next undo (or redo) is about the queue. Settles first, as the
+// step itself does, so the entry asked about is the one the step would take.
+export function queueStepNext(dir = 'undo') {
+  settleEdits();
+  const s = dir === 'undo' ? undoStack : redoStack;
+  return QUEUE_KINDS.has(s[s.length - 1]?.t);
+}
 
 // A copy of the live stack, for a write that must not disturb it.
 export function peekStack() {
