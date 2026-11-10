@@ -96,7 +96,7 @@
   import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
   import { wavePath } from './bezier-path.js';
-  import { maskTool, setMaskTool } from './mask-tool.svelte.js';
+  import { drawKindFor, setDrawTool, clearDrawTool } from './box-draw-tool.svelte.js';
   import { regridWarp } from './warp-gizmo.js';
   import { liquifyTool, setLiquifyMode, LIQUIFY_RADIUS_MIN, LIQUIFY_RADIUS_MAX } from './liquify-tool.svelte.js';
   import { LIQUIFY_MODES } from './liquify.js';
@@ -122,11 +122,14 @@
     setInspectorTab,
     effectsSubTab,
     setEffectsSubTab,
+    setEffectsGroup,
+    effectsGroupOf,
+    effectsTabsIn,
+    EFFECTS_GROUPS,
   } from './inspector-tabs.svelte.js';
   import { presets, savePreset, removePreset } from './presets.svelte.js';
   import {
     tabIcons,
-    effectsSubTabIcons,
     iconRotate,
     iconNoFill,
   } from './tab-icons.js';
@@ -178,40 +181,47 @@
     document.getElementById(`insp-tab-${next}`)?.focus();
   }
 
-  // SFX is not here: it has its own window (SfxWindow.svelte).
-  const EFFECTS_TABS = [
-    ['stroke', 'Stroke'],
-    ['shadow', 'Shadow'],
-    ['glow', 'Glow'],
-    ['bevel', 'Bevel & Emboss'],
-    ['warp', 'Warp'],
-    // Not the same thing as the one above it, and the two labels are the only
-    // place that says so to the user: `warp` bends the BASELINE (arc, circle,
-    // bezier path), `transform` deforms the whole finished box through a mesh.
-    ['transform', 'Transform'],
-    // The same mesh as `transform`, pushed with a round tool instead of dragged
-    // by its handles - which is why it works on type and ink alike.
-    ['liquify', 'Liquify'],
-    ['blur', 'Blur'],
-    ['edges', 'Edges'],
-    ['mask', 'Mask'],
-  ];
+  // The Effects tab is a group segment over the group's own sub-tabs, both
+  // in words (inspector-tabs.svelte.js has the list). SFX is not here: it has
+  // its own window (SfxWindow.svelte).
   const effectsTab = $derived(effectsSubTab.id);
+  const effectsGroup = $derived(effectsGroupOf(effectsSubTab.id));
+  const groupTabs = $derived(effectsTabsIn(effectsGroup));
 
-  function onSubTabKey(e, id) {
-    const i = EFFECTS_TABS.findIndex(([t]) => t === id);
+  // The same keys as the main tabs, in each row: the group row walks the
+  // groups, the sub-tab row walks the group it shows.
+  function rowKey(e, ids, id, pick, prefix) {
+    const i = ids.indexOf(id);
     let n = null;
-    if (e.key === 'ArrowLeft') n = (i + EFFECTS_TABS.length - 1) % EFFECTS_TABS.length;
-    else if (e.key === 'ArrowRight') n = (i + 1) % EFFECTS_TABS.length;
+    if (e.key === 'ArrowLeft') n = (i + ids.length - 1) % ids.length;
+    else if (e.key === 'ArrowRight') n = (i + 1) % ids.length;
     else if (e.key === 'Home') n = 0;
-    else if (e.key === 'End') n = EFFECTS_TABS.length - 1;
+    else if (e.key === 'End') n = ids.length - 1;
     if (n == null) return;
     e.preventDefault();
     e.stopPropagation();
-    const next = EFFECTS_TABS[n][0];
-    setEffectsSubTab(next);
-    document.getElementById(`insp-subtab-${next}`)?.focus();
+    pick(ids[n]);
+    document.getElementById(`${prefix}${ids[n]}`)?.focus();
   }
+  const onGroupKey = (e, id) => rowKey(e, EFFECTS_GROUPS.map((g) => g.id), id, setEffectsGroup, 'insp-fxgroup-');
+  const onSubTabKey = (e, id) => rowKey(e, groupTabs.map((t) => t.id), id, setEffectsSubTab, 'insp-subtab-');
+
+  // The Mask panel's tools, and the one line that says what the armed one
+  // does. Rectangles are stored as four-point polygons.
+  const MASK_KINDS = [
+    ['brush', 'Brush'],
+    ['rect', 'Rectangle'],
+    ['ellipse', 'Ellipse'],
+    ['poly', 'Polygon'],
+    ['move', 'Move'],
+  ];
+  const MASK_HINT = {
+    brush: 'Drag on the box to paint a shape.',
+    rect: 'Drag on the box to draw a rectangle.',
+    ellipse: 'Drag on the box to draw an ellipse.',
+    poly: 'Click the corners. Double-click to close, Esc to drop it.',
+    move: 'Drag a shape to move it, or empty space to move all. Delete removes the picked shape.',
+  };
 
   function clamp(v, a, b) {
     return Math.max(a, Math.min(b, v));
@@ -2180,25 +2190,41 @@
     {#if tab === 'effects'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-effects" aria-labelledby="insp-tab-effects">
         {@render inkGapNote()}
-        <div class="sub-tabs" role="tablist" aria-label="Effects options">
-          {#each EFFECTS_TABS as [id, label] (id)}
+        <div class="fx-groups" role="tablist" aria-label="Effects groups">
+          {#each EFFECTS_GROUPS as g (g.id)}
             <button
               type="button"
               role="tab"
-              id="insp-subtab-{id}"
-              class="sub-tab"
-              class:on={effectsTab === id}
-              aria-selected={effectsTab === id}
-              aria-label={label}
-              tabindex={effectsTab === id ? 0 : -1}
-              title={label}
-              onclick={() => setEffectsSubTab(id)}
-              onkeydown={(e) => onSubTabKey(e, id)}
-            >
-              {@html effectsSubTabIcons[id]}
-            </button>
+              id="insp-fxgroup-{g.id}"
+              class="fx-group"
+              class:on={effectsGroup === g.id}
+              aria-selected={effectsGroup === g.id}
+              tabindex={effectsGroup === g.id ? 0 : -1}
+              onclick={() => setEffectsGroup(g.id)}
+              onkeydown={(e) => onGroupKey(e, g.id)}
+            >{g.label}</button>
           {/each}
         </div>
+        <div class="sub-tabs" role="tablist" aria-label="Effects options">
+          {#each groupTabs as t (t.id)}
+            <button
+              type="button"
+              role="tab"
+              id="insp-subtab-{t.id}"
+              class="sub-tab"
+              class:on={effectsTab === t.id}
+              aria-selected={effectsTab === t.id}
+              tabindex={effectsTab === t.id ? 0 : -1}
+              onclick={() => setEffectsSubTab(t.id)}
+              onkeydown={(e) => onSubTabKey(e, t.id)}
+            >{t.label}</button>
+          {/each}
+        </div>
+        <!-- One note per group for what only the Rust engine paints, rather
+             than one under every effect that needs it. -->
+        {#if !rustBoxes && effectsGroup === 'styles'}
+          <p class="nofill-note">Glow, Satin, Bevel, inner shadows, most shadow settings and strokes that are not plain outlines need the Rust text engine (Settings).</p>
+        {/if}
 
         {#if effectsTab === 'stroke'}
           <!-- The strokes: one list, the first on top. Plain ones at the head
@@ -2214,9 +2240,6 @@
                 {@render strokeItem(k, i)}
               {/each}
             </div>
-            {#if !rustBoxes && s.strokeEffects.length > outlineRun(s).n}
-              <p class="nofill-note">Strokes that are not plain outlines (Outside, a colour, Normal, each wider than the one above) need the Rust text engine (Settings).</p>
-            {/if}
             {@render addBtn('Add stroke', addStrokeEffect, roomFor(s.strokeEffects))}
           </div>
         {/if}
@@ -2233,9 +2256,6 @@
                 {@render shadowItem(s.shadows, i, false)}
               {/each}
             </div>
-            {#if s.shadows.length && !rustBoxes}
-              <p class="nofill-note">Spread, Noise, Contour and Knock out need the Rust text engine (Settings).</p>
-            {/if}
             {@render addBtn('Add shadow', addShadow, roomFor(s.shadows))}
           </div>
           <!-- Inner shadows: thrown from outside the letters into them. -->
@@ -2249,17 +2269,11 @@
                 {@render shadowItem(s.innerShadows, i, true)}
               {/each}
             </div>
-            {#if s.innerShadows.length && !rustBoxes}
-              <p class="nofill-note">Inner shadows need the Rust text engine (Settings).</p>
-            {/if}
             {@render addBtn('Add inner shadow', addInnerShadow, roomFor(s.innerShadows))}
           </div>
         {/if}
 
         {#if effectsTab === 'glow'}
-          {#if !rustBoxes}
-            <p class="nofill-note">Glows and Satin need the Rust text engine (Settings).</p>
-          {/if}
           {@render glowControls(s.outerGlow, 'Outer glow', false)}
           <div class="insp-rule"></div>
           {@render glowControls(s.innerGlow, 'Inner glow', true)}
@@ -2268,9 +2282,6 @@
         {/if}
 
         {#if effectsTab === 'bevel'}
-          {#if !rustBoxes}
-            <p class="nofill-note">Bevel & Emboss needs the Rust text engine (Settings).</p>
-          {/if}
           {@render bevelControls(s.bevel)}
         {/if}
 
@@ -2606,6 +2617,7 @@
         {/if}
 
         {#if effectsTab === 'mask'}
+          {@const maskKind = drawKindFor('mask')}
           <div class="switch-row">
             <button
               type="button"
@@ -2616,7 +2628,7 @@
               aria-label="Mask"
               onclick={() => {
                 s.clip.on = !s.clip.on;
-                if (!s.clip.on && maskTool.id !== null) setMaskTool(maskTool.id);
+                if (!s.clip.on && maskKind) clearDrawTool();
                 touch();
               }}
             ><span class="knob"></span></button>
@@ -2628,6 +2640,7 @@
                 type="button"
                 class:on={s.clip.mode === 'exclude'}
                 aria-pressed={s.clip.mode === 'exclude'}
+                disabled={!s.clip.on}
                 title="Shapes hide the text under them"
                 onclick={() => { s.clip.mode = 'exclude'; touch(); }}
               >Exclude</button>
@@ -2635,38 +2648,24 @@
                 type="button"
                 class:on={s.clip.mode === 'include'}
                 aria-pressed={s.clip.mode === 'include'}
+                disabled={!s.clip.on}
                 title="Only text under the shapes stays visible"
                 onclick={() => { s.clip.mode = 'include'; touch(); }}
               >Include</button>
             </div>
-            <div class="seg">
-              <button
-                type="button"
-                class:on={maskTool.id === 'brush'}
-                aria-pressed={maskTool.id === 'brush'}
-                onclick={() => { if (!s.clip.on) return; setMaskTool('brush'); }}
-              >Brush</button>
-              <button
-                type="button"
-                class:on={maskTool.id === 'poly'}
-                aria-pressed={maskTool.id === 'poly'}
-                onclick={() => { if (!s.clip.on) return; setMaskTool('poly'); }}
-              >Polygon</button>
-              <button
-                type="button"
-                class:on={maskTool.id === 'ellipse'}
-                aria-pressed={maskTool.id === 'ellipse'}
-                onclick={() => { if (!s.clip.on) return; setMaskTool('ellipse'); }}
-              >Ellipse</button>
+            <div class="seg" role="group" aria-label="Mask tool">
+              {#each MASK_KINDS as [k, label] (k)}
+                <button
+                  type="button"
+                  class:on={maskKind === k}
+                  aria-pressed={maskKind === k}
+                  disabled={!s.clip.on}
+                  onclick={() => setDrawTool('mask', k)}
+                >{label}</button>
+              {/each}
             </div>
-            <div class="grp">
-              <span class="lbl">Brush size</span>
-              <div class="slider-row">
-                <input type="range" min="2" max="200" step="1" value={s.clip.brushSize} disabled={!s.clip.on} aria-label="Brush size" oninput={(e) => setNum(s.clip, 'brushSize', e.target.value, 2, 200, true)} />
-                <input class="num-s" type="number" min="2" max="200" step="1" value={s.clip.brushSize} disabled={!s.clip.on} title="Brush size, page px" aria-label="Brush size, page px" onchange={(e) => commitNum(s.clip, 'brushSize', e, 2, 200, true)} />
-              </div>
-            </div>
-            <div class="insp-none">Draw on the box: brush drags, polygon clicks corner points (double-click closes, Esc cancels), ellipse drags a bounds box. Shapes hide or keep the text per the mode.</div>
+            {@render sliderRow('Brush size', 'Brush size, page px', s.clip.brushSize, (v) => setVal(s.clip, 'brushSize', v), { min: 2, max: 200, unit: 'px', aria: 'Brush size', disabled: !s.clip.on })}
+            <div class="insp-none">{MASK_HINT[maskKind] ?? 'Pick a tool, then draw on the box.'}</div>
             <div class="mask-row">
               <span class="mask-count">{s.clip.shapes.length} shape(s)</span>
               <button
@@ -3376,38 +3375,72 @@
     border-color: var(--warn);
   }
 
-  .sub-tabs {
+  /* The Effects tab's two rows: the group, then the group's own sub-tabs,
+     both in words. Four groups of four or fewer, so every word fits at the
+     panel's width. What is picked is a soft fill and nothing else: the same
+     weight and size as the rest, so the row does not jump when it changes. */
+  .fx-groups {
     display: grid;
-    /* Nine tabs in one row: at the panel's default width each is about 30px,
-       and the glyph is 15px. Six per row left a row of three. */
-    grid-template-columns: repeat(9, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    border: 1px solid var(--line2);
+    border-radius: 7px;
+    overflow: hidden;
+  }
+  .fx-group {
+    height: 28px;
+    padding: 0 4px;
+    border: none;
+    background: transparent;
+    color: var(--t2);
+    font-family: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fx-group:not(:last-child) {
+    border-right: 1px solid var(--line);
+  }
+  .fx-group:hover {
+    color: var(--text);
+  }
+  .fx-group.on {
+    color: var(--text);
+    background: var(--accent-soft);
+  }
+  .fx-group:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .sub-tabs {
+    display: flex;
+    flex-wrap: wrap;
     gap: 3px;
   }
   .sub-tab {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    flex: 1 1 0;
     height: 24px;
-    padding: 0 2px;
+    padding: 0 6px;
     border: 1px solid transparent;
     border-radius: 5px;
     background: transparent;
     color: var(--t2);
+    font-family: inherit;
+    font-size: 11.5px;
     cursor: pointer;
     min-width: 0;
-  }
-  .sub-tab :global(svg) {
-    width: 15px;
-    height: 15px;
+    white-space: nowrap;
   }
   .sub-tab:hover {
     color: var(--text);
     background: var(--surface);
   }
   .sub-tab.on {
-    color: var(--accent-fg);
-    background: var(--accent);
-    border-color: var(--accent);
+    color: var(--text);
+    background: var(--accent-soft);
   }
   .sub-tab:focus-visible {
     outline: 2px solid var(--accent);

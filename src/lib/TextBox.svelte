@@ -82,7 +82,7 @@
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
-  import { maskTool } from './mask-tool.svelte.js';
+  import { drawKindFor, clearDrawTool } from './box-draw-tool.svelte.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
@@ -2093,18 +2093,30 @@
 
   // ---- mask drawing ----
   //
-  // The armed tool comes from the Inspector (mask-tool.svelte.js). While one
-  // is armed and this box is selected, a transparent overlay takes the
-  // pointer and turns gestures into mask shapes, committed one per gesture
-  // with one undo record each, like the path gizmo's drags.
+  // The armed tool comes from the Inspector (box-draw-tool.svelte.js). While
+  // one is armed for the mask and this box is selected, a transparent overlay
+  // takes the pointer and turns gestures into mask shapes, committed one per
+  // gesture with one undo record each, like the path gizmo's drags.
   // A warped box takes them too: a mask shape is stated in box-local px and is
   // applied to the texture BEFORE the mesh carries it, so the pointer is taken
   // back through the mesh on the way in (`maskShapePoint`) and the outlines
   // forward through it on the way out (`maskOutline`).
-  const maskArmed = $derived(selected && !editing && !bulkOn && s.clip?.on && maskTool.id);
+  const maskKind = $derived(drawKindFor('mask'));
+  const maskArmed = $derived(selected && !editing && !bulkOn && s.clip?.on && maskKind);
 
-  // The gesture in progress: a shape being drawn, not yet in the style.
-  const maskDraft = $state({ shape: null, poly: null });
+  // The gesture in progress: a shape being drawn, not yet in the style; the
+  // polygon's corners so far; the shape the Move tool has picked (its index)
+  // and how far a Move drag has carried it, or every shape when `idx` is null;
+  // and where the pointer is, for the brush's ring.
+  const maskDraft = $state({ shape: null, poly: null, picked: null, moving: null, at: null });
+
+  // The tool is the selection's: it goes when this box stops being selected
+  // (another box picked, the page left, the box deleted), so it is never left
+  // armed on a box nobody chose to draw on.
+  $effect(() => {
+    if (!selected) return;
+    return () => untrack(clearDrawTool);
+  });
 
   // A pointer event in box-local page px: page coords from the page frame,
   // then inverse-rotated around the box centre - the SCREEN frame, where the
@@ -2164,13 +2176,61 @@
 
   // A shape changes the verdict as well as the picture: an include mask cuts
   // the ink the check counts (contain.js), and the fit effect does not read the
-  // mask, so the flag is brought up to date here.
-  function commitMaskShape(shape) {
+  // mask, so the flag is brought up to date here. Every mask gesture ends
+  // here - a new shape, a move, a removal - as one style record.
+  function commitMaskShapes(next) {
     const styleBefore = cloneStyle(box.style);
-    s.clip.shapes = [...s.clip.shapes, shape];
+    s.clip.shapes = next;
     markUnsaved();
     reviewBox(box, pg);
     record({ t: 'style', pageId: pg.id, boxId: box.id, before: styleBefore, after: cloneStyle(box.style) });
+  }
+  function commitMaskShape(shape) {
+    commitMaskShapes([...s.clip.shapes, shape]);
+  }
+
+  // A shape carried by (dx, dy), in the frame it is stored in.
+  function movedShape(sh, dx, dy) {
+    if (sh.kind === 'ellipse') return { ...sh, cx: sh.cx + dx, cy: sh.cy + dy };
+    return { ...sh, pts: sh.pts.map(([x, y]) => [x + dx, y + dy]) };
+  }
+
+  // The four corners of the rectangle two points span, as the polygon the
+  // engine already cuts: a rectangle needs nothing new from it.
+  function rectPts(a, b) {
+    return [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]];
+  }
+
+  // The topmost shape under a point, or null. Searched from the last drawn,
+  // the one drawn over the rest.
+  function maskShapeAt(p) {
+    const [x, y] = p;
+    for (let i = s.clip.shapes.length - 1; i >= 0; i--) {
+      const sh = s.clip.shapes[i];
+      if (sh.kind === 'ellipse') {
+        if (sh.rx > 0 && sh.ry > 0 && ((x - sh.cx) / sh.rx) ** 2 + ((y - sh.cy) / sh.ry) ** 2 <= 1) return i;
+      } else if (sh.kind === 'poly') {
+        let inside = false;
+        for (let j = 0, k = sh.pts.length - 1; j < sh.pts.length; k = j++) {
+          const [xj, yj] = sh.pts[j];
+          const [xk, yk] = sh.pts[k];
+          if (yj > y !== yk > y && x < ((xk - xj) * (y - yj)) / (yk - yj) + xj) inside = !inside;
+        }
+        if (inside) return i;
+      } else if (sh.pts?.length) {
+        // A brush stroke is hit within half its width of its line, plus a
+        // little, so a thin stroke can still be caught.
+        const reach = sh.size / 2 + 3;
+        for (let j = 0; j < sh.pts.length; j++) {
+          const [ax, ay] = sh.pts[j];
+          const [bx, by] = sh.pts[Math.min(j + 1, sh.pts.length - 1)];
+          const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+          const t = len2 ? Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / len2)) : 0;
+          if (Math.hypot(x - (ax + t * (bx - ax)), y - (ay + t * (by - ay))) <= reach) return i;
+        }
+      }
+    }
+    return null;
   }
 
   function onMaskPointerDown(e) {
@@ -2178,22 +2238,39 @@
     e.preventDefault();
     e.stopPropagation();
     const p = maskShapePoint(e);
-    // The polygon is click-built rather than dragged; the other two are drags.
-    if (maskTool.id === 'poly') {
+    const kind = maskKind;
+    // The polygon is click-built rather than dragged; the rest are drags.
+    if (kind === 'poly') {
       maskDraft.poly = [...(maskDraft.poly ?? []), p];
       return;
     }
     e.currentTarget.setPointerCapture?.(e.pointerId);
     const pid = e.pointerId;
     const start = p;
-    if (maskTool.id === 'brush') maskDraft.shape = { kind: 'stroke', size: s.clip.brushSize, pts: [p] };
+    if (kind === 'move') {
+      // A press on a shape picks it and drags it alone; a press on empty
+      // space drags them all. The shapes stay where they are in the style
+      // until the pointer comes up, so a drag is one record and no repaint
+      // per move: the overlay shows them carried meanwhile.
+      maskDraft.picked = maskShapeAt(p);
+      maskDraft.moving = { idx: maskDraft.picked, dx: 0, dy: 0 };
+    } else if (kind === 'brush') maskDraft.shape = { kind: 'stroke', size: s.clip.brushSize, pts: [p] };
+    else if (kind === 'rect') maskDraft.shape = { kind: 'poly', pts: rectPts(p, p) };
     else maskDraft.shape = { kind: 'ellipse', cx: p[0], cy: p[1], rx: 0, ry: 0 };
     const move = (ev) => {
-      if (ev.pointerId !== pid || !maskDraft.shape) return;
+      if (ev.pointerId !== pid) return;
       const q = maskShapePoint(ev);
-      if (maskDraft.shape.kind === 'stroke') {
+      if (maskDraft.moving) {
+        maskDraft.moving.dx = q[0] - start[0];
+        maskDraft.moving.dy = q[1] - start[1];
+        return;
+      }
+      if (!maskDraft.shape) return;
+      if (kind === 'brush') {
         const last = maskDraft.shape.pts[maskDraft.shape.pts.length - 1];
         if (Math.hypot(q[0] - last[0], q[1] - last[1]) > 1.5) maskDraft.shape.pts.push(q);
+      } else if (kind === 'rect') {
+        maskDraft.shape.pts = rectPts(start, q);
       } else {
         maskDraft.shape.cx = (start[0] + q[0]) / 2;
         maskDraft.shape.cy = (start[1] + q[1]) / 2;
@@ -2206,11 +2283,20 @@
       if (ev.pointerId !== pid) return;
       live.delete(ac);
       ac.abort();
+      const mv = maskDraft.moving;
+      maskDraft.moving = null;
+      if (mv) {
+        // A press that did not travel moved nothing, and records nothing.
+        if (ev.type === 'pointercancel' || Math.hypot(mv.dx, mv.dy) < 0.5) return;
+        commitMaskShapes(s.clip.shapes.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
+        return;
+      }
       const sh = maskDraft.shape;
       maskDraft.shape = null;
       if (!sh) return;
-      // An ellipse too small to see was a slip, not a shape.
+      // A shape too small to see was a slip, not a shape.
       if (sh.kind === 'ellipse' && (sh.rx < 1 || sh.ry < 1)) return;
+      if (kind === 'rect' && (Math.abs(sh.pts[2][0] - sh.pts[0][0]) < 1 || Math.abs(sh.pts[2][1] - sh.pts[0][1]) < 1)) return;
       commitMaskShape(sh);
     };
     live.add(ac);
@@ -2218,6 +2304,20 @@
     document.addEventListener('pointerup', end, { signal: ac.signal });
     document.addEventListener('pointercancel', end, { signal: ac.signal });
   }
+
+  // Where the pointer is over the capture surface, in the screen frame the
+  // ring is drawn in (as liquify's).
+  function onMaskPointerMove(e) {
+    if (maskArmed) maskDraft.at = maskPoint(e);
+  }
+  function onMaskPointerLeave() {
+    maskDraft.at = null;
+  }
+  const maskRing = $derived(
+    maskArmed && maskKind === 'brush' && maskDraft.at
+      ? { x: maskDraft.at[0], y: maskDraft.at[1], d: s.clip.brushSize * z }
+      : null,
+  );
 
   // ---- liquify ----
   //
@@ -2332,35 +2432,61 @@
     liquifyAt = null;
   });
 
-  // Double-click closes the polygon; Escape drops it.
+  // Double-click closes the polygon.
   function onMaskDblClick(e) {
-    if (maskTool.id !== 'poly' || !maskDraft.poly) return;
+    if (maskKind !== 'poly' || !maskDraft.poly) return;
     e.preventDefault();
     e.stopPropagation();
     const pts = maskDraft.poly;
     maskDraft.poly = null;
     if (pts.length >= 3) commitMaskShape({ kind: 'poly', pts });
   }
+  // A new tool starts with nothing in hand.
+  $effect(() => {
+    void maskKind;
+    untrack(() => {
+      maskDraft.poly = null;
+      maskDraft.picked = null;
+    });
+  });
   $effect(() => {
     if (!maskArmed) {
       maskDraft.poly = null;
       maskDraft.shape = null;
+      maskDraft.picked = null;
+      maskDraft.moving = null;
+      maskDraft.at = null;
       return;
     }
+    // Escape drops a polygon half built, and with none puts the tool down.
+    // Delete and Backspace remove the shape the Move tool picked. Both are
+    // taken in the capture phase and stopped there, because the window's own
+    // handler reads Escape as "deselect" and Delete as "delete the box".
+    // A key pressed in a field is the field's.
     const onKey = (e) => {
-      if (e.key === 'Escape' && maskDraft.poly) {
+      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      if (e.key === 'Escape') {
         e.preventDefault();
-        maskDraft.poly = null;
+        e.stopPropagation();
+        if (maskDraft.poly) maskDraft.poly = null;
+        else clearDrawTool();
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null) {
+        e.preventDefault();
+        e.stopPropagation();
+        const i = maskDraft.picked;
+        maskDraft.picked = null;
+        if (i < s.clip.shapes.length) commitMaskShapes(s.clip.shapes.filter((_, j) => j !== i));
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   });
 
   // Everything the mask overlay draws: committed shapes plus the draft.
   const maskShapesShown = $derived.by(() => {
     if (!(selected && !editing && !bulkOn && s.clip?.on)) return null;
-    const out = [...s.clip.shapes];
+    const mv = maskDraft.moving;
+    const out = mv ? s.clip.shapes.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)) : [...s.clip.shapes];
     if (maskDraft.shape) out.push(maskDraft.shape);
     return out;
   });
@@ -3593,21 +3719,26 @@
       {#if maskArmed}
         <rect
           class="capture"
+          class:move={maskKind === 'move'}
           x={-MASK_EXPAND * z}
           y={-MASK_EXPAND * z}
           width={(box.w + MASK_EXPAND * 2) * z}
           height={(box.h + MASK_EXPAND * 2) * z}
           onpointerdown={onMaskPointerDown}
+          onpointermove={onMaskPointerMove}
+          onpointerenter={onMaskPointerMove}
+          onpointerleave={onMaskPointerLeave}
           ondblclick={onMaskDblClick}
         />
       {/if}
       {#each maskShapesShown as sh, i (i)}
+        {@const picked = maskKind === 'move' && maskDraft.picked === i}
         {#if sh.kind === 'ellipse' && !maskMesh}
-          <ellipse cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
+          <ellipse class:picked cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
         {:else if sh.kind === 'ellipse' || sh.kind === 'poly'}
-          <polygon points={maskOutline(sh.kind === 'ellipse' ? ellipsePts(sh) : sh.pts, true)} />
+          <polygon class:picked points={maskOutline(sh.kind === 'ellipse' ? ellipsePts(sh) : sh.pts, true)} />
         {:else}
-          <polyline class="stroke" points={maskOutline(sh.pts)} style="stroke-width:{sh.size * z}px" />
+          <polyline class="stroke" class:picked points={maskOutline(sh.pts)} style="stroke-width:{sh.size * z}px" />
         {/if}
       {/each}
       {#if maskDraft.poly}
@@ -3618,6 +3749,15 @@
         {/each}
       {/if}
     </svg>
+  {/if}
+
+  {#if maskRing}
+    <!-- The brush's own circle, its width at the zoom, as liquify's. -->
+    <div
+      class="liq-ring"
+      style="left:{maskRing.x * z}px;top:{maskRing.y * z}px;width:{maskRing.d}px;height:{maskRing.d}px"
+      aria-hidden="true"
+    ></div>
   {/if}
 
   {#if liquifyOn}
@@ -3755,18 +3895,22 @@
   .path-gizmo .pa { fill: #e33; stroke: #fff; stroke-width: 1.5; }
   .path-gizmo .pa.active { stroke: #00d5e0; stroke-width: 2.5; }
   .path-gizmo .ph { fill: #fff; stroke: #663399; stroke-width: 1.5; }
-  /* The mask overlay. Shape outlines are hints, not paint: red for exclusion
-     (this ink goes away), teal for inclusion (this ink stays). The capture
-     rect is the drawing surface while a tool is armed; it reaches past the
-     box exactly as far as the mask image does. */
+  /* The mask overlay. Shape outlines are hints, not paint, drawn in the page
+     tint that does not invert, because they sit over paper in every theme.
+     An exclude shape is filled darker than an include one: darker is the ink
+     that goes away. The capture rect is the drawing surface while a tool is
+     armed; it reaches past the box exactly as far as the mask image does. */
   .mask-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-  .mask-gizmo .capture { fill: transparent; pointer-events: all; cursor: crosshair; }
-  .mask-gizmo ellipse, .mask-gizmo polygon { fill: rgba(0, 180, 190, 0.14); stroke: #00b4be; stroke-width: 1; }
-  .mask-gizmo .stroke { fill: none; stroke: rgba(0, 180, 190, 0.3); stroke-linecap: round; stroke-linejoin: round; }
-  .mask-gizmo.excl ellipse, .mask-gizmo.excl polygon { fill: rgba(230, 60, 60, 0.14); stroke: #e33; }
-  .mask-gizmo.excl .stroke { stroke: rgba(230, 60, 60, 0.3); }
-  .mask-gizmo .draft { fill: none; stroke: #f90; stroke-width: 1.5; stroke-dasharray: 4 3; }
-  .mask-gizmo .vert { fill: #f90; stroke: #fff; stroke-width: 1; }
+  .mask-gizmo .capture { fill: transparent; pointer-events: all; cursor: crosshair; touch-action: none; }
+  .mask-gizmo .capture.move { cursor: move; }
+  .mask-gizmo ellipse, .mask-gizmo polygon { fill: color-mix(in srgb, var(--tintline) 8%, transparent); stroke: var(--tintline); stroke-width: 1; }
+  .mask-gizmo .stroke { fill: none; stroke: color-mix(in srgb, var(--tintline) 14%, transparent); stroke-linecap: round; stroke-linejoin: round; }
+  .mask-gizmo.excl ellipse, .mask-gizmo.excl polygon { fill: color-mix(in srgb, var(--tintline) 22%, transparent); }
+  .mask-gizmo.excl .stroke { stroke: color-mix(in srgb, var(--tintline) 30%, transparent); }
+  .mask-gizmo .picked { stroke-width: 2.5; stroke-dasharray: 5 3; }
+  .mask-gizmo .stroke.picked { stroke: var(--tint); stroke-dasharray: none; }
+  .mask-gizmo .draft { fill: none; stroke: var(--tintline); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  .mask-gizmo .vert { fill: var(--tintline); stroke: var(--paper); stroke-width: 1; }
   /* The liquify tool's capture surface. `touch-action: none` so a pen or a
      finger drags instead of scrolling the page out from under the tool. */
   .liq-capture {

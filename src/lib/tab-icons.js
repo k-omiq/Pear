@@ -57,69 +57,6 @@ export const tabIcons = {
   layout: iconLayout,
 };
 
-// Double ring (outer circle and inner circle): an outlined glyph.
-export const iconEffectStroke = wrap('<circle cx="10" cy="10" r="6.5"/><circle cx="10" cy="10" r="3.5"/>');
-
-// Two overlapping rounded rects offset diagonally: shadow cast behind.
-export const iconEffectShadow = wrap(
-  '<rect x="7" y="7" width="9" height="9" rx="1.5" stroke-dasharray="2 2"/><rect x="4" y="4" width="9" height="9" rx="1.5"/>',
-);
-
-// S-curve path with control anchor dots at the ends.
-export const iconEffectWarp = wrap(
-  '<path d="M3 13c3.5-6 6-6 8.5-3s5 3 5.5-3"/><circle cx="3" cy="13" r="1" fill="currentColor"/><circle cx="17" cy="7" r="1" fill="currentColor"/>',
-);
-
-// A quad pulled out of square with a dot on each corner: the free-transform
-// mesh and its handles. Deliberately unlike the S-curve above - `warp` is the
-// arc/circle/path group and `transform` is the mesh, and the two icons sit next
-// to each other in the strip.
-export const iconEffectTransform = wrap(
-  '<path d="M4 6.5 16 4l1 10.5L6 16.5Z"/><circle cx="4" cy="6.5" r="1.4" fill="currentColor"/><circle cx="16" cy="4" r="1.4" fill="currentColor"/><circle cx="17" cy="14.5" r="1.4" fill="currentColor"/><circle cx="6" cy="16.5" r="1.4" fill="currentColor"/>',
-);
-
-// A circle with a bent line through it: the round liquify tool over a mesh.
-export const iconEffectLiquify = wrap(
-  '<circle cx="10" cy="10" r="6.5" stroke-dasharray="2.5 2"/><path d="M3.5 12c2.5-4 4.5-4 6.5 0s4 4 6.5 0"/>',
-);
-
-// Three horizontal speed lines of varying lengths: motion smear / blur.
-export const iconEffectBlur = wrap('<path d="M3 7h9"/><path d="M5 10.5h11"/><path d="M3 14h7"/>');
-
-// A jagged zigzag stroke: rough / distressed edge.
-export const iconEffectEdges = wrap('<path d="M3 12l2.5-3 2 3 2.5-4 2 4 2.5-3 2 3"/>');
-
-// A circle partly overlapping a rect: balloon / mask clip.
-export const iconEffectMask = wrap('<rect x="3" y="5" width="10" height="10" rx="1.5"/><circle cx="13" cy="9" r="4.5"/>');
-
-// Three letters-like bars, each one higher than the last: lettering whose
-// letters step up the line.
-export const iconEffectSfx = wrap('<path d="M4.5 16v-3.5"/><path d="M10 16V9.5"/><path d="M15.5 16V5"/>');
-
-// A disc with a soft ring round it: a glow.
-export const iconEffectGlow = wrap(
-  '<circle cx="10" cy="10" r="3.5"/><circle cx="10" cy="10" r="7" stroke-dasharray="1.5 2"/>',
-);
-
-// A square inside a square, the corners joined: a bevelled tile.
-export const iconEffectBevel = wrap(
-  '<rect x="3.5" y="3.5" width="13" height="13" rx="1"/><rect x="7" y="7" width="6" height="6"/><path d="M3.5 3.5 7 7M16.5 3.5 13 7M3.5 16.5 7 13M16.5 16.5 13 13"/>',
-);
-
-export const effectsSubTabIcons = {
-  stroke: iconEffectStroke,
-  shadow: iconEffectShadow,
-  glow: iconEffectGlow,
-  bevel: iconEffectBevel,
-  warp: iconEffectWarp,
-  transform: iconEffectTransform,
-  liquify: iconEffectLiquify,
-  blur: iconEffectBlur,
-  edges: iconEffectEdges,
-  mask: iconEffectMask,
-};
-
-
 // ---- the brush panel's tabs ----
 //
 // Icon-only, the whole reason the panel can afford five: a label per tab
