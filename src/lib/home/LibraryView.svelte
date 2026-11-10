@@ -31,7 +31,9 @@
     ocrLanguage = prefs.defaultOcrLanguage;
 
     try {
-      const p = await createProject(name, { layout: chosen, ocrLanguage: chosenLanguage });
+      // General use is asked no layout here, so the one written is a default
+      // its first document's images may still set (`layoutGuessed`).
+      const p = await createProject(name, { layout: chosen, ocrLanguage: chosenLanguage, layoutGuessed: !isComics() });
       goProject(p.id);
     } catch (e) {
       toastError(`Could not create ${name}: ${e?.message ?? e}`);
