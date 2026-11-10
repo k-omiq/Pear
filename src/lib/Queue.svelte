@@ -9,7 +9,7 @@
     settleEdits as settleNow,
   } from './store.svelte.js';
   import { stepHere, peekStack } from './editor/history.svelte.js';
-  import { pageRectPick } from './page-rect-pick.svelte.js';
+  import { pageRectPick, PICK_MIN } from './page-rect-pick.svelte.js';
 
   // "Show in queue" (the box menu): scroll to the active row even when it has
   // not changed - the user may have scrolled the list away from it since.
@@ -46,8 +46,12 @@
     pageRectPick.start({
       hint: 'Drag a box for this line · Esc cancels',
       onDone: (rect, pg) => {
+        // The pick's own 8 px floor is on the drag as made; the part left on the
+        // page can be smaller, so the floor is checked again on what is kept.
+        const kept = pg === p ? ontoPage(rect, p) : null;
         if (pg !== p) say('Drag on the page the line is on');
-        else if (p.lines.includes(line)) setLineRect(p, line.n, ontoPage(rect, p));
+        else if (kept[2] - kept[0] < PICK_MIN || kept[3] - kept[1] < PICK_MIN) say('Drag a larger box for the line');
+        else if (p.lines.includes(line)) setLineRect(p, line.n, kept);
         back();
       },
       onCancel: (why) => {

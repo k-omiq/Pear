@@ -291,7 +291,7 @@ defineTool({
   name: 'delete_line',
   description:
     'Translate chapters only. Delete a line from a page\'s queue - its row, its detected block and any box placed for it - as the typing pane\'s Delete line does. ' +
-    'Deleting a numbered line (n > 0) moves every numbered line after it up by one (line 4 becomes 3): read lines again before naming another line on that page. One undo step for the user. ' +
+    'Deleting a numbered line (n > 0) normally moves every numbered line after it up by one. The result\'s renumbered is the map of what moved, old number to new ({ "4": 3 }; {} when nothing did): name lines on that page by their new numbers from then on. One undo step for the user. ' +
     'Delete only what the user asked for, or a line that is plainly not words (a detection of art); say which lines you deleted.',
   input: {
     type: 'object',
@@ -307,16 +307,17 @@ defineTool({
     const p = queuePage(page);
     const ln = queueLine(p, page, line);
     const gone = rowOf(p, ln);
+    // Each line's number before the delete, held by the line itself, so the
+    // map below is what actually happened, not what a renumber should do.
+    const was = new Map((p.lines ?? []).map((l) => [l, l.n]));
     const ok = ctx.write([p], () => deleteLine(line, p));
     if (!ok) throw new ToolError(`line ${line} could not be deleted`);
-    return {
-      page,
-      deleted: gone,
-      // A numbered line's delete renumbers the ones after it: say so, so the
-      // next call does not name a line by its old number.
-      ...(line > 0 ? { renumbered: `numbered lines after ${line} moved up by one` } : null),
-      lines: (p.lines ?? []).map((l) => l.n),
-    };
+    const renumbered = {};
+    for (const l of p.lines ?? []) {
+      const from = was.get(l);
+      if (from !== undefined && from !== l.n) renumbered[from] = l.n;
+    }
+    return { page, deleted: gone, renumbered, lines: (p.lines ?? []).map((l) => l.n) };
   },
 });
 

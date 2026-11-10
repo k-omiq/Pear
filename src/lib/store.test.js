@@ -5045,29 +5045,80 @@ describe('lines added, deleted and drawn: the edges', () => {
     app.chapterMode = 'typeset';
   });
 
-  it('refuses to undo a delete after a re-detect replaced the lines, and changes nothing', () => {
+  const redetect = (count, jp = 'new') =>
+    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: Array.from({ length: count }, (_, i) => ({ n: i + 1, jp: jp + (i + 1), box: [0, i * 100, 50, i * 100 + 50] })) });
+
+  it('forgets a delete once a re-detect replaced the lines: undo and redo change nothing', () => {
     deleteLine(2);
-    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [1, 2, 3].map((n) => ({ n, jp: 'new' + n, box: [0, 0, 10, 10] })) });
+    redetect(3);
+    const was = snap();
+    expect([stepHere('undo'), peekStack().undo.length]).toEqual([false, 0]);
+    expect(snap()).toBe(was);
+    deleteLine(2);
+    expect(undo()).toBe(true);
+    redetect(2, 'x');
+    expect([stepHere('redo'), peekStack().redo.length]).toEqual([false, 0]);
+  });
+
+  it('does not bring a deleted last line back beside the lines of a re-detect', () => {
+    deleteLine(5);
+    redetect(5);
+    const was = snap();
+    expect(stepHere('undo')).toBe(false);
+    expect(snap()).toBe(was);
+    expect(page().lines.map((l) => l.jp)).toEqual(['new1', 'new2', 'new3', 'new4', 'new5']);
+  });
+
+  it('does not put a stale line among new ones after a re-detect to the same count', () => {
+    deleteLine(2);
+    redetect(4);
+    expect(stepHere('undo')).toBe(false);
+    expect(page().lines.map((l) => l.jp)).toEqual(['new1', 'new2', 'new3', 'new4']);
+  });
+
+  it('forgets an older text edit too, so Mod+Z cannot write it onto the line that has its number now', () => {
+    setLineText(page(), 3, 'typed');
+    settleEdits();
+    redetect(5);
+    expect(stepHere('undo')).toBe(false);
+    expect(lineByN(page(), 3).en).toBe('');
+  });
+
+  it('forgets an added line\'s step both ways after a re-detect', () => {
+    addQueueLine();
+    redetect(5);
+    expect(peekStack().undo).toEqual([]);
+    addQueueLine();
+    expect(undo()).toBe(true);
+    redetect(5);
+    expect(peekStack().redo).toEqual([]);
+    expect(redo()).toBe(false);
+  });
+
+  it('keeps the box steps on the same stack, and drops a run group that holds a line step', () => {
+    app.chapterMode = 'typeset';
+    addBoxAt(page(), { text: 'free', x: 100, y: 100 });
+    settleEdits();
+    const id = page().boxes.at(-1).id;
+    record({ t: 'move', pageId: 1, boxId: id, before: { x: 1 }, after: { x: 2 } });
+    setLineText(page(), 1, 'typed');
+    settleEdits();
+    record({ t: 'group', pageId: 1, items: [{ t: 'line', pageId: 1, lineN: 2, before: 'e2', after: 'z' }, { t: 'move', pageId: 1, boxId: id, before: { x: 1 }, after: { x: 2 } }] });
+    const boxSteps = peekStack().undo.filter((e) => e.t !== 'line' && e.t !== 'group').length;
+    redetect(5);
+    expect(peekStack().undo.some((e) => e.t === 'line' || e.t === 'group')).toBe(false);
+    expect(peekStack().undo.filter((e) => e.t === 'move')).toHaveLength(1);
+    expect(peekStack().undo).toHaveLength(boxSteps);
+  });
+
+  it('still refuses, as a second guard, a deleted last line whose number came back with no re-detect', () => {
+    deleteLine(5);
+    // An import writes lines and records nothing, so nothing was dropped.
+    page().lines = [1, 2, 3].map((n) => ({ n, type: 'dialogue', jp: 'imp' + n, en: '' }));
     const was = snap();
     expect(undo()).toBe(false);
     expect(snap()).toBe(was);
     expect(app.errors.at(-1).msg).toMatch(/lines have changed since/);
-  });
-
-  it('refuses a redo the same way', () => {
-    deleteLine(2);
-    undo();
-    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [1, 2].map((n) => ({ n, jp: 'x', box: [0, 0, 10, 10] })) });
-    const was = snap();
-    expect(redo()).toBe(false);
-    expect(snap()).toBe(was);
-  });
-
-  it('refuses to put a drawn box back on a numbered line a re-detect reused', () => {
-    setLineRect(page(), 2, [10, 10, 60, 60]);
-    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [1, 2].map((n) => ({ n, jp: 'other', box: [0, 0, 10, 10] })) });
-    expect(undo()).toBe(false);
-    expect(lineByN(page(), 2).rect).toBeUndefined();
   });
 
   it('undoes a delete and then a reorder made after it, back to the start', () => {
@@ -5134,6 +5185,36 @@ describe('lines added, deleted and drawn: the edges', () => {
     // Typeset mode is not gated.
     app.chapterMode = 'typeset';
     expect(stepAllowed('redo')).toBe(true);
+  });
+
+  it('lets a run group of line steps through the gate, and refuses one with a box step in it', () => {
+    const lineItem = { t: 'line', pageId: 1, lineN: 1, before: 'e1', after: 'agent' };
+    page().lines[0].en = 'agent';
+    record({ t: 'group', pageId: 1, items: [lineItem] });
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([true, true]);
+    expect(lineByN(page(), 1).en).toBe('e1');
+    expect([stepAllowed('redo'), stepHere('redo')]).toEqual([true, true]);
+    expect(lineByN(page(), 1).en).toBe('agent');
+    record({ t: 'group', pageId: 1, items: [lineItem, { t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } }] });
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([false, false]);
+  });
+
+  it('takes a blank free line with its box in a translate chapter, and a pending placeholder\'s line always', () => {
+    app.translateTypeset = true;
+    // A blank line, no drawn box: nothing to keep, so it goes with its box.
+    const n = addQueueLine();
+    placeActiveAt(300, 300);
+    settleEdits();
+    deleteBox(page().boxes.find((x) => x.lineN === n).id);
+    expect(lineByN(page(), n)).toBeUndefined();
+    // A click on the page left without typing: the placeholder was never
+    // recorded, so its line goes with it whatever it holds.
+    const before = page().lines.length;
+    addBoxAt(page(), { x: 200, y: 200 });
+    const ph = page().boxes.at(-1);
+    deleteBox(ph.id);
+    expect(page().lines.length).toBe(before);
+    expect(page().boxes.some((b) => b.id === ph.id)).toBe(false);
   });
 
   it('keeps a free line, text and drawn box, when its box is deleted in a translate chapter', () => {

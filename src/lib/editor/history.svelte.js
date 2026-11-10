@@ -11,6 +11,7 @@ import {
   toastError,
   selectBox,
   setRecorder,
+  setLinesReplacedHook,
   cloneStyle,
   settleEdits,
   setBoxText,
@@ -34,9 +35,10 @@ import { applyLineOrder, remapLineStack, isOrderStep, lineOrderProblem, lineRefs
 // depth costs disk, not RAM.
 export const MAX_STEPS = 30;
 
-// `undoKind` / `redoKind`: the kind of the entry on top of each stack, so the
-// translate gate (`stepAllowed`) can dim a button without reading the stacks.
-export const history = $state({ canUndo: false, canRedo: false, pageId: null, undoKind: null, redoKind: null });
+// `undoQueue` / `redoQueue`: whether the entry on top of each stack is about
+// the lines only (`isQueueStep`), so the translate gate (`stepAllowed`) can dim
+// a button without reading the stacks.
+export const history = $state({ canUndo: false, canRedo: false, pageId: null, undoQueue: false, redoQueue: false });
 
 let undoStack = [];
 let redoStack = [];
@@ -48,8 +50,8 @@ let applying = false;
 function sync() {
   history.canUndo = undoStack.length > 0;
   history.canRedo = redoStack.length > 0;
-  history.undoKind = undoStack[undoStack.length - 1]?.t ?? null;
-  history.redoKind = redoStack[redoStack.length - 1]?.t ?? null;
+  history.undoQueue = isQueueStep(undoStack[undoStack.length - 1]);
+  history.redoQueue = isQueueStep(redoStack[redoStack.length - 1]);
 }
 
 const boxOf = (entry) => {
@@ -459,6 +461,8 @@ const KINDS = {
   // after putting them back and before taking them out.
   lineDelete: {
     label: 'that line deletion',
+    // (A numbered line deleted with no renumber was the last one: see
+    // `lastSlotFree` below the kinds.)
     apply(e, dir) {
       const p = pageById(e.pageId);
       if (!p) throw new Error('the page is gone');
@@ -478,7 +482,7 @@ const KINDS = {
           lines.splice(Math.min(e.lineIndex ?? lines.length, lines.length), 0, e.line);
           const refs = [...lineRefs(p), ...boxes.map((b) => b.lineN), ...(e.takenDetect ?? []).map((it) => it.d?.n)];
           if (lineOrderProblem(lines, refs, e, 'undo')) throw new Error(replaced);
-        }
+        } else if (n > 0 && !lastSlotFree(p, n)) throw new Error(replaced);
         p.lines.splice(Math.min(e.lineIndex ?? p.lines.length, p.lines.length), 0, structuredClone(e.line));
         if (e.takenDetect?.length) {
           p.detect ??= { panels: [], boxes: [] };
@@ -497,6 +501,7 @@ const KINDS = {
         const now = e.numbers?.find(([, to]) => to === n)?.[0] ?? n;
         if (!p.lines.some((l) => l.n === now)) throw new Error('the queue line is gone');
         if (e.numbers && lineOrderProblem(p.lines, lineRefs(p), e, 'redo')) throw new Error(replaced);
+        if (!e.numbers && n > 0 && !lastSlotFree(p, n, true)) throw new Error(replaced);
         if (e.numbers) {
           applyLineOrder(p, e, 'redo');
           remapOrder(e, 'redo');
@@ -596,6 +601,19 @@ const KINDS = {
     },
   },
 };
+
+// A numbered line deleted with no renumber was the last numbered line, so it
+// goes back only onto a page numbered 1..n-1 with nothing else - a box, a
+// detected block - using n; and is taken again only while it is still the last
+// one (`taken`: the page is numbered 1..n). Anything else means the lines were
+// replaced under the entry.
+function lastSlotFree(p, n, taken = false) {
+  const nums = p.lines.filter((l) => l.n > 0).map((l) => l.n);
+  const want = taken ? n : n - 1;
+  if (nums.length !== want || new Set(nums).size !== want || nums.some((k) => k > want)) return false;
+  if (taken) return true;
+  return !p.boxes.some((b) => b.lineN === n) && !(p.detect?.boxes ?? []).some((d) => d?.n === n);
+}
 
 // What a group may hold. An `order` entry remaps the whole stack around it,
 // which only works from the top level.
@@ -1021,12 +1039,20 @@ export const redo = () => {
 // restyled a line's boxes), and walking it there would change what nobody can
 // see.
 export const QUEUE_KINDS = new Set(['line', 'lineAdd', 'lineDelete', 'order', 'lineRect']);
+// An entry about the lines and nothing else: a queue kind, or a group (an AI
+// run folds its writes on a page into one) whose every item is one. A group
+// with any box edit in it is a canvas step.
+export function isQueueStep(e) {
+  if (!e) return false;
+  if (e.t !== 'group') return QUEUE_KINDS.has(e.t);
+  return Array.isArray(e.items) && e.items.length > 0 && e.items.every((it) => QUEUE_KINDS.has(it?.t));
+}
 // Whether the next undo (or redo) is about the queue. Settles first, as the
 // step itself does, so the entry asked about is the one the step would take.
 export function queueStepNext(dir = 'undo') {
   settleEdits();
   const s = dir === 'undo' ? undoStack : redoStack;
-  return QUEUE_KINDS.has(s[s.length - 1]?.t);
+  return isQueueStep(s[s.length - 1]);
 }
 
 // The one gate every way of asking for a step goes through - the keys, the
@@ -1048,7 +1074,7 @@ export function stepHere(dir = 'undo') {
 export function stepAllowed(dir = 'undo') {
   const can = dir === 'undo' ? history.canUndo : history.canRedo;
   if (!can || !isTranslateMode()) return can;
-  return QUEUE_KINDS.has(dir === 'undo' ? history.undoKind : history.redoKind);
+  return dir === 'undo' ? history.undoQueue : history.redoQueue;
 }
 
 // A copy of the live stack, for a write that must not disturb it.
@@ -1097,9 +1123,35 @@ export function resetHistory() {
 // unsubscribe the store hands back is for.
 let releaseRecorder = null;
 let releaseLander = null;
+let releaseLinesReplaced = null;
 export function initHistory() {
   releaseRecorder?.();
   releaseRecorder = setRecorder(record);
   releaseLander?.();
   releaseLander = setFitLander(fitLanded);
+  releaseLinesReplaced?.();
+  releaseLinesReplaced = setLinesReplacedHook(forgetLineHistory);
+}
+
+// A re-detect replaced page `pageId`'s lines. Every step on that page's undo
+// and redo stacks that is about its lines - a queue kind, or a group holding
+// one - names lines that are gone, so it is dropped; box steps stay. The page's
+// stacks live in memory when it is the page shown and in the history file when
+// it is not (the off-screen amender), so both are reached.
+const aboutLines = (pageId) => (e) =>
+  e?.pageId === pageId && (QUEUE_KINDS.has(e.t) || (e.t === 'group' && (e.items ?? []).some((it) => QUEUE_KINDS.has(it?.t))));
+export function forgetLineHistory(pageId) {
+  const gone = aboutLines(pageId);
+  const drop = (list) => {
+    const keep = list.filter((e) => !gone(e));
+    if (keep.length === list.length) return false;
+    list.splice(0, list.length, ...keep);
+    return true;
+  };
+  const amend = (undo, redo) => [drop(undo), drop(redo)].some(Boolean);
+  if (offscreenAmend?.(pageId, amend)) return;
+  if (amend(undoStack, redoStack)) {
+    sync();
+    sink?.(history.pageId);
+  }
 }

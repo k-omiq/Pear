@@ -630,3 +630,24 @@ describe('rescaling a recorded entry', () => {
     expect([e.lastStyleBefore.size, e.lastStyleAfter.size]).toEqual([40, 60]);
   });
 });
+
+describe('a re-detect on a page not shown', () => {
+  it('drops that page’s line steps from the file, undo and redo sides, and keeps its box steps', async () => {
+    const { __setDir, switchHistoryPage } = await import('./history-file.svelte.js');
+    const { loadStack, peekStack, forgetLineHistory, resetHistory } = await import('./history.svelte.js');
+    __setDir(null);
+    resetHistory();
+    __setDir('/lib/proj/ch1');
+    const move = { t: 'move', pageId: 2, boxId: 'b1', before: { x: 0, y: 0 }, after: { x: 1, y: 1 } };
+    const line = { t: 'line', pageId: 2, lineN: 1, before: 'a', after: 'b' };
+    const add = { t: 'lineAdd', pageId: 2, line: { n: -1, en: '' }, lineIndex: 1 };
+    const run = { t: 'group', pageId: 2, items: [{ ...line }, { ...move }] };
+    loadStack(2, { undo: [move, line, run], redo: [add] });
+    await switchHistoryPage(2, 1);
+    expect(peekStack().undo).toEqual([]);
+    forgetLineHistory(2);
+    await switchHistoryPage(1, 2);
+    expect(peekStack()).toEqual({ undo: [move], redo: [] });
+    __setDir(null);
+  });
+});

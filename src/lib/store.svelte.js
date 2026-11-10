@@ -3444,6 +3444,12 @@ export function setPageSwitchHook(fn) {
 // is called. So everything that would make a late entry land somewhere it does
 // not belong - a page turn, an undo, the start of a drag - closes that window
 // through here first.
+// And one for a page whose lines were replaced wholesale (a re-detect): the
+// history names lines by number, and those numbers now name other lines.
+const linesReplacedHooks = seam();
+export function setLinesReplacedHook(fn) {
+  return linesReplacedHooks.subscribe(fn);
+}
 const editSettleHooks = seam();
 export function setEditSettleHook(fn) {
   return editSettleHooks.subscribe(fn);
@@ -4356,6 +4362,9 @@ export function applyDetection(result, target = null) {
   //         has no opinion about them - it never saw them and cannot renumber
   //         them, since its numbers start at 1. `carryTagsForward` appends them
   //         untouched, exactly as it does on a re-import.
+  // Typing still settling names a line about to be replaced: it is recorded
+  // now, so the drop below takes it with every other step about these lines.
+  settleEdits();
   const before = new Map(p.lines.map((l) => [l.n, l]));
   p.lines = carryTagsForward(
     p.lines,
@@ -4397,6 +4406,11 @@ export function applyDetection(result, target = null) {
     // The text mask file (MASK-1), in the detector's pixels, under masks/.
     ...(result.mask?.file ? { mask: { ...result.mask } } : {}),
   };
+  // Every undo step about this page's lines names them by number or carries
+  // the old ones whole; after this, undoing one would write a stale line among
+  // the new ones or onto whatever line now has its number. The history drops
+  // them (`forgetLineHistory`).
+  linesReplacedHooks.notify(p.id);
   // The typeset boxes go. Every one of them is bound to a line number the
   // detector has just reassigned, so keeping them would leave boxes rendering
   // whatever sentence now happens to hold their old number.
@@ -7409,9 +7423,14 @@ export function deleteBox(id, p = page()) {
   // `p.lines` it sat.
   // In a translate chapter a free line is the translator's own row - added by
   // hand, typed, maybe drawn - and the box is only where it was placed, so
-  // the line stays, unplaced, with its text and its drawn box. A typeset
-  // chapter keeps the rule below: a box typed onto the page takes its line.
-  const freeLine = isTranslateChapter() ? {} : freeLineRecord(p, b);
+  // the line stays, unplaced, with its text and its drawn box. Not when there
+  // is nothing to keep: a placeholder box still pending (a click on the page
+  // left without typing) is never recorded, so its blank line would be a row
+  // no undo takes back. A typeset chapter keeps the rule below: a box typed
+  // onto the page takes its line.
+  const keepLine = (ln) =>
+    !!ln && pendingPlace?.id !== id && (!!lineText(ln).trim() || !!(ln.jp ?? '').trim() || !!lineRect(ln.rect));
+  const freeLine = isTranslateChapter() && keepLine(lineByN(p, b.lineN)) ? {} : freeLineRecord(p, b);
   p.boxes = p.boxes.filter((x) => x.id !== id);
   // The line goes with the box. A free line exists only to be that box's queue
   // row - it holds the box's text and its tags and nothing else - so leaving it
