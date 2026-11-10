@@ -106,11 +106,33 @@ pub fn units(angle: f32, w: f32, h: f32) -> (f32, f32) {
     (chord, len)
 }
 
+/// A gradient laid over one frame at one pixel size: the centre, the angle's
+/// sine and cosine and the lengths it spans ([`Gradient::run`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Run {
+    cx: f32,
+    cy: f32,
+    s: f32,
+    c: f32,
+    chord: f32,
+    half_chord: f32,
+    half_len: f32,
+    corner: f32,
+    /// The angle, radians.
+    turn: f32,
+}
+
 impl Gradient {
     /// Where point `(x, y)` (the frame's units, y down) lies on the gradient,
     /// 0 to 1. `px` is one device pixel in those units: Linear and Reflected
     /// sample half a pixel before the centre, as Photoshop does.
     pub fn t(&self, frame: Frame, px: f32, x: f32, y: f32) -> f32 {
+        self.t_along(&self.run(frame, px), x, y)
+    }
+
+    /// What [`t`](Self::t) works out from the frame and the pixel alone, once
+    /// for every point asked over them.
+    pub fn run(&self, frame: Frame, px: f32) -> Run {
         let w = (frame[2] - frame[0]).max(1e-3);
         let h = (frame[3] - frame[1]).max(1e-3);
         let cx = frame[0] + w / 2.0 + self.offset.0 * w;
@@ -121,9 +143,6 @@ impl Gradient {
             0.0
         };
         let (s, c) = angle.to_radians().sin_cos();
-        let (dx, dy) = (x - cx, y - cy);
-        let along = dx * c - dy * s;
-        let across = dx * s + dy * c;
         let scale = if self.scale.is_finite() {
             self.scale.max(1e-3)
         } else {
@@ -131,16 +150,33 @@ impl Gradient {
         };
         let (chord, len) = units(angle, w, h);
         let (chord, len) = (chord * scale, len * scale);
-        let corner = 0.5 * px * (c - s);
+        Run {
+            cx,
+            cy,
+            s,
+            c,
+            chord,
+            half_chord: chord / 2.0,
+            half_len: len / 2.0,
+            corner: 0.5 * px * (c - s),
+            turn: angle.to_radians(),
+        }
+    }
+
+    /// [`t`](Self::t) at `(x, y)` over the frame and pixel `run` was made
+    /// for.
+    pub fn t_along(&self, run: &Run, x: f32, y: f32) -> f32 {
+        let (s, c) = (run.s, run.c);
+        let (dx, dy) = (x - run.cx, y - run.cy);
+        let along = dx * c - dy * s;
+        let across = dx * s + dy * c;
         let t = match self.style {
-            Style::Linear | Style::ShapeBurst => (along - corner) / chord + 0.5,
-            Style::Reflected => ((along - corner) / (chord / 2.0)).abs(),
-            Style::Radial => (dx * dx + dy * dy).sqrt() / (len / 2.0),
-            Style::Diamond => (along.abs() + across.abs()) / (len / 2.0),
+            Style::Linear | Style::ShapeBurst => (along - run.corner) / run.chord + 0.5,
+            Style::Reflected => ((along - run.corner) / run.half_chord).abs(),
+            Style::Radial => (dx * dx + dy * dy).sqrt() / run.half_len,
+            Style::Diamond => (along.abs() + across.abs()) / run.half_len,
             // A clockwise sweep from the gradient's angle.
-            Style::Angle => {
-                ((angle.to_radians() - (-dy).atan2(dx)) / core::f32::consts::TAU).rem_euclid(1.0)
-            }
+            Style::Angle => ((run.turn - (-dy).atan2(dx)) / core::f32::consts::TAU).rem_euclid(1.0),
         };
         self.finish(t)
     }

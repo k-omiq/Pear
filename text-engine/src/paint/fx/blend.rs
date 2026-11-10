@@ -563,6 +563,247 @@ fn lay_at_fill(
     fill: f32,
     origin: (i32, i32),
 ) {
+    lay_source(dst, bx, opacity, mode, backdrop, seed, fill, origin, src);
+}
+
+/// What [`lay_source`] lays from: the premultiplied RGBA8 pixel laid on
+/// `dst`'s pixel `(x, y)`, its `i`th. Asked only inside the box laid.
+pub(crate) trait Source {
+    fn at(&self, i: usize, x: i32, y: i32) -> [u8; 4];
+}
+
+/// A surface the size of `dst`.
+impl Source for &Surface {
+    #[inline(always)]
+    fn at(&self, i: usize, _: i32, _: i32) -> [u8; 4] {
+        match self.data[i * 4..].first_chunk::<4>() {
+            Some(p) => *p,
+            None => [0; 4],
+        }
+    }
+}
+
+/// [`lay_fill_from`]'s blend with the source asked a pixel at a time
+/// ([`Source`]), so a paint laid through a map needs no surface of its own
+/// to be laid from.
+///
+/// The mode is chosen once, outside the rows: the modes the layer effects
+/// use by default (Normal, Multiply, Screen) each have their own loop, and
+/// every other mode shares one that asks [`Blend::mix`] a pixel at a time.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lay_source<S>(
+    dst: &mut Surface,
+    bx: IBox,
+    opacity: f32,
+    mode: Blend,
+    backdrop: Option<&Backdrop<'_>>,
+    seed: u32,
+    fill: f32,
+    origin: (i32, i32),
+    src: S,
+) where
+    S: Source,
+{
+    let bx = bx.intersect(&IBox {
+        x0: 0,
+        y0: 0,
+        x1: dst.width as i32,
+        y1: dst.height as i32,
+    });
+    if bx.is_empty() || opacity <= 0.0 {
+        return;
+    }
+    let opacity = opacity.min(1.0);
+    // Only a mode that reads what is under it blends with the page.
+    let page = backdrop.filter(|_| mode != Blend::Normal && mode != Blend::Dissolve);
+    let dissolve = (mode == Blend::Dissolve).then_some((seed, origin));
+    let unit = |v: f32| v.clamp(0.0, 1.0);
+    match mode {
+        Blend::Normal | Blend::Dissolve => {
+            // A source's straight colour is a share of one already.
+            lay_rows(dst, bx, opacity, None, dissolve, true, &src, |_, s| s)
+        }
+        Blend::Multiply => lay_rows(dst, bx, opacity, page, None, true, &src, |b, s| {
+            [unit(b[0] * s[0]), unit(b[1] * s[1]), unit(b[2] * s[2])]
+        }),
+        Blend::Screen => lay_rows(dst, bx, opacity, page, None, true, &src, |b, s| {
+            [
+                unit(screen(b[0], s[0])),
+                unit(screen(b[1], s[1])),
+                unit(screen(b[2], s[2])),
+            ]
+        }),
+        _ if page.is_some() => lay_rows(dst, bx, opacity, page, None, false, &src, |b, s| {
+            mode.mix_fill(b, s, fill)
+        }),
+        _ => lay_rows(dst, bx, opacity, None, None, false, &src, |b, s| mode.mix(b, s)),
+    }
+}
+
+/// `level / 255` for each of the 256 levels: what a pixel's byte is as a
+/// share, read and not divided.
+fn levels() -> [f32; 256] {
+    core::array::from_fn(|i| i as f32 / 255.0)
+}
+
+/// [`unpremul`] with the shares of `levels`: a clear pixel and an opaque one
+/// divide nothing.
+#[inline(always)]
+fn unpremul_by(p: [u8; 4], levels: &[f32; 256]) -> [f32; 3] {
+    match p[3] {
+        0 => [0.0; 3],
+        255 => [
+            levels[usize::from(p[0])],
+            levels[usize::from(p[1])],
+            levels[usize::from(p[2])],
+        ],
+        a => {
+            let a = f32::from(a);
+            // `min(1.0)`, said as the one compare it is.
+            let share = |c: u8| {
+                let q = f32::from(c) / a;
+                if q < 1.0 {
+                    q
+                } else {
+                    1.0
+                }
+            };
+            [share(p[0]), share(p[1]), share(p[2])]
+        }
+    }
+}
+
+/// The rows of [`lay_source`] for one way of mixing: `mix(under, source)` is
+/// the colour the mode makes, both straight. `page` is there only for a mode
+/// that blends with it, `dissolve` (the seed and the surface's corner) only
+/// for Dissolve. `plain`: `mix` makes a finite colour of any two finite
+/// ones, so over a clear pixel it need not be asked. `bx` is inside `dst`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn lay_rows<S, M>(
+    dst: &mut Surface,
+    bx: IBox,
+    opacity: f32,
+    page: Option<&Backdrop<'_>>,
+    dissolve: Option<(u32, (i32, i32))>,
+    plain: bool,
+    src: &S,
+    mix: M,
+) where
+    S: Source,
+    M: Fn([f32; 3], [f32; 3]) -> [f32; 3],
+{
+    let w = dst.width;
+    let levels = levels();
+    for y in bx.y0..bx.y1 {
+        let first = y as usize * w + bx.x0 as usize;
+        let row = &mut dst.data[first * 4..(first + bx.width()) * 4];
+        for (k, dp) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (i, x) = (first + k, bx.x0 + k as i32);
+            let sp = src.at(i, x, y);
+            let mut sa = levels[usize::from(sp[3])] * opacity;
+            if sa <= 0.0 {
+                continue;
+            }
+            let s_col = unpremul_by(sp, &levels);
+            if let Some((seed, origin)) = dissolve {
+                // Each pixel is all or nothing, with the alpha as its odds.
+                let (dx, dy) = (origin.0.wrapping_add(x), origin.1.wrapping_add(y));
+                sa = if noise::unit(dx, dy, seed) < sa {
+                    1.0
+                } else {
+                    0.0
+                };
+                if sa <= 0.0 {
+                    continue;
+                }
+            }
+            if page.is_none() && dp[3] == 255 {
+                // Over an opaque pixel the alpha stays whole (`sa + (1 -
+                // sa)` is 1 for every `sa` from 0 to 1), so the source's
+                // own colour drops out and nothing is divided.
+                let d_col = [
+                    levels[usize::from(dp[0])],
+                    levels[usize::from(dp[1])],
+                    levels[usize::from(dp[2])],
+                ];
+                let mixed = mix(d_col, s_col);
+                let rest = 1.0 - sa;
+                for k in 0..3 {
+                    dp[k] = super::super::blur::to_u8((sa * mixed[k] + rest * d_col[k]) * 255.0);
+                }
+                continue;
+            }
+            if page.is_none() && plain && dp[3] == 0 {
+                // Over a clear pixel the source is its own colour at its
+                // own alpha: the mode makes a finite colour of nothing, and
+                // it is weighed by the nothing under it.
+                for k in 0..3 {
+                    let c = sa * s_col[k];
+                    let c = if sa == 1.0 { c } else { c / sa };
+                    dp[k] = super::super::blur::to_u8(c * sa * 255.0);
+                }
+                dp[3] = super::super::blur::to_u8(sa * 255.0);
+                continue;
+            }
+            let da = levels[usize::from(dp[3])];
+            let d_col = unpremul_by(*dp, &levels);
+            let alpha = sa + da * (1.0 - sa);
+            // A whole alpha divides nothing: `v / 1` is `v`.
+            let by_alpha = |v: f32| if alpha == 1.0 { v } else { v / alpha };
+            let col = match page {
+                Some(page) => {
+                    let p = page.at(i);
+                    // What is under the layer: the box so far over the page.
+                    let under = [
+                        d_col[0] * da + p[0] * (1.0 - da),
+                        d_col[1] * da + p[1] * (1.0 - da),
+                        d_col[2] * da + p[2] * (1.0 - da),
+                    ];
+                    let mixed = mix(under, s_col);
+                    // What shows: the blend over what was under.
+                    let shown = [
+                        mixed[0] * sa + under[0] * (1.0 - sa),
+                        mixed[1] * sa + under[1] * (1.0 - sa),
+                        mixed[2] * sa + under[2] * (1.0 - sa),
+                    ];
+                    // The colour that, laid at `alpha` over the page, shows
+                    // that.
+                    let c = |k: usize| by_alpha(shown[k] - p[k] * (1.0 - alpha)).clamp(0.0, 1.0);
+                    [c(0), c(1), c(2)]
+                }
+                None => {
+                    // The W3C rule: where the box is clear the source is its
+                    // own colour.
+                    let mixed = mix(d_col, s_col);
+                    let cs = |k: usize| (1.0 - da) * s_col[k] + da * mixed[k];
+                    let c = |k: usize| by_alpha(sa * cs(k) + (1.0 - sa) * da * d_col[k]);
+                    [c(0), c(1), c(2)]
+                }
+            };
+            for k in 0..3 {
+                dp[k] = super::super::blur::to_u8(col[k] * alpha * 255.0);
+            }
+            dp[3] = super::super::blur::to_u8(alpha * 255.0);
+        }
+    }
+}
+
+/// The blend as it was first written, a surface laid from and the mode asked
+/// a pixel at a time: what [`lay_source`] must give, to the byte.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn lay_as_first_written(
+    dst: &mut Surface,
+    src: &Surface,
+    bx: IBox,
+    opacity: f32,
+    mode: Blend,
+    backdrop: Option<&Backdrop<'_>>,
+    seed: u32,
+    fill: f32,
+    origin: (i32, i32),
+) {
     let w = dst.width;
     let bx = bx.intersect(&IBox {
         x0: 0,
@@ -584,7 +825,6 @@ fn lay_at_fill(
             }
             let s_col = unpremul(sp);
             if mode == Blend::Dissolve {
-                // Each pixel is all or nothing, with the alpha as its odds.
                 let (dx, dy) = (origin.0.wrapping_add(x), origin.1.wrapping_add(y));
                 sa = if noise::unit(dx, dy, seed) < sa {
                     1.0
@@ -601,7 +841,6 @@ fn lay_at_fill(
             let (col, alpha) = match backdrop {
                 Some(page) if mode != Blend::Normal && mode != Blend::Dissolve => {
                     let p = page.at(i);
-                    // What is under the layer: the box so far over the page.
                     let under = [
                         d_col[0] * da + p[0] * (1.0 - da),
                         d_col[1] * da + p[1] * (1.0 - da),
@@ -609,20 +848,15 @@ fn lay_at_fill(
                     ];
                     let mixed = mode.mix_fill(under, s_col, fill);
                     let alpha = sa + da * (1.0 - sa);
-                    // What shows: the blend over what was under.
                     let shown = [
                         mixed[0] * sa + under[0] * (1.0 - sa),
                         mixed[1] * sa + under[1] * (1.0 - sa),
                         mixed[2] * sa + under[2] * (1.0 - sa),
                     ];
-                    // The colour that, laid at `alpha` over the page, shows
-                    // that.
                     let c = |k: usize| ((shown[k] - p[k] * (1.0 - alpha)) / alpha).clamp(0.0, 1.0);
                     ([c(0), c(1), c(2)], alpha)
                 }
                 _ => {
-                    // The W3C rule: where the box is clear the source is its
-                    // own colour.
                     let mixed = mode.mix(d_col, s_col);
                     let cs = |k: usize| (1.0 - da) * s_col[k] + da * mixed[k];
                     let alpha = sa + da * (1.0 - sa);
@@ -659,6 +893,71 @@ mod tests {
 
     fn close(a: [f32; 3], b: [f32; 3]) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
+    }
+
+    #[test]
+    fn a_lay_is_what_it_was_to_the_byte() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (w, h) = (23usize, 9usize);
+        // Premultiplied pixels of every kind: clear, whole, faint, and ones
+        // whose colour is past their alpha (as a rounding can leave them).
+        let pixels = |next: &mut dyn FnMut() -> u64| -> Surface {
+            let mut s = Surface::new(w, h).unwrap();
+            for p in s.data.as_chunks_mut::<4>().0 {
+                let a = match next() % 5 {
+                    0 => 0,
+                    1 => 255,
+                    2 => 1 + (next() % 3) as u8,
+                    _ => (next() % 256) as u8,
+                };
+                for c in &mut p[..3] {
+                    *c = if next().is_multiple_of(9) {
+                        (next() % 256) as u8
+                    } else {
+                        (next() % (u64::from(a) + 1)) as u8
+                    };
+                }
+                p[3] = a;
+            }
+            s
+        };
+        let bx = IBox {
+            x0: -2,
+            y0: 1,
+            x1: 21,
+            y1: 40,
+        };
+        for n in 0..=27u32 {
+            let Some(mode) = Blend::from_u32(n) else {
+                continue;
+            };
+            for round in 0..24 {
+                let src = pixels(&mut next);
+                let base = pixels(&mut next);
+                let page = pixels(&mut next);
+                let page = (round % 2 == 0).then_some(Backdrop { pixels: &page.data });
+                let opacity = [1.0, 0.37, 0.0, 2.0, 0.004, f32::NAN][round % 6];
+                let fill = [1.0, 0.5, 0.0, 0.83][round % 4];
+                let origin = (round as i32 * 7 - 30, 11);
+                let mut want = Surface::new(w, h).unwrap();
+                want.data.copy_from_slice(&base.data);
+                lay_as_first_written(
+                    &mut want, &src, bx, opacity, mode, page.as_ref(), 99, fill, origin,
+                );
+                let mut got = Surface::new(w, h).unwrap();
+                got.data.copy_from_slice(&base.data);
+                lay_at_fill(
+                    &mut got, &src, bx, opacity, mode, page.as_ref(), 99, fill, origin,
+                );
+                assert!(got.data[..] == want.data[..], "{mode:?} round {round}");
+            }
+        }
     }
 
     #[test]

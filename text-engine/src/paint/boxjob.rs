@@ -40,6 +40,7 @@ use super::fx::noise_gradient::{Model, Noise, Ramp};
 use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
 use super::job::{decode, read_fill, Fill, Request, Rgba};
+use super::kept::{self, Hasher};
 use super::raster::{Part, Rasterizer};
 use super::shade::Shader;
 use super::sweep;
@@ -990,6 +991,12 @@ impl<'a> Reader<'a> {
 /// - records the painter's budget cannot hold (the baked contour tables and
 ///   noise ramps count), and anything a glyph job is refused for.
 pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
+    decode_box_kept(bytes).map(|(request, _)| request)
+}
+
+/// [`decode_box`], and the key of the glyph job in it for
+/// [`paint_box_kept`]: of the job's own bytes as they are written.
+pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, kept::Key), Error> {
     let mut r = Reader {
         bytes,
         at: 0,
@@ -1088,12 +1095,14 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         _ => return Err(Error::BadSpec),
     };
     let len = r.u32()? as usize;
-    let mut request = decode(r.take(len)?)?;
+    let job = r.take(len)?;
+    let key = Hasher::new("job").bytes(job).finish().ok_or(Error::BadSpec)?;
+    let mut request = decode(job)?;
     if r.at != bytes.len() {
         return Err(Error::BadSpec);
     }
     request.ink = ink;
-    Ok(BoxRequest {
+    let request = BoxRequest {
         width,
         height,
         grain,
@@ -1108,7 +1117,8 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
         taps,
         clip,
         request,
-    })
+    };
+    Ok((request, key))
 }
 
 /// A circle of radius `r` about `c` as a closed polygon that stays within
@@ -1275,7 +1285,182 @@ pub fn paint_box_with(
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
-    paint(engine, request, rasterizer, true)
+    paint(engine, request, rasterizer, true, Keep(None))
+}
+
+/// [`paint_box`], with what it works out kept for the next paint and what
+/// the paints before it kept read back (`super::kept`): the same pixels, to
+/// the byte, sooner. `job` is the key of the glyph job in `request`, as
+/// [`decode_box_kept`] gives it: everything of `request.request` but its
+/// ink. A box with brush ink keeps nothing (its tips are the engine's, and
+/// can change under a key).
+pub fn paint_box_kept(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    job: kept::Key,
+) -> Result<Option<Raster>, Error> {
+    let keep = if request.request.ink.is_some() {
+        None
+    } else {
+        Hasher::new("box")
+            .key(job)
+            .u64(engine.stamp.0)
+            .debug(&engine.rules)
+            .finish()
+    };
+    paint(engine, request, &Exact, true, Keep(keep))
+}
+
+/// What a paint's pieces are kept under for the next one (`super::kept`):
+/// the key of the glyph job, the engine's fonts and its rules. None for a
+/// paint that keeps nothing and reads nothing back.
+#[derive(Clone, Copy)]
+struct Keep(Option<kept::Key>);
+
+impl Keep {
+    /// The key of what `paint_job_with` paints of `request` as it stands.
+    /// The passes of a box change a job's silhouette, grow, outlines,
+    /// negative, fill and runs (to all of them, the afterimages or the
+    /// rest) and nothing else of it: a pass that changes another field
+    /// must put it in this key.
+    fn raster(self, request: &Request) -> Option<kept::Key> {
+        if request.ink.is_some() {
+            return None;
+        }
+        let job = &request.job;
+        let ghosts = job.runs.iter().filter(|r| r.ghost).count();
+        Hasher::new("raster")
+            .maybe(self.0)
+            .debug(&job.silhouette.map(|c| c.0))
+            .f64(job.effects.grow)
+            .u64(job.bands.len() as u64)
+            .u64(u64::from(job.effects.negative.is_some()))
+            .u64(u64::from(job.no_fill))
+            .u64(ghosts as u64)
+            .u64(job.runs.len() as u64)
+            .finish()
+    }
+
+    /// The key of the surface with the shadows (`order`, as they are laid)
+    /// on it and nothing else yet; none with no shadow. `page`: the key of
+    /// the page under the box, if there is one.
+    fn shadows(
+        self,
+        request: &BoxRequest,
+        order: &[Shadow],
+        see_through: f32,
+        page: Option<kept::Key>,
+    ) -> Option<kept::Key> {
+        if order.is_empty() {
+            return None;
+        }
+        let mut h = Hasher::new("shadows")
+            .maybe(self.0)
+            .u64(u64::from(request.width))
+            .u64(u64::from(request.height))
+            .i32(request.grain.0)
+            .i32(request.grain.1)
+            .debug(&see_through)
+            .f64(request.fill_opacity)
+            .debug(&order);
+        if request.backdrop.is_some() {
+            h = h.maybe(page);
+        }
+        h.finish()
+    }
+
+    /// The key of the surface with the shadows (whose key is `shadows`) and
+    /// then the outer glows on it; none with no glow.
+    fn glows(
+        self,
+        request: &BoxRequest,
+        shadows: Option<kept::Key>,
+        glows: bool,
+        scale: f64,
+        page: Option<kept::Key>,
+    ) -> Option<kept::Key> {
+        if !glows {
+            return None;
+        }
+        let mut h = Hasher::new("glows")
+            .maybe(self.0)
+            .u64(u64::from(request.width))
+            .u64(u64::from(request.height))
+            .i32(request.grain.0)
+            .i32(request.grain.1)
+            .f64(request.fill_opacity)
+            // The glows' map is as wide as the widest of the outer effects.
+            .i32(effects::outer_reach(&request.effects, scale));
+        h = match shadows {
+            Some(k) => h.u64(1).key(k),
+            None => h.u64(0),
+        };
+        for e in &request.effects {
+            if let Effect::OuterGlow(_) = e {
+                h = h.debug(e);
+            }
+        }
+        if request.backdrop.is_some() {
+            h = h.maybe(page);
+        }
+        h.finish()
+    }
+
+    /// The key of a shadow's layer: the silhouette `request` paints as it
+    /// stands, blurred by a shadow of this `size`, on a surface this big.
+    fn layer(self, request: &Request, size: f64, width: usize, height: usize) -> Option<kept::Key> {
+        Hasher::new("shadow layer")
+            .maybe(self.raster(request))
+            .f64(size)
+            .u64(width as u64)
+            .u64(height as u64)
+            .finish()
+    }
+
+    /// The key of the letters' fill as `paint_glyphs` hands it to the
+    /// interior effects, with the place's transform and tiles.
+    fn fill(self, hollow: bool, ghostly: bool) -> Option<kept::Key> {
+        Hasher::new("fill")
+            .maybe(self.0)
+            .u64(u64::from(hollow))
+            .u64(u64::from(ghostly))
+            .finish()
+    }
+}
+
+/// `paint_job_with`, or what it painted of this job the last time.
+fn job_raster(
+    engine: &mut Engine,
+    request: &Request,
+    rasterizer: &dyn Rasterizer,
+    keep: Keep,
+) -> Result<Option<Raster>, Error> {
+    let Some(key) = keep.raster(request) else {
+        return paint_job_with(engine, request, rasterizer);
+    };
+    if let Some(hit) = kept::get::<Option<Raster>>(key) {
+        return match &*hit {
+            None => Ok(None),
+            Some(r) => {
+                let mut data = budget::filled(r.data.len(), 0u8)?;
+                data.copy_from_slice(&r.data);
+                Ok(Some(Raster {
+                    data: data.into_vec(),
+                    ..*r
+                }))
+            }
+        };
+    }
+    let painted = paint_job_with(engine, request, rasterizer)?;
+    match &painted {
+        None => kept::put(key, None::<Raster>, 0),
+        Some(r) => {
+            if let Some(data) = kept::copy(&r.data) {
+                kept::put(key, Some(Raster { data, ..*r }), r.data.len());
+            }
+        }
+    }
+    Ok(painted)
 }
 
 /// [`paint_box_with`] with every shadow laid a copy at a time, as the box job
@@ -1287,7 +1472,7 @@ pub fn paint_box_copy_by_copy(
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
-    paint(engine, request, rasterizer, false)
+    paint(engine, request, rasterizer, false, Keep(None))
 }
 
 /// Where a layer whose ink is `ink`, moved by `(dx, dy)` pixels, can leave
@@ -1328,6 +1513,7 @@ fn fill_matte(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
     width: usize,
     height: usize,
 ) -> Result<Option<budget::Buffer<u8>>, Error> {
@@ -1336,7 +1522,7 @@ fn fill_matte(
     let negative = job.effects.negative.take();
     let silhouette = job.silhouette.replace(Rgba([0, 0, 0, 255]));
     let no_fill = core::mem::replace(&mut job.no_fill, false);
-    let painted = paint_job_with(engine, &request.request, rasterizer);
+    let painted = job_raster(engine, &request.request, rasterizer, keep);
     let job = &mut request.request.job;
     job.bands = bands;
     job.effects.negative = negative;
@@ -1371,6 +1557,7 @@ fn lay_styled(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
     sh: &Shadow,
     s: &mut Surface,
     scale: f64,
@@ -1383,7 +1570,7 @@ fn lay_styled(
     let job_grow = request.request.job.effects.grow;
     request.request.job.silhouette = Some(sh.color);
     request.request.job.effects.grow = sh.grow;
-    let painted = paint_job_with(engine, &request.request, rasterizer);
+    let painted = job_raster(engine, &request.request, rasterizer, keep);
     request.request.job.silhouette = job_silhouette;
     request.request.job.effects.grow = job_grow;
     let Some(r) = painted? else {
@@ -1396,7 +1583,7 @@ fn lay_styled(
     let mut matte = alpha_of(&layer)?;
     // The letters as they stand, unmoved: what a knockout cuts away.
     let letters = if knock > 0.0 {
-        fill_matte(engine, request, rasterizer, width, height)?
+        fill_matte(engine, request, rasterizer, keep, width, height)?
     } else {
         None
     };
@@ -1512,6 +1699,7 @@ fn paint_glyphs(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
     carried: impl Fn(f64, f64) -> (f64, f64),
     scale: f64,
     special: bool,
@@ -1528,13 +1716,13 @@ fn paint_glyphs(
     let mut this = this.as_mut();
     if hollow && !silhouette {
         if let Some(t) = this.take() {
-            own_content(engine, request, rasterizer, t)?;
+            own_content(engine, request, rasterizer, keep, t)?;
         }
     }
     // A special-eight fill is handed back whole even at a whole Fill when
     // Transparency Shapes Layer is off: its own alpha is in the blend.
     if silhouette || (!inside && (hollow || (fade >= 1.0 && !special))) {
-        let rasters: Vec<Raster> = paint_job_with(engine, &request.request, rasterizer)?
+        let rasters: Vec<Raster> = job_raster(engine, &request.request, rasterizer, keep)?
             .into_iter()
             .collect();
         if let Some(t) = this {
@@ -1552,7 +1740,7 @@ fn paint_glyphs(
     // With no fill, the afterimages in their own fill, under everything.
     let ghostly = hollow && inside && request.request.job.runs.iter().any(|r| r.ghost);
     if ghostly {
-        if let Some(g) = paint_ghosts(engine, request, rasterizer)? {
+        if let Some(g) = paint_ghosts(engine, request, rasterizer, keep)? {
             out.push(g);
         }
     }
@@ -1571,7 +1759,7 @@ fn paint_glyphs(
         };
         request.request.job.no_fill = false;
         request.request.job.silhouette = Some(Rgba([0, 0, 0, 255]));
-        let fill = paint_job_with(engine, &request.request, rasterizer);
+        let fill = job_raster(engine, &request.request, rasterizer, keep);
         request.request.job.no_fill = hollow;
         request.request.job.silhouette = None;
         request.request.job.bands = bands;
@@ -1581,7 +1769,7 @@ fn paint_glyphs(
         }
         fill
     } else {
-        paint_fill(engine, request, rasterizer)
+        paint_fill(engine, request, rasterizer, keep)
     };
     if let Some(mut r) = fill? {
         if inside {
@@ -1591,7 +1779,7 @@ fn paint_glyphs(
                 grain: request.grain,
                 page: request.page,
             };
-            let (laid, o, b) = effects::interior(
+            let (laid, o, b) = effects::interior_kept(
                 &r,
                 &request.effects,
                 fade,
@@ -1599,6 +1787,7 @@ fn paint_glyphs(
                 scale,
                 carried,
                 &place,
+                keep.fill(hollow, ghostly),
             )?;
             (outside, bevels) = (o, b);
             // No fill hides the letters' fill and not the ink: it stays
@@ -1628,7 +1817,7 @@ fn paint_glyphs(
         }
     }
     // The outlines, outside the letters.
-    if let Some(r) = paint_rims(engine, request, rasterizer)? {
+    if let Some(r) = paint_rims(engine, request, rasterizer, keep)? {
         if let Some(t) = this.as_mut() {
             t.draw(&r);
         }
@@ -1649,12 +1838,13 @@ fn paint_fill(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
 ) -> Result<Option<Raster>, Error> {
     let job = &mut request.request.job;
     let bands = core::mem::take(&mut job.bands);
     let negative = job.effects.negative.take();
     let no_fill = core::mem::replace(&mut job.no_fill, false);
-    let painted = paint_job_with(engine, &request.request, rasterizer);
+    let painted = job_raster(engine, &request.request, rasterizer, keep);
     let job = &mut request.request.job;
     job.bands = bands;
     job.effects.negative = negative;
@@ -1669,6 +1859,7 @@ fn paint_rims(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
 ) -> Result<Option<Raster>, Error> {
     let job = &request.request.job;
     if job.bands.is_empty() && job.effects.negative.is_none() {
@@ -1681,7 +1872,7 @@ fn paint_rims(
     };
     let no_fill = core::mem::replace(&mut request.request.job.no_fill, true);
     rims_of(request, true);
-    let rims = paint_job_with(engine, &request.request, rasterizer);
+    let rims = job_raster(engine, &request.request, rasterizer, keep);
     rims_of(request, false);
     request.request.job.no_fill = no_fill;
     rims
@@ -1697,12 +1888,13 @@ fn own_content(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
     t: &mut Content,
 ) -> Result<(), Error> {
-    if let Some(r) = paint_fill(engine, request, rasterizer)? {
+    if let Some(r) = paint_fill(engine, request, rasterizer, keep)? {
         t.draw(&r);
     }
-    if let Some(r) = paint_rims(engine, request, rasterizer)? {
+    if let Some(r) = paint_rims(engine, request, rasterizer, keep)? {
         t.draw(&r);
     }
     Ok(())
@@ -1714,6 +1906,7 @@ fn paint_ghosts(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
 ) -> Result<Option<Raster>, Error> {
     let job = &mut request.request.job;
     let runs = core::mem::take(&mut job.runs);
@@ -1723,7 +1916,7 @@ fn paint_ghosts(
     let silhouette = job.silhouette.take();
     let no_fill = core::mem::replace(&mut job.no_fill, false);
     let ink = request.request.ink.take();
-    let painted = paint_job_with(engine, &request.request, rasterizer);
+    let painted = job_raster(engine, &request.request, rasterizer, keep);
     request.request.ink = ink;
     let job = &mut request.request.job;
     job.runs = runs;
@@ -1805,19 +1998,31 @@ struct Glyphs {
 /// The outer glows behind the letters, on `s`. Their shape is the letters'
 /// whole silhouette, outlines included, as a drop shadow's is; where the fill
 /// is see-through each glow is kept from behind the fill.
+///
+/// `painted` is that silhouette when a shadow has painted it already (not
+/// grown, in an opaque colour): only its alpha is read, which is the same in
+/// any opaque colour.
 fn lay_glows(
     engine: &mut Engine,
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
+    keep: Keep,
     s: &mut Surface,
     scale: f64,
+    painted: Option<Raster>,
 ) -> Result<Option<IBox>, Error> {
     let black = Some(Rgba([0, 0, 0, 255]));
     let job_silhouette = request.request.job.silhouette;
-    request.request.job.silhouette = black;
-    let outline = paint_job_with(engine, &request.request, rasterizer);
-    request.request.job.silhouette = job_silhouette;
-    let Some(outline) = outline? else {
+    let outline = match painted {
+        Some(r) => Some(r),
+        None => {
+            request.request.job.silhouette = black;
+            let outline = job_raster(engine, &request.request, rasterizer, keep);
+            request.request.job.silhouette = job_silhouette;
+            outline?
+        }
+    };
+    let Some(outline) = outline else {
         return Ok(None);
     };
     let reach = effects::outer_reach(&request.effects, scale);
@@ -1849,7 +2054,7 @@ fn lay_glows(
         let bands = core::mem::take(&mut request.request.job.bands);
         let negative = request.request.job.effects.negative.take();
         request.request.job.silhouette = black;
-        let fill = paint_job_with(engine, &request.request, rasterizer);
+        let fill = job_raster(engine, &request.request, rasterizer, keep);
         request.request.job.silhouette = job_silhouette;
         request.request.job.bands = bands;
         request.request.job.effects.negative = negative;
@@ -1861,7 +2066,14 @@ fn lay_glows(
         .backdrop
         .as_deref()
         .map(|pixels| Backdrop { pixels });
-    effects::lay_outer_glows(
+    // The silhouette and the fill are the job's; the region is theirs and
+    // the reach of the outer effects, on this surface.
+    let source = Hasher::new("glow shape")
+        .maybe(keep.0)
+        .debug(&region)
+        .u64(u64::from(fill.is_some()))
+        .finish();
+    effects::lay_outer_glows_kept(
         s,
         &request.effects,
         &shape,
@@ -1871,6 +2083,7 @@ fn lay_glows(
         scale,
         page.as_ref(),
         request.grain,
+        source,
     )
 }
 
@@ -1879,6 +2092,7 @@ fn paint(
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
     sweeps: bool,
+    keep: Keep,
 ) -> Result<Option<Raster>, Error> {
     let _budget = budget::Scope::new();
     let (width, height) = (request.width as usize, request.height as usize);
@@ -1961,7 +2175,7 @@ fn paint(
         && !request.effects.iter().any(Effect::shows)
     {
         // Nothing but glyphs: the glyph job, and its own raster.
-        return match paint_job_with(engine, &request.request, rasterizer)? {
+        return match job_raster(engine, &request.request, rasterizer, keep)? {
             Some(r) => cut(r, surface),
             None => Ok(None),
         };
@@ -1974,7 +2188,7 @@ fn paint(
     // Where anything has been laid on the surface, so that finding what of
     // it has ink reads only that.
     let mut laid: Option<IBox> = None;
-    let mut lay = |b: IBox| laid = Some(laid.map_or(b, |l| l.union(&b)));
+    let join = |laid: &mut Option<IBox>, b: IBox| *laid = Some(laid.map_or(b, |l| l.union(&b)));
     // Shadows, the last first, so the first is on top of the rest. One
     // layer serves them all, and a shadow like the one before it (an
     // extrude's steps, a shake's copies) is the same layer moved again.
@@ -1995,7 +2209,40 @@ fn paint(
     let mut painted_as: Option<(Rgba, f64, f64)> = None;
     let job_silhouette = request.request.job.silhouette;
     let job_grow = request.request.job.effects.grow;
-    let mut i = 0;
+    // The letters' silhouette as a shadow painted it, kept for the outer
+    // glows when it is theirs too: not grown, and in an opaque colour, whose
+    // alpha is what black's would be. `Some(None)`: painted, and nothing.
+    let glows = request
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::OuterGlow(_)) && e.shows());
+    let mut silhouette: Option<Option<Raster>> = None;
+    // The surface with the shadows and the glows on it, as the last paint
+    // of the same ones left it (`super::kept`).
+    type Under = (Vec<u8>, Option<IBox>);
+    let page_key = match (&request.backdrop, keep.0) {
+        (Some(page), Some(_)) if !order.is_empty() || glows => {
+            Hasher::new("page").bytes(page).finish()
+        }
+        _ => None,
+    };
+    // With the shadows on it, and with the glows on it too. With no glow the
+    // first is all of it, and with no shadow the second is.
+    let shadows_key = keep.shadows(request, &order, see_through, page_key);
+    let glows_key = keep.glows(request, shadows_key, glows, scale, page_key);
+    let fits = |u: &std::rc::Rc<Under>| u.0.len() == width * height * 4;
+    let under_kept = glows_key.or(shadows_key).and_then(kept::get::<Under>).filter(fits);
+    // Short of that, with the shadows alone: the glows are laid again.
+    let shadows_kept = match (&under_kept, glows) {
+        (None, true) => shadows_key.and_then(kept::get::<Under>).filter(fits),
+        _ => None,
+    };
+    if let Some(u) = under_kept.as_ref().or(shadows_kept.as_ref()) {
+        s.data.copy_from_slice(&u.0);
+        laid = u.1;
+    }
+    let shadows_laid = under_kept.is_some() || shadows_kept.is_some();
+    let mut i = if shadows_laid { order.len() } else { 0 };
     while let Some(sh) = order.get(i).copied() {
         if sh.styled(see_through > 0.0) {
             let knock = if sh.knockout { see_through } else { 0.0 };
@@ -2003,6 +2250,7 @@ fn paint(
                 engine,
                 request,
                 rasterizer,
+                keep,
                 &sh,
                 &mut s,
                 scale,
@@ -2010,7 +2258,7 @@ fn paint(
                 knock,
                 &mut acc,
             )? {
-                lay(b);
+                join(&mut laid, b);
             }
             i += 1;
             continue;
@@ -2022,7 +2270,17 @@ fn paint(
             runs = None;
             request.request.job.silhouette = Some(sh.color);
             request.request.job.effects.grow = sh.grow;
-            let painted = paint_job_with(engine, &request.request, rasterizer);
+            let kept_as = keep.layer(&request.request, sh.size, width, height);
+            // The layer as a paint before this one blurred it, and where
+            // the silhouette it was blurred from stood.
+            type Layer = (Vec<u8>, Option<IBox>);
+            let layer_kept = kept_as
+                .and_then(kept::get::<Layer>)
+                .filter(|l| l.0.len() == width * height * 4);
+            let painted = match &layer_kept {
+                Some(_) => Ok(None),
+                None => job_raster(engine, &request.request, rasterizer, keep),
+            };
             request.request.job.silhouette = job_silhouette;
             request.request.job.effects.grow = job_grow;
             let layer = match &mut layer {
@@ -2032,12 +2290,46 @@ fn paint(
                 }
                 none => none.insert(Surface::new(width, height)?),
             };
-            if let Some(r) = painted? {
+            if let Some(kept_layer) = &layer_kept {
+                layer.data.copy_from_slice(&kept_layer.0);
+                if let Some(at) = kept_layer.1 {
+                    let reach = super::fx::tent::reach(super::fx::tent_width(sh.size, scale));
+                    let drawn = IBox {
+                        x0: at.x0.saturating_sub(reach),
+                        y0: at.y0.saturating_sub(reach),
+                        x1: at.x1.saturating_add(reach),
+                        y1: at.y1.saturating_add(reach),
+                    };
+                    ink = layer.ink_in(drawn);
+                    let again = order.get(i + 1).is_some_and(|n| layer_key(n) == key);
+                    if let (Some(ink), true) = (ink, sweeps && again) {
+                        runs = Some(sweep::Runs::new(layer, ink)?);
+                    }
+                }
+            }
+            let painted = painted?;
+            let shared = glows
+                && silhouette.is_none()
+                && sh.color.0[3] == 255
+                && sh.grow.to_bits() == job_grow.to_bits();
+            if shared && painted.is_none() && layer_kept.is_none() {
+                silhouette = Some(None);
+            }
+            if let Some(r) = painted {
                 layer.draw(&r.data, r.width as usize, r.x, r.y);
                 // A silhouette is one colour, so only its alpha needs the blur.
                 let [red, green, blue, _] = sh.color.0;
                 let width = super::fx::tent_width(sh.size, scale);
                 blur::tent_flat(layer, width, [red, green, blue])?;
+                if let (Some(key), Some(data)) = (kept_as, kept::copy(&layer.data)) {
+                    let at = IBox {
+                        x0: r.x,
+                        y0: r.y,
+                        x1: r.x.saturating_add(r.width as i32),
+                        y1: r.y.saturating_add(r.height as i32),
+                    };
+                    kept::put(key, (data, Some(at)), layer.data.len());
+                }
                 // The ink is the raster's, and as far round it as the blur
                 // spread it.
                 let reach = super::fx::tent::reach(width);
@@ -2047,7 +2339,11 @@ fn paint(
                     x1: r.x.saturating_add(r.width as i32).saturating_add(reach),
                     y1: r.y.saturating_add(r.height as i32).saturating_add(reach),
                 };
-                drop(r);
+                if shared {
+                    silhouette = Some(Some(r));
+                } else {
+                    drop(r);
+                }
                 ink = layer.ink_in(drawn);
                 // Finding the runs costs about what laying a copy along them
                 // saves, so only a layer laid again finds them.
@@ -2073,7 +2369,7 @@ fn paint(
             continue;
         };
         for n in &order[i..end] {
-            lay(landed(ink, thrown(n)));
+            join(&mut laid, landed(ink, thrown(n)));
         }
         match &runs {
             Some(runs) if end - i >= 2 => {
@@ -2092,15 +2388,32 @@ fn paint(
         i = end;
     }
     drop(layer);
-    if request
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::OuterGlow(_)) && e.shows())
-    {
-        if let Some(b) = lay_glows(engine, request, rasterizer, &mut s, scale)? {
-            lay(b);
+    let keep_under = |key: Option<kept::Key>, s: &Surface, laid: Option<IBox>| {
+        if let Some(key) = key {
+            if let Some(data) = kept::copy(&s.data) {
+                kept::put(key, (data, laid), s.data.len());
+            }
+        }
+    };
+    if !shadows_laid {
+        keep_under(shadows_key, &s, laid);
+    }
+    drop(shadows_kept);
+    if glows && under_kept.is_none() {
+        let glow = match silhouette {
+            // A shadow painted it and it was nothing: no glow either.
+            Some(None) => None,
+            Some(painted) => lay_glows(engine, request, rasterizer, keep, &mut s, scale, painted)?,
+            None => lay_glows(engine, request, rasterizer, keep, &mut s, scale, None)?,
+        };
+        if let Some(b) = glow {
+            join(&mut laid, b);
         }
     }
+    if under_kept.is_none() {
+        keep_under(glows_key, &s, laid);
+    }
+    drop(under_kept);
 
     // Over a page, one of the special eight takes Fill into its blend, and
     // with Transparency Shapes Layer off the letters' own transparency too
@@ -2127,7 +2440,7 @@ fn paint(
         outside,
         bevels,
     } = paint_glyphs(
-        engine, request, rasterizer, carried, scale, special, &mut this,
+        engine, request, rasterizer, keep, carried, scale, special, &mut this,
     )?;
     let page = request
         .backdrop
@@ -2148,12 +2461,12 @@ fn paint(
         effects::lay_outside(&mut s, &o, &request.effects, &place, page.as_ref())?;
         let b = o.bounds().intersect(&surface);
         if !b.is_empty() {
-            lay(b);
+            join(&mut laid, b);
         }
     }
     if let Some(bv) = &bevels {
         if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, false, page.as_ref())? {
-            lay(b);
+            join(&mut laid, b);
         }
     }
     let mut own = if blends {
@@ -2188,7 +2501,7 @@ fn paint(
             request.grain,
         );
         own.clear();
-        lay(bx);
+        join(&mut laid, bx);
     }
     drop(whole_fill);
     for r in &glyphs {
@@ -2202,7 +2515,7 @@ fn paint(
             Some(own) => own.draw(&r.data, r.width as usize, r.x, r.y),
             None => s.draw(&r.data, r.width as usize, r.x, r.y),
         }
-        lay(bx);
+        join(&mut laid, bx);
     }
     drop(glyphs);
     if let (Some(own), Some(bx)) = (&own, laid) {

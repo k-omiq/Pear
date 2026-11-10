@@ -20,7 +20,7 @@
 //! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors for the
 //! order and the compositing it follows, MIT licence (see `THIRD_PARTY.md`).
 
-use super::super::blur::Surface;
+use super::super::blur::{to_u8, Surface};
 use super::super::geom::{Affine, IBox, Pt};
 use super::super::job::{Fill, Rgba, Tile};
 use super::super::shade::Shader;
@@ -34,6 +34,7 @@ pub use super::map::Technique;
 use super::map::{self, Map, Soft};
 use super::{noise, spread_split};
 use crate::paint::budget::{self, Buffer};
+use crate::paint::kept::{self, Hasher, Key};
 use crate::paint::MAX_PIXELS;
 use crate::Error;
 
@@ -407,9 +408,9 @@ enum Brush<'a> {
     Flat([f32; 4]),
     Ramp {
         g: &'a Gradient,
-        frame: Frame,
+        /// The gradient over its frame, at the size of a device pixel.
+        run: gradient::Run,
         to_job: Affine,
-        px: f32,
         /// [`Place::grain`]: Dither is hashed from the page's pixel.
         grain: (i32, i32),
     },
@@ -432,13 +433,12 @@ impl Brush<'_> {
             Brush::Flat(c) => *c,
             Brush::Ramp {
                 g,
-                frame,
+                run,
                 to_job,
-                px,
                 grain,
             } => {
                 let p = to_job.apply(Pt::new(f64::from(x) + 0.5, f64::from(y) + 0.5));
-                let t = g.t(*frame, *px, p.x as f32, p.y as f32);
+                let t = g.t_along(run, p.x as f32, p.y as f32);
                 g.sample_at(t, x.wrapping_add(grain.0), y.wrapping_add(grain.1))
             }
             Brush::Burst {
@@ -494,17 +494,15 @@ fn brush<'a>(paint: &'a Paint, frame: Frame, place: &Place<'a>) -> Option<Brush<
                 let (frame, to_page) = page.frame(&place.transform)?;
                 Brush::Ramp {
                     g,
-                    frame,
+                    run: g.run(frame, to_page.det().abs().sqrt() as f32),
                     to_job: to_page,
-                    px: to_page.det().abs().sqrt() as f32,
                     grain: place.grain,
                 }
             }
             None => Brush::Ramp {
                 g,
-                frame,
+                run: g.run(frame, place.px()),
                 to_job: place.transform.invert()?,
-                px: place.px(),
                 grain: place.grain,
             },
         },
@@ -575,6 +573,57 @@ fn lay_with(
     seed: u32,
     grain: (i32, i32),
 ) -> Result<Option<IBox>, Error> {
+    lay_through(dst, m, at, dev, color, opacity, mode, page, seed, grain)
+}
+
+/// [`lay_with`] for a paint of one colour, `c` straight: nothing is asked a
+/// pixel at a time.
+#[allow(clippy::too_many_arguments)]
+fn lay_flat(
+    dst: &mut Surface,
+    m: &Map,
+    at: (i32, i32),
+    dev: (i32, i32),
+    c: [f32; 4],
+    opacity: f64,
+    mode: Blend,
+    page: Option<&Backdrop<'_>>,
+    seed: u32,
+    grain: (i32, i32),
+) -> Result<Option<IBox>, Error> {
+    lay_through(
+        dst,
+        m,
+        at,
+        dev,
+        move |_, _, _| c,
+        opacity,
+        mode,
+        page,
+        seed,
+        grain,
+    )
+}
+
+/// [`lay_with`] for any way of asking the paint. Each pixel of the paint
+/// through the map is rounded to premultiplied RGBA8 and laid from that, as
+/// from a surface, with no surface made for it.
+#[allow(clippy::too_many_arguments)]
+fn lay_through<C>(
+    dst: &mut Surface,
+    m: &Map,
+    at: (i32, i32),
+    dev: (i32, i32),
+    color: C,
+    opacity: f64,
+    mode: Blend,
+    page: Option<&Backdrop<'_>>,
+    seed: u32,
+    grain: (i32, i32),
+) -> Result<Option<IBox>, Error>
+where
+    C: Fn(i32, i32, usize) -> [f32; 4],
+{
     let Some(bx) = ink(m) else {
         return Ok(None);
     };
@@ -593,28 +642,53 @@ fn lay_with(
     if bx.is_empty() {
         return Ok(None);
     }
-    // The paint through the map, premultiplied, on a surface of `dst`'s
-    // size: only `bx` is written or read.
-    let mut src = Surface::new(dst.width, dst.height)?;
-    for y in bx.y0..bx.y1 {
-        for x in bx.x0..bx.x1 {
-            let i = (y - at.1) as usize * m.w + (x - at.0) as usize;
-            let v = m.v[i].clamp(0.0, 1.0);
-            if v <= 0.0 {
-                continue;
-            }
-            let c = color(x + dev.0, y + dev.1, i);
-            let a = (v * c[3].clamp(0.0, 1.0)).clamp(0.0, 1.0);
-            let p = &mut src.data[(y as usize * dst.width + x as usize) * 4..][..4];
-            for k in 0..3 {
-                p[k] = (c[k].clamp(0.0, 1.0) * a * 255.0 + 0.5) as u8;
-            }
-            p[3] = (a * 255.0 + 0.5) as u8;
-        }
-    }
     let hashed = (dev.0.wrapping_add(grain.0), dev.1.wrapping_add(grain.1));
-    blend::lay_from(dst, &src, bx, opacity as f32, mode, page, seed, hashed);
+    let source = Through { m, at, dev, color };
+    blend::lay_source(
+        dst,
+        bx,
+        opacity as f32,
+        mode,
+        page,
+        seed,
+        1.0,
+        hashed,
+        source,
+    );
     Ok(Some(bx))
+}
+
+/// A paint through a map whose corner is `at` on the surface laid on:
+/// `color(x, y, i)` at device pixel `(x, y)`, map pixel `i`, the surface's
+/// corner at device `dev`.
+struct Through<'a, C> {
+    m: &'a Map,
+    at: (i32, i32),
+    dev: (i32, i32),
+    color: C,
+}
+
+impl<C> blend::Source for Through<'_, C>
+where
+    C: Fn(i32, i32, usize) -> [f32; 4],
+{
+    #[inline(always)]
+    fn at(&self, _: usize, x: i32, y: i32) -> [u8; 4] {
+        let i = (y - self.at.1) as usize * self.m.w + (x - self.at.0) as usize;
+        let v = self.m.v[i].clamp(0.0, 1.0);
+        if v <= 0.0 {
+            return [0; 4];
+        }
+        let c = (self.color)(x + self.dev.0, y + self.dev.1, i);
+        // Two shares of one, so a share of one: nothing to clamp.
+        let a = v * c[3].clamp(0.0, 1.0);
+        [
+            to_u8(c[0].clamp(0.0, 1.0) * a * 255.0),
+            to_u8(c[1].clamp(0.0, 1.0) * a * 255.0),
+            to_u8(c[2].clamp(0.0, 1.0) * a * 255.0),
+            to_u8(a * 255.0),
+        ]
+    }
 }
 
 /// A glow's paint over its map: its colour, or its gradient run along the
@@ -632,12 +706,11 @@ fn lay_glow(
     match &g.gradient {
         None => {
             let c = flat(g.color);
-            lay_with(
-                dst,
+            lay_flat(dst,
                 m,
                 at,
                 dev,
-                &|_, _, _| c,
+                c,
                 g.opacity,
                 g.blend,
                 page,
@@ -701,6 +774,7 @@ const JITTER_SALT: u32 = 0x6a09_e667;
 /// `dst` pixel plus `grain` ([`Place::grain`]). Hands back where they can
 /// have laid ink.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn lay_outer_glows(
     dst: &mut Surface,
     effects: &[Effect],
@@ -712,6 +786,36 @@ pub(crate) fn lay_outer_glows(
     page: Option<&Backdrop<'_>>,
     grain: (i32, i32),
 ) -> Result<Option<IBox>, Error> {
+    lay_outer_glows_kept(
+        dst,
+        effects,
+        shape,
+        fill,
+        fill_opacity,
+        region,
+        scale,
+        page,
+        grain,
+        None,
+    )
+}
+
+/// [`lay_outer_glows`], with each glow's map kept for the next paint
+/// (`paint::kept`). `source` is the key of `shape`, `fill`, `region` and
+/// `scale`; with none, nothing is kept or read back.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lay_outer_glows_kept(
+    dst: &mut Surface,
+    effects: &[Effect],
+    shape: &Map,
+    fill: Option<&Map>,
+    fill_opacity: f64,
+    region: IBox,
+    scale: f64,
+    page: Option<&Backdrop<'_>>,
+    grain: (i32, i32),
+    source: Option<Key>,
+) -> Result<Option<IBox>, Error> {
     let mut laid: Option<IBox> = None;
     let hashed = (
         region.x0.wrapping_add(grain.0),
@@ -721,7 +825,18 @@ pub(crate) fn lay_outer_glows(
         let Effect::OuterGlow(g) = e else {
             continue;
         };
-        let m = outer_glow(shape, fill, fill_opacity, g, scale, hashed)?;
+        let key = source.and_then(|source| {
+            Hasher::new("outer glow")
+                .key(source)
+                .f64(fill_opacity)
+                .i32(hashed.0)
+                .i32(hashed.1)
+                .maybe(effect_key(e))
+                .finish()
+        });
+        let m = kept_map(key, || {
+            outer_glow(shape, fill, fill_opacity, g, scale, hashed)
+        })?;
         if let Some(b) = lay_glow(dst, &m, (region.x0, region.y0), (0, 0), grain, g, page)? {
             laid = Some(laid.map_or(b, |l| l.union(&b)));
         }
@@ -823,6 +938,61 @@ pub fn outline_share(cov: f32, l: f32) -> f32 {
         1.0
     } else {
         (outside / rest).min(1.0)
+    }
+}
+
+/// Whether `v` is plain zero to one: no minus zero, no NaN.
+fn plain_share(v: f32) -> bool {
+    v.to_bits() <= 1.0f32.to_bits()
+}
+
+/// What one outside stroke's share is worked out from.
+struct Reach2<'a> {
+    /// The distance out from the letters' edge.
+    d: &'a [f32],
+    shape: &'a [f32],
+    /// The letters' alpha as laid.
+    alpha: &'a [f32],
+    out_w: f32,
+    opacity: f32,
+    /// A Dissolve stroke's seed, where its grain is hashed from, and the
+    /// frame's width.
+    dissolve: Option<(u32, (i32, i32), usize)>,
+    /// Whether a pixel with nothing to add may be passed over: every stroke's
+    /// opacity is plain nothing to one.
+    skip: bool,
+}
+
+/// One outside stroke's share of each pixel, of what the strokes listed
+/// before it left: `cover` is what they and it have taken.
+fn stroke_share(share: &mut [f32], cover: &mut [f32], r: &Reach2<'_>) {
+    for (i, sh) in share.iter_mut().enumerate() {
+        let band = (r.out_w + 0.5 - r.d[i]).clamp(0.0, 1.0);
+        // Out of the stroke's reach, or under a whole pixel of the letters:
+        // a share of plain zero, as the slice holds, and none for the cover
+        // (which is nothing to one, or the sum is worked out as it was).
+        if r.skip
+            && (band.to_bits() == 0 || (r.shape[i] == 1.0 && band <= 1.0))
+            && plain_share(cover[i])
+        {
+            continue;
+        }
+        let k = if r.shape[i] > map::INSIDE_EPS {
+            band * outline_share(r.shape[i], r.alpha[i])
+        } else {
+            band
+        };
+        let mut k = k * r.opacity;
+        if let Some((seed, hashed, w)) = r.dissolve {
+            let (x, y) = (hashed.0 + (i % w) as i32, hashed.1 + (i / w) as i32);
+            k = if k > 0.0 && noise::unit(x, y, seed) < k {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        *sh = k * (1.0 - cover[i]);
+        cover[i] += *sh;
     }
 }
 
@@ -1074,6 +1244,7 @@ fn stroke_band(
     strokes: &[(usize, &Stroke)],
     scale: f64,
     din: Option<&[f32]>,
+    keys: &Keys,
 ) -> Result<Option<Map>, Error> {
     if strokes.is_empty() {
         return Ok(None);
@@ -1088,7 +1259,7 @@ fn stroke_band(
         let dout = if out_w <= 0.0 {
             None
         } else {
-            Some(outside_dist(shape, out_w, &mut chamfer, &mut exact)?)
+            Some(outside_dist(shape, out_w, &mut chamfer, &mut exact, keys)?)
         };
         for (i, r) in rest.iter_mut().enumerate() {
             let a = shape.v[i];
@@ -1123,14 +1294,15 @@ fn outside_dist<'a>(
     out_w: f32,
     chamfer: &'a mut Option<Buffer<f32>>,
     exact: &'a mut Option<Buffer<f32>>,
+    keys: &Keys,
 ) -> Result<&'a [f32], Error> {
     let near = out_w < map::STROKE_CHAMFER_MAX;
     let slot = if near { chamfer } else { exact };
     if slot.is_none() {
         *slot = Some(if near {
-            map::chamfer_outside(shape)?
+            kept_values(keys.of_shape("chamfer out"), || map::chamfer_outside(shape))?
         } else {
-            map::dist_outside(shape)?
+            kept_values(keys.of_shape("exact out"), || map::dist_outside(shape))?
         });
     }
     Ok(slot.as_ref().map_or(&[][..], |d| d.as_slice()))
@@ -1203,12 +1375,11 @@ pub(crate) fn lay_bevels(
         }
         for (m, o) in [(hi, &bv.highlight), (sh, &bv.shadow)] {
             let c = flat(o.color);
-            if let Some(bx) = lay_with(
-                dst,
+            if let Some(bx) = lay_flat(dst,
                 m,
                 b.dev,
                 (0, 0),
-                &|_, _, _| c,
+                c,
                 o.opacity,
                 o.blend,
                 page,
@@ -1287,6 +1458,7 @@ pub(crate) fn satin_throw(s: &Satin, carried: impl Fn(f64, f64) -> (f64, f64)) -
 /// `crates/compose/src/effects/composite.rs` (`interior_group`,
 /// `layer_pixels`, `paint_interior`), MIT licence.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn interior(
     r: &Raster,
     effects: &[Effect],
@@ -1296,8 +1468,353 @@ pub(crate) fn interior(
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
+    interior_kept(r, effects, fill_opacity, group, scale, carried, place, None)
+}
+
+/// [`interior`], with what it works out kept for the next paint
+/// (`paint::kept`). `source` is the key of everything here that is not an
+/// argument's own value: the raster `r`, the place's transform and tiles,
+/// `scale` and `carried`. With none, nothing is kept or read back.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn interior_kept(
+    r: &Raster,
+    effects: &[Effect],
+    fill_opacity: f64,
+    group: bool,
+    scale: f64,
+    carried: impl Fn(f64, f64) -> (f64, f64),
+    place: &Place<'_>,
+    source: Option<Key>,
+) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
     let pad = interior_pad(effects, scale);
-    interior_at(r, effects, fill_opacity, group, scale, carried, place, pad)
+    let keys = Keys::new(source, effects, pad, place);
+    let whole = keys.whole(effects, fill_opacity, group);
+    if let Some(hit) = whole.and_then(kept::get::<KeptInterior>) {
+        return hit.give();
+    }
+    let out = interior_at(
+        r,
+        effects,
+        fill_opacity,
+        group,
+        scale,
+        carried,
+        place,
+        pad,
+        &keys,
+    )?;
+    if let Some(key) = whole {
+        if let Some((piece, bytes)) = KeptInterior::of(&out) {
+            kept::put(key, piece, bytes);
+        }
+    }
+    Ok(out)
+}
+
+/// The keys an interior's pieces are kept under (`paint::kept`).
+pub(crate) struct Keys {
+    /// The letters' shape and where it stands: the fill raster, the room
+    /// round it, the place.
+    shape: Option<Key>,
+    /// Each effect's own settings, by its place in the list.
+    fx: Vec<Option<Key>>,
+}
+
+impl Keys {
+    /// With no `source`, no keys: nothing is kept.
+    fn new(source: Option<Key>, effects: &[Effect], pad: usize, place: &Place<'_>) -> Self {
+        let Some(source) = source else {
+            return Self::none();
+        };
+        Self {
+            shape: Hasher::new("shape")
+                .key(source)
+                .u64(pad as u64)
+                .i32(place.grain.0)
+                .i32(place.grain.1)
+                .debug(&place.page)
+                .finish(),
+            fx: effects.iter().map(effect_key).collect(),
+        }
+    }
+
+    pub(crate) fn none() -> Self {
+        Self {
+            shape: None,
+            fx: Vec::new(),
+        }
+    }
+
+    /// The key of a piece worked out from the shape alone.
+    fn of_shape(&self, tag: &str) -> Option<Key> {
+        Hasher::new(tag).maybe(self.shape).finish()
+    }
+
+    /// The key of a piece worked out from the shape and effect `i`.
+    fn of_effect(&self, tag: &str, i: usize) -> Option<Key> {
+        Hasher::new(tag)
+            .maybe(self.shape)
+            .maybe(self.fx.get(i).copied().flatten())
+            .finish()
+    }
+
+    /// The key of the whole interior: the shape, the Fill, and every effect
+    /// in its place. An Outer Glow is not the interior's, so only its place
+    /// is in the key (the strokes and bevels are handed back by their place
+    /// in the list).
+    fn whole(&self, effects: &[Effect], fill_opacity: f64, group: bool) -> Option<Key> {
+        let mut h = Hasher::new("interior")
+            .maybe(self.shape)
+            .f64(fill_opacity)
+            .u64(u64::from(group));
+        for (i, e) in effects.iter().enumerate() {
+            h = match e {
+                Effect::OuterGlow(_) => h.u64(0),
+                _ => h.u64(1).maybe(self.fx.get(i).copied().flatten()),
+            };
+        }
+        h.finish()
+    }
+}
+
+/// The key of one effect's settings.
+pub(crate) fn effect_key(e: &Effect) -> Option<Key> {
+    Hasher::new("effect").debug(e).finish()
+}
+
+/// A map as it is kept: its size and its values.
+type KeptMap = (usize, usize, Vec<f32>);
+
+fn keep_map(m: &Map) -> Option<KeptMap> {
+    Some((m.w, m.h, kept::copy(&m.v)?))
+}
+
+fn give_map(m: &KeptMap) -> Result<Map, Error> {
+    let mut out = Map::filled(m.0, m.1, 0.0)?;
+    out.v.copy_from_slice(&m.2);
+    Ok(out)
+}
+
+fn give_values(v: &[f32]) -> Result<Buffer<f32>, Error> {
+    let mut out = budget::filled(v.len(), 0.0f32)?;
+    out.copy_from_slice(v);
+    Ok(out)
+}
+
+/// The map kept under `key`, or `make`'s, kept for the next paint.
+fn kept_map(key: Option<Key>, make: impl FnOnce() -> Result<Map, Error>) -> Result<Map, Error> {
+    if let Some(hit) = key.and_then(kept::get::<KeptMap>) {
+        return give_map(&hit);
+    }
+    let m = make()?;
+    if let (Some(key), Some(piece)) = (key, keep_map(&m)) {
+        kept::put(key, piece, m.v.len() * 4);
+    }
+    Ok(m)
+}
+
+/// The values kept under `key`, or `make`'s, kept for the next paint.
+fn kept_values(
+    key: Option<Key>,
+    make: impl FnOnce() -> Result<Buffer<f32>, Error>,
+) -> Result<Buffer<f32>, Error> {
+    if let Some(hit) = key.and_then(kept::get::<Vec<f32>>) {
+        return give_values(&hit);
+    }
+    let v = make()?;
+    if let (Some(key), Some(piece)) = (key, kept::copy(&v)) {
+        kept::put(key, piece, v.len() * 4);
+    }
+    Ok(v)
+}
+
+/// A bevel's maps kept under `key`, or `make`'s, kept for the next paint.
+fn kept_bevel(
+    key: Option<Key>,
+    make: impl FnOnce() -> Result<(Map, Map, Reach), Error>,
+) -> Result<(Map, Map, Reach), Error> {
+    if let Some(hit) = key.and_then(kept::get::<(KeptMap, KeptMap, Reach)>) {
+        return Ok((give_map(&hit.0)?, give_map(&hit.1)?, hit.2));
+    }
+    let (hi, sh, reach) = make()?;
+    if let (Some(key), Some(a), Some(b)) = (key, keep_map(&hi), keep_map(&sh)) {
+        kept::put(key, (a, b, reach), (hi.v.len() + sh.v.len()) * 4);
+    }
+    Ok((hi, sh, reach))
+}
+
+/// A whole interior as it is kept: the fill with its effects, the strokes'
+/// outside parts and the bevels laid round it.
+struct KeptInterior {
+    laid: Raster,
+    #[allow(clippy::type_complexity)]
+    outside: Option<(
+        (i32, i32),
+        usize,
+        usize,
+        Option<Frame>,
+        Vec<(usize, Vec<f32>, Option<Vec<f32>>)>,
+    )>,
+    #[allow(clippy::type_complexity)]
+    bevels: Option<((i32, i32), (i32, i32), Vec<(usize, bool, KeptMap, KeptMap)>)>,
+}
+
+impl KeptInterior {
+    /// A copy to keep, and its size; none when the memory is not to be had.
+    fn of(out: &(Raster, Option<Outside>, Option<Bevels>)) -> Option<(Self, usize)> {
+        let (laid, outside, bevels) = out;
+        let mut bytes = laid.data.len();
+        let laid = Raster {
+            data: kept::copy(&laid.data)?,
+            ..*laid
+        };
+        let outside = match outside {
+            None => None,
+            Some(o) => {
+                let mut items = Vec::new();
+                for (i, share, depth) in &o.items {
+                    let depth = match depth {
+                        Some(d) => Some(kept::copy(d)?),
+                        None => None,
+                    };
+                    bytes += (share.len() + depth.as_ref().map_or(0, Vec::len)) * 4;
+                    items.push((*i, kept::copy(share)?, depth));
+                }
+                Some((o.dev, o.w, o.h, o.frame, items))
+            }
+        };
+        let bevels = match bevels {
+            None => None,
+            Some(b) => {
+                let mut items = Vec::new();
+                for (i, over, hi, sh) in &b.items {
+                    bytes += (hi.v.len() + sh.v.len()) * 4;
+                    items.push((*i, *over, keep_map(hi)?, keep_map(sh)?));
+                }
+                Some((b.dev, b.grain, items))
+            }
+        };
+        Some((
+            Self {
+                laid,
+                outside,
+                bevels,
+            },
+            bytes,
+        ))
+    }
+
+    /// The interior, as `interior_at` hands it back.
+    fn give(&self) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
+        let mut data = budget::filled(self.laid.data.len(), 0u8)?;
+        data.copy_from_slice(&self.laid.data);
+        let laid = Raster {
+            data: data.into_vec(),
+            ..self.laid
+        };
+        let outside = match &self.outside {
+            None => None,
+            Some((dev, w, h, frame, kept)) => {
+                let mut items = Vec::new();
+                for (i, share, depth) in kept {
+                    let depth = match depth {
+                        Some(d) => Some(give_values(d)?),
+                        None => None,
+                    };
+                    items.push((*i, give_values(share)?, depth));
+                }
+                Some(Outside {
+                    dev: *dev,
+                    w: *w,
+                    h: *h,
+                    frame: *frame,
+                    items,
+                })
+            }
+        };
+        let bevels = match &self.bevels {
+            None => None,
+            Some((dev, grain, kept)) => {
+                let mut items = Vec::new();
+                for (i, over, hi, sh) in kept {
+                    items.push((*i, *over, give_map(hi)?, give_map(sh)?));
+                }
+                Some(Bevels {
+                    dev: *dev,
+                    grain: *grain,
+                    items,
+                })
+            }
+        };
+        Ok((laid, outside, bevels))
+    }
+}
+
+/// The fill as each effect is laid on it, step by step, for the next paint
+/// to start from (`paint::kept`). A step's key is the fill's, and every step
+/// up to it: what the surface is after that step and nothing else.
+///
+/// One state is kept, the last one that the next paint can use: after a step
+/// seen before whose next step is new. That is the step before the setting
+/// the person is moving, so the paints after it start there.
+struct Trail {
+    steps: Vec<Option<Key>>,
+}
+
+impl Trail {
+    /// `order`: each step's phase and effect, in the order they are laid.
+    fn new(keys: &Keys, order: &[(u8, usize)], fill_opacity: f64, group: bool) -> Self {
+        let mut at = Hasher::new("fill")
+            .maybe(keys.shape)
+            .f64(fill_opacity)
+            .u64(u64::from(group))
+            .finish();
+        let mut steps = Vec::with_capacity(order.len());
+        for &(phase, i) in order {
+            let h = Hasher::new("step").maybe(at).u64(u64::from(phase));
+            at = match keys.fx.get(i) {
+                Some(k) => h.maybe(*k).finish(),
+                // The group's fade: a step with no effect of its own.
+                None => h.finish(),
+            };
+            steps.push(at);
+        }
+        Self { steps }
+    }
+
+    /// Puts the furthest kept state on `lay`, and says which step is next.
+    fn restore(&self, lay: &mut Surface) -> usize {
+        for (j, key) in self.steps.iter().enumerate().rev() {
+            if let Some(state) = key.and_then(kept::get::<Vec<u8>>) {
+                if state.len() == lay.data.len() {
+                    lay.data.copy_from_slice(&state);
+                    return j + 1;
+                }
+            }
+        }
+        0
+    }
+
+    /// Keeps `lay` as it is after step `j`, when the next paint can use it.
+    fn keep(&self, j: usize, lay: &Surface) {
+        let Some(key) = self.steps[j] else {
+            return;
+        };
+        let next_is_new = match self.steps.get(j + 1) {
+            Some(Some(next)) => !kept::seen(*next),
+            _ => true,
+        };
+        if kept::seen(key) && next_is_new && kept::get::<Vec<u8>>(key).is_none() {
+            if let Some(state) = kept::copy(&lay.data) {
+                kept::put(key, state, lay.data.len());
+            }
+        }
+    }
+
+    /// Remembers every step as seen.
+    fn mark(&self) {
+        self.steps.iter().flatten().for_each(|k| kept::mark(*k));
+    }
 }
 
 /// Room round the letters, device pixels, for a soft edge to come in from
@@ -1349,6 +1866,7 @@ fn interior_at(
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
     pad: usize,
+    keys: &Keys,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
     let (rw, rh) = (r.width as usize, r.height as usize);
     let (w, h) = (rw + 2 * pad, rh + 2 * pad);
@@ -1370,37 +1888,45 @@ fn interior_at(
     // The fill, straight, as a surface at its own alpha, and its shape.
     let mut shape = Map::filled(w, h, 0.0)?;
     let mut lay = Surface::new(w, h)?;
+    // Relative to the shape, the fill is whole; Fill Opacity is all of its
+    // alpha.
+    let k = (content_fill.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
     for y in 0..rh {
         for x in 0..rw {
             let p = &r.data[(y * rw + x) * 4..(y * rw + x) * 4 + 4];
             let i = (y + pad) * w + x + pad;
+            if p[3] == 0 {
+                continue;
+            }
             let a = f32::from(p[3]) / 255.0;
             shape.v[i] = a;
             if a <= map::INSIDE_EPS {
                 continue;
             }
-            // Relative to the shape, the fill is whole; Fill Opacity is
-            // all of its alpha.
-            let k = (content_fill.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
             let d = &mut lay.data[i * 4..i * 4 + 4];
-            for c in 0..3 {
-                d[c] = ((u32::from(p[c]) * k + 127) / 255) as u8;
+            if k == 255 {
+                // A whole fill is the colour it is: `c * 255 / 255`.
+                d[..3].copy_from_slice(&p[..3]);
+            } else {
+                for c in 0..3 {
+                    d[c] = ((u32::from(p[c]) * k + 127) / 255) as u8;
+                }
             }
             d[3] = k as u8;
         }
     }
     let frame = job_frame(&shape, dev, place);
     // Inside the shape, whole.
-    let full = Map::collect(
+    let mut full = Some(Map::collect(
         w,
         h,
         shape
             .v
             .iter()
             .map(|&a| if a > map::INSIDE_EPS { 1.0 } else { 0.0 }),
-    )?;
+    )?);
     // Of each kind the first listed is on top, so it is laid last.
-    let shown = || effects.iter().rev().filter(|e| e.shows());
+    let shown = || effects.iter().enumerate().rev().filter(|(_, e)| e.shows());
     let strokes: Vec<(usize, &Stroke)> = effects
         .iter()
         .enumerate()
@@ -1413,135 +1939,23 @@ fn interior_at(
     let inside_parts = strokes.iter().any(|(_, s)| s.widths().0 > 0.0);
     let burst_strokes = strokes.iter().any(|(_, s)| is_burst(&s.paint));
     let burst_overlay =
-        shown().any(|e| matches!(e, Effect::GradientOverlay(o) if is_burst(&o.paint)));
+        shown().any(|(_, e)| matches!(e, Effect::GradientOverlay(o) if is_burst(&o.paint)));
     // The depth in from the letters' edge, worked out once: a Shape Burst
     // overlay's run, the strokes' inside parts' bands, a Stroke Emboss's
     // band and a Shape Burst stroke's run.
     let din = if burst_overlay || inside_parts || burst_strokes {
-        Some(map::chamfer_inside(&shape)?)
+        Some(kept_values(keys.of_shape("depth in"), || {
+            map::chamfer_inside(&shape)
+        })?)
     } else {
         None
     };
     // A Shape Burst overlay's depth, worked out once for them all.
-    let overlay_depth = match &din {
+    let mut overlay_depth = match &din {
         Some(d) if burst_overlay => Some(depth_share(d)?),
         _ => None,
     };
-    let overlay = |lay: &mut Surface, o: &PaintOverlay| -> Result<(), Error> {
-        let depth = overlay_depth.as_ref().map(|d| d.as_slice());
-        if let Some(br) = brush_in(&o.paint, frame, place, dev, w, depth) {
-            lay_with(
-                lay,
-                &full,
-                (0, 0),
-                dev,
-                &|x, y, _| br.at(x, y),
-                o.opacity,
-                o.blend,
-                None,
-                0,
-                place.grain,
-            )?;
-        }
-        Ok(())
-    };
-    for e in shown() {
-        if let Effect::PatternOverlay(o) = e {
-            overlay(&mut lay, o)?;
-        }
-    }
-    for e in shown() {
-        if let Effect::GradientOverlay(o) = e {
-            overlay(&mut lay, o)?;
-        }
-    }
-    drop(overlay_depth);
-    for e in shown() {
-        if let Effect::ColorOverlay(o) = e {
-            let c = flat(o.color);
-            lay_with(
-                &mut lay,
-                &full,
-                (0, 0),
-                dev,
-                &|_, _, _| c,
-                o.opacity,
-                o.blend,
-                None,
-                0,
-                place.grain,
-            )?;
-        }
-    }
-    drop(full);
-    for e in shown() {
-        if let Effect::Satin(st) = e {
-            let (dx, dy) = satin_throw(st, &carried);
-            let m = map::satin(
-                &shape,
-                dx as f32,
-                dy as f32,
-                super::tent_width(st.size, scale) as f32,
-                st.invert,
-                st.contour.as_ref(),
-            )?;
-            let m = map::relative_to(&m, &shape)?;
-            let c = flat(st.color);
-            lay_with(
-                &mut lay,
-                &m,
-                (0, 0),
-                dev,
-                &|_, _, _| c,
-                st.opacity,
-                st.blend,
-                None,
-                0,
-                place.grain,
-            )?;
-        }
-    }
-    for e in shown() {
-        if let Effect::InnerGlow(g) = e {
-            let s = soft(
-                g.size, g.spread, scale, g.range, g.noise, g.contour, g.seed, hashed,
-            );
-            let m = map::glow(&shape, g.technique, true, g.center, &s)?;
-            let m = map::relative_to(&m, &shape)?;
-            lay_glow(&mut lay, &m, (0, 0), dev, place.grain, g, None)?;
-        }
-    }
-    // Grouped: Fill Opacity fades the fill and what is on it so far.
-    if group {
-        let k = (fill_opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
-        for v in lay.data.iter_mut() {
-            *v = ((u32::from(*v) * k + 127) / 255) as u8;
-        }
-    }
-    for e in shown() {
-        if let Effect::InnerShadow(sh) = e {
-            let (dx, dy) = whole_throw(sh.x, sh.y, &carried);
-            let s = soft(
-                sh.size, sh.choke, scale, 1.0, sh.noise, sh.contour, sh.seed, hashed,
-            );
-            let m = map::inner_shadow(&shape, dx as f32, dy as f32, &s)?;
-            let m = map::relative_to(&m, &shape)?;
-            let c = flat(sh.color);
-            lay_with(
-                &mut lay,
-                &m,
-                (0, 0),
-                dev,
-                &|_, _, _| c,
-                sh.opacity,
-                sh.blend,
-                None,
-                sh.seed,
-                place.grain,
-            )?;
-        }
-    }
-    // The strokes: their inside parts over the letters, the bottom one first.
+    // The strokes' inside parts read the depth in.
     let din = din.as_ref().map(|d| d.as_slice());
     let deepest = din.map_or(0.0, |d| d.iter().copied().fold(0.0f32, f32::max));
     // A Shape Burst stroke runs from its outer edge (0) to its inner one
@@ -1551,51 +1965,199 @@ fn interior_at(
         let o = (o * scale) as f32;
         (o, o + ((i * scale) as f32).min(deepest))
     };
-    if let Some(din) = din.filter(|_| inside_parts) {
-        for (_, st) in strokes.iter().rev() {
-            let in_w = (st.widths().0 * scale) as f32;
-            if in_w <= 0.0 {
-                continue;
+    // What is laid on the fill, in the order it is laid: the Pattern
+    // Overlays (0), the Gradient Overlays (1), the Colour Overlays (2), the
+    // Satins (3), the Inner Glows (4), the group's fade (5), the Inner
+    // Shadows (6) and the strokes' inside parts, the bottom one first (7).
+    const FADE: usize = usize::MAX;
+    let mut order: Vec<(u8, usize)> = Vec::new();
+    for phase in 0..8u8 {
+        if phase == 5 {
+            // Grouped: Fill Opacity fades the fill and what is on it so far.
+            if group {
+                order.push((phase, FADE));
             }
-            let depth = if is_burst(&st.paint) {
-                let (out, total) = burst_in(st);
-                Some(budget::exact(
-                    n,
-                    din.iter()
-                        .map(|&d| ((out + d.max(0.0)) / total.max(1e-3)).clamp(0.0, 1.0)),
-                )?)
-            } else {
-                None
-            };
-            let m = Map::collect(
-                w,
-                h,
-                shape.v.iter().zip(din).map(|(a, d)| {
-                    if *a > map::INSIDE_EPS {
-                        (in_w + 0.5 - d).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    }
-                }),
-            )?;
-            let sf = frame.map(|f| stroke_frame(f, st, place.px()));
-            let depth = depth.as_ref().map(|d| d.as_slice());
-            if let Some(br) = brush_in(&st.paint, sf, place, dev, w, depth) {
-                lay_with(
+            continue;
+        }
+        for (i, e) in shown() {
+            let of_phase = matches!(
+                (phase, e),
+                (0, Effect::PatternOverlay(_))
+                    | (1, Effect::GradientOverlay(_))
+                    | (2, Effect::ColorOverlay(_))
+                    | (3, Effect::Satin(_))
+                    | (4, Effect::InnerGlow(_))
+                    | (6, Effect::InnerShadow(_))
+                    | (7, Effect::Stroke(_))
+            );
+            if of_phase {
+                order.push((phase, i));
+            }
+        }
+    }
+    // The fill as a paint before this one left it, as far on as it is kept.
+    let trail = Trail::new(keys, &order, fill_opacity, group);
+    let start = trail.restore(&mut lay);
+    for (j, &(phase, i)) in order.iter().enumerate() {
+        // The overlays' maps are let go once the overlays are laid.
+        if phase > 1 {
+            overlay_depth = None;
+        }
+        if phase > 2 {
+            full = None;
+        }
+        if j < start {
+            continue;
+        }
+        match (effects.get(i), full.as_ref()) {
+            (Some(Effect::PatternOverlay(o) | Effect::GradientOverlay(o)), Some(full)) => {
+                let depth = overlay_depth.as_ref().map(|d| d.as_slice());
+                if let Some(br) = brush_in(&o.paint, frame, place, dev, w, depth) {
+                    lay_with(
+                        &mut lay,
+                        full,
+                        (0, 0),
+                        dev,
+                        &|x, y, _| br.at(x, y),
+                        o.opacity,
+                        o.blend,
+                        None,
+                        0,
+                        place.grain,
+                    )?;
+                }
+            }
+            (Some(Effect::ColorOverlay(o)), Some(full)) => {
+                let c = flat(o.color);
+                lay_flat(
+                    &mut lay,
+                    full,
+                    (0, 0),
+                    dev,
+                    c,
+                    o.opacity,
+                    o.blend,
+                    None,
+                    0,
+                    place.grain,
+                )?;
+            }
+            (Some(Effect::Satin(st)), _) => {
+                let m = kept_map(keys.of_effect("satin", i), || {
+                    let (dx, dy) = satin_throw(st, &carried);
+                    let m = map::satin(
+                        &shape,
+                        dx as f32,
+                        dy as f32,
+                        super::tent_width(st.size, scale) as f32,
+                        st.invert,
+                        st.contour.as_ref(),
+                    )?;
+                    map::relative_to(&m, &shape)
+                })?;
+                let c = flat(st.color);
+                lay_flat(
                     &mut lay,
                     &m,
                     (0, 0),
                     dev,
-                    &|x, y, _| br.at(x, y),
+                    c,
                     st.opacity,
                     st.blend,
                     None,
-                    st.seed,
+                    0,
                     place.grain,
                 )?;
             }
+            (Some(Effect::InnerGlow(g)), _) => {
+                let m = kept_map(keys.of_effect("inner glow", i), || {
+                    let s = soft(
+                        g.size, g.spread, scale, g.range, g.noise, g.contour, g.seed, hashed,
+                    );
+                    let m = map::glow(&shape, g.technique, true, g.center, &s)?;
+                    map::relative_to(&m, &shape)
+                })?;
+                lay_glow(&mut lay, &m, (0, 0), dev, place.grain, g, None)?;
+            }
+            (None, _) if phase == 5 => {
+                let k = (fill_opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+                for v in lay.data.iter_mut() {
+                    *v = ((u32::from(*v) * k + 127) / 255) as u8;
+                }
+            }
+            (Some(Effect::InnerShadow(sh)), _) => {
+                let m = kept_map(keys.of_effect("inner shadow", i), || {
+                    let (dx, dy) = whole_throw(sh.x, sh.y, &carried);
+                    let s = soft(
+                        sh.size, sh.choke, scale, 1.0, sh.noise, sh.contour, sh.seed, hashed,
+                    );
+                    let m = map::inner_shadow(&shape, dx as f32, dy as f32, &s)?;
+                    map::relative_to(&m, &shape)
+                })?;
+                let c = flat(sh.color);
+                lay_flat(
+                    &mut lay,
+                    &m,
+                    (0, 0),
+                    dev,
+                    c,
+                    sh.opacity,
+                    sh.blend,
+                    None,
+                    sh.seed,
+                    place.grain,
+                )?;
+            }
+            // A stroke's inside part, over the letters.
+            (Some(Effect::Stroke(st)), _) => {
+                let in_w = (st.widths().0 * scale) as f32;
+                if let (Some(din), true) = (din.filter(|_| inside_parts), in_w > 0.0) {
+                    let depth = if is_burst(&st.paint) {
+                        let (out, total) = burst_in(st);
+                        Some(budget::exact(
+                            n,
+                            din.iter()
+                                .map(|&d| ((out + d.max(0.0)) / total.max(1e-3)).clamp(0.0, 1.0)),
+                        )?)
+                    } else {
+                        None
+                    };
+                    let m = Map::collect(
+                        w,
+                        h,
+                        shape.v.iter().zip(din).map(|(a, d)| {
+                            if *a > map::INSIDE_EPS {
+                                (in_w + 0.5 - d).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            }
+                        }),
+                    )?;
+                    let sf = frame.map(|f| stroke_frame(f, st, place.px()));
+                    let depth = depth.as_ref().map(|d| d.as_slice());
+                    if let Some(br) = brush_in(&st.paint, sf, place, dev, w, depth) {
+                        lay_with(
+                            &mut lay,
+                            &m,
+                            (0, 0),
+                            dev,
+                            &|x, y, _| br.at(x, y),
+                            st.opacity,
+                            st.blend,
+                            None,
+                            st.seed,
+                            place.grain,
+                        )?;
+                    }
+                }
+            }
+            _ => {}
         }
+        trail.keep(j, &lay);
     }
+    trail.mark();
+    drop(overlay_depth);
+    drop(full);
     // The bevels: an inner one the last of the interior effects, over the
     // strokes' inside parts (B9); the others kept for the box to lay. A
     // Stroke Emboss raises the strokes' band, and with no stroke there is
@@ -1608,7 +2170,7 @@ fn interior_at(
         };
         if b.style == BevelStyle::StrokeEmboss {
             if band.is_none() {
-                band = Some(stroke_band(&shape, &strokes, scale, din)?);
+                band = Some(stroke_band(&shape, &strokes, scale, din, keys)?);
             }
             let Some(Some(band)) = &band else {
                 continue;
@@ -1617,7 +2179,9 @@ fn interior_at(
             bevels.push((k, true, hi, sh));
             continue;
         }
-        let (hi, sh, reach) = bevel_maps(&shape, b, scale, &carried, place, dev)?;
+        let (hi, sh, reach) = kept_bevel(keys.of_effect("bevel", k), || {
+            bevel_maps(&shape, b, scale, &carried, place, dev)
+        })?;
         if reach != Reach::Inner {
             bevels.push((k, reach == Reach::Both, hi, sh));
             continue;
@@ -1625,12 +2189,11 @@ fn interior_at(
         for (m, o) in [(&hi, &b.highlight), (&sh, &b.shadow)] {
             let m = map::relative_to(m, &shape)?;
             let c = flat(o.color);
-            lay_with(
-                &mut lay,
+            lay_flat(&mut lay,
                 &m,
                 (0, 0),
                 dev,
-                &|_, _, _| c,
+                c,
                 o.opacity,
                 o.blend,
                 None,
@@ -1642,7 +2205,9 @@ fn interior_at(
     drop(band);
     // The shape's own alpha, and back to straight colour.
     let mut data = budget::filled(n * 4, 0u8)?;
-    let mut alpha = budget::filled(n, 0f32)?;
+    // The letters' alpha as laid, which only an outside stroke reads.
+    let outside_strokes = strokes.iter().any(|(_, s)| s.widths().1 > 0.0);
+    let mut alpha = budget::filled(if outside_strokes { n } else { 0 }, 0f32)?;
     for (i, (d, p)) in data
         .as_chunks_mut::<4>().0.iter_mut()
         .zip(lay.data.as_chunks::<4>().0.iter())
@@ -1652,46 +2217,55 @@ fn interior_at(
         if la == 0 {
             continue;
         }
-        let a = (f32::from(p[3]) * shape.v[i]).round().clamp(0.0, 255.0) as u8;
-        for c in 0..3 {
-            d[c] = ((u32::from(p[c]) * 255 + la / 2) / la).min(255) as u8;
+        // A whole pixel of the shape keeps the alpha it has, and a whole
+        // alpha the colour it has: nothing to round or divide.
+        let cover = shape.v[i];
+        let a = if cover == 1.0 {
+            p[3]
+        } else {
+            (f32::from(p[3]) * cover).round().clamp(0.0, 255.0) as u8
+        };
+        if la == 255 {
+            d[..3].copy_from_slice(&p[..3]);
+        } else {
+            for c in 0..3 {
+                d[c] = ((u32::from(p[c]) * 255 + la / 2) / la).min(255) as u8;
+            }
         }
         d[3] = a;
-        alpha[i] = f32::from(a) / 255.0;
+        if let Some(al) = alpha.get_mut(i) {
+            *al = f32::from(a) / 255.0;
+        }
     }
     drop(lay);
     // The outside parts: each stroke's share, the first listed first.
     let mut items = Vec::new();
-    if strokes.iter().any(|(_, s)| s.widths().1 > 0.0) {
+    if outside_strokes {
         let mut chamfer = None;
         let mut exact = None;
         let mut cover = budget::filled(n, 0.0f32)?;
+        // Each stroke at an opacity of plain nothing to one (by its bits: a
+        // minus zero is not): a pixel a stroke does not reach then adds
+        // plain zero.
+        let sure = strokes.iter().all(|(_, s)| plain_share(s.opacity as f32));
         for (k, st) in &strokes {
             let out_w = (st.widths().1 * scale) as f32;
             if out_w <= 0.0 {
                 continue;
             }
-            let d = outside_dist(&shape, out_w, &mut chamfer, &mut exact)?;
+            let d = outside_dist(&shape, out_w, &mut chamfer, &mut exact, keys)?;
             let mut share = budget::filled(n, 0.0f32)?;
-            for (i, sh) in share.iter_mut().enumerate() {
-                let band = (out_w + 0.5 - d[i]).clamp(0.0, 1.0);
-                let k = if shape.v[i] > map::INSIDE_EPS {
-                    band * outline_share(shape.v[i], alpha[i])
-                } else {
-                    band
-                };
-                let mut k = k * st.opacity as f32;
-                if st.blend == Blend::Dissolve {
-                    let (x, y) = (hashed.0 + (i % w) as i32, hashed.1 + (i / w) as i32);
-                    k = if k > 0.0 && noise::unit(x, y, st.seed) < k {
-                        1.0
-                    } else {
-                        0.0
-                    };
-                }
-                *sh = k * (1.0 - cover[i]);
-                cover[i] += *sh;
-            }
+            let dissolve = (st.blend == Blend::Dissolve).then_some((st.seed, hashed, w));
+            let reach = Reach2 {
+                d,
+                shape: &shape.v,
+                alpha: &alpha,
+                out_w,
+                opacity: st.opacity as f32,
+                dissolve,
+                skip: sure,
+            };
+            stroke_share(&mut share, &mut cover, &reach);
             let depth = if is_burst(&st.paint) {
                 let (out, total) = burst_in(st);
                 Some(budget::exact(
@@ -1733,6 +2307,87 @@ fn interior_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stroke's share as it was first written: every pixel worked out.
+    fn stroke_share_as_first_written(share: &mut [f32], cover: &mut [f32], r: &Reach2<'_>) {
+        for (i, sh) in share.iter_mut().enumerate() {
+            let band = (r.out_w + 0.5 - r.d[i]).clamp(0.0, 1.0);
+            let k = if r.shape[i] > map::INSIDE_EPS {
+                band * outline_share(r.shape[i], r.alpha[i])
+            } else {
+                band
+            };
+            let mut k = k * r.opacity;
+            if let Some((seed, hashed, w)) = r.dissolve {
+                let (x, y) = (hashed.0 + (i % w) as i32, hashed.1 + (i / w) as i32);
+                k = if k > 0.0 && noise::unit(x, y, seed) < k {
+                    1.0
+                } else {
+                    0.0
+                };
+            }
+            *sh = k * (1.0 - cover[i]);
+            cover[i] += *sh;
+        }
+    }
+
+    #[test]
+    fn a_strokes_share_is_what_it_was_to_the_bit() {
+        let mut seed = 5u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let opacities = [1.0f32, 0.5, 0.0, 0.3, -0.0, 2.0, -1.0, f32::NAN, f32::INFINITY];
+        let widths = [3.0f32, 0.25, 40.0, f32::NAN, f32::INFINITY];
+        for round in 0..400 {
+            let n = 64;
+            let odd = round % 4 == 0;
+            let mut pick = |whole: u64| -> f32 {
+                let r = next();
+                let v = (r % 1001) as f32 / 1000.0;
+                match (r >> 12) % 16 {
+                    0..=4 => 0.0,
+                    5..=8 => whole as f32,
+                    9 if odd => f32::NAN,
+                    10 if odd => -v,
+                    _ => v,
+                }
+            };
+            let d: Vec<f32> = (0..n).map(|_| pick(1) * 8.0 - 0.5).collect();
+            let shape: Vec<f32> = (0..n).map(|_| pick(1)).collect();
+            let alpha: Vec<f32> = (0..n).map(|_| pick(1)).collect();
+            let (mut cover, mut cover_then) = (vec![0.0f32; n], vec![0.0f32; n]);
+            // Three strokes, one after another, over the one cover.
+            let strokes: Vec<(f32, f32, bool)> = (0..3)
+                .map(|_| {
+                    let o = opacities[next() as usize % if odd { opacities.len() } else { 5 }];
+                    let w = widths[next() as usize % if odd { widths.len() } else { 3 }];
+                    (o, w, next() % 3 == 0)
+                })
+                .collect();
+            let sure = strokes.iter().all(|(o, _, _)| plain_share(*o));
+            for (opacity, out_w, dissolve) in strokes {
+                let r = Reach2 {
+                    d: &d,
+                    shape: &shape,
+                    alpha: &alpha,
+                    out_w,
+                    opacity,
+                    dissolve: dissolve.then_some((9, (-3, 4), 8)),
+                    skip: sure,
+                };
+                let (mut now, mut then) = (vec![0.0f32; n], vec![0.0f32; n]);
+                stroke_share(&mut now, &mut cover, &r);
+                stroke_share_as_first_written(&mut then, &mut cover_then, &r);
+                let bits = |v: &[f32]| v.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&now), bits(&then), "share, {opacity} at {out_w}");
+                assert_eq!(bits(&cover), bits(&cover_then), "cover, {opacity} at {out_w}");
+            }
+        }
+    }
 
     const RED: Rgba = Rgba([255, 0, 0, 255]);
     const BLUE: Rgba = Rgba([0, 0, 255, 255]);
@@ -2467,7 +3122,17 @@ mod tests {
         let carried = |x: f64, y: f64| (x * scale, y * scale);
         let (r, _, _) = match pad {
             None => interior(r, effects, 1.0, false, scale, carried, &place()),
-            Some(pad) => interior_at(r, effects, 1.0, false, scale, carried, &place(), pad),
+            Some(pad) => interior_at(
+                r,
+                effects,
+                1.0,
+                false,
+                scale,
+                carried,
+                &place(),
+                pad,
+                &Keys::none(),
+            ),
         }
         .unwrap();
         (r, budget::peak_for_test())

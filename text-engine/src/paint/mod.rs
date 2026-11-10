@@ -28,6 +28,7 @@ pub mod fx;
 mod geom;
 pub mod ink;
 mod job;
+pub mod kept;
 mod outline;
 mod pattern;
 mod raster;
@@ -49,8 +50,9 @@ mod warp;
 pub mod compare;
 
 pub use boxjob::{
-    decode_box, paint_box, paint_box_copy_by_copy, paint_box_with, BoxRequest, Clip, ClipMode,
-    ClipShape, Shadow, Tap, BOX_MAGIC, BOX_WIRE_VERSION, MAX_PAGE,
+    decode_box, decode_box_kept, paint_box, paint_box_copy_by_copy, paint_box_kept,
+    paint_box_with, BoxRequest, Clip, ClipMode, ClipShape, Shadow, Tap, BOX_MAGIC,
+    BOX_WIRE_VERSION, MAX_PAGE,
 };
 use geom::positive;
 pub use geom::{Affine, IBox, Polys, Pt};
