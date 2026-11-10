@@ -1410,24 +1410,21 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
   background:var(--accent); color:var(--accent-fg);
   font-size:12.5px; font-weight:600; letter-spacing:.02em; cursor:pointer;
 }
-.name-input{
-  width:212px; height:40px; padding:0 12px; border:1px solid var(--line2); border-radius:8px;
-  background:var(--surface); color:var(--text); font-size:12.5px;
-}
-.name-input:focus{ outline:none; border-color:var(--accent); }
-/* The layout picker in the create-a-project row: the same 212px column every
-   other control in `.home-actions` is, so the three of them read as one form
-   rather than a segmented control that wandered in. */
-.seg.new-layout{ width:212px; border-radius:8px; }
-.seg.new-layout button{ height:36px; font-size:11.5px; }
-.seg.new-language{ width:272px; border-radius:8px; }
-.seg.new-language button{ height:36px; padding:0 9px; font-size:11.5px; }
 
 .home-actions{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:96px 0 72px; }
 /* New project, opened in place of the two buttons: one 272px column, so the
    name, the two choices and the buttons line up as one form. */
 .new-project{ display:flex; flex-direction:column; gap:10px; width:272px; }
-.new-project .name-input,.new-project .seg{ width:100%; }
+/* ProjectFields' rows, stacked here: the label over its control, every
+   control the column's full width. */
+.new-project .field > span{ font-size:11.5px; color:var(--t2); }
+.new-project .field input{
+  height:40px; padding:0 12px; border:1px solid var(--line2); border-radius:8px;
+  background:var(--surface); color:var(--text); font-size:12.5px;
+}
+.new-project .field input:focus{ outline:none; border-color:var(--accent); }
+.new-project .seg{ width:100%; border-radius:8px; }
+.new-project .seg button{ height:36px; padding:0 9px; font-size:11.5px; }
 .new-project-foot{ display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
 .new-project-foot .soft-btn{ height:30px; }
 .section-label{ margin:0 0 18px; font-size:10.5px; font-weight:400; letter-spacing:.22em; color:var(--t3); }
