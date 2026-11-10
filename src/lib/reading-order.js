@@ -4,23 +4,34 @@
 export const orderMap = (entry, dir = 'redo') =>
   new Map(entry.numbers.map(([before, after]) => dir === 'undo' ? [after, before] : [before, after]));
 
-export function applyLineOrder(p, entry, dir = 'redo') {
+// Why `entry` cannot be crossed in direction `dir` on a page holding these
+// lines and these references (`activeLineN`, box and block numbers), or null
+// when it can. Apart from the page so a caller about to put lines back can ask
+// it of the page as it would be, before changing anything.
+export function lineOrderProblem(lines, refs, entry, dir = 'redo') {
   const numbers = orderMap(entry, dir);
   const order = dir === 'undo' ? entry.before : entry.numbers.map(([, n]) => n);
-  const imported = p.lines.filter((l) => !(l.n < 0));
+  const imported = lines.filter((l) => !(l.n < 0));
   const targets = new Set(numbers.values());
   if (
     imported.length !== numbers.size || new Set(imported.map((l) => l.n)).size !== numbers.size ||
     imported.some((l) => !Number.isFinite(l.n) || l.n <= 0 || !numbers.has(l.n)) ||
     targets.size !== numbers.size || order.length !== numbers.size ||
     new Set(order).size !== numbers.size || order.some((n) => !Number.isFinite(n) || n <= 0 || !targets.has(n))
-  ) throw new Error('the queue line numbers are not unique or have changed');
+  ) return 'the queue line numbers are not unique or have changed';
   // An orphan must not silently become attached when a sparse page is numbered
   // from one. Refuse that ambiguous edit before touching any part of the page.
-  const refs = [p.activeLineN, ...p.boxes.map((b) => b.lineN), ...(p.detect?.boxes ?? []).map((d) => d.n)];
-  if (refs.some((n) => n > 0 && !numbers.has(n) && targets.has(n))) {
-    throw new Error('a line number has no queue line');
-  }
+  if (refs.some((n) => n > 0 && !numbers.has(n) && targets.has(n))) return 'a line number has no queue line';
+  return null;
+}
+export const lineRefs = (p) => [p.activeLineN, ...p.boxes.map((b) => b.lineN), ...(p.detect?.boxes ?? []).map((d) => d.n)];
+
+export function applyLineOrder(p, entry, dir = 'redo') {
+  const problem = lineOrderProblem(p.lines, lineRefs(p), entry, dir);
+  if (problem) throw new Error(problem);
+  const numbers = orderMap(entry, dir);
+  const order = dir === 'undo' ? entry.before : entry.numbers.map(([, n]) => n);
+  const imported = p.lines.filter((l) => !(l.n < 0));
   const remap = (n) => numbers.get(n) ?? n;
   for (const l of imported) l.n = remap(l.n);
   const byN = new Map(imported.map((l) => [l.n, l]));

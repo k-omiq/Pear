@@ -6,8 +6,9 @@
     deleteLine,
     lineLabel,
     toast as say,
+    settleEdits as settleNow,
   } from './store.svelte.js';
-  import { undo as undoStep, peekStack } from './editor/history.svelte.js';
+  import { stepHere, peekStack } from './editor/history.svelte.js';
   import { pageRectPick } from './page-rect-pick.svelte.js';
 
   // "Show in queue" (the box menu): scroll to the active row even when it has
@@ -34,8 +35,11 @@
     const p = pageNow();
     const line = p.lines.find((l) => l.n === n);
     if (!line) return false;
+    // Only onto the page the drag was for, while it is still the one shown: a
+    // pick outlived by a page turn or a closed chapter must not move the queue
+    // of whatever page is up now.
     const back = () => {
-      if (!p.lines.includes(line)) return;
+      if (pageNow() !== p || !p.lines.includes(line)) return;
       if (p.activeLineN !== line.n) activate(line.n);
       focusActiveField('en');
     };
@@ -47,7 +51,9 @@
         back();
       },
       onCancel: (why) => {
-        if (why === 'replaced') return;
+        // Ended by something else - another pick, a page turn, the chapter
+        // closing, the mode switching: the caret stays where that left it.
+        if (why !== 'escape' && why !== 'small') return;
         if (why === 'small') say('Drag a larger box for the line');
         back();
       },
@@ -65,7 +71,9 @@
 
   // Delete line `n` (`deleteLine`) and say so, with the way back on the toast.
   // The toast's Undo takes back this delete and nothing else: once anything
-  // has been recorded over it, the press does nothing rather than undo that.
+  // has been recorded over it - typing still in its settle window included,
+  // which is why it is settled before the stack is read - the press says so
+  // rather than undo that. And through the same gate as the keys.
   export function deleteLineWithUndo(n) {
     const p = pageNow();
     const label = lineLabel(p, n);
@@ -74,7 +82,9 @@
     say(`Deleted line ${label}`, 'info', {
       label: 'Undo',
       run: () => {
-        if (peekStack().undo.at(-1) === mine) undoStep();
+        settleNow();
+        if (peekStack().undo.at(-1) === mine) stepHere('undo');
+        else say('Undo the newer edits first');
       },
     });
     return true;
@@ -373,6 +383,13 @@
       e.stopPropagation();
       return true;
     };
+    // A box being drawn for a line (started from the field, by its key) ends
+    // on Escape wherever the caret is; the field's own Escape waits for it.
+    if (e.key === 'Escape' && pageRectPick.active) {
+      take();
+      pageRectPick.cancel();
+      return true;
+    }
     if (where === 'row') {
       if (pressed(e, 'translate.lineDown') || pressed(e, 'translate.lineUp')) {
         take();

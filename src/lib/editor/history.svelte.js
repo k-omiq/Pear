@@ -25,15 +25,18 @@ import {
   setFitLander,
   applyChapterLight,
   takeLine,
+  isTranslateMode,
 } from '../store.svelte.js';
-import { applyLineOrder, remapLineStack, isOrderStep } from '../reading-order.js';
+import { applyLineOrder, remapLineStack, isOrderStep, lineOrderProblem, lineRefs } from '../reading-order.js';
 
 // About thirty steps a page (UND-1). Entries are deltas of tens of bytes, the
 // live stack is one page's, and the rest spill to `logs/history.json`, so the
 // depth costs disk, not RAM.
 export const MAX_STEPS = 30;
 
-export const history = $state({ canUndo: false, canRedo: false, pageId: null });
+// `undoKind` / `redoKind`: the kind of the entry on top of each stack, so the
+// translate gate (`stepAllowed`) can dim a button without reading the stacks.
+export const history = $state({ canUndo: false, canRedo: false, pageId: null, undoKind: null, redoKind: null });
 
 let undoStack = [];
 let redoStack = [];
@@ -45,6 +48,8 @@ let applying = false;
 function sync() {
   history.canUndo = undoStack.length > 0;
   history.canRedo = redoStack.length > 0;
+  history.undoKind = undoStack[undoStack.length - 1]?.t ?? null;
+  history.redoKind = redoStack[redoStack.length - 1]?.t ?? null;
 }
 
 const boxOf = (entry) => {
@@ -424,7 +429,10 @@ const KINDS = {
       if (!p) throw new Error('the page is gone');
       if (dir === 'undo') dropLine(p, e);
       else restoreLine(p, e);
-      setActive(p, dir === 'undo' ? e.activeBefore : e.activeAfter);
+      // A free line outlives a re-detect, the numbered row that was active
+      // before it may not: the queue is only moved onto a line that is there.
+      const a = dir === 'undo' ? e.activeBefore : e.activeAfter;
+      if (a == null || p.lines.some((l) => l.n === a)) setActive(p, a);
     },
   },
   // The box drawn for a line (`setLineRect`), null for none on either side.
@@ -435,6 +443,10 @@ const KINDS = {
       if (!p) throw new Error('the page is gone');
       const ln = p.lines.find((l) => l.n === e.lineN);
       if (!ln) throw new Error('the queue line is gone');
+      // A numbered line's number is reused by a re-detect for whatever it
+      // finds there; its source text says whether this is still the line the
+      // box was drawn for (`jp`, recorded for numbered lines only).
+      if (e.jp != null && (ln.jp ?? '') !== e.jp) throw new Error('the line has changed since (a re-detect or an import)');
       const r = dir === 'undo' ? e.before : e.after;
       if (r) ln.rect = r.slice();
       else delete ln.rect;
@@ -451,8 +463,22 @@ const KINDS = {
       const p = pageById(e.pageId);
       if (!p) throw new Error('the page is gone');
       const n = e.line?.n;
+      // Every check before the first change, so a step that is refused leaves
+      // the page exactly as it was. The page can have been replaced under the
+      // entry - a re-detect or a re-import writes new lines and records nothing
+      // - and then the order no longer fits it: putting the line back first and
+      // finding that out after would leave a stray row and a second block.
+      const replaced = 'the page’s lines have changed since (a re-detect or an import)';
       if (dir === 'undo') {
         if (p.lines.some((l) => l.n === n)) throw new Error('the queue line is back already');
+        const boxes = (e.takenBoxes ?? []).map((it) => it.box);
+        if (boxes.some((b) => p.boxes.some((x) => x.id === b.id))) throw new Error('its text boxes are back already');
+        if (e.numbers) {
+          const lines = [...p.lines];
+          lines.splice(Math.min(e.lineIndex ?? lines.length, lines.length), 0, e.line);
+          const refs = [...lineRefs(p), ...boxes.map((b) => b.lineN), ...(e.takenDetect ?? []).map((it) => it.d?.n)];
+          if (lineOrderProblem(lines, refs, e, 'undo')) throw new Error(replaced);
+        }
         p.lines.splice(Math.min(e.lineIndex ?? p.lines.length, p.lines.length), 0, structuredClone(e.line));
         if (e.takenDetect?.length) {
           p.detect ??= { panels: [], boxes: [] };
@@ -460,18 +486,17 @@ const KINDS = {
           for (const it of e.takenDetect) p.detect.boxes.splice(Math.min(it.index, p.detect.boxes.length), 0, structuredClone(it.d));
         }
         for (const it of e.takenBoxes ?? []) p.boxes.splice(Math.min(it.index, p.boxes.length), 0, structuredClone(it.box));
-        recheck(p, (e.takenBoxes ?? []).map((it) => it.box));
+        recheck(p, boxes);
         if (e.numbers) {
           applyLineOrder(p, e, 'undo');
           remapOrder(e, 'undo');
         }
         setActive(p, e.activeBefore);
       } else {
-        // Asked under the number the line has now, before the order moves it:
-        // a redo that renumbered the page and then found nothing to take would
-        // leave the page renumbered by a step that was refused.
+        // Asked under the number the line has now, before the order moves it.
         const now = e.numbers?.find(([, to]) => to === n)?.[0] ?? n;
         if (!p.lines.some((l) => l.n === now)) throw new Error('the queue line is gone');
+        if (e.numbers && lineOrderProblem(p.lines, lineRefs(p), e, 'redo')) throw new Error(replaced);
         if (e.numbers) {
           applyLineOrder(p, e, 'redo');
           remapOrder(e, 'redo');
@@ -1002,6 +1027,28 @@ export function queueStepNext(dir = 'undo') {
   settleEdits();
   const s = dir === 'undo' ? undoStack : redoStack;
   return QUEUE_KINDS.has(s[s.length - 1]?.t);
+}
+
+// The one gate every way of asking for a step goes through - the keys, the
+// dock's buttons, a toast's Undo. A translate chapter with its typesetting
+// tools hidden draws no boxes, but its page keeps one stack for both halves:
+// box edits made while the tools were shown, and a tag that restyled a line's
+// boxes, sit beside the queue's own edits. So there a step runs only when the
+// entry it would take is about the lines, and anything else is refused with
+// this toast rather than moving a box nobody can see.
+export function stepHere(dir = 'undo') {
+  if (isTranslateMode() && !queueStepNext(dir)) {
+    toast('Nothing to undo here: a translate chapter edits the queue, not the canvas');
+    return false;
+  }
+  return dir === 'undo' ? undo() : redo();
+}
+// Whether `stepHere(dir)` would act now, read reactively for a button's dimmed
+// state. An edit still in its settle window is not counted; pressing settles it.
+export function stepAllowed(dir = 'undo') {
+  const can = dir === 'undo' ? history.canUndo : history.canRedo;
+  if (!can || !isTranslateMode()) return can;
+  return QUEUE_KINDS.has(dir === 'undo' ? history.undoKind : history.redoKind);
 }
 
 // A copy of the live stack, for a write that must not disturb it.

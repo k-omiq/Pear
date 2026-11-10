@@ -30,11 +30,16 @@
   const rtl = $derived(readingDirection() === 'rtl');
   const marks = $derived.by(() => {
     const blocks = new Map();
-    for (const d of pg.detect?.boxes ?? []) if (!blocks.has(d?.n)) blocks.set(d?.n, d.box);
+    // The first usable block per line: a malformed one ahead of it must not
+    // hide it.
+    for (const d of pg.detect?.boxes ?? []) {
+      const r = lineRect(d?.box);
+      if (r && !blocks.has(d.n)) blocks.set(d.n, r);
+    }
     const labels = lineLabels(pg.lines);
     const out = [];
     for (const l of pg.lines ?? []) {
-      const r = lineRect(l.rect) ?? lineRect(blocks.get(l.n));
+      const r = lineRect(l.rect) ?? blocks.get(l.n);
       if (!r) continue;
       const label = labels.get(l.n);
       out.push({ n: l.n, label, wide: label.length > 2, x: r[0], y: r[1], w: r[2] - r[0], h: r[3] - r[1], done: isTranslated(l) });

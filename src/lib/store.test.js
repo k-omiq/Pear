@@ -117,7 +117,8 @@ import { defaultStyle, normalizeStyle, normalizeAuto, normalizeBevel, GRADIENT_M
 const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, position: 'outside', color, opacity });
 import { setPref } from './prefs.svelte.js';
 import { bindTags, unbindTags, tags, lineTags, setLineTags } from './tags.svelte.js';
-import { initHistory, resetHistory, undo, redo, peekStack, queueStepNext, record } from './editor/history.svelte.js';
+import { initHistory, resetHistory, undo, redo, peekStack, queueStepNext, record, stepHere, stepAllowed, setOffscreenSink } from './editor/history.svelte.js';
+import { moveLine, isTranslateChapter } from './store.svelte.js';
 import {
   deleteLine,
   setLineRect,
@@ -132,7 +133,7 @@ import {
   dismissToast,
   detectedRectFor,
 } from './store.svelte.js';
-import { rescaleEntry } from './editor/history-file.svelte.js';
+import { rescaleEntry, appendEntry, emptyDoc } from './editor/history-file.svelte.js';
 import { buildChapterPackage, readChapterPackage, packagePagesForImport } from './package.js';
 
 beforeEach(() => {
@@ -5007,5 +5008,166 @@ describe('lines added, deleted and drawn', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The review's fixes to the above (2026-11-10): steps that refuse leave the page
+// as it was, the one translate gate, and the free-line rules in a translate
+// chapter.
+describe('lines added, deleted and drawn: the edges', () => {
+  const five = () => [
+    {
+      id: 1,
+      w: 800,
+      h: 1200,
+      boxes: [],
+      lines: [1, 2, 3, 4, 5].map((n) => ({ n, type: 'dialogue', jp: 'j' + n, en: 'e' + n })),
+      detect: { panels: [], boxes: [1, 2, 3, 4, 5].map((n) => ({ n, box: [0, n * 100, 50, n * 100 + 50] })) },
+    },
+    { id: 2, w: 800, h: 1200, boxes: [], lines: [1, 2, 3].map((n) => ({ n, type: 'dialogue', jp: 'k' + n, en: '' })) },
+  ];
+  const snap = () => JSON.stringify({ lines: page().lines, detect: page().detect, boxes: page().boxes.map((b) => b.id), active: page().activeLineN });
+
+  beforeEach(() => {
+    app.chapterRef = null;
+    app.chapterMode = 'translate';
+    app.translateTypeset = false;
+    loadProjectPages(five());
+    page().activeLineN = 1;
+    app.errors = [];
+    initHistory();
+    resetHistory();
+  });
+  afterEach(() => {
+    settleEdits();
+    resetHistory();
+    app.errors = [];
+    app.chapterMode = 'typeset';
+  });
+
+  it('refuses to undo a delete after a re-detect replaced the lines, and changes nothing', () => {
+    deleteLine(2);
+    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [1, 2, 3].map((n) => ({ n, jp: 'new' + n, box: [0, 0, 10, 10] })) });
+    const was = snap();
+    expect(undo()).toBe(false);
+    expect(snap()).toBe(was);
+    expect(app.errors.at(-1).msg).toMatch(/lines have changed since/);
+  });
+
+  it('refuses a redo the same way', () => {
+    deleteLine(2);
+    undo();
+    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [1, 2].map((n) => ({ n, jp: 'x', box: [0, 0, 10, 10] })) });
+    const was = snap();
+    expect(redo()).toBe(false);
+    expect(snap()).toBe(was);
+  });
+
+  it('refuses to put a drawn box back on a numbered line a re-detect reused', () => {
+    setLineRect(page(), 2, [10, 10, 60, 60]);
+    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [1, 2].map((n) => ({ n, jp: 'other', box: [0, 0, 10, 10] })) });
+    expect(undo()).toBe(false);
+    expect(lineByN(page(), 2).rect).toBeUndefined();
+  });
+
+  it('undoes a delete and then a reorder made after it, back to the start', () => {
+    const was = snap();
+    deleteLine(2);
+    moveLine(1, 4);
+    expect(page().lines.map((l) => l.en)).toEqual(['e3', 'e4', 'e5', 'e1']);
+    undo();
+    undo();
+    expect(snap()).toBe(was);
+    redo();
+    redo();
+    expect(page().lines.map((l) => l.en)).toEqual(['e3', 'e4', 'e5', 'e1']);
+  });
+
+  it('moves the queue to the next row when the active free line between numbered rows goes', () => {
+    loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [{ n: 1, en: 'a' }, { n: -1, en: 'free' }, { n: 2, en: 'b' }] }]);
+    page().activeLineN = -1;
+    deleteLine(-1);
+    expect(peekStack().undo.at(-1)).toMatchObject({ activeBefore: -1, activeAfter: 2 });
+    expect(page().activeLineN).toBe(2);
+    undo();
+    expect(page().activeLineN).toBe(-1);
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2]);
+  });
+
+  it('files a delete on a page not shown with that page, renumbering its stored stack', () => {
+    const sent = [];
+    const release = setOffscreenSink((pageId, e) => (pageId !== page().id ? (sent.push(e), true) : false));
+    try {
+      expect(deleteLine(1, app.pages[1])).toBe(true);
+    } finally {
+      release();
+    }
+    expect(peekStack().undo).toEqual([]);
+    expect(sent[0]).toMatchObject({ t: 'lineDelete', pageId: 2 });
+    expect(app.pages[1].lines.map((l) => [l.n, l.jp])).toEqual([[1, 'k2'], [2, 'k3']]);
+    // The history file's half: an older entry about line 3 there is about line 2 now.
+    const doc = { version: 1, pages: { 2: { undo: [{ t: 'line', pageId: 2, lineN: 3, before: '', after: 'x' }], redo: [] } } };
+    const next = appendEntry(doc, 2, sent[0]);
+    expect(next.pages['2'].undo.map((e) => [e.t, e.lineN])).toEqual([['line', 2], ['lineDelete', undefined]]);
+    expect(appendEntry(emptyDoc(), 2, sent[0]).pages['2'].undo).toHaveLength(1);
+  });
+
+  it('gates undo and redo in translate mode on the entry on top, for the keys and the buttons', () => {
+    record({ t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } });
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([false, false]);
+    expect(app.toast.msg).toBe('Nothing to undo here: a translate chapter edits the queue, not the canvas');
+    expect(peekStack().undo).toHaveLength(1);
+    record({ t: 'group', pageId: 1, items: [{ t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } }] });
+    expect(stepHere('undo')).toBe(false);
+    resetHistory();
+    addQueueLine();
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([true, true]);
+    expect([stepAllowed('redo'), stepHere('redo')]).toEqual([true, true]);
+    // A box edit on the redo side is refused too.
+    app.chapterMode = 'typeset';
+    addBoxAt(page(), { text: 'hi', x: 100, y: 100 });
+    const id = page().boxes.at(-1).id;
+    record({ t: 'move', pageId: 1, boxId: id, before: { x: 1 }, after: { x: 2 } });
+    expect(undo()).toBe(true);
+    app.chapterMode = 'translate';
+    expect([stepAllowed('redo'), stepHere('redo')]).toEqual([false, false]);
+    // Typeset mode is not gated.
+    app.chapterMode = 'typeset';
+    expect(stepAllowed('redo')).toBe(true);
+  });
+
+  it('keeps a free line, text and drawn box, when its box is deleted in a translate chapter', () => {
+    app.translateTypeset = true;
+    const n = addQueueLine();
+    setLineText(page(), n, 'kept');
+    setLineRect(page(), n, [100, 100, 300, 170]);
+    placeDetectedOnPage();
+    const b = page().boxes.find((x) => x.lineN === n);
+    expect([b.x, b.y, b.w]).toEqual([100, 100, 200]);
+    deleteBox(b.id);
+    expect(lineByN(page(), n)).toMatchObject({ en: 'kept', rect: [100, 100, 300, 170] });
+    undo();
+    expect(page().boxes.some((x) => x.lineN === n)).toBe(true);
+    // In a typeset chapter the old rule stands: the box takes its line.
+    app.chapterMode = 'typeset';
+    expect(isTranslateChapter()).toBe(false);
+    deleteBox(page().boxes.find((x) => x.lineN === n).id);
+    expect(lineByN(page(), n)).toBeUndefined();
+  });
+
+  it('places a numbered line that has a drawn box inside that box', () => {
+    app.chapterMode = 'typeset';
+    setLineRect(page(), 3, [400, 600, 700, 800]);
+    page().activeLineN = 3;
+    placeActiveAt(10, 10);
+    const b = page().boxes.find((x) => x.lineN === 3);
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    expect(cx > 400 && cx < 700 && cy > 600 && cy < 800).toBe(true);
+  });
+
+  it('reads past a malformed block to a good one for the same line', () => {
+    page().detect.boxes.unshift({ n: 1, box: [0, 0, 'x', 1] });
+    expect(lineRectOf(page(), 1)).toEqual([0, 100, 50, 150]);
   });
 });
