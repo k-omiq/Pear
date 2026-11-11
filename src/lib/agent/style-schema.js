@@ -413,6 +413,10 @@ export const STYLE_SCHEMA = {
     tilt: number('degrees', 0, 20),
     seed: integer('seed', 0, 999),
   }),
+  paint: object('colour painted over the letters, box-local', {
+    on: boolean('enable paint'),
+    marks: readOnly('set through the Colour paint tool'),
+  }),
   curve: number('arc: negative=frown, positive=smile'),
   shape: choice('line-breaking shape', ['auto', 'oval', 'rect', 'off']),
   minOrphan: number('minimum solo-word letters'),
