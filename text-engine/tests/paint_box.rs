@@ -3706,3 +3706,71 @@ fn paint_marks_are_read_back_after_a_whole_pixel_move() {
     let (with, without) = (moved_hits(true), moved_hits(false));
     assert!(with >= without + 2, "the two marks read back: {with} against {without}");
 }
+
+/// The kept cover is rastered over the surface and a fixed margin of 256 px
+/// each way (commit 6358e0b); a paint with nothing kept rasters it over the
+/// surface alone. Read at a rest move by whole pixels near the margin's
+/// edge, the cover over the wider window is, to the byte, the raster of the
+/// moved shapes over the surface: a keep and a hide shape reaching past the
+/// margin, a hard fade and a soft one (soft 6, cells of 3 px, so the moves
+/// are whole cells).
+#[test]
+fn the_kept_cover_over_its_margin_is_the_raster_over_the_surface() {
+    use mt_text::paint::kept::{self, Hasher};
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    kept::set_ceiling(kept::KEPT_BYTES);
+    let shaped = |shift: Pt| {
+        let mut b = plain(font);
+        let mut clip = Clip::all(
+            ClipMode::Include,
+            Pt::new(0.0, 0.0),
+            vec![ClipShape::Polygon(vec![Pt::new(-300.0, -280.0), Pt::new(470.0, -300.0), Pt::new(480.0, 430.0), Pt::new(-310.0, 410.0)])],
+        );
+        clip.shapes.extend(
+            Clip::all(
+                ClipMode::Exclude,
+                Pt::new(0.0, 0.0),
+                vec![
+                    ClipShape::Ellipse { centre: Pt::new(-200.0, -150.0), rx: 60.0, ry: 40.0 },
+                    ClipShape::Stroke { size: 7.5, pts: vec![Pt::new(300.0, -100.0), Pt::new(80.0, 75.0), Pt::new(420.0, 300.0)] },
+                ],
+            )
+            .shapes,
+        );
+        b.clip = Some(clip);
+        b.fade = Some(Fade {
+            origin: Pt::new(0.0, 0.0),
+            shapes: vec![
+                FadePart { strength: 0.6, soft: 0.0, shape: ClipShape::Ellipse { centre: Pt::new(330.0, 60.0), rx: 50.0, ry: 30.0 } },
+                FadePart {
+                    strength: 0.8,
+                    soft: 6.0,
+                    shape: ClipShape::Polygon(vec![Pt::new(-200.0, 86.0), Pt::new(400.0, 92.0), Pt::new(400.0, 260.0), Pt::new(-200.0, 260.0)]),
+                },
+            ],
+        });
+        b.pin_shift = shift;
+        b
+    };
+    let k = BoxKeys {
+        job: Hasher::new("t job").u64(6358).finish().unwrap(),
+        premask: Hasher::new("t premask").u64(6358).finish(),
+        cover: Hasher::new("t cover").u64(6358).finish(),
+    };
+    kept::clear();
+    let still = paint_box_kept(&mut e, &mut shaped(Pt::new(0.0, 0.0)), k).unwrap();
+    assert_eq!(still, paint_box(&mut e, &mut shaped(Pt::new(0.0, 0.0))).unwrap());
+    let mut read = 0;
+    for (sx, sy) in [(255.0, 0.0), (-252.0, 120.0), (0.0, -255.0), (-99.0, 252.0)] {
+        let hits = kept::hits();
+        let kept_paint = paint_box_kept(&mut e, &mut shaped(Pt::new(sx, sy)), k).unwrap();
+        read += usize::from(kept::hits() >= hits + 2);
+        let fresh = paint_box(&mut e, &mut shaped(Pt::new(sx, sy))).unwrap();
+        assert!(fresh.is_some(), "({sx}, {sy}) paints something");
+        assert_eq!(kept_paint, fresh, "({sx}, {sy})");
+    }
+    // Every move stayed in the window: each read the cover kept at the
+    // first paint (and the premask), not a raster of its own.
+    assert_eq!(read, 4);
+}
