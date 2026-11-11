@@ -742,6 +742,13 @@ impl<'a> Reader<'a> {
 /// amount is within 4096 either way, its detail is 0 to 8 and its grit is 0
 /// to 4096.
 pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
+    decode_split(bytes).map(|(request, _)| request)
+}
+
+/// [`decode`], and where the special effects' record starts in `bytes`
+/// (their length with none): what is before it is all the letters' raster
+/// reads of the job but Crack's and Scratches' numbers.
+pub(crate) fn decode_split(bytes: &[u8]) -> Result<(Request, usize), Error> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != MAGIC || r.u32()? != WIRE_VERSION {
         return Err(Error::BadSpec);
@@ -878,6 +885,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     if flags & 1 != 0 && flags & 128 != 0 {
         return Err(Error::BadSpec);
     }
+    let special_at = r.at;
     let special = if flags & 256 != 0 { Some(r.special()?) } else { None };
     if flags > 511 {
         return Err(Error::BadSpec);
@@ -885,7 +893,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     if r.at != bytes.len() {
         return Err(Error::BadSpec);
     }
-    Ok(Request {
+    let request = Request {
         job: Job {
             curved: flags & 1 != 0,
             align,
@@ -922,7 +930,8 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         tiles,
         ink: None,
         faces,
-    })
+    };
+    Ok((request, special_at))
 }
 
 /// A swatch uses the same fill and tile records as a job, without a font
