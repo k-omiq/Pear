@@ -267,9 +267,12 @@ fn walk(from: Pt, angle: f64, step: f64, steps: usize, turn: f64, dice: Dice, it
 // ===== the letters' shapes =====
 
 /// The cuts and adds of `sp` for letters whose ink (job space, unbent) is
-/// `ink`, at font size `size`. Kept under its numbers, so a move or an edit
-/// of anything else reads them back.
-pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Result<Rc<Shapes>, Error> {
+/// `ink`, at font size `size`; the pieces that break off are chosen over
+/// `chosen`, the ink before Crisp fits the letters to the device grid, so
+/// they do not hang on the scale. The crack's and the scratches' lines are
+/// laid over `ink` as Crisp fits it. Kept under its numbers, so a move or an
+/// edit of anything else reads them back.
+pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64), chosen: (f64, f64, f64, f64)) -> Result<Rc<Shapes>, Error> {
     let mut key = Hasher::new("special shapes")
         .debug(&(sp.crack, sp.scratches))
         .f64(size)
@@ -278,7 +281,7 @@ pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Resu
         .f64(ink.2)
         .f64(ink.3);
     if let Some(b) = sp.break_off {
-        key = key.debug(&b);
+        key = key.debug(&b).f64(chosen.0).f64(chosen.1).f64(chosen.2).f64(chosen.3);
     }
     let key = key.finish();
     if let Some(hit) = key.and_then(kept::get::<Rc<Shapes>>) {
@@ -290,7 +293,7 @@ pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Resu
         let want = sp.break_off.filter(|b| b.share > 0.0);
         crack(&c, size, ink, &mut out.cuts, want.map(|_| &mut stars));
         if let Some(b) = want {
-            out.pieces = pieces(&c, &b, &stars, size, ink);
+            out.pieces = pieces(&c, &b, &stars, size, chosen);
         }
     }
     if let Some(s) = sp.scratches {
