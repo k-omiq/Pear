@@ -327,6 +327,8 @@ const scaleGeom = (g, sx, sy) => {
   if (Number.isFinite(out.size)) out.size *= s;
   if (out.auto) out.auto = rescaleAuto(out.auto, sx, sy);
   if (out.fit) out.fit = scaleFit(out.fit, sx, sy);
+  if (out.mask) out.mask = scaleMask(out.mask, sx, sy);
+  if (out.fade) out.fade = scaleMask(out.fade, sx, sy);
   if (out.ink && typeof out.ink === 'object' && Array.isArray(out.ink.strokes)) {
     out.ink = {
       ...out.ink,

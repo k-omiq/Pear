@@ -8,7 +8,7 @@
 import { app, page, toast, markUnsaved, reviewBox, findBoxOutline } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
 import { isComics } from './prefs.svelte.js';
-import { normalizeMask, bubbleLink, bubbleOutline, BUBBLE_INSET_DEFAULT, BUBBLE_INSET_MAX } from './box-mask.js';
+import { normalizeMask, bubbleLink, bubbleOutline, withFollow, BUBBLE_INSET_DEFAULT, BUBBLE_INSET_MAX } from './box-mask.js';
 import { normalizeFade } from './box-fade.js';
 
 const plain = (m) => (m ? JSON.parse(JSON.stringify(m)) : null);
@@ -30,6 +30,12 @@ export function setBoxMask(b, p, next) {
 // The Mask switch.
 export function setMaskOn(b, p, on) {
   return setBoxMask(b, p, { shapes: [], ...(b.mask ?? {}), on: !!on });
+}
+
+// "Moves with box": the shapes converted so nothing moves on screen
+// (`withFollow`), one record.
+export function setMaskFollow(b, p, on) {
+  return setBoxMask(b, p, withFollow(b, b.mask, on));
 }
 
 // Every shape gone, the switch as it was.
@@ -77,7 +83,7 @@ export function clipToBubble(ids = pickedIds(), p = page()) {
           continue;
         }
       }
-      next = { on: true, shapes: [...(b.mask?.shapes ?? []), { kind: 'bubble', op: 'keep', inset: BUBBLE_INSET_DEFAULT }] };
+      next = { ...(b.mask ?? {}), on: true, shapes: [...(b.mask?.shapes ?? []), { kind: 'bubble', op: 'keep', inset: BUBBLE_INSET_DEFAULT }] };
     }
     const before = plain(b.mask);
     b.mask = normalizeMask(next);
@@ -130,6 +136,11 @@ export function setBoxFade(b, p, next) {
 // The Fade switch.
 export function setFadeOn(b, p, on) {
   return setBoxFade(b, p, { shapes: [], ...(b.fade ?? {}), on: !!on });
+}
+
+// The fade's "Moves with box", as the mask's (`setMaskFollow`).
+export function setFadeFollow(b, p, on) {
+  return setBoxFade(b, p, withFollow(b, b.fade, on));
 }
 
 // The palette's Fade on or off, on the selected box.
