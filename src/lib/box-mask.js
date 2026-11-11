@@ -76,7 +76,7 @@ export function normalizeMask(m) {
 export function maskActive(box) {
   const m = box?.mask;
   if (!m?.on) return false;
-  return m.shapes.some((sh) => sh.kind !== 'bubble' || bubblePts(box) != null);
+  return m.shapes.some((sh) => sh.kind !== 'bubble' || bubbleClip(bubblePts(box), sh.inset) != null);
 }
 
 // The bubble link on the box's mask, or null.
@@ -146,6 +146,34 @@ export function insetPolygon(pts, d) {
   });
 }
 
+const signedArea = (pts) => {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [ax, ay] = pts[i];
+    const [bx, by] = pts[(i + 1) % pts.length];
+    a += ax * by - bx * ay;
+  }
+  return a / 2;
+};
+
+// The polygon a bubble link keeps, page px: the outline inset by its px, the
+// inset capped at a quarter of the outline's shorter side, so a narrow bubble
+// keeps a band of itself. Where the inset outline still turns inside out (a
+// sharp waist), the outline with no inset. Null for an outline with no area:
+// a link never hides the whole box, it shows it whole instead.
+export function bubbleClip(pts, inset) {
+  if (!pts || pts.length < 3) return null;
+  const area = signedArea(pts);
+  if (Math.abs(area) < 1) return null;
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const short = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  const d = Math.min(inset, short / 4);
+  const inner = insetPolygon(pts, d);
+  const a = signedArea(inner);
+  return Math.sign(a) === Math.sign(area) && Math.abs(a) < Math.abs(area) && Math.abs(a) >= 1 ? inner : pts.map((p) => [p[0], p[1]]);
+}
+
 // ---- the box's frames ----
 
 // The box's own frame: box-local page px, before its turn and its flip. A
@@ -194,6 +222,15 @@ function ellipsePolygon(sh) {
   });
 }
 
+// An ellipse as a polygon whose steps are 4 px or less.
+function ellipseRing(sh) {
+  const n = Math.min(1024, Math.max(ELLIPSE_STEPS, Math.ceil((Math.PI * 2 * Math.max(sh.rx, sh.ry)) / 4)));
+  return Array.from({ length: n }, (_, i) => {
+    const a = (i / n) * Math.PI * 2;
+    return [sh.cx + sh.rx * Math.cos(a), sh.cy + sh.ry * Math.sin(a)];
+  });
+}
+
 // `sh` with every point carried by `map`. An ellipse stays one where the map
 // is a plain move or mirror (`straight`), and becomes a polygon where it
 // turns or bends.
@@ -225,10 +262,38 @@ export function maskInBoxFrame(box) {
   for (const sh of box.mask.shapes) {
     if (sh.kind === 'bubble') {
       const pts = bubblePts(box);
-      if (pts) out.push({ kind: 'poly', op: 'keep', pts: insetPolygon(pts, sh.inset).map(map) });
+      const clip = bubbleClip(pts, sh.inset);
+      if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip.map(map) });
     } else out.push(carried(sh, map, straight));
   }
   return out;
+}
+
+// ---- what a picture keys on ----
+
+// The revision of a mask, a fade, its shape list or a fit: a number that is
+// new whenever the object is. Every writer of `box.mask` and `box.fade` (the
+// panels, the draw tool, undo, a page rescale, loading) puts a new object or
+// a new shape list there and none edits a shape in place, so the objects
+// themselves are the revision, and a key never has to read the shapes - a
+// brush mask holds up to 400 strokes, and a move frame must not walk them.
+const revs = new WeakMap();
+let lastRev = 0;
+export function revOf(o) {
+  if (!o || typeof o !== 'object') return 0;
+  let r = revs.get(o);
+  if (!r) revs.set(o, (r = ++lastRev));
+  return r;
+}
+
+// A short key for page-pinned shapes (`o`, a mask or a fade) in the box's own
+// frame: what `maskInBoxFrame` and `shapesInBoxFrame` read besides the shapes
+// - where the box stands, its size, turn and flips, and for a bubble link the
+// outline it follows.
+export function frameKey(box, o) {
+  const s = box.style;
+  const link = o?.shapes?.some?.((sh) => sh.kind === 'bubble') ? `:${revOf(box.fit)}` : '';
+  return `${revOf(o)}.${revOf(o?.shapes)}.${o?.on ? 1 : 0}:${box.x},${box.y},${box.w},${box.h},${Number(s?.rotation) || 0},${s?.flipH ? 1 : 0}${s?.flipV ? 1 : 0}${link}`;
 }
 
 // Any page-pinned shapes (the fade's, box-fade.js) in the box's own frame,
@@ -247,7 +312,8 @@ export function maskOnPage(box) {
   for (const sh of box.mask.shapes) {
     if (sh.kind === 'bubble') {
       const pts = bubblePts(box);
-      if (pts) out.push({ kind: 'poly', op: 'keep', pts: insetPolygon(pts, sh.inset) });
+      const clip = bubbleClip(pts, sh.inset);
+      if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip });
     } else out.push(sh);
   }
   return out;
@@ -269,7 +335,9 @@ export function scaleMask(mask, sx, sy) {
     ...mask,
     shapes: mask.shapes.map((sh) => {
       if (sh.kind === 'ellipse') return { ...sh, cx: sh.cx * sx, cy: sh.cy * sy, rx: sh.rx * sx, ry: sh.ry * sy };
-      if (sh.kind === 'bubble') return sh;
+      // A bubble link's outline is scaled with the page's fit; its inset, a
+      // length, by the mean of the two, as a brush's width.
+      if (sh.kind === 'bubble') return { ...sh, inset: Math.min(BUBBLE_INSET_MAX, sh.inset * Math.sqrt(Math.abs(sx * sy))) };
       const out = { ...sh, pts: sh.pts.map(([x, y]) => [x * sx, y * sy]) };
       if (sh.kind === 'stroke') out.size = sh.size * Math.sqrt(Math.abs(sx * sy));
       return out;
@@ -283,6 +351,78 @@ export function scaleMask(mask, sx, sy) {
 // frame before its warp, one mode for all), carried to the page through the
 // box as it stood: its warp, its flip, its turn and its corner. An ellipse on
 // a turned or warped box becomes a polygon. Null when the style has none.
+// `pts` with every edge cut into steps of at most `step` px, the last point
+// kept (closed: the closing edge cut too, its end not repeated). A straight
+// edge in the box's frame is a curve once a mesh has carried it, so it is cut
+// before it is carried, as the old outline drawer did.
+function densify(pts, closed, step = 4) {
+  const out = [];
+  const n = closed ? pts.length : pts.length - 1;
+  for (let i = 0; i < n; i++) {
+    const [ax, ay] = pts[i];
+    const [bx, by] = pts[(i + 1) % pts.length];
+    const k = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / step));
+    for (let j = 0; j < k; j++) out.push([ax + ((bx - ax) * j) / k, ay + ((by - ay) * j) / k]);
+  }
+  if (!closed && pts.length) out.push([pts[pts.length - 1][0], pts[pts.length - 1][1]]);
+  return out;
+}
+
+// How much wider a line running along `t` (a unit vector) at `m` comes out of
+// the mesh: the area it stretches by over the length it stretches the line
+// by, read off the mesh by differences half a px either side. Exact where the
+// mesh is locally affine.
+function widthScale(mesh, m, t) {
+  const e = 0.5;
+  const [x1, y1] = mesh.at(m[0] + e, m[1]);
+  const [x0, y0] = mesh.at(m[0] - e, m[1]);
+  const [x3, y3] = mesh.at(m[0], m[1] + e);
+  const [x2, y2] = mesh.at(m[0], m[1] - e);
+  const a = (x1 - x0) / (2 * e);
+  const b = (y1 - y0) / (2 * e);
+  const c = (x3 - x2) / (2 * e);
+  const d = (y3 - y2) / (2 * e);
+  const det = Math.abs(a * d - b * c);
+  if (!t) return Math.sqrt(det);
+  const along = Math.hypot(a * t[0] + c * t[1], b * t[0] + d * t[1]);
+  return along > 1e-9 ? det / along : Math.sqrt(det);
+}
+
+// A brush stroke carried through a mesh, as strokes of one width each: the
+// line cut into steps of 4 px and carried point by point, its width scaled
+// by how much the mesh widens a line there (`widthScale`). A run of steps
+// whose widths lie within 5 % of each other is one stroke at their mean, so
+// a width is at most 2.5 % off the mesh's own, plus what the mesh bends
+// inside one 4 px step.
+function strokeThroughMesh(sh, mesh, map) {
+  const pts = densify(sh.pts, false);
+  if (pts.length < 2) return [{ ...sh, size: sh.size * widthScale(mesh, pts[0] ?? sh.pts[0], null), pts: pts.map(map) }];
+  const out = [];
+  let run = [pts[0]];
+  let ks = [];
+  const flush = () => {
+    const k = ks.reduce((s, v) => s + v, 0) / ks.length;
+    out.push({ ...sh, size: sh.size * k, pts: run.map(map) });
+  };
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1];
+    const [bx, by] = pts[i];
+    const len = Math.hypot(bx - ax, by - ay);
+    const k = widthScale(mesh, [(ax + bx) / 2, (ay + by) / 2], len > 1e-9 ? [(bx - ax) / len, (by - ay) / len] : null);
+    const lo = Math.min(k, ...ks);
+    const hi = Math.max(k, ...ks);
+    if (ks.length && hi > lo * 1.05) {
+      flush();
+      run = [pts[i - 1]];
+      ks = [];
+    }
+    run.push(pts[i]);
+    ks.push(k);
+  }
+  flush();
+  return out;
+}
+
 export function maskFromClip(box) {
   const clip = box?.style?.clip;
   if (!clip || typeof clip !== 'object') return null;
@@ -295,7 +435,15 @@ export function maskFromClip(box) {
   const shapes = [];
   for (const raw of Array.isArray(clip.shapes) ? clip.shapes : []) {
     const sh = normalizeMaskShape({ ...raw, op });
-    if (sh && sh.kind !== 'bubble') shapes.push(carried(sh, map, straight));
+    if (!sh || sh.kind === 'bubble') continue;
+    if (!mesh) shapes.push(carried(sh, map, straight));
+    // Through a mesh an edge bends and a line widens: the edges are cut
+    // before they are carried, and a brush keeps the width the mesh gave it.
+    else if (sh.kind === 'stroke') shapes.push(...strokeThroughMesh(sh, mesh, map));
+    else {
+      const ring = sh.kind === 'ellipse' ? ellipseRing(sh) : sh.pts;
+      shapes.push({ kind: 'poly', op, pts: densify(ring, true).map(map) });
+    }
   }
   if (!shapes.length && !clip.on) return null;
   return { on: clip.on === true, shapes };

@@ -1131,6 +1131,16 @@ describe('a box with something pinned to its corner', () => {
     expect(reason({ autoHeight: false })).toBe(REVIEW_REASONS.manual);
   });
 
+  it('stays auto with a mask that is only a bubble link (Clip to bubble)', () => {
+    const fit = { kind: 'ellipse', cx: 110, cy: 55, rx: 100, ry: 50 };
+    const linked = (shapes) => cand({ style: style(), fit, mask: { on: true, shapes } });
+    expect(isAutoBox(linked([{ kind: 'bubble', op: 'keep', inset: 2 }]))).toBe(true);
+    expect(contain.manualReason(linked([{ kind: 'bubble', op: 'keep', inset: 2 }]))).toBe(REVIEW_REASONS.manual);
+    // A drawn shape beside the link makes it manual.
+    const drawn = linked([{ kind: 'bubble', op: 'keep', inset: 2 }, { kind: 'ellipse', op: 'hide', cx: 20, cy: 20, rx: 5, ry: 5 }]);
+    expect(isAutoBox(drawn)).toBe(false);
+  });
+
   it('is auto again when nothing is actually drawn or cut', () => {
     expect(auto({ ink: { ...ink, on: false } })).toBe(true);
     expect(auto({ ink: { on: true, strokes: [] } })).toBe(true);

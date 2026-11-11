@@ -39,7 +39,7 @@ import { settleBoxTips } from './brush-tips.js';
 import { backdropPixels, boxToPage, BACKDROP_MAX_PX } from './backdrop.js';
 import { maskActive, maskInBoxFrame } from './box-mask.js';
 import { fadeActive, fadeInBoxFrame } from './box-fade.js';
-import { styleReach, wobbleReach } from './paint-reach.js';
+import { styleReach, placedWobbleReach } from './paint-reach.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
@@ -240,7 +240,8 @@ function layoutBox(box, p) {
   // room to spare where the old `+ blur` cut into it.
   // A wobble moves the letters before the strokes are laid round them and
   // before roughening moves their edges again, so its reach adds to both.
-  const wob = wobbleReachMax(s);
+  const wr = placedWobbleReach(s, place);
+  const wob = Math.max(wr.x, wr.y);
   const strokeOut = strokeReach(s) + wob;
   const pad0 = Math.ceil(
     Math.max(
@@ -774,14 +775,20 @@ export function glyphJob(box, L) {
       // shows, and most visible on the letters furthest around the arc.
       // The silhouette pass wants one flat colour, not the real fill.
       if (!L.silhouette && !fillless) run.fill = runFill(fs, rect, (px, py) => [px - x, py - y], page);
-      if (trail && g.ch && g.dir && g.em > 0) {
+      // Every letter that is a run gets its copies, in the letters' order:
+      // the engine reads a wobble's numbers for them in blocks of the same
+      // count (`wobble_bases`), so a letter with none would hand its number
+      // to the next letter's copies. One that cannot trail (no path to go
+      // back along) has copies that draw nothing.
+      if (trail && g.ch) {
+        const goes = g.dir && g.em > 0;
         for (let k = 1; k <= trail.count; k++) {
-          const d = trail.dist * g.em * k;
-          const alpha = Math.round(255 * 0.5 * 0.62 ** (k - 1)).toString(16).padStart(2, '0');
+          const d = goes ? trail.dist * g.em * k : 0;
+          const alpha = goes ? Math.round(255 * 0.5 * 0.62 ** (k - 1)).toString(16).padStart(2, '0') : '00';
           ghosts.push({
             ...run,
-            x: x - g.dir[0] * d,
-            y: y - g.dir[1] * d,
+            x: goes ? x - g.dir[0] * d : x,
+            y: goes ? y - g.dir[1] * d : y,
             ghost: true,
             fill: { kind: 'solid', color: `#888888${alpha}` },
           });
@@ -1292,11 +1299,6 @@ export function roughenGrit(s) {
 export function wobbleInJob(box) {
   return wobbleDrawn(box.style);
 }
-
-const wobbleReachMax = (s) => {
-  const r = wobbleReach(s);
-  return Math.max(r.x, r.y);
-};
 
 export function roughenInJob(box) {
   const s = box.style;

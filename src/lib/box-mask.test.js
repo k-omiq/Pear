@@ -11,6 +11,8 @@ import {
   pageToBox,
   boxToPage,
   bubbleOutline,
+  bubbleClip,
+  frameKey,
   MASK_SHAPES_MAX,
 } from './box-mask.js';
 
@@ -161,10 +163,40 @@ describe('the old mask, in the style, comes to the page', () => {
     for (let r = 0; r <= 2; r++) for (let c = 0; c <= 2; c++) pts.push([c * 100 + 20, r * 60 + 10]);
     const box = boxOf({ style: { warp: { on: true, cols: 2, rows: 2, pts }, clip: clip('include', [{ kind: 'poly', pts: [[10, 10], [50, 10], [50, 50]] }, { kind: 'ellipse', cx: 100, cy: 60, rx: 10, ry: 10 }]) } });
     const m = maskFromClip(box);
-    close(m.shapes[0].pts, [[130, 100], [170, 100], [170, 140]]);
+    // Its edges cut into steps of 4 px or less before they were carried.
+    const poly = m.shapes[0].pts;
+    expect(poly.length).toBeGreaterThan(3);
+    close([poly[0]], [[130, 100]]);
+    for (let i = 0; i < poly.length; i++) {
+      const [ax, ay] = poly[i];
+      const [bx, by] = poly[(i + 1) % poly.length];
+      expect(Math.hypot(bx - ax, by - ay)).toBeLessThanOrEqual(4 + 1e-9);
+    }
     expect(m.shapes[1].kind).toBe('poly');
     const xs = m.shapes[1].pts.map((p) => p[0]);
     expect((Math.min(...xs) + Math.max(...xs)) / 2).toBeCloseTo(220, 6);
+  });
+
+  it('a warped box: an edge follows the bend, and a brush keeps the width the mesh gave it', () => {
+    // A mesh that stretches the box's left half twice as wide and leaves the
+    // right half as it was (the middle column moved right).
+    const pts = [];
+    for (let r = 0; r <= 2; r++) for (let c = 0; c <= 2; c++) pts.push([[0, 200, 300][c], r * 60]);
+    const box = boxOf({ x: 0, y: 0, style: { warp: { on: true, cols: 2, rows: 2, pts }, clip: clip('exclude', [
+      { kind: 'stroke', size: 6, pts: [[50, 10], [50, 110]] },
+      { kind: 'stroke', size: 6, pts: [[10, 60], [190, 60]] },
+    ]) } });
+    const m = maskFromClip(box);
+    // The upright line in the stretched half comes out about twice as wide;
+    // the level one, stretched along its length only, keeps about its width
+    // where it runs through that half.
+    const upright = (sh) => Math.abs(sh.pts[0][0] - sh.pts[sh.pts.length - 1][0]) < 1;
+    const up = m.shapes.find((sh) => upright(sh) && sh.pts[0][0] < 150);
+    expect(up.size).toBeGreaterThan(6 * 1.8);
+    expect(up.size).toBeLessThan(6 * 2.2);
+    const level = m.shapes.filter((sh) => Math.abs(sh.pts[0][1] - sh.pts[sh.pts.length - 1][1]) < 1 && sh.pts[0][0] < 150);
+    expect(level.length).toBeGreaterThan(0);
+    for (const sh of level) expect(sh.size).toBeLessThan(6 * 1.2);
   });
 
   it('a style with no mask has none, and an empty switched-on one keeps its switch', () => {
@@ -185,6 +217,24 @@ describe('the bubble link', () => {
     expect(maskInBoxFrame(box)[0].op).toBe('keep');
   });
 
+  it('a narrow bubble keeps a band of itself, and an outline with no area hides nothing', () => {
+    const thin = square(0, 0, 10).pts.map(([x, y]) => [x * 10, y]); // 100 x 10
+    const box = { ...boxOf(), fit: { kind: 'poly', pts: thin }, mask: normalizeMask({ on: true, shapes: [{ kind: 'bubble', inset: 20 }] }) };
+    // The inset is capped at a quarter of the short side: 2.5 px, not 20.
+    const kept = maskOnPage(box)[0].pts;
+    close([kept[0]], [[2.5, 2.5]]);
+    expect(bubbleClip(thin, 20)).toEqual(kept);
+    // A line of an outline: no link drawn, so nothing is cut.
+    const flat = { ...box, fit: { kind: 'poly', pts: [[0, 0], [50, 0], [100, 0]] } };
+    expect(maskActive(flat)).toBe(false);
+    expect(maskInBoxFrame(flat)).toEqual([]);
+  });
+
+  it('a page rescale scales the inset with the outline', () => {
+    const m = scaleMask(normalizeMask({ on: true, shapes: [{ kind: 'bubble', inset: 4 }] }), 2, 2);
+    expect(m.shapes[0].inset).toBeCloseTo(8, 9);
+  });
+
   it('an inset runs inside either way round, and a fit stated as an ellipse or a rectangle is walked round', () => {
     const cw = [[0, 0], [10, 0], [10, 10], [0, 10]];
     close(insetPolygon(cw, 1), [[1, 1], [9, 1], [9, 9], [1, 9]]);
@@ -192,5 +242,28 @@ describe('the bubble link', () => {
     expect(bubbleOutline({ fit: { kind: 'rect', x: 1, y: 2, w: 3, h: 4 } })).toEqual([[1, 2], [4, 2], [4, 6], [1, 6]]);
     expect(bubbleOutline({ fit: { kind: 'ellipse', cx: 0, cy: 0, rx: 5, ry: 3 } }).length).toBeGreaterThan(8);
     expect(bubbleOutline({ fit: null })).toBe(null);
+  });
+});
+
+describe('the key a masked picture is painted under', () => {
+  it('changes with the shapes, where the box stands, its turn, flips and followed outline, and with nothing else', () => {
+    const mask = { on: true, shapes: [{ kind: 'stroke', op: 'hide', size: 4, pts: [[1, 2], [3, 4]] }] };
+    const box = { x: 10, y: 20, w: 100, h: 50, style: { rotation: 0 }, mask, fit: { kind: 'ellipse', cx: 60, cy: 45, rx: 50, ry: 25 } };
+    const k = frameKey(box, box.mask);
+    expect(frameKey(box, box.mask)).toBe(k);
+    expect(frameKey({ ...box }, box.mask)).toBe(k);
+    // A new list or a new mask is a new revision; so is the switch.
+    expect(frameKey(box, { ...mask })).not.toBe(k);
+    mask.shapes = [...mask.shapes];
+    const k2 = frameKey(box, mask);
+    expect(k2).not.toBe(k);
+    expect(frameKey(box, { ...mask, shapes: mask.shapes, on: false })).not.toBe(frameKey(box, { ...mask, shapes: mask.shapes, on: true }));
+    for (const moved of [{ x: 11 }, { y: 21 }, { w: 99 }, { h: 51 }, { style: { rotation: 5 } }, { style: { flipH: true } }, { style: { flipV: true } }]) {
+      expect(frameKey({ ...box, ...moved }, mask)).not.toBe(k2);
+    }
+    // The outline counts only for a mask that follows it.
+    expect(frameKey({ ...box, fit: { ...box.fit } }, mask)).toBe(k2);
+    const linked = { on: true, shapes: [{ kind: 'bubble', op: 'keep', inset: 4 }] };
+    expect(frameKey({ ...box, fit: { ...box.fit } }, linked)).not.toBe(frameKey(box, linked));
   });
 });

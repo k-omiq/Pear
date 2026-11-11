@@ -6337,6 +6337,20 @@ function balloonUnder(p, b) {
   return firstFound(first, () => measureBalloonAt(p, b.x + b.w / 2, b.y + b.h / 2));
 }
 
+// The finder's outline for a box with none, set without typesetting it again
+// (Clip to bubble wants the outline to clip to, not a new layout). The
+// `refit` record of it, for the caller to fold into its own step, or null
+// when nothing was found or the box is locked.
+export function findBoxOutline(b, p) {
+  if (!b || boxLocked(b)) return null;
+  const m = balloonUnder(p, b);
+  if (!m?.fit) return null;
+  const geomBefore = refitGeom(b);
+  b.fit = m.fit;
+  setOutline(b, m.outline);
+  return { t: 'refit', pageId: p.id, boxId: b.id, geomBefore, geomAfter: refitGeom(b) };
+}
+
 // A box's outline record, written or taken away. A fresh object, never one
 // shared with a measurement or a stored block.
 function setOutline(b, outline) {

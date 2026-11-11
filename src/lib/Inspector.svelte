@@ -2728,7 +2728,7 @@
                   class:on={!!link}
                   aria-pressed={!!link}
                   title={link ? 'Stop clipping the text to its bubble' : 'Keep the text inside its bubble outline, and follow the outline when it changes'}
-                  onclick={() => clipToBubble(box.id, page())}
+                  onclick={() => clipToBubble()}
                 >Clip to bubble</button>
               </div>
               {#if link}

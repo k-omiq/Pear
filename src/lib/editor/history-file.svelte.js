@@ -13,7 +13,7 @@ import { fsx } from '../fsx.js';
 import { normalizeStyle, plainStyle } from '../data.js';
 import { toast, toastError, DOC_SAVE_MS, rescalePageGeometry, rescaleStyle, rescaleAuto, scaleFit, lengthScale } from '../store.svelte.js';
 import { scaleStroke } from '../brush.js';
-import { scaleMask } from '../box-mask.js';
+import { scaleMask, maskFromClip } from '../box-mask.js';
 import { remapLineStack } from '../reading-order.js';
 import {
   takeStack,
@@ -142,7 +142,9 @@ const isCurrentStyle = (s) =>
   typeof s.pattern.fade === 'object' &&
   s.outline === undefined &&
   s.outlineWidth === undefined &&
-  s.shadow === undefined;
+  s.shadow === undefined &&
+  // The mask of before 2026-11-10, in the style: a box moves it to the page.
+  !('clip' in s);
 
 // Whether this value is a style that has to be moved forward. A non-object is
 // not a style and is left alone - `text` entries hold strings in `before`/
@@ -173,10 +175,15 @@ export function migrateEntry(e, plain = false) {
     const cur = stale(s) ? normalizeStyle(s) : s;
     return plain ? plainStyle(cur) : cur;
   };
+  // A box saved before the mask left the style carries it to the page as a
+  // chapter load does (`maskFromClip`), through the box as it was recorded,
+  // so an undo of a delete brings it back masked.
   const forwardBox = (b) => {
     if (!b || typeof b !== 'object') return b;
     const style = forward(b.style);
-    return style === b.style ? b : { ...b, style };
+    if (style === b.style) return b;
+    const mask = b.mask === undefined && b.style && typeof b.style === 'object' && 'clip' in b.style ? maskFromClip(b) : undefined;
+    return { ...b, style, ...(mask ? { mask } : {}) };
   };
 
   // A revert's two sides are whole pages of boxes.

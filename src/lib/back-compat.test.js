@@ -695,6 +695,19 @@ describe('an undo history written before the style schema moved', () => {
     expect(e.after.strokeEffects).toEqual([outside('#ff0044', 5)]);
   });
 
+  // A delete recorded before the mask left the style: the box comes back
+  // with its mask on the page, carried through the box as it was recorded.
+  it('carries a delete entry\'s style mask to the page', () => {
+    const style = normalizeStyle({});
+    const old = { ...style, clip: { on: true, mode: 'exclude', brushSize: 9, shapes: [{ kind: 'poly', pts: [[0, 0], [10, 0], [0, 10]] }] } };
+    const e = migrateEntry({ t: 'delete', index: 0, box: { id: 'b1', x: 100, y: 50, w: 50, h: 20, text: 'A', style: old } });
+    expect('clip' in e.box.style).toBe(false);
+    expect(e.box.mask).toEqual({ on: true, shapes: [{ kind: 'poly', op: 'hide', pts: [[100, 50], [110, 50], [100, 60]] }] });
+    // A box with a mask of its own keeps it, and a current box is the same object.
+    const own = { id: 'b2', x: 0, y: 0, w: 5, h: 5, text: 'B', style, mask: { on: false, shapes: [] } };
+    expect(migrateEntry({ t: 'delete', index: 0, box: own }).box).toBe(own);
+  });
+
   it('migrates each item of a bulk entry, and leaves an absent lastStyle pair absent', () => {
     const e = migrateEntry(parsed().pages['2'].undo[0]);
     expect(e.items[0].before.strokeEffects).toEqual([outside('#00ff88', 2)]);

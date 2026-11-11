@@ -1792,6 +1792,8 @@ fn a_wobble_counts_the_trail_copies_behind_each_letter_and_moving_nothing_is_non
     assert_eq!(copies(3, 3), 1);
     // Copies that do not divide among the letters: none of them wobbles.
     assert_eq!(copies(3, 2), 0);
+    // Afterimages alone on the wire (the app never writes them): none.
+    assert_eq!(copies(3, 0), 0);
     // On with nothing to move: no wobble, so the job is one without.
     assert_eq!(decode(&wire_with_wobble(0.0, 0.0, 5)).unwrap().job.effects.wobble, None);
     assert!(decode(&wire_with_wobble(0.0, 1.0, 5)).unwrap().job.effects.wobble.is_some());
