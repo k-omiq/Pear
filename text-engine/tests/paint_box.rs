@@ -937,6 +937,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     let ink_at = b.len();
     u(&mut b, 0); // no ink (v12)
     u(&mut b, 0); // no page under them
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -1145,7 +1146,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 21));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 22));
     assert_eq!(r.grain, (-3, 7));
 }
 
@@ -1380,6 +1381,7 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     u(&mut b, 0);
     u(&mut b, 0); // no fade (v20)
     no_blending(&mut b);
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -1447,6 +1449,7 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
     }
     u(&mut b, 0); // no fade (v20)
     no_blending(&mut b);
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);

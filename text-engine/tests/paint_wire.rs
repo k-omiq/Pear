@@ -115,7 +115,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 21, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 22, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(r.grain, (-1_234_567, 89_012));
     assert_eq!(
@@ -240,6 +240,8 @@ fn every_field_of_the_box_comes_back_as_itself() {
             ..Wobble::new(0.1875, 7.5, 4242)
         })
     );
+    // v22: the runs are one line's clusters.
+    assert!(q.job.effects.line);
     assert_eq!(q.job.runs.len(), 2);
     let (a, b) = (&q.job.runs[0], &q.job.runs[1]);
     assert_eq!((a.text.as_str(), a.x, a.y, a.rot), ("AB", 14.5, 21.5, 0.375));

@@ -61,7 +61,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 21;
+pub const BOX_WIRE_VERSION: u32 = 22;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -1065,6 +1065,10 @@ impl<'a> Reader<'a> {
 /// u32 backdrop                 0 none, 1: width * height * 4 bytes follow,
 ///                              straight RGBA8 read as opaque: the page art
 ///                              under each surface pixel
+/// u32 line (v22)               0, or 1 for a curved job whose runs are the
+///                              clusters of one line, in order: they are
+///                              shaped as that line (`Effects::line`); 1 on
+///                              a straight job is refused
 /// u32 job byte length, then a glyph job in its own wire form (v18: the
 ///                              glyph job's v11, with flag 32, Crisp)
 ///
@@ -1120,6 +1124,7 @@ impl<'a> Reader<'a> {
 ///   Blend If flag past 1, or a Blend If range out of order (black low,
 ///   black high, white low, white high must not fall);
 /// - a bevel texture whose paint is not a fill;
+/// - a line flag past 1, or a line flag on a job that is not curved;
 /// - bytes left over after the job's end;
 /// - ink past its limits above (a stroke's number out of its range, a flag
 ///   that is not one, a tip index past the tips, a stride that is not 3 or 5);
@@ -1240,13 +1245,25 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
         }
         _ => return Err(Error::BadSpec),
     };
+    let line = match r.u32()? {
+        0 => false,
+        1 => true,
+        _ => return Err(Error::BadSpec),
+    };
     let len = r.u32()? as usize;
     let job = r.take(len)?;
-    let key = Hasher::new("job").bytes(job).finish().ok_or(Error::BadSpec)?;
+    // The pieces kept under this key are the job's letters, which a line
+    // shapes differently from the same runs one by one.
+    let key = Hasher::new("job")
+        .bytes(job)
+        .bytes(&[u8::from(line)])
+        .finish()
+        .ok_or(Error::BadSpec)?;
     let mut request = decode(job)?;
-    if r.at != bytes.len() {
+    if r.at != bytes.len() || (line && !request.job.curved) {
         return Err(Error::BadSpec);
     }
+    request.job.effects.line = line;
     request.ink = ink;
     let premask = match (&clip, &fade) {
         (None, None) => None,

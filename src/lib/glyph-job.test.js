@@ -79,6 +79,8 @@ describe('glyph jobs are plain data', () => {
       isCurve: true, layout: [{ ch: 'A', x: 5, y: 2, rot: 0.3 }, { ch: 'B', x: -4, y: 3, rot: -0.2 }],
     }));
     expect(job.curved).toBe(true);
+    // An arc is one line cut into its clusters, shaped again as that line.
+    expect(job.line).toBe(true);
     expect(job.fill).toBeNull();
     expect(job.runs).toEqual([
       { text: 'A', x: 65, y: 62, rot: 0.3, fill: { kind: 'linear', x0: -5, y0: 38, x1: -5, y1: -42, stops } },
@@ -93,6 +95,14 @@ describe('glyph jobs are plain data', () => {
     expect(job.fill).toBeNull();
     expect(job.runs).toEqual(straightRuns);
     expect(job.bands).toEqual([{ color: '#fff', opacity: 1, line: 4 }]);
+  });
+
+  it('says a curve is one line, but neither a straight box nor SFX lettering', () => {
+    const curve = { isCurve: true, layout: [{ ch: 'A', x: 5, y: 2, rot: 0.3 }] };
+    expect(glyphJob(box, layout(style())).line).toBeUndefined();
+    const sfx = { ...style(), sfx: { ...defaultStyle().sfx, on: true } };
+    expect(glyphJob(box, layout(sfx, curve)).line).toBeUndefined();
+    expect(glyphJob(box, layout(style(), curve)).line).toBe(true);
   });
 });
 
