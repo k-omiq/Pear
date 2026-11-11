@@ -244,6 +244,16 @@ export function migrateEntry(e, plain = false) {
     });
     if (moved) put('items', items);
   }
+  // `lineDelete`: the boxes that went with the line, each put back whole as a
+  // deleted box is.
+  if (Array.isArray(e.takenBoxes)) {
+    const taken = e.takenBoxes.map((it) => {
+      if (!it || typeof it !== 'object') return it;
+      const b = forwardBox(it.box);
+      return b === it.box ? it : { ...it, box: b };
+    });
+    if (taken.some((it, i) => it !== e.takenBoxes[i])) put('takenBoxes', taken);
+  }
   return out;
 }
 

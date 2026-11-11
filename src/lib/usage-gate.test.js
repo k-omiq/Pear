@@ -43,7 +43,7 @@ describe('the start mode', () => {
 });
 
 describe('the comic tools under general use', () => {
-  const comicIds = ['detect.page', 'detect.chapter', 'ocr.draw', 'box.fitBalloon', 'bubble.centre', 'review.next', 'view.regions', 'settings.detection', 'settings.guide'];
+  const comicIds = ['detect.page', 'detect.chapter', 'ocr.draw', 'box.fitBalloon', 'bubble.centre', 'mask.clipToBubble', 'review.next', 'view.regions', 'settings.detection', 'settings.guide'];
 
   it('have no row and no key, and come back with comics use', () => {
     expect(comicIds.every((id) => !actionOff(id))).toBe(true);
