@@ -422,7 +422,7 @@ function boxTextFor(p, box) {
 function setInFaces(p, box) {
   const runs = box.text != null ? box.runs : (p.lines ?? []).find((l) => l.n === box.lineN && l.en != null)?.runs;
   const s = box.style;
-  return !!runs?.some((r) => r.bold !== !!s?.bold || r.italic !== !!s?.italic);
+  return !!runs?.some((r) => r.bold !== !!s?.bold || r.italic !== !!s?.italic || (!!r.font && r.font !== s?.font));
 }
 
 // A CSS family list like "'Bangers', cursive" → a plausible PostScript name.

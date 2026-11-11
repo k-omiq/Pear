@@ -76,6 +76,13 @@ describe.each([
     expect(same(runs, bold)).toBe(true);
   });
 
+  it('all in another family is the box set in that family', () => {
+    const fam = { start: 0, end: 11, bold: false, italic: false, font: 'Comic Neue' };
+    const runs = texture(boxOf(LOOK, [fam]), painter());
+    expect(same(runs, texture(boxOf({ ...LOOK, font: 'Comic Neue' }), painter()))).toBe(true);
+    expect(same(runs, texture(boxOf(LOOK), painter()))).toBe(false);
+  });
+
   it('with one word bold is neither the plain box nor the bold one', () => {
     const mixed = texture(boxOf(LOOK, [B(0, 5)]), painter());
     expect(same(mixed, texture(boxOf(LOOK), painter()))).toBe(false);

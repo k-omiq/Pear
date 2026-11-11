@@ -13,6 +13,9 @@ const { callTool } = await import('./agent/registry.js');
 const { defaultStyle } = await import('./data.js');
 const { saveRuns, textCheck, editedSpan } = await import('./runs.js');
 const { bindGuide, unbindGuide } = await import('./guide.svelte.js');
+const { setRangeFace, setBoxLocked } = store;
+const { editorActionHandlers } = await import('./editor-actions.js');
+const { typingSel, setTypingSel, clearTypingSel, faceAsk } = await import('./typing-selection.svelte.js');
 await import('./agent/tools/index.js');
 
 const B = (start, end) => ({ start, end, bold: true, italic: false });
@@ -304,5 +307,99 @@ describe('the text fields and the IME pass the range they edited', () => {
     const span = editedSpan(ln.en, 'one ttwo three', 4, 4);
     setLineText(p1(), 1, 'one ttwo three', { span });
     expect(lineByN(p1(), 1).runs).toEqual([B(5, 6)]);
+  });
+});
+
+describe('face commands on selected words (C4)', () => {
+  const F = (start, end, font, more = {}) => ({ start, end, bold: false, italic: false, font, ...more });
+  afterEach(() => clearTypingSel());
+
+  it('Bold on a range: mixed becomes all bold, all bold becomes none, one undo step each', () => {
+    const b = byId('own'); // 'its own words', 'its' italic
+    expect(setRangeFace(b, 0, 8, { toggle: 'bold' }, p1())).toEqual([0, 8]);
+    expect(b.runs).toEqual([{ start: 0, end: 3, bold: true, italic: true }, B(3, 8)]);
+    setRangeFace(b, 0, 8, { toggle: 'bold' }, p1());
+    expect(b.runs).toEqual([I(0, 3), { start: 3, end: 8, bold: false, italic: false }]);
+    undo();
+    expect(b.runs).toEqual([{ start: 0, end: 3, bold: true, italic: true }, B(3, 8)]);
+    undo();
+    expect(b.runs).toEqual([I(0, 3)]);
+    expect(b.text).toBe('its own words');
+  });
+
+  it('a family, then Clear typeface back to the box face', () => {
+    const b = byId('own');
+    setRangeFace(b, 4, 7, { font: 'Bangers' }, p1());
+    expect(b.runs).toEqual([I(0, 3), F(4, 7, 'Bangers')]);
+    setRangeFace(b, 0, 13, { clear: true }, p1());
+    expect('runs' in b).toBe(false);
+    undo();
+    expect(b.runs).toEqual([I(0, 3), F(4, 7, 'Bangers')]);
+  });
+
+  it('widens to whole letters, refuses a locked box, and changes nothing that is already so', () => {
+    const b = byId('own');
+    setBoxText(b, 'ok 👍🏽 go', p1(), { runs: null });
+    setRangeFace(b, 4, 5, { toggle: 'italic' }, p1());
+    expect(b.runs).toEqual([I(3, 7)]);
+    expect(setRangeFace(b, 3, 7, { font: null }, p1())).toBe(null);
+    setBoxLocked('own', true);
+    expect(setRangeFace(b, 0, 2, { toggle: 'bold' }, p1())).toBe(null);
+    expect(b.runs).toEqual([I(3, 7)]);
+  });
+
+  it('a box reading its line sets the line\'s faces, one line step, and writes no words of its own', () => {
+    const b = byId('a'); // reads line 1, 'one two three', 'two' bold
+    setRangeFace(b, 0, 3, { toggle: 'italic' }, p1());
+    expect(b.text).toBe(null);
+    expect(lineByN(p1(), 1).runs).toEqual([I(0, 3), B(4, 7)]);
+    undo();
+    expect(lineByN(p1(), 1).runs).toEqual([B(4, 7)]);
+  });
+
+  it('the keys: on the words selected while typing, at a bare caret for what is typed next, on the whole box otherwise', () => {
+    const run = editorActionHandlers();
+    const b = byId('own');
+    selectBox('own');
+    // Typed into, two words selected.
+    beginEdit('own');
+    setTypingSel('own', b.text, 4, 13);
+    run['text.bold']();
+    expect(b.runs).toEqual([I(0, 3), B(4, 13)]);
+    expect(b.style.bold).toBe(false);
+    // The selection is kept.
+    expect([typingSel.a, typingSel.f]).toEqual([4, 13]);
+    // A bare caret: nothing changes yet, the face is asked for there.
+    setTypingSel('own', b.text, 3, 3);
+    run['text.bold']();
+    expect(typingSel.pending).toMatchObject({ boxId: 'own', at: 3, patch: { bold: true } });
+    expect(b.runs).toEqual([I(0, 3), B(4, 13)]);
+    // Bold again there takes the ask back.
+    run['text.bold']();
+    expect(typingSel.pending.patch).toEqual({ bold: false });
+    // The caret moves: the ask goes.
+    setTypingSel('own', b.text, 5, 5);
+    expect(typingSel.pending).toBe(null);
+    // Typeface… asks the picker, for the range.
+    setTypingSel('own', b.text, 0, 3);
+    const turn = faceAsk.turn;
+    run['text.typeface']();
+    expect(faceAsk).toMatchObject({ turn: turn + 1, boxId: 'own', a: 0, f: 3 });
+    run['text.clearFace']();
+    expect(b.runs).toEqual([B(4, 13)]);
+    endEdit(b.text);
+    clearTypingSel();
+    // Not typed into: the whole box, as before.
+    run['text.bold']();
+    expect(b.style.bold).toBe(true);
+    // Not from a text field with nothing selected in it, though.
+    const field = { closest: (sel) => (sel.includes('textarea') ? field : null) };
+    expect(run['text.bold']({ target: field })).toBe(false);
+    expect(b.style.bold).toBe(true);
+    // Words selected in a box that is not the one selected are not the target.
+    setTypingSel('a', boxText(byId('a')), 0, 3);
+    run['text.italic']();
+    expect(byId('a').text).toBe(null);
+    expect(lineByN(p1(), 1).runs).toEqual([B(4, 7)]);
   });
 });

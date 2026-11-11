@@ -13,7 +13,11 @@ vi.mock('./editor/box-picture.js', async (original) => {
   return { ...mod, paintBoxPicture: vi.fn(mod.paintBoxPicture) };
 });
 
+vi.mock('./editor/FaceMenu.svelte', () => ({ openFaceMenu: vi.fn(), default: () => {} }));
+
 import TextBox from './TextBox.svelte';
+import { openFaceMenu } from './editor/FaceMenu.svelte';
+import { typingSel, askPending } from './typing-selection.svelte.js';
 import { app, loadProjectPages, page, beginEdit, endEdit, setZoom, boxText, relayoutAll } from './store.svelte.js';
 import { engineSwitch } from './engine-switch.svelte.js';
 import { textEngine, setTextEngine } from './text-engine/index.js';
@@ -1912,9 +1916,15 @@ describe('the system\'s menu leaves nothing listening', () => {
     const restore = geometry({ native: { left: 100.75, top: 50, width: 0, height: 24 }, mark: { left: 100, top: 50, width: 1.5, height: 24 }, selection: { left: 300, top: 400, width: 40, height: 20 } });
     try {
       const m = await typing(id);
+      // A caret, not the words an edit starts with selected: a right-click on
+      // selected words opens their faces' menu instead of the system's.
+      nativeSel(m, 0);
       const el = m.q('.curve-edit, .type-edit');
       el.dispatchEvent(ptr('pointerdown', m, 60, 30, 1, { button: 2 }));
       const oldBack = timers.mock.calls.find((c) => c[1] === 1000)[0];
+      // The word the first press selected is let go, or this press would open
+      // its faces' menu.
+      nativeSel(m, 0);
       el.dispatchEvent(ptr('pointerdown', m, 90, 30, 1, { button: 2 }));
       expect(m.q('.curve-edit, .type-edit')).toBe(el);
       expect(el.classList.contains('ctx')).toBe(true);
@@ -1940,6 +1950,9 @@ describe('the system\'s menu leaves nothing listening', () => {
     const on = listening();
     try {
       const m = await typing('plain');
+      // A caret, not the words an edit starts with selected: a right-click on
+      // selected words opens their faces' menu instead of the system's.
+      nativeSel(m, 0);
       const el = m.q('.type-edit');
       el.dispatchEvent(ptr('pointerdown', m, 60, 30, 1, { button: 2 }));
       expect(on.left()).toBe(1);
@@ -1970,6 +1983,9 @@ describe('the system\'s menu leaves nothing listening', () => {
     const restore = geometry({ native: { left: 100.75, top: 50, width: 0, height: 24 }, mark: { left: 100, top: 50, width: 1.5, height: 24 }, selection: { left: 300, top: 400, width: 40, height: 20 } });
     try {
       const m = await typing(id);
+      // A caret, not the words an edit starts with selected: a right-click on
+      // selected words opens their faces' menu instead of the system's.
+      nativeSel(m, 0);
       const old = m.q('.curve-edit, .type-edit');
       old.dispatchEvent(ptr('pointerdown', m, 60, 30, 1, { button: 2 }));
       const oldBack = timers.mock.calls.find((c) => c[1] === 1000)[0];
@@ -1980,6 +1996,7 @@ describe('the system\'s menu leaves nothing listening', () => {
       expect(old.classList.contains('ctx')).toBe(false);
       beginEdit(m.box.id);
       await tick();
+      nativeSel(m, 0);
       const later = m.q('.curve-edit, .type-edit');
       later.dispatchEvent(ptr('pointerdown', m, 90, 30, 1, { button: 2 }));
       const moved = m.editable().style.transform;
@@ -2010,10 +2027,15 @@ describe('the system\'s menu leaves nothing listening', () => {
     const on = listening();
     try {
       const m = await typing(id);
+      // A caret, not the words an edit starts with selected: a right-click on
+      // selected words opens their faces' menu instead of the system's.
+      nativeSel(m, 0);
       const el = m.q('.curve-edit, .type-edit');
       el.dispatchEvent(ptr('pointerdown', m, 150, 30, 1));
       el.dispatchEvent(ptr('pointerup', m, 150, 30, 1));
-      const menu = () => el.dispatchEvent(ptr('pointerdown', m, 60, 30, 1, { button: 2 }));
+      // Each press from a caret: one on the word the last press selected opens
+      // its faces' menu instead.
+      const menu = () => (nativeSel(m, 0), el.dispatchEvent(ptr('pointerdown', m, 60, 30, 1, { button: 2 })));
       // The menu comes.
       menu();
       expect(on.added()).toBe(1);
@@ -2360,5 +2382,67 @@ describe('browser ranges on a real picture broken inside a raw grapheme', () => 
     await tick();
     expect(ev.defaultPrevented).toBe(true);
     expect(m.box.text).toBe('가');
+  });
+});
+
+describe('the faces of selected words while typed into (C4)', () => {
+  const B = (start, end) => ({ start, end, bold: true, italic: false });
+
+  it('the selection is the face commands\' while the box is typed into, and only then', async () => {
+    const m = await typing('plain');
+    nativeSel(m, 0, 4);
+    await tick();
+    expect(typingSel).toMatchObject({ boxId: 'plain', text: m.box.text, a: 0, f: 4 });
+    endEdit(m.box.text);
+    await tick();
+    expect(typingSel.boxId).toBe(null);
+  });
+
+  it('a face asked for at the caret is the face of the letters typed there', async () => {
+    const m = await typing('plain');
+    const rows = rowsOf(m.box);
+    press(m, rows[0].xs[5] + 1, rows[0].top + 5);
+    release(m);
+    await tick();
+    askPending('plain', m.box.text, 5, { bold: true });
+    input(m, 'insertText', 'X');
+    await tick();
+    expect(m.box.text).toBe('WAIT XFOR ME\nOVER THERE');
+    expect(m.box.runs).toEqual([B(5, 6)]);
+    expect(typingSel.pending).toBe(null);
+    // The next letter takes the face of the one before it.
+    input(m, 'insertText', 'Y');
+    await tick();
+    expect(m.box.runs).toEqual([B(5, 7)]);
+  });
+
+  it('the browser\'s own Bold writes nothing into the words', async () => {
+    const m = await typing('plain');
+    nativeSel(m, 0, 4);
+    await tick();
+    const ev = input(m, 'formatBold');
+    expect(ev.defaultPrevented).toBe(true);
+    await tick();
+    expect(m.box.text).toBe('WAIT FOR ME\nOVER THERE');
+    expect('runs' in m.box).toBe(false);
+  });
+
+  it('the right button on selected words opens the menu of their faces; anywhere else the system\'s', async () => {
+    openFaceMenu.mockClear();
+    const m = await typing('plain');
+    const rows = rowsOf(m.box);
+    nativeSel(m, 0, 4);
+    await tick();
+    const el = m.q('.type-edit');
+    const on = ptr('pointerdown', m, rows[0].xs[2], rows[0].top + 5, 1, { button: 2, cancelable: true });
+    el.dispatchEvent(on);
+    expect(on.defaultPrevented).toBe(true);
+    expect(openFaceMenu).toHaveBeenCalledTimes(1);
+    expect(m.sel()).toEqual([0, 4]);
+    // Off the selection: the word under it is selected for the system's menu.
+    const off = ptr('pointerdown', m, rows[1].xs[2], rows[1].top + 5, 2, { button: 2, cancelable: true });
+    el.dispatchEvent(off);
+    expect(openFaceMenu).toHaveBeenCalledTimes(1);
+    expect(off.defaultPrevented).toBe(false);
   });
 });

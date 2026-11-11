@@ -5,7 +5,11 @@
 // string. Which of the box family's four faces a stretch of it is set in is
 // said beside the string, not inside it: a list of runs,
 //
-//   [{ start, end, bold, italic }, ...]
+//   [{ start, end, bold, italic, font? }, ...]
+//
+// `font`, when there, is a family the run's letters are set in instead of the
+// box's (any family the app has, the user's own included); without it they
+// are in the box's family, in the run's weight and slant.
 //
 // in UTF-16 offsets of the string they sit beside (`box.runs` beside
 // `box.text`, `line.runs` beside `line.en`). A run names the face its letters
@@ -22,7 +26,14 @@
 const HOLDER_KEY = 'runs';
 
 const isBool = (v) => v === true || v === false;
-const sameFace = (a, b) => !!a.bold === !!b.bold && !!a.italic === !!b.italic;
+// A family name as a run may hold one: a name, not too long to be one.
+const isFamily = (v) => typeof v === 'string' && v.trim() !== '' && v.length <= 256;
+const sameFace = (a, b) => !!a.bold === !!b.bold && !!a.italic === !!b.italic && (a.font ?? null) === (b.font ?? null);
+
+// The face a run names, as plain data: its weight and slant, and its family
+// when it has one of its own. Every copy of a run's face goes through here, so
+// none drops the family.
+export const faceOf = (r) => (r.font ? { bold: !!r.bold, italic: !!r.italic, font: r.font } : { bold: !!r.bold, italic: !!r.italic });
 
 // Whether offset `k` of `t` falls between the two halves of a surrogate pair,
 // where no edge may sit: the engine cannot cut a letter in two, and refuses
@@ -48,7 +59,7 @@ export function normalizeRuns(runs, text) {
     const s = snap(t, Math.max(0, Math.min(len, Math.trunc(Number(r.start)))));
     const e = snap(t, Math.max(0, Math.min(len, Math.trunc(Number(r.end)))));
     if (!(e > s)) continue;
-    list.push({ start: s, end: e, bold: isBool(r.bold) ? r.bold : false, italic: isBool(r.italic) ? r.italic : false });
+    list.push({ start: s, end: e, bold: isBool(r.bold) ? r.bold : false, italic: isBool(r.italic) ? r.italic : false, ...(isFamily(r.font) ? { font: r.font } : {}) });
   }
   if (!list.length) return null;
   let out = list;
@@ -64,7 +75,7 @@ export function normalizeRuns(runs, text) {
       const e = edges[i];
       let top = null;
       for (const r of list) if (r.start <= s && r.end >= e) top = r;
-      if (top) out.push({ start: s, end: e, bold: top.bold, italic: top.italic });
+      if (top) out.push({ start: s, end: e, ...faceOf(top) });
     }
   }
   const merged = [];
@@ -81,7 +92,7 @@ export function faceAt(runs, offset, face) {
   if (runs) {
     for (const r of runs) {
       if (r.start > offset) break;
-      if (offset < r.end) return { bold: r.bold, italic: r.italic };
+      if (offset < r.end) return faceOf(r);
     }
   }
   return { bold: !!face?.bold, italic: !!face?.italic };
@@ -98,7 +109,7 @@ export function faceSpans(runs, len, face) {
     if (r.start >= len) break;
     if (r.start > at) out.push({ start: at, end: r.start, ...own });
     const end = Math.min(len, r.end);
-    out.push({ start: r.start, end, bold: r.bold, italic: r.italic });
+    out.push({ start: r.start, end, ...faceOf(r) });
     at = end;
   }
   if (at < len || !out.length) out.push({ start: at, end: len, ...own });
@@ -123,6 +134,79 @@ export function toggleRuns(runs, text, start, end, key, face) {
   // The untouched runs first, then the range written over them: `normalizeRuns`
   // gives the later run the letters both claim.
   return normalizeRuns([...(runs ?? []), ...changed], text);
+}
+
+// ----- a face set on a range, as the editor's commands set it -----
+
+// `[a, b)` of `text` widened to whole letters as a reader sees them
+// (graphemes): an emoji sequence, a flag, a letter and its combining marks are
+// never split between two faces. Asked when a command is given, never while
+// typing.
+let graphemes = null;
+export function wholeLetters(text, a, b) {
+  const t = typeof text === 'string' ? text : '';
+  let lo = Math.max(0, Math.min(t.length, Math.min(a, b)));
+  let hi = Math.max(0, Math.min(t.length, Math.max(a, b)));
+  // A caret is no range of letters to widen.
+  if (lo === hi) return [lo, hi];
+  // With no segmenter, whole code points at least.
+  if (typeof Intl === 'undefined' || typeof Intl.Segmenter !== 'function') return [snap(t, lo), splitsPair(t, hi) ? hi + 1 : hi];
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  for (const g of graphemes.segment(t)) {
+    const end = g.index + g.segment.length;
+    if (g.index < lo && end > lo) lo = g.index;
+    if (g.index < hi && end > hi) hi = end;
+    if (g.index >= hi) break;
+  }
+  return [lo, hi];
+}
+
+// What `[a, b)` is set in, read for a toggle and for the Inspector: each of
+// bold and italic true, false or 'mixed', and the family - a run's own, null
+// for the box's, or 'mixed'. `face` is the box's own (bold, italic).
+export function rangeFace(runs, text, a, b, face) {
+  const pieces = faceSpans(runs, text.length, face).filter((p) => p.end > a && p.start < b && b > a);
+  if (!pieces.length) {
+    const at = faceAt(runs, Math.max(0, a - 1), face);
+    return { bold: at.bold, italic: at.italic, font: at.font ?? null };
+  }
+  const one = (get) => {
+    const v = get(pieces[0]);
+    return pieces.every((p) => get(p) === v) ? v : 'mixed';
+  };
+  return { bold: one((p) => !!p.bold), italic: one((p) => !!p.italic), font: one((p) => p.font ?? null) };
+}
+
+// Runs with `[a, b)` changed by `patch`: `bold` or `italic` set as given, and
+// `font` set to a family (or null, the box's). What a letter had and the patch
+// does not name it keeps. `face` is the box's own, the face of the letters
+// outside every run.
+export function patchRuns(runs, text, a, b, patch, face) {
+  const len = text.length;
+  const lo = Math.max(0, Math.min(len, a));
+  const hi = Math.max(lo, Math.min(len, b));
+  if (lo === hi) return normalizeRuns(runs, text);
+  const changed = faceSpans(runs, len, face)
+    .filter((p) => p.end > lo && p.start < hi)
+    .map((p) => {
+      const out = { start: Math.max(lo, p.start), end: Math.min(hi, p.end), bold: 'bold' in patch ? !!patch.bold : !!p.bold, italic: 'italic' in patch ? !!patch.italic : !!p.italic };
+      const font = 'font' in patch ? patch.font : p.font;
+      return font ? { ...out, font } : out;
+    });
+  return normalizeRuns([...(runs ?? []), ...changed], text);
+}
+
+// Runs with every one taken off `[a, b)`: its letters back in the box's face.
+export function clearRuns(runs, text, a, b) {
+  const out = [];
+  for (const r of runs ?? []) {
+    if (r.end <= a || r.start >= b) out.push(r);
+    else {
+      if (r.start < a) out.push({ ...r, end: a });
+      if (r.end > b) out.push({ ...r, start: b });
+    }
+  }
+  return normalizeRuns(out, text);
 }
 
 // Where two strings differ: the replaced range `[a, b]` of `before`, from the
@@ -215,7 +299,7 @@ export function sliceRuns(runs, start, end) {
   for (const r of runs) {
     const s = Math.max(start, r.start);
     const e = Math.min(end, r.end);
-    if (e > s) out.push({ start: s - start, end: e - start, bold: r.bold, italic: r.italic });
+    if (e > s) out.push({ start: s - start, end: e - start, ...faceOf(r) });
   }
   return out.length ? out : null;
 }
@@ -257,13 +341,13 @@ export function shiftRuns(runs, before, after, span) {
       s = r.start <= a ? r.start : r.start >= b ? r.start + delta : a + ins;
       e = r.end <= a ? r.end : r.end >= b ? r.end + delta : a;
     }
-    if (e > s) out.push({ start: s, end: e, bold: r.bold, italic: r.italic });
+    if (e > s) out.push({ start: s, end: e, ...faceOf(r) });
   }
   return normalizeRuns(out, now);
 }
 
 // Two run lists the same, for a caller deciding whether anything changed.
-export const runsKey = (runs) => (runs?.length ? runs.map((r) => `${r.start}-${r.end}${r.bold ? 'b' : ''}${r.italic ? 'i' : ''}`).join(',') : '');
+export const runsKey = (runs) => (runs?.length ? runs.map((r) => `${r.start}-${r.end}${r.bold ? 'b' : ''}${r.italic ? 'i' : ''}${r.font ? `@${r.font}` : ''}`).join(',') : '');
 
 // THE writer of a text that runs index. `holder[key] = v`, with `holder.runs`
 // brought along: shifted from what the text was (`from`, default the holder's
@@ -291,7 +375,11 @@ export function putText(holder, key, v, opts = {}) {
 }
 
 // `runs` for a record or a copy: plain data, or null for none.
-export const copyRuns = (runs) => (runs?.length ? runs.map((r) => ({ start: r.start, end: r.end, bold: r.bold, italic: r.italic })) : null);
+export const copyRuns = (runs) => (runs?.length ? runs.map((r) => ({ start: r.start, end: r.end, ...faceOf(r) })) : null);
+
+// The families runs set letters in, besides the box's: what a chapter's
+// fonts must hold for them (the package, the wait for fonts before an export).
+export const runFamilies = (runs) => [...new Set((runs ?? []).map((r) => r.font).filter(Boolean))];
 
 // ----- on disk -----
 //

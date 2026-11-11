@@ -789,8 +789,10 @@ function trimEnd(line) {
 // outside every run do, and goes - the stored runs keep it, as a run is a face
 // outright and the box's face may change. A text left with none is plain
 // text: `{ text, runs: null }`, today's layout.
+// A run's family is its own only when it is not the box's.
+const ownFamily = (f, style) => !f.font || f.font === style?.font;
 const notOwn = (list, style) => {
-  const out = list?.filter((r) => r.bold !== !!style?.bold || r.italic !== !!style?.italic);
+  const out = list?.filter((r) => r.bold !== !!style?.bold || r.italic !== !!style?.italic || !ownFamily(r, style));
   return out?.length ? out : null;
 };
 export function casedRuns(text, runs, style) {
@@ -832,13 +834,19 @@ export function casedRuns(text, runs, style) {
 // not measured in. When a face that was not ready arrives, the store is told
 // (`noteFontsChanged`), which drops the layouts and this with them and lays
 // out and paints every box again.
+//
+// A run with a family of its own is measured in that family, resolved as the
+// box's own is (`faceFor`): a user's font, a system one, the last resort for
+// a name the machine does not have.
 const faceStyles = new WeakMap();
 function faceStyle(style, f) {
-  if (!!style.bold === f.bold && !!style.italic === f.italic) return style;
+  const family = ownFamily(f, style) ? null : f.font;
+  if (!!style.bold === !!f.bold && !!style.italic === !!f.italic && !family) return style;
   let kept = faceStyles.get(style);
-  if (!kept) faceStyles.set(style, (kept = []));
-  const i = (f.bold ? 2 : 0) + (f.italic ? 1 : 0);
-  const fs = (kept[i] ??= { ...style, bold: f.bold, italic: f.italic });
+  if (!kept) faceStyles.set(style, (kept = new Map()));
+  const k = `${f.bold ? 'b' : ''}${f.italic ? 'i' : ''}|${family ?? ''}`;
+  let fs = kept.get(k);
+  if (!fs) kept.set(k, (fs = family ? { ...style, bold: !!f.bold, italic: !!f.italic, font: family } : { ...style, bold: !!f.bold, italic: !!f.italic }));
   return faceIsReady(faceFor(fs, fs.size)) ? fs : style;
 }
 
@@ -904,16 +912,17 @@ function piecesOf(text, runs, style, s, e, hyphen) {
     if (p.end <= s || p.start >= e) continue;
     const a = Math.max(s, p.start) - s;
     const b = Math.min(e, p.end) - s;
+    const font = ownFamily(p, style) ? null : p.font;
     const last = out[out.length - 1];
-    if (last && last.bold === p.bold && last.italic === p.italic) last.end = b;
-    else out.push({ start: a, end: b, bold: p.bold, italic: p.italic });
+    if (last && last.bold === p.bold && last.italic === p.italic && last.font === font) last.end = b;
+    else out.push({ start: a, end: b, bold: p.bold, italic: p.italic, font });
   }
-  if (!out.length) out.push({ start: 0, end: 0, bold: !!style.bold, italic: !!style.italic });
+  if (!out.length) out.push({ start: 0, end: 0, bold: !!style.bold, italic: !!style.italic, font: null });
   if (hyphen) out[out.length - 1].end += 1;
   return out;
 }
-const isOwnFace = (pieces, style) => pieces.length === 1 && pieces[0].bold === !!style.bold && pieces[0].italic === !!style.italic;
-const pieceSig = (pieces) => pieces.map((p) => `${p.end - p.start}${p.bold ? 'b' : ''}${p.italic ? 'i' : ''}`).join(',');
+const isOwnFace = (pieces, style) => pieces.length === 1 && pieces[0].bold === !!style.bold && pieces[0].italic === !!style.italic && !pieces[0].font;
+const pieceSig = (pieces) => pieces.map((p) => `${p.end - p.start}${p.bold ? 'b' : ''}${p.italic ? 'i' : ''}${p.font ? `@${p.font}` : ''}`).join(',');
 
 // The width of `[s, e)` of `text` (cased, with its cased runs), and of the
 // hyphen after it when `hyphen`: what `lineWidth` answers for that string,

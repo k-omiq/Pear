@@ -180,6 +180,10 @@
     query = seed;
     overlay.show();
   }
+  // Opened by its owner, for a command that asks for a family ("Typeface…").
+  export function openList() {
+    if (!open) openPanel();
+  }
 
   // On open: the list starts at the family the box is in, and the search has
   // the keys.

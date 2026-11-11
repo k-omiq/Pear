@@ -56,6 +56,7 @@ import { createFontSync } from './text-engine/font-sync.js';
 import { osOf } from './text-engine/last-resort.js';
 import { engineWasmUrl, fetchEngineWasm } from './text-engine/wasm.js';
 import { startPaintMirror } from './text-engine/paint-mirror.js';
+import { runFamilies } from './runs.js';
 
 async function tauriInvoke() {
   if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return null;
@@ -364,7 +365,9 @@ export async function fontsSettled(pages = app.pages) {
     for (const p of pages ?? []) {
       for (const b of p?.boxes ?? []) {
         if (!b?.style) continue;
-        if (!s.ready(b.style.font) || boxLetters(b, p).pending.length) waiting = true;
+        // The families of its words' runs too: a word set in another family
+        // is drawn from that family's bytes.
+        if (!s.ready(b.style.font) || runFamilies(boxRuns(b, p)).some((f) => !s.ready(f)) || boxLetters(b, p).pending.length) waiting = true;
       }
     }
     if (!waiting) return;
