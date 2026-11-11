@@ -1509,18 +1509,19 @@ fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer)
     // arms, which reach far past the letters, and what lands past the
     // surface is never seen (its padding holds the farthest a piece goes).
     let surface = l.job.effects.surface;
-    let alpha = |polys: &Polys, t: &Affine| -> Result<Option<Alpha>, Error> {
+    let alpha = |polys: &Polys, t: &Affine, within: Option<IBox>| -> Result<Option<Alpha>, Error> {
         let Some(p) = poly_plan(polys, l.bends, t, l.tiles, l.tol)? else {
             return Ok(None);
         };
         let bx = surface.map_or(p.bx, |s| p.bx.intersect(&s));
+        let bx = within.map_or(bx, |w| bx.intersect(&w));
         if bx.is_empty() {
             return Ok(None);
         }
         let a = alpha_bytes(&p.parts, bx, rasterizer)?;
         Ok(Some(Alpha { bx, a }))
     };
-    let holes = alpha(&outlines(&mut shapes.pieces.iter()), l.transform)?;
+    let holes = alpha(&outlines(&mut shapes.pieces.iter()), l.transform, None)?;
     let to_job = l.transform.invert();
     let bound = |o: &[Pt]| {
         o.iter().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, v| {
@@ -1532,7 +1533,7 @@ fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer)
         let at = match (piece.moved, to_job) {
             (Some(m), Some(to_job)) => {
                 let moved = l.transform.after(&m);
-                match (moved.after(&to_job).invert(), alpha(&outlines(&mut core::iter::once(piece)), &moved)?) {
+                match (moved.after(&to_job).invert(), alpha(&outlines(&mut core::iter::once(piece)), &moved, None)?) {
                     (Some(back), Some(mut cover)) => {
                         // Less the pieces before it that overlap it (the
                         // same move takes both).
@@ -1541,7 +1542,8 @@ fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer)
                             let c = bound(&e.outline);
                             c.0 <= b.2 && c.2 >= b.0 && c.1 <= b.3 && c.3 >= b.1
                         });
-                        if let Some(e) = alpha(&outlines(&mut earlier), &moved)? {
+                        // Rastered over this piece's box alone.
+                        if let Some(e) = alpha(&outlines(&mut earlier), &moved, Some(cover.bx))? {
                             let both = cover.bx.intersect(&e.bx);
                             for y in both.y0..both.y1 {
                                 for x in both.x0..both.x1 {
