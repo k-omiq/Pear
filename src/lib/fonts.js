@@ -18,6 +18,7 @@
 // names that did not exist when the document was written.
 import { app, toast, toastError, noteFontsChanged, fontByName } from './store.svelte.js';
 import { FACE_SLOTS, emptyFaces } from './data.js';
+import { forgetUnmatchedFaces } from './text-engine/browser.js';
 
 export { FACE_SLOTS };
 
@@ -672,6 +673,9 @@ async function registerFace(family, data, slot) {
     parsedPostScriptNames.set(recordKey(family, slot), psName);
   }
   document.fonts.add(face);
+  // A face of this family a layout asked for and found nothing for may be
+  // this one: asked again (text-engine/browser.js).
+  forgetUnmatchedFaces();
   registered.set(recordKey(family, slot), face);
   // After the browser has accepted it: a file the browser refused is in no
   // list, and must not be measured by anyone.

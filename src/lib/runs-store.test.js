@@ -334,11 +334,12 @@ describe('face commands on selected words (C4)', () => {
   it('a family, then Clear typeface back to the box face', () => {
     const b = byId('own');
     setRangeFace(b, 4, 7, { font: 'Bangers' }, p1());
-    expect(b.runs).toEqual([It(0, 3), F(4, 7, 'Bangers')]);
+    // 'its' was not touched, so it keeps the shape it was loaded in.
+    expect(b.runs).toEqual([I(0, 3), F(4, 7, 'Bangers')]);
     setRangeFace(b, 0, 13, { clear: true }, p1());
     expect('runs' in b).toBe(false);
     undo();
-    expect(b.runs).toEqual([It(0, 3), F(4, 7, 'Bangers')]);
+    expect(b.runs).toEqual([I(0, 3), F(4, 7, 'Bangers')]);
   });
 
   it('widens to whole letters, refuses a locked box, and changes nothing that is already so', () => {
@@ -356,7 +357,7 @@ describe('face commands on selected words (C4)', () => {
     const b = byId('a'); // reads line 1, 'one two three', 'two' bold
     setRangeFace(b, 0, 3, { toggle: 'italic' }, p1());
     expect(b.text).toBe(null);
-    expect(lineByN(p1(), 1).runs).toEqual([It(0, 3), Bo(4, 7)]);
+    expect(lineByN(p1(), 1).runs).toEqual([It(0, 3), B(4, 7)]);
     undo();
     expect(lineByN(p1(), 1).runs).toEqual([B(4, 7)]);
   });
@@ -369,7 +370,7 @@ describe('face commands on selected words (C4)', () => {
     beginEdit('own');
     setTypingSel('own', b.text, 4, 13);
     run['text.bold']();
-    expect(b.runs).toEqual([It(0, 3), Bo(4, 13)]);
+    expect(b.runs).toEqual([I(0, 3), Bo(4, 13)]);
     expect(b.style.bold).toBe(false);
     // The selection is kept.
     expect([typingSel.a, typingSel.f]).toEqual([4, 13]);
@@ -377,7 +378,7 @@ describe('face commands on selected words (C4)', () => {
     setTypingSel('own', b.text, 3, 3);
     run['text.bold']();
     expect(typingSel.pending).toMatchObject({ boxId: 'own', at: 3, patch: { bold: true } });
-    expect(b.runs).toEqual([It(0, 3), Bo(4, 13)]);
+    expect(b.runs).toEqual([I(0, 3), Bo(4, 13)]);
     // Bold again there takes the ask back.
     run['text.bold']();
     expect(typingSel.pending.patch).toEqual({ bold: false });
@@ -416,6 +417,25 @@ describe('face commands on selected words (C4)', () => {
     expect(b.runs).toEqual([{ start: 0, end: 3, bold: false, italic: true }, { start: 4, end: 7, bold: false }]);
     b.style.italic = true;
     expect(faceAt(b.runs, 5, b.style)).toEqual({ bold: false, italic: true });
+  });
+
+  it('prunes only the letters a command changed: an un-bold kept through a box made regular and bold again', () => {
+    const b = byId('own'); // 'its own words', 'its' italic
+    setRangeFace(b, 0, 13, { clear: true }, p1());
+    b.style.bold = true;
+    setRangeFace(b, 4, 7, { toggle: 'bold' }, p1());
+    expect(b.runs).toEqual([{ start: 4, end: 7, bold: false }]);
+    b.style.bold = false;
+    setRangeFace(b, 8, 13, { toggle: 'italic' }, p1());
+    // 'own' was not touched: its bold:false stays, though it equals the box now.
+    expect(b.runs).toEqual([{ start: 4, end: 7, bold: false }, It(8, 13)]);
+    b.style.bold = true;
+    expect(faceAt(b.runs, 5, b.style).bold).toBe(false);
+    // A command over part of a run prunes that part only.
+    b.style.bold = false;
+    setRangeFace(b, 0, 13, { toggle: 'bold' }, p1());
+    setRangeFace(b, 8, 13, { toggle: 'bold' }, p1());
+    expect(b.runs).toEqual([Bo(0, 8), It(8, 13)]);
   });
 
   it('refuses a box showing a line another locked box shows, and curved text, with one plain toast', () => {

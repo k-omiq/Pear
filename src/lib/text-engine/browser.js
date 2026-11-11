@@ -174,32 +174,56 @@ function wrapPlain(face, text, opts) {
 // Readiness used to ask the live font set even when there was no measuring
 // canvas at import time. Keep that answer for a browser installed later too.
 //
-// A face the set does not have yet is loaded once, and whatever that load
-// ends in - the face, an error, nothing that matched - is final: from then on
-// the face is ready, and the browser draws it with what it has, as it does a
-// face whose file was never there (a bold made from the regular, say), the
-// same in the measure and on the canvas. So a file that will not load is not
-// asked for again, and a face never waits on it for good. Each load that ends
-// is told to the engines' font listeners (`onFontsChange`), as the set's own
+// A face the set does not have yet is loaded once. A load that fails is
+// final: from then on the face is ready, and the browser draws it with what it
+// has, the same in the measure and on the canvas, so a file that will not load
+// is never asked for again. A load that matched nothing is not final: the
+// family may be added later (a font the user loads, a chapter opened before
+// its fonts). Until the set changes (its `loadingdone`, or a face added,
+// `forgetUnmatchedFaces`) such a face is drawn with what the browser has, as a
+// failed one is - but a caller fitting a box to the face (`{ matched: true }`,
+// the store) is told it is not here, so no box is sized for the stand-in and
+// then kept at that size once the real face comes. Each load that ends is
+// told to the engines' font listeners (`onFontsChange`), as the set's own
 // events would, so the layouts made while it was loading are made again.
-const facesSettled = new Set();
+const facesFailed = new Set();
+const facesUnmatched = new Set();
 const facesLoading = new Set();
 const faceListeners = new Set();
-export function browserFaceReady(face) {
+const setsWatched = new WeakSet();
+export function forgetUnmatchedFaces() {
+  facesUnmatched.clear();
+}
+export function browserFaceReady(face, { matched = false } = {}) {
   const set = typeof document === 'undefined' ? null : document.fonts;
   if (typeof set?.check !== 'function') return true;
   const key = face.key;
-  if (facesSettled.has(key)) return true;
+  if (facesFailed.has(key)) return true;
   try {
+    // Whatever set is asked is the one whose changes count.
+    if (!setsWatched.has(set) && typeof set.addEventListener === 'function') {
+      setsWatched.add(set);
+      set.addEventListener('loadingdone', forgetUnmatchedFaces);
+    }
     if (set.check(key)) return true;
+    if (facesUnmatched.has(key)) return !matched;
     if (!facesLoading.has(key)) {
       facesLoading.add(key);
-      const done = () => {
-        facesLoading.delete(key);
-        facesSettled.add(key);
+      const tell = () => {
         for (const cb of [...faceListeners]) cb();
       };
-      Promise.resolve(set.load?.(key)).then(done, done);
+      Promise.resolve(set.load?.(key)).then(
+        (got) => {
+          facesLoading.delete(key);
+          if (!got?.length) facesUnmatched.add(key);
+          tell();
+        },
+        () => {
+          facesLoading.delete(key);
+          facesFailed.add(key);
+          tell();
+        },
+      );
     }
     return false;
   } catch {

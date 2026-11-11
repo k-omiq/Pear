@@ -211,18 +211,30 @@ export function patchRuns(runs, text, a, b, patch, face) {
 }
 
 // Runs left naming only what differs from the box's face `face` (bold,
-// italic, font) as it is now: what equals it is dropped, so the letters follow
-// the box again, and a run left naming nothing goes. For a command, when it is
-// given - never on save, load or typing - so bold put on and taken off again
-// leaves no run, and a word un-bolded in a bold box keeps its `bold: false`.
-export function pruneRuns(runs, text, face) {
-  const out = (runs ?? []).map((r) => {
-    const k = { start: r.start, end: r.end, ...attrsOf(r) };
-    if (k.bold === !!face?.bold) delete k.bold;
-    if (k.italic === !!face?.italic) delete k.italic;
-    if (k.font && k.font === face?.font) delete k.font;
-    return k;
-  });
+// italic, font) inside `ranges` (`[[a, b], ...]`, the letters a command
+// changed): what equals the face there is dropped, so those letters follow
+// the box again, and a run left naming nothing goes. Runs outside the ranges
+// are kept as they are: a word un-bolded while the box was bold keeps its
+// `bold: false` through a command on other words, whatever the box is by
+// then. For a command, when it is given - never on save, load or typing - so
+// bold put on and taken off again leaves no run.
+export function pruneRuns(runs, text, face, ranges) {
+  const cuts = [...new Set((ranges ?? []).flat())].sort((x, y) => x - y);
+  const inside = (a, b) => (ranges ?? []).some(([lo, hi]) => a >= lo && b <= hi);
+  const out = [];
+  for (const r of runs ?? []) {
+    // Cut at the range edges, so only the part inside is pruned.
+    const at = [r.start, ...cuts.filter((c) => c > r.start && c < r.end), r.end];
+    for (let i = 0; i < at.length - 1; i++) {
+      const k = { start: at[i], end: at[i + 1], ...attrsOf(r) };
+      if (inside(k.start, k.end)) {
+        if (k.bold === !!face?.bold) delete k.bold;
+        if (k.italic === !!face?.italic) delete k.italic;
+        if (k.font && k.font === face?.font) delete k.font;
+      }
+      out.push(k);
+    }
+  }
   return normalizeRuns(out, text);
 }
 

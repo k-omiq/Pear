@@ -101,6 +101,25 @@ describe('face commands in the queue\'s English field', () => {
     expect(app.toast?.msg).toBe('This box is locked - unlock it first');
   });
 
+  it('the field\'s Cmd+Z over a face is refused once a box showing the line is locked', async () => {
+    load('typeset');
+    const el = await field();
+    key(el, 'b');
+    settleEdits();
+    await tick();
+    expect(line().runs).toEqual([{ start: 4, end: 7, bold: true }]);
+    page().boxes[0].locked = true;
+    key(el, 'z');
+    settleEdits();
+    expect(line().runs).toEqual([{ start: 4, end: 7, bold: true }]);
+    expect(app.toast?.msg).toBe('This box is locked - unlock it first');
+    // Unlocked again, the same Cmd+Z takes it back: the field did not step.
+    page().boxes[0].locked = false;
+    key(el, 'z');
+    settleEdits();
+    expect(line().runs ?? null).toBe(null);
+  });
+
   it('do nothing in a translate chapter, and nothing once the field lets go', async () => {
     load('translate');
     let el = await field();
