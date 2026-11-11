@@ -904,6 +904,19 @@ function newtonBack(m, tx, ty, px, py, r, f0 = null) {
   return r <= UNWARP_TOLERANCE ? [px, py] : null;
 }
 
+// The mesh of a box that changed size, carried to the new size. The points are
+// box-local page px, and the painter maps the box rect at its CURRENT size onto
+// them - so a mesh left where it was when the box grew squeezes the text back
+// into the old rectangle, and the gizmo's handles sit on that old rectangle
+// rather than on the box's corners. Scaled per axis, the mesh keeps the same
+// deformation of the new rect. Fresh points; an empty mesh stays empty.
+export function scaleMesh(pts, sx, sy) {
+  if (!Array.isArray(pts)) return [];
+  const kx = Number.isFinite(+sx) && +sx > 0 ? +sx : 1;
+  const ky = Number.isFinite(+sy) && +sy > 0 ? +sy : 1;
+  return pts.map((p) => [+p?.[0] * kx, +p?.[1] * ky]);
+}
+
 // Whether a style's warp changes anything, which is the question every renderer
 // asks before it pays for a texture pass.
 //
