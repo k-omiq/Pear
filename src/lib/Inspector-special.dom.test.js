@@ -188,14 +188,30 @@ describe('the Special panel', () => {
     expect(box().style.special.bandOutline).toBe('cut-through');
   });
 
-  it('with a text outline and a box stroke at their defaults, says the two differ', async () => {
+  it('with a text outline and a box stroke, shows a named row each, each with its choice picked', async () => {
     const k0 = defaultStyle().strokeEffects[0];
     const both = { strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, position: 'outside' }, { ...k0, on: true, size: 8, opacity: 1, position: 'center' }] };
-    const { view } = mounted(true, { crack: { on: true } }, both);
+    const { view, box } = mounted(true, { crack: { on: true } }, both);
     await tick();
-    expect(view.getByText(/Mixed/)).toBeTruthy();
-    expect(view.getByRole('button', { name: 'Fills cuts' }).getAttribute('aria-pressed')).toBe('false');
-    expect(view.getByRole('button', { name: 'Cut through' }).getAttribute('aria-pressed')).toBe('false');
+    expect(view.queryByText(/Mixed/)).toBeNull();
+    const plain = view.getByRole('group', { name: 'Special plain outline' });
+    const other = view.getByRole('group', { name: 'Special other strokes' });
+    const pressed = (g) => [...g.querySelectorAll('button')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.textContent);
+    // Each at its own default: the old look.
+    expect(pressed(plain)).toEqual(['Cut through']);
+    expect(pressed(other)).toEqual(['Fills cuts']);
+    const fills = [...plain.querySelectorAll('button')].find((b) => b.textContent === 'Fills cuts');
+    await fireEvent.pointerDown(fills);
+    await fireEvent.click(fills);
+    settleEdits();
+    expect(box().style.special.bandOutline).toBe('fills-cuts');
+    expect(box().style.special.outline).toBe('fills-cuts');
+    const cut = [...other.querySelectorAll('button')].find((b) => b.textContent === 'Cut through');
+    await fireEvent.pointerDown(cut);
+    await fireEvent.click(cut);
+    settleEdits();
+    expect(box().style.special.outline).toBe('cut-through');
+    expect(box().style.special.bandOutline).toBe('fills-cuts');
   });
 
   it('a lightning can be aimed from a point, with a start and a direction', async () => {

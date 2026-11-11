@@ -165,17 +165,18 @@ export function specialCuts(style) {
   return shownSpecial(style).some((k) => k === 'crack' || k === 'scratches');
 }
 
-// What the Outline row shows for `style` (`outline`, `bandOutline`), given
-// whether it has the text's own outline (`hasBand`, a glyph band: data.js
-// `outlineRun`) and a box stroke (`hasStroke`, Effects ▸ Stroke): `any`,
-// either; `current`, the choice the outlines there share, or null when the
-// two keys differ for outlines both there.
+// What the Outline rows show for `style`, given whether it has the text's own
+// outline (`hasBand`, a glyph band: data.js `outlineRun`) and a box stroke
+// (`hasStroke`, Effects ▸ Stroke): `any`, either; `both`, the two, each with
+// a row of its own; `band` and `stroke`, the choice each one has (keys
+// `bandOutline` and `outline`); `current`, the one row's choice when only one
+// is there.
 export function outlineKinds(style, hasBand, hasStroke) {
   const sp = style?.special ?? {};
-  const o = sp.outline === 'cut-through' ? 'cut-through' : 'fills-cuts';
-  const b = sp.bandOutline === 'fills-cuts' ? 'fills-cuts' : 'cut-through';
-  const current = hasBand && hasStroke ? (o === b ? o : null) : hasBand ? b : o;
-  return { any: !!(hasBand || hasStroke), current };
+  const stroke = sp.outline === 'cut-through' ? 'cut-through' : 'fills-cuts';
+  const band = sp.bandOutline === 'fills-cuts' ? 'fills-cuts' : 'cut-through';
+  const both = !!(hasBand && hasStroke);
+  return { any: !!(hasBand || hasStroke), both, band, stroke, current: both ? null : hasBand ? band : stroke };
 }
 
 // Whether any special effect draws on this style.

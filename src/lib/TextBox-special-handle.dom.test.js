@@ -15,9 +15,9 @@ import { installFakeCanvas } from '../test/fake-canvas.js';
 // writes x and y (the lightning's arm, its angle), one undo step.
 // ===========================================================================
 
-const BOX = (special) => ({
+const BOX = (special, over = {}) => ({
   id: 'b', lineN: null, text: 'KABOOM', x: 100, y: 200, w: 200, h: 100,
-  style: normalizeStyle({ ...defaultStyle(), size: 30, special }),
+  style: normalizeStyle({ ...defaultStyle(), size: 30, special, ...over }),
 });
 const typeset = typesetEnabled();
 let restoreCanvas;
@@ -43,10 +43,10 @@ afterEach(() => {
   effectsSubTab.id = tabs.sub;
 });
 
-async function mount(special, sub = 'special') {
+async function mount(special, sub = 'special', over = {}) {
   inspectorTab.id = 'effects';
   effectsSubTab.id = sub;
-  loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [BOX(special)] }]);
+  loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [BOX(special, over)] }]);
   const pg = page();
   const b = pg.boxes[0];
   // The page frame at the window's corner: a client point is a page point.
@@ -104,5 +104,54 @@ describe('the special handles', () => {
     expect(b.style.special.crack.x).toBe(0);
     expect(b.style.special.crack.y).toBe(0);
     expect(b.style.special.crack.spread).toBe(50);
+  });
+
+  // The lightning starts on the left edge by default, on the W resize
+  // handle: two controls in one place would be a coin toss over which one a
+  // press gets, so the resize handles stand down while a point shows.
+  it('stand the resize handles down while a point shows', async () => {
+    const on = await mount({ lightning: { on: true } });
+    expect(on.q('.special-gizmo .hit.point')).not.toBeNull();
+    expect(on.q('.handle.w')).toBeNull();
+    expect(on.q('.handle.e')).toBeNull();
+    cleanup();
+    const other = await mount({ lightning: { on: true } }, 'stroke');
+    expect(other.q('.special-gizmo')).toBeNull();
+    expect(other.q('.handle.w')).not.toBeNull();
+    cleanup();
+    // Scratches has no point: the box keeps its handles.
+    const none = await mount({ scratches: { on: true } });
+    expect(none.q('.handle.w')).not.toBeNull();
+  });
+
+  // The engine lays the effects before the warp mesh and bends them with the
+  // letters, so a point shows where the mesh carries it, and a drag is taken
+  // back through the mesh. A shear: the top edge 40 px right, the bottom
+  // where it was, so a point h px down moves 40 * (1 - h / 100) right.
+  const SHEAR = { warp: { on: true, cols: 1, rows: 1, pts: [[40, 0], [240, 0], [0, 100], [200, 100]] } };
+  it('show a point where the warp carries it, and a drag lands under the pointer', async () => {
+    const { b, q } = await mount({ splash: { on: true } }, 'special', SHEAR);
+    const pt = q('.special-gizmo .hit.point');
+    // The middle (100, 50) is carried 20 px right.
+    expect(Number(pt.getAttribute('cx'))).toBeCloseTo(120, 6);
+    expect(Number(pt.getAttribute('cy'))).toBeCloseTo(50, 6);
+    // Box-local (50, 25) shows at (80, 25): page (180, 225).
+    await drag(pt, 180, 225);
+    expect(b.style.special.splash.x).toBeCloseTo(25, 6);
+    expect(b.style.special.splash.y).toBeCloseTo(25, 6);
+    await tick();
+    expect(Number(q('.special-gizmo .hit.point').getAttribute('cx'))).toBeCloseTo(80, 6);
+  });
+
+  it('carry the lightning arm through the warp too', async () => {
+    const { b, q } = await mount({ lightning: { on: true, aim: 'point', x: 50, y: 50, angle: 0 } }, 'special', SHEAR);
+    // Its start (100, 50) shows at (120, 50); its arm end, 36 px right of
+    // the start before the mesh, at (156, 50).
+    expect(Number(q('.special-gizmo .hit.point').getAttribute('cx'))).toBeCloseTo(120, 6);
+    expect(Number(q('.special-gizmo .hit.arm').getAttribute('cx'))).toBeCloseTo(156, 6);
+    // A drag to the shown point straight up from the start (box-local
+    // (100, 0) before the mesh, (140, 0) after) aims the bolts up: 90.
+    await drag(q('.special-gizmo .hit.arm'), 240, 200);
+    expect(b.style.special.lightning.angle).toBe(90);
   });
 });

@@ -491,7 +491,8 @@ describe('the handles', () => {
     expect(outlineKinds(st({}), false, false).any).toBe(false);
     expect(outlineKinds(st({}), true, false).current).toBe('cut-through');
     expect(outlineKinds(st({}), false, true).current).toBe('fills-cuts');
-    expect(outlineKinds(st({}), true, true).current).toBe(null);
-    expect(outlineKinds(st({ outline: 'cut-through', bandOutline: 'cut-through' }), true, true).current).toBe('cut-through');
+    expect(outlineKinds(st({}), true, true)).toMatchObject({ any: true, both: true, band: 'cut-through', stroke: 'fills-cuts' });
+    expect(outlineKinds(st({ outline: 'cut-through', bandOutline: 'fills-cuts' }), true, true)).toMatchObject({ band: 'fills-cuts', stroke: 'cut-through' });
+    expect(outlineKinds(st({}), true, false).both).toBe(false);
   });
 });
