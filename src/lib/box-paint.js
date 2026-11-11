@@ -19,7 +19,8 @@
 
 import { normalizeMaskShape, revOf, pageToBox, boxToPage, shapesInBoxFrame, shapesOnPage, shiftedShapes, bendShape, bendStrokeRuns, MASK_SHAPES_MAX } from './box-mask.js';
 import { fadeShapeSize } from './box-fade.js';
-import { meshMap, unwarpWith } from './warp.js';
+import { meshMap, unwarpWith, oneStep } from './warp.js';
+import { styleReach } from './paint-reach.js';
 
 // The most colour marks a box holds. Erasers do not count against it: a box
 // full of marks can always have one taken off. They have a ceiling of their
@@ -88,17 +89,49 @@ function meshOf(box) {
   return w?.on && Array.isArray(w.pts) ? meshMap(w.pts, w.cols, w.rows, box.w, box.h) : null;
 }
 
+// Where in the paint's frame a mark may lie: the box grown on every side by
+// the furthest its style paints past an edge (`styleReach`) or its glyphs
+// spill (`box.review.overflow`), plus half the font size, since the paint
+// lies on the letters' fill only. Past that, a point a folded mesh carries
+// back is on a sheet nobody sees, never where the pointer meant.
+export function paintBounds(box) {
+  const s = box?.style ?? {};
+  const w = Math.max(0, Number(box?.w) || 0);
+  const h = Math.max(0, Number(box?.h) || 0);
+  const st = styleReach(s, w, h);
+  const o = box?.review?.overflow ?? {};
+  const side = Math.max(0, ...['l', 't', 'r', 'b'].map((k) => Math.max(Number(st[k]) || 0, Number(o[k]) || 0)));
+  const m = side + 0.5 * (Number(s.size) || 0);
+  return [-m, -m, w + m, h + m];
+}
+
+// Whether two neighbouring points of a mark, carried back to the box's
+// points `prev.q` and `q`, are one piece (`oneStep`): the box's straight step
+// between them carries onto the straight step between where they were sent
+// (`target` of a point as handed to `at`, in the mesh's frame, which the
+// box's turn and flips move rigidly). A step onto another sheet of a fold
+// carries somewhere else entirely, and the mark is cut there.
+const joinsOn = (m, target) => (prev, p, q) => oneStep(m, prev.q, q, target(prev.p), target(p));
+
 // Shapes drawn on the page (page px), as marks in the paint's frame, in
 // their order. Through a mesh, a point the mesh does not carry anywhere
 // (`unwarpWith`: past a perspective's vanishing line, past a fold) is dropped,
 // and a shape left with nothing to draw is left out.
+//
+// A folded mesh carries more than one box point onto a page point: each
+// point takes the one nearest the point before it (`hint`), inside
+// `paintBounds`, and a stroke is cut where the next lies on another sheet
+// (`joinsOn`), as at a gap.
 export function marksFromPage(box, shapes) {
   const m = meshOf(box);
   if (!m) return shapesInBoxFrame(box, shapes);
-  const at = (p) => unwarpWith(m, box.w, box.h, ...pageToBox(box, p));
+  const bounds = paintBounds(box);
+  const target = (p) => pageToBox(box, p);
+  const at = (p, prev) => unwarpWith(m, box.w, box.h, ...target(p), { bounds, hint: prev?.q ?? null });
+  const joins = joinsOn(m, target);
   // A stroke drawn partly where the mesh does not reach is cut there, never
   // joined across the gap; any other shape with such a point is dropped.
-  return shapes.flatMap((sh) => bendStrokeRuns(sh, at));
+  return shapes.flatMap((sh) => bendStrokeRuns(sh, at, joins));
 }
 
 // The marks on the page as the box stands, one for each and in their order:
@@ -133,13 +166,19 @@ export function moveMarks(box, marks, idx, dx, dy) {
     const v = [q[0] - o[0], q[1] - o[1]];
     return marks.map((mk, i) => (pick(i) ? shiftedShapes([mk], v)[0] : mk));
   }
-  const at = (p) => {
+  const bounds = paintBounds(box);
+  const target = (p) => {
     const [x, y] = boxToPage(box, m.at(p[0], p[1]));
-    return unwarpWith(m, box.w, box.h, ...pageToBox(box, [x + dx, y + dy]));
+    return pageToBox(box, [x + dx, y + dy]);
   };
-  // A mark moved even partly where the mesh does not reach stays where it
-  // was, whole (`bendShape` is null unless every point is carried).
-  return marks.map((mk, i) => (pick(i) ? (bendShape(mk, at) ?? mk) : mk));
+  // Each point is looked for near where it stood before the move, so a small
+  // move never sends it to another sheet of a fold.
+  const at = (p) => unwarpWith(m, box.w, box.h, ...target(p), { bounds, hint: p });
+  const joins = joinsOn(m, target);
+  // A mark moved even partly where the mesh does not reach, or onto another
+  // sheet, stays where it was, whole (`bendShape` is null unless every point
+  // is carried in one piece).
+  return marks.map((mk, i) => (pick(i) ? (bendShape(mk, at, joins) ?? mk) : mk));
 }
 
 // Whether the paint lays any colour: on, with a mark that is not an eraser.

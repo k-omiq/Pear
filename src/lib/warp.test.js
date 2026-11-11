@@ -14,6 +14,7 @@ import {
   meshMap,
   affineWarpPoint,
   unwarpPoint,
+  unwarpWith,
 } from './warp.js';
 import { normalizeStyle, normalizeWarp, defaultStyle } from './data.js';
 
@@ -296,29 +297,49 @@ describe('unwarpPoint', () => {
     expect(unwarpPoint(flat, 2, 2, W, H, 50, 10)).toBe(null);
   });
 
-  it('finds every point a folded mesh reaches, even where Newton stalls in the crease', () => {
+  it('finds every point a folded mesh reaches, on the sheet the hint is on', () => {
     // The middle dot dragged far right and down: the right half folds back
     // over itself. From the nearest seed, Newton stops in the crease for some
     // of these points; each is still reached, from the fold's other side.
     const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
     const m = meshMap(fold, 2, 2, W, H);
+    const bounds = [-10, -10, 110, 110];
     let lost = 0;
     for (let y = 0; y <= 100; y += 4) {
       for (let x = 0; x <= 100; x += 4) {
         const [qx, qy] = m.at(x, y);
-        const back = unwarpPoint(fold, 2, 2, W, H, qx, qy);
+        // A stroke's previous point, a px back along the row.
+        const back = unwarpWith(m, W, H, qx, qy, { bounds, hint: [x - 1, y] });
         if (!back) {
           lost++;
           continue;
         }
         const [bx, by] = m.at(back[0], back[1]);
         expect(Math.hypot(bx - qx, by - qy)).toBeLessThanOrEqual(1e-3);
+        // Where it was: right in the crease another point within a couple
+        // of px goes to the same place, never one on a far sheet.
+        expect(Math.hypot(back[0] - x, back[1] - y)).toBeLessThanOrEqual(3);
+        // With no hint, still inside the bounds.
+        const any = unwarpWith(m, W, H, qx, qy, { bounds });
+        expect(any[0] >= -10 && any[0] <= 110 && any[1] >= -10 && any[1] <= 110).toBe(true);
       }
     }
     expect(lost).toBe(0);
     // The point Newton stalled on from its nearest seed.
     const [qx, qy] = m.at(62, 7);
     expect(unwarpPoint(fold, 2, 2, W, H, qx, qy)).not.toBe(null);
+  });
+
+  it('answers nothing outside the bounds', () => {
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    const bounds = [-10, -10, 110, 110];
+    expect(unwarpWith(m, W, H, 50, 400, { bounds })).toBe(null);
+    // A perspective's closed form keeps to the bounds too.
+    const narrow = [[0, 0], [100, 0], [40, 100], [60, 100]];
+    const pm = meshMap(narrow, 1, 1, W, H);
+    expect(unwarpWith(pm, W, H, 50, 124, { bounds })).toBe(null);
+    expect(unwarpWith(pm, W, H, 50, 124)).not.toBe(null);
   });
 
   it('undoes a one-cell parallelogram (the affine map)', () => {
