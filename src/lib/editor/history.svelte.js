@@ -303,6 +303,16 @@ const KINDS = {
       reviewBox(b, pageById(e.pageId));
     },
   },
+  // The box's fade (`box.fade`, box-fade.js), page geometry like the mask.
+  fade: {
+    label: 'that fade change',
+    apply(e, dir) {
+      const b = boxOf(e);
+      if (!b) throw missing(e);
+      const f = dir === 'undo' ? e.before : e.after;
+      b.fade = f ? structuredClone(f) : null;
+    },
+  },
   // The Refit button (`refitBalloon`): the balloon fit, the rectangle, the size
   // and the solver record, all inside the two geometry records.
   refit: {

@@ -466,7 +466,8 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // v18: the glyph job inside it is v11 (job flag 32, Crisp).
 // v19: the mask states each shape's op (keep or hide), and is cut after the
 // box's warp, so the engine no longer bends it by the mesh.
-export const BOX_WIRE_VERSION = 19
+// v20: the fade, after the mask: shapes that take some of the opacity.
+export const BOX_WIRE_VERSION = 20
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
@@ -874,36 +875,54 @@ function inkRecord(ink) {
   for (const [k, pts, ref] of strokes) inkStroke(k, pts, ref, keys.length)
 }
 
+// A mask or fade shape's kind on the wire: 1 ellipse, 2 polygon, 3 stroke,
+// or 0 for one of a kind this does not know or with nothing to draw, which
+// is not written (`drawClipShapes` draws nothing for it either).
+function shapeKind(sh) {
+  if (sh?.kind === 'ellipse') return 1
+  if (!Array.isArray(sh?.pts) || !sh.pts.length) return 0
+  return sh.kind === 'poly' ? 2 : sh.kind === 'stroke' ? 3 : 0
+}
+
 // One mask shape in the box's own frame (`maskInBoxFrame`), and its op: keep
-// is 1, hide is 2. A shape of a kind this does not know, or with nothing to
-// draw, is not written (`drawClipShapes` draws nothing for it either).
+// is 1, hide is 2.
 function clipShape(sh) {
-  const op = sh?.op === 'keep' ? 1 : 2
-  if (sh?.kind === 'ellipse') {
-    u32(1)
-    u32(op)
+  const kind = shapeKind(sh)
+  if (!kind) return false
+  u32(kind)
+  u32(sh.op === 'keep' ? 1 : 2)
+  shapeData(sh, kind)
+  return true
+}
+
+// One fade shape in the box's own frame (`fadeInBoxFrame`): its strength, 0
+// to 1, and its soft edge, a gaussian's sigma.
+function fadeShape(sh) {
+  const kind = shapeKind(sh)
+  if (!kind) return false
+  u32(kind)
+  f64(Math.min(1, Math.max(0, sh.strength || 0)))
+  f64(Math.max(0, sh.soft || 0))
+  shapeData(sh, kind)
+  return true
+}
+
+// A shape's numbers, by its kind.
+function shapeData(sh, kind) {
+  if (kind === 1) {
     f64(sh.cx)
     f64(sh.cy)
     f64(sh.rx)
     f64(sh.ry)
-    return true
+    return
   }
-  const pts = Array.isArray(sh?.pts) ? sh.pts : []
-  if (!pts.length || (sh.kind !== 'poly' && sh.kind !== 'stroke')) return false
-  if (sh.kind === 'poly') {
-    u32(2)
-    u32(op)
-  } else {
-    u32(3)
-    u32(op)
-    f64(sh.size || 0)
-  }
+  const pts = sh.pts
+  if (kind === 3) f64(sh.size || 0)
   u32(pts.length)
   for (const q of pts) {
     f64(q[0])
     f64(q[1])
   }
-  return true
 }
 
 /**
@@ -942,6 +961,11 @@ function clipShape(sh) {
  *   its warp, each with its `op` ('keep' or 'hide'), and the box's corner in
  *   job space. The letters show inside the keep shapes (everywhere, with
  *   none) less the hide shapes
+ * @param {{x: number, y: number, shapes: object[]} | null} [request.fade]
+ *   the fade (v20): `fadeInBoxFrame(box)`, each shape with its `strength` (0
+ *   to 1) and its `soft` edge (a gaussian's sigma, job units), from the box's
+ *   corner. Laid after the mask: the opacity left is one less the most any
+ *   shape takes
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
  * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1; over a backdrop,
  *   in one of the special eight modes (Color Burn, Linear Burn, Color Dodge, Linear Dodge,
@@ -1002,7 +1026,7 @@ function clipShape(sh) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
+  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, fade = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -1038,6 +1062,17 @@ export function encodeBox(request) {
     u32(0)
     let n = 0
     for (const sh of clip.shapes ?? []) if (clipShape(sh)) n++
+    view.setUint32(countAt, n, true)
+  }
+  // The fade (v20), after the mask and from the same corner.
+  u32(fade ? 1 : 0)
+  if (fade) {
+    f64(fade.x)
+    f64(fade.y)
+    const countAt = at
+    u32(0)
+    let n = 0
+    for (const sh of fade.shapes ?? []) if (fadeShape(sh)) n++
     view.setUint32(countAt, n, true)
   }
   u32(blendId(blend))

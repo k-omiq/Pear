@@ -129,6 +129,7 @@ import { scaleStroke } from './brush.js';
 import { translateStrokes } from './brush-board.svelte.js';
 import { setGlobalLight } from './text-paint.js';
 import { normalizeMask, maskFromClip, scaleMask, maskActive } from './box-mask.js';
+import { normalizeFade } from './box-fade.js';
 import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip, revealRectInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
@@ -347,6 +348,8 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
         // carried to the page here, through the box as it was saved. A box
         // with none has no key, so its document reads as it always did.
         const mask = b.mask !== undefined ? normalizeMask(b.mask) : maskFromClip({ ...b, style: { ...style, clip: b.style?.clip } });
+        // The fade, pinned to the page like the mask (box-fade.js).
+        const fade = normalizeFade(b.fade);
         return {
           id,
           lineN: b.lineN,
@@ -357,6 +360,7 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
           h: b.h,
           style,
           ...(mask ? { mask } : {}),
+          ...(fade ? { fade } : {}),
           // The balloon this box was fitted to, in page coordinates. Through
           // `normalizeFit` for the same reason the style goes through
           // `normalizeStyle`: what is on disk was written by some build, and a
@@ -4035,6 +4039,7 @@ export function rescalePageGeometry(p, sx, sy) {
     if (b.fit) b.fit = scaleFit(b.fit, sx, sy);
     // The mask is page geometry too, pinned where the art is.
     if (b.mask) b.mask = scaleMask(b.mask, sx, sy);
+    if (b.fade) b.fade = scaleMask(b.fade, sx, sy);
     // The type is page geometry too. Without this the boxes follow the art and
     // the text inside them does not: a chapter re-cleaned at 2x came back with
     // every line half the size it was drawn at, hairline strokes and shadows
@@ -6601,6 +6606,7 @@ function boxSnapshot(src, p) {
       style: cloneStyle(src.style),
       // The mask, pinned to the page: the copy takes it at the same page spot.
       ...(src.mask ? { mask: $state.snapshot(src.mask) } : {}),
+      ...(src.fade ? { fade: $state.snapshot(src.fade) } : {}),
       lines: place && !place.isCurve && place.lines?.length ? [...place.lines] : null,
       // The solver's record: whether it manages the box, the size it was solved
       // from and the locks the user set. A copy that lost it would lay itself
@@ -6646,6 +6652,7 @@ function placeSnapshot(p, snap, x, y, select = true) {
     // that must restyle apart.
     style: cloneStyle(src.style),
     ...(src.mask ? { mask: structuredClone(src.mask) } : {}),
+    ...(src.fade ? { fade: structuredClone(src.fade) } : {}),
     // No balloon (`boxSnapshot`): Refit or the Regions view gives the copy
     // the one it lands on.
     fit: null,

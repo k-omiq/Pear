@@ -41,6 +41,7 @@ fn sheet(
         blur: 0.0,
         taps: Vec::new(),
         clip: None,
+        fade: None,
         blend: Blend::Normal,
         fill_opacity: 1.0,
         blending: Default::default(),

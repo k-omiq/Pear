@@ -56,7 +56,7 @@ describe('the gradient on the wire (v14)', () => {
   // The overlay's gradient record starts after the box header (with the
   // grain's corner, v15, and the page, v16), the blending options and the
   // effect's kind, opacity, blend and paint kind.
-  const head = 4 * 4 + 8 + 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4;
+  const head = 4 * 4 + 8 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4; // the fade's u32 (v20) after the mask's
   const send = (gradient) => dv(encodeBox({ ...job, effects: [{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient }] }).slice());
 
   it('sends one midpoint per segment, from the stop that ends it, then Dither, the Method and Smoothness', () => {

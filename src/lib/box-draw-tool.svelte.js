@@ -7,7 +7,7 @@
 // `target` is what the gestures write into and `kind` is the gesture. The
 // Mask, Fade and Colour panels each own a model of their own; what they share
 // is only the pointer work, so one tool state serves all three and the target
-// says whose model a finished shape goes to. Only `mask` is wired so far.
+// says whose model a finished shape goes to. `mask` and `fade` are wired.
 //
 // `target: null` means no tool: the box moves and resizes as ever. Arming a
 // tool hands the box's pointer to the drawing overlay until it is disarmed:
@@ -19,10 +19,11 @@ export const DRAW_KINDS = ['brush', 'rect', 'ellipse', 'poly', 'move', 'erase'];
 export const drawTool = $state({ target: null, kind: null });
 
 // What the next shape of each target is drawn with, set in its panel: for
-// the mask, its op (Hide or Keep) and the brush's width, page px. Session
+// the mask, its op (Hide or Keep) and the brush's width, page px; for the
+// fade, the brush's width, its strength and its soft edge (percent). Session
 // state like the tool: a setting of the hand, not of any box, so it is not
 // saved and no box carries it.
-export const drawSettings = $state({ mask: { op: 'hide', size: 20 } });
+export const drawSettings = $state({ mask: { op: 'hide', size: 20 }, fade: { size: 40, strength: 50, soft: 30 } });
 
 // The Effects sub-tab whose panel arms each target. A tool is put down when
 // its panel is no longer the one in front (`inspector-tabs.svelte.js`): an

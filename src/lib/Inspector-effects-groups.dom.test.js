@@ -92,6 +92,16 @@ describe('the Effects groups', () => {
     expect(drawTool.target).toBe(null);
   });
 
+  it('the Fade tools are dimmed under the browser engine, and the switch cannot turn a fade on there', async () => {
+    setEffectsSubTab('fade');
+    const view = mounted();
+    await tick();
+    expect(view.getByRole('tab', { name: 'Paint' }).getAttribute('aria-selected')).toBe('true');
+    expect(view.getByRole('switch', { name: 'Fade' }).disabled).toBe(true);
+    expect(view.getByRole('button', { name: 'Rectangle' }).disabled).toBe(true);
+    expect(view.container.textContent).toContain('Only the Rust engine paints a fade.');
+  });
+
   it('the draw tool is put down when its panel is no longer in front', async () => {
     setEffectsSubTab('mask');
     const view = mounted({ on: true });

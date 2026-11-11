@@ -44,7 +44,7 @@ import {
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
 import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
 import { prefs, isComics } from './prefs.svelte.js';
-import { clipToBubble } from './box-mask-actions.js';
+import { clipToBubble, toggleFade } from './box-mask-actions.js';
 import { jobs } from './jobs.svelte.js';
 import { startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
 import { drawRead } from './draw-read.svelte.js';
@@ -128,6 +128,7 @@ const RUNS = {
   'fx.motionBlur': { when: boxSelected, run: effect('motionBlur') },
   'fx.roughen': { when: boxSelected, run: effect('roughen') },
   'fx.wobble': { when: boxSelected, run: effect('wobble') },
+  'fx.fade': { when: boxSelected, run: () => toggleFade(app.selectedId) },
   'box.snugWidth': { when: boxSelected, run: () => snugSelectedBox() },
   'page.snugWidths': { when: () => typeset() && page()?.boxes?.length > 0, run: () => snugPageBoxes() },
   'box.showInQueue': { when: () => boxSelected() && byId(app.selectedId)?.lineN != null, run: showInQueue },

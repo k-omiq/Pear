@@ -23,7 +23,7 @@ use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::gradient_bake::Method;
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::{
-    decode_box, Affine, Align, Band, Clip, ClipMode, ClipPart, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
+    decode_box, Affine, Align, Band, Clip, ClipMode, ClipPart, ClipShape, Fade, FadePart, Fill, Pt, Rgba, Shadow, Tap,
     Wobble, BOX_WIRE_VERSION, MAX_PAGE,
 };
 
@@ -115,7 +115,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 19, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 20, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(r.grain, (-1_234_567, 89_012));
     assert_eq!(
@@ -186,6 +186,26 @@ fn every_field_of_the_box_comes_back_as_itself() {
                 ClipPart {
                     mode: ClipMode::Exclude,
                     shape: ClipShape::Stroke { size: 3.5, pts: vec![Pt::new(7.5, 8.5), Pt::new(9.5, 12.5)] },
+                },
+            ],
+        })
+    );
+    // The fade (v20): its corner, then each shape's strength, soft edge and
+    // numbers.
+    assert_eq!(
+        r.fade,
+        Some(Fade {
+            origin: Pt::new(11.5, 19.25),
+            shapes: vec![
+                FadePart {
+                    strength: 0.4375,
+                    soft: 2.75,
+                    shape: ClipShape::Ellipse { centre: Pt::new(23.5, 24.5), rx: 7.5, ry: 8.5 },
+                },
+                FadePart {
+                    strength: 0.8125,
+                    soft: 0.0,
+                    shape: ClipShape::Stroke { size: 4.5, pts: vec![Pt::new(5.5, 6.5), Pt::new(15.5, 16.5)] },
                 },
             ],
         })
