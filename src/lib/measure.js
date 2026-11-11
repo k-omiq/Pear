@@ -334,7 +334,9 @@ export function lineClusters(text, style, sizePx, ls = 0) {
       });
     }
     // Counted by its code points: it holds arrays of them, and an ink each.
-    if (kept) {
+    // A line longer than half the bound is not kept: keeping it would empty
+    // the whole memo, every font's advances with it, on every call.
+    if (kept && chars.length <= MEASURE_MEMO_MAX / 2) {
       kept.lineHeld += chars.length;
       keep(memo, key, whole, chars.length);
     }
