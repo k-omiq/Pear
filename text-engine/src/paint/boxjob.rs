@@ -1522,6 +1522,30 @@ pub(crate) fn shapes_alpha<'a>(
 /// editor at 2 and an export at 3 blur alike), then carried to pixels; under
 /// half a pixel it is a hard edge. The power is taken by multiplying, so the
 /// engine's builds agree on it to the bit.
+/// Area pixels to one of a softness's small raster's (`fade_map`).
+fn fade_cell(sigma: f64) -> i32 {
+    (sigma / 2.0).floor().clamp(1.0, 16.0) as i32
+}
+
+/// The page-anchored grid a fade is rastered on, device pixels: the least
+/// common multiple of its softnesses' cells. Its shapes moved by a multiple
+/// of it move every small raster by whole cells, so the map read moved is to
+/// the byte the map rastered there; any other move lays them on the grid
+/// otherwise.
+fn fade_grid(fade: &Fade, scale: f64) -> i32 {
+    let gcd = |mut a: i32, mut b: i32| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    fade.shapes
+        .iter()
+        .filter(|p| positive(p.strength))
+        .map(|p| fade_cell(fade_sigma(p.soft, scale)))
+        .fold(1, |g, k| g / gcd(g, k) * k)
+}
+
 fn fade_sigma(soft: f64, scale: f64) -> f64 {
     if !(soft > 0.0) || !soft.is_finite() {
         return 0.0;
@@ -1638,8 +1662,7 @@ pub(crate) fn fade_map(
     let aw = area.width();
     for key in sigmas {
         let sigma = f64::from_bits(key);
-        // Area pixels to one of the small raster's.
-        let k = (sigma / 2.0).floor().clamp(1.0, 16.0) as i32;
+        let k = fade_cell(sigma);
         let kf = f64::from(k);
         let pad = blur::blur_reach(sigma / kf) + 1;
         // The small raster's corner, in page-anchored cells of `k` pixels.
@@ -1808,6 +1831,9 @@ struct Cover {
     keep: Option<Option<Map>>,
     hide: Option<Map>,
     fade: Option<Map>,
+    /// The fade's grid (`fade_grid`): a read at a whole pixel is the raster
+    /// there only at a move by a multiple of it. 1 with no fade.
+    grid: i32,
 }
 
 impl Cover {
@@ -1830,6 +1856,7 @@ impl Cover {
             keep: None,
             hide: None,
             fade: None,
+            grid: request.fade.as_ref().map_or(1, |f| fade_grid(f, scale)),
         };
         let raster = |clip: &Clip, mode: ClipMode| -> Result<Option<Map>, Error> {
             let shapes = clip.shapes.iter().filter(|p| p.mode == mode).map(|p| &p.shape);
@@ -1854,9 +1881,10 @@ impl Cover {
 
     /// Lays the mask and then the fade on `s`, their shapes moved `delta`
     /// device pixels from where they were rastered: at a whole pixel each
-    /// map is read as it is, to the byte what a raster there makes; between
-    /// pixels it is read by bilinear sampling, which differs from a raster
-    /// there only along antialiased edges.
+    /// map is read as it is, to the byte what a raster there makes (a fade
+    /// at a whole cell of its grid, `Cover::grid`); between pixels it is
+    /// read by bilinear sampling, which differs from a raster there only
+    /// along antialiased edges.
     fn lay(&self, s: &mut Surface, delta: (f64, f64)) {
         // Map pixel read for surface pixel x: x + i0, and the next one at
         // weight f (256ths).
@@ -1954,8 +1982,11 @@ fn lay_cover(
     // Only a live move frame may be approximate: any other paint reads the
     // kept cover at a whole-pixel offset only, where the read is the raster,
     // and rasters it fresh otherwise.
+    // With a fade, whole cells of its grid (`fade_grid`): a whole pixel
+    // that is not one lays its small rasters on the grid otherwise.
     let whole = |cv: &Cover| {
-        let off = |d: f64| ((d * 256.0).round() as i64).rem_euclid(256) != 0;
+        let step = 256 * i64::from(cv.grid);
+        let off = |d: f64| ((d * 256.0).round() as i64).rem_euclid(step) != 0;
         !off(at.0 - cv.at.0) && !off(at.1 - cv.at.1)
     };
     let kept = key

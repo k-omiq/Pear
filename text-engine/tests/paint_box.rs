@@ -3540,7 +3540,10 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
     let mut e = Engine::new();
     let font = load(&mut e);
     mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
-    let shaped = |turn: bool| {
+    // `soft`: the fade's softness. Soft 6 at scale 2 is rastered on a grid
+    // of 6-pixel cells, so a move by a whole pixel that is not a whole cell
+    // must raster it again.
+    let shaped = |turn: bool, soft: f64, scale: f64| {
         let mut b = plain(font);
         b.clip = Some(Clip::all(
             ClipMode::Exclude,
@@ -3554,10 +3557,15 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
             origin: Pt::new(0.0, 0.0),
             shapes: vec![FadePart {
                 strength: 0.7,
-                soft: 1.5,
+                soft,
                 shape: ClipShape::Polygon(vec![Pt::new(30.0, 88.0), Pt::new(120.0, 84.0), Pt::new(120.0, 120.0), Pt::new(30.0, 120.0)]),
             }],
         });
+        if scale != 1.0 {
+            b.request.transform = Affine([scale, 0.0, 0.0, scale, 0.0, 0.0]);
+            b.width = (200.0 * scale) as u32;
+            b.height = (160.0 * scale) as u32;
+        }
         if turn {
             // 17 degrees about the box's middle, at scale 2.
             let (c, s) = (17f64.to_radians().cos(), 17f64.to_radians().sin());
@@ -3567,31 +3575,33 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
         }
         b
     };
-    for turn in [false, true] {
+    for (turn, soft, scale) in [(false, 1.5f64, 1.0f64), (true, 1.5, 1.0), (false, 6.0, 2.0)] {
         let keys = |b: &BoxRequest| BoxKeys {
-            job: Hasher::new("t job").debug(&b.request.job).debug(&turn).finish().unwrap(),
-            premask: Hasher::new("t premask").debug(&turn).finish(),
-            cover: Hasher::new("t cover").debug(&b.clip).debug(&b.fade).debug(&turn).finish(),
+            job: Hasher::new("t job").debug(&b.request.job).debug(&(turn, soft.to_bits(), scale.to_bits())).finish().unwrap(),
+            premask: Hasher::new("t premask").debug(&(turn, soft.to_bits(), scale.to_bits())).finish(),
+            cover: Hasher::new("t cover").debug(&b.clip).debug(&b.fade).debug(&(turn, soft.to_bits(), scale.to_bits())).finish(),
         };
-        let k = keys(&shaped(turn));
+        let k = keys(&shaped(turn, soft, scale));
         mt_text::paint::kept::clear();
         // Live frames first: the kept cover is now at a part-pixel offset.
         for (sx, sy) in [(0.5, 0.25), (3.25, -1.5)] {
-            let mut live = shaped(turn);
+            let mut live = shaped(turn, soft, scale);
             live.pin_shift = Pt::new(sx, sy);
             live.pin_live = true;
             paint_box_kept(&mut e, &mut live, k).unwrap();
         }
         // Then the rest paint of each way a move ends: a drag let go, a
-        // nudge, a typed X and Y, a move past the kept window.
-        for (sx, sy) in [(3.25, -1.5), (1.0, 0.0), (-2.75, 0.5), (7.0, 3.0), (900.5, -700.25), (0.0, 0.0)] {
-            let mut rest = shaped(turn);
+        // nudge, a typed X and Y, a nudge from there and a move by a whole
+        // fade cell (6 device pixels at soft 6, scale 2), a move past the
+        // kept window.
+        for (sx, sy) in [(3.25, -1.5), (1.0, 0.0), (-2.75, 0.5), (7.0, 3.0), (8.0, 3.0), (11.0, 3.0), (900.5, -700.25), (0.0, 0.0)] {
+            let mut rest = shaped(turn, soft, scale);
             rest.pin_shift = Pt::new(sx, sy);
             let read = paint_box_kept(&mut e, &mut rest, k).unwrap();
-            let mut cold = shaped(turn);
+            let mut cold = shaped(turn, soft, scale);
             cold.pin_shift = Pt::new(sx, sy);
             let fresh = paint_box(&mut e, &mut cold).unwrap();
-            assert_eq!(read, fresh, "turn {turn}, ({sx}, {sy})");
+            assert_eq!(read, fresh, "turn {turn}, soft {soft}, scale {scale}, ({sx}, {sy})");
         }
     }
 }
