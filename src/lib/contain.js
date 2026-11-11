@@ -103,8 +103,6 @@ import {
   clipShapesBounds,
 } from './text-paint.js';
 import { placedWobbleReach } from './paint-reach.js';
-import { specialReach } from './special.js';
-import { specialDrawn } from './text-engine/index.js';
 import { maskActive, maskInBoxFrame } from './box-mask.js';
 import { warpActive, affineFromTriangle } from './warp.js';
 import { warpPlan } from './warp-paint.js';
@@ -438,9 +436,6 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
   // The letters' own rectangle grows by the wobble before the strokes are
   // laid round them.
   if (r && (wx > 0 || wy > 0)) r = grow(r, wx, wy);
-  // So does a splash's ink, thrown past the letters (`specialReach`).
-  const sr = specialDrawn(s) ? specialReach(s) : 0;
-  if (r && sr > 0) r = grow(r, sr, sr);
   const ink = inkActive(s.ink) ? inkBounds(s.ink) : null;
   if (ink) r = unite(r, ink.minX, ink.minY, ink.maxX, ink.maxY);
   if (!r) return null;

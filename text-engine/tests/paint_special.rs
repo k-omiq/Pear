@@ -1,15 +1,13 @@
-//! The special effects (glyph wire v14, plan 8.2): seeded patterns over the
+//! The special effects (glyph wire v15, plan 8.2): seeded patterns over the
 //! whole box, made in the engine from their numbers.
 
 #![cfg(feature = "paint")]
 
-use mt_text::paint::fx::blend::Blend;
-use mt_text::paint::fx::effects::{Effect, Paint, Position, Stroke};
 use mt_text::paint::kept;
 use mt_text::paint::special::{letter_shapes, lightning_marks};
 use mt_text::paint::{
     paint_box, Affine, Align, BoxRequest, Crack, Effects, Fill, Job, Lightning, Raster, Request, Rgba, Run, Scratches,
-    Special, Splash, SPLASH_REACH,
+    Special, Splash,
 };
 use mt_text::{Engine, Face, FontId};
 use std::rc::Rc;
@@ -70,6 +68,19 @@ fn boxed(font: FontId, special: Option<Special>) -> BoxRequest {
     )
 }
 
+/// A lightning with a white core in a blue glow.
+fn bolt(amount: f64, seed: u32) -> Lightning {
+    Lightning { amount, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed }
+}
+
+/// `only`, over a box drawn tight round the letters, as the app's is.
+fn tight(f: impl FnOnce(&mut Special)) -> Option<Special> {
+    only(|s| {
+        s.rect = [40.0, 45.0, 190.0, 60.0];
+        f(s)
+    })
+}
+
 fn only(f: impl FnOnce(&mut Special)) -> Option<Special> {
     let mut sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: None, lightning: None, splash: None, scratches: None };
     f(&mut sp);
@@ -77,7 +88,7 @@ fn only(f: impl FnOnce(&mut Special)) -> Option<Special> {
 }
 
 fn paint(engine: &mut Engine, mut b: BoxRequest) -> Raster {
-    b.lay_lightning().unwrap();
+    b.lay_special_paint().unwrap();
     paint_box(engine, &mut b).unwrap().expect("something painted")
 }
 
@@ -99,7 +110,7 @@ fn a_crack_cuts_and_past_sixty_percent_pieces_fall_out() {
     let mut engine = Engine::new();
     let font = load(&mut engine);
     let plain = ink(&paint(&mut engine, boxed(font, None)));
-    let crack = |a| only(|s| s.crack = Some(Crack { amount: a, size: 1.0, seed: 3 }));
+    let crack = |a| only(|s| s.crack = Some(Crack { amount: a, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }));
     let light = ink(&paint(&mut engine, boxed(font, crack(0.3))));
     let heavy = ink(&paint(&mut engine, boxed(font, crack(0.59))));
     let falls = ink(&paint(&mut engine, boxed(font, crack(1.0))));
@@ -131,8 +142,8 @@ fn a_moved_box_paints_the_same_pattern_where_it_went() {
     let mut engine = Engine::new();
     let font = load(&mut engine);
     let all = only(|s| {
-        s.crack = Some(Crack { amount: 0.8, size: 1.0, seed: 7 });
-        s.splash = Some(Splash { amount: 0.5, size: 0.6, seed: 7 });
+        s.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 7 });
+        s.splash = Some(Splash { amount: 0.5, size: 0.6, color: BLUE, seed: 7 });
         s.scratches = Some(Scratches { amount: 0.5, angle: 0.4, seed: 7 });
     });
     let here = paint(&mut engine, boxed(font, all));
@@ -148,11 +159,11 @@ fn a_moved_box_paints_the_same_pattern_where_it_went() {
 
 #[test]
 fn the_shapes_are_kept_under_their_numbers() {
-    let sp = only(|s| s.crack = Some(Crack { amount: 0.5, size: 1.0, seed: 3 })).unwrap();
+    let sp = only(|s| s.crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 })).unwrap();
     let a = letter_shapes(&sp, SIZE, (10.0, 20.0, 200.0, 90.0)).unwrap();
     let b = letter_shapes(&sp, SIZE, (10.0, 20.0, 200.0, 90.0)).unwrap();
     assert!(Rc::ptr_eq(&a, &b), "read back, not made again");
-    let l = Lightning { amount: 0.5, angle: 0.0, color: BLUE, seed: 1 };
+    let l = bolt(0.5, 1);
     let m = lightning_marks(&l, [0.0, 0.0, 360.0, 160.0], SIZE);
     // A move of the box (its corner) keeps the same bolts.
     let n = lightning_marks(&l, [50.0, 30.0, 360.0, 160.0], SIZE);
@@ -160,68 +171,44 @@ fn the_shapes_are_kept_under_their_numbers() {
 }
 
 #[test]
-fn a_splash_reaches_past_the_letters_no_further_than_its_reach() {
+fn lightning_and_splash_paint_on_the_fill_and_nowhere_else() {
+    // Both are paint on the letters' fill: the picture is as big as the
+    // plain one, nothing lands outside the letters, and their colours show.
     let mut engine = Engine::new();
     let font = load(&mut engine);
     let plain = paint(&mut engine, boxed(font, None));
-    let size = 0.6;
-    let sp = paint(&mut engine, boxed(font, only(|s| s.splash = Some(Splash { amount: 1.0, size, seed: 2 }))));
-    let reach = (SPLASH_REACH * size * SIZE).ceil() as i32 + 1;
-    assert!(sp.x < plain.x || sp.y < plain.y || sp.x + sp.width as i32 > plain.x + plain.width as i32);
-    assert!(sp.x >= plain.x - reach && sp.y >= plain.y - reach);
-    assert!(sp.x + sp.width as i32 <= plain.x + plain.width as i32 + reach);
-    assert!(sp.y + sp.height as i32 <= plain.y + plain.height as i32 + reach);
-}
-
-#[test]
-fn a_splash_is_wrapped_by_the_stroke() {
-    let mut engine = Engine::new();
-    let font = load(&mut engine);
-    let stroke = Effect::Stroke(Stroke {
-        size: 3.0,
-        position: Position::Outside,
-        opacity: 1.0,
-        blend: Blend::Normal,
-        paint: Paint::Color(BLACK),
-        seed: 2,
-    });
-    let mut b = boxed(font, only(|s| s.splash = Some(Splash { amount: 1.0, size: 0.6, seed: 2 })));
-    b.effects = vec![stroke.clone()];
-    let with = paint(&mut engine, b);
-    let mut p = boxed(font, None);
-    p.effects = vec![stroke];
-    let plain = paint(&mut engine, p);
-    // Black ink where the plain box has none: the outline round a droplet.
-    let mut rim = 0;
-    for y in with.y..with.y + with.height as i32 {
-        for x in with.x..with.x + with.width as i32 {
-            let q = at(&with, x, y);
-            if at(&plain, x, y)[3] == 0 && q[3] == 255 && q[0] < 40 {
-                rim += 1;
-            }
-        }
+    let lit = paint(&mut engine, boxed(font, only(|s| s.lightning = Some(bolt(1.0, 4)))));
+    let green = Rgba([0, 200, 0, 255]);
+    let splashed = paint(&mut engine, boxed(font, tight(|s| s.splash = Some(Splash { amount: 0.6, size: 1.0, color: green, seed: 5 }))));
+    for (name, r) in [("lightning", &lit), ("splash", &splashed)] {
+        assert_eq!((r.x, r.y, r.width, r.height), (plain.x, plain.y, plain.width, plain.height), "{name}");
+        let outside = plain.data.chunks_exact(4).zip(r.data.chunks_exact(4)).filter(|(p, q)| p[3] == 0 && q[3] != 0).count();
+        assert_eq!(outside, 0, "{name}");
     }
-    assert!(rim > 50, "{rim}");
-}
-
-#[test]
-fn lightning_paints_on_the_fill_and_nowhere_else() {
-    let mut engine = Engine::new();
-    let font = load(&mut engine);
-    let plain = paint(&mut engine, boxed(font, None));
-    let lit = paint(&mut engine, boxed(font, only(|s| s.lightning = Some(Lightning { amount: 1.0, angle: 0.1, color: BLUE, seed: 4 }))));
-    assert_eq!((lit.x, lit.y, lit.width, lit.height), (plain.x, plain.y, plain.width, plain.height));
-    let (mut blue, mut outside) = (0, 0);
-    for (p, q) in plain.data.chunks_exact(4).zip(lit.data.chunks_exact(4)) {
-        if p[3] == 0 && q[3] != 0 {
-            outside += 1;
-        }
-        if q[3] == 255 && q[2] > 200 && q[0] < 80 {
-            blue += 1;
-        }
-    }
-    assert_eq!(outside, 0);
+    let count = |r: &Raster, f: &dyn Fn(&[u8]) -> bool| r.data.chunks_exact(4).filter(|q| q[3] == 255 && f(q)).count();
+    let blue = count(&lit, &|q| q[2] > 200 && q[0] < 80);
+    let white = count(&lit, &|q| q[0] > 240 && q[1] > 240 && q[2] > 240);
     assert!(blue > 100, "{blue}");
+    // The bright core.
+    assert!(white > 30, "{white}");
+    let painted = count(&splashed, &|q| q[1] > 150 && q[0] < 60 && q[2] < 60);
+    assert!(painted > 300, "{painted}");
+}
+
+#[test]
+fn every_effect_reads_at_a_fifth() {
+    // At 20 % on a 60 px letter each effect changes a clear share of the
+    // letters.
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let plain = paint(&mut engine, boxed(font, None));
+    let lit = paint(&mut engine, boxed(font, tight(|s| s.lightning = Some(bolt(0.2, 4)))));
+    let splashed = paint(&mut engine, boxed(font, tight(|s| s.splash = Some(Splash { amount: 0.2, size: 1.0, color: BLUE, seed: 5 }))));
+    let solid = plain.data.chunks_exact(4).filter(|p| p[3] == 255).count();
+    for (name, r) in [("lightning", &lit), ("splash", &splashed)] {
+        let changed = plain.data.chunks_exact(4).zip(r.data.chunks_exact(4)).filter(|(p, q)| p[3] == 255 && p[..3] != q[..3]).count();
+        assert!(changed * 50 > solid, "{name} changes {changed} of {solid}");
+    }
 }
 
 #[test]
@@ -230,6 +217,27 @@ fn a_box_with_none_is_the_box_it_was() {
     let font = load(&mut engine);
     let plain = paint(&mut engine, boxed(font, None));
     // Amount 0 draws nothing.
-    let zero = paint(&mut engine, boxed(font, only(|s| s.crack = Some(Crack { amount: 0.0, size: 1.0, seed: 3 }))));
+    let zero = paint(&mut engine, boxed(font, only(|s| s.crack = Some(Crack { amount: 0.0, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }))));
     assert_eq!(plain.data, zero.data);
+}
+
+#[test]
+fn a_crack_gathers_at_its_focus_or_spreads_over_the_word() {
+    // Focused on the first letter with a small spread, every cut is near
+    // it; spread over all, cuts reach the far end of the word.
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let plain = paint(&mut engine, boxed(font, None));
+    let of = |at, spread| only(|s| s.crack = Some(Crack { amount: 0.5, size: 1.0, at, spread, seed: 3 }));
+    let cut_cols = |r: &Raster| -> Vec<i32> {
+        (plain.x..plain.x + plain.width as i32)
+            .filter(|&x| (plain.y..plain.y + plain.height as i32).any(|y| at(&plain, x, y)[3] == 255 && at(r, x, y)[3] < 128))
+            .collect()
+    };
+    let near = paint(&mut engine, boxed(font, of((0.05, 0.5), 0.1)));
+    let wide = paint(&mut engine, boxed(font, of((0.05, 0.5), 1.0)));
+    let (n, w) = (cut_cols(&near), cut_cols(&wide));
+    let third = plain.x + plain.width as i32 / 3;
+    assert!(!n.is_empty() && n.iter().all(|&x| x < third), "focused cuts reach {:?}", n.last());
+    assert!(w.iter().any(|&x| x > plain.x + 2 * plain.width as i32 / 3), "spread cuts stop at {:?}", w.last());
 }

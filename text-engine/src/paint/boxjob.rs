@@ -329,30 +329,32 @@ pub struct BoxRequest {
 }
 
 impl BoxRequest {
-    /// Lays the job's lightning (glyph wire v14) as paint over the letters:
-    /// its bolts, made from its numbers and kept (`lightning_marks`), go
-    /// after the box's own paint, stated from the box's corner. The decoder
+    /// Lays the job's splash and lightning (glyph wire v15) as paint on the
+    /// letters' fill: their marks, made from their numbers and kept
+    /// (`splash_marks`, `lightning_marks`), go after the box's own paint,
+    /// the splash under the bolts, stated from the box's corner. The decoder
     /// does it for every box from the wire; a request built by hand calls
     /// it once.
-    pub fn lay_lightning(&mut self) -> Result<(), Error> {
+    pub fn lay_special_paint(&mut self) -> Result<(), Error> {
         let Some(sp) = self.request.job.effects.special else {
             return Ok(());
         };
-        let Some(l) = sp.lightning else {
-            return Ok(());
-        };
-        let marks = super::special::lightning_marks(&l, sp.rect, self.request.face.size);
-        if marks.is_empty() {
-            return Ok(());
+        let size = self.request.face.size;
+        let splash = sp.splash.map(|s| super::special::splash_marks(&s, sp.rect, size));
+        let bolts = sp.lightning.map(|l| super::special::lightning_marks(&l, sp.rect, size));
+        for marks in [splash, bolts].into_iter().flatten() {
+            if marks.is_empty() {
+                continue;
+            }
+            let mut list = Vec::new();
+            budget::reserve_raw(&mut list, marks.len())?;
+            list.extend(marks.iter().cloned());
+            budget::reserve_raw(&mut self.effects, 1)?;
+            self.effects.push(Effect::Paint(Marks {
+                origin: Pt::new(sp.rect[0], sp.rect[1]),
+                marks: list,
+            }));
         }
-        let mut list = Vec::new();
-        budget::reserve_raw(&mut list, marks.len())?;
-        list.extend(marks.iter().cloned());
-        budget::reserve_raw(&mut self.effects, 1)?;
-        self.effects.push(Effect::Paint(Marks {
-            origin: Pt::new(sp.rect[0], sp.rect[1]),
-            marks: list,
-        }));
         Ok(())
     }
 
@@ -1358,7 +1360,7 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
         pin_live,
         request,
     };
-    request.lay_lightning()?;
+    request.lay_special_paint()?;
     Ok((request, BoxKeys { job: key, premask, cover }))
 }
 

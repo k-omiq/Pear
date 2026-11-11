@@ -2,7 +2,7 @@
 import { app, page, toast, toastError, boxText, boxRuns, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
 import { faceFor, textInset, contentWidth, placedInk, lineFaces } from './measure.js';
 import { glyphPainter, engineDraws, enginesNow, enginesAre, wobbleDrawn, specialDrawn } from './text-engine/index.js';
-import { specialJob, specialReach } from './special.js';
+import { specialJob } from './special.js';
 import { encodesPages, encodePage } from '../../text-engine/js/encode.mjs';
 import { crispFor } from './text-edges.svelte.js';
 import { boxCandidate, placeBlock, blockRect, linesInkRect, turnedInk } from './contain.js';
@@ -246,10 +246,7 @@ function layoutBox(box, p) {
   // before roughening moves their edges again, so its reach adds to both.
   const wr = placedWobbleReach(s, place);
   const wob = Math.max(wr.x, wr.y);
-  // A splash throws ink past the letters, and the strokes and shadows wrap
-  // it (`specialReach`).
-  const sr = specialDrawn(s) ? specialReach(s) : 0;
-  const strokeOut = strokeReach(s) + wob + sr;
+  const strokeOut = strokeReach(s) + wob;
   const pad0 = Math.ceil(
     Math.max(
       strokeOut,
@@ -269,10 +266,10 @@ function layoutBox(box, p) {
   // every side. The footprint is the unflipped frame (the flip mirrors the
   // finished bitmap), and the ink has its own growth below.
   const reach = styleReach({ ...s, ink: null, flipH: false, flipV: false }, box.w, box.h);
-  const padL = Math.max(pad0, Math.ceil(reach.l + sr) + PAD_SPARE);
-  const padT = Math.max(pad0, Math.ceil(reach.t + sr) + PAD_SPARE);
-  const padR = Math.max(pad0, Math.ceil(reach.r + sr) + PAD_SPARE);
-  const padB = Math.max(pad0, Math.ceil(reach.b + sr) + PAD_SPARE);
+  const padL = Math.max(pad0, Math.ceil(reach.l) + PAD_SPARE);
+  const padT = Math.max(pad0, Math.ceil(reach.t) + PAD_SPARE);
+  const padR = Math.max(pad0, Math.ceil(reach.r) + PAD_SPARE);
+  const padB = Math.max(pad0, Math.ceil(reach.b) + PAD_SPARE);
   const pad = Math.max(padL, padT, padR, padB);
 
   // Every glyph-by-glyph layout - the bezier path, the closed circle and the

@@ -79,8 +79,10 @@ describe('the Special panel', () => {
     expect(box().style.special.lightning.on).toBe(true);
     expect(records()).toBe(base + 1);
     await tick();
-    expect(view.getByLabelText('Lightning angle, degrees')).toBeTruthy();
-    expect(view.getByLabelText('Lightning colour hex')).toBeTruthy();
+    expect(view.getByLabelText('Lightning core colour hex')).toBeTruthy();
+    expect(view.getByLabelText('Lightning glow colour hex')).toBeTruthy();
+    expect(view.getByLabelText('Lightning glow size')).toBeTruthy();
+    expect(view.queryByLabelText('Lightning angle, degrees')).toBe(null);
 
     const seed = view.getByLabelText('Lightning seed');
     await fireEvent.pointerDown(seed);
@@ -99,11 +101,15 @@ describe('the Special panel', () => {
     expect(box().style.special.lightning.seed).toBe(42);
   });
 
-  it('a crack and a splash have a size, a scratch an angle', async () => {
+  it('a crack and a splash have a size, a splash a colour, a scratch an angle', async () => {
     const { view } = mounted(true, { crack: { on: true }, splash: { on: true }, scratches: { on: true } });
     await tick();
     expect(view.getByLabelText('Crack size')).toBeTruthy();
     expect(view.getByLabelText('Splash size')).toBeTruthy();
+    expect(view.getByLabelText('Splash colour hex')).toBeTruthy();
+    expect(view.getByLabelText('Crack focus x')).toBeTruthy();
+    expect(view.getByLabelText('Crack focus y')).toBeTruthy();
+    expect(view.getByLabelText('Crack spread')).toBeTruthy();
     expect(view.getByLabelText('Scratches angle, degrees')).toBeTruthy();
     expect(view.queryByLabelText('Crack angle, degrees')).toBe(null);
   });

@@ -414,9 +414,9 @@ export const STYLE_SCHEMA = {
     seed: integer('seed', 0, 999),
   }),
   special: object('seeded box-wide patterns, Rust engine', {
-    crack: object('cracks cut in letters; >60 pieces fall', { on: boolean('on'), amount: number('%', 0, 100), size: number('% of size', 10, 400), seed: integer('seed', 0, 999) }),
-    lightning: object('bolts painted on letters', { on: boolean('on'), amount: number('%', 0, 100), angle: number('degrees', -180, 180), color: color('colour'), seed: integer('seed', 0, 999) }),
-    splash: object('ink blobs round letters, holes in them', { on: boolean('on'), amount: number('%', 0, 100), size: number('% of size', 10, 400), seed: integer('seed', 0, 999) }),
+    crack: object('cracks; >60 pieces fall; x,y focus', { on: boolean('on'), amount: number('%', 0, 100), size: number('% of size', 10, 400), x: number('%', 0, 100), y: number('%', 0, 100), spread: number('%', 0, 100), seed: integer('seed', 0, 999) }),
+    lightning: object('bolts on fill', { on: boolean('on'), amount: number('%', 0, 100), core: color('core'), glow: color('glow'), glowSize: number('%', 0, 300), seed: integer('seed', 0, 999) }),
+    splash: object('paint splats on fill', { on: boolean('on'), amount: number('%', 0, 100), size: number('% of size', 10, 400), color: color('colour'), seed: integer('seed', 0, 999) }),
     scratches: object('thin scratches cut in letters', { on: boolean('on'), amount: number('%', 0, 100), angle: number('degrees', -180, 180), seed: integer('seed', 0, 999) }),
   }),
   paint: object('colour painted over the letters, box-local', {

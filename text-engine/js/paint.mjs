@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 14
+export const WIRE_VERSION = 15
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -471,6 +471,8 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
 }
 
 // (v14) The special effects (special.js in the app), after the faces and
+// (v15: the crack's focus and spread, the lightning's core, glow and glow
+// size, the splash's colour)
 // only for a job that has one, which says so with flag 256: the box in job
 // space, then each effect's numbers. The engine makes the shapes from them
 // (special.rs), so only these cross.
@@ -501,17 +503,22 @@ function special(sp) {
   if (sp.crack) {
     share(sp.crack.amount, 'crack amount')
     share(sp.crack.size, 'crack size', 0.01, 4)
+    share(sp.crack.x, 'crack x')
+    share(sp.crack.y, 'crack y')
+    share(sp.crack.spread, 'crack spread')
     seed(sp.crack.seed)
   }
   if (sp.lightning) {
     share(sp.lightning.amount, 'lightning amount')
-    angle(sp.lightning.angle)
-    rgba(sp.lightning.color)
+    rgba(sp.lightning.core)
+    rgba(sp.lightning.glow)
+    share(sp.lightning.glowSize, 'lightning glow', 0, 3)
     seed(sp.lightning.seed)
   }
   if (sp.splash) {
     share(sp.splash.amount, 'splash amount')
     share(sp.splash.size, 'splash size', 0.01, 4)
+    rgba(sp.splash.color)
     seed(sp.splash.seed)
   }
   if (sp.scratches) {
