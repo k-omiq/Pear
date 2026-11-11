@@ -431,6 +431,7 @@ fn wire(font: u32, text: &str, flags: u32) -> (Vec<u8>, usize, usize) {
     u(&mut b, 0); // no fade (v20)
     f(&mut b, 0.0); // not moved (v23)
     f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     u(&mut b, 0);
     f(&mut b, 1.0);
     u(&mut b, 0);

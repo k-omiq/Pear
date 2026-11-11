@@ -1146,6 +1146,10 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = nul
     // never sees it.
     fade: fadeActive(box) ? { x: L.ox, y: L.oy, shapes: heldFadeInBoxFrame(box) } : null,
     pinShift: pinShiftOf(box),
+    // A frame of the editor's live drag (TextBox's `paintedBox`): only it
+    // may read the kept mask between pixels. Export, PSD and every paint at
+    // rest send none, and the engine rasters the mask where it is.
+    pinLive: box.liveMove === true,
     // The brush ink, painted with the letters (`boxInJob` lets it in only
     // where the painter does that).
     ink: inkSpec(s, L, tips),

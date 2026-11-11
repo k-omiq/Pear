@@ -109,6 +109,8 @@ export const request = {
   },
   // How far a held box's mask and fade have moved (v23).
   pinShift: [3.25, -1.75],
+  // A frame of a live move (v24).
+  pinLive: true,
   blend: 'color-burn',
   fillOpacity: 0.6875,
   blendInterior: true,

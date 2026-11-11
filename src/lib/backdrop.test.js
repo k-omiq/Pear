@@ -190,10 +190,10 @@ describe('Channels and Blend If', () => {
     const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
     // Magic, version, size, the grain's corner (v15), no page (v16), no
     // shadows, blur, no taps, no clip, no fade (v20), the pin shift (v23),
-    // mode, fill.
-    const flagsAt = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 16 + 4 + 8;
+    // the live flag (v24), mode, fill.
+    const flagsAt = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 16 + 4 + 4 + 8;
     const plainBytes = encodeBox({ ...job, width: 4, height: 4 }).slice();
-    expect(BOX_WIRE_VERSION).toBe(23);
+    expect(BOX_WIRE_VERSION).toBe(24);
     expect(dv(plainBytes).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
     expect([0, 4, 8].map((k) => dv(plainBytes).getUint32(flagsAt + k, true))).toEqual([0, 0, 0]);
     // Transparency Shapes Layer off is blending flag 2 (v13), with interior 1.

@@ -567,7 +567,9 @@ function runFaces(job, faces) {
 // clusters of one line and are shaped as it (`job.line`).
 // v23: the pin shift after the fade: how far a held box's mask and fade
 // have moved against it.
-export const BOX_WIRE_VERSION = 23
+// v24: the live flag after the pin shift: a frame of a live move, which alone
+// may read the kept mask between pixels.
+export const BOX_WIRE_VERSION = 24
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
@@ -1176,7 +1178,7 @@ function shapeData(sh, kind) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, fade = null, pinShift = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
+  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, fade = null, pinShift = null, pinLive = false, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -1209,6 +1211,8 @@ export function encodeBox(request) {
   // v23: how far a held box's mask and fade have moved against it.
   f64(Number.isFinite(pinShift?.[0]) ? pinShift[0] : 0)
   f64(Number.isFinite(pinShift?.[1]) ? pinShift[1] : 0)
+  // v24: a frame of a live move (the editor's drag), never a rest paint.
+  u32(pinLive && pinShift ? 1 : 0)
   u32(blendId(blend))
   f64(fillOpacity)
   // The blending flags (v9): 1 Blend Interior Effects as Group, 2 (v13)

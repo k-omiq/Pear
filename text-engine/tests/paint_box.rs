@@ -83,6 +83,7 @@ fn plain(font: FontId) -> BoxRequest {
         clip: None,
         fade: None,
         pin_shift: mt_text::paint::Pt::new(0.0, 0.0),
+        pin_live: false,
         blend: Blend::Normal,
         fill_opacity: 1.0,
         blending: Default::default(),
@@ -815,6 +816,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     u(&mut b, 0); // no fade (v20)
     f(&mut b, 0.0); // not moved (v23)
     f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
     let blending_at = b.len();
@@ -1150,7 +1152,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 23));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 24));
     assert_eq!(r.grain, (-3, 7));
 }
 
@@ -1386,6 +1388,7 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     u(&mut b, 0); // no fade (v20)
     f(&mut b, 0.0); // not moved (v23)
     f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     no_blending(&mut b);
     u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
@@ -1456,6 +1459,7 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
     u(&mut b, 0); // no fade (v20)
     f(&mut b, 0.0); // not moved (v23)
     f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     no_blending(&mut b);
     u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
@@ -3458,7 +3462,8 @@ fn masked_off(bytes: &[u8], mode_at: usize) -> Vec<u8> {
 /// antialiased edges. A hard edge's coverage is a ramp one pixel wide, and
 /// the mean of two neighbours misses the ramp moved half a pixel by up to a
 /// quarter of full (64 levels): the edge reads a little softer while the
-/// box is held. The paint at rest rasters the mask where it is.
+/// box is held. The paint at rest rasters the mask where it is
+/// (`a_rest_paint_after_any_move_is_the_cold_paint`).
 #[test]
 fn a_mask_moved_part_of_a_pixel_is_read_between_its_pixels() {
     use mt_text::paint::kept::Hasher;
@@ -3499,6 +3504,8 @@ fn a_mask_moved_part_of_a_pixel_is_read_between_its_pixels() {
         let mut moved = plain(font);
         at(&mut moved, Pt::new(0.0, 0.0));
         moved.pin_shift = Pt::new(sx, sy);
+        // A frame of a live move (v24): only it reads between pixels.
+        moved.pin_live = true;
         let read = paint_box_kept(&mut e, &mut moved, k).unwrap().unwrap();
         let mut on = plain(font);
         at(&mut on, Pt::new(sx, sy));
@@ -3518,4 +3525,73 @@ fn a_mask_moved_part_of_a_pixel_is_read_between_its_pixels() {
         worst_all = worst_all.max(worst);
     }
     assert!(worst_all <= 64, "{worst_all}");
+}
+
+/// Only a live move frame may be approximate (v24). After live frames have
+/// kept the mask at part-pixel offsets, a paint at rest (no live flag) at any
+/// move is the cold paint of the same request to the byte: at a part pixel
+/// it is a miss and the mask is rastered there; at a whole pixel the kept
+/// raster is read as it is. A turned box, whose every move is part-pixel in
+/// device space, and a move past the kept window, which rasters again at a
+/// part-pixel corner, are the same.
+#[test]
+fn a_rest_paint_after_any_move_is_the_cold_paint() {
+    use mt_text::paint::kept::Hasher;
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    let shaped = |turn: bool| {
+        let mut b = plain(font);
+        b.clip = Some(Clip::all(
+            ClipMode::Exclude,
+            Pt::new(0.0, 0.0),
+            vec![
+                ClipShape::Ellipse { centre: Pt::new(62.3, 70.6), rx: 17.3, ry: 11.7 },
+                ClipShape::Stroke { size: 5.5, pts: vec![Pt::new(70.0, 60.0), Pt::new(105.0, 98.0)] },
+            ],
+        ));
+        b.fade = Some(Fade {
+            origin: Pt::new(0.0, 0.0),
+            shapes: vec![FadePart {
+                strength: 0.7,
+                soft: 1.5,
+                shape: ClipShape::Polygon(vec![Pt::new(30.0, 88.0), Pt::new(120.0, 84.0), Pt::new(120.0, 120.0), Pt::new(30.0, 120.0)]),
+            }],
+        });
+        if turn {
+            // 17 degrees about the box's middle, at scale 2.
+            let (c, s) = (17f64.to_radians().cos(), 17f64.to_radians().sin());
+            b.request.transform = Affine([2.0 * c, 2.0 * s, -2.0 * s, 2.0 * c, 120.0, 20.0]);
+            b.width = 420;
+            b.height = 420;
+        }
+        b
+    };
+    for turn in [false, true] {
+        let keys = |b: &BoxRequest| BoxKeys {
+            job: Hasher::new("t job").debug(&b.request.job).debug(&turn).finish().unwrap(),
+            premask: Hasher::new("t premask").debug(&turn).finish(),
+            cover: Hasher::new("t cover").debug(&b.clip).debug(&b.fade).debug(&turn).finish(),
+        };
+        let k = keys(&shaped(turn));
+        mt_text::paint::kept::clear();
+        // Live frames first: the kept cover is now at a part-pixel offset.
+        for (sx, sy) in [(0.5, 0.25), (3.25, -1.5)] {
+            let mut live = shaped(turn);
+            live.pin_shift = Pt::new(sx, sy);
+            live.pin_live = true;
+            paint_box_kept(&mut e, &mut live, k).unwrap();
+        }
+        // Then the rest paint of each way a move ends: a drag let go, a
+        // nudge, a typed X and Y, a move past the kept window.
+        for (sx, sy) in [(3.25, -1.5), (1.0, 0.0), (-2.75, 0.5), (7.0, 3.0), (900.5, -700.25), (0.0, 0.0)] {
+            let mut rest = shaped(turn);
+            rest.pin_shift = Pt::new(sx, sy);
+            let read = paint_box_kept(&mut e, &mut rest, k).unwrap();
+            let mut cold = shaped(turn);
+            cold.pin_shift = Pt::new(sx, sy);
+            let fresh = paint_box(&mut e, &mut cold).unwrap();
+            assert_eq!(read, fresh, "turn {turn}, ({sx}, {sy})");
+        }
+    }
 }

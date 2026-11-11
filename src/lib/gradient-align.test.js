@@ -98,7 +98,7 @@ describe('the wire (v16)', () => {
     // gradient has 2 colour stops and its opacity stops are all opaque.
     const flagsOf = (gradient) => {
       const v = dv(encodeBox({ ...job, effects: [{ kind: 'gradientOverlay', opacity: 1, blend: 'normal', gradient }] }).slice());
-      const head = 4 * 4 + 8 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 16; // the fade's u32 (v20) after the mask's, then the pin shift (v23)
+      const head = 4 * 4 + 8 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 16 + 4; // the fade's u32 (v20) after the mask's, then the pin shift (v23) and the live flag (v24)
       return v.getUint32(head + 4 + 8 + 8 + 4 + 16 + 4 + 2 * 12 + 4 + 4 + 4, true);
     };
     const g = normalizeFxGradient({});
