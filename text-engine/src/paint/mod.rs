@@ -1317,13 +1317,13 @@ fn break_off<'a>(
     let clip = within(fx);
     let Some(body) = finish_planned(planned, clip, rasterizer)? else {
         // Nothing to carry: with the cuts alone, the holes are cuts still.
-        let geom = broken(l, shapes, rasterizer)?;
-        return match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip))) {
+        let (geom, shift) = broken(l, shapes, rasterizer)?;
+        return match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip, shift))) {
             (Cuts::Alone, Some(h)) => h.opaque().map(Some),
             _ => Ok(None),
         };
     };
-    let geom = broken(l, shapes, rasterizer)?;
+    let (geom, shift) = broken(l, shapes, rasterizer)?;
     let have = IBox {
         x0: body.x,
         y0: body.y,
@@ -1334,17 +1334,18 @@ fn break_off<'a>(
     // where they land.
     let mut laid = budget::Buffer::new();
     for piece in geom.pieces.iter().flatten() {
-        let Some(cover) = piece.cover.within(clip) else {
+        let Some(cover) = piece.cover.within(clip, shift) else {
             continue;
         };
-        let Some(ahead) = piece.back.invert() else {
+        let back = piece.back_at(shift);
+        let Some(ahead) = back.invert() else {
             continue;
         };
         let bx = cover.bx.intersect(&carried(have, &ahead));
         if bx.is_empty() {
             continue;
         }
-        let data = read_moved(&body, AlphaIn { bx, of: cover.of }, &piece.back)?;
+        let data = read_moved(&body, AlphaIn { bx, ..cover }, &back)?;
         budget::push(
             &mut laid,
             Raster {
@@ -1362,11 +1363,11 @@ fn break_off<'a>(
     // goes round a piece there, over a hole too); with the letters uncut,
     // nothing.
     let mut out = body;
-    match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip))) {
+    match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip, shift))) {
         (Cuts::Made, Some(h)) => erase_by(&mut out, h),
         (Cuts::Alone, Some(h)) => {
             out = over(out, &h.opaque()?)?;
-            for c in geom.pieces.iter().flatten().filter_map(|p| p.cover.within(clip)) {
+            for c in geom.pieces.iter().flatten().filter_map(|p| p.cover.within(clip, shift)) {
                 erase_by(&mut out, c);
             }
         }
@@ -1426,11 +1427,13 @@ struct Alpha {
     a: budget::Buffer<u8>,
 }
 
-/// A view of an [`Alpha`] cut to a box.
+/// A view of an [`Alpha`] moved by whole pixels (`shift`) and cut to a box
+/// (`bx`, where it lies moved).
 #[derive(Clone, Copy)]
 struct AlphaIn<'a> {
     bx: IBox,
     of: &'a Alpha,
+    shift: (i32, i32),
 }
 
 impl Alpha {
@@ -1438,21 +1441,29 @@ impl Alpha {
         self.a[((y - self.bx.y0) as usize) * self.bx.width() + (x - self.bx.x0) as usize]
     }
 
-    /// The part of it inside `clip`, or all of it with none.
-    fn within(&self, clip: Option<IBox>) -> Option<AlphaIn<'_>> {
-        let bx = clip.map_or(self.bx, |c| self.bx.intersect(&c));
-        (!bx.is_empty()).then_some(AlphaIn { bx, of: self })
+    /// It moved by `shift` whole pixels, the part inside `clip` (all of it
+    /// with none).
+    fn within(&self, clip: Option<IBox>, shift: (i32, i32)) -> Option<AlphaIn<'_>> {
+        let (dx, dy) = shift;
+        let moved = IBox { x0: self.bx.x0 + dx, y0: self.bx.y0 + dy, x1: self.bx.x1 + dx, y1: self.bx.y1 + dy };
+        let bx = clip.map_or(moved, |c| moved.intersect(&c));
+        (!bx.is_empty()).then_some(AlphaIn { bx, of: self, shift })
     }
 }
 
 impl AlphaIn<'_> {
+    /// The coverage at device pixel `(x, y)`, inside `bx`.
+    fn at(&self, x: i32, y: i32) -> u8 {
+        self.of.at(x - self.shift.0, y - self.shift.1)
+    }
+
     /// As an opaque black raster, as a cut alone is laid.
     fn opaque(&self) -> Result<Raster, Error> {
         let (w, h) = (self.bx.width(), self.bx.height());
         let mut data = budget::filled(w * h * 4, 0u8)?;
         for y in 0..h {
             for x in 0..w {
-                data[(y * w + x) * 4 + 3] = self.of.at(self.bx.x0 + x as i32, self.bx.y0 + y as i32);
+                data[(y * w + x) * 4 + 3] = self.at(self.bx.x0 + x as i32, self.bx.y0 + y as i32);
             }
         }
         Ok(Raster {
@@ -1473,12 +1484,25 @@ struct PieceAt {
     back: Affine,
 }
 
+impl PieceAt {
+    /// `back` with the paint moved by `shift` whole device pixels.
+    fn back_at(&self, (dx, dy): (i32, i32)) -> Affine {
+        if (dx, dy) == (0, 0) {
+            return self.back;
+        }
+        let (dx, dy) = (f64::from(dx), f64::from(dy));
+        Affine::translate(dx, dy).after(&self.back).after(&Affine::translate(-dx, -dy))
+    }
+}
+
 /// What every pass of a paint reads of a crack's pieces: the holes they
 /// leave (`None` with none) and each piece where it lies (`None` for one
 /// that is gone or covers nothing).
 struct Broken {
     holes: Option<Alpha>,
     pieces: budget::Buffer<Option<PieceAt>>,
+    /// The whole device pixels of the frame's move it was rastered at.
+    at: (i32, i32),
 }
 
 impl Broken {
@@ -1488,14 +1512,29 @@ impl Broken {
 }
 
 /// The holes and the pieces' outlines of `shapes` as `l` places them,
-/// rastered once a paint: kept under the shapes' own key and the frame, so
-/// each pass of the box reads them back. Bent letters are not kept.
-fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer) -> Result<Rc<Broken>, Error> {
-    let key = shapes.key.filter(|_| l.bends.is_empty()).and_then(|k| {
-        Hasher::new("broken").key(k).debug(&l.transform.0).f64(l.tol).debug(&l.job.effects.surface).finish()
+/// rastered once a paint: kept under the shapes' own key and the frame less
+/// its whole device pixels of move, so each pass of the box reads them
+/// back, a shadow's at its offset too; with the shift from where they were
+/// rastered to where this frame wants them. Roughened letters are kept
+/// (the roughening is in job space, before the frame); letters a mesh
+/// bends are not.
+fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer) -> Result<(Rc<Broken>, (i32, i32)), Error> {
+    let [a, b, c, d, e, f] = l.transform.0;
+    let whole = |v: f64| v.floor().clamp(-1e9, 1e9) as i32;
+    let at = (whole(e), whole(f));
+    let key = shapes.key.filter(|_| l.bends.mesh.is_none()).and_then(|k| {
+        let surface = l.job.effects.surface.map(|s| (s.x0 - at.0, s.y0 - at.1, s.x1 - at.0, s.y1 - at.1));
+        Hasher::new("broken")
+            .key(k)
+            .debug(&[a, b, c, d, e - f64::from(at.0), f - f64::from(at.1)])
+            .f64(l.tol)
+            .debug(&surface)
+            .debug(&l.job.roughen)
+            .finish()
     });
     if let Some(hit) = key.and_then(kept::get::<Rc<Broken>>) {
-        return Ok(Rc::clone(&*hit));
+        let shift = (at.0 - hit.at.0, at.1 - hit.at.1);
+        return Ok((Rc::clone(&*hit), shift));
     }
     let outlines = |pieces: &mut dyn Iterator<Item = &special::Piece>| {
         let mut p = Polys::default();
@@ -1565,11 +1604,11 @@ fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer)
         budget::push(&mut pieces, at)?;
         budget::check()?;
     }
-    let out = Rc::new(Broken { holes, pieces });
+    let out = Rc::new(Broken { holes, pieces, at });
     if let Some(k) = key {
         kept::put(k, Rc::clone(&out), out.bytes());
     }
-    Ok(out)
+    Ok((out, (0, 0)))
 }
 
 /// `parts` filled by the non-zero rule over `bx`, one byte of coverage a
@@ -1613,7 +1652,7 @@ fn erase_by(r: &mut Raster, cut: AlphaIn<'_>) {
     let bx = cut.bx.intersect(&IBox { x0: r.x, y0: r.y, x1: r.x + rw, y1: r.y + r.height as i32 });
     for y in bx.y0..bx.y1 {
         for x in bx.x0..bx.x1 {
-            let a = u32::from(cut.of.at(x, y));
+            let a = u32::from(cut.at(x, y));
             if a == 0 {
                 continue;
             }
@@ -1649,7 +1688,7 @@ fn read_moved(src: &Raster, cover: AlphaIn<'_>, back: &Affine) -> Result<Vec<u8>
         let py = bx.y0 + y as i32;
         for x in 0..w {
             let px = bx.x0 + x as i32;
-            let k = cover.of.at(px, py);
+            let k = cover.at(px, py);
             if k == 0 {
                 continue;
             }
