@@ -5,10 +5,11 @@
 //!   grown from seeded points; past 60 % the pieces between two arms near a
 //!   point fall out.
 //! - **Scratches** cut many thin, near-parallel strokes.
-//! - **Splash** adds blobs and droplets round the letters (outlines and
-//!   shadows wrap them) and cuts spatter holes in them.
-//! - **Lightning** is paint: jagged bolts with branches and a soft halo,
-//!   laid on the letters' fill by the box job (`Effect::Paint`).
+//! - **Splash** is paint: spiky splats, teardrop droplets and streaks in
+//!   its own colour, laid on the letters' fill by the box job
+//!   (`Effect::Paint`), so nothing goes past the fill.
+//! - **Lightning** is paint too: jagged bolts of straight segments with
+//!   forks, a bright core in a coloured glow, on the letters' fill.
 //!
 //! Every pattern is drawn over the whole box (the letters' ink as one, or
 //! the box itself for a bolt), never restarted per letter, and from the
@@ -16,6 +17,7 @@
 //! editor and in the file (`crate::seeded::noise`). Lengths are shares of
 //! the job's font size, so a pattern scales with its letters.
 
+use std::f64::consts::{PI, TAU};
 use std::rc::Rc;
 
 use super::boxjob::ClipShape;
@@ -29,37 +31,43 @@ use crate::Error;
 /// Largest share of the font size a Size control reaches.
 pub const MAX_SPECIAL_SIZE: f64 = 4.0;
 
-/// How far a splash reaches past the letters' ink, in units of its size
-/// times the font size: the farthest droplet's edge. The app grows a box's
-/// footprint by this much (`specialReach` in exporter.js).
-pub const SPLASH_REACH: f64 = 1.2;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Crack {
     /// 0 to 1: how many cracks, how long, and past 0.6 how much falls out.
     pub amount: f64,
     /// A share of the font size: the length and width of the arms.
     pub size: f64,
+    /// Where the cracks gather: shares of the letters' ink box (0 to 1
+    /// each way).
+    pub at: (f64, f64),
+    /// 0 to 1: how far from `at` they spread. 1 spreads them over all the
+    /// letters, as one crack per stretch of them; less pulls them in to
+    /// `at`, fewer as the area shrinks.
+    pub spread: f64,
     pub seed: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lightning {
-    /// 0 to 1: how many bolts and branches.
+    /// 0 to 1: how many bolts and forks.
     pub amount: f64,
-    /// Radians: the way the bolts run, 0 along the line.
-    pub angle: f64,
-    /// Straight; the halo is this colour, the core this colour lit.
-    pub color: Rgba,
+    /// The bolt's bright core.
+    pub core: Rgba,
+    /// The glow round it, and the bolt's body.
+    pub glow: Rgba,
+    /// 0 to 3 times the default glow.
+    pub glow_size: f64,
     pub seed: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Splash {
-    /// 0 to 1: how many blobs, droplets and holes.
+    /// 0 to 1: how many splats, droplets and streaks.
     pub amount: f64,
-    /// A share of the font size: how big a blob is and how far it throws.
+    /// A share of the font size: how big a splat is.
     pub size: f64,
+    /// The paint's colour.
+    pub color: Rgba,
     pub seed: u32,
 }
 
@@ -72,7 +80,7 @@ pub struct Scratches {
     pub seed: u32,
 }
 
-/// The special effects of a box (glyph wire v14). Every job of the box
+/// The special effects of a box (glyph wire v15). Every job of the box
 /// carries them, so a shadow is cast from the cracked letters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Special {
@@ -86,14 +94,14 @@ pub struct Special {
 }
 
 impl Special {
-    /// Whether any effect changes the letters' shapes (all but Lightning).
+    /// Whether any effect changes the letters' shapes (Crack, Scratches).
     pub fn shapes_letters(&self) -> bool {
-        self.crack.is_some() || self.splash.is_some() || self.scratches.is_some()
+        self.crack.is_some() || self.scratches.is_some()
     }
 }
 
 /// What the letters' generators make, in job space: shapes cut out of every
-/// pass, and ink joined to the letters.
+/// pass. Nothing is added to them now (`adds` stays empty).
 #[derive(Debug, Default)]
 pub struct Shapes {
     pub cuts: Polys,
@@ -117,6 +125,14 @@ impl Dice {
     /// In [0, 1].
     fn u(&self, item: usize, ch: u32) -> f64 {
         (self.pm(item, ch) + 1.0) * 0.5
+    }
+    /// -1 or 1.
+    fn sign(&self, item: usize, ch: u32) -> f64 {
+        if self.pm(item, ch) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        }
     }
 }
 
@@ -167,18 +183,6 @@ fn ribbon(pts: &[Pt], width: impl Fn(f64) -> f64) -> Vec<Pt> {
     left
 }
 
-/// A wobbly round blob of radius `r` about `c`, `bump` of it either way.
-fn blob(c: Pt, r: f64, bump: f64, dice: Dice, item: usize) -> Vec<Pt> {
-    const N: usize = 18;
-    (0..N)
-        .map(|i| {
-            let t = i as f64 / N as f64 * std::f64::consts::TAU;
-            let k = 1.0 + bump * dice.pm(item, 100 + i as u32);
-            Pt::new(c.x + t.cos() * r * k, c.y + t.sin() * r * k)
-        })
-        .collect()
-}
-
 /// A jagged walk from `from`, heading `angle`, `steps` steps of `step`,
 /// turning by up to `turn` radians a step.
 fn walk(from: Pt, angle: f64, step: f64, steps: usize, turn: f64, dice: Dice, item: usize) -> Vec<Pt> {
@@ -194,29 +198,6 @@ fn walk(from: Pt, angle: f64, step: f64, steps: usize, turn: f64, dice: Dice, it
     pts
 }
 
-/// `a` to `b` cut into `2^depth` pieces, each midpoint moved sideways by up
-/// to `rough` of its piece: a bolt's zigzag.
-fn zigzag(a: Pt, b: Pt, depth: u32, rough: f64, dice: Dice, item: usize) -> Vec<Pt> {
-    let mut pts = vec![a, b];
-    let mut k = 0u32;
-    for _ in 0..depth {
-        let mut next = Vec::with_capacity(pts.len() * 2);
-        for w in pts.windows(2) {
-            let (p, q) = (w[0], w[1]);
-            let (dx, dy) = (q.x - p.x, q.y - p.y);
-            let len = dx.hypot(dy);
-            let off = rough * len * dice.pm(item, 400 + k);
-            k += 1;
-            let (nx, ny) = if len > 0.0 { (-dy / len, dx / len) } else { (0.0, 0.0) };
-            next.push(p);
-            next.push(Pt::new((p.x + q.x) / 2.0 + nx * off, (p.y + q.y) / 2.0 + ny * off));
-        }
-        next.push(*pts.last().unwrap_or(&b));
-        pts = next;
-    }
-    pts
-}
-
 // ===== the letters' shapes =====
 
 /// The cuts and adds of `sp` for letters whose ink (job space, unbent) is
@@ -224,7 +205,7 @@ fn zigzag(a: Pt, b: Pt, depth: u32, rough: f64, dice: Dice, item: usize) -> Vec<
 /// of anything else reads them back.
 pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Result<Rc<Shapes>, Error> {
     let key = Hasher::new("special shapes")
-        .debug(&(sp.crack, sp.splash, sp.scratches))
+        .debug(&(sp.crack, sp.scratches))
         .f64(size)
         .f64(ink.0)
         .f64(ink.1)
@@ -240,9 +221,6 @@ pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Resu
     }
     if let Some(s) = sp.scratches {
         scratches(&s, size, ink, &mut out.cuts);
-    }
-    if let Some(s) = sp.splash {
-        splash(&s, size, ink, &mut out);
     }
     super::budget::check()?;
     let out = Rc::new(out);
@@ -261,14 +239,18 @@ fn crack(c: &Crack, size: f64, (x0, y0, x1, y1): (f64, f64, f64, f64), cuts: &mu
     }
     let dice = Dice { seed: c.seed, stream: 1 };
     let (w, h) = (x1 - x0, y1 - y0);
-    let points = (1.0 + a * (w * h) / (u * u) * 0.6).round().clamp(1.0, 24.0) as usize;
+    let spread = c.spread.clamp(0.0, 1.0);
+    let focus = Pt::new(x0 + c.at.0.clamp(0.0, 1.0) * w, y0 + c.at.1.clamp(0.0, 1.0) * h);
+    let points = (1.0 + a * (w * h * spread * spread) / (u * u) * 0.6).round().clamp(1.0, 24.0) as usize;
     // Past 60 % the pieces between two arms start to fall out.
     let fall = ((a - 0.6) / 0.4).clamp(0.0, 1.0);
     let step = u * 0.08;
     let mut item = 0usize;
     for i in 0..points {
-        // Spread along the letters: one point to each equal stretch.
-        let centre = Pt::new(x0 + (i as f64 + dice.u(i, 0)) / points as f64 * w, y0 + dice.u(i, 1) * h);
+        // Spread along the letters, one point to each equal stretch, then
+        // pulled in to the focus by the spread.
+        let even = Pt::new(x0 + (i as f64 + dice.u(i, 0)) / points as f64 * w, y0 + dice.u(i, 1) * h);
+        let centre = Pt::new(focus.x + (even.x - focus.x) * spread, focus.y + (even.y - focus.y) * spread);
         let arms = 3 + (dice.u(i, 2) * 3.0) as usize + (a * 2.0) as usize;
         let turn0 = dice.u(i, 3) * std::f64::consts::TAU;
         let width0 = u * (0.03 + 0.04 * a);
@@ -360,78 +342,146 @@ fn scratches(s: &Scratches, size: f64, (x0, y0, x1, y1): (f64, f64, f64, f64), c
     }
 }
 
-fn splash(s: &Splash, size: f64, (x0, y0, x1, y1): (f64, f64, f64, f64), out: &mut Shapes) {
-    let a = s.amount.clamp(0.0, 1.0);
-    let u = size * s.size.clamp(0.01, MAX_SPECIAL_SIZE);
-    if !(a > 0.0) || !(u > 0.0) {
-        return;
-    }
-    let dice = Dice { seed: s.seed, stream: 3 };
-    let (w, h) = (x1 - x0, y1 - y0);
-    let my = (y0 + y1) / 2.0;
-    let splats = (1.0 + a * 2.0 + a * (w * h) / (size * size) * 0.15).round().clamp(1.0, 8.0) as usize;
-    let reach = SPLASH_REACH * u;
-    let mut item = 0usize;
-    for i in 0..splats {
-        // Spread along the letters, one to each equal stretch, and pulled
-        // a little towards their middle line.
-        let c = Pt::new(
-            x0 + (i as f64 + 0.15 + 0.7 * dice.u(i, 0)) / splats as f64 * w,
-            my + (dice.u(i, 1) - 0.5) * h * 0.85,
-        );
-        let r = u * (0.12 + 0.12 * a) * (0.6 + 0.8 * dice.u(i, 2));
-        contour(&mut out.adds, &blob(c, r, 0.18, dice, i));
-        // Fingers thrown out of the blob, a droplet at the end of some.
-        let fingers = 4 + (dice.u(i, 3) * 4.0) as usize;
-        for f in 0..fingers {
-            item += 1;
-            let dir = dice.u(item, 0) * std::f64::consts::TAU;
-            let len = r * (1.2 + 1.0 * dice.u(item, 1));
-            let (cx, cy) = (dir.cos(), dir.sin());
-            let tip = Pt::new(c.x + cx * len, c.y + cy * len);
-            let fw = r * (0.25 + 0.2 * dice.u(item, 2));
-            contour(&mut out.adds, &ribbon(&[Pt::new(c.x + cx * r * 0.5, c.y + cy * r * 0.5), tip], |t| fw * (1.0 - 0.85 * t)));
-            if f % 2 == 0 {
-                let dr = r * (0.1 + 0.1 * dice.u(item, 3));
-                let d = (len + r * (0.3 + 0.6 * dice.u(item, 4))).min(reach - dr);
-                contour(&mut out.adds, &blob(Pt::new(c.x + cx * d, c.y + cy * d), dr, 0.1, dice, item));
-            }
+
+// ===== paint =====
+
+/// An angular walk from `from` along `heading`: straight segments of about
+/// `seg`, each turned sharply off the heading, mostly the other way from the
+/// last, so the line zigzags and keeps its way. Stops after `len`, or when
+/// `stop` says a point is past where it may go.
+#[allow(clippy::too_many_arguments)]
+fn zig(
+    from: Pt,
+    heading: f64,
+    seg: f64,
+    len: f64,
+    turn: f64,
+    dice: Dice,
+    item: usize,
+    stop: impl Fn(Pt) -> bool,
+) -> Vec<Pt> {
+    let mut pts = vec![from];
+    let (mut p, mut dev, mut sign, mut gone) = (from, 0.0f64, dice.sign(item, 0), 0.0);
+    for s in 0..64u32 {
+        if gone >= len {
+            break;
         }
-        // Loose droplets round it, within the reach.
-        let drops = (4.0 + 14.0 * a) as usize;
-        for _ in 0..drops {
-            item += 1;
-            let dir = dice.u(item, 0) * std::f64::consts::TAU;
-            let dr = r * (0.09 + 0.14 * dice.u(item, 1));
-            let d = (r * (1.3 + 3.0 * dice.u(item, 2).powf(0.7))).min(reach - dr);
-            contour(&mut out.adds, &blob(Pt::new(c.x + dir.cos() * d, c.y + dir.sin() * d), dr, 0.1, dice, item));
+        if dice.u(item, 10 + s) < 0.72 {
+            sign = -sign;
+        }
+        dev = (dev * 0.35 + sign * turn * (0.35 + 0.65 * dice.u(item, 100 + s))).clamp(-1.1 * turn, 1.1 * turn);
+        let a = heading + dev;
+        let l = (seg * (0.6 + 0.8 * dice.u(item, 200 + s))).min(len - gone).max(seg * 0.25);
+        p = Pt::new(p.x + a.cos() * l, p.y + a.sin() * l);
+        gone += l;
+        pts.push(p);
+        if stop(p) {
+            break;
         }
     }
-    // Spatter holes inside the letters.
-    let holes = (a * (w * h) / (size * size) * 2.5).round().clamp(0.0, 120.0) as usize;
-    for k in 0..holes {
-        item += 1;
-        let c = Pt::new(x0 + dice.u(item, 0) * w, y0 + dice.u(item, 1) * h);
-        let r = u * (0.015 + 0.05 * dice.u(item, 2).powi(2));
-        contour(&mut out.cuts, &blob(c, r, 0.15, dice, 10_000 + k));
-    }
+    pts
 }
 
-// ===== lightning =====
+/// A splat: a rough disc of radius `r` about `c` with a few long, narrow
+/// spikes.
+fn splat(c: Pt, r: f64, dice: Dice, item: usize) -> Vec<Pt> {
+    const N: usize = 30;
+    let mut pts = Vec::with_capacity(N * 2);
+    for i in 0..N {
+        let t = i as f64 / N as f64 * TAU;
+        let ch = i as u32;
+        if dice.u(item, 300 + ch) < 0.28 {
+            // A spike: in, far out, back in.
+            let d = TAU / N as f64 * 0.32;
+            let base = r * 0.85;
+            let tip = r * (1.45 + 0.9 * dice.u(item, 400 + ch));
+            pts.push(Pt::new(c.x + (t - d).cos() * base, c.y + (t - d).sin() * base));
+            pts.push(Pt::new(c.x + t.cos() * tip, c.y + t.sin() * tip));
+            pts.push(Pt::new(c.x + (t + d).cos() * base, c.y + (t + d).sin() * base));
+        } else {
+            let k = 0.82 + 0.26 * dice.u(item, 500 + ch);
+            pts.push(Pt::new(c.x + t.cos() * r * k, c.y + t.sin() * r * k));
+        }
+    }
+    pts
+}
 
-/// The marks of a lightning over the box `rect` (job space) at font size
-/// `size`, stated from the box's corner. Kept under its numbers.
-pub fn lightning_marks(l: &Lightning, rect: [f64; 4], size: f64) -> Rc<Vec<PaintMark>> {
-    let key = Hasher::new("lightning")
-        .debug(l)
-        .f64(rect[2])
-        .f64(rect[3])
-        .f64(size)
-        .finish();
+/// A teardrop thrown along `dir`: a round head of radius `r` at `c`, its
+/// tail pointing back the way it came, `tail` long.
+fn teardrop(c: Pt, r: f64, dir: f64, tail: f64) -> Vec<Pt> {
+    const N: usize = 12;
+    let mut pts = Vec::with_capacity(N + 2);
+    for k in 0..=N {
+        let ang = dir - PI / 2.0 + PI * k as f64 / N as f64;
+        pts.push(Pt::new(c.x + ang.cos() * r, c.y + ang.sin() * r));
+    }
+    pts.push(Pt::new(c.x - dir.cos() * tail, c.y - dir.sin() * tail));
+    pts
+}
+
+/// The marks of a splash over the box `rect` (job space) at font size
+/// `size`, stated from the box's corner: laid on the letters' fill, so what
+/// falls off it is not seen. Kept under its numbers.
+pub fn splash_marks(s: &Splash, rect: [f64; 4], size: f64) -> Rc<Vec<PaintMark>> {
+    kept_marks(Hasher::new("splash marks").debug(s), rect, size, || splats(s, rect[2], rect[3], size))
+}
+
+fn splats(s: &Splash, w: f64, h: f64, size: f64) -> Vec<PaintMark> {
+    let a = s.amount.clamp(0.0, 1.0);
+    let u = size * s.size.clamp(0.01, MAX_SPECIAL_SIZE);
+    if !(a > 0.0) || !(u > 0.0) || !(w > 0.0 && h > 0.0) {
+        return Vec::new();
+    }
+    let dice = Dice { seed: s.seed, stream: 3 };
+    let mark = |pts: Vec<Pt>| PaintMark { shape: ClipShape::Polygon(pts), color: s.color, opacity: 1.0, soft: 0.0, erase: false };
+    let mut marks = Vec::new();
+    // One splat to each equal stretch of the box, about its middle line,
+    // where the letters are.
+    let splats = 1 + (a * 3.0).round() as usize;
+    let mut item = 0usize;
+    for i in 0..splats {
+        let c = Pt::new(
+            (i as f64 + 0.2 + 0.6 * dice.u(i, 0)) / splats as f64 * w,
+            h * (0.3 + 0.4 * dice.u(i, 1)),
+        );
+        let r = u * (0.2 + 0.1 * a) * (0.75 + 0.5 * dice.u(i, 2));
+        marks.push(mark(splat(c, r, dice, i)));
+        // Droplets thrown out of it, smaller the farther they go, each a
+        // teardrop pointing the way it flew.
+        let drops = (3.0 + 9.0 * a).round() as usize;
+        for _ in 0..drops {
+            item += 1;
+            let dir = dice.u(item, 0) * TAU;
+            let far = dice.u(item, 1).powf(0.8);
+            let d = r * (1.2 + 1.8 * far);
+            let dr = (r * 0.3 * (1.0 - 0.7 * far) * (0.6 + 0.6 * dice.u(item, 2))).max(size * 0.02);
+            let q = Pt::new(c.x + dir.cos() * d, c.y + dir.sin() * d);
+            marks.push(mark(teardrop(q, dr, dir, dr * (1.8 + 1.4 * dice.u(item, 3)))));
+        }
+        // A few thin streaks out of its edge.
+        let streaks = (1.0 + 2.0 * a).round() as usize;
+        for _ in 0..streaks {
+            item += 1;
+            let dir = dice.u(item, 0) * TAU;
+            let from = Pt::new(c.x + dir.cos() * r * 0.7, c.y + dir.sin() * r * 0.7);
+            let l = r * (1.0 + 1.0 * dice.u(item, 1));
+            let to = Pt::new(from.x + dir.cos() * l, from.y + dir.sin() * l);
+            let sw = (r * 0.18).max(size * 0.02);
+            let mid = Pt::new((from.x + to.x) / 2.0, (from.y + to.y) / 2.0);
+            marks.push(mark(ribbon(&[from, mid, to], |t| sw * (1.0 - t))));
+        }
+    }
+    marks
+}
+
+/// `make`'s marks, kept under `key` and the box's size and the font size (a
+/// move of the box keeps them).
+fn kept_marks(key: Hasher, rect: [f64; 4], size: f64, make: impl FnOnce() -> Vec<PaintMark>) -> Rc<Vec<PaintMark>> {
+    let key = key.f64(rect[2]).f64(rect[3]).f64(size).finish();
     if let Some(hit) = key.and_then(kept::get::<Rc<Vec<PaintMark>>>) {
         return Rc::clone(&*hit);
     }
-    let marks = Rc::new(bolts(l, rect[2], rect[3], size));
+    let marks = Rc::new(make());
     if let Some(k) = key {
         let bytes = marks.iter().map(|m| match &m.shape {
             ClipShape::Polygon(p) | ClipShape::Stroke { pts: p, .. } => p.len() * 16,
@@ -442,69 +492,90 @@ pub fn lightning_marks(l: &Lightning, rect: [f64; 4], size: f64) -> Rc<Vec<Paint
     marks
 }
 
+// ===== lightning =====
+
+/// The marks of a lightning over the box `rect` (job space) at font size
+/// `size`, stated from the box's corner. Kept under its numbers.
+pub fn lightning_marks(l: &Lightning, rect: [f64; 4], size: f64) -> Rc<Vec<PaintMark>> {
+    kept_marks(Hasher::new("lightning v15").debug(l), rect, size, || bolts(l, rect[2], rect[3], size))
+}
+
 fn bolts(l: &Lightning, w: f64, h: f64, size: f64) -> Vec<PaintMark> {
     let a = l.amount.clamp(0.0, 1.0);
-    let mut marks = Vec::new();
     if !(a > 0.0) || !(size > 0.0) || !(w > 0.0 && h > 0.0) {
-        return marks;
+        return Vec::new();
     }
     let dice = Dice { seed: l.seed, stream: 4 };
-    let [r, g, b, _] = l.color.0;
-    let lit = |v: u8| (f64::from(v) + (255.0 - f64::from(v)) * 0.65).round() as u8;
-    let core = Rgba([lit(r), lit(g), lit(b), 255]);
-    let halo = Rgba([r, g, b, 255]);
-    let count = (1.0 + a * 4.0).round() as usize;
-    let reach = 0.5 * w.hypot(h) * 1.05;
-    let width = size * (0.035 + 0.03 * a);
-    let mut item = 0usize;
+    let core_w = size * 0.05;
+    let body_w = core_w * 2.6;
+    let glow = l.glow_size.clamp(0.0, 3.0);
+    // Every line of the lightning: its points and how wide, 1 for a bolt.
+    let mut lines: Vec<(Vec<Pt>, f64)> = Vec::new();
+    let count = 1 + (a * 2.0 + 0.2).round() as usize;
+    let inside = |p: Pt| p.x < -0.08 * w || p.x > 1.08 * w;
     for i in 0..count {
-        let c = Pt::new(dice.u(i, 0) * w, dice.u(i, 1) * h);
-        let dir = l.angle + dice.pm(i, 2) * 0.3;
-        let (cx, cy) = (dir.cos(), dir.sin());
-        let from = Pt::new(c.x - cx * reach, c.y - cy * reach);
-        let to = Pt::new(c.x + cx * reach, c.y + cy * reach);
-        let main = zigzag(from, to, 6, 0.22, dice, i);
-        marks.push(PaintMark {
-            shape: ClipShape::Stroke { size: width * 3.0, pts: main.clone() },
-            color: halo,
-            opacity: 0.45,
-            soft: size * 0.05,
-            erase: false,
-        });
-        marks.push(PaintMark {
-            shape: ClipShape::Polygon(ribbon(&main, |t| width * (1.0 - 0.5 * t))),
-            color: halo,
-            opacity: 1.0,
-            soft: 0.0,
-            erase: false,
-        });
-        // A lit core down the middle of the bolt.
-        marks.push(PaintMark {
-            shape: ClipShape::Polygon(ribbon(&main, |t| width * 0.4 * (1.0 - 0.5 * t))),
-            color: core,
-            opacity: 1.0,
-            soft: 0.0,
-            erase: false,
-        });
-        let branches = (1.0 + a * 4.0).round() as usize;
-        for _ in 0..branches {
-            item += 1;
-            let at = 4 + (dice.u(item, 0) * (main.len() - 8) as f64) as usize;
-            let p = main[at];
-            let side = if dice.pm(item, 1) < 0.0 { -1.0 } else { 1.0 };
-            let bdir = dir + side * (0.3 + 0.6 * dice.u(item, 2));
-            let len = reach * (0.2 + 0.35 * dice.u(item, 3));
-            let end = Pt::new(p.x + bdir.cos() * len, p.y + bdir.sin() * len);
-            let arm = zigzag(p, end, 4, 0.25, dice, 1000 + item);
-            let bw = width * (1.0 - 0.5 * at as f64 / main.len() as f64) * 0.55;
+        // Slanted across the word: from high on one side to low on the
+        // other, or the other way, so a bolt crosses the letters' height.
+        let (hi, lo) = (h * (0.1 + 0.3 * dice.u(i, 0)), h * (0.6 + 0.3 * dice.u(i, 1)));
+        let (y0, y1) = if dice.u(i, 2) < 0.5 { (hi, lo) } else { (lo, hi) };
+        let (from, to) = if i % 2 == 0 { (Pt::new(-0.05 * w, y0), Pt::new(1.05 * w, y1)) } else { (Pt::new(1.05 * w, y0), Pt::new(-0.05 * w, y1)) };
+        let heading = (to.y - from.y).atan2(to.x - from.x);
+        let main = zig(from, heading, size * 0.24, (to.x - from.x).hypot(to.y - from.y) * 1.3, 0.95, dice, 100 + i, inside);
+        // Forks off its corners, more with the amount.
+        let forks = (1.0 + a * 4.0).round() as usize;
+        for f in 0..forks {
+            let item = 1000 + i * 50 + f;
+            if main.len() < 4 {
+                break;
+            }
+            let k = 1 + (dice.u(item, 0) * (main.len() - 2) as f64) as usize;
+            let p = main[k - 1];
+            let hd = (main[k].y - p.y).atan2(main[k].x - p.x);
+            let fd = hd + dice.sign(item, 1) * (0.45 + 0.6 * dice.u(item, 2));
+            let fl = size * (0.6 + 1.2 * dice.u(item, 3)) * (0.7 + 0.5 * a);
+            let fork = zig(main[k], fd, size * 0.18, fl, 0.9, dice, 3000 + item, |_| false);
+            if a > 0.55 && fork.len() > 2 && dice.u(item, 4) < a {
+                let m = fork.len() / 2;
+                let q = fork[m - 1];
+                let h2 = (fork[m].y - q.y).atan2(fork[m].x - q.x) - dice.sign(item, 5) * (0.5 + 0.5 * dice.u(item, 6));
+                lines.push((zig(fork[m], h2, size * 0.14, fl * 0.5, 0.9, dice, 7000 + item, |_| false), 0.5));
+            }
+            lines.push((fork, 0.75));
+        }
+        lines.push((main, 1.0));
+    }
+    let mut marks = Vec::with_capacity(lines.len() * 3);
+    // The glow under everything, then the bodies, then the cores.
+    if glow > 0.0 {
+        for (pts, k) in &lines {
             marks.push(PaintMark {
-                shape: ClipShape::Polygon(ribbon(&arm, |t| bw * (1.0 - t))),
-                color: halo,
-                opacity: 0.95,
-                soft: 0.0,
+                shape: ClipShape::Stroke { size: body_w * k * (1.0 + 0.6 * glow), pts: pts.clone() },
+                color: l.glow,
+                opacity: 0.75,
+                soft: size * 0.03 * glow * k.sqrt(),
                 erase: false,
             });
         }
+    }
+    for (pts, k) in &lines {
+        let tip = if *k < 1.0 { 0.35 } else { 0.75 };
+        marks.push(PaintMark {
+            shape: ClipShape::Polygon(ribbon(pts, |t| body_w * k * (1.0 - (1.0 - tip) * t))),
+            color: l.glow,
+            opacity: 1.0,
+            soft: 0.0,
+            erase: false,
+        });
+    }
+    for (pts, k) in &lines {
+        let tip = if *k < 1.0 { 0.3 } else { 0.7 };
+        marks.push(PaintMark {
+            shape: ClipShape::Polygon(ribbon(pts, |t| core_w * k * (1.0 - (1.0 - tip) * t))),
+            color: l.core,
+            opacity: 1.0,
+            soft: 0.0,
+            erase: false,
+        });
     }
     marks
 }

@@ -71,7 +71,7 @@ pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
 pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, shape_spans, Placed, ShapedRun};
-pub use special::{Crack, Lightning, Scratches, Special, Splash, MAX_SPECIAL_SIZE, SPLASH_REACH};
+pub use special::{Crack, Lightning, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};

@@ -618,9 +618,10 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
         }),
     ));
-    // The special effects (glyph wire v14), each over the whole box: a
+    // The special effects (glyph wire v15), each over the whole box: a
     // crack past 60 % (pieces out) under a stroke and a shadow, a splash
-    // under a stroke, scratches, and a lightning laid as paint.
+    // laid as paint on the fill under a stroke, scratches, and a lightning
+    // laid as paint.
     fn special(b: &mut BoxRequest) -> &mut Special {
         b.request.job.effects.special = Some(Special {
             rect: [0.0, 0.0, 200.0, 160.0],
@@ -634,7 +635,7 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     rows.push((
         "special_crack_falls",
         Box::new(move |b| {
-            special(b).crack = Some(Crack { amount: 0.9, size: 1.0, seed: 3 });
+            special(b).crack = Some(Crack { amount: 0.9, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
             b.shadows = vec![shadow(5.0, 6.0)];
             b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
         }),
@@ -642,8 +643,9 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     rows.push((
         "special_splash_stroke",
         Box::new(move |b| {
-            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, seed: 5 });
+            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, color: BLUE, seed: 5 });
             b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+            b.lay_special_paint().unwrap();
         }),
     ));
     rows.push((
@@ -655,8 +657,8 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     rows.push((
         "special_lightning",
         Box::new(move |b| {
-            special(b).lightning = Some(Lightning { amount: 0.6, angle: 0.35, color: BLUE, seed: 4 });
-            b.lay_lightning().unwrap();
+            special(b).lightning = Some(Lightning { amount: 0.6, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed: 4 });
+            b.lay_special_paint().unwrap();
         }),
     ));
     rows

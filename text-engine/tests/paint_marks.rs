@@ -247,7 +247,7 @@ fn a_soft_mark_grades_alike_at_every_scale_and_its_colour_is_laid_on_kept_covera
         b.request.transform = Affine::scale(scale, scale);
         b.width = (260.0 * scale) as u32;
         b.height = (160.0 * scale) as u32;
-        b.lay_lightning().unwrap();
+        b.lay_special_paint().unwrap();
         paint_box(e, &mut b).unwrap()
     };
     let soft = || vec![mark(RED, 1.0, 12.0, false, rect(-200.0, -200.0, 120.0, 400.0))];

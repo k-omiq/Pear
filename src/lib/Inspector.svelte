@@ -91,7 +91,7 @@
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
   import ValueSlider from './ValueSlider.svelte';
-  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX } from './special.js';
+  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX, SPECIAL_GLOW_MAX } from './special.js';
   import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
   import { setFxDefault, clearFxDefault, isComics } from './prefs.svelte.js';
@@ -726,8 +726,8 @@
   // The rows of Surface ▸ Special, in the order they are listed.
   const SPECIAL_ROWS = [
     { kind: 'crack', label: 'Crack', title: 'Jagged cracks through the letters. High amounts break pieces out', amount: 'How many cracks and how long. Past 60 % pieces fall out' },
-    { kind: 'lightning', label: 'Lightning', title: 'Jagged bolts painted on the letters, with a soft glow', amount: 'How many bolts and branches' },
-    { kind: 'splash', label: 'Splash', title: 'Ink blobs and droplets round the letters, and holes in them', amount: 'How many blobs, droplets and holes' },
+    { kind: 'lightning', label: 'Lightning', title: 'Jagged bolts with forks painted on the fill, a bright core in a glow', amount: 'How many bolts and forks' },
+    { kind: 'splash', label: 'Splash', title: 'Paint splats and droplets on the fill, in a colour of their own', amount: 'How many splats, droplets and streaks' },
     { kind: 'scratches', label: 'Scratches', title: 'Many thin scratches across the letters', amount: 'How many scratches' },
   ];
   // The ink note: a box whose brush ink the engine's box job cannot take yet
@@ -2844,6 +2844,22 @@
                     <span class="pl">Angle</span>
                     <div class="pc"><AngleDial angle={fx.angle} label="{row.label} angle" disabled={off} oninput={(v) => setVal(fx, 'angle', v.angle)} /></div>
                   </div>
+                {/if}
+                {#if row.kind === 'crack'}
+                  {@render sliderRow('Focus X', 'Where the cracks gather, across the letters', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Crack focus x', disabled: off })}
+                  {@render sliderRow('Focus Y', 'Where the cracks gather, down the letters', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Crack focus y', disabled: off })}
+                  {@render sliderRow('Spread', 'How far the cracks spread from the focus: 100 % covers every letter', fx.spread, (v) => setVal(fx, 'spread', v), { max: 100, unit: '%', aria: 'Crack spread', disabled: off })}
+                {/if}
+                {#if row.kind === 'lightning'}
+                  <div class="prow">
+                    <span class="pl">Core</span>
+                    <div class="pc">{@render colorField(fx, 'core', 'Lightning core colour')}</div>
+                  </div>
+                  <div class="prow">
+                    <span class="pl">Glow</span>
+                    <div class="pc">{@render colorField(fx, 'glow', 'Lightning glow colour')}</div>
+                  </div>
+                  {@render sliderRow('Glow size', 'How far the glow spreads round each bolt', fx.glowSize, (v) => setVal(fx, 'glowSize', v), { max: SPECIAL_GLOW_MAX, unit: '%', aria: 'Lightning glow size', disabled: off })}
                 {/if}
                 {#if 'color' in fx}
                   <div class="prow">

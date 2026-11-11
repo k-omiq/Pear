@@ -6,13 +6,13 @@ import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { normalizeSpecial, specialJob, specialReach, SPLASH_REACH } from './special.js';
+import { normalizeSpecial, specialJob } from './special.js';
 import { encodeJob } from '../../text-engine/js/paint.mjs';
 import { isRasterOnly } from './psd.js';
 
 // ===========================================================================
 // Special effects (plan 8.2, B4): Crack, Lightning, Splash and Scratches,
-// made by the engine from their numbers (glyph wire v14).
+// made by the engine from their numbers (glyph wire v15).
 // ===========================================================================
 
 const hadDocument = 'document' in globalThis;
@@ -43,9 +43,9 @@ beforeEach(() => {
 
 const SIZE = 56;
 const ON = {
-  crack: { on: true, amount: 80, size: 100, seed: 3 },
-  lightning: { on: true, amount: 70, angle: 15, color: '#1e90ff', seed: 4 },
-  splash: { on: true, amount: 60, size: 80, seed: 5 },
+  crack: { on: true, amount: 80, size: 100, x: 50, y: 50, spread: 100, seed: 3 },
+  lightning: { on: true, amount: 70, core: '#ffffff', glow: '#1e90ff', glowSize: 100, seed: 4 },
+  splash: { on: true, amount: 60, size: 80, color: '#e63946', seed: 5 },
   scratches: { on: true, amount: 60, angle: -20, seed: 6 },
 };
 const LOOK = { strokes: [{ color: '#000000', width: 4, opacity: 1 }], shadows: [{ x: 6, y: 5, blur: 0, color: '#00ff00', opacity: 1 }] };
@@ -64,11 +64,14 @@ const same = (a, b) => a.width === b.width && a.height === b.height && a.data.eq
 
 describe('the model', () => {
   it('reads anything as four rows, off, in range', () => {
-    const n = normalizeSpecial({ crack: { on: true, amount: 300, size: 1, seed: -4 }, lightning: { color: 'blue', angle: 999 } });
-    expect(n.crack).toEqual({ on: true, amount: 100, size: 10, seed: 0 });
+    const n = normalizeSpecial({ crack: { on: true, amount: 300, size: 1, seed: -4 }, lightning: { core: 'blue', glowSize: 999 }, splash: { color: '#ABCDEF' } });
+    expect(n.crack).toEqual({ on: true, amount: 100, size: 10, x: 50, y: 50, spread: 100, seed: 0 });
     expect(n.lightning.on).toBe(false);
-    expect(n.lightning.color).toBe('#1e90ff');
-    expect(n.lightning.angle).toBe(180);
+    expect(n.lightning.core).toBe('#ffffff');
+    expect(n.lightning.glowSize).toBe(300);
+    expect(n.splash.color).toBe('#abcdef');
+    // A lightning saved with one colour keeps it as its glow.
+    expect(normalizeSpecial({ lightning: { color: '#FF0000' } }).lightning.glow).toBe('#ff0000');
     expect(Object.keys(n)).toEqual(['crack', 'lightning', 'splash', 'scratches']);
     expect(style().special).toEqual(normalizeSpecial(undefined));
   });
@@ -77,8 +80,8 @@ describe('the model', () => {
     const s = style({ special: { ...ON, splash: { ...ON.splash, on: false } } });
     const j = specialJob(s, { x: 1, y: 2, w: 3, h: 4 });
     expect(j.rect).toEqual({ x: 1, y: 2, w: 3, h: 4 });
-    expect(j.crack).toEqual({ amount: 0.8, size: 1, seed: 3 });
-    expect(j.lightning.angle).toBeCloseTo((15 * Math.PI) / 180, 12);
+    expect(j.crack).toEqual({ amount: 0.8, size: 1, x: 0.5, y: 0.5, spread: 1, seed: 3 });
+    expect(j.lightning).toEqual({ amount: 0.7, core: '#ffffff', glow: '#1e90ff', glowSize: 1, seed: 4 });
     expect('splash' in j).toBe(false);
     expect(specialJob(style(), { x: 0, y: 0, w: 1, h: 1 })).toBe(null);
   });
@@ -89,19 +92,20 @@ describe('the model', () => {
   });
 });
 
-describe('the glyph wire (v14)', () => {
+describe('the glyph wire (v15)', () => {
   const job = { runs: [{ text: 'HI', x: 0, y: 40 }], bands: [], fill: { kind: 'solid', color: '#000' } };
   const req = (j) => ({ job: j, font: 0, size: 40, width: 10, height: 10 });
   it('writes a job with none as it was, and the block last under flag 256', () => {
     const plain = Buffer.from(encodeJob(req(job)));
-    const sp = { rect: { x: 0, y: 0, w: 100, h: 60 }, crack: { amount: 0.5, size: 1, seed: 2 } };
+    const sp = { rect: { x: 0, y: 0, w: 100, h: 60 }, crack: { amount: 0.5, size: 1, x: 0.5, y: 0.5, spread: 1, seed: 2 } };
     const withSp = Buffer.from(encodeJob(req({ ...job, special: sp })));
     // Only the flags word and the block at the end differ.
     // Magic, version, font, synth, chain, bold draw (u32), size, 6 x transform, weight (f64).
     const FLAGS = 6 * 4 + 8 * 8;
     expect(withSp.readUInt32LE(FLAGS) & 256).toBe(256);
     expect(plain.readUInt32LE(FLAGS) & 256).toBe(0);
-    const tail = 8 * 4 + 4 + 8 * 2 + 4;
+    // The rect, which are on, then amount, size, x, y, spread and seed.
+    const tail = 8 * 4 + 4 + 8 * 5 + 4;
     expect(withSp.length).toBe(plain.length + tail);
     const a = Buffer.from(withSp.subarray(0, plain.length));
     a.writeUInt32LE(a.readUInt32LE(FLAGS) & ~256, FLAGS);
@@ -123,18 +127,14 @@ describe('painted over the whole box', () => {
     expect(same(here, there)).toBe(true);
   });
 
-  it('grows the footprint by a splash reach and no more is needed', () => {
+  it('a splash stays on the letters: the footprint does not grow and no ink lands outside the plain box', () => {
     const plain = texture(boxOf());
-    const s = style({ special: { splash: ON.splash } });
     const sp = texture(boxOf({ special: { splash: ON.splash } }));
-    expect(specialReach(s)).toBeCloseTo(SPLASH_REACH * 0.8 * SIZE, 9);
-    expect(sp.cw).toBeGreaterThan(plain.cw);
-    // Nothing touches the picture's edge: the reach held it all.
-    const { width: w, height: h, data } = sp;
-    let edge = 0;
-    for (let i = 0; i < w; i++) edge += data[i * 4 + 3] + data[((h - 1) * w + i) * 4 + 3];
-    for (let j = 0; j < h; j++) edge += data[j * w * 4 + 3] + data[(j * w + w - 1) * 4 + 3];
-    expect(edge).toBe(0);
+    expect([sp.width, sp.height, sp.cw]).toEqual([plain.width, plain.height, plain.cw]);
+    expect(same(plain, sp)).toBe(false);
+    let outside = 0;
+    for (let i = 3; i < sp.data.length; i += 4) outside += plain.data[i] === 0 && sp.data[i] !== 0;
+    expect(outside).toBe(0);
   });
 
   it.each([
@@ -154,7 +154,7 @@ describe('painted over the whole box', () => {
     expect(ink).toBeGreaterThan(1000);
   });
 
-  it('under a mask, hides what the mask hides, splash and all', () => {
+  it('under a mask, hides what the mask hides', () => {
     const mask = { on: true, shapes: [{ kind: 'poly', op: 'hide', pts: [[0, 0], [160, 0], [160, 500], [0, 500]] }] };
     const t = texture(boxOf({ special: ON }, { mask }));
     const ss = t.width / t.cw;
@@ -166,6 +166,27 @@ describe('painted over the whole box', () => {
       }
     }
     expect(shown).toBe(0);
+  });
+
+  it('a crack focused on the first letter cuts only there, spread out it reaches the end', () => {
+    const at = (spread) => ({ special: { crack: { ...ON.crack, amount: 60, x: 5, y: 50, spread } } });
+    const plain = texture(boxOf());
+    const cutCols = (t) => {
+      const cols = [];
+      for (let i = 0; i < t.width; i++) {
+        for (let j = 0; j < t.height; j++) {
+          const k = (j * t.width + i) * 4 + 3;
+          if (plain.data[k] === 255 && t.data[k] < 128) { cols.push(i); break; }
+        }
+      }
+      return cols;
+    };
+    const near = cutCols(texture(boxOf(at(10))));
+    const wide = cutCols(texture(boxOf(at(100))));
+    expect(near.length).toBeGreaterThan(0);
+    // The arms still reach about a letter and a half from the focus.
+    expect(Math.max(...near)).toBeLessThan(plain.width / 2);
+    expect(Math.max(...wide)).toBeGreaterThan((plain.width * 2) / 3);
   });
 
   it('is not drawn by a painter that cannot, and the box is what it was', () => {

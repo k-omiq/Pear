@@ -370,10 +370,12 @@ describe('styleSchemaText', () => {
   // and to 19100 for the Photoshop stroke's Overprint.
   // To 19200 for the twelve pattern kinds of 2026-11-10, and to 19300 for
   // the letters' Wobble the same day; to 19600 for the four special
-  // effects (crack, lightning, splash, scratches) of 2026-11-11.
-  it('describes every key, field and item in under 19600 characters', () => {
+  // effects (crack, lightning, splash, scratches) of 2026-11-11, and to
+  // 19700 the same day for the crack's focus and spread, the lightning's
+  // core and glow and the splash's colour.
+  it('describes every key, field and item in under 19700 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(19600);
+    expect(text.length).toBeLessThan(19700);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.

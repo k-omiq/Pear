@@ -172,8 +172,8 @@ pub struct Effects {
     /// it (box wire v22); a job on the glyph wire has no place for it and
     /// shapes each run on its own, as an SFX letter is.
     pub line: bool,
-    /// Special effects (wire v14): crack, splash and scratches cut and add
-    /// shapes over the whole box, lightning is the box job's paint
+    /// Special effects (wire v15): crack and scratches cut shapes over the
+    /// whole box, splash and lightning are the box job's paint on the fill
     /// (`special.rs`). `None` paints the letters as they are.
     pub special: Option<Special>,
 }
@@ -381,7 +381,7 @@ pub const MAX_RUN_FACES: usize = 16;
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 14;
+pub const WIRE_VERSION: u32 = 15;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -578,7 +578,7 @@ impl<'a> Reader<'a> {
     // The v13 block of a job set in several faces (see `decode`). Whether a
     // stretch list covers its run's text is the shaper's to check
     // (`Engine::measure_spans`), which refuses one that does not.
-    // The special effects (wire v14). Every number is checked here, so a
+    // The special effects (wire v15). Every number is checked here, so a
     // generator never meets one it cannot use.
     fn special(&mut self) -> Result<Special, Error> {
         let mut rect = [0.0; 4];
@@ -597,16 +597,20 @@ impl<'a> Reader<'a> {
         let mut sp = Special { rect, crack: None, lightning: None, splash: None, scratches: None };
         if kinds & 1 != 0 {
             let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
-            sp.crack = Some(Crack { amount, size, seed: self.u32()? });
+            let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
+            let spread = share(self.f64()?, 0.0, 1.0)?;
+            sp.crack = Some(Crack { amount, size, at, spread, seed: self.u32()? });
         }
         if kinds & 2 != 0 {
-            let (amount, angle) = (share(self.f64()?, 0.0, 1.0)?, turn(self.f64()?)?);
-            let color = self.rgba()?;
-            sp.lightning = Some(Lightning { amount, angle, color, seed: self.u32()? });
+            let amount = share(self.f64()?, 0.0, 1.0)?;
+            let (core, glow) = (self.rgba()?, self.rgba()?);
+            let glow_size = share(self.f64()?, 0.0, 3.0)?;
+            sp.lightning = Some(Lightning { amount, core, glow, glow_size, seed: self.u32()? });
         }
         if kinds & 4 != 0 {
             let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
-            sp.splash = Some(Splash { amount, size, seed: self.u32()? });
+            let color = self.rgba()?;
+            sp.splash = Some(Splash { amount, size, color, seed: self.u32()? });
         }
         if kinds & 8 != 0 {
             let (amount, angle) = (share(self.f64()?, 0.0, 1.0)?, turn(self.f64()?)?);
@@ -695,10 +699,12 @@ impl<'a> Reader<'a> {
 ///     (the box in job space), u32 kinds (1 crack, 2 lightning, 4 splash,
 ///     8 scratches), then for each kind set, in that order:
 ///     crack:     f64 amount (0 to 1), f64 size (a share of the size, 0.01
-///                to 4), u32 seed
-///     lightning: f64 amount, f64 angle (radians), rgba colour, u32 seed
-///     splash:    f64 amount, f64 size, u32 seed
-///     scratches: f64 amount, f64 angle, u32 seed
+///                to 4), f64 x, y (where it gathers, shares of the ink
+///                box), f64 spread (0 to 1), u32 seed (v15)
+///     lightning: f64 amount, rgba core, rgba glow, f64 glow size (0 to
+///                3), u32 seed (v15)
+///     splash:    f64 amount, f64 size, rgba colour, u32 seed (v15)
+///     scratches: f64 amount, f64 angle (radians), u32 seed
 ///
 /// fill: u32 kind, then
 ///   0 none
