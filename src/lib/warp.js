@@ -626,37 +626,46 @@ export function unwarpWith(m, w, h, x, y, opts = null) {
   const r = seeds.reach;
   if (bounds && (tx < r[0] || ty < r[1] || tx > r[2] || ty > r[3])) return null;
   const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
-  const hint = opts?.hint && Number.isFinite(opts.hint[0]) && Number.isFinite(opts.hint[1]) ? opts.hint : null;
-  if (hint) {
+  const given = opts?.hint && Number.isFinite(opts.hint[0]) && Number.isFinite(opts.hint[1]) ? opts.hint : null;
+  if (given) {
     // Newton from the hint, taken when it stays on the hint's sheet: the
     // straight step from the hint to the answer carries onto the straight
     // step from where the hint goes to (x, y) (`oneStep`). Near a crease
     // Newton can jump across to another sheet, and then the seeds decide.
-    const from = m.at(hint[0], hint[1]);
-    const p = newtonBack(m, tx, ty, hint[0], hint[1], miss(from));
-    if (ok(p) && oneStep(m, hint, p, from, [tx, ty])) return p;
+    const from = m.at(given[0], given[1]);
+    const p = newtonBack(m, tx, ty, given[0], given[1], miss(from));
+    if (ok(p) && oneStep(m, given, p, from, [tx, ty])) return p;
   }
   // The seeds nearest (x, y) first. Near a fold the nearest can lead Newton
   // into the crease, where the map turns back and no step gets closer,
   // although the point is reached from the fold's other side; the next seeds
-  // start in other places. With no hint the first that converges is the
-  // answer, with one the converged answer nearest it.
+  // start in other places. Of what converges, the answer nearest the hint
+  // wins. With no hint (a stroke's first point), the answer on a sheet
+  // turned the way the box's middle is wins, then the one nearest (x, y):
+  // neighbouring targets then land on one sheet, not on whichever seed
+  // converged first.
+  const W = Number(w);
+  const H = Number(h);
+  const hint = given ?? [tx, ty];
+  const upright = given ? 0 : turnOf(m, [W / 2, H / 2]);
   const n = seeds.at.length;
   const d = new Float64Array(n);
   for (let i = 0; i < n; i++) d[i] = miss(seeds.at[i]);
   const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => d[a] - d[b]);
   let best = null;
   let bestD = Infinity;
-  for (let s = 0; s < Math.min(UNWARP_SEEDS, n); s++) {
-    const [sx, sy] = seeds.from[order[s]];
-    const p = newtonBack(m, tx, ty, sx, sy, d[order[s]]);
-    if (!ok(p)) continue;
-    if (!hint) return p;
-    const e = Math.hypot(p[0] - hint[0], p[1] - hint[1]);
+  const consider = (p) => {
+    if (!ok(p)) return;
+    const e = Math.hypot(p[0] - hint[0], p[1] - hint[1]) + (upright && turnOf(m, p) !== upright ? 1e9 : 0);
     if (e < bestD) {
       bestD = e;
       best = p;
     }
+  };
+  if (!given) consider(newtonBack(m, tx, ty, tx, ty, miss(m.at(tx, ty))));
+  for (let s = 0; s < Math.min(UNWARP_SEEDS, n); s++) {
+    const [sx, sy] = seeds.from[order[s]];
+    consider(newtonBack(m, tx, ty, sx, sy, d[order[s]]));
   }
   return best;
 }
