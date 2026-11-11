@@ -10,6 +10,7 @@ const { initHistory, resetHistory, undo } = await import('../../editor/history.s
 const { callContext, __resetRun } = await import('../run.svelte.js');
 const { callTool } = await import('../registry.js');
 const { defaultStyle } = await import('../../data.js');
+const { normalizeSpecial } = await import('../../special.js');
 const { fitPolygon } = await import('../../outline-geom.js');
 const { checksOf } = await import('./edit.js');
 const { partsOf, readsFirst } = await import('./split.js');
@@ -149,6 +150,31 @@ describe('split', () => {
     undo();
     expect(pageById(1).boxes).toHaveLength(1);
     expect(box('a').mask).toEqual(mask);
+  });
+
+  it('every part keeps the special effects; the paint marks, drawn mask and fade still go as above', async () => {
+    // A whole-box copy (duplicate, paste, a split part) carries style.special:
+    // it is the look of the box, laid over whatever text it holds. What was
+    // drawn over the first part's letters or bubble is not.
+    load({ kind: 'poly', pts: joinedOutline() });
+    const special = normalizeSpecial({ crack: { on: true, amount: 55, seed: 7 }, lightning: { on: true, amount: 30 } });
+    box('a').style.special = structuredClone(special);
+    box('a').style.paint = { on: true, marks: [{ kind: 'stroke', size: 6, pts: [[10, 10], [60, 30]], color: '#ff0000', opacity: 100, soft: 0 }] };
+    box('a').mask = { on: true, shapes: [{ kind: 'bubble', op: 'keep', inset: 2 }, { kind: 'poly', op: 'hide', pts: [[10, 10], [60, 10], [10, 60]] }] };
+    box('a').fade = { on: true, shapes: [{ kind: 'ellipse', cx: 40, cy: 40, rx: 20, ry: 20, strength: 70, soft: 30 }] };
+    const r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for me!'] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const parts = r.result.ids.map(box);
+    expect(parts).toHaveLength(2);
+    for (const b of parts) {
+      expect(b.style.special).toEqual(special);
+      expect(b.style.paint).toEqual({ on: false, marks: [] });
+    }
+    // Not one object shared between the parts.
+    expect(parts[1].style.special).not.toBe(parts[0].style.special);
+    expect(parts[0].mask.shapes).toHaveLength(2);
+    expect(parts[1].mask.shapes.map((sh) => sh.kind)).toEqual(['bubble']);
+    expect(parts[1].fade).toMatchObject({ on: false, shapes: [] });
   });
 
   it('refuses parts that are not the text, and a single bubble with nowhere to put the rest', async () => {
