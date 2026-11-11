@@ -427,6 +427,20 @@ describe('unwarpPoint', () => {
     expect(meshMap(bulge, 2, 2, 100, 100).folds()).toBe(false);
     expect(meshMap(wave, 4, 2, 100, 100).folds()).toBe(false);
   });
+
+  // A fold on a fine mesh can sit between any fixed grid of samples; the
+  // point grid itself tells.
+  it('finds the fold of one node moved on a fine mesh, and no fold on smooth ones', () => {
+    for (const n of [16, 24, 32]) {
+      const cell = 100 / n;
+      const pts = identityMesh(n, n, 100, 100).map(([x, y], i) => (i === (n / 2) * (n + 1) + n / 2 ? [x + 1.5 * cell, y + 0.45 * cell] : [x, y]));
+      expect(meshMap(pts, n, n, 100, 100).folds()).toBe(true);
+    }
+    const persp = [[0, 0], [50, 5], [100, 10], [-3, 50], [52, 50], [108, 50], [-5, 100], [55, 95], [115, 90]];
+    const wave8 = identityMesh(8, 8, 100, 100).map(([x, y]) => [x, y + 6 * Math.sin((x / 100) * 4 * Math.PI)]);
+    expect(meshMap(persp, 2, 2, 100, 100).folds()).toBe(false);
+    expect(meshMap(wave8, 8, 8, 100, 100).folds()).toBe(false);
+  });
 });
 
 describe('resampleMesh', () => {
