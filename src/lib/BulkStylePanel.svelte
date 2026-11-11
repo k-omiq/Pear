@@ -886,18 +886,6 @@ import {
               <span class="lbl">Wobble</span>
               <div class="switch" class:on={s.wobble.on} role="switch" aria-checked={s.wobble.on} aria-label="Wobble" tabindex="0" onclick={() => set('wobble.on', !s.wobble.on)} onkeydown={(e) => e.key === 'Enter' && set('wobble.on', !s.wobble.on)}><span class="knob"></span></div>
             </div>
-            <!-- Shapes and brushSize are box-local geometry, not surfaced in the bulk panel. -->
-            <div class="brow" class:off={!app.bulk.mask.clip}>
-              {@render tick('clip')}
-              <span class="lbl">Mask</span>
-              <div class="sub-row">
-                <div class="switch" class:on={s.clip.on} role="switch" aria-checked={s.clip.on} aria-label="Mask" tabindex="0" onclick={() => { s.clip.on = !s.clip.on; tickBulkProp('clip'); }} onkeydown={(e) => e.key === 'Enter' && ((s.clip.on = !s.clip.on), tickBulkProp('clip'))}><span class="knob"></span></div>
-                <select aria-label="Mask mode" value={s.clip.mode} onchange={(e) => { s.clip.mode = e.target.value; tickBulkProp('clip'); }} style="flex:1 1 auto; height:24px; min-width:0">
-                  <option value="exclude">Exclude</option>
-                  <option value="include">Include</option>
-                </select>
-              </div>
-            </div>
           </div>
         </div>
 

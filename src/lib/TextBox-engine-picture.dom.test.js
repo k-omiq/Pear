@@ -63,7 +63,9 @@ const KINDS = {
     flipH: true,
   }),
   rough: box('rough', { roughen: { on: true, amount: 4, detail: 0.05, seed: 7 } }),
-  masked: box('masked', { clip: { on: true, mode: 'include', brushSize: 20, shapes: [{ kind: 'ellipse', cx: 120, cy: 45, rx: 80, ry: 30 }] } }),
+  // The mask is the box's own, pinned to the page: (120, 45) in the box is
+  // page (220, 245).
+  masked: { ...box('masked'), mask: { on: true, shapes: [{ kind: 'ellipse', op: 'keep', cx: 220, cy: 245, rx: 80, ry: 30 }] } },
   arc: box('arc', { curve: 40 }),
   path: box('path', { path: { on: true, pts: [{ x: 10, y: 60, ix: -30, iy: 0, ox: 30, oy: -20 }, { x: 230, y: 40, ix: -30, iy: 20, ox: 30, oy: 0 }] } }),
   warped: box('warped', { warp: { on: true, cols: 1, rows: 1, pts: [[0, 0], [250, 12], [-6, 96], [240, 90]] } }),
@@ -680,7 +682,7 @@ describe('what repaints the picture, and what does not', () => {
   it('a stroke does', () => loud('stroke', (m) => (m.box.style.strokeEffects[0].size = 6)));
   it('a shadow does', () => loud('shadow', (m) => (m.box.style.shadows[0].x = 9)));
   it('the blur does', () => loud('blur', (m) => (m.box.style.blur = 5)));
-  it('the mask does', () => loud('mask', (m) => (m.box.style.clip.shapes = [...m.box.style.clip.shapes, { kind: 'ellipse', cx: 10, cy: 10, rx: 5, ry: 5 }]), 'masked'));
+  it('the mask does', () => loud('mask', (m) => (m.box.mask.shapes = [...m.box.mask.shapes, { kind: 'ellipse', op: 'keep', cx: 110, cy: 210, rx: 5, ry: 5 }]), 'masked'));
   it('the curve does', () => loud('curve', (m) => (m.box.style.curve = -30), 'arc'));
   it('a path anchor does', () => loud('path', (m) => (m.box.style.path.pts[0].y = 20), 'path'));
   it('the mesh does', () => loud('mesh', (m) => (m.box.style.warp.pts = [[0, 0], [260, 30], [-6, 96], [240, 90]]), 'warped'));

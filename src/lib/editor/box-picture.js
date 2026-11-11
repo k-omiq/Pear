@@ -553,7 +553,9 @@ export const PICTURE_OFF = 'e|off';
  *        into and how far each is set in, which is where a balloon fit, the
  *        typesetting mode and a late font show up; the scale; the font
  *        version.
- *   out: where the box is. A move repaints nothing.
+ *   out: where the box is. A move repaints nothing. (A box with a mask on
+ *        is repainted as it moves: TextBox's key adds the mask in the box's
+ *        frame, since the mask stays on the page.)
  *
  * Except for a box that blends with the page (`usesBackdrop`): its picture
  * is of the page under it too, so `under` names that page art and where the

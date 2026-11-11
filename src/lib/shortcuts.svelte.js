@@ -335,6 +335,7 @@ const DEFS = [
   { id: 'box.fitBalloon', label: 'Fit to bubble on or off', group: 'Bubble', combo: 'Mod+Shift+f', keywords: 'balloon auto', ...T },
   { id: 'box.retypeset', label: 'Redetect bubble and refit', group: 'Bubble', combo: 'Mod+Alt+f', keywords: 'balloon outline find again typeset', ...T },
   { id: 'bubble.centre', label: 'Centre in bubble', group: 'Bubble', combo: null, keywords: 'center middle outline move', ...T },
+  { id: 'mask.clipToBubble', label: 'Clip to bubble', group: 'Bubble', combo: null, keywords: 'mask keep inside outline cut', ...T },
   { id: 'bubble.outlineToBox', label: 'Use box as outline', group: 'Bubble', combo: null, keywords: 'outline rectangle free text', ...T },
   { id: 'box.approveOutline', label: 'Approve outline', group: 'Bubble', combo: 'Mod+Alt+a', keywords: 'ok check', ...T },
   { id: 'bubble.approvePage', label: 'Approve all outlines on page', group: 'Bubble', combo: null, keywords: 'ok check every', ...T },

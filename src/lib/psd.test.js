@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { readPsd, writePsd, initializeCanvas } from 'ag-psd';
+import { maskActive } from './box-mask.js';
 import {
   buildPagePsd,
   isRasterOnly,
@@ -175,10 +176,14 @@ describe('isRasterOnly', () => {
   // The mask hides ink. A re-render has no mask, so Photoshop would show the
   // letters the user erased - but only a mask with shapes hides anything, and
   // an empty one must not cost the box its editability.
+  // The mask is the box's (`box.mask`), so the layer asks `maskActive` beside
+  // the style's question.
   it('is true for an active visibility mask and false for an empty one', () => {
-    expect(isRasterOnly({ clip: { on: true, mode: 'exclude', shapes: [{ kind: 'ellipse', cx: 1, cy: 1, rx: 2, ry: 2 }] } })).toBe(true);
-    expect(isRasterOnly({ clip: { on: true, mode: 'exclude', shapes: [] } })).toBe(false);
-    expect(isRasterOnly({ clip: { on: false, shapes: [{ kind: 'ellipse', cx: 1, cy: 1, rx: 2, ry: 2 }] } })).toBe(false);
+    const sh = [{ kind: 'ellipse', op: 'hide', cx: 1, cy: 1, rx: 2, ry: 2 }];
+    expect(maskActive({ mask: { on: true, shapes: sh } })).toBe(true);
+    expect(maskActive({ mask: { on: true, shapes: [] } })).toBe(false);
+    expect(maskActive({ mask: { on: false, shapes: sh } })).toBe(false);
+    expect(isRasterOnly({})).toBe(false);
   });
 
   // Both blur the finished composite - fill, strokes and shadows together -

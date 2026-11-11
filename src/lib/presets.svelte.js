@@ -155,11 +155,11 @@ export const hasCopiedStyle = () => clipboardStyle != null;
 // What a style PASTE declines to move: a box's transform belongs to where it
 // sits on the page, not to how its text looks, and pasting a look should not
 // tilt or mirror the target. Nor the box's own hand-placed geometry - its
-// brush strokes, mask shapes, bezier path and warp mesh, all in px from its own
+// brush strokes, bezier path and warp mesh, all in px from its own
 // corner, which on another box would be someone else's lettering drawn over it
 // and the target's own work thrown away (see `applyBoxDefaults`, which keeps a
 // new box from inheriting them for the same reason).
-const EXCLUDED_KEYS = ['rotation', 'flipH', 'flipV', 'ink', 'clip', 'path', 'warp'];
+const EXCLUDED_KEYS = ['rotation', 'flipH', 'flipV', 'ink', 'path', 'warp'];
 // And what a paste leaves alone on a MANUAL box (`isAutoBox`): the switches that
 // made it manual. Pasted over, a box the user sized by hand or bent onto an arc
 // would turn auto and be re-sized by the paste's own fit. Onto an auto box they

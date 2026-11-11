@@ -8,6 +8,7 @@ import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
+import { maskFromClip } from './box-mask.js';
 import { FX_CASES } from '../test/fx-compare/cases.js';
 
 // ===========================================================================
@@ -52,16 +53,22 @@ afterAll(() => {
   else delete globalThis.document;
 });
 
-const boxOf = (c) => ({
-  id: 'b',
-  lineN: null,
-  text: c.text ?? 'ROUGH\nEDGES',
-  x: 140,
-  y: 140,
-  w: c.w ?? 320,
-  h: c.h ?? 150,
-  style: normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 56, ...c.style }),
-});
+// A case states its mask the old way, in its style (`clip`): carried to the
+// page as a chapter load carries it (`maskFromClip`).
+const boxOf = (c) => {
+  const b = {
+    id: 'b',
+    lineN: null,
+    text: c.text ?? 'ROUGH\nEDGES',
+    x: 140,
+    y: 140,
+    w: c.w ?? 320,
+    h: c.h ?? 150,
+    style: normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 56, ...c.style }),
+  };
+  b.mask = maskFromClip({ ...b, style: { ...b.style, clip: c.style?.clip } });
+  return b;
+};
 
 // The engine as a wasm built before it drew pattern tiles looks to the
 // painter, so the tile is the canvas's again.

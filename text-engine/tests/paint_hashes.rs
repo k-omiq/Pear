@@ -38,7 +38,7 @@ use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
-    paint_box, paint_box_kept, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
+    paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
     Fill, Job, Pt, Raster, Request, Rgba, Run, Shadow, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
@@ -287,15 +287,11 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
         (
             "clip_include_ellipse",
             Box::new(|b| {
-                b.clip = Some(Clip {
-                    mode: ClipMode::Include,
-                    origin: Pt::new(0.0, 0.0),
-                    shapes: vec![ClipShape::Ellipse {
+                b.clip = Some(Clip::all(ClipMode::Include, Pt::new(0.0, 0.0), vec![ClipShape::Ellipse {
                         centre: Pt::new(75.0, 78.0),
                         rx: 30.0,
                         ry: 18.0,
-                    }],
-                })
+                    }]))
             }),
         ),
         (
@@ -693,9 +689,26 @@ fn job_key(b: &BoxRequest) -> Key {
     h.finish().unwrap()
 }
 
+/// The premask key of a box with a mask, as `decode_box_kept` makes it from
+/// every byte but the mask's: here from the box's other fields as decoded.
+fn premask_key(b: &BoxRequest, job: Key) -> Option<Key> {
+    b.clip.as_ref()?;
+    Hasher::new("test premask")
+        .key(job)
+        .debug(&(b.width, b.height, b.grain, b.page))
+        .debug(&b.shadows)
+        .debug(&(b.blend, b.fill_opacity, b.blending))
+        .debug(&b.effects)
+        .debug(&b.backdrop)
+        .debug(&b.blur)
+        .debug(&b.taps)
+        .finish()
+}
+
 fn kept_paint(engine: &mut Engine, b: &mut BoxRequest) -> Option<Raster> {
-    let key = job_key(b);
-    paint_box_kept(engine, b, key).unwrap()
+    let job = job_key(b);
+    let premask = premask_key(b, job);
+    paint_box_kept(engine, b, BoxKeys { job, premask }).unwrap()
 }
 
 /// Every row of the sheet, painted with nothing kept.

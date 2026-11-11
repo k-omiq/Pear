@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { maskFromClip } from './box-mask.js';
 
 // ===========================================================================
 // Containment: text never goes outside its box (OVF-2)
@@ -140,8 +141,19 @@ setTypesetEnabled(true);
 
 const S = 20;
 const ADV = 0.55 * S;
-const style = (extra = {}) => normalizeStyle({ ...defaultStyle(), size: S, bold: false, strokeEffects: [], ...extra });
-const cand = (over = {}) => ({ x: 100, y: 100, w: 200, h: 100, text: 'HELLO', fit: null, ...over, style: over.style ?? style() });
+// A mask is stated here the old way, in the style (`clip`, box-local): kept on
+// the style object so a chapter load carries it to the box (`maskFromClip`),
+// as it carries a saved one, and a candidate made here gets it the same way.
+const style = (extra = {}) => {
+  const s = normalizeStyle({ ...defaultStyle(), size: S, bold: false, strokeEffects: [], ...extra });
+  if (extra.clip) s.clip = extra.clip;
+  return s;
+};
+const cand = (over = {}) => {
+  const c = { x: 100, y: 100, w: 200, h: 100, text: 'HELLO', fit: null, ...over, style: over.style ?? style() };
+  if (c.style.clip && c.mask === undefined) c.mask = maskFromClip(c);
+  return c;
+};
 
 // A page with the boxes given, loaded the way a saved chapter is.
 const load = (boxes, over = {}) => {
@@ -526,7 +538,7 @@ const expectEdges = (r, want, digits = 6) => {
 describe('boxInkRect, every effect the export paints', () => {
   const base = () => cand({ text: 'HELLO' });
   const plainEdges = () => edges(boxInkRect(base()));
-  const withFx = (extra) => boxInkRect({ ...base(), style: style(extra) });
+  const withFx = (extra) => boxInkRect(cand({ text: 'HELLO', style: style(extra) }));
 
   it('counts the whole-picture blur three sigma out, on every side', () => {
     const P = plainEdges();
@@ -623,7 +635,7 @@ describe('boxInkRect, every effect the export paints', () => {
     // always fits - even in a box the bare text runs out of on every side.
     const tiny = cand({ text: 'HELLO', w: 20, h: 10 });
     expect(containBox(tiny).fits).toBe(false);
-    const hidden = { ...tiny, style: style({ clip: clip('include', { kind: 'ellipse', cx: 300, cy: 300, rx: 5, ry: 5 }) }) };
+    const hidden = cand({ text: 'HELLO', w: 20, h: 10, style: style({ clip: clip('include', { kind: 'ellipse', cx: 300, cy: 300, rx: 5, ry: 5 }) }) });
     expect(boxInkRect(hidden)).toBeNull();
     expect(containBox(hidden).fits).toBe(true);
   });
@@ -1198,9 +1210,9 @@ describe('ink in the store', () => {
   });
 
   // "Fit now" on a box that is only ink has no font to shrink and no text
-  // anchored to it: the box grows around what it paints and the ink - and the
-  // mask pinned to the same corner - is carried back, so on the page only the
-  // box's own rectangle changes. Flipped and turned, which is where getting the
+  // anchored to it: the box grows around what it paints and the ink is
+  // carried back, and the mask, pinned to the page, stays, so on the page
+  // only the box's own rectangle changes. Flipped and turned, which is where getting the
   // carry and the centre right matters.
   it('"Fit now" grows a box of ink around it, flipped and turned, and nothing moves on the page', () => {
     const drawn = inkOf(inkLine([[-10, 20], [120, 20]]), inkLine([[50, 20], [50, 60]]));
@@ -1210,7 +1222,7 @@ describe('ink in the store', () => {
     // The strokes reach -15..125 across and 15..65 down: mirrored in a 100px
     // box, that is 25px out on the left and 15 on the right, and 15 below.
     expect(b.review).toEqual({ kind: 'overflow', overflow: { l: 25, t: 0, r: 15, b: 15 }, reason: REVIEW_REASONS.ink });
-    const before = { geom: geomOf(b), ink: plain(b.style.ink), clip: plain(b.style.clip), onPage: pagePoints(b) };
+    const before = { geom: geomOf(b), ink: plain(b.style.ink), mask: plain(b.mask), onPage: pagePoints(b) };
 
     expect(fitBoxNow('k', p)).toBe(true);
     expect({ w: b.w, h: b.h, size: b.style.size }).toEqual({ w: 140, h: 65, size: S });
@@ -1223,15 +1235,14 @@ describe('ink in the store', () => {
     // Carried by the growth on the side they are drawn from: the right one,
     // since the flip mirrors the picture's left onto the box's right.
     expect(b.style.ink.strokes[0].pts[0].slice(0, 2)).toEqual([5, 20]);
-    expect(b.style.clip.shapes[0]).toMatchObject({ cx: 45, cy: 30 });
-    expect(b.style.clip.shapes[1].pts).toEqual([[75, 40], [85, 45]]);
+    expect(plain(b.mask)).toEqual(before.mask);
 
     // One undo puts back the box, the strokes, the mask and the flag.
     hist.undo();
     const u = byId('k');
     expect(geomOf(u)).toEqual(before.geom);
     expect(plain(u.style.ink)).toEqual(before.ink);
-    expect(plain(u.style.clip)).toEqual(before.clip);
+    expect(plain(u.mask)).toEqual(before.mask);
     expect(u.review?.reason).toBe(REVIEW_REASONS.ink);
     hist.redo();
     expect(byId('k').review).toBeUndefined();

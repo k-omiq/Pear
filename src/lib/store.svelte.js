@@ -127,7 +127,8 @@ import { measureChapterFits } from './chapter-fit.js';
 import { setBrushMode } from './brush-tool.svelte.js';
 import { scaleStroke } from './brush.js';
 import { translateStrokes } from './brush-board.svelte.js';
-import { translateClipShapes, setGlobalLight } from './text-paint.js';
+import { setGlobalLight } from './text-paint.js';
+import { normalizeMask, maskFromClip, scaleMask, maskActive } from './box-mask.js';
 import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip, revealRectInStrip } from './editor/strip-sync.svelte.js';
 import { exportPageColumn } from './export-pages.svelte.js';
@@ -340,6 +341,12 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
         const id = keep ? b.id : 'b' + boxSeq++;
         takenBoxes.add(id);
         if (!keep) minted++;
+        const style = normalizeStyle(b.style);
+        // The mask, pinned to the page (box-mask.js). A box saved before it
+        // moved out of the style has it in `style.clip`, in its own frame:
+        // carried to the page here, through the box as it was saved. A box
+        // with none has no key, so its document reads as it always did.
+        const mask = b.mask !== undefined ? normalizeMask(b.mask) : maskFromClip({ ...b, style: { ...style, clip: b.style?.clip } });
         return {
           id,
           lineN: b.lineN,
@@ -348,7 +355,8 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
           y: b.y,
           w: b.w,
           h: b.h,
-          style: normalizeStyle(b.style),
+          style,
+          ...(mask ? { mask } : {}),
           // The balloon this box was fitted to, in page coordinates. Through
           // `normalizeFit` for the same reason the style goes through
           // `normalizeStyle`: what is on disk was written by some build, and a
@@ -4025,6 +4033,8 @@ export function rescalePageGeometry(p, sx, sy) {
     b.w *= sx;
     b.h *= sy;
     if (b.fit) b.fit = scaleFit(b.fit, sx, sy);
+    // The mask is page geometry too, pinned where the art is.
+    if (b.mask) b.mask = scaleMask(b.mask, sx, sy);
     // The type is page geometry too. Without this the boxes follow the art and
     // the text inside them does not: a chapter re-cleaned at 2x came back with
     // every line half the size it was drawn at, hairline strokes and shadows
@@ -5793,7 +5803,9 @@ function measureBlock(p, det, pixels) {
 // can move all of them and none of them can be re-derived on the way back. A
 // press that changed none of them records nothing, so an undo never lands on a
 // step that does nothing.
-export function refitBalloon(boxId = app.selectedId, p = page()) {
+// `quiet` says nothing: a caller with its own words for the outcome (Clip to
+// bubble) says them.
+export function refitBalloon(boxId = app.selectedId, p = page(), { quiet = false } = {}) {
   const b = (p?.boxes ?? []).find((x) => x.id === boxId);
   if (!b || refuseLocked(b)) return false;
   // A pending Inspector edit on this box would settle AFTER this one and record
@@ -5803,6 +5815,7 @@ export function refitBalloon(boxId = app.selectedId, p = page()) {
   const m = balloonUnder(p, b);
   const { fit, solved } = setBoxOutline(b, p, m?.fit ?? null, m?.outline);
   const where = fit ? `the ${panelLike(b) ? 'panel' : 'balloon'} under this box` : null;
+  if (quiet) return !!fit;
   if (fit) toast(solved != null ? `Typeset again in ${where}` : `Fitted to ${where}`);
   else if (before) toast('No balloon found under this box - layout is rectangular again');
   else toast('No balloon found under this box');
@@ -6586,6 +6599,8 @@ function boxSnapshot(src, p) {
       w: src.w,
       h: src.h,
       style: cloneStyle(src.style),
+      // The mask, pinned to the page: the copy takes it at the same page spot.
+      ...(src.mask ? { mask: $state.snapshot(src.mask) } : {}),
       lines: place && !place.isCurve && place.lines?.length ? [...place.lines] : null,
       // The solver's record: whether it manages the box, the size it was solved
       // from and the locks the user set. A copy that lost it would lay itself
@@ -6630,6 +6645,7 @@ function placeSnapshot(p, snap, x, y, select = true) {
     // Cloned again, not handed over: one clipboard pasted twice is two boxes
     // that must restyle apart.
     style: cloneStyle(src.style),
+    ...(src.mask ? { mask: structuredClone(src.mask) } : {}),
     // No balloon (`boxSnapshot`): Refit or the Regions view gives the copy
     // the one it lands on.
     fit: null,
@@ -6887,7 +6903,6 @@ function holdInk(b, p) {
   if (!g) return false;
   const s = b.style;
   if (s.ink?.strokes?.length) s.ink = { ...s.ink, strokes: translateStrokes(s.ink.strokes, g.dx, g.dy) };
-  if (s.clip?.shapes?.length) s.clip = { ...s.clip, shapes: translateClipShapes(s.clip.shapes, g.dx, g.dy) };
   b.x = g.x;
   b.y = g.y;
   b.w = g.w;
@@ -7129,6 +7144,9 @@ function settleNudge() {
   const b = p?.boxes.find((x) => x.id === pend.boxId);
   if (!b) return; // the box went while the window was open - nothing to record against
   if (b.x === pend.before.x && b.y === pend.before.y) return;
+  // The mask stays on the page, so a move changes what a keep shape lets
+  // the check count.
+  if (maskActive(b)) reviewBox(b, p);
   recordEdit({ t: 'move', pageId: pend.pageId, boxId: pend.boxId, before: pend.before, after: moveGeom(b) });
 }
 
@@ -7316,7 +7334,6 @@ export const BULK_PROPS = [
   // Only the switch: a wobble's numbers are tuned by eye on one box, and a
   // bulk edit turns that look on or off across the rest.
   'wobble.on',
-  'clip',
   // `path`, `ink` and `warp` are deliberately absent: anchors, hand-drawn
   // strokes and mesh control points are all box-local geometry in THIS box's
   // px, and a bulk edit would smear them across boxes of different sizes - a
@@ -7342,7 +7359,7 @@ export const BULK_PROPS = [
 // comment on BULK_PROPS). Named once here because two places have to agree on
 // it: the style-leaf arithmetic that pins BULK_PROPS against `defaultStyle`
 // treats these as single leaves rather than groups of them.
-export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokeEffects', 'shadows', 'blending', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'motionBlur', 'clip', 'circle'];
+export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokeEffects', 'shadows', 'blending', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'motionBlur', 'circle'];
 
 // How the panel rows group the mask's vocabulary for its tick-all headers.
 // Declared beside BULK_PROPS rather than inside the panel so there is one list
@@ -7353,7 +7370,7 @@ export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
   fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blending', 'blur', 'motionBlur', 'strokeEffects', 'gradient', 'pattern', 'colorOverlays', 'gradientOverlays', 'patternOverlay'],
   shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'satin', 'bevel'],
-  warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'wobble.on', 'clip'],
+  warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'wobble.on'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
   transform: ['rotation', 'flipH', 'flipV', 'autoHeight', 'fitText', 'fitMax'],
 };

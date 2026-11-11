@@ -23,7 +23,7 @@ use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::gradient_bake::Method;
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::{
-    decode_box, Affine, Align, Band, Clip, ClipMode, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
+    decode_box, Affine, Align, Band, Clip, ClipMode, ClipPart, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
     Wobble, BOX_WIRE_VERSION, MAX_PAGE,
 };
 
@@ -115,7 +115,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 18, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 19, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(r.grain, (-1_234_567, 89_012));
     assert_eq!(
@@ -171,13 +171,22 @@ fn every_field_of_the_box_comes_back_as_itself() {
     );
     assert_eq!(
         r.clip,
+        // Each shape states its own op (v19): keep, then hide, then hide.
         Some(Clip {
-            mode: ClipMode::Exclude,
             origin: Pt::new(13.5, 17.25),
             shapes: vec![
-                ClipShape::Ellipse { centre: Pt::new(21.5, 22.5), rx: 5.5, ry: 6.5 },
-                ClipShape::Polygon(vec![Pt::new(1.5, 2.5), Pt::new(30.5, 3.5), Pt::new(4.5, 29.5)]),
-                ClipShape::Stroke { size: 3.5, pts: vec![Pt::new(7.5, 8.5), Pt::new(9.5, 12.5)] },
+                ClipPart {
+                    mode: ClipMode::Include,
+                    shape: ClipShape::Ellipse { centre: Pt::new(21.5, 22.5), rx: 5.5, ry: 6.5 },
+                },
+                ClipPart {
+                    mode: ClipMode::Exclude,
+                    shape: ClipShape::Polygon(vec![Pt::new(1.5, 2.5), Pt::new(30.5, 3.5), Pt::new(4.5, 29.5)]),
+                },
+                ClipPart {
+                    mode: ClipMode::Exclude,
+                    shape: ClipShape::Stroke { size: 3.5, pts: vec![Pt::new(7.5, 8.5), Pt::new(9.5, 12.5)] },
+                },
             ],
         })
     );

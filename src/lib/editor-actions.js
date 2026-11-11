@@ -43,7 +43,8 @@ import {
 } from './store.svelte.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
 import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
-import { prefs } from './prefs.svelte.js';
+import { prefs, isComics } from './prefs.svelte.js';
+import { clipToBubble } from './box-mask-actions.js';
 import { jobs } from './jobs.svelte.js';
 import { startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
 import { drawRead } from './draw-read.svelte.js';
@@ -133,6 +134,8 @@ const RUNS = {
   'bulk.open': { when: () => typeset() && !app.bulk.active, run: () => openBulk() },
 
   'bubble.centre': { when: fitted, run: () => centreTextInOutline(app.selectedId) },
+  // Comics only: free text has no bubble to keep to.
+  'mask.clipToBubble': { when: () => boxSelected() && isComics(), run: () => clipToBubble(app.selectedId) },
   'bubble.outlineToBox': { when: boxSelected, run: () => outlineToBox(app.selectedId) },
   'bubble.approvePage': { when: typeset, run: () => approvePageOutlines() },
 

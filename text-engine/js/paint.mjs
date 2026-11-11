@@ -464,13 +464,14 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // v17 is a changed meaning with no new byte: the glyph job's mesh and
 // roughening now bend the box's brush ink too (a v16 wasm left it unbent).
 // v18: the glyph job inside it is v11 (job flag 32, Crisp).
-export const BOX_WIRE_VERSION = 18
+// v19: the mask states each shape's op (keep or hide), and is cut after the
+// box's warp, so the engine no longer bends it by the mesh.
+export const BOX_WIRE_VERSION = 19
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
 export const MAX_PAGE = 1048576
 const BOX_MAGIC = 0x4250544d // "MTPB"
-const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
 // sliders in the wire's order (`decode_box`).
 const BLEND_CHANNELS = ['r', 'g', 'b']
@@ -873,12 +874,14 @@ function inkRecord(ink) {
   for (const [k, pts, ref] of strokes) inkStroke(k, pts, ref, keys.length)
 }
 
-// One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
-// does not know, or with nothing to draw, is not written (`drawClipShapes`
-// draws nothing for it either).
+// One mask shape in the box's own frame (`maskInBoxFrame`), and its op: keep
+// is 1, hide is 2. A shape of a kind this does not know, or with nothing to
+// draw, is not written (`drawClipShapes` draws nothing for it either).
 function clipShape(sh) {
+  const op = sh?.op === 'keep' ? 1 : 2
   if (sh?.kind === 'ellipse') {
     u32(1)
+    u32(op)
     f64(sh.cx)
     f64(sh.cy)
     f64(sh.rx)
@@ -887,9 +890,12 @@ function clipShape(sh) {
   }
   const pts = Array.isArray(sh?.pts) ? sh.pts : []
   if (!pts.length || (sh.kind !== 'poly' && sh.kind !== 'stroke')) return false
-  if (sh.kind === 'poly') u32(2)
-  else {
+  if (sh.kind === 'poly') {
+    u32(2)
+    u32(op)
+  } else {
     u32(3)
+    u32(op)
     f64(sh.size || 0)
   }
   u32(pts.length)
@@ -931,9 +937,11 @@ function clipShape(sh) {
  *   `opacity` paints the silhouette once.
  * @param {number} [request.blur] the whole-box blur, a gaussian's sigma
  * @param {{dx: number, dy: number, w: number}[]} [request.taps] `motionBlurTaps`
- * @param {{mode: 'include' | 'exclude', x: number, y: number, shapes: object[]} | null} [request.clip]
- *   the visibility mask: `style.clip.shapes`, which are box-local, and the
- *   box's corner in job space
+ * @param {{x: number, y: number, shapes: object[]} | null} [request.clip]
+ *   the mask (v19): `maskInBoxFrame(box)`, shapes in the box's own frame after
+ *   its warp, each with its `op` ('keep' or 'hide'), and the box's corner in
+ *   job space. The letters show inside the keep shapes (everywhere, with
+ *   none) less the hide shapes
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
  * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1; over a backdrop,
  *   in one of the special eight modes (Color Burn, Linear Burn, Color Dodge, Linear Dodge,
@@ -1021,10 +1029,8 @@ export function encodeBox(request) {
     f64(t.dy)
     f64(t.w)
   }
-  const mode = clip ? CLIP_MODE[clip.mode] : 0
-  if (clip && !mode) throw new Error(`mt-text: unknown clip mode ${JSON.stringify(clip.mode)}`)
-  u32(mode || 0)
-  if (mode) {
+  u32(clip ? 1 : 0)
+  if (clip) {
     f64(clip.x)
     f64(clip.y)
     // The count is written once the shapes are, less the ones not drawn.

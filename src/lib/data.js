@@ -238,13 +238,12 @@ export function setBoxDefaults(next) {
 export function applyBoxDefaults(style) {
   if (!style || typeof style !== 'object') return style;
   Object.assign(style, boxDefaults);
-  // A newborn box never inherits the previous box's bezier path, mask shapes
-  // or warp mesh: all three are that box's own geometry, and carried onto a box
+  // A newborn box never inherits the previous box's bezier path or warp
+  // mesh: both are that box's own geometry, and carried onto a box
   // of another size they curve, hide or deform text they were never drawn for.
   // A DUPLICATE keeps them - duplicateBox copies the style whole and does not
   // come through here - which is the same line the comment above draws.
   style.path = { on: false, pts: [] };
-  style.clip = { on: false, mode: 'exclude', brushSize: style.clip?.brushSize ?? 20, shapes: [] };
   style.warp = { on: false, cols: WARP_MESH_DEFAULT, rows: WARP_MESH_DEFAULT, pts: [] };
   style.ink = { on: false, strokes: [] };
   // The SFX recipe is the same kind of thing: moves tuned against one box's
@@ -455,7 +454,6 @@ export function defaultStyle() {
     //   { kind: 'stroke',  size, pts: [[x, y], ...] }  (a brush drag)
     // With no shapes the mask does nothing, whichever mode is set - so a box
     // that only flipped the switch looks exactly like the switch is off.
-    clip: { on: false, mode: 'exclude', brushSize: 20, shapes: [] },
     // Hand-drawn brush strokes inside the box, in the same box-local page px
     // the mask shapes use. Each stroke is self-describing - every field that
     // decides how it renders is on the stroke, not on the tool - so a stroke
@@ -2199,30 +2197,6 @@ export function normalizeStyle(s) {
   // 0 is auto, and anything unreadable becomes auto rather than a wild ring.
   circ.r = Math.min(4000, Math.max(0, num(circ.r, 0)));
 
-  // The mask, shape by shape. A shape that is not one of the three kinds, or
-  // whose numbers are not finite, is dropped rather than repaired - a mask
-  // with no valid shapes is simply inactive, which every renderer handles.
-  const pair = (q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]);
-  const cl = {
-    on: !!src.clip?.on,
-    mode: src.clip?.mode === 'include' ? 'include' : 'exclude',
-    brushSize: Math.min(200, Math.max(2, num(src.clip?.brushSize, d.clip.brushSize))),
-    shapes: [],
-  };
-  for (const sh of Array.isArray(src.clip?.shapes) ? src.clip.shapes : []) {
-    if (sh?.kind === 'ellipse') {
-      const e = { kind: 'ellipse', cx: num(sh.cx, NaN), cy: num(sh.cy, NaN), rx: num(sh.rx, 0), ry: num(sh.ry, 0) };
-      if (Number.isFinite(e.cx) && Number.isFinite(e.cy) && e.rx > 0 && e.ry > 0) cl.shapes.push(e);
-    } else if (sh?.kind === 'poly') {
-      const pts = (Array.isArray(sh.pts) ? sh.pts : []).filter(pair).map((q) => [+q[0], +q[1]]);
-      if (pts.length >= 3) cl.shapes.push({ kind: 'poly', pts });
-    } else if (sh?.kind === 'stroke') {
-      const pts = (Array.isArray(sh.pts) ? sh.pts : []).filter(pair).map((q) => [+q[0], +q[1]]);
-      const size = num(sh.size, 0);
-      if (pts.length >= 1 && size > 0) cl.shapes.push({ kind: 'stroke', size: Math.min(200, size), pts });
-    }
-  }
-
   const ink = { on: !!src.ink?.on, strokes: [] };
   for (const k of Array.isArray(src.ink?.strokes) ? src.ink.strokes : []) {
     const norm = normalizeInkStroke(k);
@@ -2247,7 +2221,6 @@ export function normalizeStyle(s) {
     blending: normalizeBlending(src.blending),
     motionBlur: mb,
     path: pth,
-    clip: cl,
     ink,
     warp: normalizeWarp(src.warp),
     circle: circ,
@@ -2276,6 +2249,10 @@ export function normalizeStyle(s) {
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
   foldPatternFill(out);
+  // The mask is the box's, pinned to the page (`box.mask`, box-mask.js): an
+  // old style's `clip` is carried there when its chapter loads, and is no
+  // part of a look.
+  delete out.clip;
   // A move-based SFX wrote the box's gaps over with its preset's: they go
   // back, and what it switched off stays in `before` for Remove SFX.
   const oldBefore = isOldSfx(src.sfx) && src.sfx.on === true ? src.sfx.before : null;
