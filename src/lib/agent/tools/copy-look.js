@@ -26,7 +26,8 @@ const LAYER_KEYS = ['strokeEffects', 'outerGlow', 'innerGlow', 'innerShadows', '
 // A wobble is part of how letters look; one left off is sent short, as a
 // layer style is.
 const SHORT_OFF = [...LAYER_KEYS, 'wobble'];
-export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin', 'wobble',
+// The special effects go with a look, their seeds with them.
+export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin', 'wobble', 'special',
   ...LAYER_KEYS];
 
 const STYLE_DEFAULTS = defaultStyle();

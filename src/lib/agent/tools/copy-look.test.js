@@ -91,6 +91,14 @@ describe('looksOf, layer styles', () => {
     expect(look.style.innerShadows).toEqual([]);
     expect(validateStylePatch({ bevel: look.style.bevel })).toEqual([]);
   });
+
+  it('carries the special effects whole, their seeds with them', () => {
+    const special = { ...defaultStyle().special, crack: { ...defaultStyle().special.crack, on: true, amount: 70, seed: 9 } };
+    const pages = [{ lines: [{ n: 1, tags: ['sfx'] }], boxes: [{ id: 's', lineN: 1, style: { ...defaultStyle(), special } }] }];
+    const [look] = looksOf(pages);
+    expect(look.style.special).toEqual(special);
+    expect(validateStylePatch({ special: look.style.special })).toEqual([]);
+  });
 });
 
 describe('copy_look', () => {
