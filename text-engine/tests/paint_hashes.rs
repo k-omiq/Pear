@@ -630,6 +630,7 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             lightning: None,
             splash: None,
             scratches: None,
+            cut_strokes: false,
         });
         b.request.job.effects.special.as_mut().unwrap()
     }
@@ -665,20 +666,30 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     // Scratches cutting a box's own stroke through, and a crack (no pieces
     // out) cutting a stroke centred on the outline, whose inside part reads
     // the letters whole.
-    rows.push((
-        "special_scratches_stroke",
-        Box::new(move |b| {
-            special(b).scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
-            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
-        }),
-    ));
-    rows.push((
-        "special_crack_stroke_centre",
-        Box::new(move |b| {
-            special(b).crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
-            b.effects = vec![stroke(4.0, Position::Center, Paint::Color(BLACK))];
-        }),
-    ));
+    // Each with the box strokes cut through (`cut_strokes`) and outlining
+    // the cuts (the default).
+    for (name, through) in [("special_scratches_stroke_cut_through", true), ("special_scratches_stroke_fills_cuts", false)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+                sp.cut_strokes = through;
+                b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+            }),
+        ));
+    }
+    for (name, through) in [("special_crack_stroke_centre_cut_through", true), ("special_crack_stroke_centre_fills_cuts", false)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                sp.cut_strokes = through;
+                b.effects = vec![stroke(4.0, Position::Center, Paint::Color(BLACK))];
+            }),
+        ));
+    }
     // A crack's pieces broken off, each motion, under a band stroke and a
     // shadow; and falling under a box stroke.
     for (name, motion) in [("special_break_apart", Motion::Apart), ("special_break_fall", Motion::Fall)] {
@@ -693,15 +704,18 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             }),
         ));
     }
-    rows.push((
-        "special_break_fall_box_stroke",
-        Box::new(move |b| {
-            let sp = special(b);
-            sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
-            sp.break_off = Some(BreakOff { share: 0.6, motion: Motion::Fall });
-            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
-        }),
-    ));
+    for (name, through) in [("special_break_fall_box_stroke_cut_through", true), ("special_break_fall_box_stroke_fills_cuts", false)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                sp.break_off = Some(BreakOff { share: 0.6, motion: Motion::Fall });
+                sp.cut_strokes = through;
+                b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+            }),
+        ));
+    }
     // A soft fade at scale 2, on its page-anchored grid of cells, and a
     // soft paint mark over the letters.
     rows.push((

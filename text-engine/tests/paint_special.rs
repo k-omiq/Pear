@@ -85,7 +85,7 @@ fn tight(f: impl FnOnce(&mut Special)) -> Option<Special> {
 }
 
 fn only(f: impl FnOnce(&mut Special)) -> Option<Special> {
-    let mut sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: None, break_off: None, lightning: None, splash: None, scratches: None };
+    let mut sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: None, break_off: None, lightning: None, splash: None, scratches: None, cut_strokes: false };
     f(&mut sp);
     Some(sp)
 }
@@ -246,10 +246,16 @@ fn a_crack_gathers_at_its_focus_or_spreads_over_the_word() {
 }
 
 #[test]
-fn a_crack_cuts_a_box_stroke_through_as_it_cuts_a_band() {
+fn a_crack_cuts_a_box_stroke_through_as_it_cuts_a_band_or_the_stroke_outlines_each_cut() {
     let mut engine = Engine::new();
     let font = load(&mut engine);
-    let crack = only(|s| s.crack = Some(Crack { amount: 0.7, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }));
+    let crack_of = |through: bool| {
+        only(|s| {
+            s.crack = Some(Crack { amount: 0.7, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            s.cut_strokes = through;
+        })
+    };
+    let crack = crack_of(true);
     // A black outline 4 wide outside the letters: a glyph band, whose pen
     // is centred on the outline, or the box's own stroke.
     let banded = |sp: Option<Special>| {
@@ -287,6 +293,11 @@ fn a_crack_cuts_a_box_stroke_through_as_it_cuts_a_band() {
     let either = band.len() + stroke.len() - both;
     assert!(band.len() > 200, "the crack cuts the band: {}", band.len());
     assert!(both as f64 > 0.9 * either as f64, "band {} stroke {} both {both}", band.len(), stroke.len());
+    // Outlining the cuts (the default), the stroke reads the cut letters:
+    // the thin cracks the band shows through are filled with the stroke.
+    let outlined = paint(&mut engine, stroked(crack_of(false)));
+    let filled = band.iter().filter(|&&(x, y)| at(&outlined, x, y)[3] > 200).count();
+    assert!(filled as f64 > 0.5 * band.len() as f64, "filled {filled} of {}", band.len());
 }
 
 fn breaking(share: f64, motion: Motion, at: (f64, f64), spread: f64) -> Option<Special> {
@@ -339,6 +350,7 @@ fn the_densest_cracks_break_first() {
         lightning: None,
         splash: None,
         scratches: None,
+        cut_strokes: false,
     };
     let sh = letter_shapes(&sp, SIZE, INK).unwrap();
     assert!(sh.pieces.len() >= 3);
@@ -389,9 +401,11 @@ fn a_piece_moves_with_its_fill_and_bands_and_the_hole_is_clean() {
 }
 
 /// A crack at its largest under a black box stroke 12 wide, outside: 200 px
-/// "KRAK" over a box 650 by 320 at `scale`.
-fn largest_under_stroke(font: FontId, scale: f64, break_off: Option<BreakOff>) -> BoxRequest {
+/// "KRAK" over a box 650 by 320 at `scale`, the stroke cut through or
+/// outlining the cuts (`through`).
+fn largest_under_stroke(font: FontId, scale: f64, break_off: Option<BreakOff>, through: bool) -> BoxRequest {
     let mut b = largest(font, scale, break_off);
+    b.request.job.effects.special.as_mut().unwrap().cut_strokes = through;
     b.effects = vec![Effect::Stroke(Stroke {
         size: 12.0,
         position: Position::Outside,
@@ -420,6 +434,7 @@ fn largest(font: FontId, scale: f64, break_off: Option<BreakOff>) -> BoxRequest 
         lightning: None,
         splash: None,
         scratches: None,
+        cut_strokes: false,
     });
     b
 }
@@ -453,16 +468,21 @@ fn the_largest_crack_under_a_box_stroke_paints_close_up() {
     // 200 px letters at scale 4 (a Retina screen at 200 % zoom) with the
     // box's own stroke on: its cuts reach some 68M device pixels round the
     // letters, past the painter's largest raster. The cuts-alone pass is cut
-    // to the surface, so the box paints; it once failed whole.
+    // to the surface, so the box paints; it once failed whole. Outlining the
+    // cuts, the strokes read the cut letters, which reach no further than
+    // the letters.
     let mut engine = Engine::new();
     let font = load(&mut engine);
-    let r = paint(&mut engine, largest_under_stroke(font, 4.0, None));
-    assert!(ink(&r) > 0);
-    assert!(r.x >= 0 && r.y >= 0 && r.x + r.width as i32 <= 2600 && r.y + r.height as i32 <= 1280);
-    // Broken off, each motion: each piece's cuts are cut to the surface too.
-    for motion in [Motion::Fall, Motion::Apart] {
-        let r = paint(&mut engine, largest_under_stroke(font, 4.0, Some(BreakOff { share: 1.0, motion })));
-        assert!(ink(&r) > 0, "{motion:?}");
+    for through in [true, false] {
+        let r = paint(&mut engine, largest_under_stroke(font, 4.0, None, through));
+        assert!(ink(&r) > 0, "{through}");
+        assert!(r.x >= 0 && r.y >= 0 && r.x + r.width as i32 <= 2600 && r.y + r.height as i32 <= 1280, "{through}");
+        // Broken off, each motion: each piece's cuts are cut to the surface
+        // too.
+        for motion in [Motion::Fall, Motion::Apart] {
+            let r = paint(&mut engine, largest_under_stroke(font, 4.0, Some(BreakOff { share: 1.0, motion }), through));
+            assert!(ink(&r) > 0, "{through}, {motion:?}");
+        }
     }
 }
 
@@ -477,8 +497,14 @@ fn a_cut_box_stroke_kept_is_the_fresh_one_to_the_byte() {
     use mt_text::paint::{paint_box_kept, BoxKeys};
     let mut engine = Engine::new();
     let font = load(&mut engine);
-    let crack = || only(|s| s.crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }));
-    let scratched = || only(|s| s.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 }));
+    let crack = |through| only(|s| {
+        s.crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+        s.cut_strokes = through;
+    });
+    let scratched = |through| only(|s| {
+        s.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+        s.cut_strokes = through;
+    });
     let stroked = |sp: Option<Special>, position: Position, size: f64, color: Rgba| {
         let mut b = boxed(font, sp);
         b.lay_special_paint().unwrap();
@@ -521,8 +547,12 @@ fn a_cut_box_stroke_kept_is_the_fresh_one_to_the_byte() {
         ("crack, wide outside", false, Position::Outside, 40.0),
         ("scratches, centre", true, Position::Center, 4.0),
     ];
-    for (i, (what, scratches, position, size)) in cases.into_iter().enumerate() {
-        let b = |color| stroked(if scratches { scratched() } else { crack() }, position, size, color);
+    for (i, (what, scratches, position, size, through)) in cases
+        .into_iter()
+        .flat_map(|(w, s, p, z)| [(w, s, p, z, true), (w, s, p, z, false)])
+        .enumerate()
+    {
+        let b = |color| stroked(if scratches { scratched(through) } else { crack(through) }, position, size, color);
         let keys = BoxKeys {
             job: kept::Hasher::new("t job").u64(i as u64).finish().unwrap(),
             premask: None,
@@ -540,13 +570,14 @@ fn a_cut_box_stroke_kept_is_the_fresh_one_to_the_byte() {
                 let before = kept::hits();
                 let r = paint_box_kept(&mut engine, &mut k, keys).unwrap().expect("something painted");
                 hits.push(kept::hits() - before);
-                assert_eq!((r.x, r.y, r.width, r.height), (fresh.x, fresh.y, fresh.width, fresh.height), "{what}, {pass}, {ceiling}");
-                assert!(r.data == fresh.data, "{what}, {pass}, a store of {ceiling}");
+                assert_eq!((r.x, r.y, r.width, r.height), (fresh.x, fresh.y, fresh.width, fresh.height), "{what} {through}, {pass}, {ceiling}");
+                assert!(r.data == fresh.data, "{what} {through}, {pass}, a store of {ceiling}");
             }
-            if ceiling == kept::KEPT_BYTES {
-                // Warm, the box's picture is read back; recoloured, its
-                // pieces are.
-                assert!(hits[1] > hits[0] && hits[2] > hits[0], "{what}: {hits:?}");
+            if ceiling == kept::KEPT_BYTES && through {
+                // Cut through, warm, the box's picture is read back;
+                // recoloured, its pieces are (the letters whole and the
+                // cuts alone). Outlining the cuts keeps what any box keeps.
+                assert!(hits[1] > hits[0] && hits[2] > hits[0], "{what} {through}: {hits:?}");
             }
         }
     }
@@ -561,9 +592,10 @@ fn a_cut_box_stroke_kept_is_the_fresh_one_to_the_byte() {
 fn broken_pieces_shared_by_the_passes_paint_the_same_bytes() {
     let mut engine = Engine::new();
     let font = load(&mut engine);
-    for motion in [Motion::Apart, Motion::Fall] {
+    for (motion, through) in [(Motion::Apart, true), (Motion::Fall, true), (Motion::Apart, false), (Motion::Fall, false)] {
         let make = || {
             let mut b = boxed(font, breaking(0.75, motion, (0.5, 0.5), 1.0));
+            b.request.job.effects.special.as_mut().unwrap().cut_strokes = through;
             b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 6.0 }];
             b.shadows = vec![mt_text::paint::Shadow { color: BLACK, opacity: 0.5, x: 4.0, y: 5.0, ..Default::default() }];
             b.effects = vec![Effect::Stroke(Stroke {
@@ -581,7 +613,7 @@ fn broken_pieces_shared_by_the_passes_paint_the_same_bytes() {
         kept::set_ceiling(kept::KEPT_BYTES);
         kept::clear();
         let shared = paint(&mut engine, make());
-        assert!(alone == shared, "{motion:?}");
+        assert!(alone == shared, "{motion:?}, {through}");
     }
 }
 
@@ -601,7 +633,7 @@ fn placed(outline: &[mt_text::paint::Pt], m: &Affine) -> (f64, f64, (f64, f64, f
 /// moved and how many are gone.
 fn motion_numbers(motion: Motion, share: f64) -> (f64, f64, f64, f64, usize, usize) {
     const INK: (f64, f64, f64, f64) = (40.0, 55.0, 330.0, 100.0);
-    let sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None };
+    let sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false };
     let sh = letter_shapes(&sp, SIZE, INK).unwrap();
     let focus = (185.0, 77.5);
     let (mut out, mut down, mut side, mut gone, mut over, mut area) = (0.0, 0.0, 0.0f64, 0, 0.0, 0.0);

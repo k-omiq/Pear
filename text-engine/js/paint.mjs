@@ -484,8 +484,12 @@ function special(sp) {
   // 16 (v16): the crack's pieces break off, its share and motion after the
   // crack's own numbers. A crack without it writes what v15 wrote.
   const breaks = sp.crack?.breakOff ? 16 : 0
-  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0) | breaks
-  if (!kinds) throw new Error('mt-text: a special block needs an effect')
+  // 32: a box's own strokes are cut through at the cuts (special.js
+  // `outline`); no payload. Without it a box stroke outlines each cut.
+  const through = sp.cutStrokes ? 32 : 0
+  if (through && !sp.crack && !sp.scratches) throw new Error('mt-text: strokes cut through need a crack or scratches')
+  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0) | breaks | through
+  if (!(kinds & 15)) throw new Error('mt-text: a special block needs an effect')
   f64(r.x)
   f64(r.y)
   f64(r.w)

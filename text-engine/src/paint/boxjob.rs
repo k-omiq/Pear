@@ -1325,6 +1325,10 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
     if let Some(b) = cuts.and_then(|s| s.break_off) {
         key = key.debug(&b);
     }
+    // A box's strokes cut through at the cuts, when they are.
+    if cuts.is_some_and(|s| s.cut_strokes) {
+        key = key.u64(32);
+    }
     let key = key.bytes(&[u8::from(line)]).finish().ok_or(Error::BadSpec)?;
     if r.at != bytes.len() || (line && !request.job.curved) {
         return Err(Error::BadSpec);
@@ -2541,10 +2545,11 @@ fn paint_glyphs(
     // letters' shape as they would have been filled: their solid
     // silhouette, at Fill 0, without the afterimages.
     let fill = letters_fill(engine, request, rasterizer, keep, hollow, ghostly);
-    // A box's own strokes outline the letters whole and are cut through
-    // after, as a glyph band is: one crack look whatever the stroke.
+    // Cut through (`Special::cut_strokes`): a box's own strokes outline the
+    // letters whole and are cut through after, as a glyph band is.
+    // Otherwise they read the cut letters and outline each cut.
     let cut_strokes = inside
-        && request.request.job.effects.special.is_some_and(|s| s.shapes_letters())
+        && request.request.job.effects.special.is_some_and(|s| s.shapes_letters() && s.cut_strokes)
         && request.effects.iter().any(|e| matches!(e, Effect::Stroke(_)) && e.shows());
     let cuts = if cut_strokes {
         request.request.job.effects.cuts = Cuts::Skipped;

@@ -3617,6 +3617,12 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
 /// A box of "HI" on the wire with special effects: a crack of `crack`, a
 /// lightning of `bolt` and a splash of `splash` (amounts), over the box.
 fn special_box(font: u32, crack: f64, bolt: f64, splash: f64) -> Vec<u8> {
+    special_box_kinds(font, crack, bolt, splash, 0)
+}
+
+/// [`special_box`] with `more` among the kinds (32: box strokes cut
+/// through at the cuts).
+fn special_box_kinds(font: u32, crack: f64, bolt: f64, splash: f64, more: u32) -> Vec<u8> {
     let mut job = job_bytes(font);
     let mut b = shadowed(font, 0);
     b.truncate(b.len() - job.len() - 4);
@@ -3625,7 +3631,7 @@ fn special_box(font: u32, crack: f64, bolt: f64, splash: f64) -> Vec<u8> {
     for v in [0.0, 0.0, 200.0, 160.0] {
         f(&mut job, v);
     }
-    u(&mut job, 1 | 2 | 4);
+    u(&mut job, 1 | 2 | 4 | more);
     for v in [crack, 1.0, 0.5, 0.5, 1.0] {
         f(&mut job, v);
     }
@@ -3674,6 +3680,12 @@ fn a_lightning_or_splash_change_keeps_the_letters_and_a_crack_change_does_not() 
     }
     let (key, _) = kept_paint(&mut e, &special_box(font, 0.55, 0.4, 0.3));
     assert_ne!(key, first, "a crack change cuts the letters otherwise");
+    // The box strokes cut through (kind 32) or outlining the cuts: a change
+    // of the choice is another key, and back is the first again.
+    let (through, _) = kept_paint(&mut e, &special_box_kinds(font, 0.5, 0.4, 0.3, 32));
+    assert_ne!(through, first, "cut through is another key");
+    let (back, _) = kept_paint(&mut e, &special_box(font, 0.5, 0.4, 0.3));
+    assert_eq!(back, first);
 }
 
 /// A paint mark's coverage is keyed on its shape and the frame it is
