@@ -142,6 +142,28 @@ export function recordFieldEdit(u, value, { now = Date.now(), atomic = false, fa
   return !coalesce;
 }
 
+// A face set on the field's words by a command (Bold on selected words, a
+// typeface) while the text stays as it is: a step of its own, the same words
+// with the new faces, so the field's undo takes the face back before any
+// typing. Nothing when the faces are the step's already.
+export function recordFieldFaces(u, faces, same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)) {
+  u.faces ??= [];
+  if (same(u.faces[u.i], faces)) return false;
+  u.stack.length = u.i + 1;
+  u.faces.length = u.i + 1;
+  u.stack.push(u.stack[u.i]);
+  u.faces.push(faces);
+  u.i = u.stack.length - 1;
+  if (u.stack.length > MAX_FIELD_STEPS) {
+    u.stack.shift();
+    u.faces.shift();
+    u.i--;
+  }
+  u.kind = null;
+  u.wall = true;
+  return true;
+}
+
 // Both return the value to put in the field, or null when there is nowhere to
 // go. Null rather than false because "" is a perfectly good step.
 export function undoField(u) {

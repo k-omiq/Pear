@@ -9,6 +9,7 @@ import {
   PACKAGE_FORMAT,
   PACKAGE_VERSION,
 } from './package.js';
+import { textCheck } from './runs.js';
 import { normalizeStrokeEffect } from './data.js';
 
 const bytes = (...n) => new Uint8Array(n);
@@ -256,14 +257,25 @@ describe('fontFamiliesUsed', () => {
     expect(fontFamiliesUsed(pages, tags)).toEqual(['A', 'B', 'C']);
   });
 
+  // As saved: runs beside the check of the text they index (runs.js).
   it('collects the typeface of words set in another family, in a box or in its line', () => {
     const pages = [
       {
-        lines: [{ n: 1, runs: [{ start: 0, end: 2, bold: true, italic: false, font: 'D' }] }],
-        boxes: [{ style: { font: 'A' }, runs: [{ start: 0, end: 1, bold: false, italic: false, font: 'E' }, { start: 1, end: 2, bold: true, italic: false }] }],
+        lines: [{ n: 1, en: 'hi', runs: [{ start: 0, end: 2, bold: true, font: 'D' }], runsCheck: textCheck('hi') }],
+        boxes: [{ style: { font: 'A' }, text: 'ok', runs: [{ start: 0, end: 1, font: 'E' }, { start: 1, end: 2, bold: true }], runsCheck: textCheck('ok') }],
       },
     ];
     expect(fontFamiliesUsed(pages, [])).toEqual(['A', 'E', 'D']);
+  });
+
+  it('leaves out the families of runs a load would drop: no check, or a check of other words', () => {
+    const pages = [
+      {
+        lines: [{ n: 1, en: 'hi', runs: [{ start: 0, end: 2, font: 'Stale' }], runsCheck: textCheck('hello') }],
+        boxes: [{ style: { font: 'A' }, text: 'ok', runs: [{ start: 0, end: 1, font: 'Unchecked' }] }],
+      },
+    ];
+    expect(fontFamiliesUsed(pages, [])).toEqual(['A']);
   });
 });
 

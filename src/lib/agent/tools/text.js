@@ -10,7 +10,8 @@ import { defineTool, ToolError, nearest } from '../registry.js';
 import { parsePages } from '../select.js';
 import { untrusted } from '../fence.js';
 import { app, lineByN, lineText, boxText, boxRuns, editBoxes, setBoxText, setRangesFace, writeLineText, isTranslateMode, boxLocked, allFonts } from '../../store.svelte.js';
-import { faceSpans } from '../../runs.js';
+import { faceSpans, wholeLetters } from '../../runs.js';
+import { curvedStyle } from '../../contain.js';
 import { lineTags } from '../../tags.svelte.js';
 import { readsLine, lineLocked, matchesOf, handToSolver, heldBreaks, breaksDropped, reportOf } from './edit.js';
 
@@ -210,7 +211,7 @@ defineTool({
   name: 'face',
   description:
     'Set bold, italic or the typeface of part of one box\'s words, the way a letterer stresses one word in a line. id: the box. Which words: start and end (UTF-16 offsets into the box\'s text, end exclusive; box shows the text and its faces), or words: an exact, case-sensitive piece of the text, every place it appears unless nth (1-based) picks one. ' +
-    'What: bold and/or italic (true or false), font (an exact family from fonts; null is the box\'s own), or clear: true (back to the box\'s face). A range is widened to whole letters. One undo step for the user. The face of the whole box stays edit set.style. Returns the ranges set and the box\'s faces after.',
+    'What: bold and/or italic (true or false), font (an exact family from fonts; null is the box\'s own), or clear: true (back to the box\'s face). A range is widened to whole letters. One undo step for the user. The face of the whole box stays edit set.style. Text on a curve, path or circle is set in one face: there edit set.style. Returns the ranges as applied (widened) and the box\'s faces after.',
   input: {
     type: 'object',
     additionalProperties: false,
@@ -234,6 +235,12 @@ defineTool({
     const p = app.pages[i];
     const b = p.boxes.find((x) => x.id === id);
     if (boxLocked(b)) throw new ToolError(`box ${id} is locked`, 'the user locked it to hold it as it is; ask them before changing it');
+    // The faces of a line's words are the line's: a locked box showing the
+    // same line holds them too.
+    if (readsLine(b, p) && lineLocked(p, b.lineN)) throw new ToolError(`box ${id} shows line ${b.lineN}, which a locked box shows`, 'the user locked it to hold it as it is; ask them before changing its words\' faces');
+    // A curve draws its words in one face, so runs on it would never show.
+    if (curvedStyle(b.style)) throw new ToolError(`box ${id} is on a curve, path or circle, which is set in one face`, 'edit set.style (bold, italic, font) sets the whole box.');
+    if (nth != null && words == null) throw new ToolError('nth picks one place of words; it does not go with start and end');
     const text = boxText(b, p) ?? '';
     let ranges;
     if (words != null) {
@@ -267,6 +274,8 @@ defineTool({
       change = { set };
     }
     const done = ctx.write([p], () => setRangesFace(b, ranges, change, p));
-    return { id, page: i + 1, outcome: done ? 'changed' : 'nothing needed', ranges: done ?? ranges, faces: boxFaces(b, p) };
+    // As applied: widened to whole letters, as the store set them.
+    const applied = done ?? ranges.map(([a, f]) => wholeLetters(text, a, f));
+    return { id, page: i + 1, outcome: done ? 'changed' : 'nothing needed', ranges: applied, faces: boxFaces(b, p) };
   },
 });

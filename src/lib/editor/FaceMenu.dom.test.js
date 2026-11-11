@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import FaceMenu, { openFaceMenu } from './FaceMenu.svelte';
@@ -6,14 +6,15 @@ import { app, loadProjectPages, selectBox, deselect } from '../store.svelte.js';
 import { initHistory, resetHistory, undo } from './history.svelte.js';
 import { registerShortcutHandlers, setMacKeyboard, isMacKeyboard } from '../shortcuts.svelte.js';
 import { editorActionHandlers } from '../editor-actions.js';
-import { setTypingSel, clearTypingSel } from '../typing-selection.svelte.js';
+import { setTypingSel, clearTypingSel, onEditAway } from '../typing-selection.svelte.js';
 import { defaultStyle } from '../data.js';
 import { textCheck } from '../runs.js';
 
 // The right-click menu on selected words: what it offers and shows, that its
 // items are the registry's commands, and that the focus goes back to the text.
 
-const B = (start, end) => ({ start, end, bold: true, italic: false });
+// The box is regular, so a run names only what differs from it (runs.js).
+const B = (start, end) => ({ start, end, bold: true });
 let unregister;
 let mac;
 beforeEach(() => {
@@ -61,15 +62,18 @@ async function opened(a, f) {
 }
 
 describe('the menu of the selected words\' faces', () => {
-  it('offers the four commands with their keys, Bold mixed over a half-bold range', async () => {
+  it('offers Cut and Copy, then the four commands with their keys, Bold mixed over a half-bold range', async () => {
     const { menu, item } = await opened(0, 7);
-    expect([...menu.querySelectorAll('.fm-label')].map((n) => n.textContent)).toEqual(['Bold', 'Italic', 'Typeface…', 'Clear typeface']);
+    expect([...menu.querySelectorAll('.fm-label')].map((n) => n.textContent)).toEqual(['Cut', 'Copy', 'Bold', 'Italic', 'Typeface…', 'Clear typeface']);
+    expect(menu.querySelectorAll('.fm-sep').length).toBe(1);
+    expect(item('Cut').querySelector('.fm-key').textContent).toBe('⌘X');
+    expect(item('Copy').querySelector('.fm-key').textContent).toBe('⌘C');
     expect(item('Bold').getAttribute('aria-checked')).toBe('mixed');
     expect(item('Italic').getAttribute('aria-checked')).toBe('false');
     expect(item('Bold').querySelector('.fm-key').textContent).toBe('⌘B');
     expect(item('Italic').querySelector('.fm-key').textContent).toBe('⌘I');
     // The first item has the focus, for the keys.
-    expect(document.activeElement).toBe(item('Bold'));
+    expect(document.activeElement).toBe(item('Cut'));
   });
 
   it('runs the command on the range, closes, gives the focus back to the text, one undo step', async () => {
@@ -108,5 +112,40 @@ describe('the menu of the selected words\' faces', () => {
     clearTypingSel();
     await tick();
     expect(view.container.querySelector('.face-menu')).toBe(null);
+  });
+
+  it('Cut and Copy give the words back, then run the browser\'s own command on them', async () => {
+    const { item, text } = await opened(4, 7);
+    const was = document.execCommand;
+    const seen = [];
+    document.execCommand = (kind) => {
+      const s = getSelection();
+      seen.push([kind, document.activeElement === text, s.anchorOffset, s.focusOffset]);
+      return true;
+    };
+    try {
+      item('Copy').click();
+      await tick();
+      expect(seen).toEqual([['copy', true, 4, 7]]);
+    } finally {
+      document.execCommand = was;
+    }
+  });
+
+  it('closed with nowhere to give the focus back, ends the edit', async () => {
+    vi.useFakeTimers();
+    const away = vi.fn();
+    const off = onEditAway(away);
+    try {
+      const { view } = await opened(4, 7);
+      window.dispatchEvent(new Event('resize'));
+      await tick();
+      expect(view.container.querySelector('.face-menu')).toBe(null);
+      vi.runAllTimers();
+      expect(away).toHaveBeenCalledTimes(1);
+    } finally {
+      off();
+      vi.useRealTimers();
+    }
   });
 });

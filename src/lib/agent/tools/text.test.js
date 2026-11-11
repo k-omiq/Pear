@@ -117,7 +117,8 @@ describe('edit set.text', () => {
 });
 
 describe('face', () => {
-  const B = (start, end, extra = {}) => ({ start, end, bold: true, italic: false, ...extra });
+  // A run names only what differs from the box's face (runs.js).
+  const B = (start, end, extra = {}) => ({ start, end, bold: true, ...extra });
 
   it('sets bold on a word of a line-reading box, on its line, shown in box, one undo step', async () => {
     const r = await call('face', { id: 'a', words: 'there', bold: true });
@@ -139,12 +140,12 @@ describe('face', () => {
     expect(font).toBeTruthy();
     expect((await call('face', { id: 'own', start: 0, end: 2, italic: true })).ok).toBe(true);
     const own = () => pageById(1).boxes.find((b) => b.id === 'own');
-    expect(own().runs).toEqual([{ start: 0, end: 2, bold: false, italic: true }]);
+    expect(own().runs).toEqual([{ start: 0, end: 2, italic: true }]);
     const bad = await call('face', { id: 'own', start: 0, end: 2, font: 'No Such Font Here' });
     expect(bad.ok).toBe(false);
     expect(JSON.stringify(bad)).toMatch(/no font/);
     expect((await call('face', { id: 'own', start: 0, end: 2, font: font.toUpperCase() })).ok).toBe(true);
-    expect(own().runs).toEqual([{ start: 0, end: 2, bold: false, italic: true, font }]);
+    expect(own().runs).toEqual([{ start: 0, end: 2, italic: true, font }]);
     expect((await call('face', { id: 'own', start: 0, end: 3, clear: true })).ok).toBe(true);
     expect(own().runs).toBeUndefined();
   });
@@ -159,5 +160,33 @@ describe('face', () => {
     expect((await call('face', { id: 'lk', start: 0, end: 2, bold: true })).ok).toBe(false);
     // Already as asked: nothing written.
     expect((await call('face', { id: 'x', words: 'no', nth: 2, bold: true })).result.outcome).toBe('nothing needed');
+    // nth picks one place of words, and goes with nothing else.
+    const both = await call('face', { id: 'x', start: 0, end: 2, nth: 1, bold: true });
+    expect(both.ok).toBe(false);
+    expect(JSON.stringify(both)).toMatch(/nth/);
+  });
+
+  it('returns the ranges as applied, widened to whole letters, changed or not', async () => {
+    loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [], boxes: [box('e', null, { text: 'ok 👍🏽 go' })] }]);
+    const r = await call('face', { id: 'e', start: 4, end: 5, italic: true });
+    expect(r.result).toMatchObject({ outcome: 'changed', ranges: [[3, 7]] });
+    const again = await call('face', { id: 'e', start: 4, end: 5, italic: true });
+    expect(again.result).toMatchObject({ outcome: 'nothing needed', ranges: [[3, 7]] });
+  });
+
+  it('refuses a box showing a line a locked box shows, and a curved box, writing nothing', async () => {
+    loadProjectPages([{
+      id: 1, w: 800, h: 1200,
+      lines: [{ n: 1, en: 'hold on' }],
+      boxes: [box('r', 1), box('lk', 1, { locked: true, y: 300 }), box('c', null, { text: 'round', y: 500, style: { ...defaultStyle(), size: 20, curve: 30 } })],
+    }]);
+    const locked = await call('face', { id: 'r', words: 'hold', bold: true });
+    expect(locked.ok).toBe(false);
+    expect(JSON.stringify(locked)).toMatch(/locked/);
+    expect(lineByN(pageById(1), 1).runs ?? null).toBe(null);
+    const curved = await call('face', { id: 'c', words: 'round', bold: true });
+    expect(curved.ok).toBe(false);
+    expect(JSON.stringify(curved)).toMatch(/curve/);
+    expect(pageById(1).boxes.find((b) => b.id === 'c').runs ?? null).toBe(null);
   });
 });

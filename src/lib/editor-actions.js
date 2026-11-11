@@ -43,8 +43,10 @@ import {
   boxText,
   boxRuns,
   setRangeFace,
+  setLineRangeFace,
+  faceRefusal,
 } from './store.svelte.js';
-import { typingSel, selectedRange, askPending, askFacePick } from './typing-selection.svelte.js';
+import { typingSel, selectedRange, askPending, askFacePick, lineSel } from './typing-selection.svelte.js';
 import { faceAt } from './runs.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
 import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
@@ -92,6 +94,12 @@ function faceTarget() {
   const r = b ? selectedRange(b.id, text) : null;
   return r ? { b, text, r, caret: r[0] === r[1], typing: app.editingId === b.id } : null;
 }
+// Words selected in a queue line's English field (typed into now): the line's.
+function lineTarget() {
+  if (!typeset() || lineSel.n == null || lineSel.a === lineSel.f || lineSel.pageId !== page()?.id) return null;
+  const ln = lineByN(page(), lineSel.n);
+  return ln && (ln.en ?? '') === lineSel.text ? { n: lineSel.n, a: lineSel.a, f: lineSel.f } : null;
+}
 const faceRange = () => {
   const t = faceTarget();
   return t && !t.caret ? t : null;
@@ -102,8 +110,14 @@ const faceRange = () => {
 // key pressed in a text field with nothing selected there (the queue's, the
 // Inspector's) is not about the whole box, and falls through.
 const inField = (e) => !!e?.target?.closest?.('input, textarea, [contenteditable="true"]');
+// A locked box, or curved text (laid out in one face), takes no face on part
+// of its words: said once, nothing written.
+const refused = (t) => !!faceRefusal(t.b, page(), { toast: true });
 const faceToggle = (key) => (e) => {
+  const L = lineTarget();
+  if (L) return void setLineRangeFace(page(), L.n, L.a, L.f, { toggle: key });
   const t = faceTarget();
+  if (t && (!t.caret || t.typing) && refused(t)) return;
   if (t && !t.caret) return void setRangeFace(t.b, t.r[0], t.r[1], { toggle: key });
   if (t?.typing) {
     const at = t.r[0];
@@ -145,10 +159,18 @@ const retryable = () => jobs.items.findLast((j) => !j.running && j.failed.length
 const SETTINGS_SERIES = new Set(['series', 'styles', 'guide']);
 
 const RUNS = {
-  'text.bold': { when: () => boxSelected() || !!faceTarget(), run: faceToggle('bold') },
-  'text.italic': { when: () => boxSelected() || !!faceTarget(), run: faceToggle('italic') },
-  'text.typeface': { when: () => !!faceRange(), run: () => { const t = faceRange(); askFacePick(t.b.id, t.text, t.r[0], t.r[1]); } },
-  'text.clearFace': { when: () => !!faceRange(), run: () => { const t = faceRange(); setRangeFace(t.b, t.r[0], t.r[1], { clear: true }); } },
+  'text.bold': { when: () => boxSelected() || !!faceTarget() || !!lineTarget(), run: faceToggle('bold') },
+  'text.italic': { when: () => boxSelected() || !!faceTarget() || !!lineTarget(), run: faceToggle('italic') },
+  'text.typeface': { when: () => !!faceRange(), run: () => { const t = faceRange(); if (!refused(t)) askFacePick(t.b.id, t.text, t.r[0], t.r[1]); } },
+  'text.clearFace': {
+    when: () => !!faceRange() || !!lineTarget(),
+    run: () => {
+      const L = lineTarget();
+      if (L) return void setLineRangeFace(page(), L.n, L.a, L.f, { clear: true });
+      const t = faceRange();
+      setRangeFace(t.b, t.r[0], t.r[1], { clear: true });
+    },
+  },
   'text.uppercase': { when: boxSelected, run: flip('uppercase') },
   'text.alignLeft': { when: boxSelected, run: set('align', 'left') },
   'text.alignCenter': { when: boxSelected, run: set('align', 'center') },
