@@ -11,6 +11,7 @@
 // nothing on the document's own save path ever waits on this one.
 import { fsx } from '../fsx.js';
 import { normalizeStyle, plainStyle } from '../data.js';
+import { normalizeSpecial } from '../special.js';
 import { toast, toastError, DOC_SAVE_MS, rescalePageGeometry, rescaleStyle, rescaleAuto, scaleFit, lengthScale } from '../store.svelte.js';
 import { scaleStroke } from '../brush.js';
 import { scaleMask, maskFromClip } from '../box-mask.js';
@@ -151,8 +152,14 @@ const isCurrentStyle = (s) =>
   typeof s.wobble === 'object' &&
   !!s.paint &&
   typeof s.paint === 'object' &&
-  !!s.special &&
-  typeof s.special === 'object';
+  specialCurrent(s.special);
+
+// The special effects grew fields more than once (a lightning's core and
+// glow, a crack's focus and spread, its break off): an entry recorded before
+// one of them is read as this build reads it, or an undo would hand the
+// painter a lightning with no core.
+const specialCurrent = (sp) =>
+  !!sp && typeof sp === 'object' && JSON.stringify(normalizeSpecial(sp)) === JSON.stringify(sp);
 
 // Whether this value is a style that has to be moved forward. A non-object is
 // not a style and is left alone - `text` entries hold strings in `before`/
