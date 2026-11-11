@@ -6,7 +6,7 @@ import {
   BEVEL_SOFTEN_MAX, BEVEL_TEXTURE_SCALE_MIN, BEVEL_TEXTURE_SCALE_MAX, KNOCKOUT_MODES, FX_INSTANCES_MAX,
   PATTERN_SCALE_MIN, PATTERN_SCALE_MAX,
 } from '../data.js';
-import { BREAK_MOTIONS } from '../special.js';
+import { BREAK_MOTIONS, SPECIAL_OUTLINES } from '../special.js';
 
 const number = (desc, min, max) => ({ type: 'number', desc, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
 const integer = (desc, min, max) => ({ ...number(desc, min, max), type: 'integer' });
@@ -419,6 +419,7 @@ export const STYLE_SCHEMA = {
     lightning: object('bolts on fill', { on: boolean('on'), amount: number('%', 0, 100), core: color('core'), glow: color('glow'), glowSize: number('%', 0, 300), seed: integer('seed', 0, 999) }),
     splash: object('paint splats on fill', { on: boolean('on'), amount: number('%', 0, 100), size: number('% of size', 10, 400), color: color('colour'), seed: integer('seed', 0, 999) }),
     scratches: object('thin scratches cut in letters', { on: boolean('on'), amount: number('%', 0, 100), angle: number('degrees', -180, 180), seed: integer('seed', 0, 999) }),
+    outline: choice('box stroke at crack/scratch cuts', SPECIAL_OUTLINES),
   }),
   paint: object('colour painted over the letters, box-local', {
     on: boolean('enable paint'),
