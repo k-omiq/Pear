@@ -21,7 +21,7 @@ import { resolveFace, postScriptNameFor } from './fonts.js';
 import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor, lineFaces } from './measure.js';
 import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
-import { boxCandidate, placeBlock } from './contain.js';
+import { boxCandidate, placeBlock, curvedStyle } from './contain.js';
 import { runFamilies, normalizeRuns, textCheck, runsField, faceOf } from './runs.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch, outlineRun, outlineBands, strokesFromBands } from './data.js';
@@ -1038,8 +1038,10 @@ export function textLayerFor(p, box, rendered, doc = null) {
   // The review flag, then - with the Rust engine drawing - that the box's font
   // is not on this machine and what it shows is the stand-in.
   // A family some of its words are set in (runs.js) that is not here is said
-  // the same way: those words show the stand-in too.
-  const missing = engineDraws() ? [s.font, ...runFamilies(boxRunsFor(p, box))].filter((f, i, all) => f && all.indexOf(f) === i && fontMissing(f)) : [];
+  // the same way: those words show the stand-in too. Not on a curve, which
+  // draws every letter in the box's face, so no run's family is shown there.
+  const runFams = curvedStyle(s) ? [] : runFamilies(boxRunsFor(p, box));
+  const missing = engineDraws() ? [s.font, ...runFams].filter((f, i, all) => f && all.indexOf(f) === i && fontMissing(f)) : [];
   const flag = (reviewOf(box, p) ? REVIEW_MARK : '') + missing.map(fontMissingMark).join('');
   // A turned box's effect gradients, placed against the page bounds; one
   // whose scale Photoshop cannot hold ships the box's pixels.
@@ -2372,7 +2374,10 @@ export async function reconstructForeign(psd) {
           style: {},
         });
       } else if (n.text) {
-        const st = n.text.style || {};
+        // A layer in several fonts states its font per run and none for the
+        // whole (ag-psd leaves `style` with what all runs share): the first
+        // run's face stands in for what the layer-wide style leaves out.
+        const st = { ...(n.text.styleRuns?.[0]?.style ?? null), ...(n.text.style ?? null) };
         // The outline first: the box comes back from the layer's frame by
         // undoing the content box's inset, and the inset counts the outline.
         // Its layer style: the effects, the blending and the outlines

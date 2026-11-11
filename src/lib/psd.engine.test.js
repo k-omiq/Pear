@@ -404,12 +404,18 @@ describe('a box with words in another face (C5)', () => {
     expect(layer.name.endsWith(BORROWED_MARK)).toBe(false);
   });
 
+  // A raster-only box still draws each run in its face when its words lie
+  // straight (here roughened), so a missing family of its words is marked; a
+  // curve draws every letter in the box's face, so there it is not.
   it('a family of its words that is not here is marked, and the importer takes every mark off', async () => {
     await on();
-    const p = await open([faced('DejaVu Sans', 'HEY YOU', [{ start: 4, end: 7, bold: false, italic: false, font: 'No Such Font' }], { curve: 30 })]);
+    const runs = [{ start: 4, end: 7, font: 'No Such Font' }];
     const rendered = { imageData: { width: 4, height: 4, data: new Uint8ClampedArray(64) }, left: 100, top: 500, right: 250, bottom: 620 };
+    const p = await open([faced('DejaVu Sans', 'HEY YOU', runs, { roughen: { on: true, amount: 2, detail: 0.05, seed: 1 } }), faced('DejaVu Sans', 'HEY YOU', runs, { curve: 30 }, { id: 'curved' })]);
     const layer = textLayerFor(p, p.boxes[0], rendered);
+    expect(layer.text).toBeUndefined();
     expect(layer.name).toBe(`HEY YOU${fontMissingMark('No Such Font')}${RASTER_MARK}`);
+    expect(textLayerFor(p, p.boxes[1], rendered).name).toBe(`HEY YOU${RASTER_MARK}`);
     const back = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [{ ...layer, imageData: undefined }] }] });
     expect(back.boxes.map((x) => x.text)).toEqual(['HEY YOU']);
   });
@@ -423,5 +429,30 @@ describe('a box with words in another face (C5)', () => {
     const layer = textLayerFor(p, p.boxes[0], rendered);
     expect(layer.text).toBeUndefined();
     expect(layer.name.endsWith(RASTER_MARK)).toBe(true);
+  });
+});
+
+// A foreign PSD (no embedded project) whose type layer is set in several fonts
+// names a font per run and none for the layer: the face is read from the
+// first run, as the layer's would be.
+describe('a foreign type layer in several fonts', () => {
+  it('takes bold and italic from its first run\'s face', async () => {
+    const layer = {
+      name: 'HEY YOU',
+      left: 100,
+      top: 100,
+      right: 300,
+      bottom: 160,
+      text: {
+        text: 'HEY YOU',
+        style: { fontSize: 24 },
+        styleRuns: [
+          { length: 4, style: { font: { name: 'SomeFace-BoldItalic' }, fontSize: 24 } },
+          { length: 3, style: { font: { name: 'Other-Regular' }, fontSize: 24 } },
+        ],
+      },
+    };
+    const back = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [layer] }] });
+    expect(back.boxes[0].style).toMatchObject({ size: 24, bold: true, italic: true });
   });
 });
