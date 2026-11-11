@@ -329,7 +329,7 @@ describe('general use', () => {
     await fireEvent.input(view.getByLabelText('Project name'), { target: { value: 'Mine' } });
     await pick(view);
     await create(view);
-    expect(mock.createProject).toHaveBeenCalledWith('Mine', { layout: 'longstrip', ocrLanguage: 'ko' });
+    expect(mock.createProject).toHaveBeenCalledWith('Mine', { layout: 'longstrip', ocrLanguage: 'ko', exportScale: 1 });
   });
 
   it('lets the first document of an empty project set its layout, and no later one', async () => {

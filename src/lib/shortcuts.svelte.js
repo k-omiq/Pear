@@ -457,6 +457,7 @@ export function defaultCombo(id) {
 // (plan 2.1), so its placing keys stay with it.
 const COMICS_ONLY = new Set([
   'box.fitBalloon', 'box.retypeset', 'bubble.centre', 'bubble.outlineToBox', 'box.approveOutline', 'bubble.approvePage',
+  'mask.clipToBubble',
   'view.regions', 'review.next',
   'detect.page', 'detect.chapter', 'jobs.retry', 'ocr.draw',
   'settings.detection', 'settings.guide',

@@ -91,6 +91,18 @@ describe('an entry from before Layer Styles', () => {
     const cur = { t: 'delete', pageId: 1, box: { id: 'a', style: normalizeStyle(defaultStyle()) } };
     expect(migrateEntry(cur)).toBe(cur);
   });
+
+  it('reaches the boxes a deleted line took with it', () => {
+    const old = { ...defaultStyle(), shadows: [{ x: 2, y: 2, blur: 4 }] };
+    for (const k of ['innerShadows', 'strokeEffects', 'blendMode', 'bevel', 'blending']) delete old[k];
+    const line = { n: 2, en: 'x' };
+    const out = migrateEntry({ t: 'lineDelete', pageId: 1, line, takenBoxes: [{ index: 0, box: { id: 'a', lineN: 2, style: old } }] });
+    expect(out.takenBoxes[0].index).toBe(0);
+    expect(out.takenBoxes[0].box.style.innerShadows).toEqual([]);
+    expect(out.takenBoxes[0].box.style.bevel).toBeTruthy();
+    const cur = { t: 'lineDelete', pageId: 1, line, takenBoxes: [{ index: 0, box: { id: 'a', lineN: 2, style: normalizeStyle(defaultStyle()) } }] };
+    expect(migrateEntry(cur)).toBe(cur);
+  });
 });
 
 describe('an entry with special effects of an older shape', () => {
