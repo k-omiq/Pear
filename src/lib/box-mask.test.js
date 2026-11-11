@@ -227,6 +227,21 @@ describe('the old mask, in the style, comes to the page', () => {
     expect(ring.length).toBeLessThanOrEqual(8192 + 4096);
   });
 
+  it('a stray huge polygon is cut at a capped count: the densify step grows past the cap', () => {
+    const pts = [];
+    for (let r = 0; r <= 2; r++) for (let c = 0; c <= 2; c++) pts.push([c * 100 + 20, r * 60 + 10]);
+    // 4e6 px around: cut every 4 px, a million points.
+    const huge = [[-1e6, -1e6], [0, -1e6], [0, 1e6], [-1e6, 1e6]];
+    const box = boxOf({ style: { warp: { on: true, cols: 2, rows: 2, pts }, clip: clip('include', [{ kind: 'poly', pts: huge }]) } });
+    const cut = maskFromClip(box).shapes[0].pts;
+    expect(cut.length).toBeGreaterThan(8000);
+    expect(cut.length).toBeLessThanOrEqual(8192 + huge.length);
+    // A page-size one is still cut every 4 px, at most.
+    const page = [[0, 0], [800, 0], [800, 1200], [0, 1200]];
+    const small = boxOf({ style: { warp: { on: true, cols: 2, rows: 2, pts }, clip: clip('include', [{ kind: 'poly', pts: page }]) } });
+    expect(maskFromClip(small).shapes[0].pts.length).toBe(1000);
+  });
+
   it('a style with no mask has none, and an empty switched-on one keeps its switch', () => {
     expect(maskFromClip(boxOf())).toBe(null);
     expect(maskFromClip(boxOf({ style: { clip: { on: true, mode: 'exclude', shapes: [] } } }))).toEqual({ on: true, shapes: [] });
