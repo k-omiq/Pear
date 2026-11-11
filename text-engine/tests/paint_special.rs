@@ -731,3 +731,42 @@ fn pieces_land_the_same_whatever_the_box_height() {
         }
     }
 }
+
+/// The holes and the pieces' outlines are kept under the frame less its
+/// whole pixels of move: the letters' job moved by whole pixels (as a
+/// shadow's pass at its offset is) reads them back, roughened too, and
+/// paints what a fresh paint there does.
+#[test]
+fn broken_pieces_are_read_back_at_a_whole_pixel_offset() {
+    use mt_text::paint::{paint_job, Roughen};
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    for rough in [false, true] {
+        for motion in [Motion::Apart, Motion::Fall] {
+            let make = |dx: f64, dy: f64| {
+                let mut b = boxed(font, breaking(0.75, motion, (0.5, 0.5), 1.0));
+                b.request.transform = Affine::translate(dx, dy);
+                b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+                if rough {
+                    b.request.job.roughen = Some(Roughen { amount: 2.0, detail: 0.05, seed: 3.0, origin: mt_text::paint::Pt::new(0.0, 0.0), grit: 0.0 });
+                }
+                b.request
+            };
+            let mut job = |r: Request| paint_job(&mut engine, &r).unwrap().expect("something painted");
+            kept::set_ceiling(kept::KEPT_BYTES);
+            kept::clear();
+            job(make(0.0, 0.0));
+            let h = kept::hits();
+            job(make(0.0, 0.0));
+            let again = kept::hits() - h;
+            let h = kept::hits();
+            let moved = job(make(7.0, -3.0));
+            let offset = kept::hits() - h;
+            assert!(offset >= again && again > 0, "{rough} {motion:?}: again {again}, at an offset {offset}");
+            kept::set_ceiling(0);
+            let fresh = job(make(7.0, -3.0));
+            assert!(moved == fresh, "{rough} {motion:?}: read back at an offset is the fresh paint");
+        }
+    }
+    kept::set_ceiling(kept::KEPT_BYTES);
+}
