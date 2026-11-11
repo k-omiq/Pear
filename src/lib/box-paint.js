@@ -18,7 +18,7 @@
 // so under the browser engine the paint is kept and not shown.
 
 import { normalizeMaskShape, revOf, pageToBox, boxToPage, shapesInBoxFrame, shapesOnPage, shiftedShapes, bendShape, bendStrokeRuns, MASK_SHAPES_MAX } from './box-mask.js';
-import { fadeShapeSize } from './box-fade.js';
+import { boundsSize } from './box-fade.js';
 import { meshMap, unwarpWith, oneStep } from './warp.js';
 import { styleReach } from './paint-reach.js';
 
@@ -200,7 +200,7 @@ export function paintMarksForEngine(paint) {
   return (paint?.marks ?? []).map((m) => ({
     ...m,
     opacity: m.opacity / 100,
-    soft: Math.round((m.soft / 100) * fadeShapeSize(m)) / 4,
+    soft: Math.round((m.soft / 100) * boundsSize(m)) / 4,
   }));
 }
 

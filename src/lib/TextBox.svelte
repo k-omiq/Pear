@@ -20,6 +20,7 @@
     refitBox,
     autoFitBoxTo,
     fitGeom,
+    followGeom,
     moveGeom,
     moveBoxTo,
     focusPage,
@@ -90,7 +91,7 @@
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
   import { drawTool, drawSettings, clearDrawTool, DRAW_TARGETS } from './box-draw-tool.svelte.js';
-  import { maskActive, frameKey, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
+  import { maskActive, frameKey, maskInBoxFrame, maskOnPage, translateMask, pinnedToPage, modelShapesOnPage, modelShapesFromPage, MASK_SHAPES_MAX } from './box-mask.js';
   import { fadeActive } from './box-fade.js';
   import { paintKey, marksFromPage, marksOnPage, moveMarks, paintRoomFor } from './box-paint.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
@@ -870,7 +871,8 @@
   let moveLive = $state(false);
   const paintedBox = () => {
     let b = editing && composeText != null ? { ...box, text: composeText, runs: liveRuns } : box;
-    if (!maskOn && !fadeOn) return b;
+    // Shapes that move with the box need no hold (`pinnedToPage`).
+    if ((!maskOn && !fadeOn) || !pinnedToPage(box)) return b;
     if (grainHold?.key !== engineRest) grainHold = { key: engineRest, x: box.x, y: box.y };
     const dx = grainHold.x - box.x;
     const dy = grainHold.y - box.y;
@@ -1849,7 +1851,7 @@
         ? clamp(oy + (ev.clientY - sy) / zz, stripBounds.min, stripBounds.max)
         : clamp(oy + (ev.clientY - sy) / zz, -box.h + 20, dims.h - 20);
       moveBoxTo(box, x, y, pg);
-      if (maskOn || fadeOn) moveLive = true;
+      if ((maskOn || fadeOn) && pinnedToPage(box)) moveLive = true;
       markUnsaved();
     };
 
@@ -1904,6 +1906,8 @@
     // The rectangle and the size, and the solver's record: a width drag locks the
     // width and re-sets the text in it, and the undo has to take both back.
     const o = fitGeom(box);
+    // A mask or fade that moves with the box, which a scale scales.
+    const followStart = dir === 'rot' ? null : followGeom(box);
     const isRot = dir === 'rot';
     const hasInk = !!(box.style?.ink?.on && box.style?.ink?.strokes?.length);
     const inkBefore = hasInk ? cloneStyle(box.style).ink : null;
@@ -2028,7 +2032,7 @@
       const styleAfter = cloneStyle(box.style);
       if (JSON.stringify(styleAfter) !== JSON.stringify(styleStart)) {
         markUnsaved();
-        record({ t: 'style', pageId, boxId: box.id, before: styleStart, after: styleAfter, geomBefore: o, geomAfter: fitGeom(box) });
+        record({ t: 'style', pageId, boxId: box.id, before: styleStart, after: styleAfter, geomBefore: { ...o, ...followStart }, geomAfter: { ...fitGeom(box), ...followGeom(box) } });
         return;
       }
       const before = { ...o };
@@ -2224,7 +2228,8 @@
   // The shown target's shapes in page px, one for each stored shape and in
   // its order.
   const shownList = $derived.by(() => {
-    if (shownTarget !== 'paint') return box[shownTarget]?.shapes;
+    // A mask or fade that moves with the box is shown in page px too.
+    if (shownTarget !== 'paint') return modelShapesOnPage(box, box[shownTarget]);
     const marks = box.style.paint?.marks;
     return drawShown && marks ? marksOnPage(box, marks) : marks;
   });
@@ -2291,7 +2296,7 @@
   function commitMaskShapes(next) {
     const target = drawTarget ?? 'mask';
     const before = plainOf(box[target]);
-    box[target] = { ...(box[target] ?? { on: true }), shapes: next };
+    box[target] = { ...(box[target] ?? { on: true }), shapes: modelShapesFromPage(box, box[target], next) };
     markUnsaved();
     // The fade changes no verdict.
     if (target === 'mask') reviewBox(box, pg);
@@ -2348,9 +2353,8 @@
   // its order: a bubble link as its inset outline (null with no outline).
   const pageShapes = $derived.by(() => {
     if (shownTarget === 'paint') return shownList ?? [];
-    const m = box[shownTarget];
-    if (!m) return [];
-    return m.shapes.map((sh) => (sh.kind === 'bubble' ? (maskOnPage({ ...box, mask: { shapes: [sh] } })[0] ?? null) : sh));
+    if (!box[shownTarget]) return [];
+    return (shownList ?? []).map((sh) => (sh.kind === 'bubble' ? (maskOnPage({ ...box, mask: { shapes: [sh] } })[0] ?? null) : sh));
   });
 
   // The topmost shape under a page point, or null. Searched from the last

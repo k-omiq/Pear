@@ -83,6 +83,8 @@ const setFields = (b, from) => {
     else if (k === 'autoHeight') b.style.autoHeight = from.autoHeight;
     else if (k === 'ink') b.style.ink = structuredClone(from.ink);
     else if (k === 'fit') b.fit = from.fit ? structuredClone(from.fit) : null;
+    // A mask or a fade that moves with the box, scaled with it (`fitGeom`).
+    else if (k === 'mask' || k === 'fade') b[k] = from[k] ? structuredClone(from[k]) : null;
     else if (k === 'outline') {
       if (from.outline) b.outline = structuredClone(from.outline);
       else delete b.outline;
