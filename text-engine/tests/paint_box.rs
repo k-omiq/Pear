@@ -3540,10 +3540,13 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
     let mut e = Engine::new();
     let font = load(&mut e);
     mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
-    // `soft`: the fade's softness. Soft 6 at scale 2 is rastered on a grid
-    // of 6-pixel cells, so a move by a whole pixel that is not a whole cell
-    // must raster it again.
-    let shaped = |turn: bool, soft: f64, scale: f64| {
+    // `softs`: the fade's softnesses, a shape each. Soft 6 at scale 2 is
+    // rastered on a grid of 6-pixel cells, so a move by a whole pixel that
+    // is not a whole cell must raster it again. Soft 2.2 and 3.1 at scale 2
+    // are cells of 2 and 3: the grid is their least common multiple, 6, so
+    // a move by 3 device pixels (1.5 page px), a whole cell of the larger,
+    // must raster again too.
+    let shaped = |turn: bool, softs: &[f64], scale: f64| {
         let mut b = plain(font);
         b.clip = Some(Clip::all(
             ClipMode::Exclude,
@@ -3553,13 +3556,17 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
                 ClipShape::Stroke { size: 5.5, pts: vec![Pt::new(70.0, 60.0), Pt::new(105.0, 98.0)] },
             ],
         ));
+        let polys = [
+            vec![Pt::new(30.0, 88.0), Pt::new(120.0, 84.0), Pt::new(120.0, 120.0), Pt::new(30.0, 120.0)],
+            vec![Pt::new(140.0, 20.0), Pt::new(190.0, 24.0), Pt::new(186.0, 70.0), Pt::new(138.0, 66.0)],
+        ];
         b.fade = Some(Fade {
             origin: Pt::new(0.0, 0.0),
-            shapes: vec![FadePart {
-                strength: 0.7,
-                soft,
-                shape: ClipShape::Polygon(vec![Pt::new(30.0, 88.0), Pt::new(120.0, 84.0), Pt::new(120.0, 120.0), Pt::new(30.0, 120.0)]),
-            }],
+            shapes: softs
+                .iter()
+                .zip(polys)
+                .map(|(&soft, poly)| FadePart { strength: 0.7, soft, shape: ClipShape::Polygon(poly) })
+                .collect(),
         });
         if scale != 1.0 {
             b.request.transform = Affine([scale, 0.0, 0.0, scale, 0.0, 0.0]);
@@ -3575,11 +3582,12 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
         }
         b
     };
-    for (turn, soft, scale) in [(false, 1.5f64, 1.0f64), (true, 1.5, 1.0), (false, 6.0, 2.0)] {
+    let cases: [(bool, &[f64], f64); 4] = [(false, &[1.5], 1.0), (true, &[1.5], 1.0), (false, &[6.0], 2.0), (false, &[2.2, 3.1], 2.0)];
+    for (turn, soft, scale) in cases {
         let keys = |b: &BoxRequest| BoxKeys {
-            job: Hasher::new("t job").debug(&b.request.job).debug(&(turn, soft.to_bits(), scale.to_bits())).finish().unwrap(),
-            premask: Hasher::new("t premask").debug(&(turn, soft.to_bits(), scale.to_bits())).finish(),
-            cover: Hasher::new("t cover").debug(&b.clip).debug(&b.fade).debug(&(turn, soft.to_bits(), scale.to_bits())).finish(),
+            job: Hasher::new("t job").debug(&b.request.job).debug(&(turn, soft, scale.to_bits())).finish().unwrap(),
+            premask: Hasher::new("t premask").debug(&(turn, soft, scale.to_bits())).finish(),
+            cover: Hasher::new("t cover").debug(&b.clip).debug(&b.fade).debug(&(turn, soft, scale.to_bits())).finish(),
         };
         let k = keys(&shaped(turn, soft, scale));
         mt_text::paint::kept::clear();
@@ -3593,15 +3601,15 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
         // Then the rest paint of each way a move ends: a drag let go, a
         // nudge, a typed X and Y, a nudge from there and a move by a whole
         // fade cell (6 device pixels at soft 6, scale 2), a move past the
-        // kept window.
-        for (sx, sy) in [(3.25, -1.5), (1.0, 0.0), (-2.75, 0.5), (7.0, 3.0), (8.0, 3.0), (11.0, 3.0), (900.5, -700.25), (0.0, 0.0)] {
+        // kept window; and from the nudge, 1.5 then 3 page px on.
+        for (sx, sy) in [(3.25, -1.5), (1.0, 0.0), (2.5, 0.0), (4.0, 0.0), (-2.75, 0.5), (7.0, 3.0), (8.0, 3.0), (11.0, 3.0), (900.5, -700.25), (0.0, 0.0)] {
             let mut rest = shaped(turn, soft, scale);
             rest.pin_shift = Pt::new(sx, sy);
             let read = paint_box_kept(&mut e, &mut rest, k).unwrap();
             let mut cold = shaped(turn, soft, scale);
             cold.pin_shift = Pt::new(sx, sy);
             let fresh = paint_box(&mut e, &mut cold).unwrap();
-            assert_eq!(read, fresh, "turn {turn}, soft {soft}, scale {scale}, ({sx}, {sy})");
+            assert_eq!(read, fresh, "turn {turn}, soft {soft:?}, scale {scale}, ({sx}, {sy})");
         }
     }
 }
