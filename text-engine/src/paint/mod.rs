@@ -1358,11 +1358,18 @@ fn break_off<'a>(
         budget::check()?;
     }
     // The holes: taken out of the letters; with the cuts alone, laid among
-    // the cuts; with the letters uncut, nothing.
+    // the cuts, less what each piece covers where it lies (a box stroke
+    // goes round a piece there, over a hole too); with the letters uncut,
+    // nothing.
     let mut out = body;
     match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip))) {
         (Cuts::Made, Some(h)) => erase_by(&mut out, h),
-        (Cuts::Alone, Some(h)) => out = over(out, &h.opaque()?)?,
+        (Cuts::Alone, Some(h)) => {
+            out = over(out, &h.opaque()?)?;
+            for c in geom.pieces.iter().flatten().filter_map(|p| p.cover.within(clip)) {
+                erase_by(&mut out, c);
+            }
+        }
         _ => {}
     }
     // The pieces over it, in one raster as big as all of them.

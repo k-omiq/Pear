@@ -716,6 +716,18 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             }),
         ));
     }
+    // Apart under a wide box stroke cut through: a piece that lands over a
+    // hole keeps its stroke there.
+    rows.push((
+        "special_break_apart_box_stroke_cut_through",
+        Box::new(move |b| {
+            let sp = special(b);
+            sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            sp.break_off = Some(BreakOff { share: 0.3, motion: Motion::Apart });
+            sp.cut_strokes = true;
+            b.effects = vec![stroke(12.0, Position::Outside, Paint::Color(BLUE))];
+        }),
+    ));
     // A soft fade at scale 2, on its page-anchored grid of cells, and a
     // soft paint mark over the letters.
     rows.push((
