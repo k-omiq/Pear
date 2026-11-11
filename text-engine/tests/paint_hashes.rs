@@ -38,8 +38,8 @@ use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
-    paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
-    Crack, Fade, FadePart, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
+    paint_box, paint_box_kept, Affine, BoxKeys, Align, Band, BoxRequest, Clip, ClipMode, ClipShape, Effects,
+    BreakOff, Crack, Fade, FadePart, Motion, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -677,6 +677,29 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
         Box::new(move |b| {
             special(b).crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
             b.effects = vec![stroke(4.0, Position::Center, Paint::Color(BLACK))];
+        }),
+    ));
+    // A crack's pieces broken off, each motion, under a band stroke and a
+    // shadow; and falling under a box stroke.
+    for (name, motion) in [("special_break_apart", Motion::Apart), ("special_break_fall", Motion::Fall)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                sp.break_off = Some(BreakOff { share: 0.6, motion });
+                b.shadows = vec![shadow(5.0, 6.0)];
+                b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+            }),
+        ));
+    }
+    rows.push((
+        "special_break_fall_box_stroke",
+        Box::new(move |b| {
+            let sp = special(b);
+            sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            sp.break_off = Some(BreakOff { share: 0.6, motion: Motion::Fall });
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
         }),
     ));
     // A soft fade at scale 2, on its page-anchored grid of cells, and a
