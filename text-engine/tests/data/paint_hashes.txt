@@ -51,3 +51,7 @@ curve_as_one_line 2aa88712eb3e38de
 curve_letter_by_letter 9aa8f871d3e13c08
 runs_two_faces 00f762654d14138f
 runs_two_faces_stroke_shadow 6289f18314f85a6a
+special_crack_falls 91671ea939336e02
+special_splash_stroke 0d465f68b69fee6c
+special_scratches 611a09849ef2685e
+special_lightning 18731e5679237a31

@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 13
+export const WIRE_VERSION = 14
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -381,6 +381,7 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
   // 64 (v12): Wobble, each letter moved up or down and turned by numbers of
   // its own (`wobble`, below).
   // 128 (v13): lines set in several faces (`runFaces`, at the job's end).
+  // 256 (v14): special effects (`special`, after the faces).
   const negative = job.negative ?? null
   const wobble = job.wobble ?? null
   u32(
@@ -391,7 +392,8 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
       (negative ? 16 : 0) |
       (job.crisp ? 32 : 0) |
       (wobble ? 64 : 0) |
-      (job.faces?.length ? 128 : 0),
+      (job.faces?.length ? 128 : 0) |
+      (job.special ? 256 : 0),
   )
   // An alignment the canvas does not know leaves its `textAlign` at "start".
   u32(ALIGN[job.align] ?? 0)
@@ -465,6 +467,58 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
   }
   writeTiles(sent)
   runFaces(job, faces)
+  special(job.special)
+}
+
+// (v14) The special effects (special.js in the app), after the faces and
+// only for a job that has one, which says so with flag 256: the box in job
+// space, then each effect's numbers. The engine makes the shapes from them
+// (special.rs), so only these cross.
+const SPECIAL = ['crack', 'lightning', 'splash', 'scratches']
+function special(sp) {
+  if (!sp) return
+  const r = sp.rect
+  if (!(r && [r.x, r.y, r.w, r.h].every(Number.isFinite) && r.w > 0 && r.h > 0)) throw new Error('mt-text: special effects need the box (rect x, y, w, h)')
+  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0)
+  if (!kinds) throw new Error('mt-text: a special block needs an effect')
+  f64(r.x)
+  f64(r.y)
+  f64(r.w)
+  f64(r.h)
+  u32(kinds)
+  const share = (v, name, lo = 0, hi = 1) => {
+    if (!(v >= lo && v <= hi)) throw new Error(`mt-text: special ${name} is ${lo} to ${hi}, not ${v}`)
+    f64(v)
+  }
+  const seed = (v) => {
+    if (!(Number.isInteger(v) && v >= 0 && v <= 0xffffffff)) throw new Error(`mt-text: special seed is a u32, not ${v}`)
+    u32(v)
+  }
+  const angle = (v) => {
+    if (!(Number.isFinite(v) && Math.abs(v) <= 64)) throw new Error(`mt-text: special angle is radians within 64, not ${v}`)
+    f64(v)
+  }
+  if (sp.crack) {
+    share(sp.crack.amount, 'crack amount')
+    share(sp.crack.size, 'crack size', 0.01, 4)
+    seed(sp.crack.seed)
+  }
+  if (sp.lightning) {
+    share(sp.lightning.amount, 'lightning amount')
+    angle(sp.lightning.angle)
+    rgba(sp.lightning.color)
+    seed(sp.lightning.seed)
+  }
+  if (sp.splash) {
+    share(sp.splash.amount, 'splash amount')
+    share(sp.splash.size, 'splash size', 0.01, 4)
+    seed(sp.splash.seed)
+  }
+  if (sp.scratches) {
+    share(sp.scratches.amount, 'scratches amount')
+    angle(sp.scratches.angle)
+    seed(sp.scratches.seed)
+  }
 }
 
 // (v13) The faces of a straight job's lines set in several, at the very end

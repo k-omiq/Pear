@@ -37,6 +37,7 @@ mod scene;
 mod screen;
 mod shade;
 mod shape;
+pub mod special;
 mod stroke;
 mod sweep;
 mod warp;
@@ -70,6 +71,7 @@ pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
 pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, shape_spans, Placed, ShapedRun};
+pub use special::{Crack, Lightning, Scratches, Special, Splash, MAX_SPECIAL_SIZE, SPLASH_REACH};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
@@ -594,6 +596,30 @@ impl Glyphs {
 
     pub(crate) fn len(&self) -> usize {
         self.items.len()
+    }
+
+    /// The box of the outlines of the glyphs `range`, job space, as they
+    /// stand before any bend.
+    fn bounds_of(&self, range: core::ops::Range<usize>) -> Option<(f64, f64, f64, f64)> {
+        self.items[range]
+            .iter()
+            .filter_map(|g| g.polys.bounds())
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+    }
+
+    /// `polys` (job space) as one more glyph, joined to the letters: the
+    /// bands go round it and the fill fills it. No bold, no drip, a pen of 1.
+    fn add_shape(&mut self, polys: &Polys) -> Result<(), Error> {
+        budget::push(
+            &mut self.items,
+            GlyphPolys {
+                polys: polys.map(&Affine::IDENTITY),
+                bold: 0.0,
+                smear: None,
+                drip: None,
+                pen: 1.0,
+            },
+        )
     }
 
     /// One glyph's contours moved to `side`: by the bold pen and `extra`
@@ -1122,6 +1148,30 @@ fn paint_letters(
     if all.is_empty() {
         return Ok(None);
     }
+    // The special effects that shape the letters (wire v14), drawn over the
+    // letters' ink as one, so a pattern runs across the whole word. The
+    // shapes added go with the last letter, whose fill fills them; what is
+    // cut is cut from everything, last.
+    let special = match job.effects.special.filter(Special::shapes_letters) {
+        Some(sp) => {
+            let ink = (0..job.runs.len())
+                .filter(|&i| !job.runs[i].ghost)
+                .filter_map(|i| glyphs.bounds_of(runs[i].0.clone()))
+                .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
+            match ink {
+                Some(ink) => Some(special::letter_shapes(&sp, face.size, ink)?),
+                None => None,
+            }
+        }
+        None => None,
+    };
+    if let Some(sh) = &special {
+        let last = job.runs.len().checked_sub(1).filter(|&i| !job.runs[i].ghost);
+        if let (Some(i), false) = (last, sh.adds.is_empty()) {
+            glyphs.add_shape(&sh.adds)?;
+            runs[i].0.end = glyphs.len();
+        }
+    }
     // And its roughening, which is stated in the box before the mesh bends it.
     let rough = match &job.roughen {
         Some(r) => r.map()?,
@@ -1196,6 +1246,25 @@ fn paint_letters(
             transform,
             tol,
         )?;
+        let shader = Shader::new(&OPAQUE, transform, tiles);
+        if let Some(mut p) = shader.and_then(|s| plan(parts, s, 1.0)) {
+            p.erase = true;
+            budget::push(&mut planned, p)?;
+        }
+    }
+    // A special effect's cuts, out of everything: bent with the letters, so
+    // a crack stays on the letter it crosses under a mesh.
+    if let Some(sh) = special.as_ref().filter(|sh| !sh.cuts.is_empty() && !planned.is_empty()) {
+        const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
+        let cut = match (bends.is_empty(), sh.cuts.bounds()) {
+            (false, Some(b)) => match bends.cut(b, tol) {
+                Some(c) => warp::bend(&sh.cuts, |p| bends.at(p), c, tol)?.map(transform),
+                None => sh.cuts.map(transform),
+            },
+            _ => sh.cuts.map(transform),
+        };
+        let mut parts = budget::Buffer::new();
+        budget::push(&mut parts, Part::plain(cut))?;
         let shader = Shader::new(&OPAQUE, transform, tiles);
         if let Some(mut p) = shader.and_then(|s| plan(parts, s, 1.0)) {
             p.erase = true;
