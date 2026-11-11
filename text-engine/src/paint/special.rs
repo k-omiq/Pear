@@ -125,6 +125,12 @@ pub struct Special {
     pub lightning: Option<Lightning>,
     pub splash: Option<Splash>,
     pub scratches: Option<Scratches>,
+    /// What a box's own strokes do at the cuts of a crack or scratches
+    /// (wire kind 32): `false`, the first-built look, outlines each cut (the
+    /// strokes read the cut letters); `true` cuts them through as a glyph
+    /// band is (the strokes read the letters whole, the cuts are taken out
+    /// after). A glyph band is always cut through.
+    pub cut_strokes: bool,
 }
 
 impl Special {

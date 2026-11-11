@@ -615,13 +615,14 @@ impl<'a> Reader<'a> {
             return Err(Error::BadSpec);
         }
         let kinds = self.u32()?;
-        // 16 (v16): the crack's pieces break off; only with a crack.
-        if kinds & 15 == 0 || kinds > 31 || (kinds & 16 != 0 && kinds & 1 == 0) {
+        // 16 (v16): the crack's pieces break off; only with a crack. 32: a
+        // box's strokes are cut through; only with a crack or scratches.
+        if kinds & 15 == 0 || kinds > 63 || (kinds & 16 != 0 && kinds & 1 == 0) || (kinds & 32 != 0 && kinds & 9 == 0) {
             return Err(Error::BadSpec);
         }
         let share = |v: f64, lo: f64, hi: f64| if (lo..=hi).contains(&v) { Ok(v) } else { Err(Error::BadSpec) };
         let turn = |v: f64| if v.is_finite() && v.abs() <= 64.0 { Ok(v) } else { Err(Error::BadSpec) };
-        let mut sp = Special { rect, crack: None, break_off: None, lightning: None, splash: None, scratches: None };
+        let mut sp = Special { rect, crack: None, break_off: None, lightning: None, splash: None, scratches: None, cut_strokes: kinds & 32 != 0 };
         if kinds & 1 != 0 {
             let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
             let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
@@ -736,7 +737,9 @@ impl<'a> Reader<'a> {
 ///     and one-past-last UTF-16 unit of the run's text
 /// with flag 256 (v14), after the faces: the special effects. f64 x, y, w, h
 ///     (the box in job space), u32 kinds (1 crack, 2 lightning, 4 splash,
-///     8 scratches; 16 the crack's pieces break off, v16, only with 1),
+///     8 scratches; 16 the crack's pieces break off, v16, only with 1;
+///     32 a box's own strokes are cut through at the cuts, no payload, only
+///     with 1 or 8),
 ///     then for each kind set, in that order:
 ///     crack:     f64 amount (0 to 1), f64 size (a share of the size, 0.01
 ///                to 4), f64 x, y (where it gathers, shares of the ink
