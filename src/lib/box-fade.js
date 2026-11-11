@@ -11,6 +11,11 @@
 // Only the Rust engine paints a fade (box wire v20, the stage after the
 // mask): there is no canvas twin, so under the browser engine a fade is kept
 // and not shown.
+//
+// Known limit: the engine lays the fade after the box's mesh, so a warp never
+// bends it, except where the box is painted with no mesh and bent on the
+// canvas afterwards (the warp gizmo's drag frames, and a perspective corner
+// pulled past the horizon). There the fade bends with the letters. Accepted.
 
 import { normalizeMaskShape, shapesInBoxFrame, MASK_SHAPES_MAX } from './box-mask.js';
 

@@ -7,7 +7,7 @@
 use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::{
     paint_box, Affine, Align, BoxRequest, ClipShape, Effects, Fade, FadePart, Fill, Job, Pt,
-    Raster, Request, Rgba, Run,
+    Raster, Request, Rgba, Run, Shadow,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -199,4 +199,99 @@ fn a_fade_that_is_empty_paints_the_box_as_it_was() {
     )
     .unwrap();
     assert_eq!(r, plain_r);
+}
+
+/// Each pixel's alpha as a share of the plain box's, over the letters' rows,
+/// read at the box's own coordinates (`dx`, `dy` is where the box lies on the
+/// surface).
+fn shares(r: &Option<Raster>, plain_r: &Option<Raster>, dx: i32, dy: i32) -> Vec<(i32, i32, u8, u8)> {
+    let mut out = Vec::new();
+    for y in 50..106 {
+        for x in 30..220 {
+            let p = alpha(plain_r, x + dx, y + dy);
+            if p > 0 {
+                out.push((x, y, p, alpha(r, x + dx, y + dy)));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_shape_far_larger_than_the_box_fades_every_letter_evenly() {
+    // The soft blur once read past the picture's edge as nothing, so letters
+    // near the edge kept up to half their opacity under a fade that covers
+    // the whole page.
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let plain_r = paint_box(&mut e, &mut plain(font)).unwrap();
+    let huge = rect(-100_000.0, -100_000.0, 100_000.0, 100_000.0);
+    let hard = paint_box(&mut e, &mut faded(font, vec![part(0.5, 0.0, huge.clone())])).unwrap();
+    for soft in [3.0, 40.0, 400.0] {
+        let r = paint_box(&mut e, &mut faded(font, vec![part(0.5, soft, huge.clone())])).unwrap();
+        assert_eq!(r, hard, "soft {soft}");
+    }
+    // Every letter pixel at half its plain opacity.
+    for (x, y, p, a) in shares(&hard, &plain_r, 0, 0) {
+        let want = (u32::from(p) * 127 + 127) / 255;
+        assert_eq!(u32::from(a), want, "{x} {y}");
+    }
+}
+
+#[test]
+fn the_fade_on_a_letter_does_not_change_with_the_room_round_the_box() {
+    // A shadow makes the picture bigger: the box sits further in, and the
+    // surface's page corner moves out by as much. What the fade takes from a
+    // letter must not change with it.
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let shapes = || {
+        vec![
+            part(0.7, 40.0, rect(-50.0, -50.0, 110.0, 300.0)),
+            part(0.4, 6.0, rect(150.0, 20.0, 260.0, 90.0)),
+            part(1.0, 0.0, rect(185.0, 0.0, 190.0, 160.0)),
+        ]
+    };
+    let plain_r = paint_box(&mut e, &mut plain(font)).unwrap();
+    let r = paint_box(&mut e, &mut faded(font, shapes())).unwrap();
+    let base = shares(&r, &plain_r, 0, 0);
+    for (dx, dy) in [(37, 0), (0, 53), (91, 64)] {
+        let room = |mut b: BoxRequest| {
+            b.width += 2 * dx as u32;
+            b.height += 2 * dy as u32;
+            b.grain = (-dx, -dy);
+            b.request.transform = Affine::translate(f64::from(dx), f64::from(dy));
+            b
+        };
+        let pr = paint_box(&mut e, &mut room(plain(font))).unwrap();
+        let fr = paint_box(&mut e, &mut room(faded(font, shapes()))).unwrap();
+        assert_eq!(shares(&fr, &pr, dx, dy), base, "room {dx} {dy}");
+        // And with a real shadow thrown below the letters, clear of them.
+        let shadow = Shadow { y: 70.0, ..Shadow::default() };
+        let mut sp = room(plain(font));
+        sp.shadows.push(shadow);
+        let mut sf = room(faded(font, shapes()));
+        sf.shadows.push(shadow);
+        let pr = paint_box(&mut e, &mut sp).unwrap();
+        let fr = paint_box(&mut e, &mut sf).unwrap();
+        assert_eq!(shares(&fr, &pr, dx, dy), base, "shadow {dx} {dy}");
+    }
+}
+
+#[test]
+fn soft_shapes_far_apart_fade_as_each_would_alone() {
+    // Shapes of one softness whose blurs cannot meet are blurred apart, each
+    // on its own small piece; what they take is what each takes alone.
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    let a = || part(0.8, 4.0, rect(44.0, 50.0, 70.0, 110.0));
+    let b = || part(0.6, 4.0, rect(170.0, 50.0, 196.0, 110.0));
+    let both = paint_box(&mut e, &mut faded(font, vec![a(), b()])).unwrap().unwrap();
+    let ra = paint_box(&mut e, &mut faded(font, vec![a()])).unwrap().unwrap();
+    let rb = paint_box(&mut e, &mut faded(font, vec![b()])).unwrap().unwrap();
+    assert_eq!((both.x, both.y, both.width, both.height), (ra.x, ra.y, ra.width, ra.height));
+    let min: Vec<u8> = ra.data.iter().zip(&rb.data).map(|(x, y)| *x.min(y)).collect();
+    assert_eq!(both.data, min);
+    assert_ne!(both.data, ra.data);
+    assert_ne!(both.data, rb.data);
 }

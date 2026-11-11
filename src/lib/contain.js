@@ -100,7 +100,7 @@ import {
   inkBounds,
   clipShapesBounds,
 } from './text-paint.js';
-import { wobbleReach } from './paint-reach.js';
+import { placedWobbleReach } from './paint-reach.js';
 import { maskActive, maskInBoxFrame } from './box-mask.js';
 import { warpActive, affineFromTriangle } from './warp.js';
 import { warpPlan } from './warp-paint.js';
@@ -185,7 +185,10 @@ function handPlaced(cand) {
   if (curvedStyle(s)) return REVIEW_REASONS.curve;
   if (warpActive(s, cand?.w, cand?.h)) return REVIEW_REASONS.warp;
   if (inkActive(s?.ink)) return REVIEW_REASONS.ink;
-  if (maskActive(cand)) return REVIEW_REASONS.mask;
+  // Shapes drawn by hand make the box manual. A bubble link does not: it
+  // follows the outline the solver lays the box in, so Clip to bubble leaves
+  // an auto box auto.
+  if (maskActive(cand) && cand.mask.shapes.some((sh) => sh.kind !== 'bubble')) return REVIEW_REASONS.mask;
   return null;
 }
 
@@ -403,25 +406,18 @@ const unite = (r, x0, y0, x1, y1) =>
 export function boxInkRect(cand, place = placeBlock(cand)) {
   const s = place.s;
   let r = null;
-  // How far a wobble carries a letter (`wobbleReach`). On a curve each letter
-  // is turned and scaled by its own frame, so the move can point any way and
-  // is as long as the frame's larger scale makes it.
-  const wr = wobbleReach(s);
-  let wx = wr.x;
-  let wy = wr.y;
+  // How far a wobble carries a letter, as the export makes room for it.
+  const { x: wx, y: wy } = placedWobbleReach(s, place);
   if (place.isCurve) {
     const cx = cand.w / 2;
     const cy = cand.h / 2;
-    let scale = 1;
     for (const g of place.layout) {
-      scale = Math.max(scale, Math.abs(g.sx ?? 1), Math.abs(g.sy ?? 1));
       const k = glyphInk(g.ch, s, s.size);
       if (!k) continue;
       // A drip pulls the placed letter's foot straight down the box (paint/mod.rs).
       const [x0, y0, x1, y1] = turnedInk(k, g.rot, cx + g.x, cy + g.y, g.sx, g.sy, g.skew);
       r = unite(r, x0, y0, x1, y1 + (g.drip > 0 ? g.drip : 0));
     }
-    wx = wy = Math.max(wr.x, wr.y) * scale;
   } else {
     r = linesInkRect(place);
   }

@@ -136,7 +136,7 @@ const RUNS = {
 
   'bubble.centre': { when: fitted, run: () => centreTextInOutline(app.selectedId) },
   // Comics only: free text has no bubble to keep to.
-  'mask.clipToBubble': { when: () => boxSelected() && isComics(), run: () => clipToBubble(app.selectedId) },
+  'mask.clipToBubble': { when: () => boxSelected() && isComics(), run: () => clipToBubble() },
   'bubble.outlineToBox': { when: boxSelected, run: () => outlineToBox(app.selectedId) },
   'bubble.approvePage': { when: typeset, run: () => approvePageOutlines() },
 

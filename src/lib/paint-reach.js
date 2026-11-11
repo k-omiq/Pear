@@ -26,6 +26,20 @@ export function wobbleReach(style) {
   return { x: turn, y: turn + (size * Math.max(0, Number(w.amount) || 0)) / 100 };
 }
 
+// How far a wobble carries the letters of a placed block (`placeBlock`), x
+// and y: what the box's ink rectangle (contain.js) and the export footprint
+// (exporter.js) both grow by. On a curve each letter is turned and scaled by
+// its own frame, so the move can point any way and is as long as the larger
+// scale of any letter's frame makes it.
+export function placedWobbleReach(style, place) {
+  const wr = wobbleReach(style);
+  if (!place?.isCurve || (!wr.x && !wr.y)) return wr;
+  let scale = 1;
+  for (const g of place.layout ?? []) scale = Math.max(scale, Math.abs(g.sx ?? 1), Math.abs(g.sy ?? 1));
+  const m = Math.max(wr.x, wr.y) * scale;
+  return { x: m, y: m };
+}
+
 // The hand-drawn ink's reach past each edge, with the finish wrapped around it
 // (the box's outline bands and the shadows thrown from them - `drawInk`). The
 // editor's ink canvas is grown by exactly this on each side. It used to be grown

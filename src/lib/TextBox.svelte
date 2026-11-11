@@ -82,8 +82,8 @@
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
   import { drawTool, drawSettings, clearDrawTool } from './box-draw-tool.svelte.js';
-  import { maskActive, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
-  import { fadeActive, fadeInBoxFrame } from './box-fade.js';
+  import { maskActive, frameKey, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
+  import { fadeActive } from './box-fade.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
@@ -383,10 +383,9 @@
   // it does anything: what the picture's key, this image and the overlay read.
   const maskOn = $derived(maskActive(box));
   const maskFrame = $derived(maskOn ? maskInBoxFrame(box) : []);
-  // The fade's shapes as the engine lays them (box-fade.js): pinned to the
-  // page like the mask's, so they are in the picture's key beside them.
+  // Whether the fade does anything (box-fade.js): pinned to the page like
+  // the mask, so it is in the picture's key beside it.
   const fadeOn = $derived(fadeActive(box));
-  const fadeFrame = $derived(fadeOn ? fadeInBoxFrame(box) : []);
   let maskUrl = $state('');
   let maskW = $state(0); // page px the mask image spans, MASK_EXPAND included
   let maskH = $state(0);
@@ -413,13 +412,17 @@
       setMask('', 0, 0);
       return;
     }
+    // While a pictured box is dragged nothing applies this image, and its
+    // key changes every frame (the mask stays on the page): it is built
+    // again once, when the box is let go.
+    if (placeHeld && pictured) return;
     const qz = Math.min(1, Math.max(0.125, Math.round(z * 8) / 8));
     const w = Math.ceil((box.w + MASK_EXPAND * 2) / MASK_STEP) * MASK_STEP;
     const h = Math.ceil((box.h + MASK_EXPAND * 2) / MASK_STEP) * MASK_STEP;
-    const shapes = maskFrame;
-    const key = JSON.stringify([shapes, qz, w, h]);
+    const key = `${frameKey(box, box.mask)}|${qz}|${w}|${h}`;
     if (key === maskKey) return;
     maskKey = key;
+    const shapes = maskFrame;
     const cnv = document.createElement('canvas');
     cnv.width = Math.max(2, Math.round(w * qz));
     cnv.height = Math.max(2, Math.round(h * qz));
@@ -747,9 +750,11 @@
   // Everything of the picture's key but the mask and the fade, and the key
   // itself. A box with a mask or a fade on is painted again as it moves,
   // since they stay on the page while the letters slide under them: their
-  // shapes in the box's own frame (`maskFrame`, `fadeFrame`) are in the key.
+  // shapes in the box's own frame are in the picture.
   // Nothing else of it changes with a move, so the engine reads the picture
-  // before them back (its premask piece) and only lays them again.
+  // before them back (its premask piece) and only lays them again. The key
+  // holds each one's revision and what its frame depends on (`frameKey`),
+  // never the shapes themselves: a key is built on every move frame.
   const engineRest = $derived(
     engineWanted
       ? pictureOn
@@ -777,7 +782,7 @@
   );
   const engineKey = $derived(
     engineRest && engineRest !== PICTURE_OFF && (maskOn || fadeOn)
-      ? `${engineRest}${maskOn ? `|M${JSON.stringify(maskFrame)}` : ''}${fadeOn ? `|F${JSON.stringify(fadeFrame)}` : ''}`
+      ? `${engineRest}${maskOn ? `|M${frameKey(box, box.mask)}` : ''}${fadeOn ? `|F${frameKey(box, box.fade)}` : ''}`
       : engineRest,
   );
   // The key of the picture the box is to be, whichever paint makes it: the

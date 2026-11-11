@@ -5,7 +5,7 @@
 // by the box's check, since a keep shape cuts the ink the check counts. The
 // drawing gestures themselves are TextBox's; they record the same kind.
 
-import { app, page, toast, markUnsaved, reviewBox, refitBalloon } from './store.svelte.js';
+import { app, page, toast, markUnsaved, reviewBox, findBoxOutline } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
 import { isComics } from './prefs.svelte.js';
 import { normalizeMask, bubbleLink, bubbleOutline, BUBBLE_INSET_DEFAULT, BUBBLE_INSET_MAX } from './box-mask.js';
@@ -45,27 +45,50 @@ export function setBubbleInset(b, p, inset) {
   return setBoxMask(b, p, { ...b.mask, shapes: b.mask.shapes.map((sh) => (sh.kind === 'bubble' ? { ...sh, inset: v } : sh)) });
 }
 
-// Clip to bubble: the box's mask keeps the letters inside its bubble outline,
-// a live link that follows a refit, or, pressed on a box that has the link,
-// the link goes. A box with no outline has one found first (Find outline);
-// where none is found the box is left as it was. The mask is switched on with
-// the link, which is what the button asks for. Comics only. True when the box
-// changed.
-export function clipToBubble(boxId = app.selectedId, p = page()) {
+// The boxes an action on "the selection" acts on: the Bulk panel's picked
+// boxes while it is open, else the selected box.
+const pickedIds = () => (app.bulk.active && app.bulk.targets.length ? [...app.bulk.targets] : [app.selectedId]);
+
+// Clip to bubble: each box's mask keeps the letters inside its bubble
+// outline, a live link that follows a refit; or, when every box has the link
+// already, the links go. A box with no outline has the finder's set first,
+// with no typesetting again; where none is found the box is left as it was.
+// The mask is switched on with the link, which is what the button asks for.
+// Comics only. One undo step for all of it. True when anything changed.
+export function clipToBubble(ids = pickedIds(), p = page()) {
   if (!isComics()) return false;
-  const b = boxIn(p, boxId);
-  if (!b) return false;
-  const link = bubbleLink(b);
-  if (link) return setBoxMask(b, p, { ...b.mask, shapes: b.mask.shapes.filter((sh) => sh !== link) });
-  if (!bubbleOutline(b)) {
-    refitBalloon(b.id, p, { quiet: true });
-    if (!bubbleOutline(b)) {
-      toast('No bubble outline here');
-      return false;
+  const boxes = [ids].flat().map((id) => boxIn(p, id)).filter(Boolean);
+  if (!boxes.length) return false;
+  const unlink = boxes.every((b) => bubbleLink(b));
+  const items = [];
+  let missing = 0;
+  for (const b of boxes) {
+    let next;
+    if (unlink) {
+      const link = bubbleLink(b);
+      next = { ...b.mask, shapes: b.mask.shapes.filter((sh) => sh !== link) };
+    } else {
+      if (bubbleLink(b)) continue;
+      if (!bubbleOutline(b)) {
+        const found = findBoxOutline(b, p);
+        if (found) items.push(found);
+        if (!bubbleOutline(b)) {
+          missing++;
+          continue;
+        }
+      }
+      next = { on: true, shapes: [...(b.mask?.shapes ?? []), { kind: 'bubble', op: 'keep', inset: BUBBLE_INSET_DEFAULT }] };
     }
+    const before = plain(b.mask);
+    b.mask = normalizeMask(next);
+    reviewBox(b, p);
+    items.push({ t: 'mask', pageId: p.id, boxId: b.id, before, after: plain(b.mask) });
   }
-  const shapes = [...(b.mask?.shapes ?? []), { kind: 'bubble', op: 'keep', inset: BUBBLE_INSET_DEFAULT }];
-  return setBoxMask(b, p, { on: true, shapes });
+  if (missing) toast(missing === boxes.length ? 'No bubble outline here' : `No bubble outline under ${missing} of those boxes`);
+  if (!items.length) return false;
+  markUnsaved();
+  record(items.length === 1 ? items[0] : { t: 'group', pageId: p.id, items });
+  return true;
 }
 
 // The Inset slider: the link drawn live as it slides, one record when it

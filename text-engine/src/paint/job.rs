@@ -183,11 +183,14 @@ pub struct Wobble {
     pub tilt: f64,
     pub seed: u32,
     /// How many afterimages of each letter an SFX trail lays (`Run::ghost`):
-    /// not on the wire, but read from the run list when it is decoded, so a
-    /// job of the afterimages alone still knows whose copy each one is and
-    /// wobbles it as its letter. The trail lays the same number behind every
-    /// letter, in the letters' order; zero when the runs do not divide that
-    /// way, and then no afterimage wobbles.
+    /// not on the wire, but read from the run list when it is decoded, so
+    /// the box job's own pass of the afterimages alone (the trail laid under
+    /// the letters) still knows whose copy each one is and wobbles it as its
+    /// letter. The app's writer lays the same number behind every letter
+    /// that is a run, in the letters' order, copies that draw nothing for a
+    /// letter that cannot trail. Zero when the runs do not divide that way,
+    /// and for a job on the wire of afterimages alone, which the app never
+    /// writes: then no afterimage wobbles.
     pub copies: u32,
 }
 

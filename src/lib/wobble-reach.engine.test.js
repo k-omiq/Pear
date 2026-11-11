@@ -3,7 +3,8 @@ import { createCanvas } from '@napi-rs/canvas';
 import { rustEngine } from '../test/rust-engine.js';
 import { renderBoxTexture } from './exporter.js';
 import { boxCandidate, boxInkRect, placeBlock } from './contain.js';
-import { styleReach, wobbleReach } from './paint-reach.js';
+import { styleReach, wobbleReach, placedWobbleReach } from './paint-reach.js';
+import { applySfxKind } from './sfx.js';
 import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
@@ -118,5 +119,24 @@ describe('room for a wobble', () => {
     const a = boxInkRect(cand, plainScaled);
     const b = boxInkRect(cand, scaled);
     expect(a.x - b.x).toBeCloseTo(2 * most, 6);
+  });
+
+  it('the export makes room for a scaled letter\'s wobble as the hull does: one reach for both', () => {
+    // An SFX letter drawn twice its size by hand: its wobble goes twice as far.
+    const make = (wobble) => {
+      const b = boxOf('I', { size: 100, ...(wobble ? { wobble: WOBBLE } : {}) }, 100, 100);
+      if (!applySfxKind(b.style, 'slash')) throw new Error('the engine has no "slash" type');
+      b.style.sfx.glyphs = { '0:0': { dx: 0, dy: 0, rot: 0, s: 2 } };
+      return b;
+    };
+    const on = make(true);
+    const place = placeBlock(boxCandidate(on, on.text));
+    expect(place.isCurve).toBe(true);
+    const r = placedWobbleReach(on.style, place);
+    const flat = wobbleReach(on.style);
+    expect(r.x).toBeGreaterThan(1.5 * Math.max(flat.x, flat.y));
+    const off = make(false);
+    const grown = renderBoxTexture(on, pageOf(on), new Map(), 1).ox - renderBoxTexture(off, pageOf(off), new Map(), 1).ox;
+    expect(grown).toBeGreaterThanOrEqual(Math.floor(r.x));
   });
 });

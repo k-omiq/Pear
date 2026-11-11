@@ -261,7 +261,14 @@ pub struct FadePart {
 /// surface (wire v20). Shapes of one softness are rastered at their
 /// strength and combined by the most, so two dabs at 40 % that overlap stay
 /// at 40 %; each softness is blurred once; and the softnesses are combined
-/// by the most again. The surface is multiplied by what is left.
+/// by the most again. The surface is multiplied by what is left. Softnesses
+/// within a tenth of each other share one blur.
+///
+/// Known limit: the fade is cut from the surface after the mesh, so the warp
+/// never bends it, but in the two cases where the box is painted with no mesh
+/// and bent on the canvas afterwards (the warp gizmo's drag frames, and a
+/// perspective corner pulled past the horizon) the fade bends with the
+/// letters. Both are accepted.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fade {
     /// The box's corner in job space: the shapes are stated from it.
@@ -1365,179 +1372,223 @@ fn shapes_mask<'a>(
     Ok(Some((finish(layers, bx, rasterizer)?, bx)))
 }
 
-/// One softness of the fade, rastered and blurred: its alpha at `1 / k`
-/// of the surface's resolution, and the surface pixels it reaches.
-struct FadeGroup {
-    low: Surface,
-    k: i32,
-    reach: IBox,
+/// A fade shape's softness in surface pixels, snapped to steps of a tenth
+/// (1.1 to the power of a whole number), so shapes of near sizes share one
+/// blur; under half a pixel it is a hard edge. The power is taken by
+/// multiplying, so the engine's builds agree on it to the bit.
+fn fade_sigma(soft: f64, scale: f64) -> f64 {
+    let s = soft * scale;
+    if !(s >= 0.5) || !s.is_finite() {
+        return 0.0;
+    }
+    let i = (s.ln() / 1.1f64.ln()).round() as i32;
+    let mut v = 1.0;
+    for _ in 0..i.unsigned_abs().min(400) {
+        v *= 1.1;
+    }
+    if i < 0 {
+        1.0 / v
+    } else {
+        v
+    }
 }
 
-/// The fade's softness groups over the surface (see [`Fade`]). `scale`
-/// carries a softness from job units to pixels, as it carries the whole-box
-/// blur.
+/// The surface multiplied by one less the fade (see [`Fade`]): at each pixel
+/// with ink, the most any softness takes there. `scale` carries a softness
+/// from job units to pixels, as it carries the whole-box blur; `grain` is the
+/// surface's corner anchored to the page.
 ///
-/// A soft group is rastered and blurred at a fraction of the surface's
-/// resolution, chosen so its blur is still two pixels or more there, and is
-/// read back by bilinear sampling ([`lay_fade`]): the blur takes out every
-/// detail the smaller raster loses, and a soft edge across a whole box costs
-/// a few thousand pixels instead of the surface twice over.
-fn fade_groups(
+/// A softness is rastered and blurred at a fraction of the surface's
+/// resolution, chosen so its blur is still two pixels or more there: the blur
+/// takes out every detail the smaller raster loses. That raster's grid is
+/// anchored to the page, not to the surface, and reaches past the surface by
+/// the blur's own reach, so what a shape does to a letter does not depend on
+/// how much room the surface takes round the box (a shadow's, say) or on
+/// where its edge falls. Each softness is read back by bilinear sampling at
+/// the pixels with ink only, folded into one map by the most, and let go
+/// before the next is made.
+fn lay_fade(
+    s: &mut Surface,
     fade: &Fade,
     request: &Request,
-    surface: IBox,
     scale: f64,
+    grain: (i32, i32),
     rasterizer: &dyn Rasterizer,
-) -> Result<budget::Buffer<FadeGroup>, Error> {
-    let mut out = budget::Buffer::new();
+) -> Result<(), Error> {
+    let (w, h) = (s.width as i32, s.height as i32);
+    let (gx, gy) = grain;
     // The softnesses, each once, in the order they first come.
-    let mut softs: Vec<u64> = Vec::new();
+    let mut sigmas: Vec<u64> = Vec::new();
     for p in &fade.shapes {
-        if positive(p.strength) && !softs.contains(&p.soft.to_bits()) {
-            softs.push(p.soft.to_bits());
+        let key = fade_sigma(p.soft, scale).to_bits();
+        if positive(p.strength) && !sigmas.contains(&key) {
+            sigmas.push(key);
         }
     }
-    for soft in softs {
-        let sigma = f64::from_bits(soft) * scale;
-        // Pixels of the surface to one of the group's raster.
+    let mut map: Option<budget::Buffer<u8>> = None;
+    let mut cover: Option<IBox> = None;
+    for key in sigmas {
+        let sigma = f64::from_bits(key);
+        // Surface pixels to one of the small raster's.
         let k = (sigma / 2.0).floor().clamp(1.0, 16.0) as i32;
         let kf = f64::from(k);
+        let pad = blur::blur_reach(sigma / kf) + 1;
+        // The small raster's corner, in page-anchored cells of `k` pixels.
+        let (lx, ly) = (gx.div_euclid(k) - pad, gy.div_euclid(k) - pad);
+        let lw = ((gx + w - 1).div_euclid(k) - lx + 1 + pad) as usize;
+        let lh = ((gy + h - 1).div_euclid(k) - ly + 1 + pad) as usize;
         let low_box = IBox {
             x0: 0,
             y0: 0,
-            x1: (surface.x1 + k - 1) / k,
-            y1: (surface.y1 + k - 1) / k,
+            x1: lw as i32,
+            y1: lh as i32,
         };
-        let transform = Affine::scale(1.0 / kf, 1.0 / kf).after(&request.transform);
-        let mut low = Surface::new(low_box.width(), low_box.height())?;
-        let lw = low_box.width();
-        let mut any = false;
+        let transform = Affine::translate(-f64::from(lx), -f64::from(ly)).after(
+            &Affine::scale(1.0 / kf, 1.0 / kf)
+                .after(&Affine::translate(f64::from(gx), f64::from(gy)).after(&request.transform)),
+        );
+        // Each shape's coverage on the small grid.
+        let mut covs = budget::Buffer::new();
         for p in fade
             .shapes
             .iter()
-            .filter(|p| p.soft.to_bits() == soft && positive(p.strength))
+            .filter(|p| fade_sigma(p.soft, scale).to_bits() == key && positive(p.strength))
         {
-            let Some((cov, bx)) = shapes_mask(
+            if let Some((cov, bx)) = shapes_mask(
                 fade.origin,
                 core::iter::once(&p.shape),
                 &transform,
                 low_box,
                 rasterizer,
-            )?
-            else {
+            )? {
+                budget::push(&mut covs, (cov, bx, p.strength))?;
+            }
+            budget::check()?;
+        }
+        // Shapes far enough apart that their blurs cannot meet are rastered,
+        // blurred and read back apart: each piece is then only its shapes'
+        // box grown by the blur's reach, so a few small dabs across the box
+        // cost a few small pieces, not the surface. Apart, what each blur
+        // leaves is nothing where another's is anything, so the most of them
+        // is what one blur of them all would leave.
+        let grown = |bx: &IBox| IBox {
+            x0: (bx.x0 - pad).max(0),
+            y0: (bx.y0 - pad).max(0),
+            x1: (bx.x1 + pad).min(low_box.x1),
+            y1: (bx.y1 + pad).min(low_box.y1),
+        };
+        let mut clusters: Vec<(IBox, Vec<usize>)> = Vec::new();
+        for (i, (_, bx, _)) in covs.iter().enumerate() {
+            let mut g = grown(bx);
+            let mut members = vec![i];
+            // Join every cluster this one meets, until none is left to join.
+            loop {
+                let Some(j) = clusters.iter().position(|(c, _)| !c.intersect(&g).is_empty()) else {
+                    break;
+                };
+                let (c, m) = clusters.swap_remove(j);
+                g = g.union(&c);
+                members.extend(m);
+            }
+            clusters.push((g, members));
+        }
+        let (lx0, ly0) = (lx, ly);
+        for (g, members) in clusters {
+            let gw = g.width();
+            let mut low = Surface::new(gw, g.height())?;
+            for &i in members.iter() {
+                let (cov, bx, strength) = &covs[i];
+                // Laid by the most: the raster is white, premultiplied, its
+                // alpha the strongest shape over each pixel.
+                let bw = bx.width();
+                for y in bx.y0..bx.y1 {
+                    let from = (y - bx.y0) as usize * bw * 4;
+                    let to = ((y - g.y0) as usize * gw + (bx.x0 - g.x0) as usize) * 4;
+                    for i in 0..bw {
+                        let a = (f64::from(cov[from + i * 4 + 3]) * strength).round() as u8;
+                        let q = &mut low.data[to + i * 4..to + i * 4 + 4];
+                        if a > q[3] {
+                            q.fill(a);
+                        }
+                    }
+                }
+            }
+            blur::gaussian(&mut low, sigma / kf)?;
+            let Some(ink) = low.ink() else {
                 continue;
             };
-            any = true;
-            // Laid by the most: the group is white, premultiplied, its alpha
-            // the strongest shape over each pixel.
-            let bw = bx.width();
-            for y in bx.y0..bx.y1 {
-                let from = (y - bx.y0) as usize * bw * 4;
-                let to = (y as usize * lw + bx.x0 as usize) * 4;
-                for i in 0..bw {
-                    let a = (f64::from(cov[from + i * 4 + 3]) * p.strength).round() as u8;
-                    let q = &mut low.data[to + i * 4..to + i * 4 + 4];
-                    if a > q[3] {
-                        q.fill(a);
+            // The small raster's corner on the page-anchored grid.
+            let (lx, ly) = (lx0 + g.x0, ly0 + g.y0);
+            // The surface pixels this softness reaches, a cell wider each side
+            // for the sampling.
+            let reach = IBox {
+                x0: ((lx + ink.x0 - 1) * k - gx).max(0),
+                y0: ((ly + ink.y0 - 1) * k - gy).max(0),
+                x1: ((lx + ink.x1 + 1) * k - gx).min(w),
+                y1: ((ly + ink.y1 + 1) * k - gy).min(h),
+            };
+            if reach.is_empty() {
+                continue;
+            }
+            let m = match map.as_mut() {
+                Some(m) => m,
+                None => map.insert(budget::filled(s.width * s.height, 0u8)?),
+            };
+            cover = Some(cover.map_or(reach, |c| c.union(&reach)));
+            // Per surface column: the small raster's column left of the sample
+            // and the weight of the one right of it, in 256ths.
+            let mut cols = budget::Buffer::new();
+            for x in reach.x0..reach.x1 {
+                let sx = (f64::from(x + gx) + 0.5) / kf - 0.5 - f64::from(lx);
+                let x0 = sx.floor();
+                budget::push(&mut cols, (x0 as isize, ((sx - x0) * 256.0).round() as u32))?;
+            }
+            let (lw, lh) = (gw as isize, g.height() as isize);
+            // Outside the small raster the blur has nothing: it reaches past
+            // every shape by the blur's reach.
+            let at = |r: isize, c: isize| {
+                if r < 0 || c < 0 || r >= lh || c >= lw {
+                    0
+                } else {
+                    u32::from(low.data[(r * lw + c) as usize * 4 + 3])
+                }
+            };
+            for y in reach.y0..reach.y1 {
+                let sy = (f64::from(y + gy) + 0.5) / kf - 0.5 - f64::from(ly);
+                let r0 = sy.floor() as isize;
+                let fy = ((sy - sy.floor()) * 256.0).round() as u32;
+                let row = y as usize * s.width;
+                for x in reach.x0..reach.x1 {
+                    if s.data[(row + x as usize) * 4 + 3] == 0 {
+                        continue;
+                    }
+                    let (c0, fx) = cols[(x - reach.x0) as usize];
+                    let top = at(r0, c0) * (256 - fx) + at(r0, c0 + 1) * fx;
+                    let bottom = at(r0 + 1, c0) * (256 - fx) + at(r0 + 1, c0 + 1) * fx;
+                    let v = ((top * (256 - fy) + bottom * fy + 32768) >> 16).min(255) as u8;
+                    let q = &mut m[row + x as usize];
+                    if v > *q {
+                        *q = v;
                     }
                 }
             }
             budget::check()?;
         }
-        if !any {
-            continue;
-        }
-        blur::gaussian(&mut low, sigma / kf)?;
-        let Some(ink) = low.ink() else {
-            continue;
-        };
-        // The surface pixels the group's ink reaches, a pixel of the small
-        // raster wider each side for the sampling.
-        let reach = IBox {
-            x0: ((ink.x0 - 1) * k).max(0),
-            y0: ((ink.y0 - 1) * k).max(0),
-            x1: ((ink.x1 + 1) * k).min(surface.x1),
-            y1: ((ink.y1 + 1) * k).min(surface.y1),
-        };
-        if !reach.is_empty() {
-            budget::push(&mut out, FadeGroup { low, k, reach })?;
-        }
     }
-    Ok(out)
-}
-
-/// The surface multiplied by one less the fade: at each pixel with ink, the
-/// most any group takes there, each read from its small raster by bilinear
-/// sampling in eighths of 256.
-fn lay_fade(s: &mut Surface, groups: &[FadeGroup]) -> Result<(), Error> {
-    let Some(cover) = groups.iter().map(|g| g.reach).reduce(|a, b| a.union(&b)) else {
+    let (Some(m), Some(cover)) = (map, cover) else {
         return Ok(());
     };
-    let w = s.width;
-    // Per group, per surface column of its reach: the small raster's column
-    // to the left of the sample and the weight of the one right of it.
-    let mut cols: Vec<Vec<(u32, u32)>> = Vec::with_capacity(groups.len());
-    for g in groups {
-        let lw = g.low.width as i32;
-        let kf = f64::from(g.k);
-        let mut c = Vec::with_capacity(g.reach.width());
-        for x in g.reach.x0..g.reach.x1 {
-            let sx = (f64::from(x) + 0.5) / kf - 0.5;
-            let x0 = sx.floor();
-            let fx = ((sx - x0) * 256.0).round() as u32;
-            c.push((x0.clamp(0.0, f64::from(lw - 1)) as u32, if (x0 as i32) < 0 || x0 as i32 >= lw - 1 { 0 } else { fx }));
-        }
-        cols.push(c);
-        budget::check()?;
-    }
-    // Per group, for the row in hand: its two rows of the small raster, the
-    // lower one's weight, and whether the group reaches the row at all.
-    let mut rows = vec![(0usize, 0usize, 0u32, false); groups.len()];
-    for y in cover.y0..cover.y1 {
-        let row = &mut s.data[y as usize * w * 4..(y as usize + 1) * w * 4];
-        for (i, g) in groups.iter().enumerate() {
-            rows[i].3 = false;
-            if y < g.reach.y0 || y >= g.reach.y1 {
+    for y in cover.y0 as usize..cover.y1 as usize {
+        for x in cover.x0 as usize..cover.x1 as usize {
+            let f = u32::from(m[y * s.width + x]);
+            if f == 0 {
                 continue;
             }
-            let lh = g.low.height as i32;
-            let sy = (f64::from(y) + 0.5) / f64::from(g.k) - 0.5;
-            let y0 = sy.floor();
-            let fy = if (y0 as i32) < 0 || y0 as i32 >= lh - 1 { 0 } else { ((sy - y0) * 256.0).round() as u32 };
-            let r0 = y0.clamp(0.0, f64::from(lh - 1)) as usize;
-            let r1 = (r0 + 1).min(lh as usize - 1);
-            rows[i] = (r0, r1, fy, true);
-        }
-        for x in cover.x0..cover.x1 {
-            let p = (x as usize) * 4;
-            if row[p + 3] == 0 {
-                continue;
-            }
-            let mut m = 0u32;
-            for (i, g) in groups.iter().enumerate() {
-                let (r0, r1, fy, on) = rows[i];
-                if !on || x < g.reach.x0 || x >= g.reach.x1 {
-                    continue;
-                }
-                let (c0, fx) = cols[i][(x - g.reach.x0) as usize];
-                let lw = g.low.width;
-                let c1 = (c0 as usize + 1).min(lw - 1);
-                let d = &g.low.data;
-                let a = |r: usize, c: usize| u32::from(d[(r * lw + c) * 4 + 3]);
-                let top = a(r0, c0 as usize) * (256 - fx) + a(r0, c1) * fx;
-                let bottom = a(r1, c0 as usize) * (256 - fx) + a(r1, c1) * fx;
-                let v = (top * (256 - fy) + bottom * fy + 32768) >> 16;
-                m = m.max(v);
-            }
-            if m == 0 {
-                continue;
-            }
-            let k = 255 - m.min(255);
-            for c in &mut row[p..p + 4] {
+            let k = 255 - f;
+            for c in &mut s.data[(y * s.width + x) * 4..(y * s.width + x) * 4 + 4] {
                 *c = ((u32::from(*c) * k + 127) / 255) as u8;
             }
         }
-        budget::check()?;
     }
     Ok(())
 }
@@ -3008,8 +3059,7 @@ fn paint(
     // Then the fade, from the same surface: shadows and glows fade with the
     // letters, as they are laid on them by now.
     if let Some(fade) = &request.fade {
-        let groups = fade_groups(fade, &request.request, surface, scale, rasterizer)?;
-        lay_fade(&mut s, &groups)?;
+        lay_fade(&mut s, fade, &request.request, scale, request.grain, rasterizer)?;
     }
 
     // A blur and a smear carry ink past where it was laid; a mask only
