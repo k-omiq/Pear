@@ -64,7 +64,19 @@ describe('normalizeRuns', () => {
   it('drops junk, and keeps a run whatever face the box is in', () => {
     expect(normalizeRuns([null, { start: 'x', end: 3 }], 'abcdef')).toBe(null);
     expect(normalizeRuns([run(0, 3, I)], 'abcdef')).toEqual([run(0, 3, I)]);
-    expect(normalizeRuns([{ start: 1, end: 3, bold: 1 }], 'abcdef')).toEqual([{ start: 1, end: 3, bold: false, italic: false }]);
+    // An attribute that is not a yes or a no is not named; a run naming
+    // nothing goes.
+    expect(normalizeRuns([{ start: 1, end: 3, bold: 1 }], 'abcdef')).toBe(null);
+    expect(normalizeRuns([{ start: 1, end: 3, bold: 1, italic: true }], 'abcdef')).toEqual([{ start: 1, end: 3, italic: true }]);
+  });
+
+  it('a run naming only part of a face follows the box for the rest', () => {
+    const runs = normalizeRuns([{ start: 0, end: 2, bold: true }, { start: 2, end: 4, bold: true, italic: false }], 'abcdef');
+    // Two runs, not one: the second holds its italic off, the first follows the box.
+    expect(runs).toEqual([{ start: 0, end: 2, bold: true }, { start: 2, end: 4, bold: true, italic: false }]);
+    expect(faceAt(runs, 0, { bold: false, italic: true })).toEqual({ bold: true, italic: true });
+    expect(faceAt(runs, 2, { bold: false, italic: true })).toEqual({ bold: true, italic: false });
+    expect(runsKey(runs)).toBe('0-2b,2-4b!i');
   });
 });
 

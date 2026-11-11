@@ -2201,7 +2201,9 @@ describe('placement chooses the size (FIT-1)', () => {
 
   // DET-4: a face the page has asked for and not got measures as the fallback.
   it('places as before, unsolved, while the face the text is set in is still loading', () => {
-    const load = vi.fn(() => Promise.resolve([]));
+    // Still on its way: a load that finished would settle the face for good
+    // (browserFaceReady), for every case after this one too.
+    const load = vi.fn(() => new Promise(() => {}));
     vi.stubGlobal('document', { fonts: { check: () => false, load } });
     try {
       const b = placeAt(32);
@@ -2220,7 +2222,11 @@ describe('placement chooses the size (FIT-1)', () => {
     let ready = false;
     beforeEach(() => {
       ready = false;
-      vi.stubGlobal('document', { fonts: { check: () => ready, load: () => Promise.resolve([]) } });
+      // A face on its way: `check` says when it is here, and its load never
+      // finishes meanwhile. A load that finishes settles the face for good
+      // (browserFaceReady), as a face that matched nothing is then the
+      // browser's own stand-in.
+      vi.stubGlobal('document', { fonts: { check: () => ready, load: () => new Promise(() => {}) } });
     });
     afterEach(() => vi.unstubAllGlobals());
     const geomOf = (b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size });
@@ -2251,7 +2257,7 @@ describe('placement chooses the size (FIT-1)', () => {
       // The plain wrap reads the browser's own breaks off a DOM node; this
       // environment has none to lay out, so every paragraph is one line.
       vi.stubGlobal('document', {
-        fonts: { check: () => ready, load: () => Promise.resolve([]) },
+        fonts: { check: () => ready, load: () => new Promise(() => {}) },
         body: { appendChild: () => {} },
         createElement: () => ({ style: {}, remove: () => {} }),
         createRange: () => ({ setStart: () => {}, setEnd: () => {}, getClientRects: () => [] }),

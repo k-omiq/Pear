@@ -11,12 +11,17 @@
 // box's (any family the app has, the user's own included); without it they
 // are in the box's family, in the run's weight and slant.
 //
+// Each of `bold`, `italic` and `font` is optional: one a run does not name is
+// the box's, so a word made bold in a regular box still turns italic with the
+// box. A command leaves a run naming only what differs from the box's face
+// when it is given (`pruneRuns`); what a run names it keeps after that, so a
+// word un-bolded inside a bold box stays regular when the box changes.
+//
 // in UTF-16 offsets of the string they sit beside (`box.runs` beside
-// `box.text`, `line.runs` beside `line.en`). A run names the face its letters
-// are set in outright, not a change to the box's face, so a letter outside
-// every run is in the box's own face and a letter inside one is in that run's.
-// The list is sorted, no two runs overlap or touch with the same face, and none
-// is empty. No runs at all is no list: the field is absent, which is what every
+// `box.text`, `line.runs` beside `line.en`). A letter outside every run is in
+// the box's own face, and a letter inside one is in the box's face with what
+// the run names put over it. The list is sorted, no two runs overlap or touch
+// naming the same, and none is empty or names nothing. No runs at all is no list: the field is absent, which is what every
 // text saved before runs existed already is, so such a document loads and saves
 // byte for byte as it did.
 //
@@ -28,12 +33,20 @@ const HOLDER_KEY = 'runs';
 const isBool = (v) => v === true || v === false;
 // A family name as a run may hold one: a name, not too long to be one.
 const isFamily = (v) => typeof v === 'string' && v.trim() !== '' && v.length <= 256;
-const sameFace = (a, b) => !!a.bold === !!b.bold && !!a.italic === !!b.italic && (a.font ?? null) === (b.font ?? null);
+// Two runs naming the same: an attribute one names and the other does not is
+// a difference, since the other one follows the box.
+const sameFace = (a, b) => a.bold === b.bold && a.italic === b.italic && (a.font ?? null) === (b.font ?? null);
 
-// The face a run names, as plain data: its weight and slant, and its family
-// when it has one of its own. Every copy of a run's face goes through here, so
-// none drops the family.
-export const faceOf = (r) => (r.font ? { bold: !!r.bold, italic: !!r.italic, font: r.font } : { bold: !!r.bold, italic: !!r.italic });
+// What a run names, as plain data: each of bold, italic and family only when
+// it names it. Every copy of a run goes through here, so none drops one or
+// makes one up.
+const attrsOf = (r) => ({ ...(isBool(r.bold) ? { bold: r.bold } : null), ...(isBool(r.italic) ? { italic: r.italic } : null), ...(isFamily(r.font) ? { font: r.font } : null) });
+const namesAny = (r) => isBool(r.bold) || isBool(r.italic) || isFamily(r.font);
+
+// The face a run's letters are set in, in a box whose own face is `face`:
+// what the run names, the box's for the rest. The family only when the run
+// names one (none is the box's).
+export const faceOf = (r, face) => ({ bold: isBool(r.bold) ? r.bold : !!face?.bold, italic: isBool(r.italic) ? r.italic : !!face?.italic, ...(isFamily(r.font) ? { font: r.font } : null) });
 
 // Whether offset `k` of `t` falls between the two halves of a surrogate pair,
 // where no edge may sit: the engine cannot cut a letter in two, and refuses
@@ -46,9 +59,9 @@ const snap = (t, k) => (splitsPair(t, k) ? k - 1 : k);
 // an edit, so anything that is not a run is dropped rather than trusted: offsets
 // are cut to the text's length and moved off the middle of a letter written as
 // two UTF-16 units, a run with no letters goes, overlapping runs are cut so the
-// later one wins its letters, and runs that touch with the same face become
-// one. A run names a face outright, so it is never compared with the box's own:
-// a bold run in a box made bold stays when the box is made regular again.
+// later one wins its letters, a run naming nothing goes, and runs that touch
+// naming the same become one. Nothing is compared with the box's own face here
+// (that is `pruneRuns`, for a command), so a document loads as it was saved.
 export function normalizeRuns(runs, text) {
   if (!Array.isArray(runs) || !runs.length) return null;
   const t = typeof text === 'string' ? text : '';
@@ -59,7 +72,8 @@ export function normalizeRuns(runs, text) {
     const s = snap(t, Math.max(0, Math.min(len, Math.trunc(Number(r.start)))));
     const e = snap(t, Math.max(0, Math.min(len, Math.trunc(Number(r.end)))));
     if (!(e > s)) continue;
-    list.push({ start: s, end: e, bold: isBool(r.bold) ? r.bold : false, italic: isBool(r.italic) ? r.italic : false, ...(isFamily(r.font) ? { font: r.font } : {}) });
+    if (!namesAny(r)) continue;
+    list.push({ start: s, end: e, ...attrsOf(r) });
   }
   if (!list.length) return null;
   let out = list;
@@ -75,7 +89,7 @@ export function normalizeRuns(runs, text) {
       const e = edges[i];
       let top = null;
       for (const r of list) if (r.start <= s && r.end >= e) top = r;
-      if (top) out.push({ start: s, end: e, ...faceOf(top) });
+      if (top) out.push({ start: s, end: e, ...attrsOf(top) });
     }
   }
   const merged = [];
@@ -92,7 +106,7 @@ export function faceAt(runs, offset, face) {
   if (runs) {
     for (const r of runs) {
       if (r.start > offset) break;
-      if (offset < r.end) return faceOf(r);
+      if (offset < r.end) return faceOf(r, face);
     }
   }
   return { bold: !!face?.bold, italic: !!face?.italic };
@@ -109,7 +123,7 @@ export function faceSpans(runs, len, face) {
     if (r.start >= len) break;
     if (r.start > at) out.push({ start: at, end: r.start, ...own });
     const end = Math.min(len, r.end);
-    out.push({ start: r.start, end, ...faceOf(r) });
+    out.push({ start: r.start, end, ...faceOf(r, face) });
     at = end;
   }
   if (at < len || !out.length) out.push({ start: at, end: len, ...own });
@@ -194,6 +208,22 @@ export function patchRuns(runs, text, a, b, patch, face) {
       return font ? { ...out, font } : out;
     });
   return normalizeRuns([...(runs ?? []), ...changed], text);
+}
+
+// Runs left naming only what differs from the box's face `face` (bold,
+// italic, font) as it is now: what equals it is dropped, so the letters follow
+// the box again, and a run left naming nothing goes. For a command, when it is
+// given - never on save, load or typing - so bold put on and taken off again
+// leaves no run, and a word un-bolded in a bold box keeps its `bold: false`.
+export function pruneRuns(runs, text, face) {
+  const out = (runs ?? []).map((r) => {
+    const k = { start: r.start, end: r.end, ...attrsOf(r) };
+    if (k.bold === !!face?.bold) delete k.bold;
+    if (k.italic === !!face?.italic) delete k.italic;
+    if (k.font && k.font === face?.font) delete k.font;
+    return k;
+  });
+  return normalizeRuns(out, text);
 }
 
 // Runs with every one taken off `[a, b)`: its letters back in the box's face.
@@ -299,7 +329,7 @@ export function sliceRuns(runs, start, end) {
   for (const r of runs) {
     const s = Math.max(start, r.start);
     const e = Math.min(end, r.end);
-    if (e > s) out.push({ start: s - start, end: e - start, ...faceOf(r) });
+    if (e > s) out.push({ start: s - start, end: e - start, ...attrsOf(r) });
   }
   return out.length ? out : null;
 }
@@ -341,13 +371,15 @@ export function shiftRuns(runs, before, after, span) {
       s = r.start <= a ? r.start : r.start >= b ? r.start + delta : a + ins;
       e = r.end <= a ? r.end : r.end >= b ? r.end + delta : a;
     }
-    if (e > s) out.push({ start: s, end: e, ...faceOf(r) });
+    if (e > s) out.push({ start: s, end: e, ...attrsOf(r) });
   }
   return normalizeRuns(out, now);
 }
 
 // Two run lists the same, for a caller deciding whether anything changed.
-export const runsKey = (runs) => (runs?.length ? runs.map((r) => `${r.start}-${r.end}${r.bold ? 'b' : ''}${r.italic ? 'i' : ''}${r.font ? `@${r.font}` : ''}`).join(',') : '');
+// An attribute named false is not one left to the box: `!b` against nothing.
+const named = (v, k) => (v === true ? k : v === false ? `!${k}` : '');
+export const runsKey = (runs) => (runs?.length ? runs.map((r) => `${r.start}-${r.end}${named(r.bold, 'b')}${named(r.italic, 'i')}${r.font ? `@${r.font}` : ''}`).join(',') : '');
 
 // THE writer of a text that runs index. `holder[key] = v`, with `holder.runs`
 // brought along: shifted from what the text was (`from`, default the holder's
@@ -375,7 +407,7 @@ export function putText(holder, key, v, opts = {}) {
 }
 
 // `runs` for a record or a copy: plain data, or null for none.
-export const copyRuns = (runs) => (runs?.length ? runs.map((r) => ({ start: r.start, end: r.end, ...faceOf(r) })) : null);
+export const copyRuns = (runs) => (runs?.length ? runs.map((r) => ({ start: r.start, end: r.end, ...attrsOf(r) })) : null);
 
 // The families runs set letters in, besides the box's: what a chapter's
 // fonts must hold for them (the package, the wait for fonts before an export).
