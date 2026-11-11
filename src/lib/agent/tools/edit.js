@@ -613,7 +613,7 @@ function writeDo(d, matches) {
             b.style.warp = { ...b.style.warp, on: false, pts: [] };
           } else {
             const { cols, rows, pts } = warpPresetPts(d.preset, d.amount, b.w, b.h);
-            b.style.warp = { on: true, cols, rows, pts };
+            b.style.warp = { on: true, cols, rows, pts, w: b.w, h: b.h };
           }
         } else {
           const ln = b.lineN != null ? lineByN(p, b.lineN) : null;
