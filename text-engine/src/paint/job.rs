@@ -407,7 +407,7 @@ pub const MAX_RUN_FACES: usize = 16;
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 16;
+pub const WIRE_VERSION: u32 = 17;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -615,7 +615,7 @@ impl<'a> Reader<'a> {
             return Err(Error::BadSpec);
         }
         let kinds = self.u32()?;
-        // 16 (v16): the crack's pieces break off; only with a crack. 32: a
+        // 16 (v16): the crack's pieces break off; only with a crack. 32 (v17): a
         // box's strokes are cut through; only with a crack or scratches.
         if kinds & 15 == 0 || kinds > 63 || (kinds & 16 != 0 && kinds & 1 == 0) || (kinds & 32 != 0 && kinds & 9 == 0) {
             return Err(Error::BadSpec);
@@ -738,8 +738,8 @@ impl<'a> Reader<'a> {
 /// with flag 256 (v14), after the faces: the special effects. f64 x, y, w, h
 ///     (the box in job space), u32 kinds (1 crack, 2 lightning, 4 splash,
 ///     8 scratches; 16 the crack's pieces break off, v16, only with 1;
-///     32 a box's own strokes are cut through at the cuts, no payload, only
-///     with 1 or 8),
+///     32 a box's own strokes are cut through at the cuts, v17, no
+///     payload, only with 1 or 8),
 ///     then for each kind set, in that order:
 ///     crack:     f64 amount (0 to 1), f64 size (a share of the size, 0.01
 ///                to 4), f64 x, y (where it gathers, shares of the ink

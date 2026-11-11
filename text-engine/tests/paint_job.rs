@@ -1748,7 +1748,7 @@ fn a_runs_scale_and_skew_are_read_and_their_range_is_checked() {
     let mut old = good.clone();
     old[4] = 9;
     assert_eq!(decode(&old).err(), Some(Error::BadSpec));
-    assert_eq!(WIRE_VERSION, 16);
+    assert_eq!(WIRE_VERSION, 17);
 }
 
 /// `wire` with Wobble on (flag 64, v12): its amount, tilt and seed go after

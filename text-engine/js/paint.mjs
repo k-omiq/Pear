@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 16
+export const WIRE_VERSION = 17
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -484,7 +484,7 @@ function special(sp) {
   // 16 (v16): the crack's pieces break off, its share and motion after the
   // crack's own numbers. A crack without it writes what v15 wrote.
   const breaks = sp.crack?.breakOff ? 16 : 0
-  // 32: a box's own strokes are cut through at the cuts (special.js
+  // 32 (v17): a box's own strokes are cut through at the cuts (special.js
   // `outline`); no payload. Without it a box stroke outlines each cut.
   const through = sp.cutStrokes ? 32 : 0
   if (through && !sp.crack && !sp.scratches) throw new Error('mt-text: strokes cut through need a crack or scratches')
