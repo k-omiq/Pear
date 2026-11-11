@@ -560,18 +560,52 @@ function strokeThroughMesh(sh, mesh, map) {
 // the bend, an ellipse as the polygon of its ring, a brush's points the same
 // and its width scaled by how much the map widens a line at its middle
 // (`widthScale`). Whatever else the shape carries goes with it.
+//
+// `at` may answer null for a point it cannot carry (`unwarpWith` where the
+// mesh does not reach): that point is dropped, and a shape left with too few
+// points to draw is null. The width is read at the point nearest the middle
+// that it carries.
+//
+// Once a stroke is enough for its width: a mark is stored on the box's
+// surface and the mesh bends it with the letters, so along a perspective it
+// narrows and widens as they do. The factor only sets the width the user
+// drew at the stroke's middle; a width per point would need the engine to
+// take one (its stroke has a single size), or one stroke cut into many
+// marks, which a pick, a move and an undo would then see as many.
 export function bendShape(sh, at) {
+  const carry = (pts) => {
+    const out = [];
+    for (const p of pts) {
+      const q = at(p);
+      if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) out.push(q);
+    }
+    return out;
+  };
   if (sh.kind === 'stroke') {
     const pts = densify(sh.pts, false);
-    const mid = pts[pts.length >> 1] ?? sh.pts[0];
-    const k = mid ? widthScale({ at: (x, y) => at([x, y]) }, mid, null) : 1;
-    return { ...sh, size: sh.size * k, pts: pts.map(at) };
+    const moved = carry(pts);
+    if (!moved.length) return null;
+    const safe = { at: (x, y) => at([x, y]) ?? [NaN, NaN] };
+    let k = NaN;
+    const mid = pts.length >> 1;
+    for (let d = 0; d <= mid + 1 && !Number.isFinite(k); d++) {
+      for (const i of [mid - d, mid + d]) {
+        if (i < 0 || i >= pts.length || Number.isFinite(k)) continue;
+        const v = widthScale(safe, pts[i], null);
+        if (Number.isFinite(v) && v > 0) k = v;
+      }
+    }
+    return { ...sh, size: sh.size * (Number.isFinite(k) ? k : 1), pts: moved };
   }
   if (sh.kind === 'ellipse') {
     const { cx: _cx, cy: _cy, rx: _rx, ry: _ry, ...rest } = sh;
-    return { ...rest, kind: 'poly', pts: densify(ellipseRing(sh), true).map(at) };
+    const pts = carry(densify(ellipseRing(sh), true));
+    return pts.length >= 3 ? { ...rest, kind: 'poly', pts } : null;
   }
-  if (sh.kind === 'poly') return { ...sh, pts: densify(sh.pts, true).map(at) };
+  if (sh.kind === 'poly') {
+    const pts = carry(densify(sh.pts, true));
+    return pts.length >= 3 ? { ...sh, pts } : null;
+  }
   return sh;
 }
 

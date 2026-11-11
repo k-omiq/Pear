@@ -276,6 +276,26 @@ describe('unwarpPoint', () => {
     expect(y).toBeCloseTo(100, 4);
   });
 
+  it('undoes a four-handle perspective in closed form, and nothing past its vanishing line', () => {
+    // Top wide, foot narrow: the sides meet at (50, 125), and the vanishing
+    // line is y = 125.
+    const narrow = [[0, 0], [100, 0], [40, 100], [60, 100]];
+    for (const [x, y] of [[50, 50], [45, 99], [10, 5], [50, 124]]) {
+      const [ux, uy] = unwarpPoint(narrow, 1, 1, W, H, x, y);
+      const [bx, by] = warpPoint(narrow, 1, 1, W, H, ux, uy);
+      expect(bx).toBeCloseTo(x, 9);
+      expect(by).toBeCloseTo(y, 9);
+    }
+    expect(unwarpPoint(narrow, 1, 1, W, H, 50, 200)).toBe(null);
+    expect(unwarpPoint(narrow, 1, 1, W, H, 0, 130)).toBe(null);
+  });
+
+  it('drops a point the mesh does not reach: never the closest point it found', () => {
+    // A grid flattened onto one line: nothing off the line is reached.
+    const flat = identityMesh(2, 2, W, H).map(([x]) => [x, 50]);
+    expect(unwarpPoint(flat, 2, 2, W, H, 50, 10)).toBe(null);
+  });
+
   it('undoes a one-cell parallelogram (the affine map)', () => {
     const shear = [[0, 0], [100, 0], [30, 100], [130, 100]];
     roundTrip(shear, 1, 1, W, H, [[65, 50], [0, 0], [200, -40]]);

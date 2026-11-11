@@ -88,22 +88,35 @@ function meshOf(box) {
   return w?.on && Array.isArray(w.pts) ? meshMap(w.pts, w.cols, w.rows, box.w, box.h) : null;
 }
 
-// Shapes drawn on the page (page px), as marks in the paint's frame, one for
-// each and in their order.
+// Shapes drawn on the page (page px), as marks in the paint's frame, in
+// their order. Through a mesh, a point the mesh does not carry anywhere
+// (`unwarpWith`: past a perspective's vanishing line, past a fold) is dropped,
+// and a shape left with nothing to draw is left out.
 export function marksFromPage(box, shapes) {
   const m = meshOf(box);
   if (!m) return shapesInBoxFrame(box, shapes);
   const at = (p) => unwarpWith(m, box.w, box.h, ...pageToBox(box, p));
-  return shapes.map((sh) => bendShape(sh, at));
+  return shapes.map((sh) => bendShape(sh, at)).filter(Boolean);
 }
 
 // The marks on the page as the box stands, one for each and in their order:
-// what the tool shows and picks from.
+// what the tool shows and picks from. Kept with the mark list until it, the
+// mesh or where the box stands changes: the tool asks whenever the box does,
+// and a bent mark is cut into 4 px steps and carried point by point. The list
+// is shared; nobody may change it.
+const onPage = new WeakMap();
 export function marksOnPage(box, marks) {
+  const s = box.style;
+  const w = s?.warp;
+  const mesh = w?.on && Array.isArray(w.pts) ? `${w.cols}x${w.rows}:${w.pts.flat().join(',')}` : '';
+  const key = `${box.x},${box.y},${box.w},${box.h},${Number(s?.rotation) || 0},${s?.flipH ? 1 : 0}${s?.flipV ? 1 : 0}|${mesh}`;
+  const hit = onPage.get(marks);
+  if (hit?.key === key) return hit.out;
   const m = meshOf(box);
-  if (!m) return shapesOnPage(box, marks);
-  const at = (p) => boxToPage(box, m.at(p[0], p[1]));
-  return marks.map((sh) => bendShape(sh, at));
+  // The forward map carries every point: one shape for each mark.
+  const out = m ? marks.map((sh) => bendShape(sh, (p) => boxToPage(box, m.at(p[0], p[1])))) : shapesOnPage(box, marks);
+  onPage.set(marks, { key, out });
+  return out;
 }
 
 // The marks with mark `idx` (every mark for null) moved (dx, dy) page px as
@@ -122,7 +135,8 @@ export function moveMarks(box, marks, idx, dx, dy) {
     const [x, y] = boxToPage(box, m.at(p[0], p[1]));
     return unwarpWith(m, box.w, box.h, ...pageToBox(box, [x + dx, y + dy]));
   };
-  return marks.map((mk, i) => (pick(i) ? bendShape(mk, at) : mk));
+  // A mark moved where the mesh does not reach stays where it was.
+  return marks.map((mk, i) => (pick(i) ? (bendShape(mk, at) ?? mk) : mk));
 }
 
 // Whether the paint lays any colour: on, with a mark that is not an eraser.

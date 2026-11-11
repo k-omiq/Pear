@@ -51,6 +51,40 @@ describe('a mark lands under the pointer', () => {
   });
 });
 
+describe('a warped box, where the mesh does not reach', () => {
+  // Top wide, foot narrow: page points past the vanishing line come from no
+  // point of the box's plane.
+  const NARROW = { on: true, cols: 1, rows: 1, pts: [[0, 0], [200, 0], [80, 120], [120, 120]] };
+  it('drops the points it cannot carry, and a mark left with none', () => {
+    const box = boxOf({ style: { warp: NARROW } });
+    // The sides meet at box (100, 150): page (200, 230) and below is past it.
+    expect(marksFromPage(box, [{ kind: 'ellipse', cx: 200, cy: 400, rx: 10, ry: 10, color: '#ff0000', opacity: 100, soft: 0 }])).toEqual([]);
+    const [m] = marksFromPage(box, [stroke([[190, 120], [200, 140], [200, 400]])]);
+    // The points past the line are gone; the rest land under the pointer.
+    for (const p of m.pts) expect(boxToPage(box, warpPoint(NARROW.pts, 1, 1, 200, 120, p[0], p[1]))[1]).toBeLessThan(230);
+    near(boxToPage(box, warpPoint(NARROW.pts, 1, 1, 200, 120, ...m.pts[0])), [190, 120]);
+  });
+
+  it('a mark moved past the line stays where it was', () => {
+    const box = boxOf({ style: { warp: NARROW } });
+    const [m] = marksFromPage(box, [{ kind: 'ellipse', cx: 200, cy: 130, rx: 5, ry: 5, color: '#ff0000', opacity: 100, soft: 0 }]);
+    const [moved] = moveMarks(box, [m], 0, 0, 400);
+    expect(moved).toBe(m);
+  });
+
+  it('shows the marks from one carry until the marks, the mesh or the box change', () => {
+    const box = boxOf({ style: { warp: BENT } });
+    const marks = marksFromPage(box, [stroke([[150, 100], [200, 120]])]);
+    const a = marksOnPage(box, marks);
+    expect(marksOnPage(box, marks)).toBe(a);
+    expect(marksOnPage({ ...box, x: 101 }, marks)).not.toBe(a);
+    const b = marksOnPage(box, marks);
+    const pts = BENT.pts.map((p, i) => (i === 4 ? [121, 75] : p));
+    expect(marksOnPage({ ...box, style: style({ warp: { ...BENT, pts } }) }, marks)).not.toBe(b);
+    expect(marksOnPage(box, [...marks])).not.toBe(marksOnPage(box, marks));
+  });
+});
+
 describe('a gesture carries back only its own mark', () => {
   const ELLIPSE = { kind: 'ellipse', cx: 50, cy: 40, rx: 10, ry: 5, color: '#00ff00', opacity: 100, soft: 0 };
 
