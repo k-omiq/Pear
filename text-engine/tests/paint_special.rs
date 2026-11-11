@@ -6,7 +6,7 @@
 use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::effects::{Effect, Paint, Position, Stroke};
 use mt_text::paint::kept;
-use mt_text::paint::special::{letter_shapes, lightning_marks};
+use mt_text::paint::special::{letter_shapes, lightning_marks, BreakOff, Motion, BREAK_DROP, BREAK_SIDE};
 use mt_text::paint::{
     paint_box, Affine, Align, Band, BoxRequest, Crack, Effects, Fill, Job, Lightning, Raster, Request, Rgba, Run, Scratches,
     Special, Splash,
@@ -84,7 +84,7 @@ fn tight(f: impl FnOnce(&mut Special)) -> Option<Special> {
 }
 
 fn only(f: impl FnOnce(&mut Special)) -> Option<Special> {
-    let mut sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: None, lightning: None, splash: None, scratches: None };
+    let mut sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: None, break_off: None, lightning: None, splash: None, scratches: None };
     f(&mut sp);
     Some(sp)
 }
@@ -286,4 +286,103 @@ fn a_crack_cuts_a_box_stroke_through_as_it_cuts_a_band() {
     let either = band.len() + stroke.len() - both;
     assert!(band.len() > 200, "the crack cuts the band: {}", band.len());
     assert!(both as f64 > 0.9 * either as f64, "band {} stroke {} both {both}", band.len(), stroke.len());
+}
+
+fn breaking(share: f64, motion: Motion, at: (f64, f64), spread: f64) -> Option<Special> {
+    tight(|s| {
+        s.crack = Some(Crack { amount: 0.8, size: 1.0, at, spread, seed: 3 });
+        s.break_off = Some(BreakOff { share, motion });
+    })
+}
+
+#[test]
+fn pieces_break_off_the_same_cracks_and_never_past_the_padding() {
+    const INK: (f64, f64, f64, f64) = (40.0, 55.0, 230.0, 100.0);
+    let crack_only = tight(|s| s.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 })).unwrap();
+    let cuts = letter_shapes(&crack_only, SIZE, INK).unwrap();
+    assert!(cuts.pieces.is_empty());
+    for motion in [Motion::Apart, Motion::Fall] {
+        let mut last = 0;
+        for share in [0.25, 0.5, 0.75, 1.0] {
+            let sp = breaking(share, motion, (0.5, 0.5), 1.0).unwrap();
+            let sh = letter_shapes(&sp, SIZE, INK).unwrap();
+            // The crack lines are the same whatever breaks off.
+            assert_eq!(sh.cuts.pts, cuts.cuts.pts);
+            assert!(sh.pieces.len() > last, "{motion:?} {share}: more pieces as it goes up");
+            last = sh.pieces.len();
+            let down = sp.rect[3] + BREAK_DROP * SIZE;
+            let side = BREAK_SIDE * SIZE;
+            for p in &sh.pieces {
+                let Some(m) = p.moved else {
+                    assert_eq!(motion, Motion::Fall, "only a fall loses pieces");
+                    continue;
+                };
+                for &v in &p.outline {
+                    let d = m.apply(v).minus(v);
+                    assert!(d.x.abs() <= side + 1e-9 && d.y >= -side - 1e-9 && d.y <= down + 1e-9, "{motion:?}: {d:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_densest_cracks_break_first() {
+    // A long line of letters, the cracks over all of it and gathered at the
+    // left: the first pieces to break lie at the left.
+    const INK: (f64, f64, f64, f64) = (0.0, 0.0, 1200.0, 300.0);
+    let sp = Special {
+        rect: [0.0, 0.0, 1200.0, 300.0],
+        crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.05, 0.5), spread: 1.0, seed: 3 }),
+        break_off: Some(BreakOff { share: 0.1, motion: Motion::Apart }),
+        lightning: None,
+        splash: None,
+        scratches: None,
+    };
+    let sh = letter_shapes(&sp, SIZE, INK).unwrap();
+    assert!(sh.pieces.len() >= 3);
+    let mean = sh.pieces.iter().map(|p| p.outline.iter().map(|v| v.x).sum::<f64>() / p.outline.len() as f64).sum::<f64>()
+        / sh.pieces.len() as f64;
+    assert!(mean < 400.0, "the first pieces are not at the focus: {mean}");
+}
+
+#[test]
+fn a_piece_moves_with_its_fill_and_bands_and_the_hole_is_clean() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let banded = |sp: Option<Special>| {
+        let mut b = boxed(font, sp);
+        b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+        b
+    };
+    let crack = paint(&mut engine, banded(tight(|s| s.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }))));
+    for motion in [Motion::Apart, Motion::Fall] {
+        let a = paint(&mut engine, banded(breaking(0.75, motion, (0.5, 0.5), 1.0)));
+        let b = paint(&mut engine, banded(breaking(0.75, motion, (0.5, 0.5), 1.0)));
+        assert_eq!((a.x, a.y, a.width, a.height, &a.data), (b.x, b.y, b.width, b.height, &b.data), "the same numbers, the same picture");
+        // Ink where the crack alone has none, red and black both: a piece
+        // moved there with its fill and its band.
+        let (mut red, mut black, mut holes) = (0, 0, 0);
+        for y in 0..160 {
+            for x in 0..360 {
+                let (p, q) = (at(&a, x, y), at(&crack, x, y));
+                if p[3] > 200 && q[3] == 0 {
+                    if p[0] > 200 && p[1] < 60 {
+                        red += 1;
+                    } else if p[0] < 60 && p[1] < 60 && p[2] < 60 {
+                        black += 1;
+                    }
+                }
+                if q[3] > 200 && p[3] == 0 {
+                    holes += 1;
+                }
+            }
+        }
+        assert!(red > 40 && black > 20 && holes > 40, "{motion:?}: red {red} black {black} holes {holes}");
+    }
+    // Falling, pieces lie below the letters' ink.
+    let fall = paint(&mut engine, banded(breaking(1.0, Motion::Fall, (0.5, 0.5), 1.0)));
+    let low = (0..160).rev().find(|&y| (0..360).any(|x| at(&crack, x, y)[3] > 0)).unwrap();
+    let below: usize = (low + 3..160).map(|y| (0..360).filter(|&x| at(&fall, x, y)[3] > 128).count()).sum();
+    assert!(below > 40, "below {below}");
 }

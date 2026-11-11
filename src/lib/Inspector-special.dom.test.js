@@ -110,6 +110,7 @@ describe('the Special panel', () => {
     expect(view.getByLabelText('Crack focus x')).toBeTruthy();
     expect(view.getByLabelText('Crack focus y')).toBeTruthy();
     expect(view.getByLabelText('Crack spread')).toBeTruthy();
+    expect(view.getByLabelText('Crack break off')).toBeTruthy();
     expect(view.getByLabelText('Scratches angle, degrees')).toBeTruthy();
     expect(view.queryByLabelText('Crack angle, degrees')).toBe(null);
   });

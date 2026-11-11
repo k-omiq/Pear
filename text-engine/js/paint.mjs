@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 15
+export const WIRE_VERSION = 16
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -472,7 +472,7 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
 
 // (v14) The special effects (special.js in the app), after the faces and
 // (v15: the crack's focus and spread, the lightning's core, glow and glow
-// size, the splash's colour)
+// size, the splash's colour; v16: kind 16, a crack's pieces breaking off)
 // only for a job that has one, which says so with flag 256: the box in job
 // space, then each effect's numbers. The engine makes the shapes from them
 // (special.rs), so only these cross.
@@ -481,7 +481,10 @@ function special(sp) {
   if (!sp) return
   const r = sp.rect
   if (!(r && [r.x, r.y, r.w, r.h].every(Number.isFinite) && r.w > 0 && r.h > 0)) throw new Error('mt-text: special effects need the box (rect x, y, w, h)')
-  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0)
+  // 16 (v16): the crack's pieces break off, its share and motion after the
+  // crack's own numbers. A crack without it writes what v15 wrote.
+  const breaks = sp.crack?.breakOff ? 16 : 0
+  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0) | breaks
   if (!kinds) throw new Error('mt-text: a special block needs an effect')
   f64(r.x)
   f64(r.y)
@@ -507,6 +510,13 @@ function special(sp) {
     share(sp.crack.y, 'crack y')
     share(sp.crack.spread, 'crack spread')
     seed(sp.crack.seed)
+    if (breaks) {
+      const b = sp.crack.breakOff
+      if (!(b.share > 0 && b.share <= 1)) throw new Error(`mt-text: a crack breaks off more than 0, at most 1, not ${b.share}`)
+      if (b.motion !== 0 && b.motion !== 1) throw new Error(`mt-text: a crack's pieces move apart (0) or fall (1), not ${b.motion}`)
+      f64(b.share)
+      u32(b.motion)
+    }
   }
   if (sp.lightning) {
     share(sp.lightning.amount, 'lightning amount')

@@ -1318,12 +1318,14 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
     // a drag of theirs keeps the letters.
     let (mut request, special_at) = super::job::decode_split(job)?;
     let cuts = request.job.effects.special.filter(Special::shapes_letters);
-    let key = Hasher::new("job")
+    let mut key = Hasher::new("job")
         .bytes(&job[..special_at])
-        .debug(&cuts.map(|s| (s.rect, s.crack, s.scratches)))
-        .bytes(&[u8::from(line)])
-        .finish()
-        .ok_or(Error::BadSpec)?;
+        .debug(&cuts.map(|s| (s.rect, s.crack, s.scratches)));
+    // A crack's pieces breaking off (v16), when they do.
+    if let Some(b) = cuts.and_then(|s| s.break_off) {
+        key = key.debug(&b);
+    }
+    let key = key.bytes(&[u8::from(line)]).finish().ok_or(Error::BadSpec)?;
     if r.at != bytes.len() || (line && !request.job.curved) {
         return Err(Error::BadSpec);
     }

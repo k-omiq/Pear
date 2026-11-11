@@ -10,7 +10,7 @@
 use super::geom::{Affine, Pt};
 use super::roughen::Roughen;
 use super::shade::Premul;
-use super::special::{Crack, Lightning, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
+use super::special::{BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 use super::stroke::Join;
 use super::warp::{Mesh, MAX_MESH_SIDE};
 use super::BoldDraw;
@@ -399,7 +399,7 @@ pub const MAX_RUN_FACES: usize = 16;
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 15;
+pub const WIRE_VERSION: u32 = 16;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -607,17 +607,30 @@ impl<'a> Reader<'a> {
             return Err(Error::BadSpec);
         }
         let kinds = self.u32()?;
-        if kinds == 0 || kinds > 15 {
+        // 16 (v16): the crack's pieces break off; only with a crack.
+        if kinds & 15 == 0 || kinds > 31 || (kinds & 16 != 0 && kinds & 1 == 0) {
             return Err(Error::BadSpec);
         }
         let share = |v: f64, lo: f64, hi: f64| if (lo..=hi).contains(&v) { Ok(v) } else { Err(Error::BadSpec) };
         let turn = |v: f64| if v.is_finite() && v.abs() <= 64.0 { Ok(v) } else { Err(Error::BadSpec) };
-        let mut sp = Special { rect, crack: None, lightning: None, splash: None, scratches: None };
+        let mut sp = Special { rect, crack: None, break_off: None, lightning: None, splash: None, scratches: None };
         if kinds & 1 != 0 {
             let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
             let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
             let spread = share(self.f64()?, 0.0, 1.0)?;
             sp.crack = Some(Crack { amount, size, at, spread, seed: self.u32()? });
+            if kinds & 16 != 0 {
+                let share = self.f64()?;
+                if !(share > 0.0 && share <= 1.0) {
+                    return Err(Error::BadSpec);
+                }
+                let motion = match self.u32()? {
+                    0 => Motion::Apart,
+                    1 => Motion::Fall,
+                    _ => return Err(Error::BadSpec),
+                };
+                sp.break_off = Some(BreakOff { share, motion });
+            }
         }
         if kinds & 2 != 0 {
             let amount = share(self.f64()?, 0.0, 1.0)?;
@@ -715,10 +728,13 @@ impl<'a> Reader<'a> {
 ///     and one-past-last UTF-16 unit of the run's text
 /// with flag 256 (v14), after the faces: the special effects. f64 x, y, w, h
 ///     (the box in job space), u32 kinds (1 crack, 2 lightning, 4 splash,
-///     8 scratches), then for each kind set, in that order:
+///     8 scratches; 16 the crack's pieces break off, v16, only with 1),
+///     then for each kind set, in that order:
 ///     crack:     f64 amount (0 to 1), f64 size (a share of the size, 0.01
 ///                to 4), f64 x, y (where it gathers, shares of the ink
-///                box), f64 spread (0 to 1), u32 seed (v15)
+///                box), f64 spread (0 to 1), u32 seed (v15); with 16, f64
+///                break off (over 0, at most 1), u32 motion (0 apart,
+///                1 fall)
 ///     lightning: f64 amount, rgba core, rgba glow, f64 glow size (0 to
 ///                3), u32 seed (v15)
 ///     splash:    f64 amount, f64 size, rgba colour, u32 seed (v15)
