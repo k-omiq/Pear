@@ -73,7 +73,7 @@ fn boxed(font: FontId, special: Option<Special>) -> BoxRequest {
 
 /// A lightning with a white core in a blue glow.
 fn bolt(amount: f64, seed: u32) -> Lightning {
-    Lightning { amount, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed }
+    Lightning { amount, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed, aim: None }
 }
 
 /// `only`, over a box drawn tight round the letters, as the app's is.
@@ -85,7 +85,7 @@ fn tight(f: impl FnOnce(&mut Special)) -> Option<Special> {
 }
 
 fn only(f: impl FnOnce(&mut Special)) -> Option<Special> {
-    let mut sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: None, break_off: None, lightning: None, splash: None, scratches: None, cut_strokes: false };
+    let mut sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: None, break_off: None, lightning: None, splash: None, scratches: None, cut_strokes: false, fill_bands: false };
     f(&mut sp);
     Some(sp)
 }
@@ -146,7 +146,7 @@ fn a_moved_box_paints_the_same_pattern_where_it_went() {
     let font = load(&mut engine);
     let all = only(|s| {
         s.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 7 });
-        s.splash = Some(Splash { amount: 0.5, size: 0.6, color: BLUE, seed: 7 });
+        s.splash = Some(Splash { amount: 0.5, size: 0.6, color: BLUE, seed: 7, at: (0.5, 0.5), spread: 1.0 });
         s.scratches = Some(Scratches { amount: 0.5, angle: 0.4, seed: 7 });
     });
     let here = paint(&mut engine, boxed(font, all));
@@ -182,7 +182,7 @@ fn lightning_and_splash_paint_on_the_fill_and_nowhere_else() {
     let plain = paint(&mut engine, boxed(font, None));
     let lit = paint(&mut engine, boxed(font, only(|s| s.lightning = Some(bolt(1.0, 4)))));
     let green = Rgba([0, 200, 0, 255]);
-    let splashed = paint(&mut engine, boxed(font, tight(|s| s.splash = Some(Splash { amount: 0.6, size: 1.0, color: green, seed: 5 }))));
+    let splashed = paint(&mut engine, boxed(font, tight(|s| s.splash = Some(Splash { amount: 0.6, size: 1.0, color: green, seed: 5, at: (0.5, 0.5), spread: 1.0 }))));
     for (name, r) in [("lightning", &lit), ("splash", &splashed)] {
         assert_eq!((r.x, r.y, r.width, r.height), (plain.x, plain.y, plain.width, plain.height), "{name}");
         let outside = plain.data.chunks_exact(4).zip(r.data.chunks_exact(4)).filter(|(p, q)| p[3] == 0 && q[3] != 0).count();
@@ -206,7 +206,7 @@ fn every_effect_reads_at_a_fifth() {
     let font = load(&mut engine);
     let plain = paint(&mut engine, boxed(font, None));
     let lit = paint(&mut engine, boxed(font, tight(|s| s.lightning = Some(bolt(0.2, 4)))));
-    let splashed = paint(&mut engine, boxed(font, tight(|s| s.splash = Some(Splash { amount: 0.2, size: 1.0, color: BLUE, seed: 5 }))));
+    let splashed = paint(&mut engine, boxed(font, tight(|s| s.splash = Some(Splash { amount: 0.2, size: 1.0, color: BLUE, seed: 5, at: (0.5, 0.5), spread: 1.0 }))));
     let solid = plain.data.chunks_exact(4).filter(|p| p[3] == 255).count();
     for (name, r) in [("lightning", &lit), ("splash", &splashed)] {
         let changed = plain.data.chunks_exact(4).zip(r.data.chunks_exact(4)).filter(|(p, q)| p[3] == 255 && p[..3] != q[..3]).count();
@@ -351,6 +351,7 @@ fn the_densest_cracks_break_first() {
         splash: None,
         scratches: None,
         cut_strokes: false,
+        fill_bands: false,
     };
     let sh = letter_shapes(&sp, SIZE, INK, INK).unwrap();
     assert!(sh.pieces.len() >= 3);
@@ -435,6 +436,7 @@ fn largest(font: FontId, scale: f64, break_off: Option<BreakOff>) -> BoxRequest 
         splash: None,
         scratches: None,
         cut_strokes: false,
+        fill_bands: false,
     });
     b
 }
@@ -633,7 +635,7 @@ fn placed(outline: &[mt_text::paint::Pt], m: &Affine) -> (f64, f64, (f64, f64, f
 /// moved and how many are gone.
 fn motion_numbers(motion: Motion, share: f64) -> (f64, f64, f64, f64, usize, usize) {
     const INK: (f64, f64, f64, f64) = (40.0, 55.0, 330.0, 100.0);
-    let sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false };
+    let sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false, fill_bands: false };
     let sh = letter_shapes(&sp, SIZE, INK, INK).unwrap();
     let focus = (185.0, 77.5);
     let (mut out, mut down, mut side, mut gone, mut over, mut area) = (0.0, 0.0, 0.0f64, 0, 0.0, 0.0);
@@ -714,7 +716,7 @@ fn pieces_land_the_same_whatever_the_box_height() {
     for motion in [Motion::Apart, Motion::Fall] {
         for share in [0.25, 0.5, 0.75, 1.0] {
             let at = |h: f64| {
-                let sp = Special { rect: [0.0, 0.0, 360.0, h], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false };
+                let sp = Special { rect: [0.0, 0.0, 360.0, h], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false, fill_bands: false };
                 letter_shapes(&sp, SIZE, INK, INK).unwrap()
             };
             let (low, tall) = (at(120.0), at(900.0));
@@ -843,4 +845,129 @@ fn break_off_warm_equals_cold_at_whole_pixel_offsets() {
             assert!(warm.data == cold.data && (warm.width, warm.height) == (cold.width, cold.height), "{motion:?} ({dx}, {dy}): the box warm equals cold");
         }
     }
+}
+
+// ===== fix round 1 (glyph wire v18) =====
+
+/// `special` over "HELLO" with two glyph bands, the outer blue.
+fn banded(font: FontId, special: Option<Special>) -> BoxRequest {
+    let mut b = boxed(font, special);
+    b.request.job.bands = vec![Band { color: BLUE, opacity: 1.0, line: 12.0 }, Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+    b
+}
+
+#[test]
+fn glyph_bands_fill_the_cuts_when_asked_and_only_inside_them() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    for kind in 0..2 {
+        let sp = |fill: bool| {
+            only(|s| {
+                if kind == 0 {
+                    s.crack = Some(Crack { amount: 0.6, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                } else {
+                    s.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+                }
+                s.fill_bands = fill;
+            })
+        };
+        let through = paint(&mut engine, banded(font, sp(false)));
+        let fills = paint(&mut engine, banded(font, sp(true)));
+        let whole = paint(&mut engine, banded(font, None));
+        assert_ne!(through.data, fills.data, "kind {kind}: the choice is seen");
+        assert!(ink(&fills) > ink(&through), "kind {kind}: filled cuts hold ink");
+        assert_eq!((fills.x, fills.y, fills.width, fills.height), (through.x, through.y, through.width, through.height));
+        // Nothing is laid where the whole letters lay nothing: the fills
+        // stay inside the outline's reach.
+        let mut past = 0;
+        for y in fills.y..fills.y + fills.height as i32 {
+            for x in fills.x..fills.x + fills.width as i32 {
+                past += usize::from(at(&fills, x, y)[3] > 8 && at(&whole, x, y)[3] == 0);
+            }
+        }
+        assert_eq!(past, 0, "kind {kind}: nothing past the outline");
+    }
+    // With no band the switch changes nothing.
+    let crack = |fill| only(|s| {
+        s.crack = Some(Crack { amount: 0.6, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+        s.fill_bands = fill;
+    });
+    assert_eq!(paint(&mut engine, boxed(font, crack(true))).data, paint(&mut engine, boxed(font, crack(false))).data);
+}
+
+#[test]
+fn a_thin_crack_through_a_wide_band_reads_in_the_band_colour() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let sp = |fill| only(|s| {
+        s.crack = Some(Crack { amount: 0.4, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+        s.fill_bands = fill;
+    });
+    let mut b = boxed(font, sp(true));
+    b.request.job.bands = vec![Band { color: BLUE, opacity: 1.0, line: 14.0 }];
+    let fills = paint(&mut engine, b);
+    let mut b = boxed(font, sp(false));
+    b.request.job.bands = vec![Band { color: BLUE, opacity: 1.0, line: 14.0 }];
+    let through = paint(&mut engine, b);
+    let (mut added, mut blue) = (0, 0);
+    for (f, t) in fills.data.chunks_exact(4).zip(through.data.chunks_exact(4)) {
+        if f[3] > t[3].saturating_add(64) {
+            added += 1;
+            blue += usize::from(f[2] > f[0]);
+        }
+    }
+    assert!(added > 50, "{added}");
+    assert!(blue * 10 > added * 9, "{blue} of {added}");
+}
+
+#[test]
+fn an_aimed_lightning_starts_at_its_point_and_goes_its_way() {
+    let rect = [0.0, 0.0, 360.0, 160.0];
+    let aimed = |at, angle| Lightning { aim: Some(mt_text::paint::Aim { at, angle }), ..bolt(0.6, 4) };
+    let first = |l: &Lightning| -> Vec<mt_text::paint::Pt> {
+        let marks = lightning_marks(l, rect, SIZE);
+        match &marks.last().unwrap().shape {
+            mt_text::paint::ClipShape::Polygon(p) => p.clone(),
+            _ => panic!("a core is a polygon"),
+        }
+    };
+    // Across is what it was: no aim.
+    assert_eq!(lightning_marks(&bolt(0.6, 4), rect, SIZE).len(), lightning_marks(&bolt(0.6, 4), rect, SIZE).len());
+    let right = first(&aimed((0.0, 0.5), 0.0));
+    let left = first(&aimed((1.0, 0.5), std::f64::consts::PI));
+    let down = first(&aimed((0.5, 0.0), std::f64::consts::FRAC_PI_2));
+    let mean = |p: &[mt_text::paint::Pt]| {
+        let n = p.len() as f64;
+        (p.iter().map(|q| q.x).sum::<f64>() / n, p.iter().map(|q| q.y).sum::<f64>() / n)
+    };
+    assert!(mean(&right).0 > 120.0, "{:?}", mean(&right));
+    assert!(mean(&left).0 < 240.0, "{:?}", mean(&left));
+    assert!(mean(&down).1 > 50.0, "{:?}", mean(&down));
+    assert_ne!(right, left);
+}
+
+#[test]
+fn a_splash_spread_over_the_box_is_where_it_was_and_pulled_in_lands_at_its_point() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let sp = |at, spread| only(|s| s.splash = Some(Splash { amount: 0.6, size: 0.8, color: BLUE, seed: 5, at, spread }));
+    let first = paint(&mut engine, boxed(font, sp((0.5, 0.5), 1.0)));
+    let moved = paint(&mut engine, boxed(font, sp((0.05, 0.9), 1.0)));
+    assert_eq!(first.data, moved.data, "at 1 the point does nothing");
+    let blue_x = |r: &Raster| {
+        let (mut sx, mut n) = (0.0, 0.0);
+        for y in r.y..r.y + r.height as i32 {
+            for x in r.x..r.x + r.width as i32 {
+                let p = at(r, x, y);
+                if p[3] > 128 && p[2] > 150 && p[0] < 100 {
+                    sx += f64::from(x);
+                    n += 1.0;
+                }
+            }
+        }
+        sx / n
+    };
+    let left = paint(&mut engine, boxed(font, sp((0.15, 0.6), 0.2)));
+    let right = paint(&mut engine, boxed(font, sp((0.65, 0.6), 0.2)));
+    assert!(blue_x(&left) + 40.0 < blue_x(&right), "{} {}", blue_x(&left), blue_x(&right));
 }

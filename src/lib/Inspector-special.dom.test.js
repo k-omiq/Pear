@@ -137,13 +137,13 @@ describe('the Special panel', () => {
     expect(again.box().style.special.crack.motion).toBe('fall');
   });
 
-  it('Outline shows only with cuts and a box stroke, reads Fills cuts by default, and a pick is one undo step', async () => {
+  it('Outline shows with cuts and any outline, reads Fills cuts by default for a box stroke, and a pick is one undo step', async () => {
     const k0 = defaultStyle().strokeEffects[0];
     const boxStroke = { strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, position: 'center' }] };
     const band = { strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, position: 'outside' }] };
     const cases = [
-      [{ crack: { on: true } }, {}, false],
-      [{ crack: { on: true } }, band, false],
+      [{ crack: { on: true } }, { strokeEffects: [] }, false],
+      [{ crack: { on: true } }, band, true],
       [{ lightning: { on: true } }, boxStroke, false],
       [{ scratches: { on: true } }, boxStroke, true],
     ];
@@ -151,6 +151,8 @@ describe('the Special panel', () => {
       const { view } = mounted(true, special, more);
       await tick();
       expect(!!view.queryByRole('group', { name: 'Special outline' }), JSON.stringify(special)).toBe(shown);
+      // With cuts and no outline, a line says why there is no choice.
+      if (more.strokeEffects?.length === 0) expect(view.getByText(/add an outline/)).toBeTruthy();
       cleanup();
     }
     const { view, box } = mounted(true, { crack: { on: true } }, boxStroke);
@@ -166,6 +168,73 @@ describe('the Special panel', () => {
     expect(records()).toBe(base + 1);
     undo();
     expect(box().style.special.outline).toBe('fills-cuts');
+  });
+
+  it('on a text outline reads Cut through by default, and Fills cuts sets both outlines', async () => {
+    const k0 = defaultStyle().strokeEffects[0];
+    const band = { strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, position: 'outside' }] };
+    const { view, box } = mounted(true, { crack: { on: true } }, band);
+    await tick();
+    const fills = view.getByRole('button', { name: 'Fills cuts' });
+    expect(view.getByRole('button', { name: 'Cut through' }).getAttribute('aria-pressed')).toBe('true');
+    const base = records();
+    await fireEvent.pointerDown(fills);
+    await fireEvent.click(fills);
+    settleEdits();
+    expect(box().style.special.bandOutline).toBe('fills-cuts');
+    expect(box().style.special.outline).toBe('fills-cuts');
+    expect(records()).toBe(base + 1);
+    undo();
+    expect(box().style.special.bandOutline).toBe('cut-through');
+  });
+
+  it('with a text outline and a box stroke, shows a named row each, each with its choice picked', async () => {
+    const k0 = defaultStyle().strokeEffects[0];
+    const both = { strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, position: 'outside' }, { ...k0, on: true, size: 8, opacity: 1, position: 'center' }] };
+    const { view, box } = mounted(true, { crack: { on: true } }, both);
+    await tick();
+    expect(view.queryByText(/Mixed/)).toBeNull();
+    const plain = view.getByRole('group', { name: 'Special plain outline' });
+    const other = view.getByRole('group', { name: 'Special other strokes' });
+    const pressed = (g) => [...g.querySelectorAll('button')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.textContent);
+    // Each at its own default: the old look.
+    expect(pressed(plain)).toEqual(['Cut through']);
+    expect(pressed(other)).toEqual(['Fills cuts']);
+    const fills = [...plain.querySelectorAll('button')].find((b) => b.textContent === 'Fills cuts');
+    await fireEvent.pointerDown(fills);
+    await fireEvent.click(fills);
+    settleEdits();
+    expect(box().style.special.bandOutline).toBe('fills-cuts');
+    expect(box().style.special.outline).toBe('fills-cuts');
+    const cut = [...other.querySelectorAll('button')].find((b) => b.textContent === 'Cut through');
+    await fireEvent.pointerDown(cut);
+    await fireEvent.click(cut);
+    settleEdits();
+    expect(box().style.special.outline).toBe('cut-through');
+    expect(box().style.special.bandOutline).toBe('fills-cuts');
+  });
+
+  it('a lightning can be aimed from a point, with a start and a direction', async () => {
+    const { view, box } = mounted(true, { lightning: { on: true } });
+    await tick();
+    expect(view.queryByLabelText('Lightning start x')).toBe(null);
+    const from = view.getByRole('button', { name: 'From a point' });
+    await fireEvent.pointerDown(from);
+    await fireEvent.click(from);
+    settleEdits();
+    await tick();
+    expect(box().style.special.lightning.aim).toBe('point');
+    expect(view.getAllByLabelText('Lightning start x').length).toBeGreaterThan(0);
+    expect(view.getAllByLabelText(/Lightning direction/).length).toBeGreaterThan(0);
+    // The scratches' Angle row is the scratches' alone.
+    expect(view.queryByLabelText('Lightning angle')).toBe(null);
+  });
+
+  it('a splash has where it lands and a spread', async () => {
+    const { view } = mounted(true, { splash: { on: true } });
+    await tick();
+    expect(view.getAllByLabelText('Splash x').length).toBeGreaterThan(0);
+    expect(view.getAllByLabelText('Splash spread').length).toBeGreaterThan(0);
   });
 
   it('under the browser engine, the switches are dimmed and the group says why; one on can still go off', async () => {

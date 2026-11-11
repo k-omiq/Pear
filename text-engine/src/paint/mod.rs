@@ -71,7 +71,7 @@ pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
 pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, shape_spans, Placed, ShapedRun};
-pub use special::{BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
+pub use special::{Aim, BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
@@ -736,6 +736,36 @@ struct Planned<'a> {
     alpha: f32,
     /// The layer takes away what is under it (`Layer::erase`).
     erase: bool,
+    /// Its coverage already worked out (`band_fills`): laid as it is, and
+    /// `parts` are not read.
+    dense: Option<Dense>,
+}
+
+/// A coverage already worked out, one byte a pixel over its box.
+struct Dense {
+    bx: IBox,
+    a: budget::Buffer<u8>,
+}
+
+impl raster::Coverage for Dense {
+    fn render(
+        &mut self,
+        y0: i32,
+        y1: i32,
+        out: &mut [f32],
+        stride: usize,
+        spans: &mut [(u32, u32)],
+    ) -> Result<(), Error> {
+        let w = self.bx.width();
+        for (r, y) in (y0..y1).enumerate() {
+            let row = &self.a[(y - self.bx.y0) as usize * w..][..w];
+            for (o, &a) in out[r * stride..r * stride + w].iter_mut().zip(row) {
+                *o = f32::from(a) / 255.0;
+            }
+            spans[r] = (0, w as u32);
+        }
+        Ok(())
+    }
 }
 
 fn plan<'a>(parts: budget::Buffer<Part>, shader: Shader<'a>, alpha: f64) -> Option<Planned<'a>> {
@@ -757,6 +787,7 @@ fn plan<'a>(parts: budget::Buffer<Part>, shader: Shader<'a>, alpha: f64) -> Opti
         shader,
         alpha: alpha.min(1.0) as f32,
         erase: false,
+        dense: None,
     })
 }
 
@@ -776,7 +807,12 @@ fn finish(
     for p in planned {
         let bx = p.bx.intersect(&surface);
         if !bx.is_empty() {
-            let cov = rasterizer.prepare(&p.parts, bx)?;
+            // A coverage worked out already is laid over its own box (the
+            // composite cuts it to the surface).
+            let (bx, cov) = match p.dense {
+                Some(d) => (d.bx, Box::new(d) as Box<dyn raster::Coverage>),
+                None => (bx, rasterizer.prepare(&p.parts, bx)?),
+            };
             budget::push(
                 &mut layers,
                 Layer {
@@ -1211,7 +1247,7 @@ fn paint_letters(
         .filter(|&i| !job.runs[i].ghost)
         .collect();
     let shapes = special.as_deref();
-    let planned = plan_letters(&layers, &ghosts, &letters, shapes)?;
+    let planned = plan_letters(&layers, &ghosts, &letters, shapes, rasterizer)?;
     match shapes.filter(|sh| !sh.pieces.is_empty()) {
         Some(sh) => break_off(planned, &layers, sh, rasterizer),
         None => finish_planned(planned, within(&job.effects), rasterizer),
@@ -1227,6 +1263,7 @@ fn plan_letters<'a>(
     ghosts: &[usize],
     letters: &[usize],
     shapes: Option<&special::Shapes>,
+    rasterizer: &dyn Rasterizer,
 ) -> Result<budget::Buffer<Planned<'a>>, Error> {
     let job = l.job;
     let fx = &job.effects;
@@ -1296,11 +1333,147 @@ fn plan_letters<'a>(
     // a crack stays on the letter it crosses under a mesh.
     if fx.cuts == Cuts::Made && !planned.is_empty() {
         if let Some(mut p) = shapes.map(|sh| poly_plan(&sh.cuts, l.bends, l.transform, l.tiles, l.tol)).transpose()?.flatten() {
+            // The glyph bands laid again in the cuts, when they fill them
+            // (`Special::fill_bands`), worked out before the cut is spent.
+            let fills = match fx.special.filter(|s| s.fill_bands) {
+                Some(_) => band_fills(l, letters, &p, rasterizer)?,
+                None => budget::Buffer::new(),
+            };
             p.erase = true;
             budget::push(&mut planned, p)?;
+            for f in fills {
+                budget::push(&mut planned, f)?;
+            }
         }
     }
     Ok(planned)
+}
+
+/// The glyph bands filling a special effect's cuts (`Special::fill_bands`):
+/// each band, outermost first, laid again inside the cuts (`cut`, as
+/// planned), no further than its half line from a cut's edge and no further
+/// than it reaches round the letters, so a crack narrower than the outline
+/// reads as a line in its colour and a wide cut is outlined, as a box
+/// stroke outlines the cut letters (`fills-cuts`). Inside the cuts only, so
+/// they are laid after the cut, over nothing of the letters.
+///
+/// The distance to a cut's edge is measured on its coverage, so cuts that
+/// overlap are one shape (a branch's start inside its arm draws no line);
+/// a pixel half covered or less is on the edge.
+fn band_fills<'a>(
+    l: &Layers<'a>,
+    letters: &[usize],
+    cut: &Planned<'a>,
+    rasterizer: &dyn Rasterizer,
+) -> Result<budget::Buffer<Planned<'a>>, Error> {
+    let fx = &l.job.effects;
+    let mut out = budget::Buffer::new();
+    // Each band as it is laid, outermost first: its colour, its opacity,
+    // how far it reaches round the glyphs (job space) and how far in from a
+    // cut's edge it fills (half its line). A silhouette (a shadow's shape)
+    // is one band, its own colour as far as it reaches, filled as far in as
+    // its widest band.
+    let mut bands: budget::Buffer<(Rgba, f64, f64, f64)> = budget::Buffer::new();
+    match l.job.silhouette {
+        Some(color) => {
+            let band = l.job.bands.first().map_or(0.0, |b| (b.line / 2.0).max(0.0));
+            let pen = band + fx.negative.map_or(0.0, |n| n.grow) + fx.grow;
+            if positive(band) {
+                budget::push(&mut bands, (color, 1.0, pen, band))?;
+            }
+        }
+        None => {
+            for b in l.job.bands.iter().filter(|b| positive(b.line) && positive(b.opacity)) {
+                let reach = b.line / 2.0;
+                budget::push(&mut bands, (b.color, b.opacity, fx.negative.map_or(reach, |n| n.grow + reach), reach))?;
+            }
+        }
+    }
+    let Some(widest) = bands.iter().map(|b| b.2).reduce(f64::max) else {
+        return Ok(out);
+    };
+    // Device pixels a job length is, near enough under a mesh.
+    let scale = l.transform.det().abs().sqrt();
+    let parts_of = |pen: f64| {
+        l.glyphs.parts(l.glyphs_of(letters), Reach { pen, weight: 0.0 }, false, fx.join, l.bends, l.transform, l.tol)
+    };
+    // Where any band reaches, a little wider, so the distance to a cut's
+    // edge is read past where it is used.
+    let room = (widest * scale).ceil() as i32 + 2;
+    let Some(reach_bx) = parts_of(widest)?.iter().filter_map(Part::pixel_box).reduce(|a, b| a.union(&b)) else {
+        return Ok(out);
+    };
+    let grown = IBox { x0: reach_bx.x0 - room, y0: reach_bx.y0 - room, x1: reach_bx.x1 + room, y1: reach_bx.y1 + room };
+    let bx = cut.bx.intersect(&grown);
+    if bx.is_empty() {
+        return Ok(out);
+    }
+    let (w, h) = (bx.width(), bx.height());
+    let c = alpha_bytes(&cut.parts, bx, rasterizer)?;
+    if c.iter().all(|&a| a == 0) {
+        return Ok(out);
+    }
+    // The squared distance from each pixel to the nearest one outside the
+    // cuts.
+    let outside: budget::Buffer<bool> = c.iter().map(|&a| a < 128).collect();
+    let d2 = fx::distance::squared(&outside, w, h)?;
+    for (color, opacity, pen, reach) in bands {
+        let r = reach * scale;
+        let d = alpha_bytes(&parts_of(pen)?, bx, rasterizer)?;
+        let mut a = budget::filled(w * h, 0u8)?;
+        let mut any = false;
+        for i in 0..w * h {
+            if c[i] == 0 || d[i] == 0 {
+                continue;
+            }
+            // From the pixel to the cut's edge, which lies half a pixel in
+            // from the nearest pixel outside; a pixel on the edge is near.
+            let edge = if outside[i] { 0.0 } else { f64::from(d2[i]).sqrt() - 0.5 };
+            let near = (r + 0.5 - edge).clamp(0.0, 1.0);
+            let v = f64::from(c[i]) * near * f64::from(d[i]) / 255.0;
+            if v > 0.0 {
+                a[i] = blur::to_u8(v as f32);
+                any |= a[i] > 0;
+            }
+        }
+        budget::check()?;
+        if !any {
+            continue;
+        }
+        // Cut to what it covers, so it makes the paint no bigger.
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for (i, &v) in a.iter().enumerate() {
+            if v > 0 {
+                let (x, y) = (i % w, i / w);
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            }
+        }
+        let tight = IBox { x0: bx.x0 + x0 as i32, y0: bx.y0 + y0 as i32, x1: bx.x0 + x1 as i32, y1: bx.y0 + y1 as i32 };
+        let tw = x1 - x0;
+        let mut cut_a = budget::filled(tw * (y1 - y0), 0u8)?;
+        for y in y0..y1 {
+            cut_a[(y - y0) * tw..(y - y0 + 1) * tw].copy_from_slice(&a[y * w + x0..y * w + x1]);
+        }
+        let (bx, a) = (tight, cut_a);
+        let Some(shader) = Shader::new(&Fill::Solid(color), l.transform, l.tiles) else {
+            continue;
+        };
+        if shader.solid().is_some_and(|c| c[3] <= 0.0) {
+            continue;
+        }
+        budget::push(
+            &mut out,
+            Planned {
+                parts: budget::Buffer::new(),
+                bx,
+                shader,
+                alpha: opacity.min(1.0) as f32,
+                erase: false,
+                dense: Some(Dense { bx, a }),
+            },
+        )?;
+    }
+    Ok(out)
 }
 
 /// The letters with a crack's pieces broken off (`special::Piece`).
@@ -1954,6 +2127,7 @@ mod hardening_tests {
             shader: Shader::new(&fill, &Affine::IDENTITY, &[]).unwrap(),
             alpha: 1.,
             erase: false,
+            dense: None,
         };
         let planned = [p].into_iter().collect();
         let _scope = budget::Scope::new();

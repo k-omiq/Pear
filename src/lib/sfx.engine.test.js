@@ -6,7 +6,7 @@ import { textEngine, setTextEngine, setGlyphPainter, glyphPainter } from './text
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeSfx, normalizeStyle } from './data.js';
-import { placeBlock, curvedStyle, isAutoBox, boxInkRect } from './contain.js';
+import { placeBlock, curvedStyle, isAutoBox, boxInkRect, lettersInkRect } from './contain.js';
 import { glyphJob } from './exporter.js';
 import {
   sfxAvailable, sfxLayout, sfxKinds, sfxPick, sfxPlacement, applySfxKind, clearSfx, sfxResolved, sfxParams,
@@ -210,6 +210,27 @@ describe('a painted SFX box', () => {
       expect(ink.x1, id).toBeLessThanOrEqual(Math.ceil(r.x + r.w) + 1);
       expect(ink.y0, id).toBeGreaterThanOrEqual(Math.floor(r.y) - 1);
       expect(ink.y1, id).toBeLessThanOrEqual(Math.ceil(r.y + r.h) + 1);
+    }
+  });
+  // The crack handle's frame (special.js `handleFrame`) is the letters' ink
+  // as contain.js works it out; the engine states the focus in the painted
+  // glyphs' bounds. On an SFX box the two must be the same place.
+  it('has its letters where lettersInkRect says, for the crack handle', () => {
+    for (const id of ['impact', 'explosion', 'small', 'slash', 'rumble']) {
+      use();
+      const s = typed(id, { strokeEffects: [] });
+      const ink = painted(s, 'BOOM');
+      const r = lettersInkRect(cand(s, 'BOOM'));
+      const msg = `${id}: painted ${JSON.stringify(ink)} vs ${JSON.stringify(r)}`;
+      // Within 4 px (the handle's ring is 11 px): the engine's glyph bounds
+      // are the outlines', not the half-covered pixels, and a leaned letter's
+      // bounds (`turnedInk`) are a little wide of its ink.
+      const tx = 4;
+      const ty = 4;
+      expect(Math.abs(ink.x0 - r.x0), msg).toBeLessThanOrEqual(tx);
+      expect(Math.abs(ink.y0 - r.y0), msg).toBeLessThanOrEqual(ty);
+      expect(Math.abs(ink.x1 + 1 - r.x1), msg).toBeLessThanOrEqual(tx);
+      expect(Math.abs(ink.y1 + 1 - r.y1), msg).toBeLessThanOrEqual(ty);
     }
   });
 });

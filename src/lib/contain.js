@@ -327,6 +327,24 @@ export function linesInkRect(place) {
   return r;
 }
 
+// The letters' own ink, box-local, as one rectangle ({ x0, y0, x1, y1 }), or
+// null with none: the glyphs alone, without the outlines, the ink or any
+// effect. What a crack's focus is stated in (special.js `handleFrame`), near
+// enough: the engine reads the painted glyphs' outlines.
+export function lettersInkRect(cand, place = placeBlock(cand)) {
+  if (!place) return null;
+  if (!place.isCurve) return linesInkRect(place);
+  const s = place.s;
+  let r = null;
+  for (const g of place.layout) {
+    const k = placedInk(g, s, s.size);
+    if (!k) continue;
+    const [x0, y0, x1, y1] = turnedInk(k, g.rot, cand.w / 2 + g.x, cand.h / 2 + g.y, g.sx, g.sy, g.skew);
+    r = unite(r, x0, y0, x1, y1);
+  }
+  return r;
+}
+
 // Where a straight block is on screen once it is a picture: its line boxes
 // (`blockRect`) and its glyphs' ink (`linesInkRect`) as one box-local
 // rectangle. The picture holds both - the exporter's footprint is grown to
