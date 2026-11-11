@@ -46,7 +46,7 @@ use super::raster::{Part, Rasterizer};
 use super::shade::Shader;
 use super::sweep;
 use super::{
-    budget, finish, paint_job_with, plan, Exact, Planned, Raster, FLATTEN_TOLERANCE,
+    budget, paint_job_with, plan, Exact, Raster, FLATTEN_TOLERANCE,
 };
 use super::{MAX_PIXELS, MAX_SIDE};
 use crate::engine::Engine;
@@ -1441,19 +1441,21 @@ fn clip_parts<'a>(
     Ok(out)
 }
 
-/// The coverage of the union of `shapes`, stated from `origin`, over the
-/// surface: straight RGBA8 whose alpha is the share of each pixel they cover,
-/// and the box of pixels it is for. `None` when they cover nothing of the
-/// surface. The mask's shapes are cut from the finished surface, after the
-/// box's warp: the app has taken them from the page into the box's frame, so
-/// the mesh does not bend them.
-pub(crate) fn shapes_mask<'a>(
+/// The coverage of the union of `shapes`, stated from `origin`, over their
+/// box cut to `surface`, one byte a pixel: to the byte the alpha the
+/// composite stores for them painted in opaque white, at a quarter of an
+/// RGBA raster's memory. `None` when they cover nothing of the surface. The
+/// mask's shapes are cut from the finished surface, after the box's warp:
+/// the app has taken them from the page into the box's frame, so the mesh
+/// does not bend them.
+pub(crate) fn shapes_alpha<'a>(
     origin: Pt,
     shapes: impl Iterator<Item = &'a ClipShape>,
     transform: &Affine,
     surface: IBox,
     rasterizer: &dyn Rasterizer,
-) -> Result<Option<(Vec<u8>, IBox)>, Error> {
+) -> Result<Option<Map>, Error> {
+    use super::raster::{strip_of, STRIP_ROWS};
     let tol = FLATTEN_TOLERANCE / transform.max_scale();
     let mut parts = budget::Buffer::new();
     for polys in clip_parts(origin, shapes, tol)?.iter() {
@@ -1472,9 +1474,35 @@ pub(crate) fn shapes_mask<'a>(
     if bx.is_empty() {
         return Ok(None);
     }
-    let mut layers: budget::Buffer<Planned<'_>> = budget::Buffer::new();
-    budget::push(&mut layers, planned)?;
-    Ok(Some((finish(layers, bx, rasterizer)?, bx)))
+    let w = bx.width();
+    let mut data = budget::filled(w.checked_mul(bx.height()).ok_or(Error::BadSpec)?, 0u8)?;
+    let mut coverage = rasterizer.prepare(&planned.parts, bx)?;
+    let stride = w + 2;
+    let strip = STRIP_ROWS as usize;
+    let mut cov = budget::filled(stride * strip, 0.0f32)?;
+    let mut spans = budget::filled(strip, (0u32, 0u32))?;
+    let mut y = bx.y0;
+    while y < bx.y1 {
+        let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
+        let rows = (y_end - y) as usize;
+        cov[..stride * rows].fill(0.0);
+        coverage.render(y, y_end, &mut cov[..stride * rows], stride, &mut spans)?;
+        for (r, &(a, b)) in spans[..rows].iter().enumerate() {
+            let (a, b) = (a as usize, (b as usize).min(w));
+            if a >= b {
+                continue;
+            }
+            let row = &mut data[((y - bx.y0) as usize + r) * w..][..w];
+            for (o, &c) in row[a..b].iter_mut().zip(&cov[r * stride + a..r * stride + b]) {
+                // As the composite stores one opaque white layer's alpha.
+                if c > 0.0 {
+                    *o = blur::to_u8(if c < 1.0 { c } else { 1.0 } * 255.0);
+                }
+            }
+        }
+        y = y_end;
+    }
+    Ok(Some(Map { data: data.into_vec(), bx }))
 }
 
 /// A fade shape's softness in surface pixels, snapped to steps of a tenth
@@ -1544,14 +1572,6 @@ pub(crate) struct Map {
 }
 
 impl Map {
-    /// The alpha of a straight RGBA8 raster over `bx`.
-    fn alpha(rgba: &[u8], bx: IBox) -> Option<Self> {
-        let mut data = Vec::new();
-        data.try_reserve_exact(rgba.len() / 4).ok()?;
-        data.extend(rgba.iter().skip(3).step_by(4));
-        Some(Self { data, bx })
-    }
-
     #[inline(always)]
     pub(crate) fn at(&self, x: i32, y: i32) -> u32 {
         let b = &self.bx;
@@ -1666,8 +1686,8 @@ pub(crate) fn fade_map(
             let mut small = Surface::new(gw, g.height())?;
             for &i in members.iter() {
                 let p = &fade.shapes[i];
-                let Some((cov, bx)) =
-                    shapes_mask(fade.origin, core::iter::once(&p.shape), &low, g, rasterizer)?
+                let Some(Map { data: cov, bx }) =
+                    shapes_alpha(fade.origin, core::iter::once(&p.shape), &low, g, rasterizer)?
                 else {
                     continue;
                 };
@@ -1675,10 +1695,10 @@ pub(crate) fn fade_map(
                 // alpha the strongest shape over each pixel.
                 let bw = bx.width();
                 for y in bx.y0..bx.y1 {
-                    let from = (y - bx.y0) as usize * bw * 4;
+                    let from = (y - bx.y0) as usize * bw;
                     let to = ((y - g.y0) as usize * gw + (bx.x0 - g.x0) as usize) * 4;
                     for i in 0..bw {
-                        let a = (f64::from(cov[from + i * 4 + 3]) * p.strength).round() as u8;
+                        let a = (f64::from(cov[from + i]) * p.strength).round() as u8;
                         let q = &mut small.data[to + i * 4..to + i * 4 + 4];
                         if a > q[3] {
                             q.fill(a);
@@ -1801,8 +1821,7 @@ impl Cover {
         };
         let raster = |clip: &Clip, mode: ClipMode| -> Result<Option<Map>, Error> {
             let shapes = clip.shapes.iter().filter(|p| p.mode == mode).map(|p| &p.shape);
-            Ok(shapes_mask(clip.origin, shapes, &transform, window, rasterizer)?
-                .and_then(|(rgba, bx)| Map::alpha(&rgba, bx)))
+            shapes_alpha(clip.origin, shapes, &transform, window, rasterizer)
         };
         if let Some(clip) = &request.clip {
             // Inside the keep shapes, when there are any: shapes that cover
@@ -1882,10 +1901,14 @@ impl Cover {
     }
 }
 
+/// How far past the surface a kept cover is rastered each way, surface
+/// pixels: a move stays inside it for a while.
+const COVER_MARGIN: i32 = 256;
+
 /// The mask and the fade laid on `s`: from the cover kept under `key` when
 /// there is one and the move has not left its window, or rastered now.
-/// Kept, it is rastered over the surface grown by its own size each way,
-/// so a move stays inside it for a while; not kept, over the surface.
+/// Kept, it is rastered over the surface grown by [`COVER_MARGIN`] each way;
+/// not kept (no key, or maps past what the store keeps), over the surface.
 fn lay_cover(
     s: &mut Surface,
     request: &BoxRequest,
@@ -1930,19 +1953,23 @@ fn lay_cover(
     let cover = match kept {
         Some(cv) => cv,
         None => {
-            let window = if key.is_some() {
-                let (w, h) = (surface.x1, surface.y1);
-                IBox {
-                    x0: -w,
-                    y0: -h,
-                    x1: 2 * w,
-                    y1: 2 * h,
-                }
-            } else {
-                surface
+            // Kept, the window is the surface and a fixed margin each way,
+            // while its maps (one byte a pixel each) fit what the store
+            // keeps; past that the surface alone, not kept.
+            let grown = IBox {
+                x0: -COVER_MARGIN,
+                y0: -COVER_MARGIN,
+                x1: surface.x1 + COVER_MARGIN,
+                y1: surface.y1 + COVER_MARGIN,
             };
+            let maps = request.clip.as_ref().map_or(0, |c| {
+                usize::from(c.shapes.iter().any(|p| p.mode == ClipMode::Include))
+                    + usize::from(c.shapes.iter().any(|p| p.mode == ClipMode::Exclude))
+            }) + usize::from(request.fade.is_some());
+            let keep = key.filter(|_| grown.width() * grown.height() * maps <= kept::ceiling() / 4);
+            let window = if keep.is_some() { grown } else { surface };
             let cv = std::rc::Rc::new(Cover::new(request, scale, at, window, rasterizer)?);
-            if let Some(k) = key {
+            if let Some(k) = keep {
                 kept::put(k, std::rc::Rc::clone(&cv), cv.bytes());
             }
             cv
