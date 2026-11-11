@@ -391,6 +391,21 @@ fn a_piece_moves_with_its_fill_and_bands_and_the_hole_is_clean() {
 /// A crack at its largest under a black box stroke 12 wide, outside: 200 px
 /// "KRAK" over a box 650 by 320 at `scale`.
 fn largest_under_stroke(font: FontId, scale: f64, break_off: Option<BreakOff>) -> BoxRequest {
+    let mut b = largest(font, scale, break_off);
+    b.effects = vec![Effect::Stroke(Stroke {
+        size: 12.0,
+        position: Position::Outside,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        paint: Paint::Fill(Fill::Solid(BLACK)),
+        seed: 0,
+    })];
+    b
+}
+
+/// A crack at its largest (amount 1, size 400 %, over every letter): 200 px
+/// "KRAK" over a box 650 by 320 at `scale`.
+fn largest(font: FontId, scale: f64, break_off: Option<BreakOff>) -> BoxRequest {
     let (w, h) = ((650.0 * scale) as u32, (320.0 * scale) as u32);
     let mut b = boxed(font, None);
     b.width = w;
@@ -406,15 +421,30 @@ fn largest_under_stroke(font: FontId, scale: f64, break_off: Option<BreakOff>) -
         splash: None,
         scratches: None,
     });
-    b.effects = vec![Effect::Stroke(Stroke {
-        size: 12.0,
-        position: Position::Outside,
-        opacity: 1.0,
-        blend: Blend::Normal,
-        paint: Paint::Fill(Fill::Solid(BLACK)),
-        seed: 0,
-    })];
     b
+}
+
+#[test]
+fn the_largest_crack_broken_off_paints_close_up() {
+    // Every piece broken off a crack at its largest, at scale 4, no
+    // stroke: the pieces' outlines follow the crack's arms, some 31M device
+    // pixels round the letters (once 84 MB of coverage, all kept). Only
+    // what lies on the surface is rastered: everything the paint keeps fits
+    // in a few surfaces' worth of bytes.
+    use mt_text::paint::kept;
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    kept::set_ceiling(1 << 30);
+    let surface = 2600 * 1280;
+    for motion in [Motion::Fall, Motion::Apart] {
+        kept::clear();
+        let r = paint(&mut engine, largest(font, 4.0, Some(BreakOff { share: 1.0, motion })));
+        assert!(ink(&r) > 0, "{motion:?}");
+        assert!(r.x >= 0 && r.y >= 0 && r.x + r.width as i32 <= 2600 && r.y + r.height as i32 <= 1280, "{motion:?}");
+        assert!(kept::bytes() < 8 * surface, "{motion:?}: kept {}", kept::bytes());
+    }
+    kept::clear();
+    kept::set_ceiling(kept::KEPT_BYTES);
 }
 
 #[test]

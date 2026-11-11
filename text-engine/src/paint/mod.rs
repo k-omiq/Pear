@@ -1203,7 +1203,7 @@ fn paint_letters(
     let planned = plan_letters(&layers, &ghosts, &letters, shapes)?;
     match shapes.filter(|sh| !sh.pieces.is_empty()) {
         Some(sh) => break_off(planned, &layers, sh, rasterizer),
-        None => finish_planned(planned, within(job.effects.cuts), rasterizer),
+        None => finish_planned(planned, within(&job.effects), rasterizer),
     }
 }
 
@@ -1221,7 +1221,7 @@ fn plan_letters<'a>(
     let fx = &job.effects;
     // The cuts alone: a box's own strokes cut by them as a glyph band is
     // (`Cuts::Alone`).
-    if let Cuts::Alone(_) = fx.cuts {
+    if let Cuts::Alone = fx.cuts {
         let mut planned = budget::Buffer::new();
         if let Some(p) = shapes.map(|sh| poly_plan(&sh.cuts, l.bends, l.transform, l.tiles, l.tol)).transpose()?.flatten() {
             budget::push(&mut planned, p)?;
@@ -1314,12 +1314,12 @@ fn break_off<'a>(
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
     let fx = &l.job.effects;
-    let clip = within(fx.cuts);
+    let clip = within(fx);
     let Some(body) = finish_planned(planned, clip, rasterizer)? else {
         // Nothing to carry: with the cuts alone, the holes are cuts still.
         let geom = broken(l, shapes, rasterizer)?;
         return match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip))) {
-            (Cuts::Alone(_), Some(h)) => h.opaque().map(Some),
+            (Cuts::Alone, Some(h)) => h.opaque().map(Some),
             _ => Ok(None),
         };
     };
@@ -1362,7 +1362,7 @@ fn break_off<'a>(
     let mut out = body;
     match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip))) {
         (Cuts::Made, Some(h)) => erase_by(&mut out, h),
-        (Cuts::Alone(_), Some(h)) => out = over(out, &h.opaque()?)?,
+        (Cuts::Alone, Some(h)) => out = over(out, &h.opaque()?)?,
         _ => {}
     }
     // The pieces over it, in one raster as big as all of them.
@@ -1485,7 +1485,7 @@ impl Broken {
 /// each pass of the box reads them back. Bent letters are not kept.
 fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer) -> Result<Rc<Broken>, Error> {
     let key = shapes.key.filter(|_| l.bends.is_empty()).and_then(|k| {
-        Hasher::new("broken").key(k).debug(&l.transform.0).f64(l.tol).finish()
+        Hasher::new("broken").key(k).debug(&l.transform.0).f64(l.tol).debug(&l.job.effects.surface).finish()
     });
     if let Some(hit) = key.and_then(kept::get::<Rc<Broken>>) {
         return Ok(Rc::clone(&*hit));
@@ -1498,12 +1498,20 @@ fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer)
         }
         p
     };
+    // No further than the surface: a piece's outline follows the crack's
+    // arms, which reach far past the letters, and what lands past the
+    // surface is never seen (its padding holds the farthest a piece goes).
+    let surface = l.job.effects.surface;
     let alpha = |polys: &Polys, t: &Affine| -> Result<Option<Alpha>, Error> {
         let Some(p) = poly_plan(polys, l.bends, t, l.tiles, l.tol)? else {
             return Ok(None);
         };
-        let a = alpha_bytes(&p.parts, p.bx, rasterizer)?;
-        Ok(Some(Alpha { bx: p.bx, a }))
+        let bx = surface.map_or(p.bx, |s| p.bx.intersect(&s));
+        if bx.is_empty() {
+            return Ok(None);
+        }
+        let a = alpha_bytes(&p.parts, bx, rasterizer)?;
+        Ok(Some(Alpha { bx, a }))
     };
     let holes = alpha(&outlines(&mut shapes.pieces.iter()), l.transform)?;
     let to_job = l.transform.invert();
@@ -1723,11 +1731,11 @@ fn lay_over(dst: &mut [u8], db: IBox, src: &[u8], sb: IBox) {
     }
 }
 
-/// Where a pass's raster may reach: the cuts alone, no further than the box
-/// asks (`Cuts::Alone`); any other, all it paints.
-fn within(cuts: Cuts) -> Option<IBox> {
-    match cuts {
-        Cuts::Alone(b) => Some(b),
+/// Where a pass's raster may reach: the cuts alone, no further than the
+/// surface (`Cuts::Alone`); any other, all it paints.
+fn within(fx: &Effects) -> Option<IBox> {
+    match fx.cuts {
+        Cuts::Alone => fx.surface,
         _ => None,
     }
 }

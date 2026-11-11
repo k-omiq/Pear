@@ -181,6 +181,11 @@ pub struct Effects {
     /// cuts alone, so a stroke outlines the letters and is then cut through
     /// as a glyph band is.
     pub cuts: Cuts,
+    /// The device pixels this paint is seen through (not on the wire): the
+    /// box's surface, its corner at device `(0, 0)`. A crack's cuts alone
+    /// and its pieces are rastered no further, so a crack far bigger than
+    /// the letters makes no raster past it. `None`: as far as they reach.
+    pub surface: Option<IBox>,
 }
 
 /// [`Effects::cuts`].
@@ -192,11 +197,9 @@ pub enum Cuts {
     /// The letters as if nothing cut them.
     Skipped,
     /// The cuts alone, opaque, and nothing of the letters, rastered no
-    /// further than this box of device pixels (the box's surface): a cut
-    /// only takes away, so what lies past it is never read, and a crack far
-    /// bigger than the letters cannot make a raster past the painter's
-    /// largest.
-    Alone(IBox),
+    /// further than the surface (`Effects::surface`): a cut only takes
+    /// away, so what lies past it is never read.
+    Alone,
 }
 
 /// Letters that jump about: each letter is moved up or down by up to
@@ -257,6 +260,7 @@ impl Default for Effects {
             line: false,
             special: None,
             cuts: Cuts::Made,
+            surface: None,
         }
     }
 }
@@ -954,6 +958,7 @@ pub(crate) fn decode_split(bytes: &[u8]) -> Result<(Request, usize), Error> {
                 line: false,
                 special,
                 cuts: Cuts::Made,
+                surface: None,
             },
             runs,
         },
