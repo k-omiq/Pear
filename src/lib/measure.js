@@ -1,5 +1,5 @@
 // Shared text measurement + line wrapping (used by curved rendering and export).
-import { fontCssFor, measuredFontFor } from './store.svelte.js';
+import { fontCssFor, measuredFontFor, noteFontsChanged } from './store.svelte.js';
 import { balanceLines, neededHeight, balancedBlockSize, BALANCED_DEFAULTS, ovalProfile } from './typeset.js';
 import { interiorLineWidths, safetyInset, layoutShape } from './balloon.js';
 import { fitPolygon, roomOver, turnPolygon } from './outline-geom.js';
@@ -824,8 +824,14 @@ export function casedRuns(text, runs, style) {
 //
 // A face the engine is still loading (a bold file of the family on its way)
 // is measured - and so painted, and its carets placed, all through here - in
-// the box's own face until it is ready; the fonts-changed signal that comes
-// with it lays the box out and paints it again.
+// the box's own face until it is ready.
+//
+// The engine's answer is kept with the layouts (`faceReadiness`, dropped only
+// by `clearLayoutMemo`): a layout kept from before the face came and a paint
+// after it ask the same question, so a line is never painted in a face it was
+// not measured in. When a face that was not ready arrives, the store is told
+// (`noteFontsChanged`), which drops the layouts and this with them and lays
+// out and paints every box again.
 const faceStyles = new WeakMap();
 function faceStyle(style, f) {
   if (!!style.bold === f.bold && !!style.italic === f.italic) return style;
@@ -833,7 +839,40 @@ function faceStyle(style, f) {
   if (!kept) faceStyles.set(style, (kept = []));
   const i = (f.bold ? 2 : 0) + (f.italic ? 1 : 0);
   const fs = (kept[i] ??= { ...style, bold: f.bold, italic: f.italic });
-  return engine?.faceReady?.(faceFor(fs, fs.size)) === false ? style : fs;
+  return faceIsReady(faceFor(fs, fs.size)) ? fs : style;
+}
+
+// face key -> whether the engine had it when a layout first asked.
+const faceReadiness = new Map();
+// face key -> face, for the ones that were not.
+const facesAwaited = new Map();
+let arrivalQueued = false;
+function faceIsReady(face) {
+  let ready = faceReadiness.get(face.key);
+  if (ready === undefined) {
+    ready = engine?.faceReady?.(face) !== false;
+    faceReadiness.set(face.key, ready);
+    if (!ready) facesAwaited.set(face.key, face);
+  }
+  return ready;
+}
+// On any change of the engine's fonts: whether a face a layout went without
+// has come. Asked again of the engine, which starts no second load for one on
+// its way (`browserFaceReady`).
+function awaitedArrived() {
+  if (!facesAwaited.size || arrivalQueued) return;
+  for (const face of facesAwaited.values()) {
+    if (engine?.faceReady?.(face) === false) continue;
+    arrivalQueued = true;
+    // After the event that said so: the store lays every box out again, which
+    // is no work for a font listener to do in the middle of a font event.
+    setTimeout(() => {
+      if (!arrivalQueued) return;
+      arrivalQueued = false;
+      noteFontsChanged();
+    });
+    return;
+  }
 }
 
 // The faces line `k` of a layout is drawn in: `[{ start, end, style }]`,
@@ -1093,7 +1132,9 @@ function watchEngine(e) {
   // face on its own path.
   unwatchFonts = e?.onFontsChange(() => {
     // An old engine may not offer an unsubscribe; it must not invalidate the new one.
-    if (engine === e) clearMeasureMemo();
+    if (engine !== e) return;
+    clearMeasureMemo();
+    awaitedArrived();
   });
 }
 onTextEngineChange((e) => {
@@ -1636,6 +1677,9 @@ function memoKey(text, style, sizePx, w, widthsFor, breakWords) {
 export function clearLayoutMemo() {
   memo.clear();
   clearMeasureMemo();
+  faceReadiness.clear();
+  facesAwaited.clear();
+  arrivalQueued = false;
 }
 
 // For the tests, and for the same sort of introspection `pagePixelsHeld` offers.

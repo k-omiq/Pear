@@ -147,7 +147,12 @@ export function changedSpan(before, after) {
 // side of it. Checked against the text the edit left, so a selection that does
 // not explain it - an input that moved the caret first, an IME - gives null,
 // and the caller falls back to `changedSpan`'s guess.
-export function editedSpan(before, after, selA, selB) {
+//
+// `inputType`, the edit's own, says which side of the caret a delete took:
+// both may explain the text left ("aa" less one "a"), and a forward delete
+// took the letter after the caret. Without it the letter before is tried
+// first, as Backspace is the delete typed most.
+export function editedSpan(before, after, selA, selB, inputType = '') {
   if (typeof before !== 'string' || typeof after !== 'string' || before === after) return null;
   const lo = Math.min(selA, selB);
   const hi = Math.max(selA, selB);
@@ -157,8 +162,50 @@ export function editedSpan(before, after, selA, selB) {
     after.startsWith(before.slice(0, a)) && after.endsWith(before.slice(b));
   if (lo < hi) return fits(lo, hi) ? [lo, hi] : null;
   const delta = after.length - before.length;
-  for (const [a, b] of delta >= 0 ? [[lo, lo]] : [[lo + delta, lo], [lo, lo - delta]]) if (fits(a, b)) return [a, b];
+  const forward = /^delete\w*Forward$/.test(inputType);
+  const back = [lo + delta, lo];
+  const ahead = [lo, lo - delta];
+  for (const [a, b] of delta >= 0 ? [[lo, lo]] : forward ? [ahead, back] : [back, ahead]) if (fits(a, b)) return [a, b];
   return null;
+}
+
+// What each edit of a plain text field (a textarea, an input) replaced, for
+// the faces of its words to move with it: the field's text, selection and
+// input type as `beforeinput` saw them (`before`), read once the edit has
+// landed (`span`). A textarea gives no target ranges, so its selection is
+// all there is - except while an IME composes, when the range the
+// composition holds is followed from its start (`start`) through each edit
+// it makes, as the composed letters are not selected. What the selection does
+// not explain - an autocorrect or dictation replacing a word the caret is
+// next to, a drop - is null, and the writer guesses from the text.
+export function fieldSpans() {
+  let was = null;
+  let held = null;
+  return {
+    before(e) {
+      const el = e.currentTarget;
+      was = { v: el.value, a: held ? held.a : el.selectionStart, b: held ? held.b : el.selectionEnd, t: e.inputType ?? '' };
+    },
+    start(e) {
+      const el = e.currentTarget;
+      held = { a: el.selectionStart, b: el.selectionEnd };
+    },
+    // WebKit ends a composition before its last input lands.
+    end() {
+      setTimeout(() => {
+        held = null;
+      });
+    },
+    // The span of the field's text before this edit that became `v`, when
+    // that text was `model`'s (the store's words the field shows).
+    span(v, model) {
+      const w = was;
+      was = null;
+      const sp = w && w.v === model ? editedSpan(w.v, v, w.a, w.b, w.t) : null;
+      if (held) held = sp ? { a: sp[0], b: sp[1] + v.length - w.v.length } : null;
+      return sp;
+    },
+  };
 }
 
 // The runs of `[start, end)` of a text, as runs of that slice alone.
