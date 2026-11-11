@@ -7,7 +7,7 @@
 //! [`decode`] reads the wire form `text-engine/js/paint.mjs` writes: one
 //! little-endian buffer per job.
 
-use super::geom::{Affine, Pt};
+use super::geom::{Affine, IBox, Pt};
 use super::roughen::Roughen;
 use super::shade::Premul;
 use super::special::{BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
@@ -191,8 +191,12 @@ pub enum Cuts {
     Made,
     /// The letters as if nothing cut them.
     Skipped,
-    /// The cuts alone, opaque, and nothing of the letters.
-    Alone,
+    /// The cuts alone, opaque, and nothing of the letters, rastered no
+    /// further than this box of device pixels (the box's surface): a cut
+    /// only takes away, so what lies past it is never read, and a crack far
+    /// bigger than the letters cannot make a raster past the painter's
+    /// largest.
+    Alone(IBox),
 }
 
 /// Letters that jump about: each letter is moved up or down by up to
