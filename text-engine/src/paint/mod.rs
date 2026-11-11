@@ -59,8 +59,8 @@ pub use boxjob::{
 use geom::positive;
 pub use geom::{Affine, IBox, Polys, Pt};
 pub use job::{
-    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, Wobble,
-    Stop, Tile, MAGIC, MAX_WOBBLE_AMOUNT, MAX_WOBBLE_TILT, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
+    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, RunFaces,
+    Wobble, Stop, Tile, MAGIC, MAX_RUN_FACES, MAX_WOBBLE_AMOUNT, MAX_WOBBLE_TILT, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
 };
 pub(crate) use outline::glyph_polys;
 pub use outline::FLATTEN_TOLERANCE;
@@ -69,7 +69,7 @@ pub use raster::{Coverage, Exact, Part, PlainScratch, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
-pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, Placed, ShapedRun};
+pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, shape_spans, Placed, ShapedRun};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
@@ -974,9 +974,14 @@ fn paint_letters(
     } = request;
     let face: Face = *face;
     let bold_draw = bold_draw.unwrap_or(BoldDraw::for_rule(engine.rules.bold_advance));
-    // Validate both handles even when the job has no runs or draws nothing.
+    // Validate both handles even when the job has no runs or draws nothing,
+    // and those of every face its lines are set in.
     engine.font(face.font)?;
     engine.check_chain(face.chain)?;
+    for f in &request.faces.faces {
+        engine.font(f.font)?;
+        engine.check_chain(f.chain)?;
+    }
     if !transform.is_finite() || transform.invert().is_none() || !positive(face.size) {
         return Ok(None);
     }
@@ -1032,7 +1037,8 @@ fn paint_letters(
     };
     // A curved line's runs, shaped as the line (`Effects::line`); `None`
     // shapes each run on its own. An afterimage is an SFX letter's, never a
-    // line's.
+    // line's. A curved job never carries faces (the decoder refuses one), so
+    // the line is always in the job's face.
     let mut line = None;
     if job.curved && job.effects.line && !job.runs.iter().any(|r| r.ghost) {
         let texts = job.runs.iter().map(|r| r.text.as_str());
@@ -1041,9 +1047,16 @@ fn paint_letters(
     }
     for (i, run) in job.runs.iter().enumerate() {
         let spacing = if job.curved { 0.0 } else { job.letter_spacing };
-        let shaped = match line.as_mut().and_then(Iterator::next) {
-            Some(shaped) => shaped,
-            None => shape_run(engine, face, &run.text, spacing)?,
+        // A line set in several faces is shaped by its stretches, each in
+        // its face: what the layout measured it by. From here on its glyphs
+        // are glyphs like any other - each names its own font and synthetic
+        // style, as a letter borrowed from a fallback font always has - so
+        // the bands, the fill, a wobble, a mesh and a mask need nothing of
+        // their own for it.
+        let shaped = match (line.as_mut().and_then(Iterator::next), request.faces.of(i)) {
+            (Some(shaped), _) => shaped,
+            (None, Some(spans)) => shape_spans(engine, &spans, &run.text, spacing)?,
+            (None, None) => shape_run(engine, face, &run.text, spacing)?,
         };
         let frame = if job.curved {
             // translate(x, y); rotate(rot); the glyph centred on the origin.
@@ -1341,6 +1354,7 @@ mod hardening_tests {
             transform: Affine::IDENTITY,
             tiles: vec![],
             ink: None,
+            faces: Default::default(),
             job: job::Job {
                 curved: false,
                 align: job::Align::Left,

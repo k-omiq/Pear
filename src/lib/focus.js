@@ -33,9 +33,19 @@ export function focusable(root) {
 export function captureFocus(fallback) {
   const previous = /** @type {HTMLElement | null} */ (document.activeElement);
   const parent = previous?.parentElement ?? null;
+  // Text selected in an editable goes back with the focus. WebKit puts the
+  // caret at the start of an editable it focuses, so words selected in a box
+  // when a menu opened over them were let go when it closed.
+  const sel = previous?.closest?.('[contenteditable]:not([contenteditable="false"])') ? document.getSelection() : null;
+  const range = sel?.rangeCount && previous.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.getRangeAt(0).cloneRange() : null;
   return () => {
     if (previous && document.contains(previous)) {
       previous.focus();
+      if (range && document.contains(range.startContainer) && document.contains(range.endContainer)) {
+        const now = document.getSelection();
+        now?.removeAllRanges();
+        now?.addRange(range);
+      }
       return;
     }
     const node = typeof fallback === 'function' ? fallback() : fallback;

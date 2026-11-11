@@ -56,6 +56,7 @@ fn plain(font: FontId) -> BoxRequest {
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
         ink: None,
+        faces: Default::default(),
     };
     let mut b = BoxRequest::new(260, 160, request);
     b.blend = Blend::Normal;

@@ -80,6 +80,7 @@ fn sheet(
             transform,
             tiles: Vec::new(),
             ink: None,
+            faces: Default::default(),
         },
     }
 }

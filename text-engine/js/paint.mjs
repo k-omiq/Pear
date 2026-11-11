@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 12
+export const WIRE_VERSION = 13
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -356,7 +356,7 @@ function writeTiles(sent) {
 // The job's bytes, appended where the buffer stands.
 // `collector` is the tile table, given when the box's effects already sent
 // tiles into it.
-function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0, transform, tiles }, collector = tileCollector(tiles)) {
+function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', weight = 0, transform, tiles }, collector = tileCollector(tiles)) {
   const { sent, index: tileIndex } = collector
   const m = transform ?? [1, 0, 0, 1, 0, 0]
   u32(MAGIC)
@@ -380,6 +380,7 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   // or a roughening would undo it).
   // 64 (v12): Wobble, each letter moved up or down and turned by numbers of
   // its own (`wobble`, below).
+  // 128 (v13): lines set in several faces (`runFaces`, at the job's end).
   const negative = job.negative ?? null
   const wobble = job.wobble ?? null
   u32(
@@ -389,7 +390,8 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
       (job.strokeOrder === 'each' ? 8 : 0) |
       (negative ? 16 : 0) |
       (job.crisp ? 32 : 0) |
-      (wobble ? 64 : 0),
+      (wobble ? 64 : 0) |
+      (job.faces?.length ? 128 : 0),
   )
   // An alignment the canvas does not know leaves its `textAlign` at "start".
   u32(ALIGN[job.align] ?? 0)
@@ -462,6 +464,38 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
     at += written
   }
   writeTiles(sent)
+  runFaces(job, faces)
+}
+
+// (v13) The faces of a straight job's lines set in several, at the very end
+// of the job and only for such a job, which says so with flag 128: a job in
+// one face is the bytes it was, and a field added to the glyph job later goes
+// under a flag of its own, after this block or not.
+// `job.faces` are the faces the lines' `spans` name by index, and `faces`
+// the engine faces the caller resolved them to (`{ font, flags }`, an engine
+// face's, chain and all), one each. A span is `{ face, start, end }`, UTF-16
+// units of its run's text.
+function runFaces(job, faces) {
+  if (!job.faces?.length) return
+  if (job.curved) throw new Error('mt-text: a curved job is laid out in one face')
+  if (!Array.isArray(faces) || faces.length !== job.faces.length) throw new Error('mt-text: a job set in several faces needs each face resolved (request.faces)')
+  u32(faces.length)
+  for (const f of faces) {
+    const flags = faceFlags(f.flags ?? f.synth)
+    u32(f.font)
+    u32(flags & ((1 << CHAIN_SHIFT) - 1))
+    u32(f.chain ?? flags >>> CHAIN_SHIFT)
+  }
+  u32(job.runs.length)
+  for (const run of job.runs) {
+    const spans = run.spans ?? []
+    u32(spans.length)
+    for (const sp of spans) {
+      u32(sp.face)
+      u32(sp.start)
+      u32(sp.end)
+    }
+  }
 }
 
 // Rule: every new flag bit, field, record kind or changed meaning bumps this,

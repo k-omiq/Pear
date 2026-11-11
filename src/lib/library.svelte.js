@@ -12,6 +12,7 @@
 import { fsx } from './fsx.js';
 import { takeSnapshot, requireSnapshot, listSnapshots, isSnapshotName } from './snapshots.js';
 import { uniqueSlug, chapterSlug } from './paths.js';
+import { putText, saveRuns } from './runs.js';
 import {
   app,
   chapterProgress,
@@ -2039,7 +2040,11 @@ export const applyTranslations = guarded(async function applyTranslations(
       const en = lineText(incoming.get(l.n));
       if (lineText(l).trim() || !en.trim()) return l;
       filled++;
-      return { ...l, en };
+      // Through the one writer of an English (runs.js). Imported words carry
+      // no faces, and none left beside the blank they replace is theirs.
+      const out = { ...l };
+      putText(out, 'en', en, { runs: null });
+      return out;
     });
     for (const l of parsed[i].lines) if (!existing.has(l.n)) lines.push(l);
     return { ...pg, lines };
@@ -2613,9 +2618,11 @@ async function writeOpenChapter(seq, requestedRef, requestedTurn) {
     ...(pg.note ? { note: pg.note } : null),
     // $state.snapshot is a deep clone: the nested style objects inside boxes
     // and the detect geometry come out as plain data, never proxies.
-    lines: $state.snapshot(pg.lines),
+    // The faces beside the words (runs.js) normalised on the way out, as
+    // they are on the way in.
+    lines: saveRuns($state.snapshot(pg.lines), 'en'),
     detect: $state.snapshot(pg.detect),
-    boxes: $state.snapshot(pg.boxes),
+    boxes: saveRuns($state.snapshot(pg.boxes), 'text'),
   }));
   // Serialised here, in the same synchronous breath as `record.pages` and from
   // the same document, so the two files can never describe different moments.

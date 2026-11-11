@@ -76,6 +76,7 @@ fn request(job: Job, font: FontId) -> Request {
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
         ink: None,
+        faces: Default::default(),
     }
 }
 

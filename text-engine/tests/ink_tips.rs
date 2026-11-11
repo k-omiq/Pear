@@ -74,6 +74,7 @@ fn tipped(font: FontId, k: Stroke, keys: &[&str], scale: f64) -> BoxRequest {
         transform: Affine::scale(scale, scale),
         tiles: Vec::new(),
         ink: Some(ink),
+        faces: Default::default(),
     };
     BoxRequest::new((240.0 * scale) as u32, (160.0 * scale) as u32, request)
 }

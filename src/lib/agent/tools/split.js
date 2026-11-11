@@ -17,7 +17,8 @@
 // Then every piece is typeset in its bubble. One undo step per page.
 
 import { defineTool, ToolError } from '../registry.js';
-import { app, boxText, duplicateBox, editBoxes, setBoxText, resizeBox, dropBoxOutline, refitBalloon, commitOutlinePoints, isTranslateMode } from '../../store.svelte.js';
+import { sliceRuns } from '../../runs.js';
+import { app, boxText, boxRuns, duplicateBox, editBoxes, setBoxText, resizeBox, dropBoxOutline, refitBalloon, commitOutlinePoints, isTranslateMode } from '../../store.svelte.js';
 import { breaksFor } from '../../measure.js';
 import { splitOutline, farLobe } from '../../bubble-outline.js';
 import { fitPolygon, intervalsAt } from '../../outline-geom.js';
@@ -31,12 +32,20 @@ const inside = (pts, [x, y]) => intervalsAt(pts, y).some(([l, r]) => x >= l && x
 const dot = ([x, y], r = 2) => [x - r, y - r, x + r, y + r];
 
 // The parts as the text's own pieces (capitals and spacing as the text has
-// them), or null when they are not the text, every word once, in order.
+// them), each with where it sits in the text - `{ text, start, end }` - or
+// null when they are not the text, every word once, in order. Where, so each
+// piece takes the faces of its own letters (runs.js): the same words twice
+// over cannot say which of them a face was on.
 export function partsOf(text, parts) {
   const t = String(text ?? '');
   const b = breaksFor(t, null, 0, parts);
   if (!b) return null;
-  return b.at.map((from, i) => t.slice(from, b.at[i + 1] ?? t.length).trim());
+  return b.at.map((from, i) => {
+    const raw = t.slice(from, b.at[i + 1] ?? t.length);
+    const start = from + (raw.length - raw.trimStart().length);
+    const piece = raw.trim();
+    return { text: piece, start, end: start + piece.length };
+  });
 }
 
 // Reading order of two points on a manga page: the higher first when they sit
@@ -77,6 +86,7 @@ defineTool({
       throw new ToolError(`parts must be 2 to ${MAX_PARTS} non-empty strings`, 'e.g. ["Wait!", "Where are you going?"]');
     }
     const pieces = partsOf(boxText(b, p), parts);
+    const runs = boxRuns(b, p);
     if (!pieces) throw new ToolError(`the parts are not box ${id}'s text`, 'give every word of the text once, in order, cut into parts (capitals may differ); box shows the text.');
     const nums = (q) => Array.isArray(q) && q.length === 2 && q.every((v) => typeof v === 'number' && Number.isFinite(v));
     if (at != null && (!Array.isArray(at) || at.length !== pieces.length - 1 || !at.every(nums))) {
@@ -118,7 +128,8 @@ defineTool({
         boxes.map((box) => ({ page: p, box })),
         (box) => {
           if (box.style.paint?.marks?.length || box.style.paint?.on) box.style.paint = { on: false, marks: [] };
-          setBoxText(box, pieces[boxes.indexOf(box)], p, { fit: false });
+          const piece = pieces[boxes.indexOf(box)];
+          setBoxText(box, piece.text, p, { fit: false, runs: sliceRuns(runs, piece.start, piece.end) });
         },
         // The AI lays the box out as a placement does (`autoFitBox`).
         { solve: true },

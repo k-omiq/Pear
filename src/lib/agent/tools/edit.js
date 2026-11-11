@@ -13,7 +13,7 @@ import { selectBoxes } from '../select.js';
 import { withPagePixels } from '../render.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
-import { applyCase, breaksFor } from '../../measure.js';
+import { applyCase, breaksFor, casedRuns } from '../../measure.js';
 import { normalizeAuto, normalizeStrokeEffect } from '../../data.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
@@ -43,6 +43,7 @@ import {
   markUnsaved,
   lineByN,
   boxText,
+  boxRuns,
   isTranslateMode,
   withStyleOrder,
   setLineSpeaker,
@@ -50,7 +51,7 @@ import {
   refSizeOf,
 } from '../../store.svelte.js';
 import { setLineTags, normalizeTagName, styleForLine } from '../../tags.svelte.js';
-import { applyTextRules } from '../../text-rules.js';
+import { textRuleEdits } from '../../text-rules.js';
 import { letteringSetUp } from '../../lettering.js';
 import { guide, guideBound, termById } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
@@ -443,7 +444,9 @@ function writeSet(set, matches) {
         } else {
           if (b.style.margin == null) b.style.margin = OUTLINE_FIT.margin;
           const st = b.style;
-          const brk = breaksFor(applyCase(boxText(b, p), st), st, st.size, set.breaks.map((t) => applyCase(t, st)));
+          // Keyed with the faces of the words (runs.js), as the box lays them out.
+          const cased = casedRuns(boxText(b, p), boxRuns(b, p), st);
+          const brk = breaksFor(cased.text, st, st.size, set.breaks.map((t) => applyCase(t, st)), cased.runs);
           if (brk) {
             b.auto.breaks = brk;
             b.auto.locks.breaks = true;
@@ -573,6 +576,7 @@ function writeDo(d, matches) {
     return { changed: ids, created, deleted, noOriginal };
   }
   if (['preset', 'sfx_kind', 'sfx_pick', 'clear_sfx', 'apply_guide', 'warp'].includes(d.kind)) {
+    const facesLost = new Set();
     const out = editBoxes(
       matches.map((m) => ({ page: m.page, box: m.box })),
       (b, p) => {
@@ -614,16 +618,23 @@ function writeDo(d, matches) {
         } else {
           const ln = b.lineN != null ? lineByN(p, b.lineN) : null;
           if (ln) b.style = cloneStyle(styleForLine(withStyleOrder(ln), cloneStyle(b.style)));
-          const text = boxText(b, p);
-          const ruled = applyTextRules(text, guide.rules);
-          if (ruled !== text) setBoxText(b, ruled, p, { fit: false });
+          // Each change of the rules as its own exact edit, so the faces of
+          // the words between two changes (runs.js) stay where they are. Only
+          // a change over letters in more than one face can keep just one of
+          // them, and the caller is told.
+          for (const e of textRuleEdits(boxText(b, p), guide.rules)) {
+            const [a, z] = e.span;
+            if (boxRuns(b, p)?.some((r) => r.start < z && r.end > a && !(r.start <= a && r.end >= z))) facesLost.add(b.id);
+            const t = boxText(b, p);
+            setBoxText(b, t.slice(0, a) + e.put + t.slice(z), p, { fit: false, span: e.span });
+          }
         }
         solverOwns(b);
       },
       // The AI lays the box out as a placement does (`autoFitBox`).
       { solve: true },
     );
-    return { changed: out.map((t) => t.box.id), created, deleted };
+    return { changed: out.map((t) => t.box.id), created, deleted, facesLost: [...facesLost] };
   }
   for (const { page: p, box: b } of matches) {
     const id = b.id;
@@ -785,6 +796,7 @@ function runOp(c) {
     if (r.unsplit?.length) out.notSplit = { ids: r.unsplit, why: 'no neck found in the outline; draw the outline (set.outline) instead' };
     if (r.noOriginal?.length) out.noOriginal = { ids: r.noOriginal, why: 'no original found where the cleaner worked (no cleaned image, or nothing cleaned there): laid on the detected line instead, at its size; turn and colour it by eye (view source "raw")' };
     if (r.shrunk?.length) out.shrunk = { boxes: r.shrunk, why: 'the outline was made for the size each box aims for (ref), and its text still fits only smaller (size): allow it (sizing.min), give the box more room (geometry, then outline_to_box again), or a shorter line' };
+    if (r.facesLost?.length) out.facesLost = { ids: r.facesLost, why: 'a text rule replaced letters set in more than one face (bold, italic or another typeface on part of them); the new letters are in the box face: check those boxes\' faces (box shows them, face sets them)' };
     if (r.noBalloon?.length) out.noBalloon = { ids: r.noBalloon, why: 'no balloon found under the box (the box now lays out in a rectangle if it had an outline); draw the outline (set.outline) instead' };
     if (c.do.kind === 'approve_outline') {
       const open = c.matches.filter((m) => !m.box.fit).length;
@@ -814,7 +826,7 @@ function runOp(c) {
 
 // The lines a box draws now, as every renderer breaks them.
 export function shownLines(b, p) {
-  const place = placeBlock(boxCandidate(b, boxText(b, p)), { cache: false });
+  const place = placeBlock(boxCandidate(b, boxText(b, p), boxRuns(b, p)), { cache: false });
   return place && !place.isCurve ? [...place.lines] : [];
 }
 const lineKey = (t) => String(t).trim().replace(/-$/, '').toLowerCase();

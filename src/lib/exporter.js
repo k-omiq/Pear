@@ -1,6 +1,6 @@
 // Native-resolution raster export via canvas 2D. PNG is lossless.
-import { app, page, toast, toastError, boxText, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
-import { faceFor, textInset, contentWidth, placedInk } from './measure.js';
+import { app, page, toast, toastError, boxText, boxRuns, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
+import { faceFor, textInset, contentWidth, placedInk, lineFaces } from './measure.js';
 import { glyphPainter, engineDraws, enginesNow, enginesAre, wobbleDrawn } from './text-engine/index.js';
 import { encodesPages, encodePage } from '../../text-engine/js/encode.mjs';
 import { crispFor } from './text-edges.svelte.js';
@@ -223,7 +223,9 @@ function layoutBox(box, p) {
   // statement; it was lifted out whole so that "the text fits its box" is
   // decided about exactly the block this file paints, rather than about a second
   // implementation that agrees with it today.
-  const place = placeBlock(boxCandidate(box, boxText(box, p)));
+  // With the faces of its words (runs.js), so the lines break where the editor
+  // breaks them; `glyphJob` paints each in its face.
+  const place = placeBlock(boxCandidate(box, boxText(box, p), boxRuns(box, p)));
   const lineH = s.size * (s.lineHeight > 0 ? s.lineHeight : 1);
   // How far past the glyphs the ink can reach, on every edge. Each term is one
   // thing that draws outside the letters: the outermost stroke (drawn at twice
@@ -820,11 +822,25 @@ export function glyphJob(box, L) {
     // fill style is chosen per line rather than once for the block.
     const perLine = !L.silhouette && !fillless && s.gradient?.on && s.gradient.scope === 'line';
     if (!L.silhouette && !fillless && !perLine) job.fill = runFill(fs, fillRect(box, L), null, page);
+    // A line set in several faces (runs.js) says where each starts and ends
+    // (`lineFaces`, the cut its width was measured by), and the faces go in a
+    // table of the job's: each painter shapes every stretch in its face with
+    // the engine that measured it. A job with no such line has neither, and
+    // is the job it always was.
+    const faces = [];
+    const faceIndex = (style) => {
+      const f = faceFor(style, s.size);
+      const i = faces.findIndex((g) => g.key === f.key);
+      return i >= 0 ? i : faces.push(f) - 1;
+    };
     job.runs = L.lines.map((ln, i) => {
       const run = { text: ln, x: L.ox + L.lineX[i], y: startY + i * L.lineH + L.baseY };
       if (perLine) run.fill = runFill(fs, fillRect(box, L, i));
+      const pieces = lineFaces(L.lines, i, s);
+      if (pieces) run.spans = pieces.map((p) => ({ face: faceIndex(p.style), start: p.start, end: p.end }));
       return run;
     });
+    if (faces.length) job.faces = faces;
   }
   return job;
 }

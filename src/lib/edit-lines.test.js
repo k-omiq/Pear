@@ -281,33 +281,33 @@ describe('typing into curved text: the raw text is what changes (UX-4)', () => {
   });
 
   it('replaces a selection', () => {
-    expect(rawEdit('hello world', [6, 11], 'insertText', 'there')).toEqual({ v: 'hello there', caret: 11 });
-    expect(rawEdit('ab', [0, 2], 'insertReplacementText', 'cd')).toEqual({ v: 'cd', caret: 2 });
+    expect(rawEdit('hello world', [6, 11], 'insertText', 'there')).toEqual({ v: 'hello there', caret: 11, span: [6, 11] });
+    expect(rawEdit('ab', [0, 2], 'insertReplacementText', 'cd')).toEqual({ v: 'cd', caret: 2, span: [0, 2] });
   });
 
   it('deletes the character before or after a caret, and a selection whole', () => {
-    expect(rawEdit('hello', [3, 3], 'deleteContentBackward')).toEqual({ v: 'helo', caret: 2 });
-    expect(rawEdit('hello', [3, 3], 'deleteContentForward')).toEqual({ v: 'helo', caret: 3 });
-    expect(rawEdit('hello', [1, 4], 'deleteContentBackward')).toEqual({ v: 'ho', caret: 1 });
-    expect(rawEdit('hello', [0, 5], 'deleteByCut')).toEqual({ v: '', caret: 0 });
+    expect(rawEdit('hello', [3, 3], 'deleteContentBackward')).toEqual({ v: 'helo', caret: 2, span: [2, 3] });
+    expect(rawEdit('hello', [3, 3], 'deleteContentForward')).toEqual({ v: 'helo', caret: 3, span: [3, 4] });
+    expect(rawEdit('hello', [1, 4], 'deleteContentBackward')).toEqual({ v: 'ho', caret: 1, span: [1, 4] });
+    expect(rawEdit('hello', [0, 5], 'deleteByCut')).toEqual({ v: '', caret: 0, span: [0, 5] });
     // An emoji goes whole.
-    expect(rawEdit('a\u{1F44D}', [3, 3], 'deleteContentBackward')).toEqual({ v: 'a', caret: 1 });
+    expect(rawEdit('a\u{1F44D}', [3, 3], 'deleteContentBackward')).toEqual({ v: 'a', caret: 1, span: [1, 3] });
   });
 
   it('changes nothing for a Backspace at the start or a Delete at the end', () => {
-    expect(rawEdit('hello', [0, 0], 'deleteContentBackward')).toEqual({ v: 'hello', caret: 0 });
-    expect(rawEdit('hello', [5, 5], 'deleteContentForward')).toEqual({ v: 'hello', caret: 5 });
+    expect(rawEdit('hello', [0, 0], 'deleteContentBackward')).toEqual({ v: 'hello', caret: 0, span: [0, 0] });
+    expect(rawEdit('hello', [5, 5], 'deleteContentForward')).toEqual({ v: 'hello', caret: 5, span: [5, 5] });
   });
 
   it('pastes raw text, its Returns made plain newlines', () => {
-    expect(rawEdit('ab', [1, 1], 'insertFromPaste', 'x\r\ny\rz')).toEqual({ v: 'ax\ny\nzb', caret: 6 });
+    expect(rawEdit('ab', [1, 1], 'insertFromPaste', 'x\r\ny\rz')).toEqual({ v: 'ax\ny\nzb', caret: 6, span: [1, 1] });
     const r = after('on the', [6, 6], 'insertFromPaste', ' curve');
     expect(r.v).toBe('on the curve');
     expect(r.glyphs).toHaveLength(12);
   });
 
   it('types a Return as a newline, and leaves inputs it does not know alone', () => {
-    expect(rawEdit('ab', [1, 1], 'insertParagraph')).toEqual({ v: 'a\nb', caret: 2 });
+    expect(rawEdit('ab', [1, 1], 'insertParagraph')).toEqual({ v: 'a\nb', caret: 2, span: [1, 1] });
     expect(rawEdit('ab', [1, 1], 'insertText', null)).toBeNull();
     expect(rawEdit('ab', [0, 2], 'formatBold')).toBeNull();
   });

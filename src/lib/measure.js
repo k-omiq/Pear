@@ -1,5 +1,5 @@
 // Shared text measurement + line wrapping (used by curved rendering and export).
-import { fontCssFor, measuredFontFor } from './store.svelte.js';
+import { fontCssFor, measuredFontFor, noteFontsChanged } from './store.svelte.js';
 import { balanceLines, neededHeight, balancedBlockSize, BALANCED_DEFAULTS, ovalProfile } from './typeset.js';
 import { interiorLineWidths, safetyInset, layoutShape } from './balloon.js';
 import { fitPolygon, roomOver, turnPolygon } from './outline-geom.js';
@@ -7,6 +7,7 @@ import { normalizeFit, strokeExtentOf } from './data.js';
 import { splitPath, smoothPath } from './bezier-path.js';
 import { textEngine, setTextEngine, onTextEngineChange } from './text-engine/index.js';
 import { createBrowserTextEngine, browserPlainBreaker } from './text-engine/browser.js';
+import { faceSpans, normalizeRuns, runsKey } from './runs.js';
 
 // Keep creation at the old canvas's import-time boundary: tests install their
 // browser before importing this module, or hand the painter a context later.
@@ -176,7 +177,7 @@ export function inkShiftY(lines, style, sizePx) {
 // as it always has.
 export function blockInk(lines, style, sizePx) {
   const list = Array.isArray(lines) ? lines : [];
-  const inks = list.map((ln) => lineInk(ln, style, sizePx));
+  const inks = list.spans ? list.map((_, k) => lineInkAt(list, k, style, sizePx)) : list.map((ln) => lineInk(ln, style, sizePx));
   if (!engine || list.length === 0 || !(sizePx > 0)) return { inks, shift: 0 };
   const lineH = sizePx * (style?.lineHeight > 0 ? style.lineHeight : 1);
   const base = baselineInLine(style, sizePx);
@@ -865,6 +866,332 @@ function trimEnd(line) {
   return c > 32 && c < 127 ? line : line.replace(/\s+$/, '');
 }
 
+// ===== a text set in several faces (runs.js) =====
+//
+// A box whose words have runs is measured by where a stretch is in its text,
+// not only by what it says: the same word is two widths in two faces. Nothing
+// here is reached without runs - a text with none goes through the functions
+// above, exactly as it did before runs existed, and every caller below asks
+// `runs` first so that stays true.
+//
+// The faces are the box family's own four (`faceFor` with the run's bold and
+// italic). Line height and the vertical font metrics stay the box face's: a
+// bold word does not open the leading.
+
+// `text` and its runs in the case the box draws them in: `applyCase`, with
+// each run moved to where its letters went. Upper-casing can change a
+// letter's length (ß to SS), so the runs are carried through one code point at
+// a time. For the layout a run in the box's own face measures as the letters
+// outside every run do, and goes - the stored runs keep it, as a run is a face
+// outright and the box's face may change. A text left with none is plain
+// text: `{ text, runs: null }`, today's layout.
+// A run's family is its own only when it is not the box's.
+const ownFamily = (f, style) => !f.font || f.font === style?.font;
+const notOwn = (list, style) => {
+  const out = list?.filter((r) => r.bold !== !!style?.bold || r.italic !== !!style?.italic || !ownFamily(r, style));
+  return out?.length ? out : null;
+};
+export function casedRuns(text, runs, style) {
+  const raw = String(text ?? '');
+  const list = notOwn(normalizeRuns(runs, raw), style);
+  if (!list) return { text: applyCase(raw, style), runs: null };
+  if (!style?.uppercase) return { text: raw, runs: list };
+  // Where each raw UTF-16 unit starts in the cased text.
+  const at = new Array(raw.length + 1);
+  let out = '';
+  for (let i = 0; i < raw.length; ) {
+    const cp = raw.codePointAt(i);
+    at[i] = out.length;
+    if (cp > 0xffff) at[i + 1] = out.length;
+    out += String.fromCodePoint(cp).toUpperCase();
+    i += cp > 0xffff ? 2 : 1;
+  }
+  at[raw.length] = out.length;
+  // Code point by code point is the whole text upper-cased, wherever the app
+  // runs. If it ever were not, the runs could not be put on the right letters,
+  // and the text is laid out in the box face rather than in faces on the wrong
+  // ones.
+  const whole = applyCase(raw, style);
+  if (out !== whole) return { text: whole, runs: null };
+  return { text: out, runs: normalizeRuns(list.map((r) => ({ ...r, start: at[r.start], end: at[r.end] })), out) };
+}
+
+// The style a run's letters are measured in: the box's, with the run's face.
+// Kept per style so the memo keys `fontShorthand` builds come from one object
+// a face, and nothing is made per measurement.
+//
+// A face the engine is still loading (a bold file of the family on its way)
+// is measured - and so painted, and its carets placed, all through here - in
+// the box's own face until it is ready.
+//
+// The engine's answer is kept with the layouts (`faceReadiness`, dropped only
+// by `clearLayoutMemo`): a layout kept from before the face came and a paint
+// after it ask the same question, so a line is never painted in a face it was
+// not measured in. When a face that was not ready arrives, the store is told
+// (`noteFontsChanged`), which drops the layouts and this with them and lays
+// out and paints every box again.
+//
+// A run with a family of its own is measured in that family, resolved as the
+// box's own is (`faceFor`): a user's font, a system one, the last resort for
+// a name the machine does not have.
+const faceStyles = new WeakMap();
+function faceStyle(style, f) {
+  const family = ownFamily(f, style) ? null : f.font;
+  if (!!style.bold === !!f.bold && !!style.italic === !!f.italic && !family) return style;
+  let kept = faceStyles.get(style);
+  if (!kept) faceStyles.set(style, (kept = new Map()));
+  const k = `${f.bold ? 'b' : ''}${f.italic ? 'i' : ''}|${family ?? ''}`;
+  let fs = kept.get(k);
+  if (!fs) kept.set(k, (fs = family ? { ...style, bold: !!f.bold, italic: !!f.italic, font: family } : { ...style, bold: !!f.bold, italic: !!f.italic }));
+  return faceIsReady(faceFor(fs, fs.size)) ? fs : style;
+}
+
+// face key -> whether the engine had it when a layout first asked.
+const faceReadiness = new Map();
+// face key -> face, for the ones that were not.
+const facesAwaited = new Map();
+let arrivalQueued = false;
+function faceIsReady(face) {
+  let ready = faceReadiness.get(face.key);
+  if (ready === undefined) {
+    ready = engine?.faceReady?.(face) !== false;
+    faceReadiness.set(face.key, ready);
+    if (!ready) facesAwaited.set(face.key, face);
+  }
+  return ready;
+}
+// On any change of the engine's fonts: whether a face a layout went without
+// has come. Asked again of the engine, which starts no second load for one on
+// its way (`browserFaceReady`).
+function awaitedArrived() {
+  if (!facesAwaited.size || arrivalQueued) return;
+  for (const face of facesAwaited.values()) {
+    if (engine?.faceReady?.(face) === false) continue;
+    arrivalQueued = true;
+    // After the event that said so: the store lays every box out again, which
+    // is no work for a font listener to do in the middle of a font event.
+    setTimeout(() => {
+      if (!arrivalQueued) return;
+      arrivalQueued = false;
+      noteFontsChanged();
+    });
+    return;
+  }
+}
+
+// The faces line `k` of a layout is drawn in: `[{ start, end, style }]`,
+// UTF-16 offsets into the line's own string (an added hyphen in the face of
+// the letter before it), end to end, each with the style to draw that
+// stretch in - or null for a line drawn in the box's face alone, which is
+// every line of a layout without runs. The painters, the line DOM and the
+// carets all read it, so they cut a line exactly where its measure did.
+export function lineFaces(lines, k, style) {
+  const sp = lines?.spans?.[k];
+  if (!sp || !lines.runs || !style) return null;
+  const str = String(lines[k] ?? '');
+  const out = [];
+  for (const p of piecesOf(lines.source, lines.runs, style, sp[0], sp[1], str.length > sp[1] - sp[0])) {
+    const fs = faceStyle(style, p);
+    const last = out[out.length - 1];
+    if (last && last.style === fs) last.end = p.end;
+    else out.push({ start: p.start, end: p.end, style: fs });
+  }
+  return out.length === 1 && out[0].style === style ? null : out;
+}
+
+// `[s, e)` of `text` - plus an added hyphen, set in the face of the letter
+// before it - cut where its face changes: `[{ start, end, bold, italic }]`,
+// offsets into the measured string (the slice and its hyphen).
+function piecesOf(text, runs, style, s, e, hyphen) {
+  const out = [];
+  for (const p of faceSpans(runs, text.length, style)) {
+    if (p.end <= s || p.start >= e) continue;
+    const a = Math.max(s, p.start) - s;
+    const b = Math.min(e, p.end) - s;
+    const font = ownFamily(p, style) ? null : p.font;
+    const last = out[out.length - 1];
+    if (last && last.bold === p.bold && last.italic === p.italic && last.font === font) last.end = b;
+    else out.push({ start: a, end: b, bold: p.bold, italic: p.italic, font });
+  }
+  if (!out.length) out.push({ start: 0, end: 0, bold: !!style.bold, italic: !!style.italic, font: null });
+  if (hyphen) out[out.length - 1].end += 1;
+  return out;
+}
+const isOwnFace = (pieces, style) => pieces.length === 1 && pieces[0].bold === !!style.bold && pieces[0].italic === !!style.italic && !pieces[0].font;
+const pieceSig = (pieces) => pieces.map((p) => `${p.end - p.start}${p.bold ? 'b' : ''}${p.italic ? 'i' : ''}${p.font ? `@${p.font}` : ''}`).join(',');
+
+// The width of `[s, e)` of `text` (cased, with its cased runs), and of the
+// hyphen after it when `hyphen`: what `lineWidth` answers for that string,
+// set in its faces. Trailing whitespace is not measured, as `lineWidth` does
+// not measure it. One engine call for the whole stretch - `advanceRuns`, the
+// cut into faces the painter makes of the same line - so no kerning reaches
+// across a change of face, as none reaches across a change of fallback font.
+// Kept with the box face's advances, by the string and where its faces
+// change.
+export function sliceWidth(text, runs, style, sizePx, s, e, hyphen = false) {
+  if (!hyphen) while (e > s && /\s/.test(text[e - 1])) e--;
+  const str = text.slice(s, e) + (hyphen ? '-' : '');
+  if (!str) return 0;
+  if (!runs?.length || !engine || !(sizePx > 0)) return lineWidth(str, style, sizePx);
+  const pieces = piecesOf(text, runs, style, s, e, hyphen);
+  if (isOwnFace(pieces, style)) return lineWidth(str, style, sizePx);
+  const css = familyFor(style);
+  const font = fontShorthand(style, sizePx, css);
+  const ls = (Number(style?.letterSpacing) || 0) * (style?.size > 0 ? sizePx / style.size : 0);
+  const memo = advancesIn(font);
+  const key = `${str}\u0000${pieceSig(pieces)}`;
+  let width = memo?.get(key);
+  if (width === undefined) {
+    const faces = pieces.map((p) => faceFor(faceStyle(style, p), sizePx));
+    // One engine call, which cuts where the painter cuts. Should it refuse the
+    // spans (a run edge it cannot cut at), the same pieces are measured one at
+    // a time instead: a bad run never takes a box's layout down.
+    const sum = () => pieces.reduce((w, p, i) => w + engine.advance(faces[i], str.slice(p.start, p.end)), 0);
+    try {
+      width = engine.advanceRuns ? engine.advanceRuns(faces, str, pieces) : sum();
+    } catch {
+      width = sum();
+    }
+    if (memo) keep(memo, key, width);
+  }
+  return width + (ls ? Math.max(0, [...str].length - 1) * ls : 0);
+}
+
+// The width of line `k` of a layout, as `lineWidth` measures it: by its
+// offsets and faces when the layout has runs (`lines.spans`), else by the
+// string, exactly as before.
+export function lineWidthAt(lines, k, style, sizePx) {
+  const sp = lines?.spans?.[k];
+  if (!sp || !lines.runs) return lineWidth(lines[k], style, sizePx);
+  return sliceWidth(lines.source, lines.runs, style, sizePx, sp[0], sp[1], lines[k].length > sp[1] - sp[0]);
+}
+
+// The ink of line `k`, as `lineInk` reads it, for a layout with runs: each
+// stretch of one face measured alone at its pen, the ink boxes joined. The
+// vertical metrics are the tallest stretch's.
+export function lineInkAt(lines, k, style, sizePx) {
+  const sp = lines?.spans?.[k];
+  const str = String(lines?.[k] ?? '');
+  if (!sp || !lines.runs || !engine) return lineInk(str, style, sizePx);
+  if (!/\S/.test(str) || !(sizePx > 0) || !style) return null;
+  const pieces = piecesOf(lines.source, lines.runs, style, sp[0], sp[1], str.length > sp[1] - sp[0]);
+  if (isOwnFace(pieces, style)) return lineInk(str, style, sizePx);
+  const align = style.align === 'left' || style.align === 'right' ? style.align : 'center';
+  const ls = (Number(style.letterSpacing) || 0) * (style.size > 0 ? sizePx / style.size : 0);
+  const n = [...str].length;
+  const spread = Math.max(0, n - 1) * ls;
+  let width = 0;
+  let chars = 0;
+  let left = Infinity;
+  let right = -Infinity;
+  let ascent = -Infinity;
+  let descent = -Infinity;
+  for (const p of pieces) {
+    const seg = str.slice(p.start, p.end);
+    const fs = faceStyle(style, p);
+    const css = familyFor(fs);
+    const m = inkMetrics(seg, fs, sizePx, css, fontShorthand(fs, sizePx, css));
+    const cs = [...seg].length;
+    if (/\S/.test(seg)) {
+      if (![m.left, m.right, m.ascent, m.descent].every(Number.isFinite)) return lineInk(str, style, sizePx);
+      const pen = width + chars * ls;
+      left = Math.min(left, pen - m.left);
+      right = Math.max(right, pen + m.right + Math.max(0, (cs - 1) * ls));
+      ascent = Math.max(ascent, m.ascent);
+      descent = Math.max(descent, m.descent);
+    }
+    width += m.width;
+    chars += cs;
+  }
+  const x0 = align === 'left' ? 0 : align === 'right' ? -(width + n * ls) : -(width + n * ls) / 2;
+  return { left: x0 + left + Math.min(0, spread), right: x0 + right, ascent, descent };
+}
+
+// The widest word of `text` (cased, with its cased runs), each measured in its
+// faces: what `Math.max(...text.split(/\s+/).map(lineWidth))` answers for a
+// text with no runs.
+export function widestWord(text, runs, style, sizePx) {
+  let widest = 0;
+  const re = /\S+/g;
+  let m;
+  while ((m = re.exec(text)) !== null) widest = Math.max(widest, sliceWidth(text, runs, style, sizePx, m.index, m.index + m[0].length));
+  return widest;
+}
+
+// A layout's lines with what a reader needs to measure them by offset: each
+// line's `[start, end)` in `source` (the cased text), the hyphen after it
+// being the one character a line may have that the source has not, and the
+// cased runs. Only a layout with runs carries them.
+export function withSpans(lines, spans, source, runs) {
+  lines.spans = spans;
+  lines.source = source;
+  lines.runs = runs;
+  return lines;
+}
+
+// The breaker's measure for a text with runs: by string for the odd caller
+// that asks that way, and by offset (`span`, offsets into `text`) for the
+// breaker, which knows where every line it tries starts and ends.
+function runMeasure(text, runs, style, sizePx) {
+  const fn = (str) => lineWidth(str, style, sizePx);
+  fn.span = (s, e, hyphen) => sliceWidth(text, runs, style, sizePx, s, e, hyphen);
+  return fn;
+}
+
+// Plain wrapping (`shape: 'off'`, or the switch off) for a text with runs: the
+// greedy wrap the plain path does, by offset. The browser's own wrapping and
+// the Rust engine's copy of it (`wrapPlain`) measure in one face, so a text in
+// several is wrapped here instead, by the same rule they follow (`word-break:
+// break-word`): a line breaks at a space, and a word too wide for a line of
+// its own is broken between letters where it stops fitting, so it never runs
+// out of the box.
+const plainGraphemes = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+function plainRunLines(text, measure, width) {
+  const lines = [];
+  const spans = [];
+  const put = (a, b) => {
+    lines.push(text.slice(a, b));
+    spans.push([a, b]);
+  };
+  // A word `[ws, we)` that does not fit alone: whole lines of it, as many
+  // letters each as fit (one at the least), and the start of what is left.
+  const breakWord = (ws, we) => {
+    const stops = [];
+    if (plainGraphemes) for (const { index } of plainGraphemes.segment(text.slice(ws, we))) stops.push(ws + index);
+    else for (let k = ws; k < we; k += text.codePointAt(k) > 0xffff ? 2 : 1) stops.push(k);
+    stops.push(we);
+    let a = ws;
+    for (let i = 1; i < stops.length; i++) {
+      if (measure.span(a, stops[i], false) <= width || stops[i - 1] === a) continue;
+      put(a, stops[i - 1]);
+      a = stops[i - 1];
+    }
+    return a;
+  };
+  let base = 0;
+  for (const para of text.split('\n')) {
+    const re = /\S+/g;
+    let m;
+    let start = -1;
+    let end = -1;
+    while ((m = re.exec(para)) !== null) {
+      const ws = base + m.index;
+      const we = ws + m[0].length;
+      if (start >= 0 && measure.span(start, we, false) <= width) {
+        end = we;
+        continue;
+      }
+      if (start >= 0) put(start, end);
+      start = measure.span(ws, we, false) > width ? breakWord(ws, we) : ws;
+      end = we;
+    }
+    if (start < 0) put(base, base);
+    else put(start, end);
+    base += para.length + 1;
+  }
+  return withSpans(lines, spans, text, null);
+}
+
 // ===== a string's advance, remembered =====
 //
 // Typing into an auto box re-solves it on every keystroke (FIT-2), and a solve
@@ -910,7 +1237,9 @@ function watchEngine(e) {
   // face on its own path.
   unwatchFonts = e?.onFontsChange(() => {
     // An old engine may not offer an unsubscribe; it must not invalidate the new one.
-    if (engine === e) clearMeasureMemo();
+    if (engine !== e) return;
+    clearMeasureMemo();
+    awaitedArrived();
   });
 }
 onTextEngineChange((e) => {
@@ -990,8 +1319,9 @@ function trimMeasureMemo() {
 // top and the bottom, and a block laid out against one flat number runs into the
 // curve at both ends. `contentWidthPx` stays required and stays the answer when
 // no callback is supplied, so every existing caller means exactly what it did.
-export function shapedLines(text, style, sizePx, contentWidthPx, widthsFor, stopAbove, breakWords = false) {
-  const measureFn = lineWidthIn(style, sizePx);
+// `measureFn` is the breaker's measure; a text with runs hands one that also
+// measures by offset (`runMeasure`), and the lines then carry their offsets.
+export function shapedLines(text, style, sizePx, contentWidthPx, widthsFor, stopAbove, breakWords = false, measureFn = lineWidthIn(style, sizePx)) {
   const run = (widths, stop = stopAbove) =>
     balanceLines(text, widths, measureFn, {
       // Null instead of lines when the block certainly takes more lines than
@@ -1031,7 +1361,9 @@ export function shapedLines(text, style, sizePx, contentWidthPx, widthsFor, stop
 function fitsRound(round, lines, measureFn) {
   if (!(lines.length <= round.holds)) return false;
   const rows = round(lines.length);
-  return lines.every((l, i) => measureFn(l) <= rows[i] + 0.5 || !/\s/.test(l.trim()));
+  const sp = lines.spans;
+  const width = sp ? (l, i) => measureFn.span(sp[i][0], sp[i][1], l.length > sp[i][1] - sp[i][0]) : measureFn;
+  return lines.every((l, i) => width(l, i) <= rows[i] + 0.5 || !/\s/.test(l.trim()));
 }
 
 // ===== the balloon a box was fitted to, as a `widthsFor` callback =====
@@ -1230,8 +1562,11 @@ export function outlineRows(pts, top, lineH, n, axis, m, pad = 0) {
 // size they were measured in: change any of them and the key no longer
 // matches, the breaks are ignored, and the lines are broken as before until the
 // next solve chooses again.
-export function breaksKey(text, style, sizePx) {
-  return hashKey(JSON.stringify([String(text ?? ''), style?.font ?? '', sizePx, !!style?.bold, !!style?.italic, Number(style?.letterSpacing) || 0]));
+// `runs`, the text's cased runs: lines held for words in some faces are not
+// the lines for the same words in others. None is the key it always was.
+export function breaksKey(text, style, sizePx, runs = null) {
+  const k = JSON.stringify([String(text ?? ''), style?.font ?? '', sizePx, !!style?.bold, !!style?.italic, Number(style?.letterSpacing) || 0]);
+  return hashKey(runs?.length ? `${k}${runsKey(runs)}` : k);
 }
 
 function hashKey(k) {
@@ -1255,9 +1590,9 @@ export const breaksTextKey = (text) => {
 // changed since. `breaks` itself when its key still matches; null when it was
 // chosen for other words (or carries no words key: lines kept before there
 // was one), and the lines are broken afresh.
-export function rekeyBreaks(breaks, text, style, sizePx) {
+export function rekeyBreaks(breaks, text, style, sizePx, runs = null) {
   if (!breaks || !Array.isArray(breaks.at)) return null;
-  const key = breaksKey(text, style, sizePx);
+  const key = breaksKey(text, style, sizePx, runs);
   if (breaks.key === key) return breaks;
   if (!breaks.textKey || breaks.textKey !== breaksTextKey(text)) return null;
   return { ...breaks, key };
@@ -1267,26 +1602,32 @@ const WORDISH = /[\p{L}\p{N}]/u;
 
 // The kept lines, or null when there are none for this text, face and size.
 // A line that ends inside a word gets the hyphen the breaker would have drawn.
-export function brokenLines(text, style, sizePx, breaks) {
-  if (!breaks || !Array.isArray(breaks.at) || breaks.key !== breaksKey(text, style, sizePx)) return null;
+// With `runs` (the text's cased runs) the lines carry their offsets, as a
+// layout with runs does (`withSpans`).
+export function brokenLines(text, style, sizePx, breaks, runs = null) {
+  if (!breaks || !Array.isArray(breaks.at) || breaks.key !== breaksKey(text, style, sizePx, runs)) return null;
   const t = String(text);
   const at = breaks.at;
   if (at[0] !== 0 || at.some((v, i) => !(v <= t.length) || (i && v <= at[i - 1]))) return null;
   const lines = [];
+  const spans = runs?.length ? [] : null;
   for (let i = 0; i < at.length; i++) {
     const end = i + 1 < at.length ? at[i + 1] : t.length;
-    let line = t.slice(at[i], end).replace(/\s+$/, '').replace(/^[ \t]+/, '');
+    const piece = t.slice(at[i], end).replace(/\s+$/, '');
+    let line = piece.replace(/^[ \t]+/, '');
     if (line.includes('\n')) return null;
+    const from = at[i] + piece.length - line.length;
+    spans?.push([from, from + line.length]);
     if (end < t.length && WORDISH.test(t[end - 1] ?? '') && WORDISH.test(t[end] ?? '') && !line.endsWith('-')) line += '-';
     lines.push(line);
   }
-  return lines;
+  return spans ? withSpans(lines, spans, t, runs) : lines;
 }
 
 // Breaks for `lines` of `text` (both cased): where each line starts, found in
 // order, capitals aside. Null when the lines are not the text's own (a line
 // the text does not have where it should be).
-export function breaksFor(text, style, sizePx, lines) {
+export function breaksFor(text, style, sizePx, lines, runs = null) {
   const t = String(text);
   const starts = [];
   let from = 0;
@@ -1306,7 +1647,7 @@ export function breaksFor(text, style, sizePx, lines) {
   }
   while (from < t.length && /\s/.test(t[from])) from++;
   if (from !== t.length || !starts.length || starts[0] !== 0) return null;
-  return { key: breaksKey(t, style, sizePx), at: starts, textKey: breaksTextKey(t) };
+  return { key: breaksKey(t, style, sizePx, runs), at: starts, textKey: breaksTextKey(t) };
 }
 
 // ===== the size that covers an original =====
@@ -1363,7 +1704,8 @@ export function lineIndents(lines, style, sizePx, contentWidthPx, widthsFor) {
   let any = false;
   const out = lines.map((line, i) => {
     const row = rows[i] ?? w;
-    const v = Math.max(0, Math.min((w - row) / 2, w - lineWidth(line, style, sizePx)));
+    const lw = lines.spans ? lineWidthAt(lines, i, style, sizePx) : lineWidth(line, style, sizePx);
+    const v = Math.max(0, Math.min((w - row) / 2, w - lw));
     if (v > 0) any = true;
     return v;
   });
@@ -1440,6 +1782,9 @@ function memoKey(text, style, sizePx, w, widthsFor, breakWords) {
 export function clearLayoutMemo() {
   memo.clear();
   clearMeasureMemo();
+  faceReadiness.clear();
+  facesAwaited.clear();
+  arrivalQueued = false;
 }
 
 // For the tests, and for the same sort of introspection `pagePixelsHeld` offers.
@@ -1506,7 +1851,11 @@ export function layoutLines(text, style, sizePx, contentWidthPx, widthsFor, opts
   // Asked and answered - see the memo above. A hit promotes, so what survives
   // eviction is what the editor is actually laying out rather than whatever a
   // chapter export happened to walk past last.
-  const key = memoKey(text, style, sizePx, w, widthsFor, !!opts?.breakWords);
+  // A text in several faces (`opts.runs`, its cased runs - `casedRuns`): the
+  // runs join the key, and none is today's key.
+  const runs = opts?.runs?.length ? opts.runs : null;
+  let key = memoKey(text, style, sizePx, w, widthsFor, !!opts?.breakWords);
+  if (key !== null && runs) key += runsKey(runs);
   if (key !== null) {
     const hit = memo.get(key);
     if (hit) {
@@ -1515,16 +1864,24 @@ export function layoutLines(text, style, sizePx, contentWidthPx, widthsFor, opts
       return hit;
     }
   }
-  const lines =
-    !typesetEnabled() || (style.shape ?? 'auto') === 'off'
-      ? wrapLinesDOM(text, style, sizePx, w)
-      : shapedLines(text, style, sizePx, w, widthsFor, opts?.stopAbove, !!opts?.breakWords);
+  const plain = !typesetEnabled() || (style.shape ?? 'auto') === 'off';
+  let lines;
+  if (!runs) lines = plain ? wrapLinesDOM(text, style, sizePx, w) : shapedLines(text, style, sizePx, w, widthsFor, opts?.stopAbove, !!opts?.breakWords);
+  else {
+    // Measured by offset, in the faces; the lines come back with their
+    // offsets. Painted in the box face until the painter takes runs (C3): the
+    // widths are the faces', the glyphs drawn are still the box face's.
+    const measure = runMeasure(text, runs, style, sizePx);
+    lines = plain ? plainRunLines(text, measure, w) : shapedLines(text, style, sizePx, w, widthsFor, opts?.stopAbove, !!opts?.breakWords, measure);
+    if (lines !== null) withSpans(lines, lines.spans, text, runs);
+  }
   if (lines === null) return null;
   let a = 0;
   let b = lines.length;
   while (a < b && !/\S/.test(lines[a])) a++;
   while (b > a && !/\S/.test(lines[b - 1])) b--;
-  const out = a === 0 && b === lines.length ? lines : b > a ? lines.slice(a, b) : [''];
+  let out = a === 0 && b === lines.length ? lines : b > a ? lines.slice(a, b) : [''];
+  if (runs && out !== lines) out = withSpans(out, b > a ? lines.spans.slice(a, b) : [[0, 0]], text, runs);
   if (key !== null && opts?.cache !== false) {
     memo.set(key, out);
     // One over the bound, once per miss, so the oldest key is the only thing
