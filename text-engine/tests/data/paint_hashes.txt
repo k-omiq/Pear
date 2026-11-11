@@ -55,3 +55,7 @@ special_crack_falls 56bae449a6163d46
 special_splash_stroke 423773a09d898a1c
 special_scratches 611a09849ef2685e
 special_lightning 5224deba8b39ca22
+special_scratches_stroke cddaa2c6dd54342e
+special_crack_stroke_centre c6152295a9745fbe
+fade_soft_scale_two 63a1bec8a6c799dd
+paint_mark_soft c4a70b5b20365e90
