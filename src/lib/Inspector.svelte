@@ -91,7 +91,7 @@
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
   import ValueSlider from './ValueSlider.svelte';
-  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX, SPECIAL_GLOW_MAX, specialCuts } from './special.js';
+  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX, SPECIAL_GLOW_MAX, specialCuts, outlineKinds } from './special.js';
   import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
   import { setFxDefault, clearFxDefault, isComics } from './prefs.svelte.js';
@@ -2855,13 +2855,14 @@
                 {#if 'size' in fx}
                   {@render sliderRow('Size', 'How big the pattern is, percent of the font size', fx.size, (v) => setVal(fx, 'size', v), { min: SPECIAL_SIZE_MIN, max: SPECIAL_SIZE_MAX, soft: 200, unit: '%', aria: `${row.label} size`, disabled: off })}
                 {/if}
-                {#if 'angle' in fx}
+                {#if row.kind === 'scratches'}
                   <div class="prow" title="The way the pattern runs: 0 is along the line">
                     <span class="pl">Angle</span>
                     <div class="pc"><AngleDial angle={fx.angle} label="{row.label} angle" disabled={off} oninput={(v) => setVal(fx, 'angle', v.angle)} /></div>
                   </div>
                 {/if}
                 {#if row.kind === 'crack'}
+                  <p class="nofill-note">Drag the red point on the box to move the focus.</p>
                   {@render sliderRow('Focus X', 'Where the cracks gather, across the letters', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Crack focus x', disabled: off })}
                   {@render sliderRow('Focus Y', 'Where the cracks gather, down the letters', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Crack focus y', disabled: off })}
                   {@render sliderRow('Spread', 'How far the cracks spread from the focus: 100 % covers every letter', fx.spread, (v) => setVal(fx, 'spread', v), { max: 100, unit: '%', aria: 'Crack spread', disabled: off })}
@@ -2880,6 +2881,22 @@
                     <div class="pc">{@render colorField(fx, 'glow', 'Lightning glow colour')}</div>
                   </div>
                   {@render sliderRow('Glow size', 'How far the glow spreads round each bolt', fx.glowSize, (v) => setVal(fx, 'glowSize', v), { max: SPECIAL_GLOW_MAX, unit: '%', aria: 'Lightning glow size', disabled: off })}
+                  {@render segRow('Bolts', 'Where the bolts run', [['across', 'Across', 'Across the box, from side to side'], ['point', 'From a point', 'From the blue point on the box, the way its arm points']], fx.aim === 'point' ? 'point' : 'across', (v) => setVal(fx, 'aim', v), 'Lightning bolts')}
+                  {#if fx.aim === 'point'}
+                    <p class="nofill-note">Drag the blue point on the box to move the start, and its arm to aim.</p>
+                    {@render sliderRow('Start X', 'Where the bolts start, across the box', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Lightning start x', disabled: off })}
+                    {@render sliderRow('Start Y', 'Where the bolts start, down the box', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Lightning start y', disabled: off })}
+                    <div class="prow" title="The way the bolts go: 0 is along the line, 90 is up">
+                      <span class="pl">Direction</span>
+                      <div class="pc"><AngleDial angle={fx.angle} label="Lightning direction" disabled={off} oninput={(v) => setVal(fx, 'angle', v.angle)} /></div>
+                    </div>
+                  {/if}
+                {/if}
+                {#if row.kind === 'splash'}
+                  <p class="nofill-note">Drag the yellow point on the box to set where the paint lands.</p>
+                  {@render sliderRow('Land X', 'Where the paint lands, across the box', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Splash x', disabled: off })}
+                  {@render sliderRow('Land Y', 'Where the paint lands, down the box', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Splash y', disabled: off })}
+                  {@render sliderRow('Spread', 'How far the splats spread from where the paint lands: 100 % covers the box', fx.spread, (v) => setVal(fx, 'spread', v), { max: 100, unit: '%', aria: 'Splash spread', disabled: off })}
                 {/if}
                 {#if 'color' in fx}
                   <div class="prow">
@@ -2899,11 +2916,19 @@
               </div>
             {/if}
           {/each}
-          <!-- What a box stroke does at the cuts: only with a crack or
-               scratches on and a stroke the engine lays as a box stroke (a
-               glyph band is always cut through). -->
-          {#if sp && specialCuts(s) && boxEffects(s).some((fx) => fx.kind === 'stroke')}
-            {@render segRow('Outline', 'What the box stroke does where Crack or Scratches cut', [['fills-cuts', 'Fills cuts', 'The stroke outlines each cut: the cracks read as lines in its colour'], ['cut-through', 'Cut through', 'The stroke is cut like the letters: the page shows through']], sp.outline === 'cut-through' ? 'cut-through' : 'fills-cuts', (v) => setVal(sp, 'outline', v), 'Special outline')}
+          <!-- What the outlines do at the cuts: with a crack or scratches on
+               and any outline, the text's own (a glyph band) or a box
+               stroke. One row sets both keys (special.js `outlineKinds`). -->
+          {#if sp && specialCuts(s)}
+            {@const ok = outlineKinds(s, outlineRun(s).bands.length > 0, boxEffects(s).some((fx) => fx.kind === 'stroke'))}
+            {#if ok.any}
+              {@render segRow('Outline', 'What the outline does where Crack or Scratches cut', [['fills-cuts', 'Fills cuts', 'The outline goes round each cut: a thin crack reads as a line in its colour'], ['cut-through', 'Cut through', 'The outline is cut like the letters: the page shows through']], ok.current, (v) => { sp.outline = v; sp.bandOutline = v; touch(); }, 'Special outline')}
+              {#if ok.current == null}
+                <p class="nofill-note">Mixed: the stroke fills the cuts, the text outline is cut through. Pick one for both.</p>
+              {/if}
+            {:else}
+              <p class="nofill-note">Outline: add an outline (Stroke tab) to choose whether it fills the cuts.</p>
+            {/if}
           {/if}
         {/if}
 

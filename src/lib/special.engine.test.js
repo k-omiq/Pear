@@ -6,7 +6,7 @@ import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { normalizeSpecial, specialJob, breakReach, BREAK_SIDE, BREAK_DROP } from './special.js';
+import { normalizeSpecial, specialJob, breakReach, BREAK_SIDE, BREAK_DROP, dragHandle, dragArm, armEnd, handleFrame, handlePoint, handlePercents, outlineKinds } from './special.js';
 import { encodeJob } from '../../text-engine/js/paint.mjs';
 import { isRasterOnly } from './psd.js';
 
@@ -77,7 +77,7 @@ describe('the model', () => {
     expect(n.splash.color).toBe('#abcdef');
     // A lightning saved with one colour keeps it as its glow.
     expect(normalizeSpecial({ lightning: { color: '#FF0000' } }).lightning.glow).toBe('#ff0000');
-    expect(Object.keys(n)).toEqual(['crack', 'lightning', 'splash', 'scratches', 'outline']);
+    expect(Object.keys(n)).toEqual(['crack', 'lightning', 'splash', 'scratches', 'outline', 'bandOutline']);
     expect(style().special).toEqual(normalizeSpecial(undefined));
   });
 
@@ -304,5 +304,194 @@ describe('painted over the whole box', () => {
     const off = texture(boxOf({ special: ON }));
     const plain = texture(boxOf());
     expect(same(off, plain)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Fix round 1 (2026-11-11): the Outline choice for the text's own outline
+// (glyph wire v18, kind 64), an aimed lightning (128) and a placed splash
+// (256), and the on-page handles' numbers.
+// ===========================================================================
+
+describe('the new keys', () => {
+  it('read as the first-built look when missing, and send nothing new at their defaults', () => {
+    const n = normalizeSpecial({});
+    expect(n.bandOutline).toBe('cut-through');
+    expect(n.lightning).toMatchObject({ aim: 'across', x: 0, y: 50, angle: 0 });
+    expect(n.splash).toMatchObject({ x: 50, y: 50, spread: 100 });
+    expect(normalizeSpecial({ bandOutline: 'fills-cuts' }).bandOutline).toBe('fills-cuts');
+    expect(normalizeSpecial({ bandOutline: 'over' }).bandOutline).toBe('cut-through');
+    expect(normalizeSpecial({ lightning: { aim: 'spin', x: 400, angle: 900 } }).lightning).toMatchObject({ aim: 'across', x: 100, angle: 180 });
+    const rect = { x: 0, y: 0, w: 10, h: 10 };
+    const j = specialJob(style({ special: { ...ON, splash: { ...ON.splash, x: 10, y: 90 } } }), rect);
+    expect('aim' in j.lightning).toBe(false);
+    expect('at' in j.splash).toBe(false);
+    expect('fillBands' in j).toBe(false);
+  });
+
+  it('sends an aim, a placing and bands filling the cuts only when set', () => {
+    const rect = { x: 0, y: 0, w: 10, h: 10 };
+    const aimed = specialJob(style({ special: { lightning: { ...ON.lightning, aim: 'point', x: 25, y: 75, angle: 90 } } }), rect);
+    // The dial's 90 is up: the engine's heading is clockwise, so -90.
+    expect(aimed.lightning.aim).toEqual({ x: 0.25, y: 0.75, angle: -Math.PI / 2 });
+    const placed = specialJob(style({ special: { splash: { ...ON.splash, x: 20, y: 40, spread: 30 } } }), rect);
+    expect(placed.splash.at).toEqual({ x: 0.2, y: 0.4, spread: 0.3 });
+    expect(specialJob(style({ special: { crack: ON.crack, bandOutline: 'fills-cuts' } }), rect).fillBands).toBe(true);
+    // Only with cuts.
+    expect('fillBands' in specialJob(style({ special: { lightning: ON.lightning, bandOutline: 'fills-cuts' } }), rect)).toBe(false);
+  });
+});
+
+describe('the glyph wire (v18)', () => {
+  const job = { runs: [{ text: 'HI', x: 0, y: 40 }], bands: [], fill: { kind: 'solid', color: '#000' } };
+  const req = (j) => ({ job: j, font: 0, size: 40, width: 10, height: 10 });
+  const rect = { x: 0, y: 0, w: 100, h: 60 };
+  const crack = { amount: 0.5, size: 1, x: 0.5, y: 0.5, spread: 1, seed: 2 };
+  const bolt = { amount: 0.5, core: '#ffffff', glow: '#0000ff', glowSize: 1, seed: 1 };
+  const splash = { amount: 0.5, size: 1, color: '#ff0000', seed: 1 };
+  const kindsOf = (b, tail) => b.readUInt32LE(b.length - tail - 4);
+
+  it('kind 64: bands fill the cuts, no payload, only with cuts', () => {
+    const none = Buffer.from(encodeJob(req({ ...job, special: { rect, crack } })));
+    const fills = Buffer.from(encodeJob(req({ ...job, special: { rect, crack, fillBands: true } })));
+    expect(fills.length).toBe(none.length);
+    expect(kindsOf(fills, 8 * 5 + 4)).toBe(1 | 64);
+    expect(() => encodeJob(req({ ...job, special: { rect, lightning: bolt, fillBands: true } }))).toThrow(/crack or scratches/);
+  });
+
+  it('kind 128: an aimed lightning, x, y and angle after its seed', () => {
+    const across = Buffer.from(encodeJob(req({ ...job, special: { rect, lightning: bolt } })));
+    const aimed = Buffer.from(encodeJob(req({ ...job, special: { rect, lightning: { ...bolt, aim: { x: 0.25, y: 0.5, angle: 1 } } } })));
+    expect(aimed.length).toBe(across.length + 24);
+    expect(aimed.readDoubleLE(across.length)).toBe(0.25);
+    expect(aimed.readDoubleLE(across.length + 16)).toBe(1);
+    expect(kindsOf(aimed, 24 + 8 + 4 + 4 + 8 + 4)).toBe(2 | 128);
+  });
+
+  it('kind 256: a placed splash, x, y and spread after its seed', () => {
+    const even = Buffer.from(encodeJob(req({ ...job, special: { rect, splash } })));
+    const placed = Buffer.from(encodeJob(req({ ...job, special: { rect, splash: { ...splash, at: { x: 0.1, y: 0.2, spread: 0.3 } } } })));
+    expect(placed.length).toBe(even.length + 24);
+    expect(placed.readDoubleLE(even.length + 16)).toBe(0.3);
+    expect(() => encodeJob(req({ ...job, special: { rect, splash: { ...splash, at: { x: 2, y: 0, spread: 0 } } } }))).toThrow(/splash x/);
+  });
+});
+
+describe('painted (fix round 1)', () => {
+  const k0 = () => defaultStyle().strokeEffects[0];
+  // The text's own outline: an Outside stroke is a glyph band.
+  const band = () => ({ strokeEffects: [{ ...k0(), on: true, size: 5, opacity: 1, color: '#000000', position: 'outside' }] });
+  const ink = (t) => { let n = 0; for (let i = 3; i < t.data.length; i += 4) n += t.data[i]; return n; };
+  // The ink's middle, box-local x.
+  const middleX = (t) => {
+    let sx = 0, n = 0;
+    for (let j = 0; j < t.height; j++) for (let i = 0; i < t.width; i++) {
+      const k = (j * t.width + i) * 4;
+      // Red is the letters; the splash and bolts paint in other colours.
+      const a = t.data[k + 3];
+      if (a > 0 && !(t.data[k] > 200 && t.data[k + 1] < 60 && t.data[k + 2] < 60)) { sx += i; n++; }
+    }
+    return sx / n;
+  };
+
+  it('a text outline fills the cuts or is cut through, cut through by default, as before', () => {
+    for (const kind of ['crack', 'scratches']) {
+      const look = (bandOutline) => ({ ...band(), special: { [kind]: ON[kind], ...(bandOutline ? { bandOutline } : {}) } });
+      const before = texture(boxOf(look(null)));
+      const through = texture(boxOf(look('cut-through')));
+      const fills = texture(boxOf(look('fills-cuts')));
+      expect(same(before, through), kind).toBe(true);
+      expect(same(fills, through), kind).toBe(false);
+      // Filled, the outline lays ink in the cuts.
+      expect(ink(fills), kind).toBeGreaterThan(ink(through));
+      // And never past where the outline reaches.
+      expect([fills.width, fills.height]).toEqual([through.width, through.height]);
+    }
+    // Without an outline the choice changes nothing.
+    const bare = (bandOutline) => texture(boxOf({ special: { crack: ON.crack, bandOutline } }));
+    expect(same(bare('fills-cuts'), bare('cut-through'))).toBe(true);
+  });
+
+  it('the filled cuts are in the outline colour, on the letters only', () => {
+    const look = (bandOutline) => ({ ...band(), special: { crack: { ...ON.crack, amount: 60 }, bandOutline } });
+    const through = texture(boxOf(look('cut-through')));
+    const fills = texture(boxOf(look('fills-cuts')));
+    let added = 0, black = 0;
+    for (let i = 0; i < fills.data.length; i += 4) {
+      if (fills.data[i + 3] > through.data[i + 3] + 64) {
+        added++;
+        black += fills.data[i] < 40 && fills.data[i + 1] < 40 && fills.data[i + 2] < 40;
+      }
+    }
+    expect(added).toBeGreaterThan(50);
+    expect(black / added).toBeGreaterThan(0.9);
+  });
+
+  it('a lightning across is the first-built one wherever x, y and angle stand; aimed, each direction its own picture', () => {
+    const at = (over) => texture(boxOf({ special: { lightning: { ...ON.lightning, ...over } } }));
+    expect(same(at({}), at({ x: 80, y: 10, angle: 45 }))).toBe(true);
+    const dirs = [0, 90, -135].map((angle) => at({ aim: 'point', x: 50, y: 50, angle }));
+    expect(same(dirs[0], dirs[1])).toBe(false);
+    expect(same(dirs[1], dirs[2])).toBe(false);
+    expect(same(dirs[0], at({}))).toBe(false);
+    // From the left middle, heading right, the bolts lie right of the start.
+    const right = at({ aim: 'point', x: 0, y: 50, angle: 0 });
+    const left = at({ aim: 'point', x: 100, y: 50, angle: 180 });
+    expect(same(right, left)).toBe(false);
+  });
+
+  it('a splash spread over the box is the first-built one wherever it lands; pulled in, it lands where it is put', () => {
+    const at = (over) => texture(boxOf({ special: { splash: { ...ON.splash, ...over } } }));
+    expect(same(at({}), at({ x: 5, y: 95 }))).toBe(true);
+    const left = at({ x: 10, y: 50, spread: 20 });
+    const right = at({ x: 90, y: 50, spread: 20 });
+    expect(same(left, right)).toBe(false);
+    expect(middleX(left)).toBeLessThan(middleX(right));
+  });
+
+  it('a crack at two origins: each its own picture', () => {
+    const at = (x) => texture(boxOf({ special: { crack: { ...ON.crack, x, y: 50, spread: 40 } } }));
+    expect(same(at(15), at(85))).toBe(false);
+  });
+});
+
+describe('the handles', () => {
+  const box = { w: 200, h: 100 };
+  it('state a crack in the letters, the others in the box', () => {
+    const ink = { x0: 20, y0: 30, x1: 120, y1: 70 };
+    expect(handleFrame('crack', box, ink)).toEqual({ x: 20, y: 30, w: 100, h: 40 });
+    expect(handleFrame('crack', box, null)).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    expect(handleFrame('splash', box, ink)).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    const f = handleFrame('crack', box, ink);
+    expect(handlePoint({ x: 50, y: 50 }, f)).toEqual({ x: 70, y: 50 });
+    expect(handlePercents({ x: 500, y: -9 }, f)).toEqual({ x: 100, y: 0 });
+  });
+
+  it('a drag sets x and y, pulls a spread-out crack or splash in, and aims a lightning', () => {
+    const f = handleFrame('splash', box, null);
+    const sp = { x: 50, y: 50, spread: 100 };
+    dragHandle('splash', sp, { x: 50, y: 25 }, f);
+    expect(sp).toEqual({ x: 25, y: 25, spread: 50 });
+    const kept = { x: 50, y: 50, spread: 30 };
+    dragHandle('crack', kept, { x: 100, y: 50 }, f);
+    expect(kept.spread).toBe(30);
+    const bolt = { aim: 'across', x: 0, y: 50, angle: 0 };
+    dragHandle('lightning', bolt, { x: 20, y: 10 }, f);
+    expect(bolt).toMatchObject({ aim: 'point', x: 10, y: 10 });
+    // The arm: 90 is up, as the dial reads it.
+    dragArm(bolt, { x: 20, y: 10 }, { x: 20, y: -30 });
+    expect(bolt.angle).toBe(90);
+    const end = armEnd(bolt, { x: 20, y: 10 }, 10);
+    expect(end.x).toBeCloseTo(20);
+    expect(end.y).toBeCloseTo(0);
+  });
+
+  it('the Outline row reads the outlines there', () => {
+    const st = (special) => ({ special });
+    expect(outlineKinds(st({}), false, false).any).toBe(false);
+    expect(outlineKinds(st({}), true, false).current).toBe('cut-through');
+    expect(outlineKinds(st({}), false, true).current).toBe('fills-cuts');
+    expect(outlineKinds(st({}), true, true).current).toBe(null);
+    expect(outlineKinds(st({ outline: 'cut-through', bandOutline: 'cut-through' }), true, true).current).toBe('cut-through');
   });
 });
