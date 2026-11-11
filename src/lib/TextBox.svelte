@@ -843,8 +843,8 @@
   // where they are on the page relative to it. The letters are the same wherever the box stands, and
   // what is anchored to the page (the grain of a noise or a glow) stays put
   // under a move as it does for a box with no mask, whose picture a move
-  // never repaints: so a move changes only the mask's bytes, and the engine's
-  // premask piece is read back. The file is always painted where the box is.
+  // never repaints: so a move changes only how far the mask has moved, and
+  // the engine's premask piece and its raster of the mask are read back. The file is always painted where the box is.
   let grainHold = null;
   const paintedBox = () => {
     let b = editing && composeText != null ? { ...box, text: composeText } : box;
@@ -853,12 +853,11 @@
     const dx = grainHold.x - box.x;
     const dy = grainHold.y - box.y;
     if (!dx && !dy) return b;
-    const out = { ...b, x: grainHold.x, y: grainHold.y };
-    // The bubble link resolved first (`maskOnPage`): the outline it follows
-    // is the box's, and the box's fit does not move here.
-    if (maskOn) out.mask = translateMask({ on: true, shapes: maskOnPage(box) }, dx, dy);
-    if (fadeOn) out.fade = translateMask(box.fade, dx, dy);
-    return out;
+    // The shapes stay as they are (a bubble link's outline is the fit's,
+    // which does not move here) and the move goes apart: the engine reads
+    // the raster it keeps of them at the move (`pinShiftOf`), and a move
+    // frame never walks the shapes.
+    return { ...b, x: grainHold.x, y: grainHold.y, pinMove: [dx, dy] };
   };
   // `key` is the picture key this paint is for: the effect's paints have one,
   // and only those may go to the paint worker (`paintFull`). `worker` false

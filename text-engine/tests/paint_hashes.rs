@@ -708,7 +708,8 @@ fn premask_key(b: &BoxRequest, job: Key) -> Option<Key> {
 fn kept_paint(engine: &mut Engine, b: &mut BoxRequest) -> Option<Raster> {
     let job = job_key(b);
     let premask = premask_key(b, job);
-    paint_box_kept(engine, b, BoxKeys { job, premask }).unwrap()
+    let cover = premask.and_then(|_| Hasher::new("test cover").debug(&b.clip).debug(&b.fade).finish());
+    paint_box_kept(engine, b, BoxKeys { job, premask, cover }).unwrap()
 }
 
 /// Every row of the sheet, painted with nothing kept.

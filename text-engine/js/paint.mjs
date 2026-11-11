@@ -470,7 +470,9 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // v21: paint over the letters, effect kind 10.
 // v22: the line flag before the glyph job: a curved job's runs are the
 // clusters of one line and are shaped as it (`job.line`).
-export const BOX_WIRE_VERSION = 22
+// v23: the pin shift after the fade: how far a held box's mask and fade
+// have moved against it.
+export const BOX_WIRE_VERSION = 23
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
@@ -890,6 +892,35 @@ function shapeKind(sh) {
 
 // One mask shape in the box's own frame (`maskInBoxFrame`), and its op: keep
 // is 1, hide is 2.
+// The mask's or the fade's record: 0 for none, or 1, the box's corner and
+// the shapes, each written by `one` (false for one that draws nothing). A
+// held box sends the same shape list every frame of a move (`pinShift` is
+// what changes), so the record is kept with its list and copied, not
+// written again: a brush mask holds up to 400 strokes.
+const shapeRecords = new WeakMap()
+function shapesRecord(o, one) {
+  if (!o) return u32(0)
+  const list = Array.isArray(o.shapes) ? o.shapes : null
+  const hit = list && shapeRecords.get(list)
+  if (hit && hit.x === o.x && hit.y === o.y && hit.one === one) {
+    need(hit.bytes.length)
+    u8.set(hit.bytes, at)
+    at += hit.bytes.length
+    return
+  }
+  const from = at
+  u32(1)
+  f64(o.x)
+  f64(o.y)
+  // The count is written once the shapes are, less the ones not drawn.
+  const countAt = at
+  u32(0)
+  let n = 0
+  for (const sh of list ?? []) if (one(sh)) n++
+  view.setUint32(countAt, n, true)
+  if (list) shapeRecords.set(list, { x: o.x, y: o.y, one, bytes: u8.slice(from, at) })
+}
+
 function clipShape(sh) {
   const kind = shapeKind(sh)
   if (!kind) return false
@@ -1050,7 +1081,7 @@ function shapeData(sh, kind) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, fade = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
+  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, fade = null, pinShift = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -1077,28 +1108,12 @@ export function encodeBox(request) {
     f64(t.dy)
     f64(t.w)
   }
-  u32(clip ? 1 : 0)
-  if (clip) {
-    f64(clip.x)
-    f64(clip.y)
-    // The count is written once the shapes are, less the ones not drawn.
-    const countAt = at
-    u32(0)
-    let n = 0
-    for (const sh of clip.shapes ?? []) if (clipShape(sh)) n++
-    view.setUint32(countAt, n, true)
-  }
+  shapesRecord(clip, clipShape)
   // The fade (v20), after the mask and from the same corner.
-  u32(fade ? 1 : 0)
-  if (fade) {
-    f64(fade.x)
-    f64(fade.y)
-    const countAt = at
-    u32(0)
-    let n = 0
-    for (const sh of fade.shapes ?? []) if (fadeShape(sh)) n++
-    view.setUint32(countAt, n, true)
-  }
+  shapesRecord(fade, fadeShape)
+  // v23: how far a held box's mask and fade have moved against it.
+  f64(Number.isFinite(pinShift?.[0]) ? pinShift[0] : 0)
+  f64(Number.isFinite(pinShift?.[1]) ? pinShift[1] : 0)
   u32(blendId(blend))
   f64(fillOpacity)
   // The blending flags (v9): 1 Blend Interior Effects as Group, 2 (v13)

@@ -171,7 +171,56 @@ export function bubbleClip(pts, inset) {
   const d = Math.min(inset, short / 4);
   const inner = insetPolygon(pts, d);
   const a = signedArea(inner);
-  return Math.sign(a) === Math.sign(area) && Math.abs(a) < Math.abs(area) && Math.abs(a) >= 1 ? inner : pts.map((p) => [p[0], p[1]]);
+  const kept = Math.sign(a) === Math.sign(area) && Math.abs(a) < Math.abs(area) && Math.abs(a) >= 1;
+  // The total area alone misses a narrow spike or waist whose sides passed
+  // each other: the loop turned inside out there while the rest kept the
+  // sign. Any crossing means the inset is not a band of the bubble.
+  return kept && !crossesItself(inner) ? inner : pts.map((p) => [p[0], p[1]]);
+}
+
+// Whether two edges of a closed polygon cross or run over each other (edges
+// that share a corner do not count). An inset spike folds back on itself
+// either way: its sides pass each other, or they swap and lie along the
+// base. Outlines are a few hundred points, so the plain pairwise check is
+// cheap next to the raster.
+export function crossesItself(pts) {
+  const n = pts.length;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    const ab = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (ab < 1e-9) continue;
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      const c = pts[j];
+      const d = pts[(j + 1) % n];
+      if (Math.max(c[0], d[0]) < Math.min(a[0], b[0]) || Math.min(c[0], d[0]) > Math.max(a[0], b[0])) continue;
+      if (Math.max(c[1], d[1]) < Math.min(a[1], b[1]) || Math.min(c[1], d[1]) > Math.max(a[1], b[1])) continue;
+      const cd = Math.hypot(d[0] - c[0], d[1] - c[1]);
+      if (cd < 1e-9) continue;
+      // Within a hair of the line counts as on it: the inset's sums leave
+      // the last bits of a straight edge's points unequal.
+      const eps = 1e-9 * ab * cd;
+      const side = (v) => (v > eps ? 1 : v < -eps ? -1 : 0);
+      const d1 = side(cross(c, d, a));
+      const d2 = side(cross(c, d, b));
+      const d3 = side(cross(a, b, c));
+      const d4 = side(cross(a, b, d));
+      if (d1 * d2 < 0 && d3 * d4 < 0) return true;
+      if (d1 === 0 && d2 === 0) {
+        // On one line: they run over each other where their spans along it
+        // overlap by more than a point.
+        const ux = (b[0] - a[0]) / ab;
+        const uy = (b[1] - a[1]) / ab;
+        const t = (p) => (p[0] - a[0]) * ux + (p[1] - a[1]) * uy;
+        const lo = Math.max(0, Math.min(t(c), t(d)));
+        const hi = Math.min(ab, Math.max(t(c), t(d)));
+        if (hi - lo > 1e-6) return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ---- the box's frames ----
@@ -222,9 +271,10 @@ function ellipsePolygon(sh) {
   });
 }
 
-// An ellipse as a polygon whose steps are 4 px or less.
+// An ellipse as a polygon whose steps are 4 px or less, however large: the
+// count follows the radius, so a wide ellipse never shows its corners.
 function ellipseRing(sh) {
-  const n = Math.min(1024, Math.max(ELLIPSE_STEPS, Math.ceil((Math.PI * 2 * Math.max(sh.rx, sh.ry)) / 4)));
+  const n = Math.max(ELLIPSE_STEPS, Math.ceil((Math.PI * 2 * Math.max(sh.rx, sh.ry)) / 4));
   return Array.from({ length: n }, (_, i) => {
     const a = (i / n) * Math.PI * 2;
     return [sh.cx + sh.rx * Math.cos(a), sh.cy + sh.ry * Math.sin(a)];
@@ -254,19 +304,66 @@ const turned = (box) => (Number(box.style?.rotation) || 0) % 360 !== 0;
 // The mask's shapes in the box's own frame, ready to paint: each one mapped
 // there (`pageToBox`), the bubble link made the outline's polygon inset by
 // its px. Shapes that draw nothing are left out. Empty for a mask that is off.
+// For a held box (`pinMove`) they are moved on by its move.
 export function maskInBoxFrame(box) {
+  return shiftedShapes(heldMaskInBoxFrame(box), pinShiftOf(box));
+}
+
+// `maskInBoxFrame` as the box stands, whatever its `pinMove`: what the
+// engine takes, with the move apart (`pinShiftOf`). Worked out once for each
+// mask and place: a brush mask holds up to 400 strokes, and a move frame
+// must not map them all again. The list is shared; nobody may change it.
+const heldMasks = new WeakMap();
+export function heldMaskInBoxFrame(box) {
   if (!box?.mask?.on) return [];
-  const map = (p) => pageToBox(box, p);
-  const straight = !turned(box);
-  const out = [];
-  for (const sh of box.mask.shapes) {
-    if (sh.kind === 'bubble') {
-      const pts = bubblePts(box);
-      const clip = bubbleClip(pts, sh.inset);
-      if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip.map(map) });
-    } else out.push(carried(sh, map, straight));
-  }
+  return memoFrame(heldMasks, box, box.mask, () => {
+    const map = (p) => pageToBox(box, p);
+    const straight = !turned(box);
+    const out = [];
+    for (const sh of box.mask.shapes) {
+      if (sh.kind === 'bubble') {
+        const pts = bubblePts(box);
+        const clip = bubbleClip(pts, sh.inset);
+        if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip.map(map) });
+      } else out.push(carried(sh, map, straight));
+    }
+    return out;
+  });
+}
+
+// What `make` gives for the shapes of `o` (a mask or a fade) as `box` stands,
+// kept with the shape list until the list or the place changes
+// (`frameKey`).
+export function memoFrame(memo, box, o, make) {
+  const shapes = o?.shapes;
+  if (!shapes || typeof shapes !== 'object') return make();
+  const key = frameKey(box, o);
+  const hit = memo.get(shapes);
+  if (hit?.key === key) return hit.out;
+  const out = make();
+  memo.set(shapes, { key, out });
   return out;
+}
+
+// ---- a held box's move ----
+
+// A box with a mask or a fade is painted where it stood while it is moved
+// (TextBox's `paintedBox`), and `box.pinMove` (page px) says how far its
+// page-pinned shapes have moved against it since. This is that move in the
+// box's own frame, which is the engine's job units; null for none.
+export function pinShiftOf(box) {
+  const m = box?.pinMove;
+  if (!Array.isArray(m) || (!m[0] && !m[1])) return null;
+  const o = pageToBox(box, [0, 0]);
+  const p = pageToBox(box, m);
+  return [p[0] - o[0], p[1] - o[1]];
+}
+
+// Shapes in the box's frame moved by `v` (a `pinShiftOf`); the same list for
+// none.
+export function shiftedShapes(shapes, v) {
+  if (!v) return shapes;
+  return shapes.map((sh) => carried(sh, ([x, y]) => [x + v[0], y + v[1]], true));
 }
 
 // ---- what a picture keys on ----

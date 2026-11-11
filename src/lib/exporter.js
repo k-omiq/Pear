@@ -37,8 +37,8 @@ import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, I
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
 import { backdropPixels, boxToPage, BACKDROP_MAX_PX } from './backdrop.js';
-import { maskActive, maskInBoxFrame } from './box-mask.js';
-import { fadeActive, fadeInBoxFrame } from './box-fade.js';
+import { maskActive, maskInBoxFrame, heldMaskInBoxFrame, pinShiftOf } from './box-mask.js';
+import { fadeActive, heldFadeInBoxFrame } from './box-fade.js';
 import { styleReach, placedWobbleReach } from './paint-reach.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
@@ -1110,11 +1110,15 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = nul
     // the warp: its shapes in the box's own frame, from the box's corner.
     // Where a texture warp bends the picture afterwards, `warpTexture` cuts
     // it there instead (`maskAfterWarp`).
-    clip: maskActive(box) && !maskAfterWarp(box, L) ? { x: L.ox, y: L.oy, shapes: maskInBoxFrame(box) } : null,
+    // A held box's shapes go as the box stands, the same list every frame,
+    // and its move apart (`pinShift`): the engine keeps their raster and
+    // reads it at the move.
+    clip: maskActive(box) && !maskAfterWarp(box, L) ? { x: L.ox, y: L.oy, shapes: heldMaskInBoxFrame(box) } : null,
     // The fade, pinned to the page as the mask is, laid by the engine after
     // it. It has no canvas twin: a painter that does not paint whole boxes
     // never sees it.
-    fade: fadeActive(box) ? { x: L.ox, y: L.oy, shapes: fadeInBoxFrame(box) } : null,
+    fade: fadeActive(box) ? { x: L.ox, y: L.oy, shapes: heldFadeInBoxFrame(box) } : null,
+    pinShift: pinShiftOf(box),
     // The brush ink, painted with the letters (`boxInJob` lets it in only
     // where the painter does that).
     ink: inkSpec(s, L, tips),
