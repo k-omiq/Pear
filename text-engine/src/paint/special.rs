@@ -86,14 +86,14 @@ pub struct Scratches {
     pub seed: u32,
 }
 
-/// How a crack's broken-off pieces move (B5 test: the owner picks one).
+/// How a crack's broken-off pieces move (the crack's Motion setting).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
-    /// A little out from the focus, turned a few degrees, close to the
+    /// Out from the focus, each its own way and distance, turned, near the
     /// letters.
     Apart,
-    /// Down below the letters, farther the bigger the piece, turning as it
-    /// goes; a few small ones are gone.
+    /// Down below where it was, small pieces farther, turning as it goes;
+    /// some small ones are gone.
     Fall,
 }
 
