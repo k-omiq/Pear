@@ -55,20 +55,21 @@ export const BREAK_MOTIONS = ['apart', 'fall'];
 export const SPECIAL_OUTLINES = ['fills-cuts', 'cut-through'];
 const motionOf = (v) => (BREAK_MOTIONS.includes(v) ? v : 'fall');
 
-// How far a broken-off piece may travel, in its font size (and, falling,
-// the box's height): the engine never moves one farther (`BREAK_SIDE`,
-// `BREAK_DROP` in special.rs).
+// How far a broken-off piece may travel, in font sizes: the engine never
+// moves one farther (`BREAK_SIDE`, `BREAK_DROP` in special.rs, where they
+// come from the motions' numbers; a Rust test checks these are the same).
 export const BREAK_SIDE = 0.5;
-export const BREAK_DROP = 1.0;
+export const BREAK_DROP = 2.42;
 
 // The padding a style's broken-off pieces need past the letters' own, page
-// px, for a box `h` tall: { x, top, bottom }, or null when none breaks off.
-export function breakReach(style, h) {
+// px: { x, top, bottom }, or null when none breaks off. Whatever the box's
+// size.
+export function breakReach(style) {
   const c = style?.special?.crack;
   if (!c?.on || !(c.amount > 0) || !(c.breakOff > 0)) return null;
   const size = Number(style.size) || 0;
   const side = BREAK_SIDE * size;
-  const bottom = motionOf(c.motion) === 'fall' ? (Number(h) || 0) + BREAK_DROP * size : side;
+  const bottom = motionOf(c.motion) === 'fall' ? BREAK_DROP * size : side;
   return { x: side, top: side, bottom };
 }
 

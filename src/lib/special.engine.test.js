@@ -249,9 +249,9 @@ describe('painted over the whole box', () => {
     const at = (breakOff, motion = 'fall') => ({ ...LOOK, special: { crack: { ...ON.crack, breakOff, motion } } });
 
     it('pads the paint by the farthest a piece travels, and only the paint', () => {
-      expect(breakReach(style(at(0)), 120)).toBe(null);
-      expect(breakReach(style(at(50, 'apart')), 120)).toEqual({ x: BREAK_SIDE * SIZE, top: BREAK_SIDE * SIZE, bottom: BREAK_SIDE * SIZE });
-      expect(breakReach(style(at(50)), 120).bottom).toBe(120 + BREAK_DROP * SIZE);
+      expect(breakReach(style(at(0)))).toBe(null);
+      expect(breakReach(style(at(50, 'apart')))).toEqual({ x: BREAK_SIDE * SIZE, top: BREAK_SIDE * SIZE, bottom: BREAK_SIDE * SIZE });
+      expect(breakReach(style(at(50))).bottom).toBe(BREAK_DROP * SIZE);
       const plain = texture(boxOf(at(0)));
       const fall = texture(boxOf(at(80)));
       expect(fall.height).toBeGreaterThan(plain.height + 2 * 120);

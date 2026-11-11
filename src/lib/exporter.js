@@ -268,7 +268,7 @@ function layoutBox(box, p) {
   const reach = styleReach({ ...s, ink: null, flipH: false, flipV: false }, box.w, box.h);
   // A crack's broken-off pieces carry their strokes and shadows with them,
   // as far as they travel (`breakReach`). Paint only: no layout sees them.
-  const br = specialDrawn(s) ? breakReach(s, box.h) : null;
+  const br = specialDrawn(s) ? breakReach(s) : null;
   const padL = Math.max(pad0, Math.ceil(reach.l) + PAD_SPARE) + Math.ceil(br?.x ?? 0);
   const padT = Math.max(pad0, Math.ceil(reach.t) + PAD_SPARE) + Math.ceil(br?.top ?? 0);
   const padR = Math.max(pad0, Math.ceil(reach.r) + PAD_SPARE) + Math.ceil(br?.x ?? 0);
