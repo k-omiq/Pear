@@ -112,6 +112,7 @@ import {
   boxInkRect,
   REVIEW_REASONS,
   CONTAIN_TOL,
+  curvedStyle,
 } from './contain.js';
 import { fitPolygon, visualCentre } from './outline-geom.js';
 import { neededHeight, growToFit, heightToFit, hasHangul } from './typeset.js';
@@ -141,7 +142,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
-import { putText, copyRuns, runsField, runsKey, wholeLetters, rangeFace, patchRuns, clearRuns } from './runs.js';
+import { putText, copyRuns, runsField, runsKey, wholeLetters, rangeFace, patchRuns, clearRuns, pruneRuns, runFamilies } from './runs.js';
 import { sfxAvailable, sfxActive, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
 import { scalePaint } from './box-paint.js';
 
@@ -970,13 +971,37 @@ export function setRangeFace(b, a, f, change, p = page()) {
   return setRangesFace(b, [[a, f]], change, p)?.[0] ?? null;
 }
 
+// A face command on `[a, f)` of line `n`'s English, typed in the queue: set
+// as on a box showing the line (its face is the one the runs are pruned
+// against, `setRangesFace`), and refused as such a box would refuse it; on a
+// line no box shows yet, against the plain face.
+export function setLineRangeFace(p, n, a, f, change) {
+  if (!p || !(n >= 0) || !lineByN(p, n)) return null;
+  const reader = (p.boxes ?? []).find((x) => x.lineN === n && x.text == null) ?? { id: null, lineN: n, text: null, style: {} };
+  return setRangeFace(reader, a, f, change, p);
+}
+
+// Why the faces of box `b`'s words cannot be set, or null when they can:
+// 'locked' for a locked box, or for a box showing its line's words when any box
+// showing that line is locked (the words are the line's, so the faces are
+// too); 'curved' for text on a curve, which is laid out in one face.
+// `{ toast }` says so to the user. Every writer of a face on a range comes
+// through here (`setRangesFace`), and the commands ask it first.
+export function faceRefusal(b, p = page(), { toast: say = false } = {}) {
+  if (!b) return null;
+  const reads = b.text == null && b.lineN != null && b.lineN >= 0 && !!lineByN(p, b.lineN);
+  const why = boxLocked(b) || (reads && (p?.boxes ?? []).some((x) => x.lineN === b.lineN && boxLocked(x))) ? 'locked' : curvedStyle(b.style) ? 'curved' : null;
+  if (why && say) toast(why === 'locked' ? 'This box is locked - unlock it first' : 'Curved text uses one typeface.');
+  return why;
+}
+
 // `setRangeFace` on several ranges of the same box at once, still one undo
 // step (the agent's `face` tool sets every match of a word in one call). The
 // ranges it acted on, widened, or null when nothing changed.
 export function setRangesFace(b, ranges, change, p = page()) {
-  if (!b || !p || refuseLocked(b)) return null;
+  if (!b || !p || faceRefusal(b, p, { toast: true })) return null;
   const text = boxText(b, p) ?? '';
-  const face = { bold: !!b.style?.bold, italic: !!b.style?.italic };
+  const face = { bold: !!b.style?.bold, italic: !!b.style?.italic, font: b.style?.font };
   const runs = boxRuns(b, p);
   let next = runs;
   const done = [];
@@ -992,13 +1017,32 @@ export function setRangesFace(b, ranges, change, p = page()) {
     else return null;
     done.push([lo, hi]);
   }
+  // What equals the box's face now is left to the box (`pruneRuns`).
+  next = pruneRuns(next, text, face);
   if (!done.length || runsKey(next) === runsKey(runs)) return null;
+  writeFaces(b, text, next, p);
+  return done;
+}
+
+// The faces of box `b`'s words set to `runs` outright, the words as they are:
+// a field's own undo stepping back over a face command. Refused as a command
+// is; one undo step. Whether anything changed.
+export function setBoxRuns(b, runs, p = page()) {
+  if (!b || !p || faceRefusal(b, p, { toast: true })) return false;
+  const text = boxText(b, p) ?? '';
+  if (runsKey(runs) === runsKey(boxRuns(b, p))) return false;
+  writeFaces(b, text, runs, p);
+  return true;
+}
+
+// Where the faces sit: on the line for a box showing its line's words (one
+// `line` step, as the queue writes it), else on the box.
+function writeFaces(b, text, runs, p) {
   if (b.text == null && b.lineN != null && b.lineN >= 0 && lineByN(p, b.lineN)) {
     settleLine();
-    setLineText(p, b.lineN, text, { runs: next });
+    setLineText(p, b.lineN, text, { runs: runs ?? null });
     settleLine();
-  } else editBoxes([{ page: p, box: b }], (box, pg) => setBoxText(box, text, pg, { runs: next, fit: false }));
-  return done;
+  } else editBoxes([{ page: p, box: b }], (box, pg) => setBoxText(box, text, pg, { runs: runs ?? null, fit: false }));
 }
 
 // ---------- a queue line's translation, typed into the queue ----------
@@ -2755,12 +2799,18 @@ export function chapterSetIn(families) {
   if (!families?.size) return true;
   for (const p of app.pages) {
     for (const b of p.boxes ?? []) {
-      const name = b.style?.font;
-      if (!name) continue;
-      if (families.has(name) || families.has(fontNameFor(name))) return true;
+      for (const name of boxFamilies(b, p)) if (families.has(name) || families.has(fontNameFor(name))) return true;
     }
   }
   return false;
+}
+
+// Every family box `b`'s letters are set in: its own font, and the family of
+// each run of its words set in another typeface (runs.js).
+export function boxFamilies(b, p) {
+  const own = b.style?.font;
+  const runs = runFamilies(boxRuns(b, p));
+  return typeof own === 'string' && own ? [own, ...runs.filter((f) => f !== own)] : runs;
 }
 // The same re-measure, for anything else that changes how every line lays out
 // without touching any box - the chapter's breaker switched wholesale
@@ -8355,13 +8405,14 @@ export function fontMissing(name) {
 // The open chapter's missing families, each with how many boxes are set in it,
 // most boxes first. One answer for the whole chapter, so nobody has to open
 // every box to find out a font did not come with the file.
-export function missingFonts(pages = app.pages) {
+// `familiesOf` reads a box's families (`boxFamilies`); a caller that keeps
+// each box's answer (FontNotice) passes its own, so a keystroke, which moves a
+// box's runs but not their families, does not make the list again.
+export function missingFonts(pages = app.pages, familiesOf = boxFamilies) {
   const count = new Map();
   for (const p of pages ?? []) {
     for (const b of p.boxes ?? []) {
-      const name = b.style?.font;
-      if (typeof name !== 'string' || !name) continue;
-      count.set(name, (count.get(name) ?? 0) + 1);
+      for (const name of familiesOf(b, p)) count.set(name, (count.get(name) ?? 0) + 1);
     }
   }
   return [...count]

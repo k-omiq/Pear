@@ -7,7 +7,7 @@ import { normalizeFit, strokeExtentOf } from './data.js';
 import { splitPath, smoothPath } from './bezier-path.js';
 import { textEngine, setTextEngine, onTextEngineChange } from './text-engine/index.js';
 import { createBrowserTextEngine, browserPlainBreaker } from './text-engine/browser.js';
-import { faceSpans, normalizeRuns, runsKey } from './runs.js';
+import { faceSpans, faceOf, normalizeRuns, runsKey } from './runs.js';
 
 // Keep creation at the old canvas's import-time boundary: tests install their
 // browser before importing this module, or hand the painter a context later.
@@ -888,7 +888,10 @@ function trimEnd(line) {
 // A run's family is its own only when it is not the box's.
 const ownFamily = (f, style) => !f.font || f.font === style?.font;
 const notOwn = (list, style) => {
-  const out = list?.filter((r) => r.bold !== !!style?.bold || r.italic !== !!style?.italic || !ownFamily(r, style));
+  const out = list?.filter((r) => {
+    const f = faceOf(r, style);
+    return f.bold !== !!style?.bold || f.italic !== !!style?.italic || !ownFamily(f, style);
+  });
   return out?.length ? out : null;
 };
 export function casedRuns(text, runs, style) {

@@ -11,9 +11,9 @@ const { initHistory, resetHistory, undo, redo } = await import('./editor/history
 const { callContext, __resetRun } = await import('./agent/run.svelte.js');
 const { callTool } = await import('./agent/registry.js');
 const { defaultStyle } = await import('./data.js');
-const { saveRuns, textCheck, editedSpan } = await import('./runs.js');
+const { saveRuns, textCheck, editedSpan, faceAt } = await import('./runs.js');
 const { bindGuide, unbindGuide } = await import('./guide.svelte.js');
-const { setRangeFace, setBoxLocked } = store;
+const { setRangeFace, setBoxLocked, faceRefusal } = store;
 const { editorActionHandlers } = await import('./editor-actions.js');
 const { typingSel, setTypingSel, clearTypingSel, faceAsk } = await import('./typing-selection.svelte.js');
 await import('./agent/tools/index.js');
@@ -311,17 +311,21 @@ describe('the text fields and the IME pass the range they edited', () => {
 });
 
 describe('face commands on selected words (C4)', () => {
-  const F = (start, end, font, more = {}) => ({ start, end, bold: false, italic: false, font, ...more });
+  const F = (start, end, font, more = {}) => ({ start, end, font, ...more });
+  // A command leaves a run naming only what differs from the box's face.
+  const Bo = (start, end) => ({ start, end, bold: true });
+  const It = (start, end) => ({ start, end, italic: true });
   afterEach(() => clearTypingSel());
 
   it('Bold on a range: mixed becomes all bold, all bold becomes none, one undo step each', () => {
     const b = byId('own'); // 'its own words', 'its' italic
     expect(setRangeFace(b, 0, 8, { toggle: 'bold' }, p1())).toEqual([0, 8]);
-    expect(b.runs).toEqual([{ start: 0, end: 3, bold: true, italic: true }, B(3, 8)]);
+    expect(b.runs).toEqual([{ start: 0, end: 3, bold: true, italic: true }, Bo(3, 8)]);
+    // Off again: nothing is left pinned, so the box's own Bold reaches them.
     setRangeFace(b, 0, 8, { toggle: 'bold' }, p1());
-    expect(b.runs).toEqual([I(0, 3), { start: 3, end: 8, bold: false, italic: false }]);
+    expect(b.runs).toEqual([It(0, 3)]);
     undo();
-    expect(b.runs).toEqual([{ start: 0, end: 3, bold: true, italic: true }, B(3, 8)]);
+    expect(b.runs).toEqual([{ start: 0, end: 3, bold: true, italic: true }, Bo(3, 8)]);
     undo();
     expect(b.runs).toEqual([I(0, 3)]);
     expect(b.text).toBe('its own words');
@@ -330,29 +334,29 @@ describe('face commands on selected words (C4)', () => {
   it('a family, then Clear typeface back to the box face', () => {
     const b = byId('own');
     setRangeFace(b, 4, 7, { font: 'Bangers' }, p1());
-    expect(b.runs).toEqual([I(0, 3), F(4, 7, 'Bangers')]);
+    expect(b.runs).toEqual([It(0, 3), F(4, 7, 'Bangers')]);
     setRangeFace(b, 0, 13, { clear: true }, p1());
     expect('runs' in b).toBe(false);
     undo();
-    expect(b.runs).toEqual([I(0, 3), F(4, 7, 'Bangers')]);
+    expect(b.runs).toEqual([It(0, 3), F(4, 7, 'Bangers')]);
   });
 
   it('widens to whole letters, refuses a locked box, and changes nothing that is already so', () => {
     const b = byId('own');
     setBoxText(b, 'ok 👍🏽 go', p1(), { runs: null });
     setRangeFace(b, 4, 5, { toggle: 'italic' }, p1());
-    expect(b.runs).toEqual([I(3, 7)]);
+    expect(b.runs).toEqual([It(3, 7)]);
     expect(setRangeFace(b, 3, 7, { font: null }, p1())).toBe(null);
     setBoxLocked('own', true);
     expect(setRangeFace(b, 0, 2, { toggle: 'bold' }, p1())).toBe(null);
-    expect(b.runs).toEqual([I(3, 7)]);
+    expect(b.runs).toEqual([It(3, 7)]);
   });
 
   it('a box reading its line sets the line\'s faces, one line step, and writes no words of its own', () => {
     const b = byId('a'); // reads line 1, 'one two three', 'two' bold
     setRangeFace(b, 0, 3, { toggle: 'italic' }, p1());
     expect(b.text).toBe(null);
-    expect(lineByN(p1(), 1).runs).toEqual([I(0, 3), B(4, 7)]);
+    expect(lineByN(p1(), 1).runs).toEqual([It(0, 3), Bo(4, 7)]);
     undo();
     expect(lineByN(p1(), 1).runs).toEqual([B(4, 7)]);
   });
@@ -365,7 +369,7 @@ describe('face commands on selected words (C4)', () => {
     beginEdit('own');
     setTypingSel('own', b.text, 4, 13);
     run['text.bold']();
-    expect(b.runs).toEqual([I(0, 3), B(4, 13)]);
+    expect(b.runs).toEqual([It(0, 3), Bo(4, 13)]);
     expect(b.style.bold).toBe(false);
     // The selection is kept.
     expect([typingSel.a, typingSel.f]).toEqual([4, 13]);
@@ -373,7 +377,7 @@ describe('face commands on selected words (C4)', () => {
     setTypingSel('own', b.text, 3, 3);
     run['text.bold']();
     expect(typingSel.pending).toMatchObject({ boxId: 'own', at: 3, patch: { bold: true } });
-    expect(b.runs).toEqual([I(0, 3), B(4, 13)]);
+    expect(b.runs).toEqual([It(0, 3), Bo(4, 13)]);
     // Bold again there takes the ask back.
     run['text.bold']();
     expect(typingSel.pending.patch).toEqual({ bold: false });
@@ -386,7 +390,7 @@ describe('face commands on selected words (C4)', () => {
     run['text.typeface']();
     expect(faceAsk).toMatchObject({ turn: turn + 1, boxId: 'own', a: 0, f: 3 });
     run['text.clearFace']();
-    expect(b.runs).toEqual([B(4, 13)]);
+    expect(b.runs).toEqual([Bo(4, 13)]);
     endEdit(b.text);
     clearTypingSel();
     // Not typed into: the whole box, as before.
@@ -401,5 +405,48 @@ describe('face commands on selected words (C4)', () => {
     run['text.italic']();
     expect(byId('a').text).toBe(null);
     expect(lineByN(p1(), 1).runs).toEqual([B(4, 7)]);
+  });
+
+  it('un-bold of a word in a bold box stays, and a box face change reaches what a run does not name', () => {
+    const b = byId('own'); // 'its own words', 'its' italic
+    b.style.bold = true;
+    setRangeFace(b, 4, 7, { toggle: 'bold' }, p1());
+    // 'its' was set outright (bold false) before runs inherited: the command
+    // leaves it naming only its italic, now the box is bold.
+    expect(b.runs).toEqual([{ start: 0, end: 3, bold: false, italic: true }, { start: 4, end: 7, bold: false }]);
+    b.style.italic = true;
+    expect(faceAt(b.runs, 5, b.style)).toEqual({ bold: false, italic: true });
+  });
+
+  it('refuses a box showing a line another locked box shows, and curved text, with one plain toast', () => {
+    const a = byId('a'); // reads line 1
+    const twin = { ...a, id: 'L', locked: true, style: { ...a.style } };
+    p1().boxes.push(twin);
+    expect(faceRefusal(a, p1())).toBe('locked');
+    expect(setRangeFace(a, 0, 3, { toggle: 'bold' }, p1())).toBe(null);
+    expect(lineByN(p1(), 1).runs).toEqual([B(4, 7)]);
+    p1().boxes.pop();
+    const b = byId('own');
+    b.style.curve = 30;
+    expect(setRangeFace(b, 0, 3, { toggle: 'bold' }, p1())).toBe(null);
+    expect(faceRefusal(b, p1())).toBe('curved');
+    expect(app.toast.msg).toBe('Curved text uses one typeface.');
+    expect(b.runs).toEqual([I(0, 3)]);
+  });
+});
+
+// A family named only by a run of a box's words is one the chapter is set in:
+// the fonts-missing notice lists it, and its arriving late re-lays the chapter
+// out (App.svelte asks `chapterSetIn`).
+describe('the families a box\'s runs are set in', () => {
+  it('are listed when missing, and count as the chapter\'s for a late load', () => {
+    const { missingFonts, chapterSetIn, boxFamilies } = store;
+    loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [{ n: 1, en: 'one two', runs: [{ start: 4, end: 7, font: 'Nowhere Sans' }], runsCheck: textCheck('one two') }], boxes: [box('a', 1), box('own', null, { ...own('its own', [{ start: 0, end: 3, font: 'Gone Serif' }]) })] }]);
+    expect(boxFamilies(byId('a'), p1())).toEqual([defaultStyle().font, 'Nowhere Sans']);
+    const names = missingFonts().map((m) => m.name);
+    expect(names).toContain('Nowhere Sans');
+    expect(names).toContain('Gone Serif');
+    expect(chapterSetIn(new Set(['Gone Serif']))).toBe(true);
+    expect(chapterSetIn(new Set(['Not Used']))).toBe(false);
   });
 });

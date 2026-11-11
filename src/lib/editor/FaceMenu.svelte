@@ -1,10 +1,18 @@
 <script module>
+  import { isDesktopApp, popFaceMenu } from './face-menu-native.js';
+
   // Where the last right-click on selected words asked for the menu of their
   // faces. Module state for the reason BoxMenu's is: the press is heard by a
   // TextBox and the menu is drawn once, over everything.
   const ask = $state({ x: 0, y: 0, turn: 0 });
 
+  // In the desktop app the system's own popup (face-menu-native.js); in a
+  // browser, this one.
   export function openFaceMenu(x, y) {
+    if (isDesktopApp()) {
+      popFaceMenu();
+      return;
+    }
     ask.x = x;
     ask.y = y;
     ask.turn++;
@@ -12,21 +20,22 @@
 </script>
 
 <script>
-  // The right-click menu on words selected in a box: Bold, Italic, Typeface…
-  // and Clear typeface. Each runs through the shortcut registry (`runShortcut`),
-  // so the menu, the key and the Inspector's buttons are one command, and each
-  // shows its key as the user has it bound. Bold and Italic are checked when
-  // all of the words have them, and show "Mixed" when some do.
+  // The right-click menu on words selected in a box, in a browser: Cut and
+  // Copy, then Bold, Italic, Typeface… and Clear typeface (face-menu-items.js).
+  // Bold and Italic are checked when all of the words have them, and show
+  // "Mixed" when some do.
   //
   // The words stay selected and typed into while it is open: the box's edit
-  // does not end on the focus coming here (TextBox.svelte `onEditBlur`), and
-  // the focus goes back to the text when it closes, by a choice or Escape.
+  // does not end on the focus coming here (`data-keeps-edit`, TextBox.svelte
+  // `onEditBlur`), and the focus and the selection go back to the text when
+  // it closes, by a choice or Escape. Closed any other way, the edit ends
+  // unless the focus is back in the box (`endEditIfAway`).
   import { untrack } from 'svelte';
-  import { app, byId, boxText, boxRuns, isTranslateMode } from '../store.svelte.js';
-  import { runShortcut, hasShortcutHandler, comboFor, formatCombo } from '../shortcuts.svelte.js';
+  import { isTranslateMode } from '../store.svelte.js';
   import { anchoredOverlay } from '../anchored-overlay.svelte.js';
-  import { selectedRange } from '../typing-selection.svelte.js';
-  import { rangeFace } from '../runs.js';
+  import { endEditIfAway } from '../typing-selection.svelte.js';
+  import { faceMenuTarget, faceMenuItems } from './face-menu-items.js';
+  import { formatCombo } from '../shortcuts.svelte.js';
 
   const EDGE = 8;
   let menuEl = $state(null);
@@ -46,19 +55,20 @@
   });
 
   // The words it is about: the selection in the box typed into.
-  const target = $derived.by(() => {
-    const b = app.editingId != null ? byId(app.editingId) : null;
-    if (!b) return null;
-    const text = boxText(b) ?? '';
-    const r = selectedRange(b.id, text);
-    return r && r[0] < r[1] ? { b, text, r } : null;
-  });
+  const target = $derived(faceMenuTarget());
+
+  // Closed with nowhere to hand the focus back (a press away, the window
+  // resized, a wheel): the edit ends once the focus has landed outside it.
+  function closeAway() {
+    overlay.close({ refocus: false });
+    setTimeout(endEditIfAway);
+  }
 
   // Nothing selected any more - the edit ended, the words were typed over -
   // takes the menu away.
   $effect(() => {
     if (!overlay.open) return;
-    if (!target || isTranslateMode()) overlay.close({ refocus: false });
+    if (!target || isTranslateMode()) closeAway();
   });
 
   $effect(() => {
@@ -66,7 +76,7 @@
     const wheel = (e) => {
       if (!menuEl?.contains(e.target)) overlay.close();
     };
-    const away = () => overlay.close({ refocus: false });
+    const away = closeAway;
     window.addEventListener('wheel', wheel, { capture: true, passive: true });
     window.addEventListener('resize', away);
     return () => {
@@ -75,24 +85,18 @@
     };
   });
 
-  const keyOf = (id) => formatCombo(comboFor(id));
-  function itemsFor(t) {
-    const face = rangeFace(boxRuns(t.b), t.text, t.r[0], t.r[1], t.b.style);
-    const keyed = (id, label, extra = {}) => ({ id, label, key: keyOf(id), ok: hasShortcutHandler(id), run: () => runShortcut(id), ...extra });
-    return [
-      keyed('text.bold', 'Bold', { checked: face.bold }),
-      keyed('text.italic', 'Italic', { checked: face.italic }),
-      keyed('text.typeface', 'Typeface…', { note: face.font === 'mixed' ? 'Mixed' : face.font }),
-      keyed('text.clearFace', 'Clear typeface'),
-    ];
-  }
+  // Cut and Copy run the browser's own command on the words, which the box
+  // hears as it hears the keys (its `oncut`/`oncopy`).
+  // Their keys are the field's own, written as the app writes keys.
+  const clip = (kind, label, key) => ({ id: `edit.${kind}`, label, key: formatCombo(`Mod+${key}`), ok: true, run: () => document.execCommand(kind) });
+  const itemsFor = (t) => [clip('cut', 'Cut', 'x'), clip('copy', 'Copy', 'c'), ...faceMenuItems(t)];
 
-  // Bold, Italic and Clear give the focus back to the text first, so the
-  // edit goes on; Typeface… opens the Inspector's family picker, which takes
-  // it.
+  // Every choice gives the focus and the selection back to the text first,
+  // so the edit goes on: Typeface… then opens the Inspector's family list,
+  // which hands them back when it closes.
   function choose(it) {
     if (!it.ok) return;
-    overlay.close({ refocus: it.id !== 'text.typeface' });
+    overlay.close();
     it.run();
   }
 
@@ -139,6 +143,7 @@
   {#key turn}
   <div
     class="chrome-menu face-menu"
+    data-keeps-edit
     role="menu"
     tabindex="-1"
     aria-label="Selected words"
@@ -149,7 +154,8 @@
     onfocusout={overlay.focusOut}
     oncontextmenu={(e) => e.preventDefault()}
   >
-    {#each itemsFor(target) as it (it.id)}
+    {#each itemsFor(target) as it, i (it.id)}
+      {#if i === 2}<div class="fm-sep" role="separator"></div>{/if}
       <button
         type="button"
         role={it.checked != null ? 'menuitemcheckbox' : 'menuitem'}
@@ -186,6 +192,11 @@
   }
   .fm-label {
     flex: 1;
+  }
+  .fm-sep {
+    height: 1px;
+    margin: 4px 0;
+    background: var(--line, var(--panel2));
   }
   .fm-note {
     font-size: 11px;
