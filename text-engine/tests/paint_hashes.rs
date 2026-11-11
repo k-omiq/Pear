@@ -39,7 +39,7 @@ use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
     paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
-    Fill, Job, Pt, Raster, Request, Rgba, Run, RunFaces, Shadow, Tap, Wobble,
+    Crack, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -616,6 +616,47 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             two_faces(b);
             b.shadows = vec![shadow(5.0, 6.0)];
             b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    // The special effects (glyph wire v14), each over the whole box: a
+    // crack past 60 % (pieces out) under a stroke and a shadow, a splash
+    // under a stroke, scratches, and a lightning laid as paint.
+    fn special(b: &mut BoxRequest) -> &mut Special {
+        b.request.job.effects.special = Some(Special {
+            rect: [0.0, 0.0, 200.0, 160.0],
+            crack: None,
+            lightning: None,
+            splash: None,
+            scratches: None,
+        });
+        b.request.job.effects.special.as_mut().unwrap()
+    }
+    rows.push((
+        "special_crack_falls",
+        Box::new(move |b| {
+            special(b).crack = Some(Crack { amount: 0.9, size: 1.0, seed: 3 });
+            b.shadows = vec![shadow(5.0, 6.0)];
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    rows.push((
+        "special_splash_stroke",
+        Box::new(move |b| {
+            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, seed: 5 });
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    rows.push((
+        "special_scratches",
+        Box::new(move |b| {
+            special(b).scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+        }),
+    ));
+    rows.push((
+        "special_lightning",
+        Box::new(move |b| {
+            special(b).lightning = Some(Lightning { amount: 0.6, angle: 0.35, color: BLUE, seed: 4 });
+            b.lay_lightning().unwrap();
         }),
     ));
     rows

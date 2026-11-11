@@ -10,6 +10,7 @@
 use super::geom::{Affine, Pt};
 use super::roughen::Roughen;
 use super::shade::Premul;
+use super::special::{Crack, Lightning, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 use super::stroke::Join;
 use super::warp::{Mesh, MAX_MESH_SIDE};
 use super::BoldDraw;
@@ -171,6 +172,10 @@ pub struct Effects {
     /// it (box wire v22); a job on the glyph wire has no place for it and
     /// shapes each run on its own, as an SFX letter is.
     pub line: bool,
+    /// Special effects (wire v14): crack, splash and scratches cut and add
+    /// shapes over the whole box, lightning is the box job's paint
+    /// (`special.rs`). `None` paints the letters as they are.
+    pub special: Option<Special>,
 }
 
 /// Letters that jump about: each letter is moved up or down by up to
@@ -229,9 +234,13 @@ impl Default for Effects {
             crisp: None,
             wobble: None,
             line: false,
+            special: None,
         }
     }
 }
+
+/// Largest coordinate or side a special effect's box may state, job units.
+pub const MAX_SPECIAL_SPAN: f64 = 1_048_576.0;
 
 /// Most extra weight accepted, in synthesised bolds.
 pub const MAX_EMBOLDEN: f64 = 8.0;
@@ -372,7 +381,7 @@ pub const MAX_RUN_FACES: usize = 16;
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 13;
+pub const WIRE_VERSION: u32 = 14;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -569,6 +578,43 @@ impl<'a> Reader<'a> {
     // The v13 block of a job set in several faces (see `decode`). Whether a
     // stretch list covers its run's text is the shaper's to check
     // (`Engine::measure_spans`), which refuses one that does not.
+    // The special effects (wire v14). Every number is checked here, so a
+    // generator never meets one it cannot use.
+    fn special(&mut self) -> Result<Special, Error> {
+        let mut rect = [0.0; 4];
+        for v in &mut rect {
+            *v = self.f64()?;
+        }
+        if !rect.iter().all(|v| v.is_finite() && v.abs() <= MAX_SPECIAL_SPAN) || !(rect[2] > 0.0 && rect[3] > 0.0) {
+            return Err(Error::BadSpec);
+        }
+        let kinds = self.u32()?;
+        if kinds == 0 || kinds > 15 {
+            return Err(Error::BadSpec);
+        }
+        let share = |v: f64, lo: f64, hi: f64| if (lo..=hi).contains(&v) { Ok(v) } else { Err(Error::BadSpec) };
+        let turn = |v: f64| if v.is_finite() && v.abs() <= 64.0 { Ok(v) } else { Err(Error::BadSpec) };
+        let mut sp = Special { rect, crack: None, lightning: None, splash: None, scratches: None };
+        if kinds & 1 != 0 {
+            let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
+            sp.crack = Some(Crack { amount, size, seed: self.u32()? });
+        }
+        if kinds & 2 != 0 {
+            let (amount, angle) = (share(self.f64()?, 0.0, 1.0)?, turn(self.f64()?)?);
+            let color = self.rgba()?;
+            sp.lightning = Some(Lightning { amount, angle, color, seed: self.u32()? });
+        }
+        if kinds & 4 != 0 {
+            let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
+            sp.splash = Some(Splash { amount, size, seed: self.u32()? });
+        }
+        if kinds & 8 != 0 {
+            let (amount, angle) = (share(self.f64()?, 0.0, 1.0)?, turn(self.f64()?)?);
+            sp.scratches = Some(Scratches { amount, angle, seed: self.u32()? });
+        }
+        Ok(sp)
+    }
+
     fn run_faces(&mut self, runs: usize, size: f64) -> Result<RunFaces, Error> {
         let n = self.count(12)?;
         if n == 0 || n > MAX_RUN_FACES {
@@ -620,7 +666,8 @@ impl<'a> Reader<'a> {
 /// f64 x 6 transform (a, b, c, d, e, f)
 /// f64 weight (device pixels, 0 to 64)
 /// u32 flags (1 curved, 2 silhouette, 4 no fill, 8 letter by letter,
-///     16 negative, 32 crisp v11, 64 wobble v12, 128 faces v13), u32 align (0 left,
+///     16 negative, 32 crisp v11, 64 wobble v12, 128 faces v13, 256 special
+///     v14), u32 align (0 left,
 ///     1 centre, 2 right)
 /// f64 letter spacing
 /// rgba silhouette
@@ -644,6 +691,14 @@ impl<'a> Reader<'a> {
 ///     u32 run count (the job's), then per run: u32 stretch count (0 for a
 ///     run in the job's face), then per stretch: u32 face index, u32 first
 ///     and one-past-last UTF-16 unit of the run's text
+/// with flag 256 (v14), after the faces: the special effects. f64 x, y, w, h
+///     (the box in job space), u32 kinds (1 crack, 2 lightning, 4 splash,
+///     8 scratches), then for each kind set, in that order:
+///     crack:     f64 amount (0 to 1), f64 size (a share of the size, 0.01
+///                to 4), u32 seed
+///     lightning: f64 amount, f64 angle (radians), rgba colour, u32 seed
+///     splash:    f64 amount, f64 size, u32 seed
+///     scratches: f64 amount, f64 angle, u32 seed
 ///
 /// fill: u32 kind, then
 ///   0 none
@@ -817,6 +872,10 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     if flags & 1 != 0 && flags & 128 != 0 {
         return Err(Error::BadSpec);
     }
+    let special = if flags & 256 != 0 { Some(r.special()?) } else { None };
+    if flags > 511 {
+        return Err(Error::BadSpec);
+    }
     if r.at != bytes.len() {
         return Err(Error::BadSpec);
     }
@@ -841,6 +900,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
                 crisp,
                 wobble,
                 line: false,
+                special,
             },
             runs,
         },

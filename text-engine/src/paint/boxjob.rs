@@ -325,6 +325,33 @@ pub struct BoxRequest {
 }
 
 impl BoxRequest {
+    /// Lays the job's lightning (glyph wire v14) as paint over the letters:
+    /// its bolts, made from its numbers and kept (`lightning_marks`), go
+    /// after the box's own paint, stated from the box's corner. The decoder
+    /// does it for every box from the wire; a request built by hand calls
+    /// it once.
+    pub fn lay_lightning(&mut self) -> Result<(), Error> {
+        let Some(sp) = self.request.job.effects.special else {
+            return Ok(());
+        };
+        let Some(l) = sp.lightning else {
+            return Ok(());
+        };
+        let marks = super::special::lightning_marks(&l, sp.rect, self.request.face.size);
+        if marks.is_empty() {
+            return Ok(());
+        }
+        let mut list = Vec::new();
+        budget::reserve_raw(&mut list, marks.len())?;
+        list.extend(marks.iter().cloned());
+        budget::reserve_raw(&mut self.effects, 1)?;
+        self.effects.push(Effect::Paint(Marks {
+            origin: Pt::new(sp.rect[0], sp.rect[1]),
+            marks: list,
+        }));
+        Ok(())
+    }
+
     /// A box job of these parts with every Blending Option at its default.
     pub fn new(width: u32, height: u32, request: Request) -> Self {
         Self {
@@ -1297,7 +1324,7 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
             ),
         ),
     };
-    let request = BoxRequest {
+    let mut request = BoxRequest {
         width,
         height,
         grain,
@@ -1315,6 +1342,7 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
         pin_shift,
         request,
     };
+    request.lay_lightning()?;
     Ok((request, BoxKeys { job: key, premask, cover }))
 }
 
