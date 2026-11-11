@@ -114,8 +114,12 @@ export const library = $state({
   error: '',
 });
 
+// The side-by-side test build (scripts/install-sxs.sh) names its own folder, so a
+// fresh copy of it never opens the real library.
+const ROOT_NAME = import.meta.env?.VITE_MT_LIBRARY_DIR || 'MangaTypesetter';
+
 export async function defaultRoot() {
-  return fsx.join(await fsx.homeDir(), 'Documents', 'MangaTypesetter');
+  return fsx.join(await fsx.homeDir(), 'Documents', ROOT_NAME);
 }
 
 export async function initRoot() {

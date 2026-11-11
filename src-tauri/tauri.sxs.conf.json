@@ -3,7 +3,7 @@
   "productName": "Manga Typesetter Rust",
   "identifier": "com.mangatypesetter.rust",
   "build": {
-    "beforeBuildCommand": "npm run build:engine && VITE_MT_TEXT_ENGINE=rust npm run build"
+    "beforeBuildCommand": "npm run build:engine && VITE_MT_TEXT_ENGINE=rust VITE_MT_LIBRARY_DIR=MangaTypesetter-Rust npm run build"
   },
   "app": {
     "windows": [

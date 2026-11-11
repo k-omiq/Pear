@@ -9,6 +9,8 @@
 # its own preferences and font library. What differs:
 #
 #   - the text engine preference starts on 'rust' (VITE_MT_TEXT_ENGINE);
+#   - a fresh copy opens ~/Documents/MangaTypesetter-Rust, never the real
+#     library (VITE_MT_LIBRARY_DIR);
 #   - it has no update endpoint: an update would replace it with the released
 #     app;
 #   - no DMG and no updater artifacts, so no signing key and no Finder step.
