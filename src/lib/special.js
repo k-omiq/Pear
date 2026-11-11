@@ -56,7 +56,7 @@ export function setBreakMotion(m) {
 // How far a broken-off piece may travel, in its font size (and, falling,
 // the box's height): the engine never moves one farther (`BREAK_SIDE`,
 // `BREAK_DROP` in special.rs).
-export const BREAK_SIDE = 0.35;
+export const BREAK_SIDE = 0.5;
 export const BREAK_DROP = 1.0;
 
 // The padding a style's broken-off pieces need past the letters' own, page

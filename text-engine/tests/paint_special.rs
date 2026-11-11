@@ -552,3 +552,60 @@ fn broken_pieces_shared_by_the_passes_paint_the_same_bytes() {
         assert!(alone == shared, "{motion:?}");
     }
 }
+
+/// A piece's middle (the mean of its outline) and its box, where `m` takes
+/// it.
+fn placed(outline: &[mt_text::paint::Pt], m: &Affine) -> (f64, f64, (f64, f64, f64, f64)) {
+    let pts: Vec<_> = outline.iter().map(|&v| m.apply(v)).collect();
+    let n = pts.len() as f64;
+    let b = pts.iter().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, v| (b.0.min(v.x), b.1.min(v.y), b.2.max(v.x), b.3.max(v.y)));
+    (pts.iter().map(|v| v.x).sum::<f64>() / n, pts.iter().map(|v| v.y).sum::<f64>() / n, b)
+}
+
+/// How the pieces of a crack at 80 over a line of letters move at
+/// `share`: the mean of how much farther from the focus each lands, how
+/// far down, the most any drifts sideways, how much the boxes of the pieces
+/// where they lie overlap (pairwise, a share of their area) and how many
+/// moved and how many are gone.
+fn motion_numbers(motion: Motion, share: f64) -> (f64, f64, f64, f64, usize, usize) {
+    const INK: (f64, f64, f64, f64) = (40.0, 55.0, 330.0, 100.0);
+    let sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None };
+    let sh = letter_shapes(&sp, SIZE, INK).unwrap();
+    let focus = (185.0, 77.5);
+    let (mut out, mut down, mut side, mut gone, mut over, mut area) = (0.0, 0.0, 0.0f64, 0, 0.0, 0.0);
+    let mut boxes = Vec::new();
+    for p in &sh.pieces {
+        let Some(m) = p.moved else {
+            gone += 1;
+            continue;
+        };
+        let (x0, y0, _) = placed(&p.outline, &Affine::IDENTITY);
+        let (x1, y1, b) = placed(&p.outline, &m);
+        out += (x1 - focus.0).hypot(y1 - focus.1) - (x0 - focus.0).hypot(y0 - focus.1);
+        down += y1 - y0;
+        side = side.max((x1 - x0).abs());
+        boxes.push(b);
+    }
+    for (i, a) in boxes.iter().enumerate() {
+        area += (a.2 - a.0) * (a.3 - a.1);
+        for b in &boxes[i + 1..] {
+            over += (a.2.min(b.2) - a.0.max(b.0)).max(0.0) * (a.3.min(b.3) - a.1.max(b.1)).max(0.0);
+        }
+    }
+    let n = boxes.len();
+    (out / n as f64, down / n as f64, side, over / area, n, gone)
+}
+
+#[test]
+fn apart_pieces_move_clearly_out_from_the_focus_farther_as_break_off_grows() {
+    // Measured (font size 60): out 8.5, 12.9, 18.1, 19.1 at 25 to 100 %,
+    // against 2.6 to 6.2 for the first Apart, which read as wider cracks.
+    let mut last = 0.0;
+    for share in [0.25, 0.5, 0.75, 1.0] {
+        let (out, down, _, _, n, gone) = motion_numbers(Motion::Apart, share);
+        assert!(out > 0.12 * SIZE && out > last, "{share}: out {out}");
+        assert!(down.abs() < 0.1 * SIZE, "{share}: they stay by the letters, {down}");
+        assert!(n > 0 && gone == 0, "{share}: none is lost");
+        last = out;
+    }
+}

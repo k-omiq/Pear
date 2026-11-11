@@ -109,7 +109,7 @@ pub struct BreakOff {
 /// The farthest a piece moves sideways or up, in font sizes; falling, down,
 /// the box's height and `BREAK_DROP` font sizes more (special.js
 /// `breakReach` pads the paint by as much).
-pub const BREAK_SIDE: f64 = 0.35;
+pub const BREAK_SIDE: f64 = 0.5;
 pub const BREAK_DROP: f64 = 1.0;
 
 /// The special effects of a box (glyph wire v15). Every job of the box
@@ -476,9 +476,11 @@ fn pieces(c: &Crack, b: &BreakOff, stars: &[Star], size: f64, ink: (f64, f64, f6
             }
         };
         let (shift, turn) = match b.motion {
+            // Out from the focus, clear of the letters by a gap that grows
+            // with Break off, each piece its own way and turned.
             Motion::Apart => {
-                let len = size * (0.04 + 0.06 * share) * (0.7 + 0.6 * dice.u(item, 6));
-                let deg = (2.0 + 5.0 * share) * dice.pm(item, 7);
+                let len = size * (0.1 + 0.3 * share) * (0.7 + 0.6 * dice.u(item, 6));
+                let deg = dice.sign(item, 7) * (6.0 + 20.0 * share) * (0.5 + 0.5 * dice.u(item, 10));
                 (away.scale(len), deg)
             }
             Motion::Fall => {
