@@ -16,6 +16,14 @@
 // The painters work in the box's own frame (`maskInBoxFrame`): the frame its
 // picture is painted in, before its turn and its flip, after its warp. So the
 // mask is cut from the finished picture and is never bent by the box's mesh.
+//
+// "Moves with box" (`follow: true`, on the mask and on the fade alike) stores
+// the drawn shapes in that frame instead: page px from the box's corner,
+// unturned and unmirrored, as the paint's marks are (box-paint.js). They then
+// move, turn and flip with the box, and scale with it on a scale
+// (`scaleFollowing`). A bubble link stays the outline's, on the page, in both
+// modes. The switch converts the shapes (`withFollow`), so nothing moves on
+// screen. Absent on an old file: pinned.
 
 import { meshMap } from './warp.js';
 
@@ -68,7 +76,7 @@ export function normalizeMask(m) {
     shapes.push(n);
     if (shapes.length >= MASK_SHAPES_MAX) break;
   }
-  return { on: m.on === true, shapes };
+  return { on: m.on === true, shapes, ...(m.follow === true ? { follow: true } : {}) };
 }
 
 // Whether the mask changes anything: on, with a shape it can draw. A bubble
@@ -337,16 +345,107 @@ export function heldMaskInBoxFrame(box) {
   return memoFrame(heldMasks, box, box.mask, () => {
     const map = (p) => pageToBox(box, p);
     const straight = !turned(box);
+    const follow = follows(box.mask);
     const out = [];
     for (const sh of box.mask.shapes) {
       if (sh.kind === 'bubble') {
         const clip = linkClip(box, sh.inset);
         if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip.map(map) });
-      } else out.push(carried(sh, map, straight));
+      } else out.push(follow ? sh : carried(sh, map, straight));
     }
-    return out;
+    return follow ? unpinned(box, box.mask, out) : out;
   });
 }
+
+// ---- shapes that move with the box ----
+
+export const follows = (o) => o?.follow === true;
+
+// Whether the mask or the fade has anything pinned to the page, which a held
+// move must carry against the box (TextBox's `paintedBox`): a pinned mask or
+// fade that does anything, or a following mask's bubble link.
+export function pinnedToPage(box) {
+  if (maskActive(box) && (!follows(box.mask) || bubbleLink(box))) return true;
+  const f = box?.fade;
+  return !!f?.on && f.shapes?.length > 0 && !follows(f);
+}
+
+// `out` (a following model's shapes in the box's frame, as the box stands)
+// for a held box: the engine moves every shape by the held move
+// (`pinShiftOf`), and these stand still against the box, so they go the
+// other way first. Only a box whose other shapes are pinned is held.
+function unpinned(box, o, out) {
+  const v = pinShiftOf(box);
+  if (!v) return out;
+  const back = [-v[0], -v[1]];
+  return out.map((sh, i) => (o.shapes[i]?.kind === 'bubble' ? sh : shiftedShapes([sh], back)[0]));
+}
+
+// A following model's stored shapes on the page as the box stands, one for
+// each and in their order (a bubble link as it is): what the draw tool shows,
+// picks from and edits. A pinned model's are its own. Kept with the shape
+// list until it or the box's place changes; shared, nobody may change it.
+const followOnPage = new WeakMap();
+export function modelShapesOnPage(box, o) {
+  const shapes = o?.shapes;
+  if (!Array.isArray(shapes) || !follows(o)) return shapes;
+  const key = placeKey(box);
+  const hit = followOnPage.get(shapes);
+  if (hit?.key === key) return hit.out;
+  const map = (p) => boxToPage(box, p);
+  const straight = !turned(box);
+  const out = shapes.map((sh) => (sh.kind === 'bubble' ? sh : carried(sh, map, straight)));
+  followOnPage.set(shapes, { key, out });
+  return out;
+}
+
+// Page shapes (`next`, from the draw tool) as a model stores them: for a
+// following one each carried into the box's frame, but those that are still
+// `modelShapesOnPage`'s own objects go back as stored, untouched.
+export function modelShapesFromPage(box, o, next) {
+  if (!follows(o)) return next;
+  const shown = modelShapesOnPage(box, o) ?? [];
+  const back = new Map(shown.map((sh, i) => [sh, o.shapes[i]]));
+  const map = (p) => pageToBox(box, p);
+  const straight = !turned(box);
+  return next.map((sh) => back.get(sh) ?? (sh.kind === 'bubble' ? sh : carried(sh, map, straight)));
+}
+
+// The model (a mask or a fade) with "Moves with box" set to `on`, its shapes
+// carried to the frame they are stored in then, so each stays where it is on
+// screen. An ellipse on a turned box becomes a polygon.
+export function withFollow(box, o, on) {
+  const m = o ?? { on: false, shapes: [] };
+  if (!!on === follows(m)) return m;
+  const { follow: _f, ...rest } = m;
+  if (!on) return { ...rest, shapes: (modelShapesOnPage(box, m) ?? []).map((sh) => ({ ...sh })) };
+  const map = (p) => pageToBox(box, p);
+  const straight = !turned(box);
+  return { ...rest, shapes: (m.shapes ?? []).map((sh) => (sh.kind === 'bubble' ? sh : carried(sh, map, straight))), follow: true };
+}
+
+// A following model scaled with its box by (sx, sy) about the box's corner,
+// as the paint's marks are (`scalePaint`); a pinned one, and a bubble link,
+// as they are.
+export function scaleFollowing(o, sx, sy) {
+  if (!follows(o) || (sx === 1 && sy === 1)) return o;
+  const k = Math.sqrt(Math.abs(sx * sy));
+  return {
+    ...o,
+    shapes: o.shapes.map((sh) => {
+      if (sh.kind === 'bubble') return sh;
+      if (sh.kind === 'ellipse') return { ...sh, cx: sh.cx * sx, cy: sh.cy * sy, rx: sh.rx * Math.abs(sx), ry: sh.ry * Math.abs(sy) };
+      const out = { ...sh, pts: sh.pts.map(([x, y]) => [x * sx, y * sy]) };
+      if (sh.kind === 'stroke') out.size = Math.min(MASK_BRUSH_MAX, sh.size * k);
+      return out;
+    }),
+  };
+}
+
+const placeKey = (box) => {
+  const s = box.style;
+  return `${box.x},${box.y},${box.w},${box.h},${Number(s?.rotation) || 0},${s?.flipH ? 1 : 0}${s?.flipV ? 1 : 0}`;
+};
 
 // What `make` gives for the shapes of `o` (a mask or a fade) as `box` stands,
 // kept with the shape list until the list or the place changes
@@ -404,10 +503,21 @@ export function revOf(o) {
 // frame: what `maskInBoxFrame` and `shapesInBoxFrame` read besides the shapes
 // - where the box stands, its size, turn and flips, and for a bubble link the
 // outline it follows.
+//
+// A following model's drawn shapes do not read where the box stands: its key
+// has the turn, and the place only for a bubble link, and the held move (`pinMove`), which
+// `unpinned` takes them back by.
 export function frameKey(box, o) {
-  const s = box.style;
-  const link = o?.shapes?.some?.((sh) => sh.kind === 'bubble') ? `:${revOf(box.fit)}` : '';
-  return `${revOf(o)}.${revOf(o?.shapes)}.${o?.on ? 1 : 0}:${box.x},${box.y},${box.w},${box.h},${Number(s?.rotation) || 0},${s?.flipH ? 1 : 0}${s?.flipV ? 1 : 0}${link}`;
+  const hasLink = !!o?.shapes?.some?.((sh) => sh.kind === 'bubble');
+  const link = hasLink ? `:${revOf(box.fit)}` : '';
+  const head = `${revOf(o)}.${revOf(o?.shapes)}.${o?.on ? 1 : 0}`;
+  if (follows(o)) {
+    const m = box.pinMove;
+    const held = Array.isArray(m) && (m[0] || m[1]) ? `:H${m[0]},${m[1]}` : '';
+    // The turn too: a fade's soft edge is measured on the page (box-fade.js).
+    return `${head}:F${Number(box.style?.rotation) || 0}${hasLink ? `:${placeKey(box)}${link}` : ''}${held}`;
+  }
+  return `${head}:${placeKey(box)}${link}`;
 }
 
 // Any page-pinned shapes (the fade's, box-fade.js) in the box's own frame,
@@ -432,7 +542,7 @@ export function shapesOnPage(box, shapes) {
 export function maskOnPage(box) {
   if (!box?.mask) return [];
   const out = [];
-  for (const sh of box.mask.shapes) {
+  for (const sh of modelShapesOnPage(box, box.mask)) {
     if (sh.kind === 'bubble') {
       const clip = linkClip(box, sh.inset);
       if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip });

@@ -1,5 +1,8 @@
 // ===== The fade: regional opacity, pinned to the page =====
 //
+// Or moving with the box: `follow: true` stores the shapes in the box's own
+// frame, as the mask's "Moves with box" does (box-mask.js `follows`).
+//
 // `box.fade = { on, shapes }` takes some of the box's opacity where its shapes
 // lie. Like the mask (box-mask.js) the shapes are page px, pinned to the page:
 // a move of the box slides the letters under them. A shape is a mask shape
@@ -17,7 +20,7 @@
 // canvas afterwards (the warp gizmo's drag frames, and a perspective corner
 // pulled past the horizon). There the fade bends with the letters. Accepted.
 
-import { normalizeMaskShape, shapesInBoxFrame, memoFrame, pinShiftOf, shiftedShapes, MASK_SHAPES_MAX } from './box-mask.js';
+import { normalizeMaskShape, shapesInBoxFrame, memoFrame, pinShiftOf, shiftedShapes, follows, modelShapesOnPage, MASK_SHAPES_MAX } from './box-mask.js';
 
 export const FADE_STRENGTH_DEFAULT = 50;
 export const FADE_SOFT_DEFAULT = 30;
@@ -45,7 +48,7 @@ export function normalizeFade(f) {
     if (n) shapes.push(n);
     if (shapes.length >= MASK_SHAPES_MAX) break;
   }
-  return { on: f.on === true, shapes };
+  return { on: f.on === true, shapes, ...(f.follow === true ? { follow: true } : {}) };
 }
 
 // Whether the fade changes anything: on, with a shape.
@@ -91,6 +94,16 @@ export function heldFadeInBoxFrame(box) {
   if (!fadeActive(box)) return [];
   return memoFrame(heldFades, box, box.fade, () => {
     const shapes = box.fade.shapes;
+    // "Moves with box" (box-mask.js `follows`): stored in the box's frame
+    // already, and moved back by a held move, which carries only the
+    // page's shapes. The soft edge is still worked out on the page, as the
+    // shape stands there, so the switch never changes it.
+    if (follows(box.fade)) {
+      const v = pinShiftOf(box);
+      const own = v ? shiftedShapes(shapes, [-v[0], -v[1]]) : shapes;
+      const onPage = modelShapesOnPage(box, box.fade);
+      return own.map((sh, i) => ({ ...sh, strength: shapes[i].strength / 100, soft: fadeSigma(onPage[i]) }));
+    }
     return shapesInBoxFrame(box, shapes).map((sh, i) => ({ ...sh, strength: shapes[i].strength / 100, soft: fadeSigma(shapes[i]) }));
   });
 }
