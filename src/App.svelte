@@ -32,8 +32,8 @@
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
-  import { patternPick, cancelPatternPick } from './lib/pattern-pick.svelte.js';
-  import { initHistory, undo, redo } from './lib/editor/history.svelte.js';
+  import { pageRectPick } from './lib/page-rect-pick.svelte.js';
+  import { initHistory, stepHere } from './lib/editor/history.svelte.js';
   import { flushPanels, showPanel } from './lib/editor/panels.svelte.js';
   import { switchHistoryPage } from './lib/editor/history-file.svelte.js';
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
@@ -479,8 +479,7 @@
     },
 
     'edit.undo': () => {
-      if (noCanvasHistory()) return;
-      undo();
+      stepHere('undo');
     },
     'edit.redo': redoShortcut,
     'edit.redoAlt': redoShortcut,
@@ -532,16 +531,9 @@
     if (!app.selectedId || isTranslateMode()) return false;
     deleteBox(app.selectedId);
   }
+  // Through the translate gate (`stepHere`), as the dock's buttons are.
   function redoShortcut() {
-    if (noCanvasHistory()) return;
-    redo();
-  }
-  // Translate chapters edit the queue, not the canvas, and the undo stack they
-  // would walk is empty. Say so rather than doing nothing.
-  function noCanvasHistory() {
-    if (!isTranslateMode()) return false;
-    toast('Nothing to undo here: a translate chapter edits the queue, not the canvas');
-    return true;
+    stepHere('redo');
   }
 
   // Is the caret somewhere that owns the keyboard? Text fields and the canvas's
@@ -577,6 +569,7 @@
     // focus inside it; this is for one that arrives with focus outside.
     if (e.key === 'Escape' && onboarding.open) return finishOnboarding();
     const typing = isTypingTarget(e.target) || !!app.editingId;
+    if (e.key === 'Escape' && pageRectPick.active) return void pageRectPick.cancel(); // a pick ends on Escape, typing or not
     if (!typing && e.key === 'Escape') {
       // Focus is in the palette's field nearly always, and the field takes its
       // own Escape; this is for the press that arrives with focus elsewhere.
@@ -602,7 +595,6 @@
       if (settingsView.open) return closeSettings();
       if (fontModalOpen) return (fontModalOpen = false);
       if (brushTool.manager) return closeBrushManager();
-      if (patternPick.active) return cancelPatternPick();
       return deselect();
     }
     // Suppress global editor shortcuts while a modal overlay is open. Markup

@@ -273,6 +273,10 @@ export function formatCombo(combo) {
 //               same place can clash; a key with no ctx clashes with all.
 //   inField     the pane takes the key before the field types it, so it may
 //               not be a bare letter.
+//   yields      a key heard everywhere that gives way where it is named
+//               ('row'): that component hears the press first and takes it,
+//               so its own key of the same combo is no clash. Delete is the
+//               box's on the page and the line's on a focused row.
 const T = { whenTyping: true };
 const DEFS = [
   // Tools. The digits count down the tool rail in the order it draws them.
@@ -291,8 +295,8 @@ const DEFS = [
   { id: 'box.copy', label: 'Copy box', group: 'Edit', combo: 'Mod+c' },
   { id: 'box.paste', label: 'Paste box', group: 'Edit', combo: 'Mod+v' },
   { id: 'box.duplicate', label: 'Duplicate box', group: 'Edit', combo: 'Mod+d', keywords: 'clone copy', ...T },
-  { id: 'box.delete', label: 'Delete box', group: 'Edit', combo: 'Delete', keywords: 'remove' },
-  { id: 'box.deleteAlt', label: 'Delete box', group: 'Edit', combo: 'Backspace', altOf: 'box.delete' },
+  { id: 'box.delete', label: 'Delete box', group: 'Edit', combo: 'Delete', keywords: 'remove', yields: 'row' },
+  { id: 'box.deleteAlt', label: 'Delete box', group: 'Edit', combo: 'Backspace', altOf: 'box.delete', yields: 'row' },
 
   // Text: the selected box's type. Bigger and smaller are Photoshop's keys;
   // in Fit to box they step the most the fit may grow to.
@@ -390,6 +394,11 @@ const DEFS = [
   { id: 'translate.edit', label: 'Type in the line', group: 'Translate', combo: 'Enter', ctx: 'row' },
   { id: 'translate.pageNext', label: 'Next page', group: 'Translate', combo: 'ArrowRight', ctx: 'row' },
   { id: 'translate.pagePrev', label: 'Previous page', group: 'Translate', combo: 'ArrowLeft', ctx: 'row' },
+  // A row of the typing pane with focus on the row itself, never in a field:
+  // in a field these keys edit the text.
+  { id: 'line.delete', label: 'Delete line', group: 'Translate', combo: 'Delete', ctx: 'row', keywords: 'remove row' },
+  { id: 'line.deleteAlt', label: 'Delete line', group: 'Translate', combo: 'Backspace', ctx: 'row', altOf: 'line.delete' },
+  { id: 'line.drawBox', label: 'Draw line’s box on page', group: 'Translate', combo: null, keywords: 'place mark rectangle redraw', ...T },
   ...Array.from({ length: 9 }, (_, i) => ({
     id: `translate.tag${i + 1}`,
     label: `Tag ${i + 1} on or off`,
@@ -519,7 +528,9 @@ export const isCustomCombo = (id) => comboFor(id) !== defaultCombo(id);
 
 // Two keys clash only when both can be heard at once: either is heard
 // everywhere, or both in the same place (see `ctx` above).
-const sharePlace = (a, b) => !a?.ctx || !b?.ctx || a.ctx === b.ctx;
+// A key heard everywhere that yields to a place (`yields`) is not heard there.
+const yieldsTo = (a, b) => !a?.ctx && !!b?.ctx && a?.yields === b.ctx;
+const sharePlace = (a, b) => (!a?.ctx || !b?.ctx || a.ctx === b.ctx) && !yieldsTo(a, b) && !yieldsTo(b, a);
 
 // The shortcut a combo is already taken by, ignoring one id (the one being
 // rebound, whose place decides what it can clash with). Null when it is free.
