@@ -708,6 +708,15 @@ describe('an undo history written before the style schema moved', () => {
     expect(migrateEntry({ t: 'delete', index: 0, box: own }).box).toBe(own);
   });
 
+  // A place entry recorded before Wobble, paint and the special effects came
+  // back without them, and Surface > Special read `special` of undefined.
+  it.each(['special', 'paint', 'wobble'])('fills in a place entry\'s style without %s', (key) => {
+    const style = normalizeStyle({});
+    delete style[key];
+    const e = migrateEntry({ t: 'place', index: 0, box: { id: 'b1', x: 0, y: 0, w: 50, h: 20, text: 'A', style } });
+    expect(e.box.style[key]).toEqual(normalizeStyle({})[key]);
+  });
+
   it('migrates each item of a bulk entry, and leaves an absent lastStyle pair absent', () => {
     const e = migrateEntry(parsed().pages['2'].undo[0]);
     expect(e.items[0].before.strokeEffects).toEqual([outside('#00ff88', 2)]);
@@ -1206,7 +1215,7 @@ describe('a chapter laid out under the old chapter switch', () => {
     // A style of this build: since review F2 a style with no Layer Styles
     // fields is one from before them, and goes through normalizeStyle, so the
     // identity checks below need those fields to mean "left as recorded".
-    const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {} };
+    const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {}, wobble: {}, paint: {}, special: {} };
     const smart = { shape: 'auto', hyphenate: true, balloon: true, shadows: [], gradient: {}, pattern: { fade: {} }, ...layerStyles };
     const entries = [
       { t: 'style', before: { ...smart, color: '#000' }, after: { ...smart, color: '#f00' } },

@@ -123,11 +123,22 @@ defineTool({
       // The words first, so each outline below is laid out for its own part.
       // Through editBoxes, which records them for the undo. Paint marks were
       // laid over the whole text's letters in the box's frame: on a part they
-      // would sit over other words, so every part starts with none.
+      // would sit over other words, so every part starts with none. Mask and
+      // fade shapes are pinned to the page over the first part's bubble: the
+      // parts after it drop the drawn ones and keep a bubble link, which
+      // follows each part's own bubble.
       editBoxes(
         boxes.map((box) => ({ page: p, box })),
         (box) => {
           if (box.style.paint?.marks?.length || box.style.paint?.on) box.style.paint = { on: false, marks: [] };
+          if (box !== boxes[0]) {
+            for (const k of ['mask', 'fade']) {
+              const o = box[k];
+              if (!o?.shapes?.length) continue;
+              const kept = o.shapes.filter((sh) => sh.kind === 'bubble');
+              if (kept.length !== o.shapes.length) box[k] = { ...o, shapes: kept, on: o.on && kept.length > 0 };
+            }
+          }
           const piece = pieces[boxes.indexOf(box)];
           setBoxText(box, piece.text, p, { fit: false, runs: sliceRuns(runs, piece.start, piece.end) });
         },
