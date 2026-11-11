@@ -16,10 +16,11 @@ import {
   app, loadProjectPages, page, byId, setRecorder, cloneStyle, fitGeom,
   resetBoxToTagStyle, saveBoxStyleAsTag, applyTagStyleToChapter,
   autoFitBox, setMinFontSize, activateLine, placeActiveAt, openBulk, closeBulk, setBulkProp,
-  applyBulkToTag,
+  applyBulkToTag, inheritedStyleFor,
 } from './store.svelte.js';
 import { bindTags, unbindTags, findTag, TAG_STYLE_KEYS } from './tags.svelte.js';
 import { normalizePaint } from './box-paint.js';
+import { normalizeSpecial } from './special.js';
 import { defaultStyle, normalizeAuto } from './data.js';
 import { fitBox } from './contain.js';
 import { solveLayout } from './auto-layout.js';
@@ -252,5 +253,35 @@ describe('paint marks stay on the box they were drawn on', () => {
     expect(b.style.paint).toEqual(MARKS());
     expect(app.pages[1].boxes[0].style.color).toBe('#00ff00');
     expect(app.pages[1].boxes[0].style.paint).toEqual({ on: false, marks: [] });
+  });
+});
+
+// Special effects travel only by an explicit act: a tag style that has them
+// gives them to its line's new boxes, the last-used style never does.
+describe('special effects come from a tag style, not the last box', () => {
+  const CRACK = () => normalizeSpecial({ crack: { on: true, amount: 60, seed: 7 } });
+
+  it('a tag style that carries special gives it through inheritedStyleFor', () => {
+    bindTags({ list: [{ name: 'voice', style: { italic: true, special: CRACK() } }] }, () => {});
+    expect(findTag('voice').style.special).toEqual(CRACK());
+    const s = inheritedStyleFor({ n: 3, en: 'EEEE', tags: ['voice'] });
+    expect(s.italic).toBe(true);
+    expect(s.special).toEqual(CRACK());
+  });
+
+  it('a new box that only inherits the last-used style gets none', () => {
+    const before = app.lastStyle;
+    try {
+      app.lastStyle = { ...defaultStyle(), color: '#123456', special: CRACK() };
+      // The tag here sets no special: only the last-used style has one.
+      const s = inheritedStyleFor({ n: 3, en: 'EEEE', tags: ['accent'] });
+      expect(s.color).toBe('#abcdef');
+      expect(s.special).toEqual(normalizeSpecial(undefined));
+      const plain = inheritedStyleFor({ n: 4, en: 'FFFF', tags: [] });
+      expect(plain.color).toBe('#123456');
+      expect(plain.special).toEqual(normalizeSpecial(undefined));
+    } finally {
+      app.lastStyle = before;
+    }
   });
 });
