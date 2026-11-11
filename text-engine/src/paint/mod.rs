@@ -1201,7 +1201,7 @@ fn paint_letters(
     let planned = plan_letters(&layers, &ghosts, &letters, shapes)?;
     match shapes.filter(|sh| !sh.pieces.is_empty()) {
         Some(sh) => break_off(planned, &layers, &ghosts, &letters, sh, rasterizer),
-        None => finish_planned(planned, rasterizer),
+        None => finish_planned(planned, within(job.effects.cuts), rasterizer),
     }
 }
 
@@ -1219,7 +1219,7 @@ fn plan_letters<'a>(
     let fx = &job.effects;
     // The cuts alone: a box's own strokes cut by them as a glyph band is
     // (`Cuts::Alone`).
-    if fx.cuts == Cuts::Alone {
+    if let Cuts::Alone(_) = fx.cuts {
         let mut planned = budget::Buffer::new();
         if let Some(p) = shapes.map(|sh| poly_plan(&sh.cuts, l.bends, l.transform, l.tiles, l.tol)).transpose()?.flatten() {
             budget::push(&mut planned, p)?;
@@ -1316,11 +1316,11 @@ fn break_off<'a>(
         p
     };
     let holes = outlines(&shapes.pieces);
-    if fx.cuts == Cuts::Alone || !planned.is_empty() {
+    if matches!(fx.cuts, Cuts::Alone(_)) || !planned.is_empty() {
         if let Some(mut p) = poly_plan(&holes, l.bends, l.transform, l.tiles, l.tol)? {
             match fx.cuts {
                 Cuts::Made => p.erase = true,
-                Cuts::Alone => {}
+                Cuts::Alone(_) => {}
                 Cuts::Skipped => p.alpha = 0.0,
             }
             if p.alpha > 0.0 {
@@ -1328,7 +1328,7 @@ fn break_off<'a>(
             }
         }
     }
-    let mut out = finish_planned(planned, rasterizer)?;
+    let mut out = finish_planned(planned, within(fx.cuts), rasterizer)?;
     // How far past a glyph's outline its layers reach (its widest band, a
     // grow, the weight): a glyph farther than that from a piece has nothing
     // inside it, so a piece lays only the glyphs near it. Bent letters move
@@ -1374,7 +1374,13 @@ fn break_off<'a>(
         let Some(mask) = poly_plan(&own, l.bends, &moved, l.tiles, l.tol)? else {
             continue;
         };
-        let bx = mask.bx;
+        let bx = match within(fx.cuts) {
+            Some(c) => mask.bx.intersect(&c),
+            None => mask.bx,
+        };
+        if bx.is_empty() {
+            continue;
+        }
         let mut cover = budget::Buffer::new();
         budget::push(&mut cover, mask)?;
         // The pieces before it that overlap it (the same move takes both).
@@ -1502,10 +1508,21 @@ fn lay_over(dst: &mut [u8], db: IBox, src: &[u8], sb: IBox) {
     }
 }
 
+/// Where a pass's raster may reach: the cuts alone, no further than the box
+/// asks (`Cuts::Alone`); any other, all it paints.
+fn within(cuts: Cuts) -> Option<IBox> {
+    match cuts {
+        Cuts::Alone(b) => Some(b),
+        _ => None,
+    }
+}
+
 /// The planned layers laid in one raster as big as what they paint (their
-/// erasers reach no further). `None` with nothing painted.
+/// erasers reach no further), within `clip` when there is one. `None` with
+/// nothing painted.
 fn finish_planned(
     planned: budget::Buffer<Planned<'_>>,
+    clip: Option<IBox>,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
     budget::check()?;
@@ -1517,6 +1534,10 @@ fn finish_planned(
     else {
         return Ok(None);
     };
+    let surface = clip.map_or(surface, |c| surface.intersect(&c));
+    if surface.is_empty() {
+        return Ok(None);
+    }
     let (width, height) = (surface.width(), surface.height());
     if width > MAX_SIDE as usize || height > MAX_SIDE as usize || width * height > MAX_PIXELS {
         return Err(Error::BadSpec);

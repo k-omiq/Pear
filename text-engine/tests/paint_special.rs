@@ -386,3 +386,49 @@ fn a_piece_moves_with_its_fill_and_bands_and_the_hole_is_clean() {
     let below: usize = (low + 3..160).map(|y| (0..360).filter(|&x| at(&fall, x, y)[3] > 128).count()).sum();
     assert!(below > 40, "below {below}");
 }
+
+/// A crack at its largest under a black box stroke 12 wide, outside: 200 px
+/// "KRAK" over a box 650 by 320 at `scale`.
+fn largest_under_stroke(font: FontId, scale: f64, break_off: Option<BreakOff>) -> BoxRequest {
+    let (w, h) = ((650.0 * scale) as u32, (320.0 * scale) as u32);
+    let mut b = boxed(font, None);
+    b.width = w;
+    b.height = h;
+    b.request.face = Face::new(font, 200.0);
+    b.request.transform = Affine::scale(scale, scale);
+    b.request.job.runs = vec![run("KRAK", 20.0, 250.0)];
+    b.request.job.effects.special = Some(Special {
+        rect: [0.0, 0.0, 650.0, 320.0],
+        crack: Some(Crack { amount: 1.0, size: 4.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }),
+        break_off,
+        lightning: None,
+        splash: None,
+        scratches: None,
+    });
+    b.effects = vec![Effect::Stroke(Stroke {
+        size: 12.0,
+        position: Position::Outside,
+        opacity: 1.0,
+        blend: Blend::Normal,
+        paint: Paint::Fill(Fill::Solid(BLACK)),
+        seed: 0,
+    })];
+    b
+}
+
+#[test]
+fn the_largest_crack_under_a_box_stroke_paints_close_up() {
+    // Crack at its largest (amount 1, size 400 %, over every letter) on
+    // 200 px letters at scale 4 (a Retina screen at 200 % zoom) with the
+    // box's own stroke on: its cuts reach some 68M device pixels round the
+    // letters, past the painter's largest raster. The cuts-alone pass is cut
+    // to the surface, so the box paints; it once failed whole.
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let r = paint(&mut engine, largest_under_stroke(font, 4.0, None));
+    assert!(ink(&r) > 0);
+    assert!(r.x >= 0 && r.y >= 0 && r.x + r.width as i32 <= 2600 && r.y + r.height as i32 <= 1280);
+    // Broken off, at scale 2: each piece's cuts are cut to the surface too.
+    let r = paint(&mut engine, largest_under_stroke(font, 2.0, Some(BreakOff { share: 1.0, motion: Motion::Fall })));
+    assert!(ink(&r) > 0);
+}
