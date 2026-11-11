@@ -562,7 +562,11 @@ export function meshMap(pts, cols, rows, w, h) {
     return { kind: 'affine', at: (x, y) => affineWarpPoint(pts, 1, 1, W, H, x, y) };
   }
   const at = (x, y) => smoothPoint(pts, c, r, W, H, +x, +y);
-  const folds = (b = null) => foldsOf(pts, `${c},${r},${W},${H}`, at, b ?? [-W / 4, -H / 4, (5 * W) / 4, (5 * H) / 4]);
+  let last = null;
+  const folds = (b = null) => {
+    if (last?.b !== b) last = { b, out: foldsOf(pts, `${c},${r},${W},${H}`, at, b ?? [-W / 4, -H / 4, (5 * W) / 4, (5 * H) / 4]) };
+    return last.out;
+  };
   return { kind: 'smooth', at, folds };
 }
 
@@ -675,7 +679,7 @@ export function unwarpWith(m, w, h, x, y, opts = null) {
     // step from where the hint goes to (x, y) (`oneStep`). Near a crease
     // Newton can jump across to another sheet, and then the seeds decide.
     const from = m.at(given[0], given[1]);
-    const p = newtonBack(m, tx, ty, given[0], given[1], miss(from));
+    const p = newtonBack(m, tx, ty, given[0], given[1], miss(from), from);
     if (ok(p) && oneStep(m, given, p, from, [tx, ty], bounds)) return p;
   }
   // The seeds nearest (x, y) first. Near a fold the nearest can lead Newton
@@ -726,18 +730,17 @@ const BOUNDS_SLACK = 1e-6;
 // flat and a far point there passes the rest. A step onto another sheet of a
 // fold carries forward somewhere else, or turned over.
 export function oneStep(m, a, b, pa, pb, bounds = null) {
-  const ja = m.folds?.(bounds) ? jacOf(m, a) : null;
-  const turn = ja ? Math.sign(detOf(ja)) : 0;
-  if (ja && turnOf(m, b) !== turn) return false;
+  const st = stepOf(m, a, b, bounds);
+  if (!st.sheet) return false;
   const sx = pb[0] - pa[0];
   const sy = pb[1] - pa[1];
   const tol = Math.max(1, Math.hypot(sx, sy) / 2);
-  for (const t of [0.25, 0.5, 0.75]) {
-    const q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    const f = m.at(q[0], q[1]);
+  for (let k = 0; k < 3; k++) {
+    const t = (k + 1) / 4;
+    const f = st.at[k];
     if (!(Math.hypot(f[0] - (pa[0] + sx * t), f[1] - (pa[1] + sy * t)) <= tol)) return false;
-    if (ja && Math.sign(detOf(jacOf(m, q, f))) !== turn) return false;
   }
+  const ja = st.ja;
   if (ja) {
     const [A, B, C, D] = ja;
     const dt = detOf(ja);
@@ -745,6 +748,30 @@ export function oneStep(m, a, b, pa, pb, bounds = null) {
     if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 4 * want + 1) return false;
   }
   return true;
+}
+
+// What `oneStep` needs of the box step from `a` to `b` alone: where its
+// quarter points go (`at`), whether it stays on one sheet (`sheet`), and the
+// Jacobian at `a` (`ja`, null on a mesh that cannot fold). The last one is
+// kept per mesh: a stroke's step is asked about by `unwarpWith` and again by
+// the caller, with page ends a rounding apart.
+const stepMemo = new WeakMap();
+function stepOf(m, a, b, bounds) {
+  const hit = stepMemo.get(m);
+  if (hit && hit.bounds === bounds && hit.a0 === a[0] && hit.a1 === a[1] && hit.b0 === b[0] && hit.b1 === b[1]) return hit;
+  const ja = m.folds?.(bounds) ? jacOf(m, a) : null;
+  const turn = ja ? Math.sign(detOf(ja)) : 0;
+  let sheet = !ja || turnOf(m, b) === turn;
+  const at = [];
+  for (const t of [0.25, 0.5, 0.75]) {
+    const q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const f = m.at(q[0], q[1]);
+    at.push(f);
+    if (sheet && ja && Math.sign(detOf(jacOf(m, q, f))) !== turn) sheet = false;
+  }
+  const out = { bounds, a0: a[0], a1: a[1], b0: b[0], b1: b[1], at, sheet, ja };
+  stepMemo.set(m, out);
+  return out;
 }
 
 // The way the map turns at box point `p`: the sign of its Jacobian's
@@ -818,18 +845,15 @@ function seedsOf(m, W, H, bounds) {
 
 // Newton's method on `m.at` from (px, py), whose miss is `r`, each step
 // shortened until it gets closer: the box-local point within
-// `UNWARP_TOLERANCE` px of (tx, ty), or null where it stops short.
-function newtonBack(m, tx, ty, px, py, r) {
+// `UNWARP_TOLERANCE` px of (tx, ty), or null where it stops short. `f0` is
+// where (px, py) goes, when known.
+function newtonBack(m, tx, ty, px, py, r, f0 = null) {
   const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
-  let f = m.at(px, py);
-  const e = 1e-3;
+  let f = f0 ?? m.at(px, py);
   for (let k = 0; k < 40 && r > 1e-7; k++) {
-    const fx = m.at(px + e, py);
-    const fy = m.at(px, py + e);
-    const a = (fx[0] - f[0]) / e;
-    const b = (fy[0] - f[0]) / e;
-    const c = (fx[1] - f[1]) / e;
-    const d = (fy[1] - f[1]) / e;
+    // `jacOf`: a stroke's next search starts where the last one ended, whose
+    // Jacobian the sheet test has just asked for.
+    const [a, b, c, d] = jacOf(m, [px, py], f);
     const det = a * d - b * c;
     if (!(Math.abs(det) > 1e-12)) break;
     const ex = tx - f[0];
