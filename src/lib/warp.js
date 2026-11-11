@@ -398,6 +398,29 @@ export function applyHomography(h, x, y) {
   return [(h[0] * X + h[1] * Y + h[2]) / w, (h[3] * X + h[4] * Y + h[5]) / w];
 }
 
+// The closed-form way back through the homography `h`: the box-local point it
+// carries onto (x, y), or null for a point no point of the box's plane in
+// front of the vanishing line reaches (the inverse lands where `h`'s w has
+// the other sign from the box's middle, so the forward map would not place
+// it there).
+function homographyBack(h, W, H) {
+  const [a, b, c, d, e, f, g, k, l] = h;
+  // The adjugate: the inverse up to a scale, which the divide takes out.
+  const inv = [e * l - f * k, c * k - b * l, b * f - c * e, f * g - d * l, a * l - c * g, c * d - a * f, d * k - e * g, b * g - a * k, a * e - b * d];
+  const side = Math.sign(g * (W / 2) + k * (H / 2) + l);
+  return (x, y) => {
+    const X = +x;
+    const Y = +y;
+    const z = inv[6] * X + inv[7] * Y + inv[8];
+    if (!Number.isFinite(z) || Math.abs(z) < 1e-12) return null;
+    const px = (inv[0] * X + inv[1] * Y + inv[2]) / z;
+    const py = (inv[3] * X + inv[4] * Y + inv[5]) / z;
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    const w = g * px + k * py + l;
+    return Math.sign(w) === side && Math.abs(w) > 1e-12 ? [px, py] : null;
+  };
+}
+
 // ===== The bicubic surface, for a grid =====
 //
 // A grid's control points are dots the user dragged; between them the picture
@@ -534,7 +557,7 @@ export function meshMap(pts, cols, rows, w, h) {
     if (!isParallelogram(quad)) {
       const src = identityMesh(1, 1, W, H);
       const m = solveHomography([src[0], src[1], src[3], src[2]], quad);
-      if (m) return { kind: 'projective', at: (x, y) => applyHomography(m, +x, +y) };
+      if (m) return { kind: 'projective', at: (x, y) => applyHomography(m, +x, +y), back: homographyBack(m, W, H) };
     }
     return { kind: 'affine', at: (x, y) => affineWarpPoint(pts, 1, 1, W, H, x, y) };
   }
@@ -565,8 +588,11 @@ export function warpPoint(pts, cols, rows, w, h, x, y) {
 // and height past it on every side, where the map continues straight), then
 // Newton's method on `meshMap`'s own `at`, each step shortened until it gets
 // closer. A mesh folded over itself has more than one answer; this finds the
-// one nearest where the search began, and if nothing converges it hands back
-// the closest point it reached. Unchanged for an identity mesh, like
+// one nearest where the search began. Where nothing converges (past a fold,
+// or out where the map never reaches) it is null: a point the mesh does not
+// carry onto (x, y) is dropped by the caller, never placed somewhere wrong.
+// A four-handle perspective has a closed form (`homographyBack`), exact, and
+// null past its vanishing line. Unchanged for an identity mesh, like
 // `warpPoint`.
 export function unwarpPoint(pts, cols, rows, w, h, x, y) {
   return unwarpWith(meshMap(pts, cols, rows, w, h), w, h, x, y);
@@ -579,6 +605,7 @@ export function unwarpWith(m, w, h, x, y) {
   const ty = +y;
   if (!Number.isFinite(tx) || !Number.isFinite(ty)) return [tx, ty];
   if (!m) return [tx, ty];
+  if (m.back) return m.back(tx, ty);
   const W = Number(w);
   const H = Number(h);
   const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
@@ -632,8 +659,10 @@ export function unwarpWith(m, w, h, x, y) {
     }
     if (!moved) break;
   }
-  return [px, py];
+  // Converged: within a thousandth of a px of the point asked for.
+  return r <= UNWARP_TOLERANCE ? [px, py] : null;
 }
+const UNWARP_TOLERANCE = 1e-3;
 
 // Whether a style's warp changes anything, which is the question every renderer
 // asks before it pays for a texture pass.
