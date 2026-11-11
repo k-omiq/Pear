@@ -4,7 +4,8 @@
 #![cfg(feature = "paint")]
 
 use mt_text::paint::fx::blend::Blend;
-use mt_text::paint::fx::effects::{Effect, Paint, Position, Stroke};
+use mt_text::paint::fx::bevel::{BevelStyle, BevelTechnique};
+use mt_text::paint::fx::effects::{Bevel, Effect, Overlay, Paint, Position, Stroke};
 use mt_text::paint::kept;
 use mt_text::paint::special::{letter_shapes, lightning_marks, BreakOff, Motion, BREAK_DROP, BREAK_SIDE};
 use mt_text::paint::{
@@ -431,4 +432,91 @@ fn the_largest_crack_under_a_box_stroke_paints_close_up() {
     // Broken off, at scale 2: each piece's cuts are cut to the surface too.
     let r = paint(&mut engine, largest_under_stroke(font, 2.0, Some(BreakOff { share: 1.0, motion: Motion::Fall })));
     assert!(ink(&r) > 0);
+}
+
+/// A crack or scratches under a box's own stroke through the kept path
+/// (commit 26f8e7f): the letters whole, the cuts alone and the strokes'
+/// distances over the letters whole ("chamfer out, whole", "depth in,
+/// whole") are kept under keys of their own, and a paint that keeps them is
+/// the fresh paint to the byte, cold, warm, and with a store too small to
+/// hold them.
+#[test]
+fn a_cut_box_stroke_kept_is_the_fresh_one_to_the_byte() {
+    use mt_text::paint::{paint_box_kept, BoxKeys};
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let crack = || only(|s| s.crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }));
+    let scratched = || only(|s| s.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 }));
+    let stroked = |sp: Option<Special>, position: Position, size: f64, color: Rgba| {
+        let mut b = boxed(font, sp);
+        b.lay_special_paint().unwrap();
+        b.effects = vec![
+            Effect::Stroke(Stroke {
+                size,
+                position,
+                opacity: 1.0,
+                blend: Blend::Normal,
+                paint: Paint::Fill(Fill::Solid(color)),
+                seed: 0,
+            }),
+            // A Stroke Emboss reads the cut letters' own distance out
+            // ("chamfer out") beside the stroke's of the letters whole.
+            Effect::Bevel(Bevel {
+                style: BevelStyle::StrokeEmboss,
+                technique: BevelTechnique::Smooth,
+                depth: 1.2,
+                up: true,
+                size: 5.0,
+                soften: 1.0,
+                angle: 120.0,
+                altitude: 30.0,
+                highlight: Overlay { color: Rgba([255, 255, 255, 255]), opacity: 0.75, blend: Blend::Screen },
+                shadow: Overlay { color: BLACK, opacity: 0.75, blend: Blend::Multiply },
+                gloss: None,
+                gloss_aa: false,
+                contour: None,
+                range: 0.5,
+                contour_aa: false,
+                texture: None,
+            }),
+        ];
+        b
+    };
+    let cases = [
+        ("crack, outside", false, Position::Outside, 4.0),
+        ("crack, centre", false, Position::Center, 4.0),
+        ("crack, inside", false, Position::Inside, 3.0),
+        ("crack, wide outside", false, Position::Outside, 40.0),
+        ("scratches, centre", true, Position::Center, 4.0),
+    ];
+    for (i, (what, scratches, position, size)) in cases.into_iter().enumerate() {
+        let b = |color| stroked(if scratches { scratched() } else { crack() }, position, size, color);
+        let keys = BoxKeys {
+            job: kept::Hasher::new("t job").u64(i as u64).finish().unwrap(),
+            premask: None,
+            cover: None,
+        };
+        for ceiling in [kept::KEPT_BYTES, 150_000, 0] {
+            kept::set_ceiling(ceiling);
+            kept::clear();
+            let mut hits = Vec::new();
+            // Cold, the same again, then the stroke recoloured: the box's
+            // picture is not the last one, and its pieces are read back.
+            for (pass, color) in [("cold", BLACK), ("warm", BLACK), ("recoloured", RED)] {
+                let fresh = paint_box(&mut engine, &mut b(color)).unwrap().expect("something painted");
+                let mut k = b(color);
+                let before = kept::hits();
+                let r = paint_box_kept(&mut engine, &mut k, keys).unwrap().expect("something painted");
+                hits.push(kept::hits() - before);
+                assert_eq!((r.x, r.y, r.width, r.height), (fresh.x, fresh.y, fresh.width, fresh.height), "{what}, {pass}, {ceiling}");
+                assert!(r.data == fresh.data, "{what}, {pass}, a store of {ceiling}");
+            }
+            if ceiling == kept::KEPT_BYTES {
+                // Warm, the box's picture is read back; recoloured, its
+                // pieces are.
+                assert!(hits[1] > hits[0] && hits[2] > hits[0], "{what}: {hits:?}");
+            }
+        }
+    }
+    kept::set_ceiling(kept::KEPT_BYTES);
 }
