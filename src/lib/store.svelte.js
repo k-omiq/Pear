@@ -1,4 +1,5 @@
 // ===== Central reactive store (Svelte 5 runes) =====
+import { defaultSpecial } from './special.js';
 import { untrack } from 'svelte';
 import { applyLineOrder } from './reading-order.js';
 import {
@@ -3184,6 +3185,10 @@ export function withStyleOrder(ln) {
 
 export function inheritedStyleFor(ln, p = page()) {
   const base = inheritBoxStyle ? cloneStyle(app.lastStyle) : defaultStyle();
+  // Special effects travel only by an explicit act (copy look, a preset, a
+  // tag style, a bulk edit): one cracked sound effect does not crack every
+  // box placed after it. A tag style that has them still gives them below.
+  base.special = defaultSpecial();
   const style = styleForLine(withStyleOrder(ln), applyBoxDefaults(base));
   style.size = groupSizeFor(p, ln, style);
   return style;
@@ -7548,6 +7553,9 @@ export const BULK_PROPS = [
   // Only the switch: a wobble's numbers are tuned by eye on one box, and a
   // bulk edit turns that look on or off across the rest.
   'wobble.on',
+  // The special effects, all four with their numbers and seeds: a look the
+  // user moves on purpose (they are never inherited by a new box).
+  'special',
   // `path`, `ink` and `warp` are deliberately absent: anchors, hand-drawn
   // strokes and mesh control points are all box-local geometry in THIS box's
   // px, and a bulk edit would smear them across boxes of different sizes - a
@@ -7573,7 +7581,7 @@ export const BULK_PROPS = [
 // comment on BULK_PROPS). Named once here because two places have to agree on
 // it: the style-leaf arithmetic that pins BULK_PROPS against `defaultStyle`
 // treats these as single leaves rather than groups of them.
-export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokeEffects', 'shadows', 'blending', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'motionBlur', 'circle'];
+export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokeEffects', 'shadows', 'blending', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'motionBlur', 'circle', 'special'];
 
 // How the panel rows group the mask's vocabulary for its tick-all headers.
 // Declared beside BULK_PROPS rather than inside the panel so there is one list
@@ -7584,7 +7592,7 @@ export const GROUPS = {
   font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
   fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blending', 'blur', 'motionBlur', 'strokeEffects', 'gradient', 'pattern', 'colorOverlays', 'gradientOverlays', 'patternOverlay'],
   shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'satin', 'bevel'],
-  warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'wobble.on'],
+  warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'wobble.on', 'special'],
   typeset: ['shape', 'minOrphan', 'hyphenate', 'margin', 'balloon'],
   transform: ['rotation', 'flipH', 'flipV', 'autoHeight', 'fitText', 'fitMax'],
 };

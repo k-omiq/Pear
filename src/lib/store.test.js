@@ -1,3 +1,4 @@
+import { normalizeSpecial } from './special.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   app,
@@ -144,6 +145,20 @@ const nextPageSeq = () => {
   loadProjectPages([{ ...pageWith([]), id: null }]);
   return app.pages[0].id + 1;
 };
+
+describe('a new box and the last-used style', () => {
+  it('inherits its look but never its special effects', () => {
+    const before = app.lastStyle;
+    try {
+      app.lastStyle = normalizeStyle({ ...defaultStyle(), color: '#123456', special: { crack: { on: true, amount: 60 } } });
+      const s = inheritedStyleFor({ n: 1, tags: [] });
+      expect(s.color).toBe('#123456');
+      expect(s.special).toEqual(normalizeSpecial(undefined));
+    } finally {
+      app.lastStyle = before;
+    }
+  });
+});
 
 describe('loadProjectPages box identity', () => {
   beforeEach(() => {
@@ -1226,6 +1241,7 @@ const BULK_VALUES = () => ({
   'roughen.seed': 42,
   'roughen.grit': 1.5,
   'wobble.on': true,
+  special: normalizeSpecial({ crack: { on: true, amount: 55, seed: 7 }, splash: { on: true, color: '#00ff00' } }),
   shape: 'off',
   minOrphan: 6,
   hyphenate: false,

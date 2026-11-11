@@ -25,6 +25,7 @@ import {
   import ColorPicker from './ColorPicker.svelte';
   import PatternEditor from './PatternEditor.svelte';
   import { iconNoFill } from './tab-icons.js';
+  import { SPECIAL_KINDS } from './special.js';
 
   // app.bulk.style is the editable template; null when closed.
   const s = $derived(app.bulk.style);
@@ -885,6 +886,14 @@ import {
               {@render tick('wobble.on')}
               <span class="lbl">Wobble</span>
               <div class="switch" class:on={s.wobble.on} role="switch" aria-checked={s.wobble.on} aria-label="Wobble" tabindex="0" onclick={() => set('wobble.on', !s.wobble.on)} onkeydown={(e) => e.key === 'Enter' && set('wobble.on', !s.wobble.on)}><span class="knob"></span></div>
+            </div>
+            <!-- The special effects whole, as the template has them (set on
+                 a box, then copied here): which are on, with their numbers
+                 and seeds. -->
+            <div class="brow" class:off={!app.bulk.mask.special}>
+              {@render tick('special')}
+              <span class="lbl">Special</span>
+              <span class="val">{SPECIAL_KINDS.filter((k) => s.special?.[k]?.on).map((k) => k[0].toUpperCase() + k.slice(1)).join(', ') || 'None'}</span>
             </div>
           </div>
         </div>
