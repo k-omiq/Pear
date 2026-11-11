@@ -3,7 +3,7 @@ import { createCanvas } from '@napi-rs/canvas';
 import { rustEngine } from '../test/rust-engine.js';
 import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
-import { arcLayout, circleLayout, clearLayoutMemo, faceFor, glyphInk, lineClusters, setTypesetEnabled, typesetEnabled } from './measure.js';
+import { arcLayout, circleLayout, clearLayoutMemo, faceFor, glyphInk, lineClusters, measureMemoHeld, setTypesetEnabled, typesetEnabled } from './measure.js';
 import { renderBoxTexture } from './exporter.js';
 import { boxCandidate, boxInkRect } from './contain.js';
 import { defaultStyle, normalizeStyle } from './data.js';
@@ -258,3 +258,27 @@ describe('the line is shaped once, its ink when it is read', () => {
   });
 });
 
+
+// A curved line holds a width, a character and an ink per code point, and a
+// curved solve keeps one per size it tries for every text typed: the bound
+// on the measurements counts what it holds, not one per line.
+describe('the kept lines stay within the bound', () => {
+  it('holds no more than the bound over many distinct curved lines', () => {
+    clearLayoutMemo();
+    const s = styleOf();
+    const words = 'THE QUICK BROWN FOX JUMPS OVER A LAZY DOG ';
+    let last;
+    let most = 0;
+    for (let i = 0; i < 1500; i++) {
+      // Each keystroke a new text, solved at a few sizes, 40-odd code points each.
+      const text = `${words}${i}`;
+      for (const size of [48, 56, 64]) last = lineClusters(text, s, size);
+      most = Math.max(most, measureMemoHeld());
+    }
+    // 1500 texts x 3 sizes x ~44 code points is ~200000 held without the bound.
+    expect(most).toBeLessThanOrEqual(40000);
+    // The newest line is still kept.
+    expect(lineClusters(`${words}1499`, s, 64)).toBe(last);
+    clearLayoutMemo();
+  });
+});
