@@ -196,3 +196,16 @@ describe('a folded mesh', () => {
     }
   });
 });
+
+describe('a mark moved on a folded mesh', () => {
+  it('a mark pushed past the edge of its sheet stays where it was', () => {
+    // The middle dot dragged right and down: the right half folds back over itself.
+    const FOLD = { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]] };
+    const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: FOLD }), size: 20 } };
+    const mark = stroke([[56, 68], [57, 68]]);
+    // A 1 px move takes it off its sheet; the nearest other answer is some
+    // 50 px away, on the other sheet.
+    const [out] = moveMarks(box, [mark], 0, 1, 0);
+    expect(out).toBe(mark);
+  });
+});
