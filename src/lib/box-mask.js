@@ -304,6 +304,15 @@ export function shapesInBoxFrame(box, shapes) {
   return shapes.map((sh) => carried(sh, map, straight));
 }
 
+// Shapes stated in the box's own frame (the paint's marks, box-paint.js)
+// carried onto the page as the box stands there, one for each and in their
+// order: the other way from `shapesInBoxFrame`.
+export function shapesOnPage(box, shapes) {
+  const map = (p) => boxToPage(box, p);
+  const straight = !turned(box);
+  return shapes.map((sh) => carried(sh, map, straight));
+}
+
 // The page px the mask's shapes are drawn on, as they stand (`maskInBoxFrame`
 // in page px): the bubble link resolved to its inset outline.
 export function maskOnPage(box) {

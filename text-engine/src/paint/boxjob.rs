@@ -33,7 +33,7 @@ use super::fx::blending::{self, shadow_see_through, Blending, Range};
 use super::fx::contour::{self, Curve, Lut, Table};
 use super::fx::effects::{
     self, Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay,
-    Page, Paint, PaintOverlay, Place, Position, Satin, Stroke, Technique,
+    Marks, Page, Paint, PaintMark, PaintOverlay, Place, Position, Satin, Stroke, Technique,
 };
 use super::fx::gradient::{Gradient, Style};
 use super::fx::gradient_bake::Method;
@@ -61,7 +61,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 20;
+pub const BOX_WIRE_VERSION: u32 = 21;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -811,6 +811,36 @@ impl<'a> Reader<'a> {
                 })
             }
             9 => Effect::Bevel(self.bevel()?),
+            10 => {
+                let origin = self.pt()?;
+                let n = self.u32()? as usize;
+                let mut marks = budget::Buffer::new();
+                for _ in 0..n {
+                    let kind = self.u32()?;
+                    let color = self.rgba()?;
+                    let opacity = self.upto(1.0)?;
+                    let soft = self.upto(MAX_BLUR)?;
+                    let erase = match self.u32()? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(Error::BadSpec),
+                    };
+                    budget::push(
+                        &mut marks,
+                        PaintMark {
+                            shape: self.shape(kind)?,
+                            color,
+                            opacity,
+                            soft,
+                            erase,
+                        },
+                    )?;
+                }
+                Effect::Paint(Marks {
+                    origin,
+                    marks: marks.into_iter().collect(),
+                })
+            }
             _ => return Err(Error::BadSpec),
         })
     }
@@ -985,6 +1015,14 @@ impl<'a> Reader<'a> {
 ///     if flags & 16: f64 texture depth (-10 to 10), a paint record that is
 ///                    a fill (kind 2): the pattern
 ///     The anti-aliased flags are carried, not painted.
+///   10 paint over the letters (v21):
+///     f64 ox, oy               the box's corner in job space
+///     u32 mark count, then per mark, in the order drawn: u32 kind, rgba
+///     colour (its alpha not read), f64 opacity (0 to 1), f64 soft (a
+///     gaussian's sigma, job units), u32 erase (0 lays colour, 1 takes the
+///     paint under it away), then by kind as a mask shape's
+///     The marks are rastered into one layer and laid on the fill after the
+///     overlays, inside the letters.
 /// u32 ink (v12)                0 none, or 1 and the box's brush ink:
 ///     f64 ox, oy               the box's corner in job units: the strokes
 ///                              are stated from it
@@ -1342,7 +1380,7 @@ fn clip_mask(
 
 /// The coverage of the union of `shapes`, stated from `origin`, over the
 /// surface: [`clip_mask`]'s raster, for any shapes.
-fn shapes_mask<'a>(
+pub(crate) fn shapes_mask<'a>(
     origin: Pt,
     shapes: impl Iterator<Item = &'a ClipShape>,
     transform: &Affine,

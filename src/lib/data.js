@@ -3,6 +3,7 @@
 
 import { FLIP_MODES, BLEND_MODES, aaLevel, normalizeTexture } from './brush.js';
 import { wavePath } from './bezier-path.js';
+import { normalizePaint } from './box-paint.js';
 
 // Default page dimensions until a real image sets them from its natural size.
 export const PAGE_W = 850;
@@ -246,6 +247,8 @@ export function applyBoxDefaults(style) {
   style.path = { on: false, pts: [] };
   style.warp = { on: false, cols: WARP_MESH_DEFAULT, rows: WARP_MESH_DEFAULT, pts: [] };
   style.ink = { on: false, strokes: [] };
+  // Paint is drawn on one box's letters, like the ink.
+  style.paint = { on: false, marks: [] };
   // The SFX recipe is the same kind of thing: moves tuned against one box's
   // text and font. A newborn box is plain text until the user asks for one.
   style.sfx = sfxDefault();
@@ -512,6 +515,9 @@ export function defaultStyle() {
     // `tilt` degrees, so neither needs a page rescale. Painted by the Rust
     // engine only. Not the SFX `shake` above, which lays copies.
     wobble: { on: false, amount: 8, tilt: 0, seed: 7 },
+    // Paint over the letters (box-paint.js): marks of colour in the box's own
+    // frame, moving with it. Painted by the Rust engine only.
+    paint: { on: false, marks: [] },
     // warp: per-character circular arc, -100..100 (negative = frown, positive = smile)
     curve: 0,
     // ---- typesetting (see typeset.js) ----
@@ -2246,6 +2252,7 @@ export function normalizeStyle(s) {
       tilt: Math.min(20, Math.max(0, num(src.wobble?.tilt, d.wobble.tilt))),
       seed: Math.min(999, Math.max(0, Math.round(num(src.wobble?.seed, d.wobble.seed)))),
     },
+    paint: normalizePaint(src.paint),
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
   foldPatternFill(out);

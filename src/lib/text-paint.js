@@ -8,6 +8,7 @@
 
 import { strokeStamps, strokeBounds, aaLevel, textureActive } from './brush.js';
 import { CANVAS_PATTERN_KINDS, blendIfActive, shadowOwnAngle, instanceOn, outlineRun, outlineBands } from './data.js';
+import { paintShown } from './box-paint.js';
 
 // A stroke's `width` is the VISIBLE band the user asked for, but neither a
 // canvas stroke nor `-webkit-text-stroke` can draw a band: both draw a line
@@ -1238,6 +1239,10 @@ export function boxEffects(style) {
   }
   const bv = bevelOf(style);
   if (bv) out.push(bv);
+  // Paint over the letters (box-paint.js): its marks are the box's own, and
+  // made ready for the engine where the box's corner is known
+  // (`effectPaints` in exporter.js).
+  if (paintShown(style)) out.push({ kind: 'paint', paint: style.paint });
   return capEffects(out);
 }
 

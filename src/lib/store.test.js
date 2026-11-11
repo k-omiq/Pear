@@ -1290,7 +1290,8 @@ describe('the bulk edit mask', () => {
     // gradient, smear or stroke list, never one field of one stroke. `path`,
     // `ink` and `warp` are box-local geometry - drawn against this box, by
     // hand, in this box's own px - so they stay the Inspector's along with
-    // x/y/w/h. `sfx` is the Rust engine's per-letter lettering and has no row
+    // x/y/w/h. So is `paint`: its marks sit in this box's own frame. `sfx` is
+    // the Rust engine's per-letter lettering and has no row
     // in the panel (its paths are drawn against one box's text), nor do its
     // effects (the rim order and corners, the shade, the negative, extrude,
     // shake and trail), which belong with it. `autoContrast`
@@ -1299,7 +1300,7 @@ describe('the bulk edit mask', () => {
     // group is still one row per field.
     const WHOLE = new Set(BULK_WHOLE_LEAVES);
     const NOT_BULK = new Set([
-      'path', 'ink', 'warp', 'sfx', 'autoContrast',
+      'path', 'ink', 'warp', 'paint', 'sfx', 'autoContrast',
       'strokeOrder', 'strokeJoin', 'strokeShade', 'negative', 'extrude', 'shake', 'trail',
     ]);
     // A wobble moves by its switch alone: its numbers are tuned by eye on

@@ -16,8 +16,8 @@ use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::blending::Range;
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
-    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
-    Page, PaintOverlay, Position, Satin, Stroke, Technique,
+    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Marks, Overlay,
+    Paint, PaintMark, Page, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::gradient_bake::Method;
@@ -115,7 +115,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 20, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 21, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(r.grain, (-1_234_567, 89_012));
     assert_eq!(
@@ -353,6 +353,33 @@ fn every_field_of_every_effect_comes_back_as_itself() {
                 invert: true,
                 fill: Fill::Solid(rgb(0x13579b)),
             }),
+        }),
+        // v21: paint over the letters.
+        Effect::Paint(Marks {
+            origin: Pt::new(6.25, -8.75),
+            marks: vec![
+                PaintMark {
+                    shape: ClipShape::Stroke { size: 4.25, pts: vec![Pt::new(1.5, 2.5), Pt::new(3.5, 4.75)] },
+                    color: rgb(0xa1b2c3),
+                    opacity: 0.15625,
+                    soft: 2.75,
+                    erase: false,
+                },
+                PaintMark {
+                    shape: ClipShape::Polygon(vec![Pt::new(10.5, 11.5), Pt::new(12.5, 11.75), Pt::new(13.25, 14.5)]),
+                    color: rgb(0xc3d4e5),
+                    opacity: 0.96875,
+                    soft: 0.0,
+                    erase: true,
+                },
+                PaintMark {
+                    shape: ClipShape::Ellipse { centre: Pt::new(21.5, 22.25), rx: 5.75, ry: 3.125 },
+                    color: rgb(0xe5f6a7),
+                    opacity: 0.40625,
+                    soft: 0.625,
+                    erase: false,
+                },
+            ],
         }),
     ];
     assert_eq!(r.effects.len(), want.len());
