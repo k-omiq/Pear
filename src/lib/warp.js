@@ -665,15 +665,28 @@ const UNWARP_SEEDS = 8;
 
 // Whether the box's straight step from `a` to `b` carries onto the page's
 // straight step from `pa` to `pb` (where the map takes them): each quarter
-// point within half that page step, and at least 1 px. A step onto another
-// sheet of a fold carries forward somewhere else entirely.
+// point within half that page step, and at least 1 px, and both ends on one
+// sheet - the map turned the same way at each (the sign of its Jacobian,
+// which a fold's crease flips). A step onto another sheet of a fold carries
+// forward somewhere else, or turned over.
 export function oneStep(m, a, b, pa, pb) {
+  if (turnOf(m, a) !== turnOf(m, b)) return false;
   const tol = Math.max(1, Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / 2);
   for (const t of [0.25, 0.5, 0.75]) {
     const f = m.at(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
     if (!(Math.hypot(f[0] - (pa[0] + (pb[0] - pa[0]) * t), f[1] - (pa[1] + (pb[1] - pa[1]) * t)) <= tol)) return false;
   }
   return true;
+}
+
+// The way the map turns at box point `p`: the sign of its Jacobian's
+// determinant, by differences a thousandth of a px along (as Newton's).
+function turnOf(m, p) {
+  const e = 1e-3;
+  const f = m.at(p[0], p[1]);
+  const fx = m.at(p[0] + e, p[1]);
+  const fy = m.at(p[0], p[1] + e);
+  return Math.sign((fx[0] - f[0]) * (fy[1] - f[1]) - (fy[0] - f[0]) * (fx[1] - f[1]));
 }
 
 // The seeds of `unwarpWith` for mesh `m`: a 13 x 13 grid over `bounds` (else

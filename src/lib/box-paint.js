@@ -171,9 +171,15 @@ export function moveMarks(box, marks, idx, dx, dy) {
     const [x, y] = boxToPage(box, m.at(p[0], p[1]));
     return pageToBox(box, [x + dx, y + dy]);
   };
-  // Each point is looked for near where it stood before the move, so a small
-  // move never sends it to another sheet of a fold.
-  const at = (p) => unwarpWith(m, box.w, box.h, ...target(p), { bounds, hint: p });
+  // Each point is looked for near where it stood before the move, and only
+  // there: an answer its own step does not reach (`oneStep`: the move pushed
+  // it past the edge of its sheet, and the seeds found it on another) is
+  // none, so the mark stays where it was, whole.
+  const at = (p) => {
+    const to = target(p);
+    const q = unwarpWith(m, box.w, box.h, ...to, { bounds, hint: p });
+    return q && oneStep(m, p, q, m.at(p[0], p[1]), to) ? q : null;
+  };
   const joins = joinsOn(m, target);
   // A mark moved even partly where the mesh does not reach, or onto another
   // sheet, stays where it was, whole (`bendShape` is null unless every point
