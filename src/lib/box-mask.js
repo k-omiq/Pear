@@ -562,9 +562,9 @@ function strokeThroughMesh(sh, mesh, map) {
 // (`widthScale`). Whatever else the shape carries goes with it.
 //
 // `at` may answer null for a point it cannot carry (`unwarpWith` where the
-// mesh does not reach): that point is dropped, and a shape left with too few
-// points to draw is null. The width is read at the point nearest the middle
-// that it carries.
+// mesh does not reach): then the shape is null, never a shorter one joined
+// across the gap. `bendStrokeRuns` cuts a brush stroke at its gaps instead.
+// The width is read at the point nearest the middle that it carries.
 //
 // Once a stroke is enough for its width: a mark is stored on the box's
 // surface and the mesh bends it with the letters, so along a perspective it
@@ -573,18 +573,40 @@ function strokeThroughMesh(sh, mesh, map) {
 // take one (its stroke has a single size), or one stroke cut into many
 // marks, which a pick, a move and an undo would then see as many.
 export function bendShape(sh, at) {
+  const runs = bendRuns(sh, at);
+  return runs && runs.length === 1 && runs[0].whole ? runs[0].shape : null;
+}
+
+// A brush stroke carried by `at` as `bendShape` does, cut where `at` cannot
+// carry a point: one stroke for each stretch it carries, never a straight
+// segment across a gap. Any other shape is `bendShape`'s, or nothing.
+export function bendStrokeRuns(sh, at) {
+  if (sh.kind !== 'stroke') {
+    const one = bendShape(sh, at);
+    return one ? [one] : [];
+  }
+  return (bendRuns(sh, at) ?? []).map((r) => r.shape);
+}
+
+function bendRuns(sh, at) {
+  // Each stretch of points `at` carries; `whole` when nothing was dropped.
   const carry = (pts) => {
-    const out = [];
+    const runs = [[]];
+    let whole = true;
     for (const p of pts) {
       const q = at(p);
-      if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) out.push(q);
+      if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) runs[runs.length - 1].push(q);
+      else {
+        whole = false;
+        if (runs[runs.length - 1].length) runs.push([]);
+      }
     }
-    return out;
+    return { runs: runs.filter((r) => r.length), whole };
   };
   if (sh.kind === 'stroke') {
     const pts = densify(sh.pts, false);
-    const moved = carry(pts);
-    if (!moved.length) return null;
+    const { runs, whole } = carry(pts);
+    if (!runs.length) return null;
     const safe = { at: (x, y) => at([x, y]) ?? [NaN, NaN] };
     let k = NaN;
     const mid = pts.length >> 1;
@@ -595,18 +617,20 @@ export function bendShape(sh, at) {
         if (Number.isFinite(v) && v > 0) k = v;
       }
     }
-    return { ...sh, size: sh.size * (Number.isFinite(k) ? k : 1), pts: moved };
+    const size = sh.size * (Number.isFinite(k) ? k : 1);
+    return runs.map((moved) => ({ shape: { ...sh, size, pts: moved }, whole }));
   }
+  // A closed shape with a point it cannot carry is not drawn at all.
+  const closed = (pts, make) => {
+    const { runs, whole } = carry(pts);
+    return whole && runs.length === 1 && runs[0].length >= 3 ? [{ shape: make(runs[0]), whole }] : null;
+  };
   if (sh.kind === 'ellipse') {
     const { cx: _cx, cy: _cy, rx: _rx, ry: _ry, ...rest } = sh;
-    const pts = carry(densify(ellipseRing(sh), true));
-    return pts.length >= 3 ? { ...rest, kind: 'poly', pts } : null;
+    return closed(densify(ellipseRing(sh), true), (pts) => ({ ...rest, kind: 'poly', pts }));
   }
-  if (sh.kind === 'poly') {
-    const pts = carry(densify(sh.pts, true));
-    return pts.length >= 3 ? { ...sh, pts } : null;
-  }
-  return sh;
+  if (sh.kind === 'poly') return closed(densify(sh.pts, true), (pts) => ({ ...sh, pts }));
+  return [{ shape: sh, whole: true }];
 }
 
 export function maskFromClip(box) {
