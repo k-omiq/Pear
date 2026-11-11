@@ -60,7 +60,7 @@ pub use boxjob::{
 use geom::positive;
 pub use geom::{Affine, IBox, Polys, Pt};
 pub use job::{
-    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, RunFaces,
+    decode, decode_swatch, Align, Band, Cuts, Effects, Fill, Job, Negative, Request, Rgba, Run, RunFaces,
     Wobble, Stop, Tile, MAGIC, MAX_RUN_FACES, MAX_WOBBLE_AMOUNT, MAX_WOBBLE_TILT, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
 };
 pub(crate) use outline::glyph_polys;
@@ -1183,6 +1183,15 @@ fn paint_letters(
     };
 
     let fx = &job.effects;
+    // The cuts alone: a box's own strokes cut by them as a glyph band is
+    // (`Cuts::Alone`).
+    if fx.cuts == Cuts::Alone {
+        let mut planned = budget::Buffer::new();
+        if let Some(p) = special.as_ref().map(|sh| cut_plan(sh, bends, transform, tiles, tol)).transpose()?.flatten() {
+            budget::push(&mut planned, p)?;
+        }
+        return finish_planned(planned, rasterizer);
+    }
     let layers = Layers {
         job,
         glyphs: &glyphs,
@@ -1254,23 +1263,21 @@ fn paint_letters(
     }
     // A special effect's cuts, out of everything: bent with the letters, so
     // a crack stays on the letter it crosses under a mesh.
-    if let Some(sh) = special.as_ref().filter(|sh| !sh.cuts.is_empty() && !planned.is_empty()) {
-        const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
-        let cut = match (bends.is_empty(), sh.cuts.bounds()) {
-            (false, Some(b)) => match bends.cut(b, tol) {
-                Some(c) => warp::bend(&sh.cuts, |p| bends.at(p), c, tol)?.map(transform),
-                None => sh.cuts.map(transform),
-            },
-            _ => sh.cuts.map(transform),
-        };
-        let mut parts = budget::Buffer::new();
-        budget::push(&mut parts, Part::plain(cut))?;
-        let shader = Shader::new(&OPAQUE, transform, tiles);
-        if let Some(mut p) = shader.and_then(|s| plan(parts, s, 1.0)) {
+    if fx.cuts == Cuts::Made && !planned.is_empty() {
+        if let Some(mut p) = special.as_ref().map(|sh| cut_plan(sh, bends, transform, tiles, tol)).transpose()?.flatten() {
             p.erase = true;
             budget::push(&mut planned, p)?;
         }
     }
+    finish_planned(planned, rasterizer)
+}
+
+/// The planned layers laid in one raster as big as what they paint (their
+/// erasers reach no further). `None` with nothing painted.
+fn finish_planned(
+    planned: budget::Buffer<Planned<'_>>,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
     budget::check()?;
     let Some(surface) = planned
         .iter()
@@ -1292,6 +1299,31 @@ fn paint_letters(
         height: height as u32,
         data,
     }))
+}
+
+/// Crack's and Scratches' cuts as one opaque layer in device space, bent
+/// with the letters. `None` with nothing cut.
+fn cut_plan<'a>(
+    sh: &special::Shapes,
+    bends: Bends<'_>,
+    transform: &'a Affine,
+    tiles: &'a [Tile],
+    tol: f64,
+) -> Result<Option<Planned<'a>>, Error> {
+    const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
+    if sh.cuts.is_empty() {
+        return Ok(None);
+    }
+    let cut = match (bends.is_empty(), sh.cuts.bounds()) {
+        (false, Some(b)) => match bends.cut(b, tol) {
+            Some(c) => warp::bend(&sh.cuts, |p| bends.at(p), c, tol)?.map(transform),
+            None => sh.cuts.map(transform),
+        },
+        _ => sh.cuts.map(transform),
+    };
+    let mut parts = budget::Buffer::new();
+    budget::push(&mut parts, Part::plain(cut))?;
+    Ok(Shader::new(&OPAQUE, transform, tiles).and_then(|s| plan(parts, s, 1.0)))
 }
 
 #[cfg(test)]

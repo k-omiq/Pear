@@ -33,14 +33,15 @@ use super::fx::blending::{self, shadow_see_through, Blending, Range};
 use super::fx::contour::{self, Curve, Lut, Table};
 use super::fx::effects::{
     self, Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay,
-    Marks, Page, Paint, PaintMark, PaintOverlay, Place, Position, Satin, Stroke, Technique,
+    Marks, Page, Paint, PaintMark, PaintOverlay, Place, Position, Satin, Stroke, StrokeCuts,
+    Technique,
 };
 use super::fx::gradient::{Gradient, Style};
 use super::fx::gradient_bake::Method;
 use super::fx::noise_gradient::{Model, Noise, Ramp};
 use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
-use super::job::{read_fill, Fill, Request, Rgba};
+use super::job::{read_fill, Cuts, Fill, Request, Rgba};
 use super::special::Special;
 use super::kept::{self, Hasher};
 use super::raster::{Part, Rasterizer};
@@ -2124,6 +2125,7 @@ impl Keep {
             .u64(u64::from(job.no_fill))
             .u64(ghosts as u64)
             .u64(job.runs.len() as u64)
+            .debug(&job.effects.cuts)
             .finish()
     }
 
@@ -2533,29 +2535,21 @@ fn paint_glyphs(
     // The fill alone, faded, with the effects on it. With no fill, the
     // letters' shape as they would have been filled: their solid
     // silhouette, at Fill 0, without the afterimages.
-    let fill = if hollow {
-        let bands = core::mem::take(&mut request.request.job.bands);
-        let negative = request.request.job.effects.negative.take();
-        let runs = if ghostly {
-            let runs = core::mem::take(&mut request.request.job.runs);
-            request.request.job.runs = runs.iter().filter(|r| !r.ghost).cloned().collect();
-            Some(runs)
-        } else {
-            None
-        };
-        request.request.job.no_fill = false;
-        request.request.job.silhouette = Some(Rgba([0, 0, 0, 255]));
-        let fill = job_raster(engine, &request.request, rasterizer, keep);
-        request.request.job.no_fill = hollow;
-        request.request.job.silhouette = None;
-        request.request.job.bands = bands;
-        request.request.job.effects.negative = negative;
-        if let Some(runs) = runs {
-            request.request.job.runs = runs;
-        }
-        fill
+    let fill = letters_fill(engine, request, rasterizer, keep, hollow, ghostly);
+    // A box's own strokes outline the letters whole and are cut through
+    // after, as a glyph band is: one crack look whatever the stroke.
+    let cut_strokes = inside
+        && request.request.job.effects.special.is_some_and(|s| s.shapes_letters())
+        && request.effects.iter().any(|e| matches!(e, Effect::Stroke(_)) && e.shows());
+    let cuts = if cut_strokes {
+        request.request.job.effects.cuts = Cuts::Skipped;
+        let whole = letters_fill(engine, request, rasterizer, keep, hollow, ghostly);
+        request.request.job.effects.cuts = Cuts::Alone;
+        let alone = job_raster(engine, &request.request, rasterizer, keep);
+        request.request.job.effects.cuts = Cuts::Made;
+        whole?.zip(alone?)
     } else {
-        paint_fill(engine, request, rasterizer, keep)
+        None
     };
     // Where the fill's piece lands in `out`, when it is laid as a piece.
     let mut fill_piece = None;
@@ -2576,6 +2570,7 @@ fn paint_glyphs(
                 carried,
                 &place,
                 keep.fill(hollow, ghostly),
+                cuts.as_ref().map(|(whole, alone)| StrokeCuts { whole, alone }).as_ref(),
             )?;
             (outside, bevels) = (o, b);
             // No fill hides the letters' fill and not the ink: it stays
@@ -2626,6 +2621,43 @@ fn paint_glyphs(
         outside,
         bevels,
     })
+}
+
+/// The fill alone for `paint_glyphs`: with no fill, the letters' shape as
+/// they would have been filled, their solid silhouette without the
+/// afterimages (`ghostly`).
+fn letters_fill(
+    engine: &mut Engine,
+    request: &mut BoxRequest,
+    rasterizer: &dyn Rasterizer,
+    keep: Keep,
+    hollow: bool,
+    ghostly: bool,
+) -> Result<Option<Raster>, Error> {
+    if hollow {
+        let bands = core::mem::take(&mut request.request.job.bands);
+        let negative = request.request.job.effects.negative.take();
+        let runs = if ghostly {
+            let runs = core::mem::take(&mut request.request.job.runs);
+            request.request.job.runs = runs.iter().filter(|r| !r.ghost).cloned().collect();
+            Some(runs)
+        } else {
+            None
+        };
+        request.request.job.no_fill = false;
+        request.request.job.silhouette = Some(Rgba([0, 0, 0, 255]));
+        let fill = job_raster(engine, &request.request, rasterizer, keep);
+        request.request.job.no_fill = hollow;
+        request.request.job.silhouette = None;
+        request.request.job.bands = bands;
+        request.request.job.effects.negative = negative;
+        if let Some(runs) = runs {
+            request.request.job.runs = runs;
+        }
+        fill
+    } else {
+        paint_fill(engine, request, rasterizer, keep)
+    }
 }
 
 /// The letters' fill and their outlines cut to outside it (`paint_rims`)
