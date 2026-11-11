@@ -30,7 +30,7 @@
 // The one exception is a key heard in one place only - the typing pane's
 // Enter, Tab and Escape (`ctx` below): there the key has one meaning, so it
 // rebinds like any other.
-import { prefs, setPref } from './prefs.svelte.js';
+import { prefs, setPref, isComics, sfxToolOn } from './prefs.svelte.js';
 
 // ---------- platform ----------
 function detectMac() {
@@ -441,10 +441,24 @@ export function defaultCombo(id) {
   return BY_ID.get(id)?.combo ?? null;
 }
 
-// A tool switched off in Settings has no key and no row.
-const toolOff = (id) =>
-  (id === 'tool.brush' && !prefs.brushTool) || ((id === 'tool.sfx' || id === 'panel.sfx') && !prefs.sfxTool);
-const activeShortcuts = () => SHORTCUTS.filter((s) => !toolOff(s.id));
+// The comic tools general use does not have (plan 2.1): detection and OCR,
+// the bubble outlines and their fit, the check list, and the Settings tabs
+// that only serve them. Hidden, not dimmed: for that person the tool set does
+// not exist, rather than being unable to act right now. The text list stays
+// (plan 2.1), so its placing keys stay with it.
+const COMICS_ONLY = new Set([
+  'box.fitBalloon', 'box.retypeset', 'bubble.centre', 'bubble.outlineToBox', 'box.approveOutline', 'bubble.approvePage',
+  'view.regions', 'review.next',
+  'detect.page', 'detect.chapter', 'jobs.retry', 'ocr.draw',
+  'settings.detection', 'settings.guide',
+]);
+// A tool switched off in Settings, or one the usage does not have, has no key
+// and no row, and its key does nothing.
+export const actionOff = (id) =>
+  (id === 'tool.brush' && !prefs.brushTool) ||
+  ((id === 'tool.sfx' || id === 'panel.sfx') && !sfxToolOn()) ||
+  (!isComics() && COMICS_ONLY.has(id));
+const activeShortcuts = () => SHORTCUTS.filter((s) => !actionOff(s.id));
 
 // The groups, in registry order, for the settings screen. A second key
 // (`altOf`) is not a row of its own: it rides on its action's row, in `alts`.
@@ -491,7 +505,7 @@ export const keyLabel = (id) => formatCombo(comboFor(id));
 // cannot bind a key to nothing.
 // An empty string is a key the user took away: the action has none.
 export function comboFor(id) {
-  if (toolOff(id)) return null;
+  if (actionOff(id)) return null;
   const over = prefs.shortcuts?.[id];
   if (over === '') return null;
   if (typeof over === 'string') {
@@ -689,7 +703,7 @@ export function dispatchShortcut(e, { typing = false } = {}) {
 // box's right-click menu do, so a menu item and its key can never disagree.
 // The handler gets no event. False when there is no handler or it declined.
 export function runShortcut(id) {
-  if (toolOff(id)) return false;
+  if (actionOff(id)) return false;
   const fn = handlers.get(id);
   if (!fn) return false;
   return fn(null) !== false;

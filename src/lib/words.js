@@ -12,6 +12,8 @@ const WORDS = {
   chapters: ['Chapters', 'Documents'],
   newChapter: ['New chapter', 'New document'],
   rawPages: ['Raw pages', 'Images'],
+  // One of the raw pages, for sentences that count them ("3 copied raws").
+  raw: ['Raw', 'Image'],
 };
 
 // Read through `isComics`, so a template that calls this follows the

@@ -26,6 +26,7 @@
     toast,
   } from '../store.svelte.js';
   import { sidecarReady, detectAllPages, detectCurrentPage } from '../sidecar.js';
+  import { isComics } from '../prefs.svelte.js';
   import { comboFor, defaultCombo, formatCombo } from '../shortcuts.svelte.js';
 
   let { width = $bindable(420) } = $props();
@@ -119,7 +120,8 @@
     untrack(() => {
       if (tried.has(key) || app.detecting) return;
       if (!fresh) return void tried.add(key);
-      if (!ready) return;
+      // General use has no detection: an old translate chapter is typed by hand.
+      if (!ready || !isComics()) return;
       tried.add(key);
       detectAllPages();
     });
@@ -254,7 +256,10 @@
       <div class="tpane-state" aria-live="polite"><strong>Reading this page…</strong></div>
     {:else if p.lines.length === 0}
       <div class="tpane-state">
-        {#if engineReady}
+        {#if !isComics()}
+          <strong>No text on this page yet</strong>
+          <span>Add text in the list below.</span>
+        {:else if engineReady}
           <strong>No text on this page yet</strong>
           <span>Detect finds each bubble, reads it and numbers it {rtl ? 'right to left' : 'left to right'}, top to bottom.</span>
           <span class="tpane-acts">

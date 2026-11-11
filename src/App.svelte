@@ -20,6 +20,8 @@
   import NewChapterDialog from './lib/home/NewChapterDialog.svelte';
   import ChapterSourcesSheet from './lib/home/ChapterSourcesSheet.svelte';
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
+  import Onboarding from './lib/onboarding/Onboarding.svelte';
+  import { onboarding, offerOnboardingAtBoot, finishOnboarding } from './lib/onboarding/onboarding.svelte.js';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, setTranslateTypeset, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
@@ -40,9 +42,9 @@
   import { initDoor, initChapterWindowDoor, closeDoorForQuit } from './lib/agent/door.svelte.js';
   import { windowRole, parseChapterKey, agentWindowReady, closeAgentWindows } from './lib/agent/windows.js';
   import { initTheme } from './lib/theme.svelte.js';
-  // Side-effect import: reading the stored preferences also applies them, and
-  // the typesetting switch has to be applied before the first line is measured.
-  import './lib/prefs.svelte.js';
+  // Importing the preferences also reads and applies them, and the
+  // typesetting switch has to be applied before the first line is measured.
+  import { isComics } from './lib/prefs.svelte.js';
   import { library, initRoot, scanLibrary, openChapter, flushBeforeLeaving, leaveApprovalCurrent, checkOutsideChange, watchProjectRecords } from './lib/library.svelte.js';
   import { route, goBack, goEditor } from './lib/route.svelte.js';
   import { watchFontLoads, installContextMenuGuard, isReloadKey, isEditableTarget, ownsArrowKeys } from './lib/shell-guards.js';
@@ -70,6 +72,19 @@
   // Read once at boot; until it answers this is the main window.
   let role = { label: 'main', agent: false, chapter: null };
   const roleRead = windowRole().then((r) => (role = r));
+
+  // The detection engine is probed (Tauri only) once the library is read,
+  // and only for comics use: general use has no detection, so starting the
+  // engine would cost memory for nothing. Switching to comics later starts it
+  // then, once.
+  let sidecarProbed = false;
+  $effect(() => {
+    if (!booted || sidecarProbed || !isComics()) return;
+    sidecarProbed = true;
+    checkSidecar().then((h) => {
+      if (h && !role.agent) toast(`Detection ready · ${h.device}`);
+    });
+  });
 
   onMount(async () => {
     initTheme();
@@ -102,11 +117,11 @@
     // Recompute measurements when web fonts finish loading.
     document.fonts?.ready.then(() => noteFontsChanged());
     armQuitFlush();
-    // Probe detection engine (Tauri only).
-    checkSidecar().then((h) => {
-      if (h && !role.agent) toast(`Detection ready · ${h.device}`);
-    });
     await roleRead;
+    // The first-run setup, decided once the library is read (`booted`) and
+    // the window's role is known: never in an agent's window, and never for an
+    // install that is already set up.
+    offerOnboardingAtBoot(role);
     if (role.agent) {
       await initChapterWindowDoor(role.label);
       await openAgentChapter(role.chapter);
@@ -556,6 +571,11 @@
     // keys look dead. What survives is: the shortcuts that cannot be part of
     // typing (the Cmd/Ctrl combos for modes, tabs and rotation) still fire, and
     // everything else stands down. The registry decides which is which.
+    // The setup sits over everything else, so its Escape goes first and
+    // before the typing gate: a box left in edit under the screen must not
+    // keep the way out shut. Its own screen takes the Escape that arrives with
+    // focus inside it; this is for one that arrives with focus outside.
+    if (e.key === 'Escape' && onboarding.open) return finishOnboarding();
     const typing = isTypingTarget(e.target) || !!app.editingId;
     if (!typing && e.key === 'Escape') {
       // Focus is in the palette's field nearly always, and the field takes its
@@ -589,9 +609,10 @@
     // contract, relied on by this query: every app modal renders a root
     // `.modal-overlay` element and carries the `open` class only while it is
     // showing (FontModal, ExportDialog do; so must any modal added later, or
-    // this line has to be taught about it). Settings is a full-window screen,
-    // `.settings-screen`, mounted only while open.
-    if (typeof document !== 'undefined' && document.querySelector('.modal-overlay.open, .settings-screen')) return;
+    // this line has to be taught about it). Settings and the first-run setup
+    // are full-window screens, `.settings-screen` and `.onboarding-screen`,
+    // mounted only while open.
+    if (typeof document !== 'undefined' && document.querySelector('.modal-overlay.open, .settings-screen, .onboarding-screen')) return;
     if (route.name !== 'editor') return;
     // Every named shortcut, in one line: undo, redo, duplicate, delete, the
     // style clipboard, the three modes, the Inspector's tabs and the rotation
@@ -745,4 +766,7 @@
 <ExportDialog />
 <DrawReadModal />
 <CommandPalette bind:open={paletteOpen} />
+<!-- Over the route rather than in place of it, as Settings is, so running
+     the setup again from the editor keeps the chapter mounted. -->
+{#if onboarding.open}<Onboarding />{/if}
 <Toast />

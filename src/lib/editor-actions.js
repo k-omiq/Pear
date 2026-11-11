@@ -49,8 +49,8 @@ import {
 import { typingSel, selectedRange, askPending, askFacePick, lineSel } from './typing-selection.svelte.js';
 import { faceAt } from './runs.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
-import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
-import { prefs, isComics } from './prefs.svelte.js';
+import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut, actionOff } from './shortcuts.svelte.js';
+import { sfxToolOn, isComics } from './prefs.svelte.js';
 import { clipToBubble, toggleFade } from './box-mask-actions.js';
 import { jobs } from './jobs.svelte.js';
 import { startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
@@ -68,8 +68,8 @@ const boxSelected = () => typeset() && app.selectedId != null && !!byId(app.sele
 const tagged = () => boxSelected() && !!boxTagName();
 const fitted = () => boxSelected() && !!byId(app.selectedId)?.fit;
 // Both detect scopes ask the engine for work, so both need it up and idle.
-// Translate chapters detect too.
-const canDetect = () => app.loaded && sidecarReady() && !app.detecting;
+// Translate chapters detect too. General use has no detection at all.
+const canDetect = () => isComics() && app.loaded && sidecarReady() && !app.detecting;
 const paged = () => typeset() && !isLongstrip() && app.pages.length > 1;
 // The series sections of Settings are there only while a chapter is open.
 const inChapter = () => !!app.chapterRef;
@@ -226,7 +226,7 @@ const RUNS = {
   'view.raw': { when: typeset, run: toggleRaw },
   'panel.options': { when: typeset, run: () => togglePanel('options') },
   'panel.queue': { when: typeset, run: () => togglePanel('queue') },
-  'panel.sfx': { when: () => typeset() && prefs.sfxTool, run: () => togglePanel('sfx') },
+  'panel.sfx': { when: () => typeset() && sfxToolOn(), run: () => togglePanel('sfx') },
 
   'detect.page': { when: canDetect, run: () => detectCurrentPage() },
   'detect.chapter': { when: canDetect, run: () => detectAllPages() },
@@ -254,8 +254,11 @@ const RUNS = {
 };
 
 // The handlers for `RUNS`, for App.svelte to register while the editor runs.
+// Each refuses an action the usage does not have (`actionOff`) as well as one
+// whose own condition fails, so no path to a handler - a key, the palette, a
+// menu - can run a comic tool under general use.
 export function editorActionHandlers() {
-  return Object.fromEntries(Object.entries(RUNS).map(([id, a]) => [id, (e) => (a.when() ? a.run(e) : false)]));
+  return Object.fromEntries(Object.entries(RUNS).map(([id, a]) => [id, (e) => (!actionOff(id) && a.when() ? a.run(e) : false)]));
 }
 
 // What each component-owned action needs before it can do anything. Their
@@ -263,10 +266,11 @@ export function editorActionHandlers() {
 // offering what would be refused.
 const BOX_PREFIXES = ['box.', 'style.'];
 function shortcutWhen(id) {
+  // A tool switched off, or one the usage does not have, first: it is not
+  // offered whatever its own condition says.
+  if (actionOff(id)) return false;
   const r = RUNS[id];
   if (r) return r.when();
-  if (id === 'tool.brush' && !prefs.brushTool) return false;
-  if (id === 'tool.sfx' && !prefs.sfxTool) return false;
   if (id === 'box.paste') return typeset() && hasCopiedBox();
   if (id === 'fonts.open') return !isTranslateMode();
   if (BOX_PREFIXES.some((p) => id.startsWith(p))) return boxSelected();

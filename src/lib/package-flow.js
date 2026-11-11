@@ -13,7 +13,7 @@ import {
 import { userFontRecords, installFontFace } from './fonts.js';
 import { tagsInUse } from './tags.svelte.js';
 import { app, normalizeLayout, normalizeOcrLanguage, fontsGated, fontFamiliesSettling, fontMissing, fontSourceNow } from './store.svelte.js';
-import { isTauri, pickFilesTauri } from './importer.js';
+import { isTauri, pickFilesTauri, toPng, IMAGE_EXTENSIONS } from './importer.js';
 import {
   buildChapterPackage,
   readChapterPackage,
@@ -203,23 +203,37 @@ export async function exportChapterPackage(projectId, chapterId) {
 
 // ---------- import ----------
 
-export async function pickPackageFile() {
+// The new-chapter dialog's one picker: page images, or one chapter package,
+// told apart by extension. Returns `{ images }` (each converted to PNG, as
+// `pickImageFiles` does), `{ package }`, or null when nothing was picked. A
+// package is a whole chapter, so one picked with anything else is refused
+// rather than half used.
+const PACKAGE_NAME = new RegExp(`\\.(${PACKAGE_EXT}|zip)$`, 'i');
+export const isPackageName = (name) => PACKAGE_NAME.test(name ?? '');
+export async function pickChapterSource() {
+  const extensions = [...IMAGE_EXTENSIONS, PACKAGE_EXT, 'zip'];
+  let picked;
   if (isTauri()) {
-    const files = await pickFilesTauri({
-      name: 'Chapter package',
-      extensions: [PACKAGE_EXT, 'zip'],
-      multiple: false,
+    picked = await pickFilesTauri({ name: 'Images or a chapter package', extensions, multiple: true });
+  } else {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = extensions.map((e) => `.${e}`).join(',');
+    await new Promise((resolve) => {
+      input.onchange = resolve;
+      input.click();
     });
-    return files?.[0] ?? null;
+    picked = input.files?.length ? [...input.files] : null;
   }
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = `.${PACKAGE_EXT},.zip,application/zip`;
-  await new Promise((resolve) => {
-    input.onchange = resolve;
-    input.click();
-  });
-  return input.files?.[0] ?? null;
+  if (!picked) return null;
+  if (picked.some((f) => isPackageName(f.name))) {
+    if (picked.length > 1) throw new Error(`Choose page images, or one .${PACKAGE_EXT} package on its own.`);
+    return { package: picked[0] };
+  }
+  const images = [];
+  for (const f of picked) images.push(await toPng(f));
+  return { images };
 }
 
 // What a font in the package means on THIS machine.
@@ -342,7 +356,9 @@ export async function inspectPackage(file, projectId = null) {
 // load is counted and does not stop the import: the chapter still renders on
 // the fallback, and the user can add the face by hand.
 // Returns { chapter, fontsInstalled, fontsFailed, tagsAdded }.
-export async function importChapterPackage({ pkg, projectId, number, title }) {
+// `mode` overrides the package's own: general use has no translate chapters,
+// so it imports every package as typeset.
+export async function importChapterPackage({ pkg, projectId, number, title, mode = null }) {
   let fontsInstalled = 0;
   let fontsFailed = 0;
   for (const f of pkg.fonts) {
@@ -364,7 +380,7 @@ export async function importChapterPackage({ pkg, projectId, number, title }) {
     title: title ?? pkg.record.title ?? '',
     pages: packagePagesForImport(pkg),
     patterns: pkg.patterns,
-    mode: pkg.record.mode === 'translate' ? 'translate' : 'typeset',
+    mode: mode ?? (pkg.record.mode === 'translate' ? 'translate' : 'typeset'),
     // The chapter's own, absent reading as plain - never this machine's default.
     typesetting: pkg.record.typesetting ?? null,
   });

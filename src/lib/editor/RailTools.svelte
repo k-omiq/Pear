@@ -20,7 +20,7 @@
     isTranslateMode,
     isTranslateChapter,
   } from '../store.svelte.js';
-  import { prefs } from '../prefs.svelte.js';
+  import { prefs, sfxToolOn } from '../prefs.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
   import { sfxAvailable } from '../sfx.js';
   import { engineSwitch } from '../engine-switch.svelte.js';
@@ -217,7 +217,7 @@
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7V5h16v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>
       </button>
-      {#if prefs.sfxTool}
+      {#if sfxToolOn()}
         <!-- Press, drag, let go: a sound effect along the drag. Off (not gone)
              under the browser engine, which has no SFX layout. -->
         <button
