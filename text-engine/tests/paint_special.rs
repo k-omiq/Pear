@@ -807,3 +807,40 @@ fn the_same_pieces_break_at_every_scale() {
         assert!(after > cold, "{crisp:?}: the shapes read back ({cold} cold, {after} after)");
     }
 }
+
+/// With Break off on, a paint read back from the kept cache equals a cold
+/// paint to the byte at whole-pixel offsets, both motions, as a glyph job
+/// (pieces read back moved) and as a box (each offset its own surface).
+#[test]
+fn break_off_warm_equals_cold_at_whole_pixel_offsets() {
+    use mt_text::paint::paint_job;
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let make = |motion: Motion, dx: f64, dy: f64| {
+        let mut b = boxed(font, breaking(0.6, motion, (0.5, 0.5), 1.0));
+        b.request.transform = Affine::translate(dx, dy);
+        b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+        b
+    };
+    kept::set_ceiling(kept::KEPT_BYTES);
+    for motion in [Motion::Apart, Motion::Fall] {
+        for (dx, dy) in [(7.0, 3.0), (-5.0, 11.0)] {
+            // A glyph job.
+            kept::clear();
+            paint_job(&mut engine, &make(motion, 0.0, 0.0).request).unwrap();
+            let h = kept::hits();
+            let warm = paint_job(&mut engine, &make(motion, dx, dy).request).unwrap().expect("something painted");
+            assert!(kept::hits() > h, "{motion:?} ({dx}, {dy}): the job read something back");
+            kept::clear();
+            let cold = paint_job(&mut engine, &make(motion, dx, dy).request).unwrap().expect("something painted");
+            assert!(warm == cold, "{motion:?} ({dx}, {dy}): the job warm equals cold");
+            // A box.
+            kept::clear();
+            paint(&mut engine, make(motion, 0.0, 0.0));
+            let warm = paint(&mut engine, make(motion, dx, dy));
+            kept::clear();
+            let cold = paint(&mut engine, make(motion, dx, dy));
+            assert!(warm.data == cold.data && (warm.width, warm.height) == (cold.width, cold.height), "{motion:?} ({dx}, {dy}): the box warm equals cold");
+        }
+    }
+}
