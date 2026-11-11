@@ -564,7 +564,7 @@ export function meshMap(pts, cols, rows, w, h) {
   const at = (x, y) => smoothPoint(pts, c, r, W, H, +x, +y);
   let last = null;
   const folds = (b = null) => {
-    if (last?.b !== b) last = { b, out: foldsOf(pts, `${c},${r},${W},${H}`, at, b ?? [-W / 4, -H / 4, (5 * W) / 4, (5 * H) / 4]) };
+    if (last?.b !== b) last = { b, out: foldsOf(pts, c, r, `${c},${r},${W},${H}`, at, b ?? [-W / 4, -H / 4, (5 * W) / 4, (5 * H) / 4]) };
     return last.out;
   };
   return { kind: 'smooth', at, folds };
@@ -572,23 +572,24 @@ export function meshMap(pts, cols, rows, w, h) {
 
 // Whether a smooth mesh may fold over itself within `b` ([x0, y0, x1, y1],
 // box-local: the bounds answers may lie in, else the box and a quarter of it
-// past each side): its Jacobian (by `jacOf`) sampled on a 25 x 25 grid there
-// changes sign, or comes near nothing (under a fiftieth of its largest)
-// anywhere, where a thin fold could hide between the samples. A mesh that
-// cannot fold has one sheet, and `oneStep` and `unwarpWith` skip the sheet
-// tests there. Kept with the point list, which outlives the mesh objects
-// built from it.
+// past each side): a cell of its point grid is turned over or not convex
+// (`netTurns`), or its Jacobian (by `jacOf`), sampled on a grid of at least
+// 25 x 25 and 4 samples a cell, changes sign or comes near nothing (under a
+// fiftieth of its largest) anywhere, where a thin fold could hide between
+// the samples. A mesh that cannot fold has one sheet, and `oneStep` and
+// `unwarpWith` skip the sheet tests there, so a doubt counts as may fold.
+// Kept with the point list, which outlives the mesh objects built from it.
 const foldMemo = new WeakMap();
-function foldsOf(pts, mesh, at, b) {
+function foldsOf(pts, c, r, mesh, at, b) {
   const key = `${mesh}|${b.join(',')}`;
   const hit = foldMemo.get(pts);
   if (hit?.key === key) return hit.out;
   const m = { at };
-  const N = 24;
+  const N = Math.max(24, 4 * Math.max(c, r));
   let lo = Infinity;
   let hi = 0;
   let sign = 0;
-  let out = false;
+  let out = netTurns(pts, c, r);
   for (let j = 0; j <= N && !out; j++) {
     for (let i = 0; i <= N; i++) {
       const d = detOf(jacOf(m, [b[0] + ((b[2] - b[0]) * i) / N, b[1] + ((b[3] - b[1]) * j) / N]));
@@ -605,6 +606,26 @@ function foldsOf(pts, mesh, at, b) {
   out ||= lo < hi / 50;
   foldMemo.set(pts, { key, out });
   return out;
+}
+
+// Whether some cell of the point grid (row-major, `c` x `r` cells) is turned
+// over against the rest, or is not convex: a corner of it turns the other
+// way, or not at all.
+function netTurns(pts, c, r) {
+  const P = (i, j) => pts[j * (c + 1) + i];
+  let sign = 0;
+  for (let j = 0; j < r; j++) {
+    for (let i = 0; i < c; i++) {
+      const q = [P(i, j), P(i + 1, j), P(i + 1, j + 1), P(i, j + 1)];
+      for (let k = 0; k < 4; k++) {
+        const [o, a, z] = [q[k], q[(k + 1) % 4], q[(k + 2) % 4]];
+        const s = Math.sign((a[0] - o[0]) * (z[1] - a[1]) - (a[1] - o[1]) * (z[0] - a[0]));
+        if (!s || (sign && s !== sign)) return true;
+        sign = s;
+      }
+    }
+  }
+  return false;
 }
 
 // Where the box-local point (x, y) ends up once the mesh has been applied, as a

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { marksFromPage, marksOnPage, moveMarks, normalizePaint, paintRoomFor, PAINT_MARKS_MAX, PAINT_ERASERS_MAX } from './box-paint.js';
 import { boxToPage, pageToBox } from './box-mask.js';
-import { identityMesh, warpPoint } from './warp.js';
+import { identityMesh, meshMap, warpPoint } from './warp.js';
 
 // ===========================================================================
 // The paint's marks are stored in the box's texture: its own frame before
@@ -217,6 +217,32 @@ describe('a mark moved on a folded mesh', () => {
     // twice, near where the crease ends: once some 30 px off, now kept.
     const [out] = moveMarks(box, [mark], 0, 0, -1);
     expect(out).toBe(mark);
+  });
+
+  it('a mark on a fine mesh folded by one node never moves onto the other sheet', () => {
+    const n = 24;
+    const cell = 100 / n;
+    const pts = identityMesh(n, n, 100, 100).map(([x, y], i) => (i === (n / 2) * (n + 1) + n / 2 ? [x + 1.5 * cell, y + 0.45 * cell] : [x, y]));
+    const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: { on: true, cols: n, rows: n, pts } }), size: 20 } };
+    const m = meshMap(pts, n, n, 100, 100);
+    const turn = (p) => {
+      const f = m.at(p[0], p[1]);
+      const fx = m.at(p[0] + 1e-3, p[1]);
+      const fy = m.at(p[0], p[1] + 1e-3);
+      return Math.sign((fx[0] - f[0]) * (fy[1] - f[1]) - (fy[0] - f[0]) * (fx[1] - f[1]));
+    };
+    let flips = 0;
+    // Before the point grid was asked, 7 of these landed turned over.
+    for (let y = 40; y <= 64; y += 1) {
+      for (let x = 40; x <= 64; x += 1) {
+        const mark = stroke([[x, y], [x + 0.5, y]]);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const [out] = moveMarks(box, [mark], 0, dx, dy);
+          if (out !== mark && turn(out.pts[0]) !== turn(mark.pts[0])) flips++;
+        }
+      }
+    }
+    expect(flips).toBe(0);
   });
 
   // The sheet tests are for meshes that may fold. On meshes that cannot, a
