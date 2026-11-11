@@ -1,4 +1,4 @@
-// ===== edits to a box's mask =====
+// ===== edits to a box's mask and its fade =====
 //
 // Every change to `box.mask` the panels, the box menu, the palette and the
 // agent make, each one undo step (`mask` in the history) and each followed
@@ -9,6 +9,7 @@ import { app, page, toast, markUnsaved, reviewBox, refitBalloon } from './store.
 import { record } from './editor/history.svelte.js';
 import { isComics } from './prefs.svelte.js';
 import { normalizeMask, bubbleLink, bubbleOutline, BUBBLE_INSET_DEFAULT, BUBBLE_INSET_MAX } from './box-mask.js';
+import { normalizeFade } from './box-fade.js';
 
 const plain = (m) => (m ? JSON.parse(JSON.stringify(m)) : null);
 const boxIn = (p, id) => (p?.boxes ?? []).find((x) => x.id === id) ?? null;
@@ -89,4 +90,33 @@ export function flushBubbleInset() {
   reviewBox(h.b, h.p);
   const after = plain(h.b.mask);
   if (JSON.stringify(after) !== JSON.stringify(h.before)) record({ t: 'mask', pageId: h.p.id, boxId: h.b.id, before: h.before, after });
+}
+
+// The fade set to `next` (normalized, null for none), as one record. The
+// fade changes no verdict, so no check follows. False when nothing changed.
+export function setBoxFade(b, p, next) {
+  const before = plain(b.fade);
+  const after = next ? normalizeFade(next) : null;
+  if (JSON.stringify(before) === JSON.stringify(after)) return false;
+  b.fade = after;
+  markUnsaved();
+  record({ t: 'fade', pageId: p.id, boxId: b.id, before, after: plain(after) });
+  return true;
+}
+
+// The Fade switch.
+export function setFadeOn(b, p, on) {
+  return setBoxFade(b, p, { shapes: [], ...(b.fade ?? {}), on: !!on });
+}
+
+// The palette's Fade on or off, on the selected box.
+export function toggleFade(boxId = app.selectedId, p = page()) {
+  const b = boxIn(p, boxId);
+  return b ? setFadeOn(b, p, !b.fade?.on) : false;
+}
+
+// Every fade shape gone, the switch as it was.
+export function clearFadeShapes(b, p) {
+  if (!b.fade?.shapes?.length) return false;
+  return setBoxFade(b, p, { ...b.fade, shapes: [] });
 }

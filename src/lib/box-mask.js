@@ -203,7 +203,10 @@ function carried(sh, map, straight) {
       const [cx, cy] = map([sh.cx, sh.cy]);
       return { ...sh, cx, cy };
     }
-    return { kind: 'poly', op: sh.op, pts: ellipsePolygon(sh).map(map) };
+    // Whatever else the shape carries (a mask's op, a fade's strength and
+    // soft edge) goes with it.
+    const { cx: _cx, cy: _cy, rx: _rx, ry: _ry, ...rest } = sh;
+    return { ...rest, kind: 'poly', pts: ellipsePolygon(sh).map(map) };
   }
   if (Array.isArray(sh.pts)) return { ...sh, pts: sh.pts.map(map) };
   return sh;
@@ -226,6 +229,14 @@ export function maskInBoxFrame(box) {
     } else out.push(carried(sh, map, straight));
   }
   return out;
+}
+
+// Any page-pinned shapes (the fade's, box-fade.js) in the box's own frame,
+// one for each and in their order, as the mask's are carried there.
+export function shapesInBoxFrame(box, shapes) {
+  const map = (p) => pageToBox(box, p);
+  const straight = !turned(box);
+  return shapes.map((sh) => carried(sh, map, straight));
 }
 
 // The page px the mask's shapes are drawn on, as they stand (`maskInBoxFrame`

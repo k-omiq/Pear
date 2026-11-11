@@ -15,6 +15,7 @@
 //! blur      a gaussian over the whole
 //! smear     a weighted sum of moved copies (the motion blur)
 //! mask      shapes that keep, or cut, what they cover
+//! fade      shapes that take some of the opacity, their edges soft
 //! ```
 //!
 //! Every length is in the job's own units and the job's transform carries
@@ -60,7 +61,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 19;
+pub const BOX_WIRE_VERSION: u32 = 20;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -244,6 +245,30 @@ impl Clip {
     }
 }
 
+/// One shape of the fade: how much of the box's opacity it takes, and how
+/// soft its edge is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FadePart {
+    /// 0 to 1: the share of the opacity the box loses inside the shape.
+    pub strength: f64,
+    /// The edge's softness: a gaussian's sigma, job units. Zero is a hard
+    /// edge.
+    pub soft: f64,
+    pub shape: ClipShape,
+}
+
+/// The fade: regional opacity, laid after the mask on the same finished
+/// surface (wire v20). Shapes of one softness are rastered at their
+/// strength and combined by the most, so two dabs at 40 % that overlap stay
+/// at 40 %; each softness is blurred once; and the softnesses are combined
+/// by the most again. The surface is multiplied by what is left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fade {
+    /// The box's corner in job space: the shapes are stated from it.
+    pub origin: Pt,
+    pub shapes: Vec<FadePart>,
+}
+
 /// A decoded box job.
 pub struct BoxRequest {
     /// The surface, device pixels. Its corner is device `(0, 0)`.
@@ -264,6 +289,7 @@ pub struct BoxRequest {
     pub blur: f64,
     pub taps: Vec<Tap>,
     pub clip: Option<Clip>,
+    pub fade: Option<Fade>,
     /// The letters' own blend mode (Blending Options). It blends with the
     /// page only where a `backdrop` is given; with none it is Normal.
     pub blend: Blend,
@@ -297,6 +323,7 @@ impl BoxRequest {
             blur: 0.0,
             taps: Vec::new(),
             clip: None,
+            fade: None,
             blend: Blend::Normal,
             fill_opacity: 1.0,
             blending: Blending::default(),
@@ -823,6 +850,17 @@ impl<'a> Reader<'a> {
         })
     }
 
+    fn fade_part(&mut self) -> Result<FadePart, Error> {
+        let kind = self.u32()?;
+        let strength = self.upto(1.0)?;
+        let soft = self.upto(MAX_BLUR)?;
+        Ok(FadePart {
+            strength,
+            soft,
+            shape: self.shape(kind)?,
+        })
+    }
+
     fn shape(&mut self, kind: u32) -> Result<ClipShape, Error> {
         Ok(match kind {
             1 => ClipShape::Ellipse {
@@ -878,6 +916,14 @@ impl<'a> Reader<'a> {
 ///     The letters show inside the union of the keep shapes (everywhere,
 ///     with none) less the union of the hide shapes. Before v19 one mode
 ///     held for every shape and the box's mesh bent them.
+/// u32 fade (v20)              0 none; 1 then:
+///     f64 ox, oy               the box's corner in job space
+///     u32 shape count, then per shape: u32 kind, f64 strength (0 to 1),
+///     f64 soft (a gaussian's sigma, job units), then by kind as a mask
+///     shape's
+///     Laid after the mask: shapes of one soft are combined by the most and
+///     blurred once, the softs combined by the most, and the surface
+///     multiplied by one less that.
 /// u32 blend                    the letters' mode
 /// f64 fill opacity             0 to 1
 /// u32 blending flags (v9)      1 Blend Interior Effects as Group,
@@ -1040,7 +1086,7 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
 
 /// [`decode_box`], and the keys [`paint_box_kept`] keeps its pieces under:
 /// the glyph job's, of its own bytes as they are written, and for a box with
-/// a mask the premask's, of every byte but the mask's.
+/// a mask or a fade the premask's, of every byte but theirs.
 pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
     let mut r = Reader {
         bytes,
@@ -1102,6 +1148,19 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
         }
         _ => return Err(Error::BadSpec),
     };
+    let fade = match r.u32()? {
+        0 => None,
+        1 => {
+            let origin = r.pt()?;
+            let n = r.count(usize::MAX, 24)?;
+            Some(Fade {
+                origin,
+                shapes: budget::collect((0..n).map(|_| r.fade_part()))?,
+            })
+        }
+        _ => return Err(Error::BadSpec),
+    };
+    // The mask and the fade: what a move of a box with either changes.
     let mask_end = r.at;
     let blend = Blend::from_u32(r.u32()?).ok_or(Error::BadSpec)?;
     let fill_opacity = r.upto(1.0)?;
@@ -1144,15 +1203,15 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
         return Err(Error::BadSpec);
     }
     request.ink = ink;
-    let premask = match clip {
-        Some(_) => Some(
+    let premask = match (&clip, &fade) {
+        (None, None) => None,
+        _ => Some(
             Hasher::new("box but its mask")
                 .bytes(&bytes[..mask_at])
                 .bytes(&bytes[mask_end..])
                 .finish()
                 .ok_or(Error::BadSpec)?,
         ),
-        None => None,
     };
     let request = BoxRequest {
         width,
@@ -1168,6 +1227,7 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
         blur,
         taps,
         clip,
+        fade,
         request,
     };
     Ok((request, BoxKeys { job: key, premask }))
@@ -1265,15 +1325,26 @@ fn clip_mask(
     surface: IBox,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<(Vec<u8>, IBox)>, Error> {
-    let transform = &request.transform;
-    let tol = FLATTEN_TOLERANCE / transform.max_scale();
-    let mut parts = budget::Buffer::new();
     let shapes = clip
         .shapes
         .iter()
         .filter(|p| p.mode == mode)
         .map(|p| &p.shape);
-    for polys in clip_parts(clip.origin, shapes, tol)?.iter() {
+    shapes_mask(clip.origin, shapes, &request.transform, surface, rasterizer)
+}
+
+/// The coverage of the union of `shapes`, stated from `origin`, over the
+/// surface: [`clip_mask`]'s raster, for any shapes.
+fn shapes_mask<'a>(
+    origin: Pt,
+    shapes: impl Iterator<Item = &'a ClipShape>,
+    transform: &Affine,
+    surface: IBox,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<(Vec<u8>, IBox)>, Error> {
+    let tol = FLATTEN_TOLERANCE / transform.max_scale();
+    let mut parts = budget::Buffer::new();
+    for polys in clip_parts(origin, shapes, tol)?.iter() {
         let placed = polys.map(transform);
         if !placed.is_empty() {
             budget::push(&mut parts, Part::plain(placed))?;
@@ -1292,6 +1363,183 @@ fn clip_mask(
     let mut layers: budget::Buffer<Planned<'_>> = budget::Buffer::new();
     budget::push(&mut layers, planned)?;
     Ok(Some((finish(layers, bx, rasterizer)?, bx)))
+}
+
+/// One softness of the fade, rastered and blurred: its alpha at `1 / k`
+/// of the surface's resolution, and the surface pixels it reaches.
+struct FadeGroup {
+    low: Surface,
+    k: i32,
+    reach: IBox,
+}
+
+/// The fade's softness groups over the surface (see [`Fade`]). `scale`
+/// carries a softness from job units to pixels, as it carries the whole-box
+/// blur.
+///
+/// A soft group is rastered and blurred at a fraction of the surface's
+/// resolution, chosen so its blur is still two pixels or more there, and is
+/// read back by bilinear sampling ([`lay_fade`]): the blur takes out every
+/// detail the smaller raster loses, and a soft edge across a whole box costs
+/// a few thousand pixels instead of the surface twice over.
+fn fade_groups(
+    fade: &Fade,
+    request: &Request,
+    surface: IBox,
+    scale: f64,
+    rasterizer: &dyn Rasterizer,
+) -> Result<budget::Buffer<FadeGroup>, Error> {
+    let mut out = budget::Buffer::new();
+    // The softnesses, each once, in the order they first come.
+    let mut softs: Vec<u64> = Vec::new();
+    for p in &fade.shapes {
+        if positive(p.strength) && !softs.contains(&p.soft.to_bits()) {
+            softs.push(p.soft.to_bits());
+        }
+    }
+    for soft in softs {
+        let sigma = f64::from_bits(soft) * scale;
+        // Pixels of the surface to one of the group's raster.
+        let k = (sigma / 2.0).floor().clamp(1.0, 16.0) as i32;
+        let kf = f64::from(k);
+        let low_box = IBox {
+            x0: 0,
+            y0: 0,
+            x1: (surface.x1 + k - 1) / k,
+            y1: (surface.y1 + k - 1) / k,
+        };
+        let transform = Affine::scale(1.0 / kf, 1.0 / kf).after(&request.transform);
+        let mut low = Surface::new(low_box.width(), low_box.height())?;
+        let lw = low_box.width();
+        let mut any = false;
+        for p in fade
+            .shapes
+            .iter()
+            .filter(|p| p.soft.to_bits() == soft && positive(p.strength))
+        {
+            let Some((cov, bx)) = shapes_mask(
+                fade.origin,
+                core::iter::once(&p.shape),
+                &transform,
+                low_box,
+                rasterizer,
+            )?
+            else {
+                continue;
+            };
+            any = true;
+            // Laid by the most: the group is white, premultiplied, its alpha
+            // the strongest shape over each pixel.
+            let bw = bx.width();
+            for y in bx.y0..bx.y1 {
+                let from = (y - bx.y0) as usize * bw * 4;
+                let to = (y as usize * lw + bx.x0 as usize) * 4;
+                for i in 0..bw {
+                    let a = (f64::from(cov[from + i * 4 + 3]) * p.strength).round() as u8;
+                    let q = &mut low.data[to + i * 4..to + i * 4 + 4];
+                    if a > q[3] {
+                        q.fill(a);
+                    }
+                }
+            }
+            budget::check()?;
+        }
+        if !any {
+            continue;
+        }
+        blur::gaussian(&mut low, sigma / kf)?;
+        let Some(ink) = low.ink() else {
+            continue;
+        };
+        // The surface pixels the group's ink reaches, a pixel of the small
+        // raster wider each side for the sampling.
+        let reach = IBox {
+            x0: ((ink.x0 - 1) * k).max(0),
+            y0: ((ink.y0 - 1) * k).max(0),
+            x1: ((ink.x1 + 1) * k).min(surface.x1),
+            y1: ((ink.y1 + 1) * k).min(surface.y1),
+        };
+        if !reach.is_empty() {
+            budget::push(&mut out, FadeGroup { low, k, reach })?;
+        }
+    }
+    Ok(out)
+}
+
+/// The surface multiplied by one less the fade: at each pixel with ink, the
+/// most any group takes there, each read from its small raster by bilinear
+/// sampling in eighths of 256.
+fn lay_fade(s: &mut Surface, groups: &[FadeGroup]) -> Result<(), Error> {
+    let Some(cover) = groups.iter().map(|g| g.reach).reduce(|a, b| a.union(&b)) else {
+        return Ok(());
+    };
+    let w = s.width;
+    // Per group, per surface column of its reach: the small raster's column
+    // to the left of the sample and the weight of the one right of it.
+    let mut cols: Vec<Vec<(u32, u32)>> = Vec::with_capacity(groups.len());
+    for g in groups {
+        let lw = g.low.width as i32;
+        let kf = f64::from(g.k);
+        let mut c = Vec::with_capacity(g.reach.width());
+        for x in g.reach.x0..g.reach.x1 {
+            let sx = (f64::from(x) + 0.5) / kf - 0.5;
+            let x0 = sx.floor();
+            let fx = ((sx - x0) * 256.0).round() as u32;
+            c.push((x0.clamp(0.0, f64::from(lw - 1)) as u32, if (x0 as i32) < 0 || x0 as i32 >= lw - 1 { 0 } else { fx }));
+        }
+        cols.push(c);
+        budget::check()?;
+    }
+    // Per group, for the row in hand: its two rows of the small raster, the
+    // lower one's weight, and whether the group reaches the row at all.
+    let mut rows = vec![(0usize, 0usize, 0u32, false); groups.len()];
+    for y in cover.y0..cover.y1 {
+        let row = &mut s.data[y as usize * w * 4..(y as usize + 1) * w * 4];
+        for (i, g) in groups.iter().enumerate() {
+            rows[i].3 = false;
+            if y < g.reach.y0 || y >= g.reach.y1 {
+                continue;
+            }
+            let lh = g.low.height as i32;
+            let sy = (f64::from(y) + 0.5) / f64::from(g.k) - 0.5;
+            let y0 = sy.floor();
+            let fy = if (y0 as i32) < 0 || y0 as i32 >= lh - 1 { 0 } else { ((sy - y0) * 256.0).round() as u32 };
+            let r0 = y0.clamp(0.0, f64::from(lh - 1)) as usize;
+            let r1 = (r0 + 1).min(lh as usize - 1);
+            rows[i] = (r0, r1, fy, true);
+        }
+        for x in cover.x0..cover.x1 {
+            let p = (x as usize) * 4;
+            if row[p + 3] == 0 {
+                continue;
+            }
+            let mut m = 0u32;
+            for (i, g) in groups.iter().enumerate() {
+                let (r0, r1, fy, on) = rows[i];
+                if !on || x < g.reach.x0 || x >= g.reach.x1 {
+                    continue;
+                }
+                let (c0, fx) = cols[i][(x - g.reach.x0) as usize];
+                let lw = g.low.width;
+                let c1 = (c0 as usize + 1).min(lw - 1);
+                let d = &g.low.data;
+                let a = |r: usize, c: usize| u32::from(d[(r * lw + c) * 4 + 3]);
+                let top = a(r0, c0 as usize) * (256 - fx) + a(r0, c1) * fx;
+                let bottom = a(r1, c0 as usize) * (256 - fx) + a(r1, c1) * fx;
+                let v = (top * (256 - fy) + bottom * fy + 32768) >> 16;
+                m = m.max(v);
+            }
+            if m == 0 {
+                continue;
+            }
+            let k = 255 - m.min(255);
+            for c in &mut row[p..p + 4] {
+                *c = ((u32::from(*c) * k + 127) / 255) as u8;
+            }
+        }
+        budget::check()?;
+    }
+    Ok(())
 }
 
 /// A raster cut to `surface`, or `None` when nothing of it is inside.
@@ -1349,8 +1597,8 @@ pub struct BoxKeys {
     /// The glyph job in the request: everything of `request.request` but
     /// its ink.
     pub job: kept::Key,
-    /// Everything of the box but its mask, for a box with one: the surface
-    /// before the mask is kept under it. None with no mask.
+    /// Everything of the box but its mask and its fade, for a box with
+    /// either: the surface before them is kept under it. None with neither.
     pub premask: Option<kept::Key>,
 }
 
@@ -2323,6 +2571,7 @@ fn paint(
         && !positive(blur_sigma)
         && taps.is_empty()
         && request.clip.is_none()
+        && request.fade.is_none()
         && request.fill_opacity >= 1.0
         && !blends
         && !restricts
@@ -2755,6 +3004,12 @@ fn paint(
         if let Some((mask, bx)) = hide {
             blur::mask(&mut s, &mask, bx, true);
         }
+    }
+    // Then the fade, from the same surface: shadows and glows fade with the
+    // letters, as they are laid on them by now.
+    if let Some(fade) = &request.fade {
+        let groups = fade_groups(fade, &request.request, surface, scale, rasterizer)?;
+        lay_fade(&mut s, &groups)?;
     }
 
     // A blur and a smear carry ink past where it was laid; a mask only

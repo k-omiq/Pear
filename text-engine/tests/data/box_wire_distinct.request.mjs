@@ -97,6 +97,14 @@ export const request = {
       { kind: 'stroke', op: 'hide', size: 3.5, pts: [[7.5, 8.5], [9.5, 12.5]] },
     ],
   },
+  fade: {
+    x: 11.5,
+    y: 19.25,
+    shapes: [
+      { kind: 'ellipse', strength: 0.4375, soft: 2.75, cx: 23.5, cy: 24.5, rx: 7.5, ry: 8.5 },
+      { kind: 'stroke', strength: 0.8125, soft: 0, size: 4.5, pts: [[5.5, 6.5], [15.5, 16.5]] },
+    ],
+  },
   blend: 'color-burn',
   fillOpacity: 0.6875,
   blendInterior: true,

@@ -183,6 +183,7 @@ export function createRustGlyphPainter(rust, options = {}) {
       blur: spec.blur,
       taps: spec.taps,
       clip: spec.clip,
+      fade: spec.fade ?? null,
       blend: spec.blend,
       fillOpacity: spec.fillOpacity,
       blendInterior: spec.blendInterior === true,

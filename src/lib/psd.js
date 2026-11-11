@@ -27,6 +27,7 @@ import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RAN
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
 import { strokeBands, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
 import { maskActive } from './box-mask.js';
+import { fadeActive } from './box-fade.js';
 import { warpActive } from './warp.js';
 import { bakeRamp } from './gradient-ramp.js';
 import { withPageImages } from './page-images.js';
@@ -969,7 +970,8 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const onPage = own ? new Map(placedGradients(s, true).map(({ g }) => [g, turnedGradientPlacement(g, 0, own)])) : null;
   const turnPixels = (!!placed && [...placed.values()].some((q) => !q.fits)) || (!!onPage && [...onPage.values()].some((q) => !q.fits));
 
-  if (isRasterOnly(s) || maskActive(box) || turnPixels) {
+  // A fade is regional opacity, which a type layer cannot hold: raster.
+  if (isRasterOnly(s) || maskActive(box) || fadeActive(box) || turnPixels) {
     // If the box paints no pixels (e.g. empty or whitespace-only text),
     // renderBoxLayer returns null. A layer with no imageData and no text object
     // causes ag-psd to crash during channel serialization. Safest guard:

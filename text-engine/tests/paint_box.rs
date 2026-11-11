@@ -80,6 +80,7 @@ fn plain(font: FontId) -> BoxRequest {
         blur: 0.0,
         taps: Vec::new(),
         clip: None,
+        fade: None,
         blend: Blend::Normal,
         fill_opacity: 1.0,
         blending: Default::default(),
@@ -809,6 +810,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     u(&mut b, 1);
     f(&mut b, 7.0);
     f(&mut b, 8.0);
+    u(&mut b, 0); // no fade (v20)
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
     let blending_at = b.len();
@@ -1143,7 +1145,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 19));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 20));
     assert_eq!(r.grain, (-3, 7));
 }
 
@@ -1376,6 +1378,7 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     f(&mut b, 0.0);
     u(&mut b, 0);
     u(&mut b, 0);
+    u(&mut b, 0); // no fade (v20)
     no_blending(&mut b);
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
@@ -1442,6 +1445,7 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
         f(&mut b, -900.0 - f64::from(i % 7));
         f(&mut b, -900.0);
     }
+    u(&mut b, 0); // no fade (v20)
     no_blending(&mut b);
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
@@ -3345,6 +3349,57 @@ fn a_moved_mask_reads_the_premask_back_and_paints_the_same() {
     assert_eq!(second, paint_box(&mut e, &mut fresh).unwrap());
     // A box with no mask has no premask key.
     let (_, plain) = decode_box_kept(&masked_off(&bytes, mode_at)).unwrap();
+    assert!(plain.premask.is_none());
+}
+
+#[test]
+fn a_moved_fade_reads_the_premask_back_and_paints_the_same() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    let (bytes, at) = wire(font);
+    let mode_at = at[3];
+    // The mask taken out (its u32 0, then the fade's u32 0), and a fade put
+    // in: its corner and one rectangle at 60 % with a soft edge, `dx` along.
+    let off = masked_off(&bytes, mode_at);
+    let with = |dx: f64| {
+        let mut b = off[..mode_at + 4].to_vec();
+        u(&mut b, 1);
+        f(&mut b, 10.0);
+        f(&mut b, 20.0);
+        u(&mut b, 1);
+        u(&mut b, 2);
+        f(&mut b, 0.6);
+        f(&mut b, 2.0);
+        u(&mut b, 4);
+        for (x, y) in [(0.0, 0.0), (40.0, 0.0), (40.0, 60.0), (0.0, 60.0)] {
+            f(&mut b, x + dx);
+            f(&mut b, y);
+        }
+        b.extend_from_slice(&off[mode_at + 8..]);
+        b
+    };
+    let first_bytes = with(0.0);
+    let (mut cold, keys) = decode_box_kept(&first_bytes).unwrap();
+    assert!(keys.premask.is_some());
+    let first = paint_box_kept(&mut e, &mut cold, keys).unwrap();
+    let mut fresh_first = decode_box(&first_bytes).unwrap();
+    assert_eq!(first, paint_box(&mut e, &mut fresh_first).unwrap());
+    // The fade moved 7 px right: only its bytes change.
+    let moved = with(7.0);
+    let (mut warm, moved_keys) = decode_box_kept(&moved).unwrap();
+    assert_eq!(moved_keys.premask, keys.premask);
+    let held = mt_text::paint::kept::bytes();
+    let second = paint_box_kept(&mut e, &mut warm, moved_keys).unwrap();
+    assert_eq!(mt_text::paint::kept::bytes(), held);
+    let mut fresh = decode_box(&moved).unwrap();
+    assert_eq!(second, paint_box(&mut e, &mut fresh).unwrap());
+    // A strength over 1 is refused.
+    let mut bad = with(0.0);
+    bad[mode_at + 4 + 4 + 16 + 4 + 4..mode_at + 4 + 4 + 16 + 4 + 12].copy_from_slice(&1.5f64.to_le_bytes());
+    assert!(decode_box(&bad).is_err());
+    // With neither a mask nor a fade there is no premask key.
+    let (_, plain) = decode_box_kept(&off).unwrap();
     assert!(plain.premask.is_none());
 }
 

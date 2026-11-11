@@ -77,6 +77,7 @@ export const EFFECTS_TABS = [
   { id: 'edges', label: 'Edges', group: 'surface' },
   { id: 'blur', label: 'Blur', group: 'surface' },
   { id: 'mask', label: 'Mask', group: 'paint' },
+  { id: 'fade', label: 'Fade', group: 'paint' },
 ];
 
 export const EFFECTS_SUBTABS = EFFECTS_TABS.map((t) => t.id);

@@ -38,6 +38,7 @@ import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-pai
 import { settleBoxTips } from './brush-tips.js';
 import { backdropPixels, boxToPage, BACKDROP_MAX_PX } from './backdrop.js';
 import { maskActive, maskInBoxFrame } from './box-mask.js';
+import { fadeActive, fadeInBoxFrame } from './box-fade.js';
 import { styleReach, wobbleReach } from './paint-reach.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
@@ -77,7 +78,7 @@ export async function exportPreflight(pages = app.pages) {
   for (const p of pages ?? []) {
     for (const b of p?.boxes ?? []) {
       // Empty raster-only boxes produce no layer in textLayerFor either.
-      if ((isRasterOnly(b.style) || maskActive(b)) && (String(boxText(b, p) ?? '').trim() || inkActive(b.style?.ink))) raster++;
+      if ((isRasterOnly(b.style) || maskActive(b) || fadeActive(b)) && (String(boxText(b, p) ?? '').trim() || inkActive(b.style?.ink))) raster++;
     }
   }
   return { items, boxes: boxes.size, lines, text: text.size, raster };
@@ -1097,6 +1098,10 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = nul
     // Where a texture warp bends the picture afterwards, `warpTexture` cuts
     // it there instead (`maskAfterWarp`).
     clip: maskActive(box) && !maskAfterWarp(box, L) ? { x: L.ox, y: L.oy, shapes: maskInBoxFrame(box) } : null,
+    // The fade, pinned to the page as the mask is, laid by the engine after
+    // it. It has no canvas twin: a painter that does not paint whole boxes
+    // never sees it.
+    fade: fadeActive(box) ? { x: L.ox, y: L.oy, shapes: fadeInBoxFrame(box) } : null,
     // The brush ink, painted with the letters (`boxInJob` lets it in only
     // where the painter does that).
     ink: inkSpec(s, L, tips),
@@ -1614,6 +1619,7 @@ function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null) {
     (s.blur ?? 0) > 0 ||
     (s.motionBlur?.on && ((s.motionBlur.x ?? 0) !== 0 || (s.motionBlur.y ?? 0) !== 0)) ||
     maskActive(box) ||
+    fadeActive(box) ||
     inkActive(s.ink) ||
     // No fill is a cut out of the bands, and a cut made straight on the page
     // would take the page with it.

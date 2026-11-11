@@ -98,7 +98,7 @@
   import { wavePath } from './bezier-path.js';
   import { drawKindFor, setDrawTool, clearDrawTool, drawSettings } from './box-draw-tool.svelte.js';
   import { bubbleLink, BUBBLE_INSET_MAX, MASK_BRUSH_MIN, MASK_BRUSH_MAX } from './box-mask.js';
-  import { setMaskOn, clearMaskShapes, clipToBubble, slideBubbleInset } from './box-mask-actions.js';
+  import { setMaskOn, clearMaskShapes, clipToBubble, slideBubbleInset, setFadeOn, clearFadeShapes } from './box-mask-actions.js';
   import { regridWarp } from './warp-gizmo.js';
   import { liquifyTool, setLiquifyMode, LIQUIFY_RADIUS_MIN, LIQUIFY_RADIUS_MAX } from './liquify-tool.svelte.js';
   import { LIQUIFY_MODES } from './liquify.js';
@@ -2743,6 +2743,60 @@
                 class="rbtn"
                 disabled={!mk?.shapes.length}
                 onclick={() => clearMaskShapes(box, page())}
+              >Clear shapes</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if effectsTab === 'fade'}
+          <!-- Regional opacity: shapes on the page where the text loses some
+               of its opacity, shadows and glows with it. Only the Rust
+               engine paints a fade, so under the browser engine the controls
+               are dimmed and the hint says why; the switch can still turn a
+               fade off. -->
+          {@const fadeKind = drawKindFor('fade')}
+          {@const fd = box.fade}
+          {@const fadeOn = !!fd?.on}
+          {@const off = !fadeOn || !rustBoxes}
+          <div class="switch-row" title="Make parts of the text see-through">
+            <button
+              type="button"
+              class="switch"
+              class:on={fadeOn}
+              role="switch"
+              aria-checked={fadeOn}
+              aria-label="Fade"
+              disabled={!rustBoxes && !fadeOn}
+              onclick={() => {
+                setFadeOn(box, page(), !fadeOn);
+                if (!box.fade?.on && fadeKind) clearDrawTool();
+              }}
+            ><span class="knob"></span></button>
+            <span class="lbl2">Fade</span>
+          </div>
+          <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+            <div class="seg" role="group" aria-label="Fade tool">
+              {#each MASK_KINDS as [k, label] (k)}
+                <button
+                  type="button"
+                  class:on={fadeKind === k}
+                  aria-pressed={fadeKind === k}
+                  disabled={off}
+                  onclick={() => setDrawTool('fade', k)}
+                >{label}</button>
+              {/each}
+            </div>
+            {@render sliderRow('Brush size', 'Brush size, page px', drawSettings.fade.size, (v) => (drawSettings.fade.size = v), { min: MASK_BRUSH_MIN, max: MASK_BRUSH_MAX, unit: 'px', aria: 'Fade brush size', disabled: off })}
+            {@render sliderRow('Strength', 'How much of its opacity the text loses under the next shape', drawSettings.fade.strength, (v) => (drawSettings.fade.strength = v), { min: 1, max: 100, unit: '%', aria: 'Fade strength', disabled: off })}
+            {@render sliderRow('Soft edge', 'How soft the edge of the next shape is, percent of its size', drawSettings.fade.soft, (v) => (drawSettings.fade.soft = v), { min: 0, max: 100, unit: '%', aria: 'Fade soft edge', disabled: off })}
+            <div class="insp-none">{rustBoxes ? (MASK_HINT[fadeKind] ?? 'Pick a tool, then draw anywhere on the page.') : 'Only the Rust engine paints a fade.'}</div>
+            <div class="mask-row">
+              <span class="mask-count">{fd?.shapes.length ?? 0} {fd?.shapes.length === 1 ? 'shape' : 'shapes'}</span>
+              <button
+                type="button"
+                class="rbtn"
+                disabled={!fd?.shapes.length}
+                onclick={() => clearFadeShapes(box, page())}
               >Clear shapes</button>
             </div>
           </div>

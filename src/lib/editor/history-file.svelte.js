@@ -332,7 +332,7 @@ export function rescaleEntry(entry, sx, sy) {
   } else if (e.t === 'style') {
     e.before = rescaleStyle(e.before, sx, sy);
     e.after = rescaleStyle(e.after, sx, sy);
-  } else if (e.t === 'mask') {
+  } else if (e.t === 'mask' || e.t === 'fade') {
     e.before = scaleMask(e.before, sx, sy);
     e.after = scaleMask(e.after, sx, sy);
   }

@@ -486,7 +486,7 @@ function writeNote(note, matches) {
   return ids;
 }
 
-const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text, b.mask ?? null]);
+const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text, b.mask ?? null, b.fade ?? null]);
 
 // A box laid out by outline fit (a margin set) is the solver's: Auto height on
 // and fit to box off. A series can have boxes born Fixed (Settings'

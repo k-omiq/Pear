@@ -6,7 +6,7 @@ import { app, loadProjectPages, page, selectBox, setZoom } from './store.svelte.
 import { initHistory, resetHistory, undo } from './editor/history.svelte.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { drawTool, setDrawTool, clearDrawTool } from './box-draw-tool.svelte.js';
+import { drawTool, drawSettings, setDrawTool, clearDrawTool } from './box-draw-tool.svelte.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
 
 // ===========================================================================
@@ -189,5 +189,52 @@ describe('the draw tool on a masked box', () => {
     await tick();
     expect(drawTool.target).toBe(null);
     expect(drawTool.kind).toBe(null);
+  });
+});
+
+describe('the draw tool on a faded box', () => {
+  async function mountFade(kind, shapes = []) {
+    const { mask: _m, ...box } = BOX([]);
+    loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [{ ...box, fade: { on: true, shapes } }] }]);
+    const pg = page();
+    const view = render(TextBox, { box: pg.boxes[0], pageFrameEl: document.createElement('div'), pg });
+    selectBox('b');
+    await tick();
+    setDrawTool('fade', kind);
+    await tick();
+    return { b: pg.boxes[0], capture: () => view.container.querySelector('.mask-gizmo .capture'), q: (s) => view.container.querySelector(s) };
+  }
+
+  it('Rectangle adds a shape with the panel\'s strength and soft edge, one undo step, and no mask', async () => {
+    drawSettings.fade.strength = 70;
+    drawSettings.fade.soft = 25;
+    const { b, capture, q } = await mountFade('rect');
+    expect(q('.draw-page.fade')).not.toBeNull();
+    await drag(capture(), [110, 210], [190, 260]);
+    expect(b.fade.shapes).toEqual([{ kind: 'poly', strength: 70, soft: 25, pts: [[110, 210], [190, 210], [190, 260], [110, 260]] }]);
+    expect(b.mask ?? null).toBe(null);
+    undo();
+    await tick();
+    expect(page().boxes[0].fade.shapes).toEqual([]);
+  });
+
+  it('Move drags a fade shape and Delete removes it', async () => {
+    const shape = { kind: 'ellipse', strength: 50, soft: 0, cx: 150, cy: 250, rx: 20, ry: 20 };
+    const { b, capture } = await mountFade('move', [shape]);
+    await drag(capture(), [150, 250], [170, 255]);
+    expect(b.fade.shapes).toEqual([{ ...shape, cx: 170, cy: 255 }]);
+    expect(key('Delete').defaultPrevented).toBe(true);
+    await tick();
+    expect(b.fade.shapes).toEqual([]);
+  });
+
+  it('Brush draws at the fade\'s own brush size', async () => {
+    drawSettings.fade.size = 33;
+    const { b, capture, q } = await mountFade('brush');
+    capture().dispatchEvent(ev('pointermove', 150, 250));
+    await tick();
+    expect(q('.liq-ring').getAttribute('style')).toContain('width: 33px');
+    await drag(capture(), [150, 250], [180, 260]);
+    expect(b.fade.shapes[0]).toMatchObject({ kind: 'stroke', size: 33 });
   });
 });
