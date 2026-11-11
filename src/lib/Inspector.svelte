@@ -2816,8 +2816,9 @@
                seeded pattern laid over the whole box, a row with a switch
                that opens its settings, and any of them together. Only the
                Rust engine paints them; the switches can still turn one off. -->
+          <!-- A style restored from before them has none: no rows. -->
           {@const sp = s.special}
-          {#each SPECIAL_ROWS as row (row.kind)}
+          {#each sp ? SPECIAL_ROWS : [] as row (row.kind)}
             {@const fx = sp[row.kind]}
             {@const off = !fx.on || !specialPaints}
             <div class="switch-row" title={row.title}>

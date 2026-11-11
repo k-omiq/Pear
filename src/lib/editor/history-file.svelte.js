@@ -144,7 +144,15 @@ const isCurrentStyle = (s) =>
   s.outlineWidth === undefined &&
   s.shadow === undefined &&
   // The mask of before 2026-11-10, in the style: a box moves it to the page.
-  !('clip' in s);
+  !('clip' in s) &&
+  // The letters' Wobble, the box's colour paint and the special effects
+  // came after; the panels read them as objects.
+  !!s.wobble &&
+  typeof s.wobble === 'object' &&
+  !!s.paint &&
+  typeof s.paint === 'object' &&
+  !!s.special &&
+  typeof s.special === 'object';
 
 // Whether this value is a style that has to be moved forward. A non-object is
 // not a style and is left alone - `text` entries hold strings in `before`/
