@@ -71,7 +71,7 @@ pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
 pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, shape_spans, Placed, ShapedRun};
-pub use special::{Crack, Lightning, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
+pub use special::{BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
@@ -1182,16 +1182,6 @@ fn paint_letters(
         mesh,
     };
 
-    let fx = &job.effects;
-    // The cuts alone: a box's own strokes cut by them as a glyph band is
-    // (`Cuts::Alone`).
-    if fx.cuts == Cuts::Alone {
-        let mut planned = budget::Buffer::new();
-        if let Some(p) = special.as_ref().map(|sh| cut_plan(sh, bends, transform, tiles, tol)).transpose()?.flatten() {
-            budget::push(&mut planned, p)?;
-        }
-        return finish_planned(planned, rasterizer);
-    }
     let layers = Layers {
         job,
         glyphs: &glyphs,
@@ -1207,10 +1197,38 @@ fn paint_letters(
     let letters: budget::Buffer<usize> = (0..job.runs.len())
         .filter(|&i| !job.runs[i].ghost)
         .collect();
+    let shapes = special.as_deref();
+    let planned = plan_letters(&layers, &ghosts, &letters, shapes)?;
+    match shapes.filter(|sh| !sh.pieces.is_empty()) {
+        Some(sh) => break_off(planned, &layers, &ghosts, &letters, sh, rasterizer),
+        None => finish_planned(planned, rasterizer),
+    }
+}
 
-    let mut planned: budget::Buffer<Planned<'_>> = budget::Buffer::new();
+/// Every layer of the letters as `l` places them: the afterimages' fills,
+/// the letters (or their silhouette), a no-fill's cut and the special
+/// effects' cuts (`shapes`), as `Effects::cuts` asks; with `Cuts::Alone`
+/// the cuts alone, opaque.
+fn plan_letters<'a>(
+    l: &Layers<'a>,
+    ghosts: &[usize],
+    letters: &[usize],
+    shapes: Option<&special::Shapes>,
+) -> Result<budget::Buffer<Planned<'a>>, Error> {
+    let job = l.job;
+    let fx = &job.effects;
+    // The cuts alone: a box's own strokes cut by them as a glyph band is
+    // (`Cuts::Alone`).
+    if fx.cuts == Cuts::Alone {
+        let mut planned = budget::Buffer::new();
+        if let Some(p) = shapes.map(|sh| poly_plan(&sh.cuts, l.bends, l.transform, l.tiles, l.tol)).transpose()?.flatten() {
+            budget::push(&mut planned, p)?;
+        }
+        return Ok(planned);
+    }
+    let mut planned: budget::Buffer<Planned<'a>> = budget::Buffer::new();
     // Afterimages under everything, their fills alone.
-    layers.fills(&mut planned, &ghosts)?;
+    l.fills(&mut planned, &ghosts)?;
     if let Some(color) = job.silhouette {
         // The letters and their widest band as one solid shape: grown by
         // half that band's pen (and a negative's grow, and the silhouette's
@@ -1225,17 +1243,17 @@ fn paint_letters(
         if !job.no_fill || positive(pen) {
             let reach = Reach {
                 pen,
-                weight: if job.no_fill { 0.0 } else { weight },
+                weight: if job.no_fill { 0.0 } else { l.weight },
             };
-            let sel = layers.glyphs_of(&letters);
-            layers.solid(&mut planned, sel, reach, false, fx.join, color, 1.0)?;
+            let sel = l.glyphs_of(&letters);
+            l.solid(&mut planned, sel, reach, false, fx.join, color, 1.0)?;
         }
     } else if fx.each {
-        for &r in &letters {
-            layers.letters(&mut planned, &[r])?;
+        for &r in letters {
+            l.letters(&mut planned, &[r])?;
         }
     } else {
-        layers.letters(&mut planned, &letters)?;
+        l.letters(&mut planned, &letters)?;
     }
 
     // No fill: the glyphs, as heavy as they would have been filled, are taken
@@ -1245,17 +1263,17 @@ fn paint_letters(
     // so it adds nothing to the surface; with nothing under it, it is not made.
     if job.no_fill && !planned.is_empty() {
         const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
-        let sel = layers.glyphs_of(&letters);
-        let parts = glyphs.parts(
+        let sel = l.glyphs_of(&letters);
+        let parts = l.glyphs.parts(
             sel,
-            Reach::flat(weight),
+            Reach::flat(l.weight),
             false,
             Join::Round,
-            bends,
-            transform,
-            tol,
+            l.bends,
+            l.transform,
+            l.tol,
         )?;
-        let shader = Shader::new(&OPAQUE, transform, tiles);
+        let shader = Shader::new(&OPAQUE, l.transform, l.tiles);
         if let Some(mut p) = shader.and_then(|s| plan(parts, s, 1.0)) {
             p.erase = true;
             budget::push(&mut planned, p)?;
@@ -1264,12 +1282,224 @@ fn paint_letters(
     // A special effect's cuts, out of everything: bent with the letters, so
     // a crack stays on the letter it crosses under a mesh.
     if fx.cuts == Cuts::Made && !planned.is_empty() {
-        if let Some(mut p) = special.as_ref().map(|sh| cut_plan(sh, bends, transform, tiles, tol)).transpose()?.flatten() {
+        if let Some(mut p) = shapes.map(|sh| poly_plan(&sh.cuts, l.bends, l.transform, l.tiles, l.tol)).transpose()?.flatten() {
             p.erase = true;
             budget::push(&mut planned, p)?;
         }
     }
-    finish_planned(planned, rasterizer)
+    Ok(planned)
+}
+
+/// The letters with a crack's pieces broken off (`special::Piece`):
+/// `planned` (the letters where they stand) less every piece's outline, a
+/// clean hole, and over them each piece that is not gone: the letters laid
+/// again with the piece's rigid move, fill, bands, afterimages and cuts all
+/// moved alike, kept inside its outline (less those laid before it), both
+/// rastered where the piece lies, so its edges are as sharp as the
+/// letters'. A box's own strokes read the letters whole with the holes
+/// among the cuts (`Cuts`), so they are cut through at the holes too.
+fn break_off<'a>(
+    mut planned: budget::Buffer<Planned<'a>>,
+    l: &Layers<'a>,
+    ghosts: &[usize],
+    letters: &[usize],
+    shapes: &special::Shapes,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
+    let fx = &l.job.effects;
+    let outlines = |pieces: &[special::Piece]| {
+        let mut p = Polys::default();
+        for piece in pieces {
+            piece.outline.iter().for_each(|&v| p.push(v));
+            p.close();
+        }
+        p
+    };
+    let holes = outlines(&shapes.pieces);
+    if fx.cuts == Cuts::Alone || !planned.is_empty() {
+        if let Some(mut p) = poly_plan(&holes, l.bends, l.transform, l.tiles, l.tol)? {
+            match fx.cuts {
+                Cuts::Made => p.erase = true,
+                Cuts::Alone => {}
+                Cuts::Skipped => p.alpha = 0.0,
+            }
+            if p.alpha > 0.0 {
+                budget::push(&mut planned, p)?;
+            }
+        }
+    }
+    let mut out = finish_planned(planned, rasterizer)?;
+    // How far past a glyph's outline its layers reach (its widest band, a
+    // grow, the weight): a glyph farther than that from a piece has nothing
+    // inside it, so a piece lays only the glyphs near it. Bent letters move
+    // off their outlines, so they lay them all.
+    let reach = l.job.bands.iter().map(|b| b.line / 2.0).fold(0.0, f64::max)
+        + fx.grow.max(0.0)
+        + fx.negative.map_or(0.0, |n| n.grow.max(0.0))
+        + l.weight
+        + 1.0;
+    let near = |outline: &[Pt]| -> Option<Vec<(core::ops::Range<usize>, Affine)>> {
+        if !l.bends.is_empty() {
+            return None;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for v in outline {
+            (x0, y0, x1, y1) = (x0.min(v.x), y0.min(v.y), x1.max(v.x), y1.max(v.y));
+        }
+        let hit = |g: usize| {
+            l.glyphs.bounds_of(g..g + 1).is_some_and(|b| {
+                b.0 - reach <= x1 && b.2 + reach >= x0 && b.1 - reach <= y1 && b.3 + reach >= y0
+            })
+        };
+        let all = 0..l.glyphs.len();
+        // None near: every run empty.
+        let lo = all.clone().find(|&g| hit(g)).unwrap_or(0);
+        let hi = all.rev().find(|&g| hit(g)).map_or(0, |g| g + 1);
+        Some(
+            l.runs
+                .iter()
+                .map(|(r, f)| {
+                    let (a, b) = (r.start.max(lo), r.end.min(hi));
+                    (a..b.max(a), *f)
+                })
+                .collect(),
+        )
+    };
+    for (i, piece) in shapes.pieces.iter().enumerate() {
+        let Some(m) = piece.moved else {
+            continue;
+        };
+        let moved = l.transform.after(&m);
+        let own = outlines(core::slice::from_ref(piece));
+        let Some(mask) = poly_plan(&own, l.bends, &moved, l.tiles, l.tol)? else {
+            continue;
+        };
+        let bx = mask.bx;
+        let mut cover = budget::Buffer::new();
+        budget::push(&mut cover, mask)?;
+        // The pieces before it that overlap it (the same move takes both).
+        let bound = |o: &[Pt]| {
+            o.iter().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, v| {
+                (b.0.min(v.x), b.1.min(v.y), b.2.max(v.x), b.3.max(v.y))
+            })
+        };
+        let b = bound(&piece.outline);
+        let mut earlier = Polys::default();
+        for e in &shapes.pieces[..i] {
+            let c = bound(&e.outline);
+            if c.0 <= b.2 && c.2 >= b.0 && c.1 <= b.3 && c.3 >= b.1 {
+                e.outline.iter().for_each(|&v| earlier.push(v));
+                earlier.close();
+            }
+        }
+        if let Some(mut e) = poly_plan(&earlier, l.bends, &moved, l.tiles, l.tol)? {
+            e.erase = true;
+            budget::push(&mut cover, e)?;
+        }
+        let cover = finish(cover, bx, rasterizer)?;
+        let runs = near(&piece.outline);
+        let li = Layers {
+            job: l.job,
+            glyphs: l.glyphs,
+            runs: runs.as_deref().unwrap_or(l.runs),
+            bends: l.bends,
+            transform: &moved,
+            tiles: l.tiles,
+            tol: l.tol,
+            weight: l.weight,
+        };
+        // Its cuts: only the crack lines that cross its box.
+        let mut cuts = Polys::default();
+        for c in shapes.cuts.contours() {
+            let cb = bound(c);
+            if cb.0 <= b.2 && cb.2 >= b.0 && cb.1 <= b.3 && cb.3 >= b.1 {
+                c.iter().for_each(|&v| cuts.push(v));
+                cuts.close();
+            }
+        }
+        let own_cuts = special::Shapes { cuts, ..special::Shapes::default() };
+        let copy = plan_letters(&li, ghosts, letters, Some(&own_cuts))?;
+        if copy.is_empty() {
+            continue;
+        }
+        let mut data = finish(copy, bx, rasterizer)?;
+        for (px, c) in data.chunks_exact_mut(4).zip(cover.chunks_exact(4)) {
+            let a = u32::from(c[3]);
+            if a != 255 {
+                px.iter_mut().for_each(|ch| *ch = ((u32::from(*ch) * a + 127) / 255) as u8);
+            }
+        }
+        let piece = Raster {
+            x: bx.x0,
+            y: bx.y0,
+            width: bx.width() as u32,
+            height: bx.height() as u32,
+            data,
+        };
+        out = Some(match out {
+            Some(under) => over(under, &piece)?,
+            None => piece,
+        });
+        budget::check()?;
+    }
+    Ok(out)
+}
+
+/// `top` laid over `under` (both premultiplied), in one raster as big as
+/// both.
+fn over(under: Raster, top: &Raster) -> Result<Raster, Error> {
+    let bx = |r: &Raster| IBox {
+        x0: r.x,
+        y0: r.y,
+        x1: r.x + r.width as i32,
+        y1: r.y + r.height as i32,
+    };
+    let (a, b) = (bx(&under), bx(top));
+    let u = a.union(&b);
+    if u == a {
+        let mut under = under;
+        lay_over(&mut under.data, a, &top.data, b);
+        return Ok(under);
+    }
+    let (width, height) = (u.width(), u.height());
+    if width > MAX_SIDE as usize || height > MAX_SIDE as usize || width * height > MAX_PIXELS {
+        return Err(Error::BadSpec);
+    }
+    let mut data = budget::filled(width * height * 4, 0u8)?.into_vec();
+    for y in 0..under.height as usize {
+        let from = y * under.width as usize * 4;
+        let to = ((y + (a.y0 - u.y0) as usize) * width + (a.x0 - u.x0) as usize) * 4;
+        data[to..to + under.width as usize * 4].copy_from_slice(&under.data[from..from + under.width as usize * 4]);
+    }
+    lay_over(&mut data, u, &top.data, b);
+    Ok(Raster {
+        x: u.x0,
+        y: u.y0,
+        width: width as u32,
+        height: height as u32,
+        data,
+    })
+}
+
+/// Source-over of premultiplied `src` (over `sb`) into `dst` (over `db`,
+/// which holds `sb`).
+fn lay_over(dst: &mut [u8], db: IBox, src: &[u8], sb: IBox) {
+    let dw = db.width();
+    let sw = sb.width();
+    for y in 0..sb.height() {
+        for x in 0..sw {
+            let s = &src[(y * sw + x) * 4..][..4];
+            let sa = u32::from(s[3]);
+            if sa == 0 {
+                continue;
+            }
+            let (dx, dy) = ((sb.x0 - db.x0) as usize + x, (sb.y0 - db.y0) as usize + y);
+            let d = &mut dst[(dy * dw + dx) * 4..][..4];
+            for c in 0..4 {
+                d[c] = (u32::from(s[c]) + (u32::from(d[c]) * (255 - sa) + 127) / 255).min(255) as u8;
+            }
+        }
+    }
 }
 
 /// The planned layers laid in one raster as big as what they paint (their
@@ -1301,25 +1531,26 @@ fn finish_planned(
     }))
 }
 
-/// Crack's and Scratches' cuts as one opaque layer in device space, bent
-/// with the letters. `None` with nothing cut.
-fn cut_plan<'a>(
-    sh: &special::Shapes,
+/// `polys` (job space) as one opaque layer in device space, bent with the
+/// letters, so a crack stays on the letter it crosses under a mesh. `None`
+/// with nothing in it.
+fn poly_plan<'a>(
+    polys: &Polys,
     bends: Bends<'_>,
     transform: &'a Affine,
     tiles: &'a [Tile],
     tol: f64,
 ) -> Result<Option<Planned<'a>>, Error> {
     const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
-    if sh.cuts.is_empty() {
+    if polys.is_empty() {
         return Ok(None);
     }
-    let cut = match (bends.is_empty(), sh.cuts.bounds()) {
+    let cut = match (bends.is_empty(), polys.bounds()) {
         (false, Some(b)) => match bends.cut(b, tol) {
-            Some(c) => warp::bend(&sh.cuts, |p| bends.at(p), c, tol)?.map(transform),
-            None => sh.cuts.map(transform),
+            Some(c) => warp::bend(polys, |p| bends.at(p), c, tol)?.map(transform),
+            None => polys.map(transform),
         },
-        _ => sh.cuts.map(transform),
+        _ => polys.map(transform),
     };
     let mut parts = budget::Buffer::new();
     budget::push(&mut parts, Part::plain(cut))?;

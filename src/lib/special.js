@@ -9,7 +9,14 @@
 //   crack      cuts branching jagged lines out of the letters; past 60 % the
 //              pieces between two arms fall out. `x`, `y` (percents of the
 //              letters' ink box) is where they gather, `spread` how far: 100
-//              spreads them over every letter, less pulls them in
+//              spreads them over every letter, less pulls them in.
+//              `breakOff` (0 to 100, B5 shatter test) breaks the pieces
+//              between the arms loose, where the cracks are densest first,
+//              and moves them as the motion switch says (`setBreakMotion`):
+//              each keeps the letter's fill, outline and shadow and leaves a
+//              clean hole. Decoration only: the paint's padding grows by the
+//              farthest a piece may travel (`breakReach`), and no layout,
+//              containment or fit answer sees the pieces
 //   lightning  paints jagged bolts with forks on the letters' fill: a `core`
 //              colour inside a `glow` colour, `glowSize` wide
 //   splash     paints spiky splats, teardrop droplets and streaks in its
@@ -34,9 +41,38 @@ export const SPECIAL_SIZE_MAX = 400;
 // The lightning's glow, percents of its default (0: none).
 export const SPECIAL_GLOW_MAX = 300;
 
+// How a crack's broken-off pieces move (B5 shatter test, an internal switch
+// while the owner picks one): 'apart' shifts them a little out from the
+// focus and turns them a few degrees; 'fall' drops them below the letters,
+// farther the bigger they are, turning as they go, and loses a few small
+// ones. The number is the wire's (paint.mjs).
+export const BREAK_MOTIONS = ['apart', 'fall'];
+let breakMotion = 'apart';
+export const breakMotionNow = () => breakMotion;
+export function setBreakMotion(m) {
+  if (BREAK_MOTIONS.includes(m)) breakMotion = m;
+}
+
+// How far a broken-off piece may travel, in its font size (and, falling,
+// the box's height): the engine never moves one farther (`BREAK_SIDE`,
+// `BREAK_DROP` in special.rs).
+export const BREAK_SIDE = 0.35;
+export const BREAK_DROP = 1.0;
+
+// The padding a style's broken-off pieces need past the letters' own, page
+// px, for a box `h` tall: { x, top, bottom }, or null when none breaks off.
+export function breakReach(style, h) {
+  const c = style?.special?.crack;
+  if (!c?.on || !(c.amount > 0) || !(c.breakOff > 0)) return null;
+  const size = Number(style.size) || 0;
+  const side = BREAK_SIDE * size;
+  const bottom = breakMotion === 'fall' ? (Number(h) || 0) + BREAK_DROP * size : side;
+  return { x: side, top: side, bottom };
+}
+
 export function defaultSpecial() {
   return {
-    crack: { on: false, amount: 40, size: 100, x: 50, y: 50, spread: 100, seed: 1 },
+    crack: { on: false, amount: 40, size: 100, x: 50, y: 50, spread: 100, breakOff: 0, seed: 1 },
     lightning: { on: false, amount: 40, core: '#ffffff', glow: '#1e90ff', glowSize: 100, seed: 1 },
     splash: { on: false, amount: 40, size: 100, color: '#e63946', seed: 1 },
     scratches: { on: false, amount: 40, angle: -15, seed: 1 },
@@ -66,6 +102,7 @@ export function normalizeSpecial(src) {
       x: within(s.crack?.x, d.crack.x, 0, 100),
       y: within(s.crack?.y, d.crack.y, 0, 100),
       spread: within(s.crack?.spread, d.crack.spread, 0, 100),
+      breakOff: within(s.crack?.breakOff, d.crack.breakOff, 0, 100),
       seed: seedOf(s.crack?.seed, d.crack.seed),
     },
     lightning: {
@@ -111,7 +148,10 @@ export function specialJob(style, rect) {
   for (const k of shown) {
     const e = sp[k];
     const base = { amount: e.amount / 100, seed: e.seed };
-    if (k === 'crack') out[k] = { ...base, size: e.size / 100, x: e.x / 100, y: e.y / 100, spread: e.spread / 100 };
+    if (k === 'crack') {
+      out[k] = { ...base, size: e.size / 100, x: e.x / 100, y: e.y / 100, spread: e.spread / 100 };
+      if (e.breakOff > 0) out[k].breakOff = { share: e.breakOff / 100, motion: BREAK_MOTIONS.indexOf(breakMotion) };
+    }
     else if (k === 'splash') out[k] = { ...base, size: e.size / 100, color: e.color };
     else if (k === 'lightning') out[k] = { ...base, core: e.core, glow: e.glow, glowSize: e.glowSize / 100 };
     else out[k] = { ...base, angle: rad(e.angle) };

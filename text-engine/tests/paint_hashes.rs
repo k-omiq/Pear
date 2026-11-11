@@ -626,6 +626,7 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
         b.request.job.effects.special = Some(Special {
             rect: [0.0, 0.0, 200.0, 160.0],
             crack: None,
+            break_off: None,
             lightning: None,
             splash: None,
             scratches: None,

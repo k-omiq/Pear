@@ -3,7 +3,10 @@
 //!
 //! - **Crack** cuts branching, tapering, jagged lines out of the letters,
 //!   grown from seeded points; past 60 % the pieces between two arms near a
-//!   point fall out.
+//!   point fall out. With Break off (wire v16, B5 shatter test) the pieces
+//!   between neighbouring arms break loose, densest cracks first, and move
+//!   apart or fall (`BreakOff`): `paint_letters` lays each as a copy of the
+//!   letters inside its outline, moved, and leaves a clean hole.
 //! - **Scratches** cut many thin, near-parallel strokes.
 //! - **Splash** is paint: spiky splats, teardrop droplets and streaks in
 //!   its own colour, laid on the letters' fill by the box job
@@ -22,7 +25,7 @@ use std::rc::Rc;
 
 use super::boxjob::ClipShape;
 use super::fx::effects::PaintMark;
-use super::geom::{Polys, Pt};
+use super::geom::{Affine, Polys, Pt};
 use super::job::Rgba;
 use super::kept::{self, Hasher};
 use crate::seeded::noise;
@@ -80,6 +83,32 @@ pub struct Scratches {
     pub seed: u32,
 }
 
+/// How a crack's broken-off pieces move (B5 test: the owner picks one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    /// A little out from the focus, turned a few degrees, close to the
+    /// letters.
+    Apart,
+    /// Down below the letters, farther the bigger the piece, turning as it
+    /// goes; a few small ones are gone.
+    Fall,
+}
+
+/// A crack's pieces breaking off (glyph wire v16, kind 16).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BreakOff {
+    /// Over 0 to 1: how many of the pieces between two arms break loose
+    /// (the densest cracks' first) and how deep into the arms they reach.
+    pub share: f64,
+    pub motion: Motion,
+}
+
+/// The farthest a piece moves sideways or up, in font sizes; falling, down,
+/// the box's height and `BREAK_DROP` font sizes more (special.js
+/// `breakReach` pads the paint by as much).
+pub const BREAK_SIDE: f64 = 0.35;
+pub const BREAK_DROP: f64 = 1.0;
+
 /// The special effects of a box (glyph wire v15). Every job of the box
 /// carries them, so a shadow is cast from the cracked letters.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,6 +117,8 @@ pub struct Special {
     /// it.
     pub rect: [f64; 4],
     pub crack: Option<Crack>,
+    /// The crack's pieces breaking off (v16); only with a crack.
+    pub break_off: Option<BreakOff>,
     pub lightning: Option<Lightning>,
     pub splash: Option<Splash>,
     pub scratches: Option<Scratches>,
@@ -106,6 +137,18 @@ impl Special {
 pub struct Shapes {
     pub cuts: Polys,
     pub adds: Polys,
+    /// The crack's broken-off pieces, in the order they are laid: a later
+    /// one never takes what an earlier one took.
+    pub pieces: Vec<Piece>,
+}
+
+/// One broken-off piece: its outline in job space, where it was, and the
+/// rigid move that takes it to where it lies (job space), or `None` for one
+/// that is gone.
+#[derive(Debug)]
+pub struct Piece {
+    pub outline: Vec<Pt>,
+    pub moved: Option<Affine>,
 }
 
 // ===== seeded numbers =====
@@ -204,20 +247,29 @@ fn walk(from: Pt, angle: f64, step: f64, steps: usize, turn: f64, dice: Dice, it
 /// `ink`, at font size `size`. Kept under its numbers, so a move or an edit
 /// of anything else reads them back.
 pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Result<Rc<Shapes>, Error> {
-    let key = Hasher::new("special shapes")
+    let mut key = Hasher::new("special shapes")
         .debug(&(sp.crack, sp.scratches))
         .f64(size)
         .f64(ink.0)
         .f64(ink.1)
         .f64(ink.2)
-        .f64(ink.3)
-        .finish();
+        .f64(ink.3);
+    // Pieces fall by the box's height.
+    if let Some(b) = sp.break_off {
+        key = key.debug(&b).f64(sp.rect[3]);
+    }
+    let key = key.finish();
     if let Some(hit) = key.and_then(kept::get::<Rc<Shapes>>) {
         return Ok(Rc::clone(&*hit));
     }
     let mut out = Shapes::default();
     if let Some(c) = sp.crack {
-        crack(&c, size, ink, &mut out.cuts);
+        let mut stars = Vec::new();
+        let want = sp.break_off.filter(|b| b.share > 0.0);
+        crack(&c, size, ink, &mut out.cuts, want.map(|_| &mut stars));
+        if let Some(b) = want {
+            out.pieces = pieces(&c, &b, &stars, size, ink, sp.rect[3]);
+        }
     }
     if let Some(s) = sp.scratches {
         scratches(&s, size, ink, &mut out.cuts);
@@ -225,13 +277,23 @@ pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Resu
     super::budget::check()?;
     let out = Rc::new(out);
     if let Some(k) = key {
-        let bytes = (out.cuts.pts.len() + out.adds.pts.len()) * 16;
+        let outlines: usize = out.pieces.iter().map(|p| p.outline.len()).sum();
+        let bytes = (out.cuts.pts.len() + out.adds.pts.len() + outlines) * 16;
         kept::put(k, Rc::clone(&out), bytes);
     }
     Ok(out)
 }
 
-fn crack(c: &Crack, size: f64, (x0, y0, x1, y1): (f64, f64, f64, f64), cuts: &mut Polys) {
+/// One crack point and its arms, for the pieces between them.
+type Star = (Pt, Vec<Vec<Pt>>);
+
+fn crack(
+    c: &Crack,
+    size: f64,
+    (x0, y0, x1, y1): (f64, f64, f64, f64),
+    cuts: &mut Polys,
+    mut stars: Option<&mut Vec<Star>>,
+) {
     let a = c.amount.clamp(0.0, 1.0);
     let u = size * c.size.clamp(0.01, MAX_SPECIAL_SIZE);
     if !(a > 0.0) || !(u > 0.0) {
@@ -310,7 +372,142 @@ fn crack(c: &Crack, size: f64, (x0, y0, x1, y1): (f64, f64, f64, f64), cuts: &mu
                 contour(cuts, &piece);
             }
         }
+        if let Some(st) = stars.as_mut() {
+            st.push((centre, paths));
+        }
     }
+}
+
+/// The pieces of a crack that break off (`BreakOff`), from its points and
+/// arms (`stars`), so what breaks off is what is seen cracked: each piece
+/// lies between two neighbouring arms of a point, from the point out along
+/// them and closed by a jagged break. The densest cracks break first. On a
+/// stream of its own, so the cracks are the same whatever breaks.
+fn pieces(c: &Crack, b: &BreakOff, stars: &[Star], size: f64, ink: (f64, f64, f64, f64), box_h: f64) -> Vec<Piece> {
+    let share = b.share.clamp(0.0, 1.0);
+    let u = size * c.size.clamp(0.01, MAX_SPECIAL_SIZE);
+    if !(share > 0.0) || !(u > 0.0) || stars.is_empty() {
+        return Vec::new();
+    }
+    let dice = Dice { seed: c.seed, stream: 3 };
+    let (w, h) = (ink.2 - ink.0, ink.3 - ink.1);
+    let focus = Pt::new(ink.0 + c.at.0.clamp(0.0, 1.0) * w, ink.1 + c.at.1.clamp(0.0, 1.0) * h);
+    // How crowded each point is: its neighbours within about an arm, and
+    // how near the focus, where Focus and Spread gather the cracks.
+    let diag = w.hypot(h).max(u);
+    let crowd: Vec<f64> = stars
+        .iter()
+        .map(|(p, _)| {
+            let near: f64 = stars.iter().map(|(q, _)| (-(p.minus(*q).len() / u).powi(2)).exp()).sum();
+            near + 2.0 * (1.0 - p.minus(focus).len() / diag).max(0.0)
+        })
+        .collect();
+    let mut wedges: Vec<(f64, usize, usize)> = Vec::new();
+    for (i, (_, arms)) in stars.iter().enumerate() {
+        for j in 0..arms.len() {
+            wedges.push((crowd[i] + 0.35 * dice.u(i * 16 + j, 0), i, j));
+        }
+    }
+    wedges.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let n = ((share * wedges.len() as f64).round() as usize).clamp(1, wedges.len().min(48));
+    let step = u * 0.08;
+    let side = BREAK_SIDE * size;
+    let (up, down) = match b.motion {
+        Motion::Apart => (side, side),
+        Motion::Fall => (side, box_h.max(0.0) + BREAK_DROP * size),
+    };
+    let mut out = Vec::with_capacity(n);
+    for &(_, i, j) in &wedges[..n] {
+        let (centre, arms) = &stars[i];
+        let (p, q) = (&arms[j], &arms[(j + 1) % arms.len()]);
+        let most = p.len().min(q.len()).saturating_sub(1);
+        if most < 1 {
+            continue;
+        }
+        let item = i * 16 + j;
+        let depth = 0.5 + 0.45 * share * dice.u(item, 1);
+        let k = ((most as f64 * depth).round() as usize).clamp(1, most);
+        let mut outline: Vec<Pt> = p[..=k].to_vec();
+        let (pe, qe) = (p[k], q[k]);
+        for (e, t) in [0.25, 0.5, 0.75].into_iter().enumerate() {
+            let m = Pt::new(pe.x + (qe.x - pe.x) * t, pe.y + (qe.y - pe.y) * t);
+            let j2 = step * 0.7 * dice.pm(item, 2 + e as u32);
+            outline.push(Pt::new(m.x + j2, m.y - j2));
+        }
+        outline.extend(q[1..=k].iter().rev());
+        // Its middle and how big it is.
+        let (mut a2, mut cx, mut cy) = (0.0, 0.0, 0.0);
+        for t in 0..outline.len() {
+            let (s, e) = (outline[t], outline[(t + 1) % outline.len()]);
+            let x = s.cross(e);
+            a2 += x;
+            cx += (s.x + e.x) * x;
+            cy += (s.y + e.y) * x;
+        }
+        if !(a2.abs() > 1e-9) {
+            continue;
+        }
+        let mid = Pt::new(cx / (3.0 * a2), cy / (3.0 * a2));
+        // Wound one way, so outlines laid together add up (non-zero).
+        if a2 < 0.0 {
+            outline.reverse();
+        }
+        let r = (a2.abs() / 2.0 / PI).sqrt();
+        let away = {
+            let d = mid.minus(focus);
+            let d = if d.len() > 1e-6 { d } else { mid.minus(*centre) };
+            if d.len() > 1e-6 {
+                d.scale(1.0 / d.len())
+            } else {
+                let a = dice.u(item, 5) * TAU;
+                Pt::new(a.cos(), a.sin())
+            }
+        };
+        let (shift, turn) = match b.motion {
+            Motion::Apart => {
+                let len = size * (0.04 + 0.06 * share) * (0.7 + 0.6 * dice.u(item, 6));
+                let deg = (2.0 + 5.0 * share) * dice.pm(item, 7);
+                (away.scale(len), deg)
+            }
+            Motion::Fall => {
+                // Gone: a few of the small ones.
+                if r < 0.15 * size && dice.u(item, 8) < 0.35 {
+                    out.push(Piece { outline, moved: None });
+                    continue;
+                }
+                let drop = (ink.3 - mid.y) + r * (1.0 + 1.5 * share) * (0.8 + 0.4 * dice.u(item, 6)) + 0.1 * size;
+                let dx = away.x * size * 0.12 * dice.u(item, 9);
+                let deg = dice.sign(item, 7) * (10.0 + 40.0 * share) * (0.5 + 0.5 * dice.u(item, 10))
+                    * (0.3 * size / r.max(1e-6)).min(1.0);
+                (Pt::new(dx, drop), deg)
+            }
+        };
+        // Never farther than the paint is padded for (`BREAK_SIDE`,
+        // `BREAK_DROP`): shrink the move until every corner is within.
+        let rigid = |k: f64| {
+            let a = turn * k * PI / 180.0;
+            Affine::translate(mid.x + shift.x * k, mid.y + shift.y * k)
+                .after(&Affine::rotate(a.cos(), a.sin()))
+                .after(&Affine::translate(-mid.x, -mid.y))
+        };
+        let within = |m: &Affine| {
+            outline.iter().all(|&v| {
+                let d = m.apply(v).minus(v);
+                d.x.abs() <= side && d.y >= -up && d.y <= down
+            })
+        };
+        let mut k = 1.0;
+        let mut moved = rigid(k);
+        while !within(&moved) && k > 1e-3 {
+            k *= 0.8;
+            moved = rigid(k);
+        }
+        if !within(&moved) {
+            moved = Affine::IDENTITY;
+        }
+        out.push(Piece { outline, moved: Some(moved) });
+    }
+    out
 }
 
 fn scratches(s: &Scratches, size: f64, (x0, y0, x1, y1): (f64, f64, f64, f64), cuts: &mut Polys) {

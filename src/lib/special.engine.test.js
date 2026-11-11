@@ -6,7 +6,7 @@ import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { normalizeSpecial, specialJob } from './special.js';
+import { normalizeSpecial, specialJob, breakReach, setBreakMotion, breakMotionNow, BREAK_SIDE, BREAK_DROP } from './special.js';
 import { encodeJob } from '../../text-engine/js/paint.mjs';
 import { isRasterOnly } from './psd.js';
 
@@ -65,7 +65,7 @@ const same = (a, b) => a.width === b.width && a.height === b.height && a.data.eq
 describe('the model', () => {
   it('reads anything as four rows, off, in range', () => {
     const n = normalizeSpecial({ crack: { on: true, amount: 300, size: 1, seed: -4 }, lightning: { core: 'blue', glowSize: 999 }, splash: { color: '#ABCDEF' } });
-    expect(n.crack).toEqual({ on: true, amount: 100, size: 10, x: 50, y: 50, spread: 100, seed: 0 });
+    expect(n.crack).toEqual({ on: true, amount: 100, size: 10, x: 50, y: 50, spread: 100, breakOff: 0, seed: 0 });
     expect(n.lightning.on).toBe(false);
     expect(n.lightning.core).toBe('#ffffff');
     expect(n.lightning.glowSize).toBe(300);
@@ -92,7 +92,7 @@ describe('the model', () => {
   });
 });
 
-describe('the glyph wire (v15)', () => {
+describe('the glyph wire (v16)', () => {
   const job = { runs: [{ text: 'HI', x: 0, y: 40 }], bands: [], fill: { kind: 'solid', color: '#000' } };
   const req = (j) => ({ job: j, font: 0, size: 40, width: 10, height: 10 });
   it('writes a job with none as it was, and the block last under flag 256', () => {
@@ -110,6 +110,25 @@ describe('the glyph wire (v15)', () => {
     const a = Buffer.from(withSp.subarray(0, plain.length));
     a.writeUInt32LE(a.readUInt32LE(FLAGS) & ~256, FLAGS);
     expect(a.equals(plain)).toBe(true);
+  });
+
+  it('writes a crack with no break off as v15 did, and kind 16 with its share and motion after the crack', () => {
+    const crack = { amount: 0.5, size: 1, x: 0.5, y: 0.5, spread: 1, seed: 2 };
+    const rect = { x: 0, y: 0, w: 100, h: 60 };
+    const none = Buffer.from(encodeJob(req({ ...job, special: { rect, crack } })));
+    const brk = Buffer.from(encodeJob(req({ ...job, special: { rect, crack: { ...crack, breakOff: { share: 0.5, motion: 1 } } } })));
+    expect(brk.length).toBe(none.length + 12);
+    // The kinds word after the rect: 1 alone, then 1 | 16.
+    const KINDS = none.length - (8 * 5 + 4) - 4;
+    expect(none.readUInt32LE(KINDS)).toBe(1);
+    expect(brk.readUInt32LE(KINDS)).toBe(17);
+    expect(brk.readDoubleLE(none.length)).toBe(0.5);
+    expect(brk.readUInt32LE(none.length + 8)).toBe(1);
+    // At 0 the style sends no break off at all.
+    const s0 = style({ special: { crack: { ...ON.crack, breakOff: 0 } } });
+    expect('breakOff' in specialJob(s0, rect).crack).toBe(false);
+    const s5 = style({ special: { crack: { ...ON.crack, breakOff: 50 } } });
+    expect(specialJob(s5, rect).crack.breakOff).toEqual({ share: 0.5, motion: ['apart', 'fall'].indexOf(breakMotionNow()) });
   });
 });
 
@@ -187,6 +206,63 @@ describe('painted over the whole box', () => {
     // The arms still reach about a letter and a half from the focus.
     expect(Math.max(...near)).toBeLessThan(plain.width / 2);
     expect(Math.max(...wide)).toBeGreaterThan((plain.width * 2) / 3);
+  });
+
+  describe('break off (B5)', () => {
+    const was = breakMotionNow();
+    afterAll(() => setBreakMotion(was));
+    const at = (breakOff) => ({ ...LOOK, special: { crack: { ...ON.crack, breakOff } } });
+
+    it('pads the paint by the farthest a piece travels, and only the paint', () => {
+      setBreakMotion('apart');
+      expect(breakReach(style(at(0)), 120)).toBe(null);
+      expect(breakReach(style(at(50)), 120)).toEqual({ x: BREAK_SIDE * SIZE, top: BREAK_SIDE * SIZE, bottom: BREAK_SIDE * SIZE });
+      setBreakMotion('fall');
+      expect(breakReach(style(at(50)), 120).bottom).toBe(120 + BREAK_DROP * SIZE);
+      const plain = texture(boxOf(at(0)));
+      const fall = texture(boxOf(at(80)));
+      expect(fall.height).toBeGreaterThan(plain.height + 2 * 120);
+    });
+
+    it.each(['apart', 'fall'])('%s: moves pieces, the same picture each time and wherever the box stands', (m) => {
+      setBreakMotion(m);
+      const crack = texture(boxOf(at(0)));
+      const a = texture(boxOf(at(75)));
+      const b = texture(boxOf(at(75)));
+      expect(same(a, b)).toBe(true);
+      const there = texture(boxOf(at(75), { x: 213, y: 171 }));
+      expect(same(a, there)).toBe(true);
+      // Ink where the cracked box has none, the two lined up on the box's
+      // corner: a piece moved there.
+      const dx = (crack.ox - a.ox) * 2;
+      const dy = (crack.oy - a.oy) * 2;
+      let landed = 0;
+      for (let j = 0; j < a.height; j++) {
+        for (let i = 0; i < a.width; i++) {
+          const ci = i + dx, cj = j + dy;
+          const was = ci >= 0 && cj >= 0 && ci < crack.width && cj < crack.height ? crack.data[(cj * crack.width + ci) * 4 + 3] : 0;
+          if (a.data[(j * a.width + i) * 4 + 3] > 128 && was === 0) landed++;
+        }
+      }
+      // Falling, some of it lies below the letters' lowest ink.
+      if (m === 'fall') {
+        let low = 0;
+        for (let j = 0; j < crack.height; j++) for (let i = 0; i < crack.width; i++) if (crack.data[(j * crack.width + i) * 4 + 3] > 0) low = j;
+        let below = 0;
+        for (let j = low - dy + 4; j < a.height; j++) for (let i = 0; i < a.width; i++) below += a.data[(j * a.width + i) * 4 + 3] > 128;
+        expect(below).toBeGreaterThan(20);
+      }
+      expect(landed).toBeGreaterThan(50);
+    });
+
+    it('a new seed breaks other pieces, and 0 is the crack alone', () => {
+      setBreakMotion('apart');
+      const plain = texture(boxOf({ ...LOOK, special: { crack: ON.crack } }));
+      expect(same(texture(boxOf(at(0))), plain)).toBe(true);
+      const a = texture(boxOf(at(75)));
+      const b = texture(boxOf({ ...LOOK, special: { crack: { ...ON.crack, seed: 4, breakOff: 75 } } }));
+      expect(same(a, b)).toBe(false);
+    });
   });
 
   it('is not drawn by a painter that cannot, and the box is what it was', () => {

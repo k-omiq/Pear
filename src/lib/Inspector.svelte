@@ -2865,6 +2865,7 @@
                   {@render sliderRow('Focus X', 'Where the cracks gather, across the letters', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Crack focus x', disabled: off })}
                   {@render sliderRow('Focus Y', 'Where the cracks gather, down the letters', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Crack focus y', disabled: off })}
                   {@render sliderRow('Spread', 'How far the cracks spread from the focus: 100 % covers every letter', fx.spread, (v) => setVal(fx, 'spread', v), { max: 100, unit: '%', aria: 'Crack spread', disabled: off })}
+                  {@render sliderRow('Break off', 'Pieces between the cracks break loose and move, densest cracks first. Paint only: the layout never sees them', fx.breakOff, (v) => setVal(fx, 'breakOff', v), { max: 100, unit: '%', aria: 'Crack break off', disabled: off })}
                 {/if}
                 {#if row.kind === 'lightning'}
                   <div class="prow">
