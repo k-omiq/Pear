@@ -38,6 +38,7 @@
     placeableDetectedLines,
     placeDetectedOnPage,
     placeDetectedInChapter,
+    setLineRuns,
     cancelChapterPlace,
   } from './store.svelte.js';
   import { untrack, flushSync } from 'svelte';
@@ -274,10 +275,12 @@
     const next = e.shiftKey ? redoField(u) : undoField(u);
     if (next == null) return;
     const el = e.currentTarget;
-    // Only the faces changed (Bold on the selected words): they go back, and
+    // Only the faces changed (Bold on the selected words): they go back as a
+    // face command would set them, refused for a line a locked box shows, and
     // the selection stays.
     if (field !== 'jp' && next === el.value) {
-      setLineText(p, line.n, next, { runs: fieldFaces(u) });
+      // Refused: the field's history stays where the line is.
+      if (setLineRuns(p, line.n, fieldFaces(u)) === null) void (e.shiftKey ? undoField(u) : redoField(u));
       return;
     }
     const caret = caretAfter(el.value, next);

@@ -10,7 +10,9 @@ import { createBrowserGlyphPainter } from './browser-painter.js';
 //     Optional: without it, use the live browser DOM or the greedy breaker.
 //   loading(): boolean, fallback measurements must not be kept while true
 //   onFontsChange(cb): called when usable faces change; may return an unsubscribe
-//   faceReady(face): boolean, may start loading the face
+//   faceReady(face, { matched }?): boolean, may start loading the face;
+//     `matched` (the store fitting a box) refuses a face the browser found
+//     nothing for
 // A face is { key, name, bold, italic, size, css }. The key stays the CSS font
 // shorthand so swapping the implementation does not change the memo's identity.
 // Ink left/right are the engine's bounding-box distances from the anchor;

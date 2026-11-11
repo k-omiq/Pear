@@ -963,10 +963,20 @@ export function setRangeFace(b, a, f, change, p = page()) {
 // as on a box showing the line (its face is the one the runs are pruned
 // against, `setRangesFace`), and refused as such a box would refuse it; on a
 // line no box shows yet, against the plain face.
+const lineReader = (p, n) => (p.boxes ?? []).find((x) => x.lineN === n && x.text == null) ?? { id: null, lineN: n, text: null, style: {} };
 export function setLineRangeFace(p, n, a, f, change) {
   if (!p || !(n >= 0) || !lineByN(p, n)) return null;
-  const reader = (p.boxes ?? []).find((x) => x.lineN === n && x.text == null) ?? { id: null, lineN: n, text: null, style: {} };
-  return setRangeFace(reader, a, f, change, p);
+  return setRangeFace(lineReader(p, n), a, f, change, p);
+}
+// The faces of line `n`'s English set to `runs` outright, its words as they
+// are: the queue field's own undo stepping back over a face command. Refused
+// as a command is, with the toast that says so. Null when refused, else
+// whether anything changed.
+export function setLineRuns(p, n, runs) {
+  if (!p || !(n >= 0) || !lineByN(p, n)) return null;
+  const r = lineReader(p, n);
+  if (faceRefusal(r, p, { toast: true })) return null;
+  return setBoxRuns(r, runs, p);
 }
 
 // Why the faces of box `b`'s words cannot be set, or null when they can:
@@ -1005,8 +1015,9 @@ export function setRangesFace(b, ranges, change, p = page()) {
     else return null;
     done.push([lo, hi]);
   }
-  // What equals the box's face now is left to the box (`pruneRuns`).
-  next = pruneRuns(next, text, face);
+  // What equals the box's face now, in the letters this command changed, is
+  // left to the box (`pruneRuns`); runs elsewhere are not touched.
+  next = pruneRuns(next, text, face, done);
   if (!done.length || runsKey(next) === runsKey(runs)) return null;
   writeFaces(b, text, next, p);
   return done;
@@ -5211,7 +5222,9 @@ function faceReady(style, text) {
   if (faceArriving(style, text)) return false;
   const engine = textEngine();
   const face = faceFor(style, style.size);
-  return engine ? engine.faceReady(face) : browserFaceReady(face);
+  // `matched`: a face the browser found nothing for is not one to fit a box
+  // to - the box waits for the real face (text-engine/browser.js).
+  return engine ? engine.faceReady(face, { matched: true }) : browserFaceReady(face, { matched: true });
 }
 
 // With the Rust engine switched on: the face this style names is on its way to
