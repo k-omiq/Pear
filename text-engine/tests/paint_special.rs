@@ -459,9 +459,11 @@ fn the_largest_crack_under_a_box_stroke_paints_close_up() {
     let r = paint(&mut engine, largest_under_stroke(font, 4.0, None));
     assert!(ink(&r) > 0);
     assert!(r.x >= 0 && r.y >= 0 && r.x + r.width as i32 <= 2600 && r.y + r.height as i32 <= 1280);
-    // Broken off, at scale 2: each piece's cuts are cut to the surface too.
-    let r = paint(&mut engine, largest_under_stroke(font, 2.0, Some(BreakOff { share: 1.0, motion: Motion::Fall })));
-    assert!(ink(&r) > 0);
+    // Broken off, each motion: each piece's cuts are cut to the surface too.
+    for motion in [Motion::Fall, Motion::Apart] {
+        let r = paint(&mut engine, largest_under_stroke(font, 4.0, Some(BreakOff { share: 1.0, motion })));
+        assert!(ink(&r) > 0, "{motion:?}");
+    }
 }
 
 /// A crack or scratches under a box's own stroke through the kept path
