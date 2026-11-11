@@ -12,7 +12,7 @@ use std::time::Instant;
 use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::effects::{Effect, Marks, PaintMark};
 use mt_text::paint::{
-    paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, ClipShape, Effects, Fade, FadePart, Fill, Job, Pt,
+    paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects, Fade, FadePart, Fill, Job, Pt,
     Request, Rgba, Run,
 };
 use mt_text::{Engine, Face, FontId};
@@ -209,5 +209,76 @@ fn a_soft_mark_holds_a_piece_of_its_own_size() {
         eprintln!("paint, {name}: peak {:.1} MB, {cold_ms:.1} ms; one more mark {more_ms:.1} ms", cold as f64 / 1e6);
         // The surface (3.8 MB), the layer (as big), the pieces.
         assert!(cold < 20_000_000, "{cold}");
+    }
+}
+
+/// A page-size mask on a 1200 x 800 box at scale 1 and at the editor's
+/// scale 2: its cover is rastered over the surface and a fixed margin, one
+/// byte a pixel, and kept while it fits the store, so a live move frame reads
+/// it back instead of rastering the page again. Past what the store keeps
+/// (scale 2) it is rastered over the surface alone.
+#[test]
+fn a_page_size_mask_is_kept_and_a_move_frame_reads_it() {
+    let _one = ONE.lock().unwrap();
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    for scale in [1.0, 2.0] {
+        let (w, h) = ((1200.0 * scale) as u32, (800.0 * scale) as u32);
+        let make = |shift: Pt, live: bool| {
+            let mut b = big(font);
+            b.request.transform = Affine::scale(scale, scale);
+            b.width = w;
+            b.height = h;
+            let mut clip = Clip::all(
+                ClipMode::Include,
+                Pt::new(0.0, 0.0),
+                vec![ClipShape::Polygon(vec![Pt::new(-400.0, -1100.0), Pt::new(1700.0, -1100.0), Pt::new(1700.0, 2000.0), Pt::new(-400.0, 2000.0)])],
+            );
+            clip.shapes.extend(
+                Clip::all(ClipMode::Exclude, Pt::new(0.0, 0.0), vec![ClipShape::Ellipse { centre: Pt::new(600.0, 400.0), rx: 900.0, ry: 300.0 }]).shapes,
+            );
+            b.clip = Some(clip);
+            b.pin_shift = shift;
+            b.pin_live = live;
+            b
+        };
+        let keys = |b: &BoxRequest| BoxKeys {
+            job: mt_text::paint::kept::Hasher::new("t job").f64(scale).finish().unwrap(),
+            premask: mt_text::paint::kept::Hasher::new("t premask").f64(scale).finish(),
+            cover: mt_text::paint::kept::Hasher::new("t cover").debug(&b.clip).f64(scale).finish(),
+        };
+        mt_text::paint::kept::clear();
+        let mut b = make(Pt::new(0.0, 0.0), false);
+        let k = keys(&b);
+        let (cold, cold_ms, _) = peak(|| paint_box_kept(&mut e, &mut b, k).unwrap());
+        let held = mt_text::paint::kept::bytes();
+        let mut frames = Vec::new();
+        let mut most = 0;
+        for i in 1..=9 {
+            let mut f = make(Pt::new(i as f64 * 3.3, i as f64 * -1.7), true);
+            let (bytes, ms, _) = peak(|| paint_box_kept(&mut e, &mut f, k).unwrap());
+            frames.push(ms);
+            most = most.max(bytes);
+        }
+        frames.sort_by(f64::total_cmp);
+        eprintln!(
+            "page-size mask, 1200 x 800 box at {scale}: cold {cold_ms:.1} ms peak {:.1} MB, kept {:.1} MB; move frame median {:.1} ms, peak {:.1} MB",
+            cold as f64 / 1e6,
+            held as f64 / 1e6,
+            frames[4],
+            most as f64 / 1e6
+        );
+        let surface = (w * h) as usize * 4;
+        // Never the nine surfaces a window three times the surface each way
+        // held, at a byte or four a pixel.
+        assert!(cold < 4 * surface, "{cold}");
+        assert!(most < 4 * surface, "{most}");
+        if scale == 1.0 {
+            // The premask and the maps are kept: the keep map over the
+            // whole window, the hide map over the ellipse's part of it.
+            let keep = (w as usize + 512) * (h as usize + 512);
+            assert!(held >= surface + keep, "{held}");
+        }
     }
 }

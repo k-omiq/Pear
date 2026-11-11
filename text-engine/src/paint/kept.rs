@@ -243,6 +243,11 @@ pub fn clear() {
     });
 }
 
+/// The most the store holds.
+pub fn ceiling() -> usize {
+    STORE.with(|s| s.borrow().ceiling)
+}
+
 /// The bytes the store holds now.
 pub fn bytes() -> usize {
     STORE.with(|s| s.borrow().bytes)
