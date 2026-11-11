@@ -373,6 +373,7 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
   // or a roughening would undo it).
   // 64 (v12): Wobble, each letter moved up or down and turned by numbers of
   // its own (`wobble`, below).
+  // 128 (v13): lines set in several faces (`runFaces`, at the job's end).
   const negative = job.negative ?? null
   const wobble = job.wobble ?? null
   u32(
@@ -382,7 +383,8 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
       (job.strokeOrder === 'each' ? 8 : 0) |
       (negative ? 16 : 0) |
       (job.crisp ? 32 : 0) |
-      (wobble ? 64 : 0),
+      (wobble ? 64 : 0) |
+      (job.faces?.length ? 128 : 0),
   )
   // An alignment the canvas does not know leaves its `textAlign` at "start".
   u32(ALIGN[job.align] ?? 0)
@@ -459,7 +461,9 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
 }
 
 // (v13) The faces of a straight job's lines set in several, at the very end
-// of the job and only for such a job: a job in one face is the bytes it was.
+// of the job and only for such a job, which says so with flag 128: a job in
+// one face is the bytes it was, and a field added to the glyph job later goes
+// under a flag of its own, after this block or not.
 // `job.faces` are the faces the lines' `spans` name by index, and `faces`
 // the engine faces the caller resolved them to (`{ font, flags }`, an engine
 // face's, chain and all), one each. A span is `{ face, start, end }`, UTF-16

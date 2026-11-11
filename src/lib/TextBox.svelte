@@ -49,7 +49,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns, editedSpan, runsKey } from './runs.js';
+  import { copyRuns, editedSpan, runsKey, shiftRuns } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
   import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, lineFaces, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
@@ -145,9 +145,9 @@
     // is not reactive: this is what says they changed.
     app.fontsVersion;
     try {
-      // A composition is laid out in the box face: its runs are for the
-      // words before it.
-      return typeModel(box, composeText ?? text, composeText == null ? runs : null);
+      // A composition is laid out with the faces the words around it keep
+      // (`liveRuns`).
+      return typeModel(box, composeText ?? text, liveRuns);
     } catch {
       return null;
     }
@@ -756,10 +756,9 @@
             scale: pictureRes,
             fonts: app.fontsVersion,
             tiles: patternTileKey,
-            // The faces of the words, which the picture is painted in; none
-            // while an IME composes, as the composed picture is in the box
-            // face (`paintedBox`).
-            runs: composeText == null ? runs : null,
+            // The faces of the words, which the picture is painted in, moved
+            // over what an IME has in hand (`liveRuns`).
+            runs: liveRuns,
             light: lightKey,
             // Crisp letter edges, which the painter reads from the setting.
             edges: crispFor(s) ? 'crisp' : '',
@@ -822,9 +821,8 @@
   }
   // An IME's text is not the box's until the composition ends, so the box
   // is painted with it standing in for its own.
-  // While an IME composes, the picture is of its text in the box's face: the
-  // runs index the words before it, not these.
-  const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText, runs: null } : box);
+  // The faces go with it, moved over the composed letters (`liveRuns`).
+  const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText, runs: liveRuns } : box);
   // `key` is the picture key this paint is for: the effect's paints have one,
   // and only those may go to the paint worker (`paintFull`). `worker` false
   // paints here whatever the box is: the fallback for a paint the worker did
@@ -1507,6 +1505,15 @@
   // An IME's text is not the box's until the composition ends, but it is on
   // the curve while it is being composed: the editable holds it by then.
   let composeText = $state(null);
+  // What the composition began on: the text, and the raw range the IME was
+  // given (`onCompositionStart`).
+  let composeFrom = null;
+  // The faces of the words while an IME composes: the box's own runs moved
+  // over the composed letters as the edit at its end will move them (the
+  // range it was given, `editedSpan`; a guess from the text when that does not
+  // explain it), so the rest of the box keeps its faces and its line breaks.
+  // The box's runs at any other time.
+  const liveRuns = $derived(composeText == null ? runs : (shiftRuns(runs, composeFrom?.v ?? text, composeText, composeFrom ? (editedSpan(composeFrom.v, composeText, composeFrom.a, composeFrom.b) ?? undefined) : undefined) ?? null));
   const layout = $derived.by(() => {
     if ((editing && !curveEdit) || !curved) return null;
     const t = applyCase(editing ? (composeText ?? text) : text, s);
@@ -2800,8 +2807,6 @@
       composeText = e.currentTarget.textContent;
     }
   }
-  // What the composition began on, for `readBack` when it ends.
-  let composeFrom = null;
   function onCompositionStart(e) {
     clearTimeout(compositionTimer);
     compositionTimer = null;

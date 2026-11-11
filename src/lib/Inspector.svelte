@@ -144,7 +144,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns, editedSpan } from './runs.js';
+  import { copyRuns, fieldSpans } from './runs.js';
   import { onDestroy } from 'svelte';
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
@@ -440,20 +440,14 @@
     resyncField(fieldUndo, v, box ? copyRuns(boxRuns(box)) : null);
   });
 
-  // The field and its selection as each edit begins: what that edit replaced
-  // is read from them (`editedSpan`) once it has landed.
-  let textBefore = null;
-  function onTextBeforeInput(e) {
-    const el = e.currentTarget;
-    textBefore = { v: el.value, a: el.selectionStart, b: el.selectionEnd };
-  }
+  // The field, its selection and input type as each edit begins: what that
+  // edit replaced is read from them (`fieldSpans`) once it has landed.
+  const textSpans = fieldSpans();
 
   // Recorded after the write, so the step holds the faces the write left.
   function onTextInput(e) {
     const v = e.target.value;
-    const was = textBefore;
-    textBefore = null;
-    setText(v, undefined, was && was.v === boxText(box) ? editedSpan(was.v, v, was.a, was.b) ?? undefined : undefined);
+    setText(v, undefined, textSpans.span(v, boxText(box)) ?? undefined);
     recordFieldEdit(fieldUndo, e.target.value, { atomic: isAtomicInput(e.inputType), faces: copyRuns(boxRuns(box)) });
   }
 
@@ -1865,7 +1859,7 @@
       <div class="insp-pane" role="tabpanel" id="insp-pane-text" aria-labelledby="insp-tab-text">
         <div class="grp">
           <label class="lbl" for="insp-text">Content {isFreeBox(box) ? '· free' : `· line ${box.lineN}`}</label>
-          <textarea id="insp-text" value={boxText(box)} onbeforeinput={onTextBeforeInput} oninput={onTextInput} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
+          <textarea id="insp-text" value={boxText(box)} onbeforeinput={textSpans.before} oncompositionstart={textSpans.start} oncompositionend={textSpans.end} oninput={onTextInput} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
         </div>
         <div class="grp">
           <label class="lbl" for="insp-font">Font</label>

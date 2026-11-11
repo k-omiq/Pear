@@ -72,8 +72,12 @@ fn paint(e: &mut Engine, r: &Request) -> Raster {
 }
 
 /// The wire form of a one-run straight job, as paint.mjs writes it, and the
-/// v13 block after it when `block` is given.
+/// v13 block after it when `block` is given, flagged (128) as it says.
 fn wire(font: u32, text: &str, curved: bool, block: Option<&[u32]>) -> Vec<u8> {
+    wire_flagged(font, text, curved, block, block.is_some())
+}
+
+fn wire_flagged(font: u32, text: &str, curved: bool, block: Option<&[u32]>, flagged: bool) -> Vec<u8> {
     let mut b = Vec::new();
     let u = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_le_bytes());
     let f = |b: &mut Vec<u8>, v: f64| b.extend_from_slice(&v.to_le_bytes());
@@ -88,7 +92,7 @@ fn wire(font: u32, text: &str, curved: bool, block: Option<&[u32]>) -> Vec<u8> {
         f(&mut b, v);
     }
     f(&mut b, 0.0); // weight
-    u(&mut b, u32::from(curved));
+    u(&mut b, u32::from(curved) | if flagged { 128 } else { 0 });
     u(&mut b, 0); // left
     f(&mut b, 0.0);
     b.extend_from_slice(&[0, 0, 0, 255]);
@@ -160,6 +164,10 @@ fn a_damaged_block_is_refused() {
     for block in bad {
         assert_eq!(decode(&wire(3, "HI", false, Some(block))).err(), Some(Error::BadSpec), "{block:?}");
     }
+    // A block with no flag saying so is bytes past the job's end, and a flag
+    // with no block is a job cut short.
+    assert_eq!(decode(&wire_flagged(3, "HI", false, Some(&[1, 3, 0, 0, 1, 0]), false)).err(), Some(Error::BadSpec));
+    assert_eq!(decode(&wire_flagged(3, "HI", false, None, true)).err(), Some(Error::BadSpec));
     // A curve is laid out in one face.
     assert_eq!(
         decode(&wire(3, "HI", true, Some(&[1, 3, 0, 0, 1, 0]))).err(),

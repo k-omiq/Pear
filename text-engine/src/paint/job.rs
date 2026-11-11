@@ -591,7 +591,7 @@ impl<'a> Reader<'a> {
 /// f64 x 6 transform (a, b, c, d, e, f)
 /// f64 weight (device pixels, 0 to 64)
 /// u32 flags (1 curved, 2 silhouette, 4 no fill, 8 letter by letter,
-///     16 negative, 32 crisp v11, 64 wobble v12), u32 align (0 left,
+///     16 negative, 32 crisp v11, 64 wobble v12, 128 faces v13), u32 align (0 left,
 ///     1 centre, 2 right)
 /// f64 letter spacing
 /// rgba silhouette
@@ -608,9 +608,9 @@ impl<'a> Reader<'a> {
 ///                              u32 run flags (1 afterimage), fill,
 ///                              u32 byte length, UTF-8 text
 /// u32 tile count, then per tile: u32 width, u32 height, RGBA8 pixels
-/// (v13) only for a straight job whose lines are set in several faces, and
-///     nothing at all otherwise, so a job in one face is the bytes it was:
-///     u32 face count (1 to 16), then per face: u32 font, u32 synth bits,
+/// with flag 128 (v13), a straight job whose lines are set in several
+///     faces (and nothing at all otherwise, so a job in one face is the bytes
+///     it was): u32 face count (1 to 16), then per face: u32 font, u32 synth bits,
 ///     u32 fallback chain, all at the job's size;
 ///     u32 run count (the job's), then per run: u32 stretch count (0 for a
 ///     run in the job's face), then per stretch: u32 face index, u32 first
@@ -767,13 +767,13 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         })
     }))?;
     let tiles = r.tiles()?;
-    let faces = if r.at < bytes.len() {
+    let faces = if flags & 128 != 0 {
         r.run_faces(runs.len(), size)?
     } else {
         RunFaces::default()
     };
     // A curve is one glyph a run, laid out in the box's face: no stretches.
-    if flags & 1 != 0 && !faces.faces.is_empty() {
+    if flags & 1 != 0 && flags & 128 != 0 {
         return Err(Error::BadSpec);
     }
     if r.at != bytes.len() {

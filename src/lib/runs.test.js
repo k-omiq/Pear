@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeRuns, faceAt, faceSpans, toggleRuns, changedSpan, editedSpan, sliceRuns, shiftRuns, putText, saveRuns, runsKey, textCheck } from './runs.js';
+import { normalizeRuns, faceAt, faceSpans, toggleRuns, changedSpan, editedSpan, fieldSpans, sliceRuns, shiftRuns, putText, saveRuns, runsKey, textCheck } from './runs.js';
 
 const B = { bold: true, italic: false };
 const I = { bold: false, italic: true };
@@ -154,6 +154,60 @@ describe('editedSpan', () => {
     expect(editedSpan('abc', 'abc', 1, 1)).toBe(null);
     // Never through the middle of an emoji.
     expect(editedSpan('a😀', 'a\ud83d', 3, 3)).toBe(null);
+  });
+});
+
+describe('editedSpan and the side a delete took', () => {
+  it('takes the letter after the caret for a forward delete, before it otherwise', () => {
+    // "aa", the second one bold, the caret between them.
+    expect(editedSpan('aa', 'a', 1, 1)).toEqual([0, 1]);
+    expect(editedSpan('aa', 'a', 1, 1, 'deleteContentBackward')).toEqual([0, 1]);
+    expect(editedSpan('aa', 'a', 1, 1, 'deleteContentForward')).toEqual([1, 2]);
+    expect(shiftRuns([run(1, 2)], 'aa', 'a', editedSpan('aa', 'a', 1, 1, 'deleteContentForward'))).toBe(null);
+    expect(shiftRuns([run(1, 2)], 'aa', 'a', editedSpan('aa', 'a', 1, 1, 'deleteContentBackward'))).toEqual([run(0, 1)]);
+    expect(editedSpan('ha ha', 'ha ', 3, 3, 'deleteWordForward')).toEqual([3, 5]);
+    // A side that does not explain the text is not taken.
+    expect(editedSpan('abc', 'ac', 2, 2, 'deleteContentForward')).toEqual([1, 2]);
+  });
+});
+
+describe('fieldSpans, the range a plain text field edited', () => {
+  // A textarea as the handlers see it.
+  const field = (value, a, b = a) => ({ value, selectionStart: a, selectionEnd: b });
+  const ev = (el, inputType = '') => ({ currentTarget: el, inputType });
+
+  it('reads the selection and the input type each edit began with', () => {
+    const f = fieldSpans();
+    f.before(ev(field('aa', 1), 'deleteContentForward'));
+    expect(f.span('a', 'aa')).toEqual([1, 2]);
+    // Read once: an edit with no `beforeinput` of its own is not explained.
+    expect(f.span('', 'a')).toBe(null);
+    // Nor one that began on other words than the model's.
+    f.before(ev(field('xy', 1)));
+    expect(f.span('xzy', 'ab')).toBe(null);
+  });
+
+  it('follows a composition from where it began, as the composed letters are not selected', async () => {
+    const f = fieldSpans();
+    const el = field('one two', 4);
+    f.start(ev(el));
+    // Each step of it replaces the letters composed so far; the caret is
+    // at their end, which says nothing of where they start.
+    for (const [now, caret, want] of [
+      ['one ktwo', 5, [4, 4]],
+      ['one katwo', 6, [4, 5]],
+      ['one 漢two', 5, [4, 6]],
+    ]) {
+      f.before(ev(el, 'insertCompositionText'));
+      expect(f.span(now, el.value)).toEqual(want);
+      el.value = now;
+      el.selectionStart = el.selectionEnd = caret;
+    }
+    f.end();
+    await new Promise((r) => setTimeout(r, 0));
+    // After it, the selection again.
+    f.before(ev(el, 'insertText'));
+    expect(f.span('one 漢xtwo', el.value)).toEqual([5, 5]);
   });
 });
 

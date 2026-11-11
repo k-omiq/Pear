@@ -58,8 +58,10 @@ export function createBrowserTextEngine() {
     onFontsChange(cb) {
       if (typeof _fontSet?.addEventListener !== 'function') return;
       for (const ev of ['loading', 'loadingdone', 'loadingerror']) _fontSet.addEventListener(ev, cb);
+      faceListeners.add(cb);
       return () => {
         for (const ev of ['loading', 'loadingdone', 'loadingerror']) _fontSet.removeEventListener?.(ev, cb);
+        faceListeners.delete(cb);
       };
     },
     // Code points of `text` the face itself has no glyph for, each once, in
@@ -171,12 +173,34 @@ function wrapPlain(face, text, opts) {
 
 // Readiness used to ask the live font set even when there was no measuring
 // canvas at import time. Keep that answer for a browser installed later too.
+//
+// A face the set does not have yet is loaded once, and whatever that load
+// ends in - the face, an error, nothing that matched - is final: from then on
+// the face is ready, and the browser draws it with what it has, as it does a
+// face whose file was never there (a bold made from the regular, say), the
+// same in the measure and on the canvas. So a file that will not load is not
+// asked for again, and a face never waits on it for good. Each load that ends
+// is told to the engines' font listeners (`onFontsChange`), as the set's own
+// events would, so the layouts made while it was loading are made again.
+const facesSettled = new Set();
+const facesLoading = new Set();
+const faceListeners = new Set();
 export function browserFaceReady(face) {
   const set = typeof document === 'undefined' ? null : document.fonts;
   if (typeof set?.check !== 'function') return true;
+  const key = face.key;
+  if (facesSettled.has(key)) return true;
   try {
-    if (set.check(face.key)) return true;
-    set.load?.(face.key)?.catch?.(() => {});
+    if (set.check(key)) return true;
+    if (!facesLoading.has(key)) {
+      facesLoading.add(key);
+      const done = () => {
+        facesLoading.delete(key);
+        facesSettled.add(key);
+        for (const cb of [...faceListeners]) cb();
+      };
+      Promise.resolve(set.load?.(key)).then(done, done);
+    }
     return false;
   } catch {
     return true;

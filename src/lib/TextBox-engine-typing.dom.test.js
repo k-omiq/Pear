@@ -1476,6 +1476,33 @@ describe('while an IME composes, nothing the picture answers moves the caret or 
   });
   afterEach(() => setMacKeyboard(was));
   const composition = (m, type) => m.editable().dispatchEvent(new CompositionEvent(type, { bubbles: true }));
+  it('keeps the faces of the words around a composition, moved over the composed letters', async () => {
+    const B = (start, end) => ({ start, end, bold: true, italic: false });
+    const m = await typing('plain');
+    // "WAIT FOR ME": WAIT and FOR bold.
+    m.box.runs = [B(0, 4), B(5, 8)];
+    await tick();
+    const ed = m.editable();
+    nativeSel(m, 5);
+    await tick();
+    composition(m, 'compositionstart');
+    ed.textContent = 'WAIT 漢FOR ME\nOVER THERE';
+    nativeSel(m, 6);
+    ed.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    await tick();
+    // The picture painted while it composes keeps both bold words, FOR one
+    // letter on, and the composed letter plain (the letter before it is a
+    // space).
+    const painted = paintBoxPicture.mock.calls.at(-1)[0];
+    expect(painted.text).toBe('WAIT 漢FOR ME\nOVER THERE');
+    expect(painted.runs).toEqual([B(0, 4), B(6, 9)]);
+    composition(m, 'compositionend');
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    expect(m.box.text).toBe('WAIT 漢FOR ME\nOVER THERE');
+    expect(m.box.runs).toEqual([B(0, 4), B(6, 9)]);
+  });
+
   it.each([true, false])('undo/redo during composition leaves field history intact (painting=%s)', async (painting) => {
     engineSwitch.painting = painting;
     const m = await typing('plain');
