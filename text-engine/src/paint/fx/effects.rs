@@ -1667,7 +1667,7 @@ pub(crate) fn effect_key(e: &Effect) -> Option<Key> {
 /// frame's resolution once the blur is wide enough to take out what the
 /// smaller raster loses, and read back over the frame. Its grid is anchored
 /// to the box's corner, so the room round the letters does not move it.
-/// With `key` (a kept interior's shape key) each mark's coverage is kept, so
+/// With `key` (there when the interior is kept) each mark's coverage is kept, so
 /// a repaint, or one more mark, rasters only what changed. `None` when
 /// nothing is left.
 fn paint_layer(
@@ -2222,10 +2222,13 @@ fn interior_at(
                 )?;
             }
             (Some(Effect::Paint(pm)), Some(full)) => {
-                // Each mark's coverage is keyed on its own shape (`shape_hash`),
-                // so the parent key is the letters' shape alone: a colour or an
-                // opacity moved reads every coverage back.
-                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale, keys.of_shape("paint"))? {
+                // Each mark's coverage is keyed on its own shape (`shape_hash`)
+                // and the frame it is rastered in, and nothing of the letters
+                // or the page: a colour or an opacity changed, the letters
+                // retyped or the box moved by whole pixels reads every
+                // coverage back.
+                let key = keys.shape.and(Hasher::new("paint").finish());
+                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale, key)? {
                     lay_with(
                         &mut lay,
                         full,

@@ -40,7 +40,8 @@ use super::fx::gradient_bake::Method;
 use super::fx::noise_gradient::{Model, Noise, Ramp};
 use super::fx::{distance, noise, size_reach, spread_split};
 use super::geom::{positive, Affine, IBox, Polys, Pt};
-use super::job::{decode, read_fill, Fill, Request, Rgba};
+use super::job::{read_fill, Fill, Request, Rgba};
+use super::special::Special;
 use super::kept::{self, Hasher};
 use super::raster::{Part, Rasterizer};
 use super::shade::Shader;
@@ -1310,13 +1311,18 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
     let len = r.u32()? as usize;
     let job = r.take(len)?;
     // The pieces kept under this key are the job's letters, which a line
-    // shapes differently from the same runs one by one.
+    // shapes differently from the same runs one by one. Of the special
+    // effects only Crack and Scratches change them: Lightning and Splash
+    // are paint laid after (`lay_special_paint`, keyed by their marks), so
+    // a drag of theirs keeps the letters.
+    let (mut request, special_at) = super::job::decode_split(job)?;
+    let cuts = request.job.effects.special.filter(Special::shapes_letters);
     let key = Hasher::new("job")
-        .bytes(job)
+        .bytes(&job[..special_at])
+        .debug(&cuts.map(|s| (s.rect, s.crack, s.scratches)))
         .bytes(&[u8::from(line)])
         .finish()
         .ok_or(Error::BadSpec)?;
-    let mut request = decode(job)?;
     if r.at != bytes.len() || (line && !request.job.curved) {
         return Err(Error::BadSpec);
     }
