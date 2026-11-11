@@ -115,6 +115,28 @@ describe('the Special panel', () => {
     expect(view.queryByLabelText('Crack angle, degrees')).toBe(null);
   });
 
+  it('Motion shows only past Break off 0, reads Fall by default, and a pick is one undo step', async () => {
+    const { view } = mounted(true, { crack: { on: true } });
+    await tick();
+    expect(view.queryByRole('group', { name: 'Crack motion' })).toBe(null);
+    cleanup();
+    const again = mounted(true, { crack: { on: true, breakOff: 40 } });
+    await tick();
+    const group = again.view.getByRole('group', { name: 'Crack motion' });
+    const fall = again.view.getByRole('button', { name: 'Fall' });
+    const apart = again.view.getByRole('button', { name: 'Apart' });
+    expect(group.contains(fall)).toBe(true);
+    expect(fall.getAttribute('aria-pressed')).toBe('true');
+    const base = records();
+    await fireEvent.pointerDown(apart);
+    await fireEvent.click(apart);
+    settleEdits();
+    expect(again.box().style.special.crack.motion).toBe('apart');
+    expect(records()).toBe(base + 1);
+    undo();
+    expect(again.box().style.special.crack.motion).toBe('fall');
+  });
+
   it('under the browser engine, the switches are dimmed and the group says why; one on can still go off', async () => {
     const { view, box } = mounted(false, { crack: { on: true } });
     await tick();

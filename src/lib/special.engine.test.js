@@ -6,7 +6,7 @@ import { textEngine, setTextEngine, glyphPainter, setGlyphPainter } from './text
 import { createRustGlyphPainter } from './text-engine/rust-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
-import { normalizeSpecial, specialJob, breakReach, setBreakMotion, breakMotionNow, BREAK_SIDE, BREAK_DROP } from './special.js';
+import { normalizeSpecial, specialJob, breakReach, BREAK_SIDE, BREAK_DROP } from './special.js';
 import { encodeJob } from '../../text-engine/js/paint.mjs';
 import { isRasterOnly } from './psd.js';
 
@@ -65,7 +65,9 @@ const same = (a, b) => a.width === b.width && a.height === b.height && a.data.eq
 describe('the model', () => {
   it('reads anything as four rows, off, in range', () => {
     const n = normalizeSpecial({ crack: { on: true, amount: 300, size: 1, seed: -4 }, lightning: { core: 'blue', glowSize: 999 }, splash: { color: '#ABCDEF' } });
-    expect(n.crack).toEqual({ on: true, amount: 100, size: 10, x: 50, y: 50, spread: 100, breakOff: 0, seed: 0 });
+    expect(n.crack).toEqual({ on: true, amount: 100, size: 10, x: 50, y: 50, spread: 100, breakOff: 0, motion: 'fall', seed: 0 });
+    expect(normalizeSpecial({ crack: { motion: 'apart' } }).crack.motion).toBe('apart');
+    expect(normalizeSpecial({ crack: { motion: 'spin' } }).crack.motion).toBe('fall');
     expect(n.lightning.on).toBe(false);
     expect(n.lightning.core).toBe('#ffffff');
     expect(n.lightning.glowSize).toBe(300);
@@ -128,7 +130,9 @@ describe('the glyph wire (v16)', () => {
     const s0 = style({ special: { crack: { ...ON.crack, breakOff: 0 } } });
     expect('breakOff' in specialJob(s0, rect).crack).toBe(false);
     const s5 = style({ special: { crack: { ...ON.crack, breakOff: 50 } } });
-    expect(specialJob(s5, rect).crack.breakOff).toEqual({ share: 0.5, motion: ['apart', 'fall'].indexOf(breakMotionNow()) });
+    expect(specialJob(s5, rect).crack.breakOff).toEqual({ share: 0.5, motion: 1 });
+    const apart = style({ special: { crack: { ...ON.crack, breakOff: 50, motion: 'apart' } } });
+    expect(specialJob(apart, rect).crack.breakOff).toEqual({ share: 0.5, motion: 0 });
   });
 });
 
@@ -209,15 +213,11 @@ describe('painted over the whole box', () => {
   });
 
   describe('break off (B5)', () => {
-    const was = breakMotionNow();
-    afterAll(() => setBreakMotion(was));
-    const at = (breakOff) => ({ ...LOOK, special: { crack: { ...ON.crack, breakOff } } });
+    const at = (breakOff, motion = 'fall') => ({ ...LOOK, special: { crack: { ...ON.crack, breakOff, motion } } });
 
     it('pads the paint by the farthest a piece travels, and only the paint', () => {
-      setBreakMotion('apart');
       expect(breakReach(style(at(0)), 120)).toBe(null);
-      expect(breakReach(style(at(50)), 120)).toEqual({ x: BREAK_SIDE * SIZE, top: BREAK_SIDE * SIZE, bottom: BREAK_SIDE * SIZE });
-      setBreakMotion('fall');
+      expect(breakReach(style(at(50, 'apart')), 120)).toEqual({ x: BREAK_SIDE * SIZE, top: BREAK_SIDE * SIZE, bottom: BREAK_SIDE * SIZE });
       expect(breakReach(style(at(50)), 120).bottom).toBe(120 + BREAK_DROP * SIZE);
       const plain = texture(boxOf(at(0)));
       const fall = texture(boxOf(at(80)));
@@ -225,12 +225,11 @@ describe('painted over the whole box', () => {
     });
 
     it.each(['apart', 'fall'])('%s: moves pieces, the same picture each time and wherever the box stands', (m) => {
-      setBreakMotion(m);
-      const crack = texture(boxOf(at(0)));
-      const a = texture(boxOf(at(75)));
-      const b = texture(boxOf(at(75)));
+      const crack = texture(boxOf(at(0, m)));
+      const a = texture(boxOf(at(75, m)));
+      const b = texture(boxOf(at(75, m)));
       expect(same(a, b)).toBe(true);
-      const there = texture(boxOf(at(75), { x: 213, y: 171 }));
+      const there = texture(boxOf(at(75, m), { x: 213, y: 171 }));
       expect(same(a, there)).toBe(true);
       // Ink where the cracked box has none, the two lined up on the box's
       // corner: a piece moved there.
@@ -256,12 +255,14 @@ describe('painted over the whole box', () => {
     });
 
     it('a new seed breaks other pieces, and 0 is the crack alone', () => {
-      setBreakMotion('apart');
       const plain = texture(boxOf({ ...LOOK, special: { crack: ON.crack } }));
       expect(same(texture(boxOf(at(0))), plain)).toBe(true);
+      expect(same(texture(boxOf(at(0, 'apart'))), plain)).toBe(true);
       const a = texture(boxOf(at(75)));
       const b = texture(boxOf({ ...LOOK, special: { crack: { ...ON.crack, seed: 4, breakOff: 75 } } }));
       expect(same(a, b)).toBe(false);
+      // The two motions move the same pieces to other places.
+      expect(same(a, texture(boxOf(at(75, 'apart'))))).toBe(false);
     });
   });
 
