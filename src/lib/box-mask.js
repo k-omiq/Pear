@@ -76,7 +76,22 @@ export function normalizeMask(m) {
 export function maskActive(box) {
   const m = box?.mask;
   if (!m?.on) return false;
-  return m.shapes.some((sh) => sh.kind !== 'bubble' || bubbleClip(bubblePts(box), sh.inset) != null);
+  return m.shapes.some((sh) => sh.kind !== 'bubble' || linkClip(box, sh.inset) != null);
+}
+
+// `bubbleClip` of the box's outline, kept with the fit until it or the inset
+// changes: every writer of `box.fit` puts a new object there (`frameKey`
+// keys on it so), and the exporter, the containment check and the store ask
+// several times a box. The polygon is shared; nobody may change it.
+const linkClips = new WeakMap();
+export function linkClip(box, inset) {
+  const f = box?.fit;
+  if (!f || typeof f !== 'object') return bubbleClip(bubblePts(box), inset);
+  const hit = linkClips.get(f);
+  if (hit && Object.is(hit.inset, inset)) return hit.out;
+  const out = bubbleClip(bubblePts(box), inset);
+  linkClips.set(f, { inset, out });
+  return out;
 }
 
 // The bubble link on the box's mask, or null.
@@ -271,10 +286,13 @@ function ellipsePolygon(sh) {
   });
 }
 
-// An ellipse as a polygon whose steps are 4 px or less, however large: the
-// count follows the radius, so a wide ellipse never shows its corners.
+// An ellipse as a polygon whose steps are 4 px or less up to a page-size
+// one (a radius of about 2500 px), so a wide ellipse never shows its corners;
+// past that the count stays at the cap, and a stray huge radius costs no
+// more than that.
+const ELLIPSE_RING_MAX = 4096;
 function ellipseRing(sh) {
-  const n = Math.max(ELLIPSE_STEPS, Math.ceil((Math.PI * 2 * Math.max(sh.rx, sh.ry)) / 4));
+  const n = Math.min(ELLIPSE_RING_MAX, Math.max(ELLIPSE_STEPS, Math.ceil((Math.PI * 2 * Math.max(sh.rx, sh.ry)) / 4) || ELLIPSE_STEPS));
   return Array.from({ length: n }, (_, i) => {
     const a = (i / n) * Math.PI * 2;
     return [sh.cx + sh.rx * Math.cos(a), sh.cy + sh.ry * Math.sin(a)];
@@ -322,8 +340,7 @@ export function heldMaskInBoxFrame(box) {
     const out = [];
     for (const sh of box.mask.shapes) {
       if (sh.kind === 'bubble') {
-        const pts = bubblePts(box);
-        const clip = bubbleClip(pts, sh.inset);
+        const clip = linkClip(box, sh.inset);
         if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip.map(map) });
       } else out.push(carried(sh, map, straight));
     }
@@ -417,8 +434,7 @@ export function maskOnPage(box) {
   const out = [];
   for (const sh of box.mask.shapes) {
     if (sh.kind === 'bubble') {
-      const pts = bubblePts(box);
-      const clip = bubbleClip(pts, sh.inset);
+      const clip = linkClip(box, sh.inset);
       if (clip) out.push({ kind: 'poly', op: 'keep', pts: clip });
     } else out.push(sh);
   }
@@ -461,9 +477,19 @@ export function scaleMask(mask, sx, sy) {
 // kept (closed: the closing edge cut too, its end not repeated). A straight
 // edge in the box's frame is a curve once a mesh has carried it, so it is cut
 // before it is carried, as the old outline drawer did.
+// At most about DENSIFY_MAX points come out: past that the step grows, so a
+// stray huge shape costs no more than a page-size one.
+const DENSIFY_MAX = 8192;
 function densify(pts, closed, step = 4) {
   const out = [];
   const n = closed ? pts.length : pts.length - 1;
+  let length = 0;
+  for (let i = 0; i < n; i++) {
+    const [ax, ay] = pts[i];
+    const [bx, by] = pts[(i + 1) % pts.length];
+    length += Math.hypot(bx - ax, by - ay);
+  }
+  if (length / step > DENSIFY_MAX) step = length / DENSIFY_MAX;
   for (let i = 0; i < n; i++) {
     const [ax, ay] = pts[i];
     const [bx, by] = pts[(i + 1) % pts.length];

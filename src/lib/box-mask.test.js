@@ -12,6 +12,7 @@ import {
   boxToPage,
   bubbleOutline,
   bubbleClip,
+  linkClip,
   crossesItself,
   frameKey,
   MASK_SHAPES_MAX,
@@ -217,6 +218,15 @@ describe('the old mask, in the style, comes to the page', () => {
     expect(worst).toBeLessThanOrEqual(4 + 1e-9);
   });
 
+  it('a stray huge ellipse is capped: a few thousand points, not millions', () => {
+    const pts = [];
+    for (let r = 0; r <= 2; r++) for (let c = 0; c <= 2; c++) pts.push([c * 100 + 20, r * 60 + 10]);
+    const box = boxOf({ style: { warp: { on: true, cols: 2, rows: 2, pts }, clip: clip('include', [{ kind: 'ellipse', cx: 100, cy: 60, rx: 4e6, ry: 3e6 }]) } });
+    const ring = maskFromClip(box).shapes[0].pts;
+    expect(ring.length).toBeGreaterThan(3000);
+    expect(ring.length).toBeLessThanOrEqual(8192 + 4096);
+  });
+
   it('a style with no mask has none, and an empty switched-on one keeps its switch', () => {
     expect(maskFromClip(boxOf())).toBe(null);
     expect(maskFromClip(boxOf({ style: { clip: { on: true, mode: 'exclude', shapes: [] } } }))).toEqual({ on: true, shapes: [] });
@@ -235,6 +245,20 @@ describe('the bubble link', () => {
     box.fit = square(300, 40, 80);
     close(maskOnPage(box)[0].pts, [[305, 45], [375, 45], [375, 115], [305, 115]]);
     expect(maskInBoxFrame(box)[0].op).toBe('keep');
+  });
+
+  it('is worked out once for a fit and an inset, and again when either changes', () => {
+    const box = { ...boxOf(), fit: square(100, 100, 50), mask: normalizeMask({ on: true, shapes: [{ kind: 'bubble', inset: 5 }] }) };
+    const a = linkClip(box, 5);
+    expect(linkClip(box, 5)).toBe(a);
+    expect(maskActive(box)).toBe(true);
+    expect(maskOnPage(box)[0].pts).toBe(a);
+    const b = linkClip(box, 3);
+    expect(b).not.toBe(a);
+    close(b, [[103, 103], [147, 103], [147, 147], [103, 147]]);
+    box.fit = square(100, 100, 50);
+    expect(linkClip(box, 3)).not.toBe(b);
+    expect(linkClip({ ...box, fit: null }, 3)).toBe(null);
   });
 
   it('a narrow bubble keeps a band of itself, and an outline with no area hides nothing', () => {
