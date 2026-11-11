@@ -330,6 +330,35 @@ describe('unwarpPoint', () => {
     expect(unwarpPoint(fold, 2, 2, W, H, qx, qy)).not.toBe(null);
   });
 
+  it('with no hint, neighbouring targets in the fold\'s overlap land on one sheet', () => {
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    const bounds = [-10, -10, 110, 110];
+    let pairs = 0;
+    let apart = 0;
+    for (let y = 0; y <= 110; y += 1.5) {
+      for (let x = 0; x <= 120; x += 1.5) {
+        const a = unwarpWith(m, W, H, x, y, { bounds });
+        const b = unwarpWith(m, W, H, x + 1, y, { bounds });
+        if (!a || !b) continue;
+        pairs++;
+        if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 10) apart++;
+      }
+    }
+    expect(pairs).toBeGreaterThan(5000);
+    // The sheet turned as the box's middle is wins, then the answer nearest
+    // the target: a pair lands apart only where one of its sheets ends
+    // between the two (26 here; the first seed to converge gave 70).
+    expect(apart).toBeLessThanOrEqual(30);
+    // In the overlap, inside both sheets: page (104, 75) is reached from
+    // about (47, 58), turned as the box's middle is, and about (79, 68),
+    // turned over. The start and its neighbour both take the first.
+    const [s0, s1] = [unwarpWith(m, W, H, 104, 75, { bounds }), unwarpWith(m, W, H, 105, 75, { bounds })];
+    expect(Math.hypot(s0[0] - 47.2, s0[1] - 57.9)).toBeLessThan(0.1);
+    expect(Math.hypot(s0[0] - s1[0], s0[1] - s1[1])).toBeLessThan(3);
+    expect(unwarpWith(m, W, H, 104, 75, { bounds, hint: [79, 67] })[0]).toBeCloseTo(79, 0);
+  });
+
   it('answers nothing outside the bounds, and skips the search for a target out of the seeds\' reach', () => {
     const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
     const m = meshMap(fold, 2, 2, W, H);
