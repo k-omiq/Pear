@@ -144,7 +144,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns } from './runs.js';
+  import { copyRuns, editedSpan } from './runs.js';
   import { onDestroy } from 'svelte';
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
@@ -419,8 +419,10 @@
   // `setBoxText`'s own fit as well, every keystroke here solved the box twice,
   // the second time to the answer the first had just written.
   // `runs`, for a step of the field's own undo: the faces that step had.
-  function setText(v, runs) {
-    setBoxText(box, v, page(), { fit: false, runs });
+  // `span`, the range an edit replaced when it is known, so the faces move
+  // with this edit and not with a guess at it.
+  function setText(v, runs, span) {
+    setBoxText(box, v, page(), { fit: false, runs, span });
     touch();
   }
 
@@ -438,9 +440,20 @@
     resyncField(fieldUndo, v, box ? copyRuns(boxRuns(box)) : null);
   });
 
+  // The field and its selection as each edit begins: what that edit replaced
+  // is read from them (`editedSpan`) once it has landed.
+  let textBefore = null;
+  function onTextBeforeInput(e) {
+    const el = e.currentTarget;
+    textBefore = { v: el.value, a: el.selectionStart, b: el.selectionEnd };
+  }
+
   // Recorded after the write, so the step holds the faces the write left.
   function onTextInput(e) {
-    setText(e.target.value);
+    const v = e.target.value;
+    const was = textBefore;
+    textBefore = null;
+    setText(v, undefined, was && was.v === boxText(box) ? editedSpan(was.v, v, was.a, was.b) ?? undefined : undefined);
     recordFieldEdit(fieldUndo, e.target.value, { atomic: isAtomicInput(e.inputType), faces: copyRuns(boxRuns(box)) });
   }
 
@@ -1852,7 +1865,7 @@
       <div class="insp-pane" role="tabpanel" id="insp-pane-text" aria-labelledby="insp-tab-text">
         <div class="grp">
           <label class="lbl" for="insp-text">Content {isFreeBox(box) ? '· free' : `· line ${box.lineN}`}</label>
-          <textarea id="insp-text" value={boxText(box)} oninput={onTextInput} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
+          <textarea id="insp-text" value={boxText(box)} onbeforeinput={onTextBeforeInput} oninput={onTextInput} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
         </div>
         <div class="grp">
           <label class="lbl" for="insp-font">Font</label>

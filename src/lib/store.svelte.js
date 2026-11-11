@@ -139,7 +139,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
-import { putText, copyRuns, normalizeRuns, runsField, runsKey } from './runs.js';
+import { putText, copyRuns, runsField, runsKey } from './runs.js';
 import { sfxAvailable, sfxActive, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
 
 export { PAGE_W, PAGE_H };
@@ -210,10 +210,12 @@ function sanitizeLine(l) {
   const out = { ...l };
   if (l?.placed) out.placed = true;
   // The faces of the English (runs.js), which they index: off disk they are
-  // only trusted once normalised against it, and none is no key at all.
-  const runs = normalizeRuns(l?.runs, typeof out.en === 'string' ? out.en : '');
-  if (runs) out.runs = runs;
-  else delete out.runs;
+  // only trusted when their check is this English's (an older app may have
+  // changed the words and kept them) and once normalised against it. None is
+  // no key at all, and the check is never kept in memory.
+  delete out.runs;
+  delete out.runsCheck;
+  Object.assign(out, runsField(l?.runs, out.en, l?.runsCheck));
   if (out.jp != null && typeof out.jp !== 'string') delete out.jp;
   if (typeof out.jp2 !== 'string' || !out.jp2) delete out.jp2;
   if (typeof out.speaker !== 'string' || !out.speaker) delete out.speaker;
@@ -356,7 +358,7 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
           text: b.text ?? null,
           // The faces of the box's own words (runs.js), only beside words it
           // owns: a box reading its line reads the line's.
-          ...(typeof b.text === 'string' ? runsField(b.runs, b.text, style) : null),
+          ...runsField(b.runs, b.text, b.runsCheck),
           x: b.x,
           y: b.y,
           w: b.w,

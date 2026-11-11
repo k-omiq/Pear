@@ -49,7 +49,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns } from './runs.js';
+  import { copyRuns, editedSpan } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
   import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
@@ -2767,11 +2767,17 @@
 
   // Whatever the browser did change - a composition, an input it would not let
   // be cancelled - is read back as raw text, and the lines drawn again.
-  function readBack(node) {
+  //
+  // `from`, for the end of a composition: the text and the raw range the IME
+  // was given when it began, so what it replaced is known (`editedSpan`) and
+  // the faces of the words (runs.js) move with it; without it, or when it does
+  // not explain the change, the range is guessed from the text alone.
+  function readBack(node, from = null) {
     if (!node.isConnected) return;
     const caret = caretNow(node);
     const v = node.textContent;
-    if (v !== text) commitEdit(v, caret ?? v.length, 'insertText');
+    const span = from && from.v === text ? editedSpan(from.v, v, from.a, from.b) : null;
+    if (v !== text) commitEdit(v, caret ?? v.length, 'insertText', span ?? undefined);
     else drawEdit(node, caret ?? v.length);
   }
   function onEditInput(e) {
@@ -2781,11 +2787,17 @@
       composeText = e.currentTarget.textContent;
     }
   }
-  function onCompositionStart() {
+  // What the composition began on, for `readBack` when it ends.
+  let composeFrom = null;
+  function onCompositionStart(e) {
     clearTimeout(compositionTimer);
     compositionTimer = null;
     compositionVersion++;
     composing = true;
+    // On a picture the selection is the picture's own (`edSel`); in the DOM
+    // lines it is the browser's.
+    const at = typing && edSel ? [Math.min(edSel.a, edSel.f), Math.max(edSel.a, edSel.f)] : e?.currentTarget ? editSpan(e.currentTarget) : null;
+    composeFrom = at ? { v: text, a: at[0], b: at[1] } : null;
     // A drag/menu that began before composition cannot go on changing its
     // selection, even if the picture falls back to DOM text in the meantime.
     if (pictureEdit) {
@@ -2808,7 +2820,9 @@
       if (pictured) compositionTimer = null;
       composeText = null;
       if (composeAt) composeAt = null;
-      readBack(node);
+      const from = composeFrom;
+      composeFrom = null;
+      readBack(node, from);
     };
     if (pictured) {
       clearTimeout(compositionTimer);

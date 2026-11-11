@@ -226,3 +226,35 @@ describe('the readers of a layout', () => {
     expect(widest(bold, [B(0, text.length)])).toBeLessThanOrEqual(bold.w);
   });
 });
+
+describe('a run the engine cannot cut at', () => {
+  it('measures the pieces one at a time rather than throw', () => {
+    const s = styleFor();
+    // A run that ends inside the emoji, as no normalised list can, but a
+    // caller could still hand in.
+    const text = 'x\u{1F600}y';
+    expect(() => engine.advanceRuns([faceFor({ ...s, bold: true }, SIZE), faceFor(s, SIZE)], text, [{ start: 0, end: 2 }, { start: 2, end: 4 }])).toThrow();
+    const w = sliceWidth(text, [B(0, 2)], s, SIZE, 0, 4);
+    expect(Number.isFinite(w) && w > 0).toBe(true);
+  });
+
+  it('lays out a run that ends between a letter and its mark', () => {
+    const s = styleFor();
+    const text = 'CAFÉ NOIR';
+    const lines = layoutLines(text, s, SIZE, WIDE, null, { runs: [B(0, 4)] });
+    expectSpansHold(lines, text);
+    expect([...lines]).toEqual([text]);
+  });
+});
+
+describe('plain wrapping with runs', () => {
+  it('breaks a word too wide for the box between letters, as the plain path does', () => {
+    const s = styleFor({ shape: 'off' });
+    const text = 'GO UNBELIEVABLY FAR';
+    const w = adv({ ...s, bold: true }, 'UNBELI');
+    const lines = layoutLines(text, s, SIZE, w, null, { runs: [B(3, 15)], breakWords: true });
+    expectSpansHold(lines, text);
+    lines.forEach((_, k) => expect(lineWidthAt(lines, k, s, SIZE)).toBeLessThanOrEqual(w + 0.01));
+    expect(lines.join('').replace(/\s/g, '')).toBe(text.replace(/\s/g, ''));
+  });
+});

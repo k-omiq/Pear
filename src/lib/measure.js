@@ -785,12 +785,17 @@ function trimEnd(line) {
 // `text` and its runs in the case the box draws them in: `applyCase`, with
 // each run moved to where its letters went. Upper-casing can change a
 // letter's length (ß to SS), so the runs are carried through one code point at
-// a time. A run in the box's own face says nothing and goes, and a text left
-// with none is plain text: `{ text, runs: null }`.
+// a time. For the layout a run in the box's own face measures as the letters
+// outside every run do, and goes - the stored runs keep it, as a run is a face
+// outright and the box's face may change. A text left with none is plain
+// text: `{ text, runs: null }`, today's layout.
+const notOwn = (list, style) => {
+  const out = list?.filter((r) => r.bold !== !!style?.bold || r.italic !== !!style?.italic);
+  return out?.length ? out : null;
+};
 export function casedRuns(text, runs, style) {
   const raw = String(text ?? '');
-  const own = { bold: !!style?.bold, italic: !!style?.italic };
-  const list = normalizeRuns(runs, raw, own);
+  const list = notOwn(normalizeRuns(runs, raw), style);
   if (!list) return { text: applyCase(raw, style), runs: null };
   if (!style?.uppercase) return { text: raw, runs: list };
   // Where each raw UTF-16 unit starts in the cased text.
@@ -810,7 +815,7 @@ export function casedRuns(text, runs, style) {
   // ones.
   const whole = applyCase(raw, style);
   if (out !== whole) return { text: whole, runs: null };
-  return { text: out, runs: normalizeRuns(list.map((r) => ({ ...r, start: at[r.start], end: at[r.end] })), out, own) };
+  return { text: out, runs: normalizeRuns(list.map((r) => ({ ...r, start: at[r.start], end: at[r.end] })), out) };
 }
 
 // The style a run's letters are measured in: the box's, with the run's face.
@@ -868,7 +873,15 @@ export function sliceWidth(text, runs, style, sizePx, s, e, hyphen = false) {
   let width = memo?.get(key);
   if (width === undefined) {
     const faces = pieces.map((p) => faceFor(faceStyle(style, p), sizePx));
-    width = engine.advanceRuns ? engine.advanceRuns(faces, str, pieces) : pieces.reduce((sum, p, i) => sum + engine.advance(faces[i], str.slice(p.start, p.end)), 0);
+    // One engine call, which cuts where the painter cuts. Should it refuse the
+    // spans (a run edge it cannot cut at), the same pieces are measured one at
+    // a time instead: a bad run never takes a box's layout down.
+    const sum = () => pieces.reduce((w, p, i) => w + engine.advance(faces[i], str.slice(p.start, p.end)), 0);
+    try {
+      width = engine.advanceRuns ? engine.advanceRuns(faces, str, pieces) : sum();
+    } catch {
+      width = sum();
+    }
     if (memo) keep(memo, key, width);
   }
   return width + (ls ? Math.max(0, [...str].length - 1) * ls : 0);
@@ -956,12 +969,35 @@ function runMeasure(text, runs, style, sizePx) {
 }
 
 // Plain wrapping (`shape: 'off'`, or the switch off) for a text with runs: the
-// greedy word wrap `wrapLines` does, by offset. The browser's own wrapping and
+// greedy wrap the plain path does, by offset. The browser's own wrapping and
 // the Rust engine's copy of it (`wrapPlain`) measure in one face, so a text in
-// several is wrapped here instead; it breaks only at spaces.
+// several is wrapped here instead, by the same rule they follow (`word-break:
+// break-word`): a line breaks at a space, and a word too wide for a line of
+// its own is broken between letters where it stops fitting, so it never runs
+// out of the box.
+const plainGraphemes = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 function plainRunLines(text, measure, width) {
   const lines = [];
   const spans = [];
+  const put = (a, b) => {
+    lines.push(text.slice(a, b));
+    spans.push([a, b]);
+  };
+  // A word `[ws, we)` that does not fit alone: whole lines of it, as many
+  // letters each as fit (one at the least), and the start of what is left.
+  const breakWord = (ws, we) => {
+    const stops = [];
+    if (plainGraphemes) for (const { index } of plainGraphemes.segment(text.slice(ws, we))) stops.push(ws + index);
+    else for (let k = ws; k < we; k += text.codePointAt(k) > 0xffff ? 2 : 1) stops.push(k);
+    stops.push(we);
+    let a = ws;
+    for (let i = 1; i < stops.length; i++) {
+      if (measure.span(a, stops[i], false) <= width || stops[i - 1] === a) continue;
+      put(a, stops[i - 1]);
+      a = stops[i - 1];
+    }
+    return a;
+  };
   let base = 0;
   for (const para of text.split('\n')) {
     const re = /\S+/g;
@@ -971,20 +1007,16 @@ function plainRunLines(text, measure, width) {
     while ((m = re.exec(para)) !== null) {
       const ws = base + m.index;
       const we = ws + m[0].length;
-      if (start >= 0 && measure.span(start, we, false) > width) {
-        lines.push(text.slice(start, end));
-        spans.push([start, end]);
-        start = ws;
-      } else if (start < 0) start = ws;
+      if (start >= 0 && measure.span(start, we, false) <= width) {
+        end = we;
+        continue;
+      }
+      if (start >= 0) put(start, end);
+      start = measure.span(ws, we, false) > width ? breakWord(ws, we) : ws;
       end = we;
     }
-    if (start < 0) {
-      lines.push('');
-      spans.push([base, base]);
-    } else {
-      lines.push(text.slice(start, end));
-      spans.push([start, end]);
-    }
+    if (start < 0) put(base, base);
+    else put(start, end);
     base += para.length + 1;
   }
   return withSpans(lines, spans, text, null);
