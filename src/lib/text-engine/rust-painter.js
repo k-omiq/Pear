@@ -322,7 +322,8 @@ export function createRustGlyphPainter(rust, options = {}) {
   // `mesh` says a job's mesh is bent by this painter, in the outlines
   // (`meshInJob`, exporter.js): the canvas painter has no such thing.
   // `roughen` says the same of a job's roughening (`roughenInJob`), and
-  // `wobble` of a job's wobble (`wobbleInJob`).
+  // `wobble` of a job's wobble (`wobbleInJob`), and `special` of a job's
+  // special effects (`specialDrawn`).
   // `box` says this painter paints a whole box in one job (`boxInJob`), which
   // it does when the wasm it was handed has that call.
   // `screen` says a pattern is painted per pixel from its kind and controls
@@ -341,7 +342,7 @@ export function createRustGlyphPainter(rust, options = {}) {
   // `worker` is the engine's paint worker (paint-mirror.js) or null; `capture`
   // and `finishCaptured` are how a box job goes to it and comes back.
   return {
-    id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, wobble: true, box, screen, ink, forgetTips,
+    id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, wobble: true, special: true, box, screen, ink, forgetTips,
     worker: box ? (rust.paintMirror ?? null) : null,
     capture: capturePaints,
     finishCaptured,

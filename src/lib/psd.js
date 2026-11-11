@@ -33,6 +33,7 @@ import { warpActive } from './warp.js';
 import { bakeRamp } from './gradient-ramp.js';
 import { withPageImages } from './page-images.js';
 import { snapshotExportPages } from './export-pages.svelte.js';
+import { specialActive } from './special.js';
 
 // Bumped when the embedded schema changes in a non-back-compatible way. Import
 // refuses newer majors it can't understand and falls back to layer mapping.
@@ -870,6 +871,9 @@ export function isRasterOnly(style) {
     s.roughen?.on ||
     // A wobble moves and turns each letter on its own: no type layer says that.
     s.wobble?.on ||
+    // A special effect (special.js) is a seeded pattern of cuts, ink and
+    // paint the engine makes: no type layer holds one.
+    specialActive(s) ||
     // Hand-drawn strokes are not something Photoshop's type engine can
     // re-render, so a box carrying them ships as pixels or loses them.
     inkActive(s.ink) ||

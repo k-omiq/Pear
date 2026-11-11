@@ -90,6 +90,7 @@
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
   import ValueSlider from './ValueSlider.svelte';
+  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX } from './special.js';
   import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
   import { setFxDefault, clearFxDefault, isComics } from './prefs.svelte.js';
@@ -645,6 +646,14 @@
   const rustBoxes = $derived(engineSwitch.painting && glyphPainter().box === true);
   // Whether the painter moves letters on its own (`wobbleInJob`).
   const wobblePaints = $derived(engineSwitch.painting && glyphPainter().wobble === true);
+  const specialPaints = $derived(engineSwitch.painting && glyphPainter().special === true);
+  // The rows of Surface ▸ Special, in the order they are listed.
+  const SPECIAL_ROWS = [
+    { kind: 'crack', label: 'Crack', title: 'Jagged cracks through the letters. High amounts break pieces out', amount: 'How many cracks and how long. Past 60 % pieces fall out' },
+    { kind: 'lightning', label: 'Lightning', title: 'Jagged bolts painted on the letters, with a soft glow', amount: 'How many bolts and branches' },
+    { kind: 'splash', label: 'Splash', title: 'Ink blobs and droplets round the letters, and holes in them', amount: 'How many blobs, droplets and holes' },
+    { kind: 'scratches', label: 'Scratches', title: 'Many thin scratches across the letters', amount: 'How many scratches' },
+  ];
   // The ink note: a box whose brush ink the engine's box job cannot take yet
   // (`inkJobGap`) is painted by the canvas, with none of its layer effects,
   // Fill Opacity, blend mode, Channels or Blend If. The controls stay (the
@@ -2345,6 +2354,9 @@
         {#if !wobblePaints && effectsGroup === 'shape'}
           <p class="nofill-note">Wobble needs the Rust text engine (Settings).</p>
         {/if}
+        {#if !specialPaints && effectsGroup === 'surface'}
+          <p class="nofill-note">Special effects need the Rust text engine (Settings).</p>
+        {/if}
 
         {#if effectsTab === 'stroke'}
           <!-- The strokes: one list, the first on top. Plain ones at the head
@@ -2740,6 +2752,60 @@
               </div>
             </div>
           </div>
+        {/if}
+
+        {#if effectsTab === 'special'}
+          <!-- Crack, Lightning, Splash and Scratches (special.js): each a
+               seeded pattern laid over the whole box, a row with a switch
+               that opens its settings, and any of them together. Only the
+               Rust engine paints them; the switches can still turn one off. -->
+          {@const sp = s.special}
+          {#each SPECIAL_ROWS as row (row.kind)}
+            {@const fx = sp[row.kind]}
+            {@const off = !fx.on || !specialPaints}
+            <div class="switch-row" title={row.title}>
+              <button
+                type="button"
+                class="switch"
+                class:on={fx.on}
+                role="switch"
+                aria-checked={fx.on}
+                aria-label={row.label}
+                disabled={!specialPaints && !fx.on}
+                onclick={() => { fx.on = !fx.on; touch(); }}
+              ><span class="knob"></span></button>
+              <span class="lbl2">{row.label}</span>
+            </div>
+            {#if fx.on}
+              <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+                {@render sliderRow('Amount', row.amount, fx.amount, (v) => setVal(fx, 'amount', v), { max: 100, unit: '%', aria: `${row.label} amount`, disabled: off })}
+                {#if 'size' in fx}
+                  {@render sliderRow('Size', 'How big the pattern is, percent of the font size', fx.size, (v) => setVal(fx, 'size', v), { min: SPECIAL_SIZE_MIN, max: SPECIAL_SIZE_MAX, soft: 200, unit: '%', aria: `${row.label} size`, disabled: off })}
+                {/if}
+                {#if 'angle' in fx}
+                  <div class="prow" title="The way the pattern runs: 0 is along the line">
+                    <span class="pl">Angle</span>
+                    <div class="pc"><AngleDial angle={fx.angle} label="{row.label} angle" disabled={off} oninput={(v) => setVal(fx, 'angle', v.angle)} /></div>
+                  </div>
+                {/if}
+                {#if 'color' in fx}
+                  <div class="prow">
+                    <span class="pl">Colour</span>
+                    <div class="pc">{@render colorField(fx, 'color', `${row.label} colour`)}</div>
+                  </div>
+                {/if}
+                <div class="prow" title="The same seed gives the same pattern wherever the box goes">
+                  <span class="pl">Seed</span>
+                  <div class="pc seed-pc">
+                    <input type="number" min="0" max="999" step="1" value={fx.seed} disabled={off} aria-label="{row.label} seed" onchange={(e) => commitNum(fx, 'seed', e, 0, 999, true)} />
+                    <button type="button" class="dice" disabled={off} aria-label="New {row.label.toLowerCase()} seed" title="A new seed: another pattern" onclick={() => newSeed(fx, 999)}>
+                      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.5" y="3.5" width="13" height="13" rx="2.5" /><circle cx="7.2" cy="7.2" r="1" fill="currentColor" stroke="none" /><circle cx="12.8" cy="12.8" r="1" fill="currentColor" stroke="none" /><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none" /></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            {/if}
+          {/each}
         {/if}
 
         {#if effectsTab === 'edges'}

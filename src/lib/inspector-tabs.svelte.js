@@ -76,6 +76,8 @@ export const EFFECTS_TABS = [
   { id: 'wobble', label: 'Wobble', group: 'shape' },
   { id: 'edges', label: 'Edges', group: 'surface' },
   { id: 'blur', label: 'Blur', group: 'surface' },
+  // Crack, Lightning, Splash and Scratches: seeded patterns over the box.
+  { id: 'special', label: 'Special', group: 'surface' },
   { id: 'mask', label: 'Mask', group: 'paint' },
   { id: 'fade', label: 'Fade', group: 'paint' },
   { id: 'colour', label: 'Colour', group: 'paint' },
