@@ -312,7 +312,12 @@ fn crack(
         // Spread along the letters, one point to each equal stretch, then
         // pulled in to the focus by the spread.
         let even = Pt::new(x0 + (i as f64 + dice.u(i, 0)) / points as f64 * w, y0 + dice.u(i, 1) * h);
-        let centre = Pt::new(focus.x + (even.x - focus.x) * spread, focus.y + (even.y - focus.y) * spread);
+        // Spread over everything, the even point itself, to the bit.
+        let centre = if spread >= 1.0 {
+            even
+        } else {
+            Pt::new(focus.x + (even.x - focus.x) * spread, focus.y + (even.y - focus.y) * spread)
+        };
         let arms = 3 + (dice.u(i, 2) * 3.0) as usize + (a * 2.0) as usize;
         let turn0 = dice.u(i, 3) * std::f64::consts::TAU;
         let width0 = u * (0.03 + 0.04 * a);
