@@ -2374,10 +2374,7 @@ export async function reconstructForeign(psd) {
           style: {},
         });
       } else if (n.text) {
-        // A layer in several fonts states its font per run and none for the
-        // whole (ag-psd leaves `style` with what all runs share): the first
-        // run's face stands in for what the layer-wide style leaves out.
-        const st = { ...(n.text.styleRuns?.[0]?.style ?? null), ...(n.text.style ?? null) };
+        const st = n.text.style || {};
         // The outline first: the box comes back from the layer's frame by
         // undoing the content box's inset, and the inset counts the outline.
         // Its layer style: the effects, the blending and the outlines
@@ -2428,7 +2425,12 @@ export async function reconstructForeign(psd) {
         // them back unbolded. The face named in the layer is the other half of
         // the answer, and between them they cover a foreign PSD too: some
         // authoring tools set the flags, all of them name the face.
-        const psName = String(st.font?.name || '');
+        // A layer in several fonts names a font per run and none for the
+        // whole (ag-psd keeps in `style` only what every run shares): the
+        // first run's font is read then. Only the font: a size or a colour
+        // that differs between runs keeps the default it always had, since
+        // the first run's (an emphasised word, say) is no truer of the rest.
+        const psName = String(st.font?.name || n.text.styleRuns?.[0]?.style?.font?.name || '');
         const faceSuffix = psName.includes('-') ? psName.slice(psName.lastIndexOf('-') + 1) : '';
         boxes.push({
           lineN: null,

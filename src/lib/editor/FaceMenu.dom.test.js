@@ -148,4 +148,27 @@ describe('the menu of the selected words\' faces', () => {
       vi.useRealTimers();
     }
   });
+
+  it('in the desktop app, shows itself when the system popup cannot be made', async () => {
+    window.__TAURI_INTERNALS__ = {};
+    vi.doMock('@tauri-apps/api/menu', () => {
+      const fail = async () => {
+        throw new Error('no menu here');
+      };
+      return { Menu: { new: fail }, MenuItem: { new: fail }, CheckMenuItem: { new: fail }, PredefinedMenuItem: { new: fail } };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await opened(4, 7);
+      // The popup failed after a turn of the event loop: wait for it.
+      for (let i = 0; i < 10 && !document.querySelector('.face-menu'); i++) await new Promise((r) => setTimeout(r, 0));
+      await tick();
+      expect(document.querySelector('.face-menu')).not.toBe(null);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      delete window.__TAURI_INTERNALS__;
+      vi.doUnmock('@tauri-apps/api/menu');
+      warn.mockRestore();
+    }
+  });
 });

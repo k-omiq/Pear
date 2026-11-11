@@ -17,6 +17,10 @@ import { setTypingSel, clearTypingSel, askFacePick, typingSel } from './typing-s
 import { registerShortcutHandlers, dispatchShortcut, setMacKeyboard, isMacKeyboard } from './shortcuts.svelte.js';
 import { editorActionHandlers } from './editor-actions.js';
 import { textCheck } from './runs.js';
+import { setCombo, resetCombo } from './shortcuts.svelte.js';
+import { panels, setHidden } from './editor/panels.svelte.js';
+import { popFaceMenu } from './editor/face-menu-native.js';
+import OptionsPanelHost from '../test/OptionsPanelHost.svelte';
 
 const B = (start, end) => ({ start, end, bold: true });
 let restoreCanvas, unregister, mac;
@@ -69,9 +73,17 @@ const key = (el, k, more = {}) => el.dispatchEvent(new KeyboardEvent('keydown', 
 
 describe('the Inspector\'s face controls', () => {
   it('act on the whole box with no words selected, and say so', async () => {
-    const { style, scope, clear } = mounted();
+    const { view, style, scope, clear } = mounted();
     await tick();
-    expect(scope()).toEqual(['Whole box', 'Whole box']);
+    expect(scope()).toEqual(['Whole box']);
+    // The label speaks for the family, B, I and Clear, and only for them:
+    // Uppercase is always the whole box's, and sits elsewhere.
+    const scoped = view.container.querySelector('.lbl .scope').closest('.grp');
+    expect(style().every((b) => scoped.contains(b))).toBe(true);
+    expect(scoped.contains(clear())).toBe(true);
+    const tt = [...view.container.querySelectorAll('.seg button')].find((b) => b.textContent === 'TT');
+    expect(scoped.contains(tt)).toBe(false);
+    expect(tt.closest('.field').querySelector('.scope')).toBe(null);
     const [bold] = style();
     expect(bold.getAttribute('aria-pressed')).toBe('false');
     // The box has a run, so Clear is there for the whole of it.
@@ -89,7 +101,7 @@ describe('the Inspector\'s face controls', () => {
     const { style, scope, clear } = mounted();
     setTypingSel('b', 'one two three', 8, 13);
     await tick();
-    expect(scope()).toEqual(['Selected words', 'Selected words']);
+    expect(scope()).toEqual(['Selected words']);
     expect(clear().disabled).toBe(true);
     setTypingSel('b', 'one two three', 0, 7);
     await tick();
@@ -117,7 +129,7 @@ describe('the Inspector\'s face controls', () => {
     app.editingId = 'b';
     setTypingSel('b', 'one two three', 2, 2);
     await tick();
-    expect(scope()[1]).toBe('Next letters');
+    expect(scope()[0]).toBe('Next letters');
     await fireEvent.click(style()[1]);
     await tick();
     expect(typingSel.pending?.patch).toEqual({ italic: true });
@@ -134,12 +146,12 @@ describe('the Inspector\'s face controls', () => {
     field.setSelectionRange(8, 13);
     await fireEvent.select(field);
     await tick();
-    expect(scope()[1]).toBe('Selected words');
+    expect(scope()[0]).toBe('Selected words');
     // Tab or a click into the controls: the field lets go of its selection.
     style()[1].focus();
     await fireEvent.blur(field, { relatedTarget: style()[1] });
     await tick();
-    expect(scope()[1]).toBe('Selected words');
+    expect(scope()[0]).toBe('Selected words');
     await fireEvent.click(style()[1]);
     await tick();
     expect(runs()).toEqual([B(4, 7), { start: 8, end: 13, italic: true }]);
@@ -147,7 +159,76 @@ describe('the Inspector\'s face controls', () => {
     field.value = 'one two three!';
     await fireEvent.input(field);
     await tick();
-    expect(scope()[1]).toBe('Whole box');
+    expect(scope()[0]).toBe('Whole box');
+  });
+
+  // The keys and the buttons read one scope: each press below is made both
+  // ways on the same state, and must change the same letters.
+  it('a bare caret in the Text field drops the words: the label, B and Mod+B all mean the whole box', async () => {
+    const { q, style, scope } = mounted();
+    await tick();
+    const field = q('#insp-text');
+    field.focus();
+    field.setSelectionRange(8, 13);
+    await fireEvent.select(field);
+    await tick();
+    expect(scope()[0]).toBe('Selected words');
+    // A click to a bare caret.
+    field.setSelectionRange(2, 2);
+    await fireEvent.mouseUp(field);
+    await tick();
+    expect(scope()).toEqual(['Whole box']);
+    key(field, 'b');
+    await tick();
+    expect(page().boxes[0].style.bold).toBe(true);
+    expect(runs()).toEqual([B(4, 7)]);
+    await fireEvent.click(style()[0]);
+    await tick();
+    expect(page().boxes[0].style.bold).toBe(false);
+    expect(runs()).toEqual([B(4, 7)]);
+  });
+
+  it('with words selected and the focus moved into the controls, Mod+B and B act on the same words', async () => {
+    const { q, style } = mounted();
+    await tick();
+    const field = q('#insp-text');
+    field.focus();
+    field.setSelectionRange(8, 13);
+    await fireEvent.select(field);
+    style()[0].focus();
+    await fireEvent.blur(field, { relatedTarget: style()[0] });
+    await tick();
+    key(style()[0], 'b');
+    settleEdits();
+    await tick();
+    expect(runs()).toEqual([B(4, 7), B(8, 13)]);
+    await fireEvent.click(style()[0]);
+    settleEdits();
+    await tick();
+    expect(runs()).toEqual([B(4, 7)]);
+    expect(page().boxes[0].style.bold).toBe(false);
+  });
+
+  it('a text change drops the words, and undoing it does not bring them back', async () => {
+    const { q, scope } = mounted();
+    await tick();
+    const field = q('#insp-text');
+    field.focus();
+    field.setSelectionRange(8, 13);
+    await fireEvent.select(field);
+    style: {
+      const other = q('.seg button');
+      other.focus();
+      await fireEvent.blur(field, { relatedTarget: other });
+    }
+    await tick();
+    expect(scope()[0]).toBe('Selected words');
+    page().boxes[0].text = 'one two three!';
+    await tick();
+    expect(scope()[0]).toBe('Whole box');
+    page().boxes[0].text = 'one two three';
+    await tick();
+    expect(scope()[0]).toBe('Whole box');
   });
 
   it('Mod+B in the Text field bolds the selected words, and the field\'s Cmd+Z takes it back before any typing', async () => {
@@ -180,7 +261,7 @@ describe('the Inspector\'s face controls', () => {
     field.setSelectionRange(8, 13);
     await fireEvent.select(field);
     await tick();
-    expect(scope()).toEqual(['Whole box', 'Whole box']);
+    expect(scope()).toEqual(['Whole box']);
     key(field, 'b');
     await tick();
     expect(runs()).toEqual([B(4, 7)]);
@@ -226,5 +307,70 @@ describe('the Inspector\'s face controls', () => {
     const s = getSelection();
     expect([s.anchorOffset, s.focusOffset]).toEqual([4, 7]);
     text.remove();
+  });
+
+  describe('"Typeface…" with the Text box options panel hidden', () => {
+    const made = [];
+    beforeEach(() => {
+      made.length = 0;
+      setHidden('options', true);
+    });
+    afterEach(() => {
+      setHidden('options', false);
+      resetCombo('text.typeface');
+      delete window.__TAURI_INTERNALS__;
+    });
+    // The words selected in the box being typed into, the panel hidden.
+    async function hiddenWithWords() {
+      const text = 'one two three';
+      loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [], boxes: [{ id: 'b', lineN: null, text, runs: null, runsCheck: textCheck(text), x: 100, y: 100, w: 240, h: 90, style: normalizeStyle({ ...defaultStyle() }) }] }]);
+      app.chapterRef = { projectId: 'p', chapterId: 'c' };
+      app.chapterMode = 'typeset';
+      app.selectedId = 'b';
+      app.editingId = 'b';
+      setInspectorTab('fill');
+      setTypingSel('b', text, 4, 7);
+      const view = render(OptionsPanelHost);
+      await tick();
+      expect(view.container.querySelector('.insp')).toBe(null);
+      return view;
+    }
+    const opened = async (view) => {
+      for (let i = 0; i < 4; i++) await tick();
+      return view.container.querySelector('#insp-font')?.getAttribute('aria-expanded');
+    };
+
+    it('from its key: shows the panel, on the Text tab, with the family list open for the words, once', async () => {
+      setCombo('text.typeface', 'Mod+Shift+y');
+      const view = await hiddenWithWords();
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+      expect(panels.options.hidden).toBe(false);
+      expect(await opened(view)).toBe('true');
+      expect([...view.container.querySelectorAll('.lbl .scope')].map((n) => n.textContent)[0]).toBe('Selected words');
+      // Hidden and shown again: the ask was taken, the list stays shut.
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      setHidden('options', true);
+      await tick();
+      setHidden('options', false);
+      expect(await opened(view)).toBe('false');
+    });
+
+    it('from the system menu\'s item: the same', async () => {
+      window.__TAURI_INTERNALS__ = {};
+      const view = await hiddenWithWords();
+      const items = await new Promise((res) => {
+        vi.doMock('@tauri-apps/api/menu', () => ({
+          MenuItem: { new: async (o) => ({ kind: 'item', ...o }) },
+          CheckMenuItem: { new: async (o) => ({ kind: 'check', ...o }) },
+          PredefinedMenuItem: { new: async (o) => ({ kind: 'predefined', ...o }) },
+          Menu: { new: async ({ items }) => ({ close: async () => {}, popup: async () => res(items) }) },
+        }));
+        popFaceMenu();
+      });
+      items.find((i) => i.text === 'Typeface…').action();
+      expect(panels.options.hidden).toBe(false);
+      expect(await opened(view)).toBe('true');
+      vi.doUnmock('@tauri-apps/api/menu');
+    });
   });
 });

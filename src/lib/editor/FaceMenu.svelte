@@ -7,15 +7,20 @@
   const ask = $state({ x: 0, y: 0, turn: 0 });
 
   // In the desktop app the system's own popup (face-menu-native.js); in a
-  // browser, this one.
+  // browser, or when the system's popup cannot be made, this one - the
+  // browser's own menu was already held back, so a failure must not leave the
+  // press with no menu at all.
   export function openFaceMenu(x, y) {
-    if (isDesktopApp()) {
-      popFaceMenu();
-      return;
-    }
-    ask.x = x;
-    ask.y = y;
-    ask.turn++;
+    const here = () => {
+      ask.x = x;
+      ask.y = y;
+      ask.turn++;
+    };
+    if (!isDesktopApp()) return void here();
+    popFaceMenu().catch((err) => {
+      console.warn('The system menu for the selected words failed; showing the app\'s own.', err);
+      here();
+    });
   }
 </script>
 

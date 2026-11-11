@@ -454,5 +454,13 @@ describe('a foreign type layer in several fonts', () => {
     };
     const back = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [layer] }] });
     expect(back.boxes[0].style).toMatchObject({ size: 24, bold: true, italic: true });
+    // Only the font is read from the first run: a size or a colour the runs
+    // do not share keeps the default.
+    const mixed = structuredClone(layer);
+    mixed.text.style = {};
+    mixed.text.styleRuns[0].style.fontSize = 40;
+    mixed.text.styleRuns[0].style.fillColor = { r: 255, g: 0, b: 0 };
+    const back2 = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [mixed] }] });
+    expect(back2.boxes[0].style).toMatchObject({ size: 26, color: '#000000', bold: true, italic: true });
   });
 });
