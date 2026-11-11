@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeRuns, faceAt, faceSpans, toggleRuns, changedSpan, editedSpan, fieldSpans, sliceRuns, shiftRuns, putText, saveRuns, runsKey, textCheck } from './runs.js';
+import { normalizeRuns, faceAt, faceSpans, toggleRuns, changedSpan, editedSpan, fieldSpans, sliceRuns, shiftRuns, putText, saveRuns, runsKey, textCheck, copyRuns, runFamilies, wholeLetters, rangeFace, patchRuns, clearRuns } from './runs.js';
 
 const B = { bold: true, italic: false };
 const I = { bold: false, italic: true };
@@ -318,5 +318,69 @@ describe('saveRuns', () => {
     expect(textCheck('')).toBe(0x811c9dc5);
     expect(textCheck('a')).toBe(0xe40c292c);
     expect(textCheck('foobar')).toBe(0xbf9cf968);
+  });
+});
+
+describe('a run in a family of its own', () => {
+  const F = (start, end, font, more = {}) => ({ start, end, bold: false, italic: false, font, ...more });
+
+  it('keeps its family through every copy, and only a family name', () => {
+    const t = 'one two three';
+    expect(normalizeRuns([F(4, 7, 'Bangers')], t)).toEqual([F(4, 7, 'Bangers')]);
+    // Not a name: no family, the run stays a face.
+    expect(normalizeRuns([F(4, 7, ''), F(8, 13, 42)], t)).toEqual([run(4, 7, { bold: false, italic: false }), run(8, 13, { bold: false, italic: false })]);
+    // Touching runs in two families stay two; in one family they are one.
+    expect(normalizeRuns([F(0, 3, 'A'), F(3, 7, 'B')], t)).toHaveLength(2);
+    expect(normalizeRuns([F(0, 3, 'A'), F(3, 7, 'A')], t)).toEqual([F(0, 7, 'A')]);
+    expect(copyRuns([F(4, 7, 'Bangers')])).toEqual([F(4, 7, 'Bangers')]);
+    expect(sliceRuns([F(4, 7, 'Bangers')], 4, 13)).toEqual([F(0, 3, 'Bangers')]);
+    expect(shiftRuns([F(4, 7, 'Bangers')], t, 'one, two three')).toEqual([F(5, 8, 'Bangers')]);
+    expect(faceAt([F(4, 7, 'Bangers')], 5, {})).toEqual({ bold: false, italic: false, font: 'Bangers' });
+    expect(runsKey([F(4, 7, 'A')])).not.toBe(runsKey([F(4, 7, 'B')]));
+    expect(runFamilies([F(0, 3, 'A'), run(4, 5), F(6, 7, 'A'), F(8, 9, 'B')])).toEqual(['A', 'B']);
+  });
+});
+
+describe('a face set on a range', () => {
+  const t = 'one two three';
+  const own = { bold: false, italic: false };
+
+  it('widens the range to whole letters as a reader sees them', () => {
+    expect(wholeLetters('a👍🏽b', 2, 2)).toEqual([2, 2]);
+    // Inside the thumb and its skin tone: the whole of it.
+    expect(wholeLetters('a👍🏽b', 2, 3)).toEqual([1, 5]);
+    // A flag is two letters of the alphabet of regions.
+    expect(wholeLetters('x🇯🇵y', 1, 3)).toEqual([1, 5]);
+    // A letter and its combining accent.
+    expect(wholeLetters('cafe\u0301!', 0, 4)).toEqual([0, 5]);
+    // Backwards is the same range.
+    expect(wholeLetters('abc', 2, 1)).toEqual([1, 2]);
+  });
+
+  it('reads what a range is set in: one face, or mixed', () => {
+    const runs = [run(0, 3), run(4, 7, { bold: false, italic: true, font: 'Bangers' })];
+    expect(rangeFace(runs, t, 0, 3, own)).toEqual({ bold: true, italic: false, font: null });
+    expect(rangeFace(runs, t, 0, 7, own)).toEqual({ bold: 'mixed', italic: 'mixed', font: 'mixed' });
+    expect(rangeFace(runs, t, 4, 7, own)).toEqual({ bold: false, italic: true, font: 'Bangers' });
+    // The box's own face where no run is.
+    expect(rangeFace(null, t, 8, 13, { bold: true, italic: false })).toEqual({ bold: true, italic: false, font: null });
+  });
+
+  it('sets one part of the face and keeps the rest', () => {
+    const runs = [run(0, 3, { bold: true, italic: true })];
+    // A family over a bold italic word and a plain one: both keep their weight and slant.
+    expect(patchRuns(runs, t, 0, 7, { font: 'Bangers' }, own)).toEqual([
+      { start: 0, end: 3, bold: true, italic: true, font: 'Bangers' },
+      { start: 3, end: 7, bold: false, italic: false, font: 'Bangers' },
+    ]);
+    // The box's family again: the family goes, the weight stays.
+    expect(patchRuns([{ start: 0, end: 3, bold: true, italic: false, font: 'Bangers' }], t, 0, 3, { font: null }, own)).toEqual([run(0, 3)]);
+    expect(patchRuns(runs, t, 1, 2, { bold: false }, own)).toEqual([run(0, 1, { bold: true, italic: true }), run(1, 2, { bold: false, italic: true }), run(2, 3, { bold: true, italic: true })]);
+  });
+
+  it('clears a range back to the box face, cutting the runs it crosses', () => {
+    const runs = [run(0, 7), { start: 8, end: 13, bold: false, italic: false, font: 'A' }];
+    expect(clearRuns(runs, t, 2, 10)).toEqual([run(0, 2), { start: 10, end: 13, bold: false, italic: false, font: 'A' }]);
+    expect(clearRuns(runs, t, 0, 13)).toBe(null);
   });
 });

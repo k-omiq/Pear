@@ -4,6 +4,7 @@
     byId,
     boxText,
     boxRuns,
+    setRangeFace,
     deleteBox,
     beginEdit,
     cloneStyle,
@@ -144,8 +145,10 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns, fieldSpans } from './runs.js';
-  import { onDestroy } from 'svelte';
+  import { copyRuns, fieldSpans, rangeFace } from './runs.js';
+  import { onDestroy, tick, untrack } from 'svelte';
+  import { typingSel, setTypingSel, clearTypingSel, selectedRange, faceAsk } from './typing-selection.svelte.js';
+  import { showPanel } from './editor/panels.svelte.js';
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
   // A locked box shows its settings and takes no change to them.
@@ -443,6 +446,53 @@
   // The field, its selection and input type as each edit begins: what that
   // edit replaced is read from them (`fieldSpans`) once it has landed.
   const textSpans = fieldSpans();
+
+  // ----- the faces of selected words (runs.js) -----
+  // The words selected in the field, for the face commands as for the box's
+  // own selection while it is typed into (typing-selection.svelte.js): the
+  // keys, the box's right-click menu and the row below act on them.
+  function noteTextSel(e) {
+    const el = e.currentTarget;
+    if (!box || el.value !== (boxText(box) ?? '')) return;
+    setTypingSel(box.id, el.value, el.selectionStart, el.selectionEnd);
+  }
+  function endTextSel() {
+    if (box && typingSel.boxId === box.id && app.editingId !== box.id) clearTypingSel();
+  }
+  // The selected words of this box - in the field, or in the box typed into -
+  // and what they are set in.
+  const selWords = $derived.by(() => {
+    if (!box) return null;
+    const text = boxText(box) ?? '';
+    const r = selectedRange(box.id, text);
+    return r && r[0] < r[1] ? { a: r[0], f: r[1], text } : null;
+  });
+  // The range a family is being picked for: kept when the picker is pressed
+  // or asked for (`faceAsk`, "Typeface…"), as the picker taking the focus
+  // ends the edit, or leaves the field, the selection was in.
+  let pickRange = $state(null);
+  const faceRow = $derived(selWords ?? (pickRange && box && pickRange.boxId === box.id && pickRange.text === (boxText(box) ?? '') ? pickRange : null));
+  const selFace = $derived(faceRow && box ? rangeFace(boxRuns(box), faceRow.text, faceRow.a, faceRow.f, box.style) : null);
+  let facePicker = $state();
+  const faceKey = (id) => formatCombo(comboFor(id));
+  function holdPickRange() {
+    if (selWords && box) pickRange = { boxId: box.id, ...selWords };
+  }
+  function faceCmd(change) {
+    if (!faceRow || !box) return;
+    setRangeFace(box, faceRow.a, faceRow.f, change);
+  }
+  $effect(() => {
+    const t = faceAsk.turn;
+    if (!t) return;
+    untrack(() => {
+      if (!box || faceAsk.boxId !== box.id) return;
+      pickRange = { boxId: box.id, text: faceAsk.text, a: faceAsk.a, f: faceAsk.f };
+      setInspectorTab('text');
+      showPanel('options');
+      tick().then(() => facePicker?.openList());
+    });
+  });
 
   // Recorded after the write, so the step holds the faces the write left.
   function onTextInput(e) {
@@ -1859,7 +1909,7 @@
       <div class="insp-pane" role="tabpanel" id="insp-pane-text" aria-labelledby="insp-tab-text">
         <div class="grp">
           <label class="lbl" for="insp-text">Content {isFreeBox(box) ? '· free' : `· line ${box.lineN}`}</label>
-          <textarea id="insp-text" value={boxText(box)} onbeforeinput={textSpans.before} oncompositionstart={textSpans.start} oncompositionend={textSpans.end} oninput={onTextInput} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
+          <textarea id="insp-text" value={boxText(box)} onbeforeinput={textSpans.before} oncompositionstart={textSpans.start} oncompositionend={textSpans.end} oninput={onTextInput} onselect={noteTextSel} onkeyup={noteTextSel} onmouseup={noteTextSel} onblur={endTextSel} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
         </div>
         <div class="grp">
           <label class="lbl" for="insp-font">Font</label>
@@ -1898,6 +1948,35 @@
             </div>
           </div>
         </div>
+        <!-- The words selected in the box or in the field above: their faces,
+             as the keys and the right-click menu set them. A press here keeps
+             the focus where the selection is. -->
+        {#if faceRow && selFace}
+          <div class="grp sel-face">
+            <span class="lbl">Selected words</span>
+            <div class="sel-face-row">
+              <div class="seg">
+                <button type="button" class:on={selFace.bold === true} class:mixed={selFace.bold === 'mixed'} aria-pressed={selFace.bold} title="Bold{faceKey('text.bold') ? ` (${faceKey('text.bold')})` : ''}{selFace.bold === 'mixed' ? ', mixed' : ''}" onmousedown={(e) => e.preventDefault()} onclick={() => faceCmd({ toggle: 'bold' })}><b>B</b></button>
+                <button type="button" class:on={selFace.italic === true} class:mixed={selFace.italic === 'mixed'} aria-pressed={selFace.italic} title="Italic{faceKey('text.italic') ? ` (${faceKey('text.italic')})` : ''}{selFace.italic === 'mixed' ? ', mixed' : ''}" onmousedown={(e) => e.preventDefault()} onclick={() => faceCmd({ toggle: 'italic' })}><i>I</i></button>
+              </div>
+              <div class="sel-face-font" onmousedowncapture={holdPickRange}>
+                <FontPicker
+                  bind:this={facePicker}
+                  id="insp-sel-font"
+                  compact
+                  label="Typeface of the selected words"
+                  value={selFace.font === 'mixed' ? null : selFace.font}
+                  unset={selFace.font === 'mixed' ? 'Mixed' : 'Box font'}
+                  onpick={(name) => {
+                    faceCmd({ font: name });
+                    pickRange = null;
+                  }}
+                />
+              </div>
+              <button type="button" class="rbtn" title="Clear typeface: back to the box's face{faceKey('text.clearFace') ? ` (${faceKey('text.clearFace')})` : ''}" onmousedown={(e) => e.preventDefault()} onclick={() => faceCmd({ clear: true })}>Clear</button>
+            </div>
+          </div>
+        {/if}
         <!-- The fine end of B and I, folded away: how heavy the bold, how far
              the italic leans. Only the Rust painter draws them. A row shows
              while its switch is on; the fold's button carries a dot while a
@@ -3189,6 +3268,25 @@
   }
   .row-size > * {
     min-width: 0;
+  }
+
+  /* The selected words' faces: B and I, the family, Clear, on one row. */
+  .sel-face-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .sel-face-row .seg {
+    flex: 0 0 64px;
+  }
+  .sel-face-font {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  /* Some of the words have it and some do not: half the "on" fill. */
+  .seg button.mixed {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    color: var(--text);
   }
 
   /* The fold for bold weight and italic angle: narrow, after the toggles. */

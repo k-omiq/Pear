@@ -139,7 +139,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
-import { putText, copyRuns, runsField, runsKey } from './runs.js';
+import { putText, copyRuns, runsField, runsKey, wholeLetters, rangeFace, patchRuns, clearRuns } from './runs.js';
 import { sfxAvailable, sfxActive, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
 
 export { PAGE_W, PAGE_H };
@@ -939,6 +939,41 @@ export function editBoxes(targets, mutate, { always = false, solve = false, ...e
   }
   if (changed.length) markUnsaved();
   return changed;
+}
+
+// ---------- the faces of part of a box's words (runs.js) ----------
+// A face command on `[a, f)` of the words box `b` shows: `change` is
+// `{ toggle: 'bold' | 'italic' }` (all of it set becomes none of it, anything
+// else becomes all of it), `{ font: name | null }` (a family, or the box's),
+// or `{ clear: true }` (back to the box's face). The range is widened to whole
+// letters first (`wholeLetters`). One undo step; a locked box is refused with
+// the toast that says so. The range it acted on, or null when nothing
+// changed.
+//
+// The faces sit beside the words they index: on the box for its own words,
+// on the line for a box reading its line (one `line` step, as the queue
+// writes it).
+export function setRangeFace(b, a, f, change, p = page()) {
+  if (!b || !p || refuseLocked(b)) return null;
+  const text = boxText(b, p) ?? '';
+  const [lo, hi] = wholeLetters(text, a, f);
+  if (lo === hi) return null;
+  const runs = boxRuns(b, p);
+  const face = { bold: !!b.style?.bold, italic: !!b.style?.italic };
+  let next;
+  if (change?.clear) next = clearRuns(runs, text, lo, hi);
+  else if (change?.toggle === 'bold' || change?.toggle === 'italic') {
+    const now = rangeFace(runs, text, lo, hi, face)[change.toggle];
+    next = patchRuns(runs, text, lo, hi, { [change.toggle]: now !== true }, face);
+  } else if (change && 'font' in change) next = patchRuns(runs, text, lo, hi, { font: change.font || null }, face);
+  else return null;
+  if (runsKey(next) === runsKey(runs)) return null;
+  if (b.text == null && b.lineN != null && b.lineN >= 0 && lineByN(p, b.lineN)) {
+    settleLine();
+    setLineText(p, b.lineN, text, { runs: next });
+    settleLine();
+  } else editBoxes([{ page: p, box: b }], (box, pg) => setBoxText(box, text, pg, { runs: next, fit: false }));
+  return [lo, hi];
 }
 
 // ---------- a queue line's translation, typed into the queue ----------

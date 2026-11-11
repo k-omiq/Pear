@@ -33,6 +33,8 @@
     fontPreviewing,
   } from './store.svelte.js';
   import { openBoxMenu } from './editor/BoxMenu.svelte';
+  import { openFaceMenu } from './editor/FaceMenu.svelte';
+  import { typingSel, setTypingSel, clearTypingSel } from './typing-selection.svelte.js';
   import { stripDragYBounds } from './editor/strip.js';
 
   import { untrack, flushSync } from 'svelte';
@@ -49,7 +51,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns, editedSpan, runsKey, shiftRuns } from './runs.js';
+  import { copyRuns, editedSpan, runsKey, shiftRuns, patchRuns } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
   import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, lineFaces, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
@@ -1570,7 +1572,7 @@
   // the line drawn as one span per stretch, each with its weight and slant, so
   // the browser draws what it measured - each stretch alone. Null for every
   // line of a box without runs, which is drawn as the one string it was.
-  const faceCss = (st) => `font-weight:${st.bold ? 700 : 400};font-style:${st.italic ? 'italic' : 'normal'};`;
+  const faceCss = (st) => `${st.font !== s.font ? `font-family:${fontCssFor(st.font)};` : ''}font-weight:${st.bold ? 700 : 400};font-style:${st.italic ? 'italic' : 'normal'};`;
   const lineCuts = $derived(shaped?.runs ? shaped.map((_, i) => lineFaces(shaped, i, s)?.map((p) => ({ ...p, css: faceCss(p.style) })) ?? null) : null);
 
   // How far the centred block moves so its INK, not its line boxes, is centred
@@ -2566,6 +2568,19 @@
   // offsets (anchor, focus), which is what the caret on the curve is drawn from.
   let editEl = null;
   let edSel = $state(null);
+  // The selection, for the face commands (typing-selection.svelte.js), for as
+  // long as the box is typed into.
+  $effect(() => {
+    if (!editing || !edSel) return;
+    setTypingSel(box.id, text, edSel.a, edSel.f);
+  });
+  $effect(() => {
+    if (!editing) return;
+    const id = box.id;
+    return () => {
+      if (typingSel.boxId === id) clearTypingSel();
+    };
+  });
 
   // Whether this edit has been a picture at any time: what the editable's
   // teardown has to put back then, and with the switch off never true.
@@ -2631,6 +2646,9 @@
       text;
       effSize;
       effLs;
+      // The faces the lines are drawn in, set by a command with the words as
+      // they were: drawn again, the selection kept.
+      lineCuts;
       // WITH THE ENGINE DRAWING, the effect that keeps the editable's own
       // caret under the drawn one (`alignNative`). It is made HERE, as this
       // effect's child, for two reasons. It then runs after this one has
@@ -2735,7 +2753,8 @@
     if (v === text) return;
     keyed();
     caretNext = caret;
-    setBoxText(box, v, page(), { span: at });
+    const runs = pendingRuns(v, at);
+    setBoxText(box, v, page(), runs ? { runs } : { span: at });
     recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(inputType), faces: copyRuns(boxRuns(box)) });
     markUnsaved();
   }
@@ -2746,9 +2765,25 @@
     if (r) commitEdit(r.v, r.caret, inputType, r.span);
   }
 
+  // A face asked for at the caret (`typingSel.pending`, Bold or Italic with
+  // nothing selected) put on the letters typed there now: the runs the edit
+  // leaves, or null for an edit it does not touch. The letters typed after
+  // them take their face from the letter before, as any typed letter does.
+  function pendingRuns(v, at) {
+    const pend = typingSel.pending;
+    if (!pend || pend.boxId !== box.id || pend.text !== text || !at || at[0] !== pend.at || at[1] !== pend.at || v.length <= text.length) return null;
+    const face = { bold: !!s.bold, italic: !!s.italic };
+    const moved = shiftRuns(boxRuns(box), text, v, at);
+    return patchRuns(moved, v, pend.at, pend.at + v.length - text.length, pend.patch, face) ?? [];
+  }
+
   function onEditBeforeInput(e) {
     const t = e.inputType;
     if (e.isComposing || t.includes('Composition')) return;
+    // The browser's own Bold and Italic (Cmd+B in an editable) would write
+    // markup into the words: the faces are the editor's commands' to set
+    // (`text.bold`), which the key reaches through the shortcut registry.
+    if (t.startsWith('format')) return e.preventDefault();
     // On a picture, while a composition is open the text is the IME's and the
     // browser's (`composing`: an input can arrive in the middle of one without
     // saying so). Nothing is cut from the picture's rows then, and the box's
@@ -2848,7 +2883,23 @@
     } else setTimeout(finish);
   }
 
+  // The right button on the editable itself (the lines in the DOM, with the
+  // engine not drawing): on selected words of flat text, the menu of their
+  // faces; anywhere else the system's, with Paste.
+  function onEditContextMenu(e) {
+    if (curved || composing || !edSel || edSel.a === edSel.f) return;
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) return;
+    const inside = [...sel.getRangeAt(0).getClientRects()].some((r) => e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+    if (!inside) return;
+    e.preventDefault();
+    openFaceMenu(e.clientX, e.clientY);
+  }
+
   function onEditBlur(e) {
+    // To the menu of the selected words' faces, which hands the focus back:
+    // the edit, and its selection, go on.
+    if (e.relatedTarget?.closest?.('.face-menu')) return;
     if (pictureEdit) clearComposition();
     composeText = null;
     endEdit(e.currentTarget.textContent);
@@ -3235,6 +3286,16 @@
     const held = editEl.textContent;
     const lo = edSel ? Math.min(edSel.a, edSel.f) : 0;
     const hi = edSel ? Math.max(edSel.a, edSel.f) : 0;
+    // On selected words of flat text: the menu of their faces. Anywhere else
+    // the system's, with Paste.
+    if (typeFlat && lo < hi) {
+      const o = offsetAt(typed.rows, ...maskLocal(e)).o;
+      if (o >= lo && o <= hi) {
+        e.preventDefault();
+        openFaceMenu(e.clientX, e.clientY);
+        return;
+      }
+    }
     if (typeCurve) {
       const p = typeCurvePoint(e);
       const o = curveRaw(caretNearest(typeGlyphs, ...p));
@@ -3681,6 +3742,7 @@
         ondragstart={(e) => e.preventDefault()}
         onblur={onEditBlur}
         onkeydown={onEditKey}
+        oncontextmenu={onEditContextMenu}
       ></div>
     {:else if !pictured && !layout}
       <div class="txt shaped stack" style="{textStyle}{stackTransform}{filterCss}">

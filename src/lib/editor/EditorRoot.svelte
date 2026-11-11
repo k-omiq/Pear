@@ -24,6 +24,7 @@
   import Queue from '../Queue.svelte';
   import BulkStylePanel from '../BulkStylePanel.svelte';
   import BoxMenu from './BoxMenu.svelte';
+  import FaceMenu from './FaceMenu.svelte';
   import TranslatePane from './TranslatePane.svelte';
   import { app, page, pageProgress, isTranslateMode, isTranslateChapter, isLongstrip } from '../store.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
@@ -220,5 +221,5 @@
 
   <!-- A box's right-click menu (FLOW-9), drawn here over the panels rather
        than inside the box, where the page frame would clip it. -->
-  {#if !translate}<BoxMenu />{/if}
+  {#if !translate}<BoxMenu /><FaceMenu />{/if}
 </div>

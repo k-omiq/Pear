@@ -4,7 +4,7 @@ import { textEngine, setTextEngine } from './text-engine/index.js';
 import { app } from './store.svelte.js';
 import { boxCandidate, placeBlock } from './contain.js';
 import { editLines } from './edit-lines.js';
-import { layoutLines, lineWidth, lineWidthAt, sliceWidth, casedRuns, setTypesetEnabled, typesetEnabled, clearLayoutMemo, faceFor, layoutMemoSize } from './measure.js';
+import { layoutLines, lineWidth, lineWidthAt, sliceWidth, casedRuns, setTypesetEnabled, typesetEnabled, clearLayoutMemo, faceFor, layoutMemoSize, lineFaces } from './measure.js';
 import { solveLayout } from './auto-layout.js';
 import { systemFontEntry } from './fonts.js';
 import { defaultStyle, normalizeStyle } from './data.js';
@@ -256,5 +256,24 @@ describe('plain wrapping with runs', () => {
     expectSpansHold(lines, text);
     lines.forEach((_, k) => expect(lineWidthAt(lines, k, s, SIZE)).toBeLessThanOrEqual(w + 0.01));
     expect(lines.join('').replace(/\s/g, '')).toBe(text.replace(/\s/g, ''));
+  });
+});
+
+describe('a run in a family of its own (C4)', () => {
+  it('measures its letters in that family, and the line carries it to the painters', () => {
+    const s = styleFor();
+    const text = 'HELLO WORLD';
+    const F = { start: 0, end: 5, bold: false, italic: false, font: 'Comic Neue' };
+    const lines = layoutLines(text, s, SIZE, WIDE, null, { runs: [F] });
+    expect([...lines]).toEqual(['HELLO WORLD']);
+    const want = adv({ ...s, font: 'Comic Neue' }, 'HELLO') + adv(s, ' WORLD');
+    expect(adv({ ...s, font: 'Comic Neue' }, 'HELLO')).not.toBe(adv(s, 'HELLO'));
+    expect(lineWidthAt(lines, 0, s, SIZE)).toBe(want);
+    const cuts = lineFaces(lines, 0, s);
+    expect(cuts.map((c) => [c.start, c.end, c.style.font])).toEqual([[0, 5, 'Comic Neue'], [5, 11, 'Bangers']]);
+    // A run naming the box's own family is the box's face: no cut.
+    const same = layoutLines(text, s, SIZE, WIDE, null, { runs: [{ ...F, font: 'Bangers' }] });
+    expect(lineFaces(same, 0, s)).toBe(null);
+    expect(lineWidthAt(same, 0, s, SIZE)).toBe(adv(s, 'HELLO WORLD'));
   });
 });
