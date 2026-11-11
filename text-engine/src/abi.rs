@@ -648,6 +648,51 @@ pub extern "C" fn mt_line_carets(
     }))
 }
 
+/// The ink of each cluster of a line shaped whole, as a curved line's letters
+/// are painted (`Engine::cluster_inks`): what a curved layout measures each
+/// letter's footprint by, so the footprint sits where the painter draws it.
+/// Letter spacing turns the ligatures off, as it does for the painter; it is
+/// not in the inks.
+///
+/// Returns the cluster count `n`. The out buffer then holds `n` records of
+/// six little-endian `f64`: the cluster's UTF-16 offset in the line, its
+/// ink's left, right, ascent and descent (from the anchor: the middle of its
+/// room in the line, on the `middle` baseline, as `mt_glyph_ink` measures),
+/// and 1 when it has ink, else 0. None for a line whose clusters do not run
+/// forwards.
+#[cfg(feature = "paint")]
+#[no_mangle]
+pub extern "C" fn mt_line_inks(
+    font: u32,
+    size: f64,
+    flags: u32,
+    text_len: usize,
+    letter_spacing: f64,
+) -> i32 {
+    if !size.is_finite() || !letter_spacing.is_finite() {
+        with(|s| {
+            s.out.clear();
+            s.result.fill(0.0);
+        });
+        return Status::BadSpec as i32;
+    }
+    code(with_text(text_len, |engine, text, st| {
+        let inks = engine.cluster_inks(face(font, size, flags), text, letter_spacing != 0.0)?;
+        st.out.clear();
+        for (cluster, ink) in &inks {
+            let rec = [f64::from(*cluster), ink.left, ink.right, ink.ascent, ink.descent, f64::from(u8::from(ink.has_ink))];
+            if rec.iter().any(|v| !v.is_finite()) {
+                st.out.clear();
+                return Err(Error::BadSpec);
+            }
+            for v in rec {
+                st.out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        Ok(inks.len() as i32)
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -84,7 +84,7 @@ import {
   blockYFor,
   baselineInLine,
   blockInk,
-  glyphInk,
+  placedInk,
   textInset,
   contentWidth,
   arcLayout,
@@ -234,7 +234,9 @@ export function placeBlock(cand, opts) {
   // [] for it) leaves the box what the rest of its style makes it, rather than
   // a curve with no letters.
   const sfxGlyphs = !blank && sfxActive(s) ? sfxLayout(text, s, size) : null;
-  if (sfxGlyphs?.length) return { s, text, isCurve: true, layout: sfxGlyphs };
+  // `sfx` says the letters were placed one at a time by the SFX layout, not
+  // cut from one line: the painter shapes them so.
+  if (sfxGlyphs?.length) return { s, text, isCurve: true, layout: sfxGlyphs, sfx: true };
   const isPath = !blank && s.path?.on && (s.path.pts?.length ?? 0) >= 2;
   const isCircle = !blank && !isPath && s.circle?.on;
   if (isPath || isCircle || (!blank && s.curve && s.curve !== 0)) {
@@ -412,7 +414,7 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
     const cx = cand.w / 2;
     const cy = cand.h / 2;
     for (const g of place.layout) {
-      const k = glyphInk(g.ch, s, s.size);
+      const k = placedInk(g, s, s.size);
       if (!k) continue;
       // A drip pulls the placed letter's foot straight down the box (paint/mod.rs).
       const [x0, y0, x1, y1] = turnedInk(k, g.rot, cx + g.x, cy + g.y, g.sx, g.sy, g.skew);
