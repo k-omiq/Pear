@@ -281,4 +281,19 @@ describe('the kept lines stay within the bound', () => {
     expect(lineClusters(`${words}1499`, s, 64)).toBe(last);
     clearLayoutMemo();
   });
+
+  it('does not keep a line longer than half the bound, nor drop the advances for it', () => {
+    clearLayoutMemo();
+    const s = styleOf();
+    lineClusters('WAVE', s, 64);
+    const held = measureMemoHeld();
+    expect(held).toBeGreaterThan(0);
+    const long = 'A'.repeat(20001);
+    const a = lineClusters(long, s, 64);
+    expect(a.chars).toHaveLength(20001);
+    // Not kept, and what was kept is still there.
+    expect(lineClusters(long, s, 64)).not.toBe(a);
+    expect(measureMemoHeld()).toBe(held);
+    clearLayoutMemo();
+  });
 });
