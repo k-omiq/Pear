@@ -111,7 +111,7 @@ export function paintBounds(box) {
 // (`target` of a point as handed to `at`, in the mesh's frame, which the
 // box's turn and flips move rigidly). A step onto another sheet of a fold
 // carries somewhere else entirely, and the mark is cut there.
-const joinsOn = (m, target) => (prev, p, q) => oneStep(m, prev.q, q, target(prev.p), target(p));
+const joinsOn = (m, target, bounds) => (prev, p, q) => oneStep(m, prev.q, q, target(prev.p), target(p), bounds);
 
 // Shapes drawn on the page (page px), as marks in the paint's frame, in
 // their order. Through a mesh, a point the mesh does not carry anywhere
@@ -128,7 +128,7 @@ export function marksFromPage(box, shapes) {
   const bounds = paintBounds(box);
   const target = (p) => pageToBox(box, p);
   const at = (p, prev) => unwarpWith(m, box.w, box.h, ...target(p), { bounds, hint: prev?.q ?? null });
-  const joins = joinsOn(m, target);
+  const joins = joinsOn(m, target, bounds);
   // A stroke drawn partly where the mesh does not reach is cut there, never
   // joined across the gap; any other shape with such a point is dropped.
   return shapes.flatMap((sh) => bendStrokeRuns(sh, at, joins));
@@ -178,9 +178,9 @@ export function moveMarks(box, marks, idx, dx, dy) {
   const at = (p) => {
     const to = target(p);
     const q = unwarpWith(m, box.w, box.h, ...to, { bounds, hint: p });
-    return q && oneStep(m, p, q, m.at(p[0], p[1]), to) ? q : null;
+    return q && oneStep(m, p, q, m.at(p[0], p[1]), to, bounds) ? q : null;
   };
-  const joins = joinsOn(m, target);
+  const joins = joinsOn(m, target, bounds);
   // A mark moved even partly where the mesh does not reach, or onto another
   // sheet, stays where it was, whole (`bendShape` is null unless every point
   // is carried in one piece).

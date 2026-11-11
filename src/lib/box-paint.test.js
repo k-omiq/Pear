@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { marksFromPage, marksOnPage, moveMarks, normalizePaint, paintRoomFor, PAINT_MARKS_MAX, PAINT_ERASERS_MAX } from './box-paint.js';
 import { boxToPage, pageToBox } from './box-mask.js';
-import { warpPoint } from './warp.js';
+import { identityMesh, warpPoint } from './warp.js';
 
 // ===========================================================================
 // The paint's marks are stored in the box's texture: its own frame before
@@ -208,4 +208,44 @@ describe('a mark moved on a folded mesh', () => {
     const [out] = moveMarks(box, [mark], 0, 1, 0);
     expect(out).toBe(mark);
   });
+
+  it('a mark whose straight step crosses a turned-over strip and comes back stays where it was', () => {
+    const FOLD = { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]] };
+    const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: FOLD }), size: 20 } };
+    const mark = stroke([[84, 84], [85, 84]]);
+    // Both ends turn one way, but the step between them is turned over
+    // twice, near where the crease ends: once some 30 px off, now kept.
+    const [out] = moveMarks(box, [mark], 0, 0, -1);
+    expect(out).toBe(mark);
+  });
+
+  // The sheet tests are for meshes that may fold. On meshes that cannot, a
+  // mark inside the box moved 1 or 20 px in any direction (and so still
+  // inside the box) lands under the pointer.
+  const ID = identityMesh(2, 2, 100, 100);
+  const UNFOLDED = {
+    identity: { on: true, cols: 2, rows: 2, pts: ID.map(([x, y], i) => (i === 4 ? [x + 1e-9, y] : [x, y])) },
+    perspective: { on: true, cols: 1, rows: 1, pts: [[0, 0], [100, 10], [-5, 100], [115, 90]] },
+    'smooth perspective': { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 5], [100, 10], [-3, 50], [52, 50], [108, 50], [-5, 100], [55, 95], [115, 90]] },
+    bulge: { on: true, cols: 2, rows: 2, pts: ID.map(([x, y]) => (x === 50 || y === 50 ? [x + (x - 50) * 0.2, y + (y - 50) * 0.2] : [x, y])) },
+    wave: { on: true, cols: 4, rows: 2, pts: identityMesh(4, 2, 100, 100).map(([x, y], i) => [x, y + (i % 5 === 1 ? 12 : i % 5 === 3 ? -12 : 0)]) },
+  };
+  for (const [name, warp] of Object.entries(UNFOLDED)) {
+    it(`on a ${name} mesh every move inside the box is taken`, () => {
+      const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp }), size: 20 } };
+      for (let y = 25; y <= 75; y += 10) {
+        for (let x = 25; x <= 75; x += 10) {
+          const mark = stroke([[x, y], [x + 1, y]]);
+          for (const d of [1, 20]) {
+            for (const [dx, dy] of [[d, 0], [-d, 0], [0, d], [0, -d]]) {
+              const [out] = moveMarks(box, [mark], 0, dx, dy);
+              expect(out).not.toBe(mark);
+              const was = shown(box, mark.pts[0]);
+              near(shown(box, out.pts[0]), [was[0] + dx, was[1] + dy], 1e-2);
+            }
+          }
+        }
+      }
+    });
+  }
 });

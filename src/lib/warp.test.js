@@ -416,6 +416,17 @@ describe('unwarpPoint', () => {
     ];
     roundTrip(pts, 2, 2, w, h, [[20, 10], [85, 20], [160, 40], [-300, -300], [470, 340]]);
   });
+
+  // Whether a mesh may fold decides whether the sheet tests are paid for.
+  it('tells a mesh that may fold from one that cannot', () => {
+    const id = identityMesh(2, 2, 100, 100);
+    const fold = [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]];
+    const bulge = id.map(([x, y]) => (x === 50 || y === 50 ? [x + (x - 50) * 0.2, y + (y - 50) * 0.2] : [x, y]));
+    const wave = identityMesh(4, 2, 100, 100).map(([x, y], i) => [x, y + (i % 5 === 1 ? 12 : i % 5 === 3 ? -12 : 0)]);
+    expect(meshMap(fold, 2, 2, 100, 100).folds()).toBe(true);
+    expect(meshMap(bulge, 2, 2, 100, 100).folds()).toBe(false);
+    expect(meshMap(wave, 4, 2, 100, 100).folds()).toBe(false);
+  });
 });
 
 describe('resampleMesh', () => {
