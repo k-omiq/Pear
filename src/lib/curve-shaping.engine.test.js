@@ -131,6 +131,62 @@ describe('a curved letter is measured where it is painted', () => {
     expect(inks[2]).not.toBe(null);
   });
 
+  // A letter the face lacks that another loaded face has (the heart, which
+  // Bangers lacks and DejaVu Sans has) is drawn from that face: its ink is
+  // the fallback's glyph, moved by half its kern, never a missing box.
+  const withFallback = (f) => {
+    const was = rust.fallbacks();
+    rust.setFallbacks(['DejaVu Sans']);
+    clearLayoutMemo();
+    try {
+      f();
+    } finally {
+      rust.setFallbacks(was);
+      clearLayoutMemo();
+    }
+  };
+  it('a letter from a fallback font is measured as the fallback draws it', () => withFallback(() => {
+    const s = styleOf();
+    const text = 'A\u2665V';
+    // Bangers has no heart; DejaVu Sans, the fallback, lends it.
+    expect(rust.missing(faceFor(s, 64), '\u2665')).toEqual([]);
+    const { chars, widths, inks } = lineClusters(text, s, 64);
+    expect(chars).toEqual(['A', '\u2665', 'V']);
+    // The letter shaped alone in the face, which draws it from the fallback.
+    const alone = glyphInk('\u2665', s, 64);
+    const d = (rust.advance(faceFor(s, 64), '\u2665') - widths[1]) / 2;
+    expect(inks[1].left - alone.left).toBeCloseTo(d, 6);
+    expect(inks[1].right - alone.right).toBeCloseTo(d, 6);
+    expect([inks[1].ascent, inks[1].descent]).toEqual([alone.ascent, alone.descent]);
+    // The fallback's heart, not the face's own missing box.
+    const notdef = glyphInk('\u{10FFFD}', s, 64);
+    expect(inks[1].right - inks[1].left).not.toBeCloseTo(notdef.right - notdef.left, 1);
+    expect(inks[1].ascent).not.toBeCloseTo(notdef.ascent, 1);
+  }));
+
+  it('the box job paints a fallback letter where the footprint has it', () => withFallback(() => {
+    const s = styleOf({ size: 96, curve: 0.01, strokeEffects: [], strokes: [], autoHeight: false, shape: 'off', color: '#000000' });
+    const box = { id: 'b', lineN: null, text: 'A\u2665V\u2665', x: 100, y: 100, w: 400, h: 180, style: s };
+    const page = { id: 1, w: 700, h: 500, lines: [], boxes: [box] };
+    clearLayoutMemo();
+    const t = renderBoxTexture(box, page, null, 2);
+    const { width: w, height: h } = t.canvas;
+    const px = t.canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (px[(j * w + i) * 4 + 3] > 0) {
+      x0 = Math.min(x0, i);
+      x1 = Math.max(x1, i + 1);
+      y0 = Math.min(y0, j);
+      y1 = Math.max(y1, j + 1);
+    }
+    const ss = w / t.cw;
+    const r = boxInkRect(boxCandidate(box, box.text));
+    expect(Math.abs(r.x - (x0 / ss - t.ox))).toBeLessThan(0.75);
+    expect(Math.abs(r.x + r.w - (x1 / ss - t.ox))).toBeLessThan(0.75);
+    expect(Math.abs(r.y - (y0 / ss - t.oy))).toBeLessThan(0.75);
+    expect(Math.abs(r.y + r.h - (y1 / ss - t.oy))).toBeLessThan(0.75);
+  }));
+
   // Through the box job with the line flag (box wire v22): the painted
   // letters' ink edges are the footprint's (`boxInkRect`), and a painter that
   // drops the flag paints them elsewhere.
@@ -173,3 +229,32 @@ describe('a curved letter is measured where it is painted', () => {
     expect(Math.abs(edges(paint(perLetter))[0] - p0)).toBeGreaterThan(1);
   });
 });
+
+// A line shaped whole is kept, and its inks are asked of the engine only
+// when something reads them.
+describe('the line is shaped once, its ink when it is read', () => {
+  it('reads the same line back, and asks for the inks once, on the first read', () => {
+    clearLayoutMemo();
+    const s = styleOf();
+    const calls = { carets: 0, inks: 0 };
+    const carets = rust.lineCarets;
+    const inks = rust.lineInks;
+    rust.lineCarets = (...a) => (calls.carets++, carets.apply(rust, a));
+    rust.lineInks = (...a) => (calls.inks++, inks.apply(rust, a));
+    try {
+      const a = arcLayout('WAVE', s, 64);
+      const b = arcLayout('WAVE', s, 64);
+      expect(calls).toEqual({ carets: 1, inks: 0 });
+      expect(a.every((g) => g.whole)).toBe(true);
+      expect(lineClusters('WAVE', s, 64)).toBe(lineClusters('WAVE', s, 64));
+      const ink = a[0].ink;
+      expect(ink).not.toBe(null);
+      expect(b[1].ink).toEqual(lineClusters('WAVE', s, 64).inks[1]);
+      expect(calls).toEqual({ carets: 1, inks: 1 });
+    } finally {
+      rust.lineCarets = carets;
+      rust.lineInks = inks;
+    }
+  });
+});
+
