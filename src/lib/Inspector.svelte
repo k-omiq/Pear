@@ -733,7 +733,9 @@
   // Whether the painter moves letters on its own (`wobbleInJob`).
   const wobblePaints = $derived(engineSwitch.painting && glyphPainter().wobble === true);
   const specialPaints = $derived(engineSwitch.painting && glyphPainter().special === true);
-  // The rows of Surface ▸ Special, in the order they are listed.
+  // The rows of Surface ▸ Special, in the order they are listed. Known
+  // limit: the pattern is redrawn when the text or the box size changes;
+  // Seed re-rolls it.
   const SPECIAL_ROWS = [
     { kind: 'crack', label: 'Crack', title: 'Jagged cracks through the letters. High amounts break pieces out', amount: 'How many cracks and how long. Past 60 % pieces fall out' },
     { kind: 'lightning', label: 'Lightning', title: 'Jagged bolts with forks painted on the fill, a bright core in a glow', amount: 'How many bolts and forks' },

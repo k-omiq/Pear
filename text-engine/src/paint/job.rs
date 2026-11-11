@@ -176,6 +176,23 @@ pub struct Effects {
     /// whole box, splash and lightning are the box job's paint on the fill
     /// (`special.rs`). `None` paints the letters as they are.
     pub special: Option<Special>,
+    /// What of Crack's and Scratches' cuts this paint lays (not on the
+    /// wire): the box's own strokes ask for the letters whole and for the
+    /// cuts alone, so a stroke outlines the letters and is then cut through
+    /// as a glyph band is.
+    pub cuts: Cuts,
+}
+
+/// [`Effects::cuts`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cuts {
+    /// The letters with the cuts taken out of everything: every job.
+    #[default]
+    Made,
+    /// The letters as if nothing cut them.
+    Skipped,
+    /// The cuts alone, opaque, and nothing of the letters.
+    Alone,
 }
 
 /// Letters that jump about: each letter is moved up or down by up to
@@ -235,6 +252,7 @@ impl Default for Effects {
             wobble: None,
             line: false,
             special: None,
+            cuts: Cuts::Made,
         }
     }
 }
@@ -915,6 +933,7 @@ pub(crate) fn decode_split(bytes: &[u8]) -> Result<(Request, usize), Error> {
                 wobble,
                 line: false,
                 special,
+                cuts: Cuts::Made,
             },
             runs,
         },

@@ -1037,6 +1037,16 @@ fn stroke_share(share: &mut [f32], cover: &mut [f32], r: &Reach2<'_>) {
     }
 }
 
+/// Crack's and Scratches' cuts, for a box whose own strokes are on
+/// (`job::Cuts`): the letters as if uncut, in the frame of the cut letters
+/// the interior is laid from, and the cuts alone. The strokes outline the
+/// letters whole and are cut through after, as a glyph band is, so a crack
+/// looks the same whatever stroke the box has.
+pub(crate) struct StrokeCuts<'a> {
+    pub whole: &'a Raster,
+    pub alone: &'a Raster,
+}
+
 /// The outside parts of the strokes, to slide under the letters: for each
 /// stroke (first listed first) the share of each pixel it takes, over a
 /// region whose corner is device `dev`.
@@ -1300,7 +1310,7 @@ fn stroke_band(
         let dout = if out_w <= 0.0 {
             None
         } else {
-            Some(outside_dist(shape, out_w, &mut chamfer, &mut exact, keys)?)
+            Some(outside_dist(shape, out_w, &mut chamfer, &mut exact, keys, false)?)
         };
         for (i, r) in rest.iter_mut().enumerate() {
             let a = shape.v[i];
@@ -1336,14 +1346,22 @@ fn outside_dist<'a>(
     chamfer: &'a mut Option<Buffer<f32>>,
     exact: &'a mut Option<Buffer<f32>>,
     keys: &Keys,
+    whole: bool,
 ) -> Result<&'a [f32], Error> {
     let near = out_w < map::STROKE_CHAMFER_MAX;
     let slot = if near { chamfer } else { exact };
     if slot.is_none() {
+        // The letters whole (`StrokeCuts`) are a shape of their own.
+        let tag = match (near, whole) {
+            (true, false) => "chamfer out",
+            (true, true) => "chamfer out, whole",
+            (false, false) => "exact out",
+            (false, true) => "exact out, whole",
+        };
         *slot = Some(if near {
-            kept_values(keys.of_shape("chamfer out"), || map::chamfer_outside(shape))?
+            kept_values(keys.of_shape(tag), || map::chamfer_outside(shape))?
         } else {
-            kept_values(keys.of_shape("exact out"), || map::dist_outside(shape))?
+            kept_values(keys.of_shape(tag), || map::dist_outside(shape))?
         });
     }
     Ok(slot.as_ref().map_or(&[][..], |d| d.as_slice()))
@@ -1509,7 +1527,7 @@ pub(crate) fn interior(
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
-    interior_kept(r, effects, fill_opacity, group, scale, carried, place, None)
+    interior_kept(r, effects, fill_opacity, group, scale, carried, place, None, None)
 }
 
 /// [`interior`], with what it works out kept for the next paint
@@ -1526,6 +1544,7 @@ pub(crate) fn interior_kept(
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
     source: Option<Key>,
+    cuts: Option<&StrokeCuts<'_>>,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
     let pad = interior_pad(effects, scale);
     let keys = Keys::new(source, effects, pad, place);
@@ -1543,6 +1562,7 @@ pub(crate) fn interior_kept(
         place,
         pad,
         &keys,
+        cuts,
     )?;
     if let Some(key) = whole {
         if let Some((piece, bytes)) = KeptInterior::of(&out) {
@@ -2043,6 +2063,7 @@ fn interior_at(
     place: &Place<'_>,
     pad: usize,
     keys: &Keys,
+    cuts: Option<&StrokeCuts<'_>>,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
     let (rw, rh) = (r.width as usize, r.height as usize);
     let (w, h) = (rw + 2 * pad, rh + 2 * pad);
@@ -2114,6 +2135,27 @@ fn interior_at(
         .collect();
     let inside_parts = strokes.iter().any(|(_, s)| s.widths().0 > 0.0);
     let burst_strokes = strokes.iter().any(|(_, s)| is_burst(&s.paint));
+    // With cuts, the shape the strokes read: the letters whole, in this
+    // frame (`StrokeCuts`).
+    let cuts = cuts.filter(|c| {
+        !strokes.is_empty()
+            && (c.whole.x, c.whole.y, c.whole.width, c.whole.height)
+                == (r.x, r.y, r.width, r.height)
+    });
+    let whole = match cuts {
+        Some(c) => {
+            let mut m = Map::filled(w, h, 0.0)?;
+            for y in 0..rh {
+                for x in 0..rw {
+                    let a = c.whole.data[(y * rw + x) * 4 + 3];
+                    m.v[(y + pad) * w + x + pad] = f32::from(a) / 255.0;
+                }
+            }
+            Some(m)
+        }
+        None => None,
+    };
+    let stroke_shape = whole.as_ref().unwrap_or(&shape);
     let burst_overlay =
         shown().any(|(_, e)| matches!(e, Effect::GradientOverlay(o) if is_burst(&o.paint)));
     // The depth in from the letters' edge, worked out once: a Shape Burst
@@ -2131,9 +2173,18 @@ fn interior_at(
         Some(d) if burst_overlay => Some(depth_share(d)?),
         _ => None,
     };
-    // The strokes' inside parts read the depth in.
+    // The strokes' inside parts read the depth in, of the letters whole
+    // when they are cut through after.
+    let whole_din = match &whole {
+        Some(m) if inside_parts || burst_strokes => Some(kept_values(
+            keys.of_shape("depth in, whole"),
+            || map::chamfer_inside(m),
+        )?),
+        _ => None,
+    };
     let din = din.as_ref().map(|d| d.as_slice());
-    let deepest = din.map_or(0.0, |d| d.iter().copied().fold(0.0f32, f32::max));
+    let stroke_din = whole_din.as_ref().map(|d| d.as_slice()).or(din);
+    let deepest = stroke_din.map_or(0.0, |d| d.iter().copied().fold(0.0f32, f32::max));
     // A Shape Burst stroke runs from its outer edge (0) to its inner one
     // (1): `inner` is its depth in from the letters' edge to that one.
     let burst_in = |st: &Stroke| {
@@ -2324,7 +2375,7 @@ fn interior_at(
             // A stroke's inside part, over the letters.
             (Some(Effect::Stroke(st)), _) => {
                 let in_w = (st.widths().0 * scale) as f32;
-                if let (Some(din), true) = (din.filter(|_| inside_parts), in_w > 0.0) {
+                if let (Some(din), true) = (stroke_din.filter(|_| inside_parts), in_w > 0.0) {
                     let depth = if is_burst(&st.paint) {
                         let (out, total) = burst_in(st);
                         Some(budget::exact(
@@ -2421,6 +2472,20 @@ fn interior_at(
     // The letters' alpha as laid, which only an outside stroke reads.
     let outside_strokes = strokes.iter().any(|(_, s)| s.widths().1 > 0.0);
     let mut alpha = budget::filled(if outside_strokes { n } else { 0 }, 0f32)?;
+    // The letters whole as laid, for strokes cut through after.
+    if let (Some(m), true) = (&whole, outside_strokes) {
+        for (al, &cover) in alpha.iter_mut().zip(&m.v) {
+            if cover <= map::INSIDE_EPS {
+                continue;
+            }
+            let a = if cover == 1.0 {
+                k as f32
+            } else {
+                (k as f32 * cover).round().clamp(0.0, 255.0)
+            };
+            *al = a / 255.0;
+        }
+    }
     for (i, (d, p)) in data
         .as_chunks_mut::<4>().0.iter_mut()
         .zip(lay.data.as_chunks::<4>().0.iter())
@@ -2446,7 +2511,7 @@ fn interior_at(
             }
         }
         d[3] = a;
-        if let Some(al) = alpha.get_mut(i) {
+        if let (Some(al), None) = (alpha.get_mut(i), &whole) {
             *al = f32::from(a) / 255.0;
         }
     }
@@ -2466,12 +2531,12 @@ fn interior_at(
             if out_w <= 0.0 {
                 continue;
             }
-            let d = outside_dist(&shape, out_w, &mut chamfer, &mut exact, keys)?;
+            let d = outside_dist(stroke_shape, out_w, &mut chamfer, &mut exact, keys, whole.is_some())?;
             let mut share = budget::filled(n, 0.0f32)?;
             let dissolve = (st.blend == Blend::Dissolve).then_some((st.seed, hashed, w));
             let reach = Reach2 {
                 d,
-                shape: &shape.v,
+                shape: &stroke_shape.v,
                 alpha: &alpha,
                 out_w,
                 opacity: st.opacity as f32,
@@ -2490,6 +2555,31 @@ fn interior_at(
                 None
             };
             items.push((*k, share, depth));
+        }
+    }
+    // Cut through: each stroke's share less what the cuts take, as a glyph
+    // band is erased.
+    if let Some(c) = cuts {
+        let a = c.alone;
+        for y in 0..h {
+            let ay = dev.1 + y as i32 - a.y;
+            if ay < 0 || ay >= a.height as i32 {
+                continue;
+            }
+            for x in 0..w {
+                let ax = dev.0 + x as i32 - a.x;
+                if ax < 0 || ax >= a.width as i32 {
+                    continue;
+                }
+                let cut = a.data[(ay as usize * a.width as usize + ax as usize) * 4 + 3];
+                if cut == 0 {
+                    continue;
+                }
+                let keep = 1.0 - f32::from(cut) / 255.0;
+                for (_, share, _) in &mut items {
+                    share[y * w + x] *= keep;
+                }
+            }
         }
     }
     let outside = (!items.is_empty()).then_some(Outside {
@@ -3345,6 +3435,7 @@ mod tests {
                 &place(),
                 pad,
                 &Keys::none(),
+                None,
             ),
         }
         .unwrap();

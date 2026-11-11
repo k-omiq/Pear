@@ -3,10 +3,12 @@
 
 #![cfg(feature = "paint")]
 
+use mt_text::paint::fx::blend::Blend;
+use mt_text::paint::fx::effects::{Effect, Paint, Position, Stroke};
 use mt_text::paint::kept;
 use mt_text::paint::special::{letter_shapes, lightning_marks};
 use mt_text::paint::{
-    paint_box, Affine, Align, BoxRequest, Crack, Effects, Fill, Job, Lightning, Raster, Request, Rgba, Run, Scratches,
+    paint_box, Affine, Align, Band, BoxRequest, Crack, Effects, Fill, Job, Lightning, Raster, Request, Rgba, Run, Scratches,
     Special, Splash,
 };
 use mt_text::{Engine, Face, FontId};
@@ -240,4 +242,48 @@ fn a_crack_gathers_at_its_focus_or_spreads_over_the_word() {
     let third = plain.x + plain.width as i32 / 3;
     assert!(!n.is_empty() && n.iter().all(|&x| x < third), "focused cuts reach {:?}", n.last());
     assert!(w.iter().any(|&x| x > plain.x + 2 * plain.width as i32 / 3), "spread cuts stop at {:?}", w.last());
+}
+
+#[test]
+fn a_crack_cuts_a_box_stroke_through_as_it_cuts_a_band() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let crack = only(|s| s.crack = Some(Crack { amount: 0.7, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }));
+    // A black outline 4 wide outside the letters: a glyph band, whose pen
+    // is centred on the outline, or the box's own stroke.
+    let banded = |sp: Option<Special>| {
+        let mut b = boxed(font, sp);
+        b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 8.0 }];
+        b
+    };
+    let stroked = |sp: Option<Special>| {
+        let mut b = boxed(font, sp);
+        b.effects = vec![Effect::Stroke(Stroke {
+            size: 4.0,
+            position: Position::Outside,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            paint: Paint::Fill(Fill::Solid(BLACK)),
+            seed: 0,
+        })];
+        b
+    };
+    // What the crack clears: whole before, near nothing after.
+    let cleared = |whole: &Raster, cut: &Raster| -> Vec<(i32, i32)> {
+        let mut out = Vec::new();
+        for y in 0..160 {
+            for x in 0..360 {
+                if at(whole, x, y)[3] > 200 && at(cut, x, y)[3] < 55 {
+                    out.push((x, y));
+                }
+            }
+        }
+        out
+    };
+    let band = cleared(&paint(&mut engine, banded(None)), &paint(&mut engine, banded(crack)));
+    let stroke = cleared(&paint(&mut engine, stroked(None)), &paint(&mut engine, stroked(crack)));
+    let both = band.iter().filter(|p| stroke.contains(p)).count();
+    let either = band.len() + stroke.len() - both;
+    assert!(band.len() > 200, "the crack cuts the band: {}", band.len());
+    assert!(both as f64 > 0.9 * either as f64, "band {} stroke {} both {both}", band.len(), stroke.len());
 }

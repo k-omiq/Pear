@@ -18,6 +18,12 @@
 //
 // Amounts are percents, sizes percents of the font size, angles degrees
 // (0 runs along the line), seeds 0 to 999. Painted by the Rust engine only.
+//
+// Known limit: the pattern is laid over the letters' ink box, so it is
+// redrawn when the text or the box size changes; Seed re-rolls it.
+//
+// A crack or scratches cut the box's own strokes through as they cut a
+// glyph band: one look whatever stroke the box has.
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
