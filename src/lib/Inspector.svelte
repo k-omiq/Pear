@@ -152,8 +152,7 @@
   import { copyRuns, fieldSpans, rangeFace, faceAt, runsKey } from './runs.js';
   import { curvedStyle } from './contain.js';
   import { onDestroy, tick, untrack } from 'svelte';
-  import { typingSel, setTypingSel, clearTypingSel, selectedRange, faceAsk, askPending, keepsEdit, endEditIfAway } from './typing-selection.svelte.js';
-  import { showPanel } from './editor/panels.svelte.js';
+  import { typingSel, setTypingSel, clearTypingSel, selectedRange, faceAsk, takeFaceAsk, askPending, keepsEdit, endEditIfAway } from './typing-selection.svelte.js';
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
   // A locked box shows its settings and takes no change to them.
@@ -476,34 +475,40 @@
   // caret in the box typed into, on the letters typed next; else on the whole
   // box. Curved text is laid out in one face, so there it is always the box.
   //
-  // The range is remembered past the selection (`kept`): the field losing the
-  // focus, or the focus moving into these controls, does not drop it. It goes
-  // when another box is picked or none is, or when the words change.
+  // The scope is the one selection the keys read too (`typingSel`), so a
+  // button and its key always act on the same letters. A selection made in
+  // the field above lasts while the focus is in the field or moves into these
+  // controls; it goes when the field reports a bare caret, when the focus goes
+  // anywhere else, when the words change, and when another box is picked.
   function noteTextSel(e) {
     const el = e.currentTarget;
     if (!box || el.value !== (boxText(box) ?? '')) return;
     setTypingSel(box.id, el.value, el.selectionStart, el.selectionEnd);
   }
-  function endTextSel() {
+  function fieldSelGoes() {
     if (box && typingSel.boxId === box.id && app.editingId !== box.id) clearTypingSel();
   }
-  let kept = $state(null);
+  function endTextSel(e) {
+    if (!keepsEdit(e?.relatedTarget)) fieldSelGoes();
+  }
   const faceScope = $derived.by(() => {
     if (!box || curvedStyle(box.style)) return { kind: 'box' };
     const text = boxText(box) ?? '';
     const r = selectedRange(box.id, text);
     if (r && r[0] < r[1]) return { kind: 'words', text, a: r[0], f: r[1] };
     if (r && app.editingId === box.id) return { kind: 'caret', text, at: r[0] };
-    if (kept && kept.boxId === box.id && kept.text === text) return { kind: 'words', text, a: kept.a, f: kept.f };
     return { kind: 'box' };
   });
+  // The words changed under a selection made in the field, or another box was
+  // picked: that selection is gone, and does not come back with an undo.
   $effect(() => {
-    const sc = faceScope;
     const id = box?.id ?? null;
+    const text = box ? (boxText(box) ?? '') : null;
+    const sel = typingSel.boxId;
+    const selText = typingSel.text;
     untrack(() => {
-      if (sc.kind === 'words') {
-        if (kept?.boxId !== id || kept.text !== sc.text || kept.a !== sc.a || kept.f !== sc.f) kept = { boxId: id, text: sc.text, a: sc.a, f: sc.f };
-      } else if (kept && (sc.kind === 'caret' || kept.boxId !== id)) kept = null;
+      if (sel == null || app.editingId === sel) return;
+      if (sel !== id || selText !== text) clearTypingSel();
     });
   });
   // What the scope is set in: bold and italic true, false or 'mixed'; the
@@ -553,21 +558,26 @@
     if (!e.target.closest?.('input, textarea')) e.preventDefault();
   }
   function leaveFaceControls() {
-    setTimeout(endEditIfAway);
+    setTimeout(() => {
+      endEditIfAway();
+      const at = document.activeElement;
+      if (!keepsEdit(at) && at?.id !== 'insp-text') fieldSelGoes();
+    });
   }
-  // "Typeface…": the family list, for the range it was asked for. An ask made
-  // before this Inspector was drawn (the panel shown again later) is not one
-  // for it to answer.
-  let askSeen = untrack(() => faceAsk.turn);
+  // "Typeface…": the family list, for the range it was asked for. The ask is
+  // taken once (`takeFaceAsk`), by this Inspector whether it was drawn already
+  // or is drawn because the command showed its panel.
   $effect(() => {
-    const t = faceAsk.turn;
-    if (!t || t === askSeen) return;
-    askSeen = t;
+    faceAsk.turn;
+    if (!faceAsk.open || !box) return;
     untrack(() => {
-      if (!box || faceAsk.boxId !== box.id) return;
-      kept = { boxId: box.id, text: faceAsk.text, a: faceAsk.a, f: faceAsk.f };
+      const text = boxText(box) ?? '';
+      const r = takeFaceAsk(box.id, text);
+      if (!r) return;
+      // The words it was asked for are the scope, whether or not the edit
+      // they were selected in is still going.
+      if (typingSel.boxId !== box.id || typingSel.text !== text || typingSel.a !== r.a || typingSel.f !== r.f) setTypingSel(box.id, text, r.a, r.f);
       setInspectorTab('text');
-      showPanel('options');
       tick().then(() => facePicker?.openList());
     });
   });
@@ -2011,10 +2021,10 @@
           <label class="lbl" for="insp-text">Content {isFreeBox(box) ? '· free' : `· line ${box.lineN}`}</label>
           <textarea id="insp-text" value={boxText(box)} onbeforeinput={textSpans.before} oncompositionstart={textSpans.start} oncompositionend={textSpans.end} oninput={onTextInput} onselect={noteTextSel} onkeyup={noteTextSel} onmouseup={noteTextSel} onblur={endTextSel} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
         </div>
-        <!-- The family, of the selected words or of the box (`faceScope`).
-             Moving through the list shows each family on the box when it is
-             the box's; nothing is an edit until a click or Enter
-             (FontPicker.svelte). -->
+        <!-- The family, B, I and Clear: of the selected words or of the box
+             (`faceScope`), the one row its label speaks for. Moving through
+             the list shows each family on the box when it is the box's;
+             nothing is an edit until a click or Enter (FontPicker.svelte). -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="grp" data-keeps-edit onmousedown={holdFocus} onfocusout={leaveFaceControls}>
           <label class="lbl" for="insp-font">Font <span class="scope">{SCOPE_LABEL[faceScope.kind]}</span></label>
@@ -2029,6 +2039,10 @@
               onpreview={faceScope.kind === 'box' ? (name) => (name ? previewBoxFont(box, name) : endFontPreview()) : undefined}
               onpick={facePick}
             />
+            <div class="seg face-seg">
+              <button type="button" class:on={faceNow.bold === true} class:mixed={faceNow.bold === 'mixed'} aria-pressed={faceNow.bold === 'mixed' ? 'mixed' : faceNow.bold} title="Bold{keyNote('text.bold')}{faceNow.bold === 'mixed' ? ', mixed' : ''}" onclick={() => faceToggle('bold')}><b>B</b></button>
+              <button type="button" class:on={faceNow.italic === true} class:mixed={faceNow.italic === 'mixed'} aria-pressed={faceNow.italic === 'mixed' ? 'mixed' : faceNow.italic} title="Italic{keyNote('text.italic')}{faceNow.italic === 'mixed' ? ', mixed' : ''}" onclick={() => faceToggle('italic')}><i>I</i></button>
+            </div>
             <button type="button" class="rbtn" disabled={!scopeRuns} title="Clear typeface: the {faceScope.kind === 'box' ? 'whole box' : 'selected words'} back to the box's face{keyNote('text.clearFace')}" onclick={faceClear}>Clear</button>
           </div>
         </div>
@@ -2046,11 +2060,10 @@
             {#if sizing === 'fit'}<span class="size-now">Fits at {Math.round(s.size * 10) / 10} px</span>{/if}
           </div>
           <div class="field">
-            <span class="lbl">Style <span class="scope">{SCOPE_LABEL[faceScope.kind]}</span></span>
+            <!-- The whole box's, whatever is selected: no scope here. -->
+            <span class="lbl">Style</span>
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="seg" data-keeps-edit onmousedown={holdFocus} onfocusout={leaveFaceControls}>
-              <button type="button" class:on={faceNow.bold === true} class:mixed={faceNow.bold === 'mixed'} aria-pressed={faceNow.bold === 'mixed' ? 'mixed' : faceNow.bold} title="Bold{keyNote('text.bold')}{faceNow.bold === 'mixed' ? ', mixed' : ''}" onclick={() => faceToggle('bold')}><b>B</b></button>
-              <button type="button" class:on={faceNow.italic === true} class:mixed={faceNow.italic === 'mixed'} aria-pressed={faceNow.italic === 'mixed' ? 'mixed' : faceNow.italic} title="Italic{keyNote('text.italic')}{faceNow.italic === 'mixed' ? ', mixed' : ''}" onclick={() => faceToggle('italic')}><i>I</i></button>
+            <div class="seg" onmousedown={holdFocus}>
               <button type="button" class:on={s.uppercase} aria-pressed={s.uppercase} title="Uppercase" onclick={() => { s.uppercase = !s.uppercase; touch(); }}>TT</button>
               {#if engineSwitch.painting}
                 <button type="button" class="more" class:on={styleMore} class:set={styleTuned(s)} aria-expanded={styleMore} aria-controls="insp-style-more" title={styleTuned(s) ? 'Bold weight and italic angle (set)' : 'Bold weight and italic angle'} onclick={() => (styleMore = !styleMore)}>⋯</button>
@@ -3578,6 +3591,12 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+  .face-seg {
+    flex: 0 0 auto;
+  }
+  .face-seg button {
+    width: 28px;
   }
   .font-row > :first-child {
     flex: 1 1 auto;

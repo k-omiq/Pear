@@ -57,6 +57,7 @@ import { startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
 import { drawRead } from './draw-read.svelte.js';
 import { openSettings } from './settings-tabs.svelte.js';
 import { panels, setHidden, showPanel } from './editor/panels.svelte.js';
+import { setInspectorTab } from './inspector-tabs.svelte.js';
 import { showActiveRow } from './Queue.svelte';
 import { exportImages } from './exporter.js';
 import { goProject, goLibrary } from './route.svelte.js';
@@ -108,8 +109,10 @@ const faceRange = () => {
 // typed next (`askPending`: the face asked for there, else the one the
 // letter before has); with nothing typed into, the whole box, as before. A
 // key pressed in a text field with nothing selected there (the queue's, the
-// Inspector's) is not about the whole box, and falls through.
-const inField = (e) => !!e?.target?.closest?.('input, textarea, [contenteditable="true"]');
+// Inspector's size) is not about the whole box, and falls through - except
+// the Inspector's Text field, which holds the box's words: a caret there is
+// the whole box, as the Inspector's own B and I say beside it.
+const inField = (e) => !!e?.target?.closest?.('input, textarea, [contenteditable="true"]') && e.target.id !== 'insp-text';
 // A locked box, or curved text (laid out in one face), takes no face on part
 // of its words: said once, nothing written.
 const refused = (t) => !!faceRefusal(t.b, page(), { toast: true });
@@ -161,7 +164,18 @@ const SETTINGS_SERIES = new Set(['series', 'styles', 'guide']);
 const RUNS = {
   'text.bold': { when: () => boxSelected() || !!faceTarget() || !!lineTarget(), run: faceToggle('bold') },
   'text.italic': { when: () => boxSelected() || !!faceTarget() || !!lineTarget(), run: faceToggle('italic') },
-  'text.typeface': { when: () => !!faceRange(), run: () => { const t = faceRange(); if (!refused(t)) askFacePick(t.b.id, t.text, t.r[0], t.r[1]); } },
+  // The family list is the Inspector's, on its Text tab: its panel is shown,
+  // which draws the Inspector if it was hidden, and the Inspector takes the ask.
+  'text.typeface': {
+    when: () => !!faceRange(),
+    run: () => {
+      const t = faceRange();
+      if (refused(t)) return;
+      askFacePick(t.b.id, t.text, t.r[0], t.r[1]);
+      setInspectorTab('text');
+      showPanel('options');
+    },
+  },
   'text.clearFace': {
     when: () => !!faceRange() || !!lineTarget(),
     run: () => {

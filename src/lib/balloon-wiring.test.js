@@ -102,6 +102,7 @@ const top = (fit) => shapeBounds(fit).y;
 const bottom = (fit) => shapeBounds(fit).y + shapeBounds(fit).h;
 const { defaultStyle, normalizeStyle, normalizeFit } = await import('./data.js');
 const { serializePage } = await import('./psd.js');
+const { browserFaceReady } = await import('./text-engine/browser.js');
 const hist = await import('./editor/history.svelte.js');
 
 // ---------------------------------------------------------------------------
@@ -2201,9 +2202,7 @@ describe('placement chooses the size (FIT-1)', () => {
 
   // DET-4: a face the page has asked for and not got measures as the fallback.
   it('places as before, unsolved, while the face the text is set in is still loading', () => {
-    // Still on its way: a load that finished would settle the face for good
-    // (browserFaceReady), for every case after this one too.
-    const load = vi.fn(() => new Promise(() => {}));
+    const load = vi.fn(() => Promise.resolve([]));
     vi.stubGlobal('document', { fonts: { check: () => false, load } });
     try {
       const b = placeAt(32);
@@ -2222,11 +2221,7 @@ describe('placement chooses the size (FIT-1)', () => {
     let ready = false;
     beforeEach(() => {
       ready = false;
-      // A face on its way: `check` says when it is here, and its load never
-      // finishes meanwhile. A load that finishes settles the face for good
-      // (browserFaceReady), as a face that matched nothing is then the
-      // browser's own stand-in.
-      vi.stubGlobal('document', { fonts: { check: () => ready, load: () => new Promise(() => {}) } });
+      vi.stubGlobal('document', { fonts: { check: () => ready, load: () => Promise.resolve([]) } });
     });
     afterEach(() => vi.unstubAllGlobals());
     const geomOf = (b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, size: b.style.size });
@@ -2257,7 +2252,7 @@ describe('placement chooses the size (FIT-1)', () => {
       // The plain wrap reads the browser's own breaks off a DOM node; this
       // environment has none to lay out, so every paragraph is one line.
       vi.stubGlobal('document', {
-        fonts: { check: () => ready, load: () => new Promise(() => {}) },
+        fonts: { check: () => ready, load: () => Promise.resolve([]) },
         body: { appendChild: () => {} },
         createElement: () => ({ style: {}, remove: () => {} }),
         createRange: () => ({ setStart: () => {}, setEnd: () => {}, getClientRects: () => [] }),
@@ -2281,6 +2276,48 @@ describe('placement chooses the size (FIT-1)', () => {
       noteFontsChanged();
       expect(b.auto.status).toBe('pending');
       expect(geomOf(b)).toEqual(before);
+    });
+
+    // A chapter opened before its font is in: the browser's load matches
+    // nothing. The face is drawn with the stand-in meanwhile, but no box is
+    // sized for it - the box waits - and when the font is added the box is
+    // solved for it, as if it had been there all along. While the added
+    // font is loading the face is not ready either.
+    it('waits through a load that matched nothing, and is solved when the font is added later', async () => {
+      ready = true;
+      const want = placeAt(32);
+      const solved = { ...geomOf(want), auto: { ...want.auto } };
+      ready = false;
+      const heard = {};
+      let loads = 0;
+      vi.stubGlobal('document', {
+        fonts: {
+          check: () => ready,
+          load: () => (loads++, Promise.resolve([])),
+          addEventListener: (ev, cb) => (heard[ev] = cb),
+        },
+      });
+      const b = placeAt(32);
+      expect(b.auto.status).toBe('pending');
+      const face = { key: "400 32px 'Comic Neue', cursive" };
+      // The load ends, having matched nothing.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(browserFaceReady(face)).toBe(true);
+      expect(browserFaceReady(face, { matched: true })).toBe(false);
+      noteFontsChanged();
+      expect(b.auto.status).toBe('pending');
+      const asked = loads;
+      // A font is added and is loading: the set changes, and the face is
+      // asked for again, and is not ready while it loads.
+      heard.loadingdone?.();
+      expect(browserFaceReady(face)).toBe(false);
+      expect(loads).toBe(asked + 1);
+      // It is in.
+      ready = true;
+      expect(noteFontsChanged()).toBeGreaterThan(0);
+      expect(b.auto).toEqual(solved.auto);
+      expect(geomOf(b)).toEqual({ x: solved.x, y: solved.y, w: solved.w, h: solved.h, size: solved.size });
     });
 
     it('never re-solves a box that has a status', () => {

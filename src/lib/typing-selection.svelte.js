@@ -46,13 +46,26 @@ export function askPending(id, text, at, patch) {
 // words are `text`. The Inspector holds the one picker and opens it on its
 // Text tab (`turn` makes each ask a new one); the range is kept here, as the
 // picker taking the focus ends the edit the selection belonged to.
-export const faceAsk = $state({ turn: 0, boxId: null, text: '', a: 0, f: 0 });
+//
+// `open` until an Inspector takes the ask (`takeFaceAsk`), exactly once: the
+// panel may be hidden when it is asked (the command shows it), and the
+// Inspector drawn after it still finds the ask; one drawn again later finds
+// none.
+export const faceAsk = $state({ turn: 0, open: false, boxId: null, text: '', a: 0, f: 0 });
 export function askFacePick(id, text, a, f) {
   faceAsk.boxId = id;
   faceAsk.text = text;
   faceAsk.a = Math.min(a, f);
   faceAsk.f = Math.max(a, f);
+  faceAsk.open = true;
   faceAsk.turn++;
+}
+// The ask, for box `id` while its words are `text`, taken: the range, or null
+// when there is none for it. An ask for other words is dropped.
+export function takeFaceAsk(id, text) {
+  if (!faceAsk.open) return null;
+  faceAsk.open = false;
+  return faceAsk.boxId === id && faceAsk.text === text ? { a: faceAsk.a, f: faceAsk.f } : null;
 }
 
 // ----- the edit while a control that sets faces has the focus -----
