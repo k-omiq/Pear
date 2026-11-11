@@ -330,11 +330,18 @@ describe('unwarpPoint', () => {
     expect(unwarpPoint(fold, 2, 2, W, H, qx, qy)).not.toBe(null);
   });
 
-  it('answers nothing outside the bounds', () => {
+  it('answers nothing outside the bounds, and skips the search for a target out of the seeds\' reach', () => {
     const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
     const m = meshMap(fold, 2, 2, W, H);
+    let calls = 0;
+    const counted = { ...m, at: (x, y) => (calls++, m.at(x, y)) };
     const bounds = [-10, -10, 110, 110];
-    expect(unwarpWith(m, W, H, 50, 400, { bounds })).toBe(null);
+    expect(unwarpWith(counted, W, H, 50, 400, { bounds })).toBe(null);
+    // The seeds once (13 x 13), then nothing per point.
+    const first = calls;
+    expect(first).toBe(169);
+    for (let i = 0; i < 100; i++) expect(unwarpWith(counted, W, H, i, 400, { bounds })).toBe(null);
+    expect(calls).toBe(first);
     // A perspective's closed form keeps to the bounds too.
     const narrow = [[0, 0], [100, 0], [40, 100], [60, 100]];
     const pm = meshMap(narrow, 1, 1, W, H);

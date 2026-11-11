@@ -620,6 +620,11 @@ export function unwarpWith(m, w, h, x, y, opts = null) {
     return ok(p) ? p : null;
   }
   const seeds = seedsOf(m, Number(w), Number(h), bounds);
+  // Within bounds, the seeds cover every answer there may be: where nothing
+  // in their reach comes near (x, y), the mesh does not get there from
+  // inside the bounds, and the search is not paid for.
+  const r = seeds.reach;
+  if (bounds && (tx < r[0] || ty < r[1] || tx > r[2] || ty > r[3])) return null;
   const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
   const hint = opts?.hint && Number.isFinite(opts.hint[0]) && Number.isFinite(opts.hint[1]) ? opts.hint : null;
   if (hint) {
@@ -673,7 +678,10 @@ export function oneStep(m, a, b, pa, pb) {
 
 // The seeds of `unwarpWith` for mesh `m`: a 13 x 13 grid over `bounds` (else
 // the box and a box's width and height past it on every side, where the map
-// continues straight) and where each goes (`at`). Kept with the mesh object.
+// continues straight), where each goes (`at`), and `reach`, the rectangle of
+// those images grown by the longest step between two neighbouring ones: the
+// map between two seeds strays no further than that from them, so a target
+// outside it is reached by nothing in the grid. Kept with the mesh object.
 const seedMemo = new WeakMap();
 function seedsOf(m, W, H, bounds) {
   const key = bounds ? bounds.join(',') : `${W},${H}`;
@@ -691,7 +699,20 @@ function seedsOf(m, W, H, bounds) {
       at.push(m.at(sx, sy));
     }
   }
-  const out = { from, at };
+  let step = 0;
+  const reach = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      const p = at[j * (N + 1) + i];
+      reach[0] = Math.min(reach[0], p[0]);
+      reach[1] = Math.min(reach[1], p[1]);
+      reach[2] = Math.max(reach[2], p[0]);
+      reach[3] = Math.max(reach[3], p[1]);
+      if (i < N) step = Math.max(step, Math.hypot(...[0, 1].map((k) => at[j * (N + 1) + i + 1][k] - p[k])));
+      if (j < N) step = Math.max(step, Math.hypot(...[0, 1].map((k) => at[(j + 1) * (N + 1) + i][k] - p[k])));
+    }
+  }
+  const out = { from, at, reach: [reach[0] - step, reach[1] - step, reach[2] + step, reach[3] + step] };
   seedMemo.set(m, { key, out });
   return out;
 }
