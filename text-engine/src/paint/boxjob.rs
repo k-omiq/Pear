@@ -2549,14 +2549,7 @@ fn paint_glyphs(
     let cuts = if cut_strokes {
         request.request.job.effects.cuts = Cuts::Skipped;
         let whole = letters_fill(engine, request, rasterizer, keep, hollow, ghostly);
-        // The cuts no further than the box's surface: nothing past it is read.
-        let surface = IBox {
-            x0: 0,
-            y0: 0,
-            x1: request.width as i32,
-            y1: request.height as i32,
-        };
-        request.request.job.effects.cuts = Cuts::Alone(surface);
+        request.request.job.effects.cuts = Cuts::Alone;
         let alone = job_raster(engine, &request.request, rasterizer, keep);
         request.request.job.effects.cuts = Cuts::Made;
         whole?.zip(alone?)
@@ -3018,6 +3011,8 @@ fn paint(
         x1: width as i32,
         y1: height as i32,
     };
+    // Nothing past the surface is seen (`Effects::surface`).
+    request.request.job.effects.surface = Some(surface);
     let transform = request.request.transform;
     // The brush ink, laid once for every pass below, with room round it for
     // the widest outline and the most a shadow grows it.
