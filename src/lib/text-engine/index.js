@@ -1,4 +1,5 @@
 import { createBrowserGlyphPainter } from './browser-painter.js';
+import { specialActive } from '../special.js';
 
 // Engines are plain objects, and every method is synchronous:
 //   id: string
@@ -81,6 +82,12 @@ export function engineDraws() {
 export function wobbleDrawn(style) {
   const w = style?.wobble;
   return w?.on === true && (w.amount > 0 || w.tilt > 0) && engineDraws() && painter.wobble === true;
+}
+
+// Whether a style's special effects (special.js) are painted: one is on with
+// an amount, and the painter makes them from their numbers (the Rust one).
+export function specialDrawn(style) {
+  return specialActive(style) && engineDraws() && painter.special === true;
 }
 
 // ONE EXPORT, ONE ENGINE. Which engine measures and which painter draws can

@@ -4,6 +4,7 @@
 import { FLIP_MODES, BLEND_MODES, aaLevel, normalizeTexture } from './brush.js';
 import { wavePath } from './bezier-path.js';
 import { normalizePaint } from './box-paint.js';
+import { defaultSpecial, normalizeSpecial } from './special.js';
 
 // Default page dimensions until a real image sets them from its natural size.
 export const PAGE_W = 850;
@@ -518,6 +519,9 @@ export function defaultStyle() {
     // Paint over the letters (box-paint.js): marks of colour in the box's own
     // frame, moving with it. Painted by the Rust engine only.
     paint: { on: false, marks: [] },
+    // Special effects (special.js): crack, lightning, splash, scratches, each
+    // a seeded pattern over the whole box. Painted by the Rust engine only.
+    special: defaultSpecial(),
     // warp: per-character circular arc, -100..100 (negative = frown, positive = smile)
     curve: 0,
     // ---- typesetting (see typeset.js) ----
@@ -2253,6 +2257,7 @@ export function normalizeStyle(s) {
       seed: Math.min(999, Math.max(0, Math.round(num(src.wobble?.seed, d.wobble.seed)))),
     },
     paint: normalizePaint(src.paint),
+    special: normalizeSpecial(src.special),
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
   foldPatternFill(out);
