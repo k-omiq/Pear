@@ -25,6 +25,14 @@
     "fs:allow-stat",
     "fs:allow-rename",
     {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://discord.gg/3ueKc9PaX7" },
+        { "url": "https://github.com/k-omiq/Pear" },
+        { "url": "https://cleaner.komiq.cc" }
+      ]
+    },
+    {
       "identifier": "fs:scope",
       "allow": [
         { "path": "$HOME/**" }

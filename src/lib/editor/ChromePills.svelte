@@ -16,6 +16,7 @@
   import { sidecarReady } from '../sidecar.js';
   import DetectMenu from './DetectMenu.svelte';
   import { comboFor, formatCombo } from '../shortcuts.svelte.js';
+  import { isComics } from '../prefs.svelte.js';
 
   let { onFontLib, onSettings } = $props();
 
@@ -131,7 +132,8 @@
     {/if}
     <span class="save-dot" class:saved={app.saved} class:failed={app.saveFailed} title={saveTitle}></span>
   </div>
-  {#if toCheck}
+  <!-- The check list is about outlines and detected lines: comics only. -->
+  {#if toCheck && isComics()}
     <button class="pill pill-check" onclick={() => goNextCheck(checks.items)} data-tip={`Next to check${nextKey ? ` (${nextKey})` : ''}`}>
       <span class="pill-check-n">{toCheck}</span> to check
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
@@ -168,6 +170,8 @@
 {/if}
 
 <div class="pill-row far-right">
+  <!-- Detect and Regions are comic tools; general use has neither. -->
+  {#if isComics()}
   <div class="pill-anchor">
     <button
       class="pill pill-icon"
@@ -192,7 +196,9 @@
       <DetectMenu anchor={detectBtn} onClose={() => (detectOpen = false)} />
     {/if}
   </div>
+  {/if}
   {#if !translate}
+    {#if isComics()}
     <button
       class="pill pill-icon"
       class:on={app.showRegions}
@@ -203,6 +209,7 @@
     >
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="11" rx="8" ry="6" stroke-dasharray="3 2.2" /><path d="M9 16.5 7.5 20.5l4-3.6" /></svg>
     </button>
+    {/if}
     <button
       class="pill pill-icon"
       class:on={app.bulk.active}

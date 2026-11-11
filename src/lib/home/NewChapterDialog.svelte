@@ -1,60 +1,72 @@
 <script>
-  // New chapter dialog. One dialog, two sources - picked files or a chapter
-  // package - chosen at the top, so there is one place a chapter comes into
-  // being from and the project / number / title fields are shared.
+  // New chapter dialog (plan 2.3). Three things are always asked: the files,
+  // which project, and an optional title. One picker takes page images or one
+  // chapter package, told apart by extension, so there is no source switch.
+  // Comics use also sees the chapter number, and keeps everything else behind
+  // one closed "More options" fold: the start mode, the cleaned pages and the
+  // translation file, and the one page preparation that fits the layout.
   //
   // PSD import (chapterPagesFromPsdFiles / pickPsdFiles in psd.js) is parked
   // for now: the code stays, the dialog no longer offers it.
   import { untrack } from 'svelte';
-  import { library, createProject, createChapter } from '../library.svelte.js';
+  import { library, createProject, createChapter, setEmptyProjectLayout } from '../library.svelte.js';
   import { goEditor } from '../route.svelte.js';
   import { pickImageFiles, pickJsonFile, readTranslations } from '../importer.js';
-  import { pickPackageFile, inspectPackage, importChapterPackage } from '../package-flow.js';
+  import { pickChapterSource, inspectPackage, importChapterPackage } from '../package-flow.js';
   import { toast, toastError } from '../store.svelte.js';
   import { plural, relativeTime } from '../format.js';
-  import { resliceStripFiles, resliceWarning, RESLICE_H_DEFAULT, RESLICE_H_MAX, clampResliceHeight } from '../strip-reslice.js';
-  import { SLICE_H_MIN } from '../editor/strip-cuts.js';
+  import { resliceStripFiles, resliceWarning, RESLICE_H_DEFAULT, clampResliceHeight } from '../strip-reslice.js';
   import { preparePageFiles } from '../page-prep.js';
+  import { isComics, startMode, prefs } from '../prefs.svelte.js';
+  import { word } from '../words.js';
+  import ProjectFields from './ProjectFields.svelte';
+  import { guessLayout } from './layout-guess.js';
 
   // In-flight creation blocks dismissal.
   let { open = $bindable(), busy = $bindable(false), projectId = null } = $props();
 
-  // Where the pages come from: 'files' | 'package'.
-  let source = $state('files');
-
   let target = $state('');
   let newProjectName = $state('');
+  let newProjectLayout = $state('pages');
+  let newProjectOcrLanguage = $state('ja');
   let number = $state(1);
   let title = $state('');
+  // The picked page images, or the picked package with its description.
   let files = $state([]);
-  let cleaned = $state([]);
-  let translations = $state(null); // { name, pages } from a picked JSON
-  // The parsed chapter package and its description, or null before one is picked.
   let pkg = $state(null);
   let pkgSummary = $state(null);
   let pkgName = $state('');
   let reading = $state(false);
+  // The layout the picked images read as, and whether the person chose a
+  // layout by hand. A layout is permanent, so a guess never overrides a
+  // choice; it only fills in until one is made.
+  let guessedLayout = $state(null);
+  let layoutTouched = $state(false);
   let error = $state('');
-  let workflow = $state('typeset');
-  let newProjectLayout = $state('pages');
-  let newProjectOcrLanguage = $state('ja');
-  let recut = $state(false);
-  let resliceH = $state(RESLICE_H_DEFAULT);
+  // Behind "More options", which starts closed every time.
+  let more = $state(false);
+  let workflow = $state(startMode());
+  let cleaned = $state([]);
+  let translations = $state(null); // { name, pages } from a picked JSON
   let splitSpreads = $state(false);
-  let autoCrop = $state(false);
-  let autoAlign = $state(false);
+  let recut = $state(false);
   let prepared = $state.raw(null);
   let prepareWarning = $state('');
 
-  const isPackage = $derived(source === 'package');
+  const isPackage = $derived(!!pkg);
   const selectedProject = $derived(library.projects.find((p) => p.id === target));
   const importLayout = $derived(target === '__new__' ? newProjectLayout : selectedProject?.layout ?? 'pages');
   const importLanguage = $derived(target === '__new__' ? newProjectOcrLanguage : selectedProject?.ocrLanguage ?? 'ja');
+  // Cleaned pages and translations pair with the raws by position, so a
+  // preparation that changes the page count cannot run beside them.
   const prepBlocked = $derived(cleaned.length > 0 || translations !== null);
+  // The sources and the preparations are comic tools; general use never
+  // sends them, whatever was left set.
+  const sources = $derived(isComics() && !isPackage);
 
   $effect(() => {
     // Any change to the inputs invalidates the prepared-file review.
-    files; recut; resliceH; importLayout; prepBlocked; source;
+    files; recut; importLayout; prepBlocked; isPackage;
     prepared = null;
     prepareWarning = '';
   });
@@ -69,13 +81,10 @@
     if (!open) return;
     const pid = projectId;
     untrack(() => {
-      source = 'files';
       target = pid ?? library.projects.find((p) => !p.unreadable)?.id ?? '__new__';
       number = nextNumberFor(target);
       title = '';
       files = [];
-      cleaned = [];
-      translations = null;
       pkg = null;
       pkgSummary = null;
       pkgName = '';
@@ -83,18 +92,20 @@
       error = '';
       newProjectName = '';
       newProjectLayout = 'pages';
-      newProjectOcrLanguage = 'ja';
-      workflow = 'typeset';
-      recut = false;
-      resliceH = RESLICE_H_DEFAULT;
+      newProjectOcrLanguage = prefs.defaultOcrLanguage;
+      more = false;
+      guessedLayout = null;
+      layoutTouched = false;
+      workflow = startMode();
+      cleaned = [];
+      translations = null;
       splitSpreads = false;
-      autoCrop = false;
-      autoAlign = false;
+      recut = false;
     });
   });
 
   function onTargetChange() {
-    number = nextNumberFor(target);
+    if (!isPackage) number = nextNumberFor(target);
   }
 
   // Native file pickers (Tauri only).
@@ -108,11 +119,48 @@
 
   const PICKER = 'Could not open the file picker';
 
-  const pickRaws = () =>
-    picking(PICKER, async () => {
-      const picked = await pickImageFiles(true);
-      if (picked) files = [...picked];
-    });
+  // The one picker. Images become the chapter's pages and preselect the new
+  // project's layout; a package fills in what it knows - number, title, and
+  // for a new project its name, layout and language - all still editable.
+  // Neither overrides a layout the person picked by hand.
+  async function pickSource() {
+    error = '';
+    reading = true;
+    try {
+      const got = await pickChapterSource();
+      if (!got) return;
+      if (got.package) {
+        const read = await inspectPackage(got.package, target === '__new__' ? null : target);
+        files = [];
+        pkg = read.pkg;
+        pkgSummary = read.summary;
+        pkgName = got.package.name ?? '';
+        number = read.summary.number;
+        title = read.summary.title;
+        if (!newProjectName.trim()) newProjectName = read.summary.projectName ?? '';
+        guessedLayout = null;
+        if (!layoutTouched) newProjectLayout = read.summary.layout;
+        newProjectOcrLanguage = read.summary.ocrLanguage;
+      } else {
+        // Images after a package: what the package filled in is not theirs.
+        if (pkgSummary) {
+          number = nextNumberFor(target);
+          if (title === pkgSummary.title) title = '';
+          if (newProjectName === (pkgSummary.projectName ?? '')) newProjectName = '';
+        }
+        pkg = null;
+        pkgSummary = null;
+        pkgName = '';
+        files = got.images;
+        guessedLayout = await guessLayout(got.images);
+        if (!layoutTouched) newProjectLayout = guessedLayout;
+      }
+    } catch (e) {
+      error = `Could not read those files: ${e?.message ?? e}`;
+    } finally {
+      reading = false;
+    }
+  }
 
   const pickCleaned = () =>
     picking(PICKER, async () => {
@@ -120,41 +168,22 @@
       if (picked) cleaned = [...picked];
     });
 
-  // Reading a package prefills the fields it knows - number, title, and for a
-  // new project its name and layout - all of which stay editable.
-  async function pickPackage() {
-    error = '';
-    reading = true;
-    try {
-      const file = await pickPackageFile();
-      if (!file) return;
-      const read = await inspectPackage(file, target === '__new__' ? null : target);
-      pkg = read.pkg;
-      pkgSummary = read.summary;
-      pkgName = file.name ?? '';
-      number = read.summary.number;
-      title = read.summary.title;
-      if (!newProjectName.trim()) newProjectName = read.summary.projectName ?? '';
-      newProjectLayout = read.summary.layout;
-      newProjectOcrLanguage = read.summary.ocrLanguage;
-    } catch (e) {
-      pkg = null;
-      pkgSummary = null;
-      error = `Could not read that package: ${e?.message ?? e}`;
-    } finally {
-      reading = false;
-    }
-  }
-
-  const layoutLabel = (l) => (l === 'longstrip' ? 'Longstrip' : 'Pages');
-
   const pickTranslations = () =>
-    picking('Could not read that translations file', async () => {
+    picking('Could not read that translation file', async () => {
       const picked = await pickJsonFile();
       if (!picked || !picked[0]) return;
       // Validate translation JSON on selection.
       translations = { name: picked[0].name, pages: await readTranslations(picked[0]) };
     });
+
+  const layoutLabel = (l) => (l === 'longstrip' ? 'Longstrip' : 'Pages');
+
+  const pickLabel = $derived(
+    reading ? 'Reading…'
+      : pkgName ? `${pkgName} - change`
+      : files.length ? `${files.length} selected - change`
+      : 'Choose images…',
+  );
 
   // Preview positional page count.
   const summary = $derived.by(() => {
@@ -165,7 +194,8 @@
       let head = plural(sm.pageCount, 'page');
       if (sm.cleanedCount) head += ` · ${sm.cleanedCount} cleaned`;
       if (sm.boxCount) head += ` · ${plural(sm.boxCount, 'box', 'boxes')}`;
-      head += ` · ${sm.mode} chapter`;
+      // General use imports every package as typeset, so it names no mode.
+      head += isComics() ? ` · ${sm.mode} ${word('chapter').toLowerCase()}` : ` · ${word('chapter').toLowerCase()}`;
       notes.push({ text: head, warn: false });
       const by = (st) => sm.fonts.filter((f) => f.status === st);
       const bits = [];
@@ -204,18 +234,17 @@
       return notes;
     }
     if (!files.length) return [];
-    const notes = [{ text: `${plural(files.length, 'page')} in this chapter.`, warn: false }];
+    const notes = [{ text: `${plural(files.length, 'page')} in this ${word('chapter').toLowerCase()}.`, warn: false }];
+    if (!sources) return notes;
 
-    if (!cleaned.length) {
-      notes.push({ text: 'No cleaned pages - every page typesets on its raw.', warn: false });
-    } else if (cleaned.length === files.length) {
+    if (cleaned.length === files.length) {
       notes.push({ text: `All ${files.length} pages will use a cleaned image.`, warn: false });
-    } else if (cleaned.length < files.length) {
+    } else if (cleaned.length && cleaned.length < files.length) {
       notes.push({
         text: `${cleaned.length} of ${files.length} pages will use a cleaned image; pages ${cleaned.length + 1}–${files.length} keep their raw.`,
         warn: true,
       });
-    } else {
+    } else if (cleaned.length) {
       notes.push({
         text: `${files.length} cleaned images pair with a page; the last ${cleaned.length - files.length} are ignored.`,
         warn: true,
@@ -244,12 +273,8 @@
 
   async function submit() {
     error = '';
-    if (isPackage && !pkg) {
-      error = 'Choose a package file first.';
-      return;
-    }
     if (!isPackage && !files.length) {
-      error = 'Pick at least one raw page.';
+      error = `Pick at least one ${word('raw').toLowerCase()}.`;
       return;
     }
     if (target === '__new__' && !newProjectName.trim()) {
@@ -258,7 +283,7 @@
     }
     const n = number === null || number === undefined || number === '' ? 1 : Number(number);
     if (!Number.isFinite(n) || n < 0) {
-      error = 'Enter a valid chapter number.';
+      error = `Enter a valid ${word('chapter').toLowerCase()} number.`;
       return;
     }
     busy = true;
@@ -266,9 +291,10 @@
     let createdProject = null;
     try {
       let importFiles = files;
-      if (!isPackage && !prepBlocked && importLayout === 'longstrip' && recut) {
+      const prep = sources && !prepBlocked;
+      if (prep && importLayout === 'longstrip' && recut) {
         if (!prepared) {
-          prepared = await resliceStripFiles([...files], clampResliceHeight(resliceH));
+          prepared = await resliceStripFiles([...files], clampResliceHeight(RESLICE_H_DEFAULT));
           prepareWarning = resliceWarning(prepared.warnings);
           // Keep fallback warnings visible before import. A second Create
           // uses these prepared files without decoding the chapter again.
@@ -276,8 +302,8 @@
         }
         importFiles = prepared.files;
       }
-      if (!isPackage && !prepBlocked && importLayout === 'pages' && (splitSpreads || autoCrop || autoAlign)) {
-        importFiles = await preparePageFiles([...files], { splitSpreads, autoCrop, autoAlign, ocrLanguage: importLanguage });
+      if (prep && importLayout === 'pages' && splitSpreads) {
+        importFiles = await preparePageFiles([...files], { splitSpreads, ocrLanguage: importLanguage });
       }
       if (target === '__new__') {
         createdProject = await createProject(newProjectName.trim(), {
@@ -286,11 +312,18 @@
         });
       }
       const pid = createdProject ? createdProject.id : target;
+      // General use asks no layout, so a project it made from the library
+      // reads as pages until its first document's images say otherwise. Only
+      // a project marked so (`layoutGuessed`), and only while it is empty: a
+      // layout someone chose, or one under existing work, never moves.
+      if (!isComics() && !createdProject && !isPackage && guessedLayout && selectedProject?.layoutGuessed && !selectedProject.chapters.length) {
+        await setEmptyProjectLayout(pid, guessedLayout);
+      }
 
       let chapter;
       let note;
       if (isPackage) {
-        const r = await importChapterPackage({ pkg, projectId: pid, number: n, title });
+        const r = await importChapterPackage({ pkg, projectId: pid, number: n, title, mode: isComics() ? null : 'typeset' });
         chapter = r.chapter;
         const parts = [plural(pkgSummary.pageCount, 'page')];
         if (r.fontsInstalled) parts.push(`${plural(r.fontsInstalled, 'font')} installed`);
@@ -303,22 +336,22 @@
           number: n,
           title,
           files: importFiles,
-          cleanedFiles: cleaned,
-          translations: translations?.pages ?? null,
-          mode: workflow,
+          cleanedFiles: sources ? cleaned : [],
+          translations: sources ? translations?.pages ?? null : null,
+          mode: isComics() ? workflow : 'typeset',
         });
         note = `${plural(importFiles.length, 'page')} copied`;
-        if (cleaned.length) note += ` · ${Math.min(cleaned.length, files.length)} cleaned`;
+        if (sources && cleaned.length) note += ` · ${Math.min(cleaned.length, files.length)} cleaned`;
       }
       open = false;
-      toast(`Created chapter ${chapter.number} · ${note}`);
+      toast(`Created ${word('chapter').toLowerCase()} ${chapter.number} · ${note}`);
       await goEditor(pid, chapter.id);
     } catch (e) {
 
       const orphan = createdProject
         ? ` The project "${createdProject.name}" was created and is now empty.`
         : '';
-      error = `Could not create the chapter: ${e?.message ?? e}.${orphan}`;
+      error = `Could not create the ${word('chapter').toLowerCase()}: ${e?.message ?? e}.${orphan}`;
 
       toastError(error);
     } finally {
@@ -334,24 +367,12 @@
     onclick={(e) => e.target.classList.contains('modal-overlay') && !busy && (open = false)}
   >
     <div class="modal dialog-narrow">
-      <div class="modal-head">New chapter</div>
+      <div class="modal-head">{word('newChapter')}</div>
 
       <div class="field">
-        <span>Source</span>
-        <div class="seg">
-          <button class:on={source === 'files'} onclick={() => (source = 'files')} disabled={busy}>Pages</button>
-          <button class:on={source === 'package'} onclick={() => (source = 'package')} disabled={busy}>Package</button>
-        </div>
+        <span>{word('rawPages')}</span>
+        <button class="soft-btn" onclick={pickSource} disabled={busy || reading}>{pickLabel}</button>
       </div>
-
-      {#if isPackage}
-        <div class="field">
-          <span>Package</span>
-          <button class="soft-btn" onclick={pickPackage} disabled={busy || reading}>
-            {reading ? 'Reading…' : pkgName ? `${pkgName} - change` : 'Choose a .mtchapter…'}
-          </button>
-        </div>
-      {/if}
 
       <label class="field">
         <span>Project</span>
@@ -364,108 +385,76 @@
       </label>
 
       {#if target === '__new__'}
+        <ProjectFields bind:name={newProjectName} bind:layout={newProjectLayout} bind:language={newProjectOcrLanguage} disabled={busy} onpicklayout={() => (layoutTouched = true)} />
+      {/if}
+
+      {#if isComics()}
         <label class="field">
-          <span>Project name</span>
-          <input bind:value={newProjectName} placeholder="Series name" />
+          <span>{word('chapter')} number</span>
+          <input type="number" min="0" bind:value={number} disabled={busy} />
         </label>
-
-        <div class="field">
-          <span>Layout</span>
-          <div class="seg">
-            <button class:on={newProjectLayout === 'pages'} onclick={() => (newProjectLayout = 'pages')} disabled={busy}>Pages</button>
-            <button class:on={newProjectLayout === 'longstrip'} onclick={() => (newProjectLayout = 'longstrip')} disabled={busy}>Longstrip</button>
-          </div>
-        </div>
-
-        <div class="field">
-          <span>Language</span>
-          <div class="seg">
-            <button class:on={newProjectOcrLanguage === 'ja'} onclick={() => (newProjectOcrLanguage = 'ja')} disabled={busy}>Japanese</button>
-            <button class:on={newProjectOcrLanguage === 'zh'} onclick={() => (newProjectOcrLanguage = 'zh')} disabled={busy}>Chinese</button>
-            <button class:on={newProjectOcrLanguage === 'ko'} onclick={() => (newProjectOcrLanguage = 'ko')} disabled={busy}>Korean</button>
-          </div>
-        </div>
       {/if}
 
       <label class="field">
-        <span>Chapter number</span>
-        <input type="number" min="0" bind:value={number} />
-      </label>
-
-      <label class="field">
         <span>Title</span>
-        <input bind:value={title} placeholder="Optional" />
+        <input bind:value={title} placeholder="Optional" disabled={busy} />
       </label>
 
-      {#if isPackage}
-        <!-- everything a package carries is described in the notes below -->
-      {:else}
+      <!-- Everything a package carries is described in the notes below, so
+           the fold is for picked images only. -->
+      {#if sources}
+        <details class="more" bind:open={more}>
+          <summary>
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
+            More options
+          </summary>
+          <div class="more-body">
+            <div class="field">
+              <span id="nc-start">Start as</span>
+              <div class="seg" role="group" aria-labelledby="nc-start">
+                <button class:on={workflow === 'typeset'} aria-pressed={workflow === 'typeset'} onclick={() => (workflow = 'typeset')} disabled={busy}>Typeset</button>
+                <button class:on={workflow === 'translate'} aria-pressed={workflow === 'translate'} onclick={() => (workflow = 'translate')} disabled={busy}>Translate</button>
+              </div>
+            </div>
 
-        <div class="field">
-          <span>Mode</span>
-          <div class="seg">
-            <button class:on={workflow === 'typeset'} onclick={() => (workflow = 'typeset')} disabled={busy}>Typeset</button>
-            <button class:on={workflow === 'translate'} onclick={() => (workflow = 'translate')} disabled={busy}>Translate</button>
+            <div class="field">
+              <span>Cleaned pages</span>
+              <button class="soft-btn" onclick={pickCleaned} disabled={busy}>
+                {cleaned.length ? `${cleaned.length} selected - change` : 'Choose files…'}
+              </button>
+              {#if cleaned.length}
+                <button class="soft-btn slim" onclick={() => (cleaned = [])} disabled={busy}>Clear</button>
+              {/if}
+            </div>
+
+            <div class="field">
+              <span>Translation file</span>
+              <button class="soft-btn" onclick={pickTranslations} disabled={busy}>
+                {translations ? `${translations.name} - change` : 'Choose a JSON…'}
+              </button>
+              {#if translations}
+                <button class="soft-btn slim" onclick={() => (translations = null)} disabled={busy}>Clear</button>
+              {/if}
+            </div>
+
+            <!-- Dimmed, never hidden, beside cleaned pages or a translation
+                 file: those pair with the pages by position, and a cut would
+                 move every pairing after it. -->
+            {#if importLayout === 'longstrip'}
+              <label class="pair-note prep-option" title={prepBlocked ? 'Not with cleaned pages or a translation file: they pair with the pages by position.' : ''}>
+                <input class="btick" type="checkbox" bind:checked={recut} disabled={busy || prepBlocked} />
+                Re-cut long strips at clean gutters
+              </label>
+              {#if prepareWarning}<div class="pair-note warn">{prepareWarning}</div>{/if}
+            {:else}
+              <label class="pair-note prep-option" title={prepBlocked ? 'Not with cleaned pages or a translation file: they pair with the pages by position.' : ''}>
+                <input class="btick" type="checkbox" bind:checked={splitSpreads} disabled={busy || prepBlocked} />
+                Split spreads
+              </label>
+            {/if}
+            <div class="pair-note">Re-encodes the pages as PNG.</div>
           </div>
-        </div>
-
-        <div class="field">
-          <span>Raw pages</span>
-          <button class="soft-btn" onclick={pickRaws} disabled={busy}>
-            {files.length ? `${files.length} selected - change` : 'Choose files…'}
-          </button>
-        </div>
-
-        <div class="field">
-          <span>Cleaned pages</span>
-          <button class="soft-btn" onclick={pickCleaned} disabled={busy}>
-            {cleaned.length ? `${cleaned.length} selected - change` : 'Choose files…'}
-          </button>
-          {#if cleaned.length}
-            <button class="soft-btn slim" onclick={() => (cleaned = [])} disabled={busy}>Clear</button>
-          {/if}
-        </div>
-
-        <div class="field">
-          <span>Translations</span>
-          <button class="soft-btn" onclick={pickTranslations} disabled={busy}>
-            {translations ? `${translations.name} - change` : 'Choose a JSON…'}
-          </button>
-          {#if translations}
-            <button class="soft-btn slim" onclick={() => (translations = null)} disabled={busy}>Clear</button>
-          {/if}
-        </div>
-
-        {#if importLayout === 'longstrip'}
-          <label class="pair-note prep-option">
-            <input class="btick" type="checkbox" bind:checked={recut} disabled={busy || prepBlocked} />
-            Re-cut at clean gutters
-          </label>
-          <div class="pair-note">Re-encodes the pages as PNG.</div>
-          <label class="field">
-            <span>Target height (px)</span>
-            <input type="number" min={SLICE_H_MIN} max={RESLICE_H_MAX} step="1" bind:value={resliceH}
-              onblur={() => (resliceH = clampResliceHeight(resliceH))} disabled={busy || prepBlocked || !recut} />
-          </label>
-          {#if prepareWarning}<div class="pair-note warn">{prepareWarning}</div>{/if}
-        {:else}
-          <label class="pair-note prep-option">
-            <input class="btick" type="checkbox" bind:checked={splitSpreads} disabled={busy || prepBlocked} />
-            Split spreads
-          </label>
-          <label class="pair-note prep-option">
-            <input class="btick" type="checkbox" bind:checked={autoCrop} disabled={busy || prepBlocked} />
-            Auto-crop
-          </label>
-          <label class="pair-note prep-option">
-            <input class="btick" type="checkbox" bind:checked={autoAlign} disabled={busy || prepBlocked} />
-            Auto-align
-          </label>
-          <div class="pair-note">Re-encodes the pages as PNG.</div>
-        {/if}
-        {#if prepBlocked}
-          <div class="pair-note">Page preparation is unavailable with cleaned pages or translations because it changes positional pairing.</div>
-        {/if}
+        </details>
       {/if}
 
       {#each summary as note}
@@ -486,4 +475,18 @@
 
 <style>
   .prep-option { display: flex; align-items: center; gap: 8px; }
+  /* One closed fold for everything a first chapter can do without. */
+  .more { margin: 2px 0 12px; }
+  .more summary {
+    display: flex; align-items: center; gap: 6px; height: 30px; width: max-content;
+    list-style: none; cursor: pointer; font-size: 11.5px; color: var(--t2);
+  }
+  .more summary::-webkit-details-marker { display: none; }
+  .more summary:hover { color: var(--text); }
+  .more summary svg { transition: transform 0.12s ease; }
+  .more[open] summary svg { transform: rotate(90deg); }
+  .more-body { padding-top: 8px; }
+  @media (prefers-reduced-motion: reduce) {
+    .more summary svg { transition: none; }
+  }
 </style>

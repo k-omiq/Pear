@@ -17,6 +17,7 @@ const TABLE = [
   ['chapters', 'Chapters', 'Documents'],
   ['newChapter', 'New chapter', 'New document'],
   ['rawPages', 'Raw pages', 'Images'],
+  ['raw', 'Raw', 'Image'],
 ];
 
 describe('word()', () => {

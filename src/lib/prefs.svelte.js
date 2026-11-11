@@ -46,7 +46,8 @@ let legacyTypeset = 'plain';
 //      a default saved by an older build takes today's fields.
 //   4  2026-11-10: the first-run setup. An install from before it is already
 //      set up and is a comics install, so it never sees the setup and keeps
-//      every comic tool and word.
+//      every comic tool and word. New chapters start as Translate on a new
+//      install; one from before keeps Typeset, which is what it always did.
 const DEFAULTS_REV = 4;
 // The engine a build starts on: the Rust engine, unless the build says
 // otherwise (`VITE_MT_TEXT_ENGINE=browser`; the test lanes do, and measure
@@ -150,8 +151,11 @@ export const prefs = $state({
   // What the person said they use the app for: 'comics' keeps every comic tool
   // and word, 'general' hides the comic tools (`isComics`, words.js).
   usage: 'comics',
-  // The mode a new chapter starts in.
-  defaultChapterMode: 'typeset',
+  // The mode a new chapter starts in. Translate for a new comics install (the
+  // owner's choice, 2026-11-10); an install from before revision 4 keeps
+  // Typeset (`load`). General use never starts a translate chapter, whatever
+  // this says.
+  defaultChapterMode: 'translate',
   // The source language a new series starts with. The codes are the ones a
   // project stores (`OCR_LANGUAGES` in store.svelte.js).
   defaultOcrLanguage: 'ja',
@@ -159,6 +163,27 @@ export const prefs = $state({
 
 // One gate for every comic-only tool and word.
 export function isComics() { return prefs.usage !== 'general'; }
+
+// The mode a new chapter starts in, and the only reader of
+// `defaultChapterMode`: general use has no translate chapters to start, so it
+// is always typeset there whatever the stored pref says.
+export function startMode() { return isComics() ? prefs.defaultChapterMode : 'typeset'; }
+
+// The SFX tool is a comic tool: general use treats it as off without
+// changing the stored switch, so switching back to comics brings it back.
+export function sfxToolOn() { return prefs.sfxTool && isComics(); }
+
+// What the usage changes outside this module, applied at load and on every
+// change of usage or of the SFX switch. Only what is shown and which tool is
+// in hand: no chapter, box or setting is touched. General use starts on the
+// Text tool, since the Place tool places detected lines it does not have.
+// That switch is made only when the usage itself is new (`usageNew`), so a
+// general user who picks the Place tool keeps it when some other pref changes.
+function applyUsage(usageNew) {
+  setSfxToolAllowed(sfxToolOn());
+  if (app.tool === 'sfx' && !sfxToolOn()) setTool(isComics() ? 'place' : 'text');
+  if (usageNew && !isComics() && app.tool === 'place') setTool('text');
+}
 
 // The two font lists are string arrays; anything else in them is dropped.
 const NAME_LIST_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts', 'recentFonts'];
@@ -280,12 +305,9 @@ export function setPref(key, value) {
       setTool('pan');
     }
   }
-  // The same for the SFX tool, falling back to Place: a drag with the tool
-  // that is gone must not still draw a sound.
-  if (key === 'sfxTool') {
-    setSfxToolAllowed(!!value);
-    if (!value && app.tool === 'sfx') setTool('place');
-  }
+  // The same for the SFX tool and the usage (`applyUsage`): a drag with a
+  // tool that is gone must not still draw a sound.
+  if (key === 'sfxTool' || key === 'usage') applyUsage(key === 'usage');
   // Mirrored into the store the way the box defaults are mirrored into data.js.
   // No relayout: it bounds what the next fit may do, and moves nothing already
   // on the page.
@@ -374,6 +396,7 @@ function load() {
   if (saved && !(saved.defaultsRev >= 4)) {
     prefs.onboarded = true;
     prefs.usage = 'comics';
+    prefs.defaultChapterMode = 'typeset';
   }
   // No blob at all is either a fresh install or an old one from before the app
   // wrote preferences; the library root, the theme and the tag list tell them
@@ -393,6 +416,7 @@ function load() {
     if (existing) {
       prefs.onboarded = true;
       prefs.usage = 'comics';
+      prefs.defaultChapterMode = 'typeset';
     } else {
       freshInstall = true;
     }
@@ -410,7 +434,7 @@ function load() {
   applyBoxDefaults();
   setMinFontSize(prefs.minFontSize);
   setBrushToolAllowed(prefs.brushTool);
-  setSfxToolAllowed(prefs.sfxTool);
+  applyUsage(true);
   setInheritBoxStyle(prefs.inheritBoxStyle);
   // Before the engine starts: the worker starts with it, or not at all.
   setPaintWorkerAllowed(prefs.paintWorker);
@@ -420,6 +444,36 @@ function load() {
   // no-op for 'browser', which is every install that never touched the switch.
   useTextEngine(prefs.textEngine);
   if (freshInstall) persist();
+}
+
+// Other windows (an agent's chapter window, a second main window) load the
+// blob once and write all of it back on their next change. Without this, a
+// window that loaded while the setup was open would write back
+// `onboarded: false` and the old usage over what the setup just chose. Only
+// the setup's four are adopted, each checked the way `load` checks it: the
+// rest are this window's own until it writes them. Nothing is persisted
+// here, so two windows cannot echo a change back and forth.
+const SHARED_KEYS = ['onboarded', 'usage', 'defaultChapterMode', 'defaultOcrLanguage'];
+export function adoptSharedPrefs(raw) {
+  let saved = null;
+  try {
+    saved = JSON.parse(raw ?? 'null');
+  } catch {
+    return;
+  }
+  if (!saved || typeof saved !== 'object') return;
+  const usageWas = prefs.usage;
+  for (const k of SHARED_KEYS) {
+    const v = saved[k];
+    const ok = BOOL_KEYS.includes(k) ? typeof v === 'boolean' : ENUM_KEYS[k].includes(v);
+    if (ok && prefs[k] !== v) prefs[k] = v;
+  }
+  applyUsage(prefs.usage !== usageWas);
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === KEY) adoptSharedPrefs(e.newValue);
+  });
 }
 
 // Make Default for one effect: `effect` is a plain copy (`$state.snapshot`),

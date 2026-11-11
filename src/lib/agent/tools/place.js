@@ -13,6 +13,7 @@ import { sizesOf } from './check.js';
 import { withPagePixels } from '../render.js';
 import { validateStylePatch } from '../style-schema.js';
 import { app, measureForPlace, commitPlace, addBoxAt, isTranslateMode, placeableDetectedLines, lineByN, sizeKeyFor } from '../../store.svelte.js';
+import { isComics } from '../../prefs.svelte.js';
 import { ART_SIZED_ROLES } from '../../lettering.js';
 import { kindOfTag } from '../../tags.svelte.js';
 import { hasRawImage } from '../../page-images.js';
@@ -141,6 +142,7 @@ defineTool({
   input: { type: 'object', additionalProperties: false, properties: { pages: pagesSchema } },
   write: true,
   async run({ pages } = {}, ctx) {
+    if (!isComics()) throw new ToolError('detection is off: this app is set to general use', 'The user can switch to Comics in Settings, General.');
     if (isTranslateMode()) throw new ToolError('this chapter is in translate mode');
     if (!sidecarReady()) throw new ToolError('the detection engine is not ready', 'Ask the user to check it in Settings, System.');
     if (app.detecting) throw new ToolError('detection is already running', 'Wait, then call again.');

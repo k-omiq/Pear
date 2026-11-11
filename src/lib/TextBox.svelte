@@ -98,7 +98,7 @@
   import { sfxLive } from './sfx-live.svelte.js';
   import { crispFor } from './text-edges.svelte.js';
   import { editLive } from './edit-live.svelte.js';
-  import { prefs } from './prefs.svelte.js';
+  import { sfxToolOn } from './prefs.svelte.js';
   import LockChip from './LockChip.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
   import { inkTipIds, settleTips } from './brush-tips.js';
@@ -1267,7 +1267,7 @@
       !!pageFrameEl &&
       sfxCurve &&
       !!layout &&
-      prefs.sfxTool &&
+      sfxToolOn() &&
       !warpGizmoOn &&
       !boxLocked(box),
   );

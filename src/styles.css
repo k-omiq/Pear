@@ -26,6 +26,10 @@
   --edge:0 1px 1px rgba(42,38,32,.05), 0 5px 14px rgba(42,38,32,.07);
   --edge-soft:0 1px 2px rgba(42,38,32,.05);
   --scrim:rgba(42,38,32,.28);
+  /* Discord's own colours, for the invite card and nowhere else: the one hue
+     the chrome allows (DESIGN.md). Brand colours, so every theme carries the
+     same values. */
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   /* Mirrored by RAIL_W in src/lib/editor/RailTools.svelte - see the note there. */
   --rail-w:44px;
   /* The height of the top-left pill band: `.pill-row` at top:12px, 32px tall,
@@ -61,6 +65,7 @@
   --edge:0 0 0 1px rgba(255,255,255,.05), 0 6px 20px rgba(0,0,0,.42);
   --edge-soft:0 0 0 1px rgba(255,255,255,.05);
   --scrim:rgba(0,0,0,.6);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   /* Geometry, so identical to light: see the note above. */
   --chrome-top:52px;
   /* Geometry, so identical to light: see the note above. */
@@ -85,6 +90,7 @@
   --edge:0 1px 1px rgba(84,40,54,.05), 0 5px 14px rgba(84,40,54,.08);
   --edge-soft:0 1px 2px rgba(84,40,54,.06);
   --scrim:rgba(84,40,54,.28);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:light;
 }
 /* Jade: dark, green-black field, a pale jade accent. */
@@ -100,6 +106,7 @@
   --edge:0 0 0 1px rgba(214,245,230,.05), 0 6px 20px rgba(0,0,0,.45);
   --edge-soft:0 0 0 1px rgba(214,245,230,.05);
   --scrim:rgba(0,0,0,.6);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:dark;
 }
 /* Ocean: navy surfaces, a clear sea-blue accent. */
@@ -115,6 +122,7 @@
   --edge:0 0 0 1px rgba(222,239,255,.07), 0 6px 20px rgba(4,15,28,.25);
   --edge-soft:0 0 0 1px rgba(222,239,255,.07);
   --scrim:rgba(4,15,28,.55);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:dark;
 }
 
@@ -1402,24 +1410,21 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
   background:var(--accent); color:var(--accent-fg);
   font-size:12.5px; font-weight:600; letter-spacing:.02em; cursor:pointer;
 }
-.name-input{
-  width:212px; height:40px; padding:0 12px; border:1px solid var(--line2); border-radius:8px;
-  background:var(--surface); color:var(--text); font-size:12.5px;
-}
-.name-input:focus{ outline:none; border-color:var(--accent); }
-/* The layout picker in the create-a-project row: the same 212px column every
-   other control in `.home-actions` is, so the three of them read as one form
-   rather than a segmented control that wandered in. */
-.seg.new-layout{ width:212px; border-radius:8px; }
-.seg.new-layout button{ height:36px; font-size:11.5px; }
-.seg.new-language{ width:272px; border-radius:8px; }
-.seg.new-language button{ height:36px; padding:0 9px; font-size:11.5px; }
 
 .home-actions{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:96px 0 72px; }
 /* New project, opened in place of the two buttons: one 272px column, so the
    name, the two choices and the buttons line up as one form. */
 .new-project{ display:flex; flex-direction:column; gap:10px; width:272px; }
-.new-project .name-input,.new-project .seg{ width:100%; }
+/* ProjectFields' rows, stacked here: the label over its control, every
+   control the column's full width. */
+.new-project .field > span{ font-size:11.5px; color:var(--t2); }
+.new-project .field input{
+  height:40px; padding:0 12px; border:1px solid var(--line2); border-radius:8px;
+  background:var(--surface); color:var(--text); font-size:12.5px;
+}
+.new-project .field input:focus{ outline:none; border-color:var(--accent); }
+.new-project .seg{ width:100%; border-radius:8px; }
+.new-project .seg button{ height:36px; padding:0 9px; font-size:11.5px; }
 .new-project-foot{ display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
 .new-project-foot .soft-btn{ height:30px; }
 .section-label{ margin:0 0 18px; font-size:10.5px; font-weight:400; letter-spacing:.22em; color:var(--t3); }
