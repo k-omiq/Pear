@@ -16,9 +16,12 @@
 //!
 //! Every pattern is drawn over the whole box (the letters' ink as one, or
 //! the box itself for a bolt), never restarted per letter, and from the
-//! seed alone: the same numbers give the same shapes on every build, in the
-//! editor and in the file (`crate::seeded::noise`). Lengths are shares of
-//! the job's font size, so a pattern scales with its letters.
+//! seed alone: the same numbers give the same shapes in the editor and in
+//! the file (`crate::seeded::noise`). The shapes use std's sin, cos, atan2,
+//! powf and hypot, whose last bits may differ between targets: the app
+//! paints with the one wasm build on every platform, so its pictures agree;
+//! a native build (the tests) may differ from it in the last bit. Lengths
+//! are shares of the job's font size, so a pattern scales with its letters.
 
 use std::f64::consts::{PI, TAU};
 use std::rc::Rc;
