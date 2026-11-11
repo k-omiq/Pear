@@ -359,6 +359,22 @@ describe('unwarpPoint', () => {
     expect(unwarpWith(m, W, H, 104, 75, { bounds, hint: [79, 67] })[0]).toBeCloseTo(79, 0);
   });
 
+  it('a point on the edge of the bounds is inside them', () => {
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    const bounds = [-10, -10, 110, 110];
+    // Every point of the left and the top edge: the mesh there is the box's
+    // own, so each comes back as itself, give or take Newton's tolerance.
+    for (let k = -10; k <= 110; k += 5) {
+      for (const [x, y] of [[-10, k], [k, -10]]) {
+        const [qx, qy] = m.at(x, y);
+        const back = unwarpWith(m, W, H, qx, qy, { bounds, hint: [x + 0.5, y + 0.5] });
+        expect(back, `${x},${y}`).not.toBe(null);
+        expect(Math.hypot(back[0] - x, back[1] - y)).toBeLessThan(1e-2);
+      }
+    }
+  });
+
   it('answers nothing outside the bounds, and skips the search for a target out of the seeds\' reach', () => {
     const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
     const m = meshMap(fold, 2, 2, W, H);
