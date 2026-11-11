@@ -1505,25 +1505,26 @@ pub(crate) fn shapes_alpha<'a>(
     Ok(Some(Map { data: data.into_vec(), bx }))
 }
 
-/// A fade shape's softness in surface pixels, snapped to steps of a tenth
-/// (1.1 to the power of a whole number), so shapes of near sizes share one
-/// blur; under half a pixel it is a hard edge. The power is taken by
-/// multiplying, so the engine's builds agree on it to the bit.
+/// A fade shape's softness in surface pixels: the softness snapped to steps
+/// of a tenth in job units (1.1 to the power of a whole number), so shapes of
+/// near sizes share one blur and every scale lands on the same step (an
+/// editor at 2 and an export at 3 blur alike), then carried to pixels; under
+/// half a pixel it is a hard edge. The power is taken by multiplying, so the
+/// engine's builds agree on it to the bit.
 fn fade_sigma(soft: f64, scale: f64) -> f64 {
-    let s = soft * scale;
-    if !(s >= 0.5) || !s.is_finite() {
+    if !(soft > 0.0) || !soft.is_finite() {
         return 0.0;
     }
-    let i = (s.ln() / 1.1f64.ln()).round() as i32;
+    let i = (soft.ln() / 1.1f64.ln()).round() as i32;
     let mut v = 1.0;
     for _ in 0..i.unsigned_abs().min(400) {
         v *= 1.1;
     }
-    if i < 0 {
-        1.0 / v
-    } else {
-        v
+    let s = if i < 0 { 1.0 / v } else { v } * scale;
+    if !(s >= 0.5) || !s.is_finite() {
+        return 0.0;
     }
+    s
 }
 
 /// What of one shape the frame `t` can raster anything over: its box carried
