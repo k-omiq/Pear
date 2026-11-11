@@ -163,8 +163,8 @@ fn a_moved_box_paints_the_same_pattern_where_it_went() {
 #[test]
 fn the_shapes_are_kept_under_their_numbers() {
     let sp = only(|s| s.crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 })).unwrap();
-    let a = letter_shapes(&sp, SIZE, (10.0, 20.0, 200.0, 90.0)).unwrap();
-    let b = letter_shapes(&sp, SIZE, (10.0, 20.0, 200.0, 90.0)).unwrap();
+    let a = letter_shapes(&sp, SIZE, (10.0, 20.0, 200.0, 90.0), (10.0, 20.0, 200.0, 90.0)).unwrap();
+    let b = letter_shapes(&sp, SIZE, (10.0, 20.0, 200.0, 90.0), (10.0, 20.0, 200.0, 90.0)).unwrap();
     assert!(Rc::ptr_eq(&a, &b), "read back, not made again");
     let l = bolt(0.5, 1);
     let m = lightning_marks(&l, [0.0, 0.0, 360.0, 160.0], SIZE);
@@ -311,13 +311,13 @@ fn breaking(share: f64, motion: Motion, at: (f64, f64), spread: f64) -> Option<S
 fn pieces_break_off_the_same_cracks_and_never_past_the_padding() {
     const INK: (f64, f64, f64, f64) = (40.0, 55.0, 230.0, 100.0);
     let crack_only = tight(|s| s.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 })).unwrap();
-    let cuts = letter_shapes(&crack_only, SIZE, INK).unwrap();
+    let cuts = letter_shapes(&crack_only, SIZE, INK, INK).unwrap();
     assert!(cuts.pieces.is_empty());
     for motion in [Motion::Apart, Motion::Fall] {
         let mut last = 0;
         for share in [0.25, 0.5, 0.75, 1.0] {
             let sp = breaking(share, motion, (0.5, 0.5), 1.0).unwrap();
-            let sh = letter_shapes(&sp, SIZE, INK).unwrap();
+            let sh = letter_shapes(&sp, SIZE, INK, INK).unwrap();
             // The crack lines are the same whatever breaks off.
             assert_eq!(sh.cuts.pts, cuts.cuts.pts);
             assert!(sh.pieces.len() > last, "{motion:?} {share}: more pieces as it goes up");
@@ -352,7 +352,7 @@ fn the_densest_cracks_break_first() {
         scratches: None,
         cut_strokes: false,
     };
-    let sh = letter_shapes(&sp, SIZE, INK).unwrap();
+    let sh = letter_shapes(&sp, SIZE, INK, INK).unwrap();
     assert!(sh.pieces.len() >= 3);
     let mean = sh.pieces.iter().map(|p| p.outline.iter().map(|v| v.x).sum::<f64>() / p.outline.len() as f64).sum::<f64>()
         / sh.pieces.len() as f64;
@@ -634,7 +634,7 @@ fn placed(outline: &[mt_text::paint::Pt], m: &Affine) -> (f64, f64, (f64, f64, f
 fn motion_numbers(motion: Motion, share: f64) -> (f64, f64, f64, f64, usize, usize) {
     const INK: (f64, f64, f64, f64) = (40.0, 55.0, 330.0, 100.0);
     let sp = Special { rect: [0.0, 0.0, 360.0, 160.0], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false };
-    let sh = letter_shapes(&sp, SIZE, INK).unwrap();
+    let sh = letter_shapes(&sp, SIZE, INK, INK).unwrap();
     let focus = (185.0, 77.5);
     let (mut out, mut down, mut side, mut gone, mut over, mut area) = (0.0, 0.0, 0.0f64, 0, 0.0, 0.0);
     let mut boxes = Vec::new();
@@ -715,7 +715,7 @@ fn pieces_land_the_same_whatever_the_box_height() {
         for share in [0.25, 0.5, 0.75, 1.0] {
             let at = |h: f64| {
                 let sp = Special { rect: [0.0, 0.0, 360.0, h], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false };
-                letter_shapes(&sp, SIZE, INK).unwrap()
+                letter_shapes(&sp, SIZE, INK, INK).unwrap()
             };
             let (low, tall) = (at(120.0), at(900.0));
             assert_eq!(low.pieces.len(), tall.pieces.len());
@@ -771,10 +771,11 @@ fn broken_pieces_are_read_back_at_a_whole_pixel_offset() {
     kept::set_ceiling(kept::KEPT_BYTES);
 }
 
-/// A crack is laid over the letters' ink before Crisp fits them to the
-/// device grid, so the same pieces break whatever the scale and Crisp:
-/// the letters' shapes painted once are read back at scale 1 and 2, Crisp
-/// on and off (one ink box, one key).
+/// The pieces are chosen over the letters' ink before Crisp fits them to
+/// the device grid, and the lines over the fitted ink: the same shapes at
+/// scale 1 and 2, Crisp on and Crisp off each (one key across the scales).
+/// Crisp on and off lay the lines over boxes a fraction apart, as they
+/// always did.
 #[test]
 fn the_same_pieces_break_at_every_scale() {
     use mt_text::paint::Pt;
@@ -792,17 +793,17 @@ fn the_same_pieces_break_at_every_scale() {
         b
     };
     kept::set_ceiling(kept::KEPT_BYTES);
-    for (scale, crisp) in [(1.0, Some(Pt::new(0.0, 0.0))), (2.0, Some(Pt::new(0.0, 0.0))), (2.0, None)] {
-        // Cold, then after the letters were painted at scale 1, Crisp off.
+    for crisp in [None, Some(Pt::new(0.0, 0.0))] {
+        // Cold at scale 2, then after the letters were painted at scale 1.
         kept::clear();
         let h = kept::hits();
-        paint(&mut engine, make(scale, crisp));
+        paint(&mut engine, make(2.0, crisp));
         let cold = kept::hits() - h;
         kept::clear();
-        paint(&mut engine, make(1.0, None));
+        paint(&mut engine, make(1.0, crisp));
         let h = kept::hits();
-        paint(&mut engine, make(scale, crisp));
+        paint(&mut engine, make(2.0, crisp));
         let after = kept::hits() - h;
-        assert!(after > cold, "{scale} {crisp:?}: the shapes read back ({cold} cold, {after} after)");
+        assert!(after > cold, "{crisp:?}: the shapes read back ({cold} cold, {after} after)");
     }
 }

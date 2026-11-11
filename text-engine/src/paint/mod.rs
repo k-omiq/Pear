@@ -1057,10 +1057,10 @@ fn paint_letters(
     // Every run's glyphs, and for each run the frame its fill is stated in.
     let mut glyphs = Glyphs::default();
     let mut runs = budget::Buffer::new();
-    // The letters' ink in job space, before they are fitted to the device
-    // grid (Crisp): what a special effect is laid over, the same at every
-    // scale.
-    let mut ink: Option<(f64, f64, f64, f64)> = None;
+    // The letters' ink in job space before they are fitted to the device
+    // grid (Crisp): what a crack's broken pieces are chosen over, the same
+    // at every scale.
+    let mut unfitted: Option<(f64, f64, f64, f64)> = None;
     let shaping = job.effects.special.is_some_and(|s| s.shapes_letters());
     budget::reserve(&mut runs, job.runs.len())?;
     // Where each run's letters start in the count a wobble keys them by.
@@ -1141,7 +1141,7 @@ fn paint_letters(
         )?;
         if shaping && !run.ghost {
             if let Some(b) = glyphs.bounds_of(from..glyphs.len()) {
-                ink = Some(ink.map_or(b, |a| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))));
+                unfitted = Some(unfitted.map_or(b, |a| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))));
             }
         }
         if let Some(grid) = crisp {
@@ -1166,8 +1166,13 @@ fn paint_letters(
     // cut is cut from everything, last.
     let special = match job.effects.special.filter(Special::shapes_letters) {
         Some(sp) => {
+            // The lines are laid over the ink as Crisp fits it.
+            let ink = (0..job.runs.len())
+                .filter(|&i| !job.runs[i].ghost)
+                .filter_map(|i| glyphs.bounds_of(runs[i].0.clone()))
+                .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
             match ink {
-                Some(ink) => Some(special::letter_shapes(&sp, face.size, ink)?),
+                Some(ink) => Some(special::letter_shapes(&sp, face.size, ink, unfitted.unwrap_or(ink))?),
                 None => None,
             }
         }

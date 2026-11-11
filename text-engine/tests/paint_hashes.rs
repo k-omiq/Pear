@@ -728,6 +728,30 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             b.effects = vec![stroke(12.0, Position::Outside, Paint::Color(BLUE))];
         }),
     ));
+    // A crack and scratches with Crisp on, off the grid (a fractional size
+    // and baseline): their lines are laid over the letters' ink as Crisp
+    // fits it.
+    fn crisp(b: &mut BoxRequest, font: FontId) {
+        b.request.job.effects.crisp = Some(Pt::new(0.0, 0.0));
+        b.request.face = Face::new(font, 61.7);
+        b.request.job.runs[0].y = 100.7;
+    }
+    rows.push((
+        "special_crack_crisp",
+        Box::new(move |b| {
+            special(b).crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            let font = b.request.face.font;
+            crisp(b, font);
+        }),
+    ));
+    rows.push((
+        "special_scratches_crisp",
+        Box::new(move |b| {
+            special(b).scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+            let font = b.request.face.font;
+            crisp(b, font);
+        }),
+    ));
     // A soft fade at scale 2, on its page-anchored grid of cells, and a
     // soft paint mark over the letters.
     rows.push((
