@@ -317,7 +317,8 @@ export function lineClusters(text, style, sizePx, ls = 0) {
   if (!chars.length || sizePx <= 0) return { chars: [], widths: [] };
   if (!engine) return { chars, widths: chars.map(() => sizePx * 0.55) };
   const face = faceFor(style, sizePx);
-  const memo = typeof engine.lineCarets === 'function' ? (keptFor(face.key)?.line ?? null) : null;
+  const kept = typeof engine.lineCarets === 'function' ? keptFor(face.key) : null;
+  const memo = kept?.line ?? null;
   const key = `${ls}|${text}`;
   const hit = memo?.get(key);
   if (hit) return hit;
@@ -332,7 +333,11 @@ export function lineClusters(text, style, sizePx, ls = 0) {
         get: () => (inks === undefined ? (inks = clusterInks(e.lineInks(face, text, ls), whole.chars, chars)) : inks),
       });
     }
-    if (memo) keep(memo, key, whole);
+    // Counted by its code points: it holds arrays of them, and an ink each.
+    if (kept) {
+      kept.lineHeld += chars.length;
+      keep(memo, key, whole, chars.length);
+    }
     return whole;
   }
   return { chars, widths: chars.map((ch) => engine.advance(face, ch)) };
@@ -1276,7 +1281,11 @@ function plainRunLines(text, measure, width) {
 // nobody sees (DET-4).
 const MEASURE_MEMO_MAX = 40000;
 // font -> { adv: Map(string -> advance), ink: Map(string -> metrics), fns: Map(spacing -> `lineWidthIn`),
-//          line: Map(spacing|text -> `lineClusters`) }
+//          line: Map(spacing|text -> `lineClusters`), lineHeld }
+// An advance or an ink counts 1 toward the bound; a curved line counts its
+// code points (`lineHeld` is their sum for the font), since it holds a width,
+// a character and an ink for each, and a curved solve keeps one per size it
+// tries for every text typed.
 const measureMemo = new Map();
 let measureMemoSize = 0;
 function clearMeasureMemo() {
@@ -1308,16 +1317,17 @@ function keptFor(font) {
   if (engine?.loading()) return null;
   let k = measureMemo.get(font);
   if (k) measureMemo.delete(font);
-  else k = { adv: new Map(), ink: new Map(), fns: new Map(), line: new Map() };
+  else k = { adv: new Map(), ink: new Map(), fns: new Map(), line: new Map(), lineHeld: 0 };
   // Last in the map is last used, so the trim below drops the oldest first.
   measureMemo.set(font, k);
   return k;
 }
 const advancesIn = (font) => keptFor(font)?.adv ?? null;
 
-function keep(map, key, v) {
+function keep(map, key, v, size = 1) {
   map.set(key, v);
-  if (++measureMemoSize > MEASURE_MEMO_MAX) trimMeasureMemo();
+  measureMemoSize += size;
+  if (measureMemoSize > MEASURE_MEMO_MAX) trimMeasureMemo();
 }
 
 function advance(s, style, sizePx, css, font, memo) {
@@ -1351,13 +1361,14 @@ function trimMeasureMemo() {
   for (const [font, k] of measureMemo) {
     if (measureMemoSize <= MEASURE_MEMO_MAX / 2 || --left === 0) break;
     measureMemo.delete(font);
-    measureMemoSize -= k.adv.size + k.ink.size + k.line.size;
+    measureMemoSize -= k.adv.size + k.ink.size + k.lineHeld;
   }
   if (measureMemoSize > MEASURE_MEMO_MAX) {
     for (const k of measureMemo.values()) {
       k.adv.clear();
       k.ink.clear();
       k.line.clear();
+      k.lineHeld = 0;
     }
     measureMemoSize = 0;
   }
@@ -1844,6 +1855,16 @@ export function clearLayoutMemo() {
 
 // For the tests, and for the same sort of introspection `pagePixelsHeld` offers.
 export const layoutMemoSize = () => memo.size;
+// What the measurements hold, walked: an advance or an ink each 1, a curved
+// line its code points. The bound MEASURE_MEMO_MAX is on this.
+export function measureMemoHeld() {
+  let n = 0;
+  for (const k of measureMemo.values()) {
+    n += k.adv.size + k.ink.size;
+    for (const line of k.line.values()) n += line.chars.length;
+  }
+  return n;
+}
 
 // THE place the question "where does this box's text break" is answered, and the
 // only one either the editor or the exporter is allowed to ask. Both call this
