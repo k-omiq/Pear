@@ -561,7 +561,71 @@ export function meshMap(pts, cols, rows, w, h) {
     }
     return { kind: 'affine', at: (x, y) => affineWarpPoint(pts, 1, 1, W, H, x, y) };
   }
-  return { kind: 'smooth', at: (x, y) => smoothPoint(pts, c, r, W, H, +x, +y) };
+  const at = (x, y) => smoothPoint(pts, c, r, W, H, +x, +y);
+  let last = null;
+  const folds = (b = null) => {
+    if (last?.b !== b) last = { b, out: foldsOf(pts, c, r, `${c},${r},${W},${H}`, at, b ?? [-W / 4, -H / 4, (5 * W) / 4, (5 * H) / 4]) };
+    return last.out;
+  };
+  return { kind: 'smooth', at, folds };
+}
+
+// Whether a smooth mesh may fold over itself within `b` ([x0, y0, x1, y1],
+// box-local: the bounds answers may lie in, else the box and a quarter of it
+// past each side): a cell of its point grid is turned over or not convex
+// (`netTurns`), or its Jacobian (by `jacOf`), sampled on a grid of at least
+// 25 x 25 and 4 samples a cell, changes sign or comes near nothing (under a
+// fiftieth of its largest) anywhere, where a thin fold could hide between
+// the samples. A mesh that cannot fold has one sheet, and `oneStep` and
+// `unwarpWith` skip the sheet tests there, so a doubt counts as may fold.
+// Kept with the point list, which outlives the mesh objects built from it.
+const foldMemo = new WeakMap();
+function foldsOf(pts, c, r, mesh, at, b) {
+  const key = `${mesh}|${b.join(',')}`;
+  const hit = foldMemo.get(pts);
+  if (hit?.key === key) return hit.out;
+  const m = { at };
+  const N = Math.max(24, 4 * Math.max(c, r));
+  let lo = Infinity;
+  let hi = 0;
+  let sign = 0;
+  let out = netTurns(pts, c, r);
+  for (let j = 0; j <= N && !out; j++) {
+    for (let i = 0; i <= N; i++) {
+      const d = detOf(jacOf(m, [b[0] + ((b[2] - b[0]) * i) / N, b[1] + ((b[3] - b[1]) * j) / N]));
+      const s = Math.sign(d);
+      if (!s || (sign && s !== sign)) {
+        out = true;
+        break;
+      }
+      sign = s;
+      lo = Math.min(lo, Math.abs(d));
+      hi = Math.max(hi, Math.abs(d));
+    }
+  }
+  out ||= lo < hi / 50;
+  foldMemo.set(pts, { key, out });
+  return out;
+}
+
+// Whether some cell of the point grid (row-major, `c` x `r` cells) is turned
+// over against the rest, or is not convex: a corner of it turns the other
+// way, or not at all.
+function netTurns(pts, c, r) {
+  const P = (i, j) => pts[j * (c + 1) + i];
+  let sign = 0;
+  for (let j = 0; j < r; j++) {
+    for (let i = 0; i < c; i++) {
+      const q = [P(i, j), P(i + 1, j), P(i + 1, j + 1), P(i, j + 1)];
+      for (let k = 0; k < 4; k++) {
+        const [o, a, z] = [q[k], q[(k + 1) % 4], q[(k + 2) % 4]];
+        const s = Math.sign((a[0] - o[0]) * (z[1] - a[1]) - (a[1] - o[1]) * (z[0] - a[0]));
+        if (!s || (sign && s !== sign)) return true;
+        sign = s;
+      }
+    }
+  }
+  return false;
 }
 
 // Where the box-local point (x, y) ends up once the mesh has been applied, as a
@@ -588,7 +652,8 @@ export function warpPoint(pts, cols, rows, w, h, x, y) {
 // and height past it on every side, where the map continues straight), then
 // Newton's method on `meshMap`'s own `at`, each step shortened until it gets
 // closer. A mesh folded over itself has more than one answer; this finds the
-// one nearest where the search began. Where nothing converges (past a fold,
+// one nearest where the search began (the next seeds are tried when the
+// nearest stalls in a fold's crease). Where nothing converges (past a fold,
 // or out where the map never reaches) it is null: a point the mesh does not
 // carry onto (x, y) is dropped by the caller, never placed somewhere wrong.
 // A four-handle perspective has a closed form (`homographyBack`), exact, and
@@ -600,40 +665,216 @@ export function unwarpPoint(pts, cols, rows, w, h, x, y) {
 
 // `unwarpPoint` through a mesh already built (`meshMap`, null for none), for
 // a caller that carries many points through one box's mesh.
-export function unwarpWith(m, w, h, x, y) {
+//
+// `opts.bounds` ([x0, y0, x1, y1], box-local) is where an answer may lie: a
+// point a fold or a far sheet of the mesh carries onto (x, y) from outside
+// it is not one (null). `opts.hint` (box-local) is where the caller expects
+// the answer, such as the previous point of a stroke: Newton starts there
+// first, and of several points the mesh carries onto (x, y) the one nearest
+// the hint wins.
+export function unwarpWith(m, w, h, x, y, opts = null) {
   const tx = +x;
   const ty = +y;
   if (!Number.isFinite(tx) || !Number.isFinite(ty)) return [tx, ty];
   if (!m) return [tx, ty];
-  if (m.back) return m.back(tx, ty);
+  const bounds = opts?.bounds ?? null;
+  // A millionth of a px of slack: a point on the bounds' edge, which Newton
+  // reaches only to its tolerance, is inside.
+  const e = BOUNDS_SLACK;
+  const ok = (p) => !!p && (!bounds || (p[0] >= bounds[0] - e && p[1] >= bounds[1] - e && p[0] <= bounds[2] + e && p[1] <= bounds[3] + e));
+  if (m.back) {
+    const p = m.back(tx, ty);
+    return ok(p) ? p : null;
+  }
+  const seeds = seedsOf(m, Number(w), Number(h), bounds);
+  // Within bounds, the seeds cover every answer there may be: where nothing
+  // in their reach comes near (x, y), the mesh does not get there from
+  // inside the bounds, and the search is not paid for.
+  const r = seeds.reach;
+  if (bounds && (tx < r[0] || ty < r[1] || tx > r[2] || ty > r[3])) return null;
+  const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
+  const given = opts?.hint && Number.isFinite(opts.hint[0]) && Number.isFinite(opts.hint[1]) ? opts.hint : null;
+  if (given) {
+    // Newton from the hint, taken when it stays on the hint's sheet: the
+    // straight step from the hint to the answer carries onto the straight
+    // step from where the hint goes to (x, y) (`oneStep`). Near a crease
+    // Newton can jump across to another sheet, and then the seeds decide.
+    const from = m.at(given[0], given[1]);
+    const p = newtonBack(m, tx, ty, given[0], given[1], miss(from), from);
+    if (ok(p) && oneStep(m, given, p, from, [tx, ty], bounds)) return p;
+  }
+  // The seeds nearest (x, y) first. Near a fold the nearest can lead Newton
+  // into the crease, where the map turns back and no step gets closer,
+  // although the point is reached from the fold's other side; the next seeds
+  // start in other places. Of what converges, the answer nearest the hint
+  // wins. With no hint (a stroke's first point), the answer on a sheet
+  // turned the way the box's middle is wins, then the one nearest (x, y):
+  // neighbouring targets then land on one sheet, not on whichever seed
+  // converged first.
   const W = Number(w);
   const H = Number(h);
-  const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
+  const hint = given ?? [tx, ty];
+  const upright = given || !m.folds?.(bounds) ? 0 : turnOf(m, [W / 2, H / 2]);
+  const n = seeds.at.length;
+  const d = new Float64Array(n);
+  for (let i = 0; i < n; i++) d[i] = miss(seeds.at[i]);
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => d[a] - d[b]);
   let best = null;
   let bestD = Infinity;
+  const consider = (p) => {
+    if (!ok(p)) return;
+    const e = Math.hypot(p[0] - hint[0], p[1] - hint[1]) + (upright && turnOf(m, p) !== upright ? 1e9 : 0);
+    if (e < bestD) {
+      bestD = e;
+      best = p;
+    }
+  };
+  if (!given) consider(newtonBack(m, tx, ty, tx, ty, miss(m.at(tx, ty))));
+  for (let s = 0; s < Math.min(UNWARP_SEEDS, n); s++) {
+    const [sx, sy] = seeds.from[order[s]];
+    consider(newtonBack(m, tx, ty, sx, sy, d[order[s]]));
+  }
+  return best;
+}
+const UNWARP_TOLERANCE = 1e-3;
+const UNWARP_SEEDS = 8;
+const BOUNDS_SLACK = 1e-6;
+
+// Whether the box's straight step from `a` to `b` carries onto the page's
+// straight step from `pa` to `pb` (where the map takes them): each quarter
+// point within half that page step, and at least 1 px. On a mesh that may
+// fold within `bounds` (`m.folds`; as for `unwarpWith`), also on one sheet: the map turned the same way (the sign
+// of its Jacobian, which a fold's crease flips) at both ends and at each
+// quarter point, since a step can cross a turned-over strip and come back;
+// and no longer than 4 times, plus 1 px, the box step the map's Jacobian at
+// `a` gives for that page step, since where a crease ends the map is nearly
+// flat and a far point there passes the rest. A step onto another sheet of a
+// fold carries forward somewhere else, or turned over.
+export function oneStep(m, a, b, pa, pb, bounds = null) {
+  const st = stepOf(m, a, b, bounds);
+  if (!st.sheet) return false;
+  const sx = pb[0] - pa[0];
+  const sy = pb[1] - pa[1];
+  const tol = Math.max(1, Math.hypot(sx, sy) / 2);
+  for (let k = 0; k < 3; k++) {
+    const t = (k + 1) / 4;
+    const f = st.at[k];
+    if (!(Math.hypot(f[0] - (pa[0] + sx * t), f[1] - (pa[1] + sy * t)) <= tol)) return false;
+  }
+  const ja = st.ja;
+  if (ja) {
+    const [A, B, C, D] = ja;
+    const dt = detOf(ja);
+    const want = Math.hypot((D * sx - B * sy) / dt, (A * sy - C * sx) / dt);
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 4 * want + 1) return false;
+  }
+  return true;
+}
+
+// What `oneStep` needs of the box step from `a` to `b` alone: where its
+// quarter points go (`at`), whether it stays on one sheet (`sheet`), and the
+// Jacobian at `a` (`ja`, null on a mesh that cannot fold). The last one is
+// kept per mesh: a stroke's step is asked about by `unwarpWith` and again by
+// the caller, with page ends a rounding apart.
+const stepMemo = new WeakMap();
+function stepOf(m, a, b, bounds) {
+  const hit = stepMemo.get(m);
+  if (hit && hit.bounds === bounds && hit.a0 === a[0] && hit.a1 === a[1] && hit.b0 === b[0] && hit.b1 === b[1]) return hit;
+  const ja = m.folds?.(bounds) ? jacOf(m, a) : null;
+  const turn = ja ? Math.sign(detOf(ja)) : 0;
+  let sheet = !ja || turnOf(m, b) === turn;
+  const at = [];
+  for (const t of [0.25, 0.5, 0.75]) {
+    const q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const f = m.at(q[0], q[1]);
+    at.push(f);
+    if (sheet && ja && Math.sign(detOf(jacOf(m, q, f))) !== turn) sheet = false;
+  }
+  const out = { bounds, a0: a[0], a1: a[1], b0: b[0], b1: b[1], at, sheet, ja };
+  stepMemo.set(m, out);
+  return out;
+}
+
+// The way the map turns at box point `p`: the sign of its Jacobian's
+// determinant.
+function turnOf(m, p) {
+  return Math.sign(detOf(jacOf(m, p)));
+}
+const detOf = ([a, b, c, d]) => a * d - b * c;
+
+// The map's Jacobian at box point `p` ([dx/dx, dx/dy, dy/dx, dy/dy]), by
+// differences a thousandth of a px along (as Newton's); `f` is where `p`
+// goes, when known. The last 8 are kept per mesh: a stroke's point is asked
+// about by its own step and by the next.
+const jacMemo = new WeakMap();
+function jacOf(m, p, f = null) {
+  let c = jacMemo.get(m);
+  if (!c) jacMemo.set(m, (c = { x: new Float64Array(8).fill(NaN), y: new Float64Array(8).fill(NaN), v: [], i: 0 }));
+  for (let s = 0; s < 8; s++) if (c.x[s] === p[0] && c.y[s] === p[1]) return c.v[s];
+  const e = 1e-3;
+  f ??= m.at(p[0], p[1]);
+  const fx = m.at(p[0] + e, p[1]);
+  const fy = m.at(p[0], p[1] + e);
+  const v = [(fx[0] - f[0]) / e, (fy[0] - f[0]) / e, (fx[1] - f[1]) / e, (fy[1] - f[1]) / e];
+  c.x[c.i] = p[0];
+  c.y[c.i] = p[1];
+  c.v[c.i] = v;
+  c.i = (c.i + 1) % 8;
+  return v;
+}
+
+// The seeds of `unwarpWith` for mesh `m`: a 13 x 13 grid over `bounds` (else
+// the box and a box's width and height past it on every side, where the map
+// continues straight), where each goes (`at`), and `reach`, the rectangle of
+// those images grown by the longest step between two neighbouring ones: the
+// map between two seeds strays no further than that from them, so a target
+// outside it is reached by nothing in the grid. Kept with the mesh object.
+const seedMemo = new WeakMap();
+function seedsOf(m, W, H, bounds) {
+  const key = bounds ? bounds.join(',') : `${W},${H}`;
+  const hit = seedMemo.get(m);
+  if (hit?.key === key) return hit.out;
+  const [x0, y0, x1, y1] = bounds ?? [-W, -H, 2 * W, 2 * H];
   const N = 12;
+  const from = [];
+  const at = [];
   for (let j = 0; j <= N; j++) {
     for (let i = 0; i <= N; i++) {
-      const sx = -W + (3 * W * i) / N;
-      const sy = -H + (3 * H * j) / N;
-      const d = miss(m.at(sx, sy));
-      if (d < bestD) {
-        bestD = d;
-        best = [sx, sy];
-      }
+      const sx = x0 + ((x1 - x0) * i) / N;
+      const sy = y0 + ((y1 - y0) * j) / N;
+      from.push([sx, sy]);
+      at.push(m.at(sx, sy));
     }
   }
-  let [px, py] = best;
-  let f = m.at(px, py);
-  let r = bestD;
-  const e = 1e-3;
+  let step = 0;
+  const reach = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      const p = at[j * (N + 1) + i];
+      reach[0] = Math.min(reach[0], p[0]);
+      reach[1] = Math.min(reach[1], p[1]);
+      reach[2] = Math.max(reach[2], p[0]);
+      reach[3] = Math.max(reach[3], p[1]);
+      if (i < N) step = Math.max(step, Math.hypot(...[0, 1].map((k) => at[j * (N + 1) + i + 1][k] - p[k])));
+      if (j < N) step = Math.max(step, Math.hypot(...[0, 1].map((k) => at[(j + 1) * (N + 1) + i][k] - p[k])));
+    }
+  }
+  const out = { from, at, reach: [reach[0] - step, reach[1] - step, reach[2] + step, reach[3] + step] };
+  seedMemo.set(m, { key, out });
+  return out;
+}
+
+// Newton's method on `m.at` from (px, py), whose miss is `r`, each step
+// shortened until it gets closer: the box-local point within
+// `UNWARP_TOLERANCE` px of (tx, ty), or null where it stops short. `f0` is
+// where (px, py) goes, when known.
+function newtonBack(m, tx, ty, px, py, r, f0 = null) {
+  const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
+  let f = f0 ?? m.at(px, py);
   for (let k = 0; k < 40 && r > 1e-7; k++) {
-    const fx = m.at(px + e, py);
-    const fy = m.at(px, py + e);
-    const a = (fx[0] - f[0]) / e;
-    const b = (fy[0] - f[0]) / e;
-    const c = (fx[1] - f[1]) / e;
-    const d = (fy[1] - f[1]) / e;
+    // `jacOf`: a stroke's next search starts where the last one ended, whose
+    // Jacobian the sheet test has just asked for.
+    const [a, b, c, d] = jacOf(m, [px, py], f);
     const det = a * d - b * c;
     if (!(Math.abs(det) > 1e-12)) break;
     const ex = tx - f[0];
@@ -662,7 +903,6 @@ export function unwarpWith(m, w, h, x, y) {
   // Converged: within a thousandth of a px of the point asked for.
   return r <= UNWARP_TOLERANCE ? [px, py] : null;
 }
-const UNWARP_TOLERANCE = 1e-3;
 
 // Whether a style's warp changes anything, which is the question every renderer
 // asks before it pays for a texture pass.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { marksFromPage, marksOnPage, moveMarks, normalizePaint, paintRoomFor, PAINT_MARKS_MAX, PAINT_ERASERS_MAX } from './box-paint.js';
 import { boxToPage, pageToBox } from './box-mask.js';
-import { warpPoint } from './warp.js';
+import { identityMesh, meshMap, warpPoint } from './warp.js';
 
 // ===========================================================================
 // The paint's marks are stored in the box's texture: its own frame before
@@ -155,4 +155,123 @@ describe('a full box can still be erased', () => {
     expect(paintRoomFor(p, true)).toMatch(/eraser/);
     expect(paintRoomFor(p, false)).toBe(null);
   });
+});
+
+// A folded mesh carries more than one box point onto some page points: a
+// mark keeps to one sheet and to the box, never joining two sheets with a
+// long segment or jumping a point to a sheet nobody sees.
+describe('a folded mesh', () => {
+  // The middle dot dragged right and down: the right half folds back over
+  // itself.
+  const FOLD = { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]] };
+  const folded = () => ({ id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: FOLD }), size: 20 } });
+  const longest = (pts) => Math.max(0, ...pts.slice(1).map((q, i) => Math.hypot(q[0] - pts[i][0], q[1] - pts[i][1])));
+
+  it('a stroke across the fold keeps to one sheet: no segment longer than two page steps', () => {
+    const box = folded();
+    const runs = marksFromPage(box, [stroke([[0, 60], [120, 60]])]);
+    expect(runs.length).toBeGreaterThan(0);
+    for (const r of runs) {
+      // The page step is 4 px; on the box a step is no longer than 8.
+      expect(longest(r.pts)).toBeLessThanOrEqual(8);
+      for (const q of r.pts) {
+        // Inside the box and its margin (half the font size here), and on the line drawn.
+        expect(q[0] >= -10 && q[0] <= 110 && q[1] >= -10 && q[1] <= 110).toBe(true);
+        expect(Math.abs(shown(box, q)[1] - 60)).toBeLessThan(1e-3);
+      }
+    }
+  });
+
+  it('a mark moved 1 px moves about 1 px, never onto another sheet', () => {
+    const box = folded();
+    for (const y of [5, 7, 10, 20]) {
+      const pts = Array.from({ length: 26 }, (_, i) => [40 + i * 2, y]);
+      const mark = stroke(pts);
+      const [out] = moveMarks(box, [mark], 0, 1, 0);
+      if (out === mark) continue; // stayed, whole: allowed
+      expect(out.pts).toHaveLength(pts.length);
+      // Each point is still within a few px of where it stood.
+      out.pts.forEach((q, i) => expect(Math.hypot(q[0] - pts[i][0], q[1] - pts[i][1])).toBeLessThan(5));
+      expect(longest(out.pts)).toBeLessThan(8);
+    }
+  });
+});
+
+describe('a mark moved on a folded mesh', () => {
+  it('a mark pushed past the edge of its sheet stays where it was', () => {
+    // The middle dot dragged right and down: the right half folds back over itself.
+    const FOLD = { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]] };
+    const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: FOLD }), size: 20 } };
+    const mark = stroke([[56, 68], [57, 68]]);
+    // A 1 px move takes it off its sheet; the nearest other answer is some
+    // 50 px away, on the other sheet.
+    const [out] = moveMarks(box, [mark], 0, 1, 0);
+    expect(out).toBe(mark);
+  });
+
+  it('a mark whose straight step crosses a turned-over strip and comes back stays where it was', () => {
+    const FOLD = { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]] };
+    const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: FOLD }), size: 20 } };
+    const mark = stroke([[84, 84], [85, 84]]);
+    // Both ends turn one way, but the step between them is turned over
+    // twice, near where the crease ends: once some 30 px off, now kept.
+    const [out] = moveMarks(box, [mark], 0, 0, -1);
+    expect(out).toBe(mark);
+  });
+
+  it('a mark on a fine mesh folded by one node never moves onto the other sheet', () => {
+    const n = 24;
+    const cell = 100 / n;
+    const pts = identityMesh(n, n, 100, 100).map(([x, y], i) => (i === (n / 2) * (n + 1) + n / 2 ? [x + 1.5 * cell, y + 0.45 * cell] : [x, y]));
+    const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: { on: true, cols: n, rows: n, pts } }), size: 20 } };
+    const m = meshMap(pts, n, n, 100, 100);
+    const turn = (p) => {
+      const f = m.at(p[0], p[1]);
+      const fx = m.at(p[0] + 1e-3, p[1]);
+      const fy = m.at(p[0], p[1] + 1e-3);
+      return Math.sign((fx[0] - f[0]) * (fy[1] - f[1]) - (fy[0] - f[0]) * (fx[1] - f[1]));
+    };
+    let flips = 0;
+    // Before the point grid was asked, 7 of these landed turned over.
+    for (let y = 40; y <= 64; y += 1) {
+      for (let x = 40; x <= 64; x += 1) {
+        const mark = stroke([[x, y], [x + 0.5, y]]);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const [out] = moveMarks(box, [mark], 0, dx, dy);
+          if (out !== mark && turn(out.pts[0]) !== turn(mark.pts[0])) flips++;
+        }
+      }
+    }
+    expect(flips).toBe(0);
+  });
+
+  // The sheet tests are for meshes that may fold. On meshes that cannot, a
+  // mark inside the box moved 1 or 20 px in any direction (and so still
+  // inside the box) lands under the pointer.
+  const ID = identityMesh(2, 2, 100, 100);
+  const UNFOLDED = {
+    identity: { on: true, cols: 2, rows: 2, pts: ID.map(([x, y], i) => (i === 4 ? [x + 1e-9, y] : [x, y])) },
+    perspective: { on: true, cols: 1, rows: 1, pts: [[0, 0], [100, 10], [-5, 100], [115, 90]] },
+    'smooth perspective': { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 5], [100, 10], [-3, 50], [52, 50], [108, 50], [-5, 100], [55, 95], [115, 90]] },
+    bulge: { on: true, cols: 2, rows: 2, pts: ID.map(([x, y]) => (x === 50 || y === 50 ? [x + (x - 50) * 0.2, y + (y - 50) * 0.2] : [x, y])) },
+    wave: { on: true, cols: 4, rows: 2, pts: identityMesh(4, 2, 100, 100).map(([x, y], i) => [x, y + (i % 5 === 1 ? 12 : i % 5 === 3 ? -12 : 0)]) },
+  };
+  for (const [name, warp] of Object.entries(UNFOLDED)) {
+    it(`on a ${name} mesh every move inside the box is taken`, () => {
+      const box = { id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp }), size: 20 } };
+      for (let y = 25; y <= 75; y += 10) {
+        for (let x = 25; x <= 75; x += 10) {
+          const mark = stroke([[x, y], [x + 1, y]]);
+          for (const d of [1, 20]) {
+            for (const [dx, dy] of [[d, 0], [-d, 0], [0, d], [0, -d]]) {
+              const [out] = moveMarks(box, [mark], 0, dx, dy);
+              expect(out).not.toBe(mark);
+              const was = shown(box, mark.pts[0]);
+              near(shown(box, out.pts[0]), [was[0] + dx, was[1] + dy], 1e-2);
+            }
+          }
+        }
+      }
+    });
+  }
 });
