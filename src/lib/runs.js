@@ -24,20 +24,29 @@ const HOLDER_KEY = 'runs';
 const isBool = (v) => v === true || v === false;
 const sameFace = (a, b) => !!a.bold === !!b.bold && !!a.italic === !!b.italic;
 
+// Whether offset `k` of `t` falls between the two halves of a surrogate pair,
+// where no edge may sit: the engine cannot cut a letter in two, and refuses
+// spans that try.
+const splitsPair = (t, k) => k > 0 && k < t.length && (t.charCodeAt(k) & 0xfc00) === 0xdc00 && (t.charCodeAt(k - 1) & 0xfc00) === 0xd800;
+// `k` moved back to the code point it falls inside, when it falls inside one.
+const snap = (t, k) => (splitsPair(t, k) ? k - 1 : k);
+
 // Runs in their one shape, or null for none. `runs` may come off disk or out of
 // an edit, so anything that is not a run is dropped rather than trusted: offsets
-// are cut to the text's length, a run with no letters goes, overlapping runs are
-// cut so the later one wins its letters, and runs that touch with the same face
-// become one. With `face` (the box's own `{ bold, italic }`), a run in that face
-// says nothing a letter outside every run does not, and goes too.
-export function normalizeRuns(runs, text, face = null) {
+// are cut to the text's length and moved off the middle of a letter written as
+// two UTF-16 units, a run with no letters goes, overlapping runs are cut so the
+// later one wins its letters, and runs that touch with the same face become
+// one. A run names a face outright, so it is never compared with the box's own:
+// a bold run in a box made bold stays when the box is made regular again.
+export function normalizeRuns(runs, text) {
   if (!Array.isArray(runs) || !runs.length) return null;
-  const len = typeof text === 'string' ? text.length : 0;
+  const t = typeof text === 'string' ? text : '';
+  const len = t.length;
   const list = [];
   for (const r of runs) {
     if (!r || typeof r !== 'object') continue;
-    const s = Math.max(0, Math.min(len, Math.trunc(Number(r.start))));
-    const e = Math.max(0, Math.min(len, Math.trunc(Number(r.end))));
+    const s = snap(t, Math.max(0, Math.min(len, Math.trunc(Number(r.start)))));
+    const e = snap(t, Math.max(0, Math.min(len, Math.trunc(Number(r.end)))));
     if (!(e > s)) continue;
     list.push({ start: s, end: e, bold: isBool(r.bold) ? r.bold : false, italic: isBool(r.italic) ? r.italic : false });
   }
@@ -60,7 +69,6 @@ export function normalizeRuns(runs, text, face = null) {
   }
   const merged = [];
   for (const r of out) {
-    if (face && sameFace(r, face)) continue;
     const last = merged[merged.length - 1];
     if (last && last.end === r.start && sameFace(last, r)) last.end = r.end;
     else merged.push(r);
@@ -99,35 +107,70 @@ export function faceSpans(runs, len, face) {
 
 // Bold or italic (`key`) switched on `[start, end)`: off when every letter
 // there already has it, else on, the way a word processor's button works. The
-// other half of each letter's face is kept. `face` is the box's own, for the
-// letters outside every run and to drop runs that come to equal it.
+// other half of each letter's face is kept. `face` is the box's own, the face
+// of the letters outside every run; what the range becomes is written as runs
+// even where it equals that face, since a run is a face outright.
 export function toggleRuns(runs, text, start, end, key, face) {
-  // The box's face is known here - no face is the regular one - so a run that
-  // comes to equal it always goes.
   face = { bold: !!face?.bold, italic: !!face?.italic };
-  if (key !== 'bold' && key !== 'italic') return normalizeRuns(runs, text, face);
+  if (key !== 'bold' && key !== 'italic') return normalizeRuns(runs, text);
   const len = text.length;
   const a = Math.max(0, Math.min(len, start));
   const b = Math.max(a, Math.min(len, end));
-  if (a === b) return normalizeRuns(runs, text, face);
+  if (a === b) return normalizeRuns(runs, text);
   const pieces = faceSpans(runs, len, face).filter((p) => p.end > a && p.start < b);
   const on = !pieces.every((p) => p[key]);
   const changed = pieces.map((p) => ({ ...p, start: Math.max(a, p.start), end: Math.min(b, p.end), [key]: on }));
   // The untouched runs first, then the range written over them: `normalizeRuns`
   // gives the later run the letters both claim.
-  return normalizeRuns([...(runs ?? []), ...changed], text, face);
+  return normalizeRuns([...(runs ?? []), ...changed], text);
 }
 
 // Where two strings differ: the replaced range `[a, b]` of `before`, from the
-// common prefix and the common suffix. Null when they are equal.
+// common prefix and the common suffix, widened to whole code points - two
+// emoji that share their first UTF-16 unit differ in the whole letter, not in
+// its second half. Null when they are equal.
 export function changedSpan(before, after) {
   if (before === after) return null;
   const max = Math.min(before.length, after.length);
   let a = 0;
   while (a < max && before.charCodeAt(a) === after.charCodeAt(a)) a++;
+  if (splitsPair(before, a) || splitsPair(after, a)) a--;
   let k = 0;
   while (k < max - a && before.charCodeAt(before.length - 1 - k) === after.charCodeAt(after.length - 1 - k)) k++;
+  if (k > 0 && (splitsPair(before, before.length - k) || splitsPair(after, after.length - k))) k--;
   return [a, before.length - k];
+}
+
+// The range of `before` an edit replaced, when the field's selection before
+// it (`[selA, selB]`, as `beforeinput` saw it) says: the selection itself when
+// it was a range, else the letters typed at the caret or deleted on either
+// side of it. Checked against the text the edit left, so a selection that does
+// not explain it - an input that moved the caret first, an IME - gives null,
+// and the caller falls back to `changedSpan`'s guess.
+export function editedSpan(before, after, selA, selB) {
+  if (typeof before !== 'string' || typeof after !== 'string' || before === after) return null;
+  const lo = Math.min(selA, selB);
+  const hi = Math.max(selA, selB);
+  if (!(lo >= 0) || !(hi <= before.length)) return null;
+  const fits = (a, b) =>
+    a >= 0 && b <= before.length && a <= b && !splitsPair(before, a) && !splitsPair(before, b) && after.length - (before.length - b) >= a &&
+    after.startsWith(before.slice(0, a)) && after.endsWith(before.slice(b));
+  if (lo < hi) return fits(lo, hi) ? [lo, hi] : null;
+  const delta = after.length - before.length;
+  for (const [a, b] of delta >= 0 ? [[lo, lo]] : [[lo + delta, lo], [lo, lo - delta]]) if (fits(a, b)) return [a, b];
+  return null;
+}
+
+// The runs of `[start, end)` of a text, as runs of that slice alone.
+export function sliceRuns(runs, start, end) {
+  if (!runs?.length) return null;
+  const out = [];
+  for (const r of runs) {
+    const s = Math.max(start, r.start);
+    const e = Math.min(end, r.end);
+    if (e > s) out.push({ start: s - start, end: e - start, bold: r.bold, italic: r.italic });
+  }
+  return out.length ? out : null;
 }
 
 // The runs of `before` carried onto `after`. `span` is the range `[a, b]` of
@@ -203,25 +246,46 @@ export function putText(holder, key, v, opts = {}) {
 // `runs` for a record or a copy: plain data, or null for none.
 export const copyRuns = (runs) => (runs?.length ? runs.map((r) => ({ start: r.start, end: r.end, bold: r.bold, italic: r.italic })) : null);
 
-// The `{ runs }` field of an object about to be saved or loaded beside `text`:
-// normalised, or nothing at all, so an object with no runs has no key.
-export function runsField(runs, text, face = null) {
-  const out = normalizeRuns(runs, text, face);
+// ----- on disk -----
+//
+// Runs are saved with a check of the text they index (`runsCheck`, a 32-bit
+// FNV-1a of the string). An app from before runs keeps a line's unknown fields
+// as they are while it edits the words, so a chapter it saved can hold runs
+// that no longer sit on the letters they were made for; on load, runs whose
+// check does not match their text are dropped rather than put on the wrong
+// letters. Worked out on save and load only, never while typing.
+const CHECK_KEY = 'runsCheck';
+export function textCheck(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+// The `{ runs }` field of an object read off disk beside `text`: normalised,
+// and only when its `runsCheck` is that text's; nothing at all otherwise, so a
+// live object never holds the check and one with no runs has no key.
+export function runsField(runs, text, check) {
+  if (typeof text !== 'string' || check !== textCheck(text)) return null;
+  const out = normalizeRuns(runs, text);
   return out ? { runs: out } : null;
 }
 
 // A page's lines (`key` 'en') or boxes (`key` 'text') as they are about to be
-// saved, their runs normalised against the text beside them - a box's against
-// its own face - and dropped where there is none. `list` is plain data the
-// caller owns (a snapshot); only an item that has runs is touched, so a page
-// with none is written exactly as before runs existed.
+// saved: runs normalised against the text beside them, with that text's check,
+// and dropped where there is none. `list` is plain data the caller owns (a
+// snapshot); only an item that has runs is touched, so a page with none is
+// written exactly as before runs existed.
 export function saveRuns(list, key) {
   for (const item of list ?? []) {
-    if (!item || !('runs' in item)) continue;
+    if (!item || !('runs' in item || CHECK_KEY in item)) continue;
     const text = item[key];
-    const runs = typeof text === 'string' ? normalizeRuns(item.runs, text, key === 'text' ? item.style : null) : null;
-    if (runs) item.runs = runs;
-    else delete item.runs;
+    const runs = typeof text === 'string' ? normalizeRuns(item.runs, text) : null;
+    delete item.runs;
+    delete item[CHECK_KEY];
+    if (runs) Object.assign(item, { runs, [CHECK_KEY]: textCheck(text) });
   }
   return list;
 }

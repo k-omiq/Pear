@@ -11,7 +11,8 @@ const { initHistory, resetHistory, undo, redo } = await import('./editor/history
 const { callContext, __resetRun } = await import('./agent/run.svelte.js');
 const { callTool } = await import('./agent/registry.js');
 const { defaultStyle } = await import('./data.js');
-const { saveRuns } = await import('./runs.js');
+const { saveRuns, textCheck, editedSpan } = await import('./runs.js');
+const { bindGuide, unbindGuide } = await import('./guide.svelte.js');
 await import('./agent/tools/index.js');
 
 const B = (start, end) => ({ start, end, bold: true, italic: false });
@@ -21,16 +22,19 @@ const call = (name, args) => callTool(name, args, callContext('mcp'));
 const p1 = () => pageById(1);
 const byId = (id) => p1().boxes.find((b) => b.id === id);
 const plain = (v) => JSON.parse(JSON.stringify(v));
+// As a save writes runs: beside the check of the text they index.
+const en = (text, runs) => ({ en: text, runs, runsCheck: textCheck(text) });
+const own = (text, runs) => ({ text, runs, runsCheck: textCheck(text) });
 
 const doc = () => [
   {
     id: 1, w: 800, h: 1200,
     lines: [
-      { n: 1, jp: 'あ', en: 'one two three', runs: [B(4, 7)], tags: [] },
+      { n: 1, jp: 'あ', ...en('one two three', [B(4, 7)]), tags: [] },
       { n: 2, jp: 'い', en: 'plain words', tags: [] },
-      { n: -1, type: 'dialogue', jp: '', en: 'free and bold', runs: [B(9, 13)] },
+      { n: -1, type: 'dialogue', jp: '', ...en('free and bold', [B(9, 13)]) },
     ],
-    boxes: [box('a', 1), box('b', 2), box('free', -1, { y: 300 }), box('own', 2, { text: 'its own words', runs: [I(0, 3)], y: 500 })],
+    boxes: [box('a', 1), box('b', 2), box('free', -1, { y: 300 }), box('own', 2, { ...own('its own words', [I(0, 3)]), y: 500 })],
   },
 ];
 
@@ -66,20 +70,63 @@ describe('load and save', () => {
     expect(lines).toEqual([{ n: 1, jp: 'x', en: 'hello', placed: true }]);
   });
 
-  it('normalises runs on load: cut to the text, none beside words the box does not own, none in the box face', () => {
+  it('normalises runs on load: cut to the text, none beside words the box does not own, a run in the box face kept', () => {
     loadProjectPages([
       {
         id: 1, w: 800, h: 1200,
-        lines: [{ n: 1, en: 'short', runs: [B(2, 99), { start: 'x' }] }],
+        lines: [{ n: 1, ...en('short', [B(2, 99), { start: 'x' }]) }],
         boxes: [
-          box('a', 1, { runs: [B(0, 2)] }),
-          box('t', null, { text: 'abc', runs: [B(0, 1), I(1, 3)], style: { ...defaultStyle(), size: 20, italic: true } }),
+          box('a', 1, { runs: [B(0, 2)], runsCheck: textCheck('') }),
+          box('t', null, { ...own('abc', [B(0, 1), I(1, 3)]), style: { ...defaultStyle(), size: 20, italic: true } }),
         ],
       },
     ]);
     expect(lineByN(p1(), 1).runs).toEqual([B(2, 5)]);
     expect('runs' in byId('a')).toBe(false);
-    expect(byId('t').runs).toEqual([B(0, 1)]);
+    // A run is a face outright: italic letters in an italic box stay italic
+    // runs, so they stay italic if the box is made upright.
+    expect(byId('t').runs).toEqual([B(0, 1), I(1, 3)]);
+    // The check is for the disk only.
+    expect('runsCheck' in lineByN(p1(), 1)).toBe(false);
+    expect('runsCheck' in byId('t')).toBe(false);
+  });
+
+  it('drops runs whose check is not their text\'s: words an older app changed', () => {
+    loadProjectPages([
+      {
+        id: 1, w: 800, h: 1200,
+        // An app from before runs kept the fields of the line as they were
+        // and changed the words under them.
+        lines: [{ n: 1, en: 'the words now', runs: [B(4, 9)], runsCheck: textCheck('one two three') }, { n: 2, en: 'no check', runs: [B(0, 2)] }],
+        boxes: [box('t', null, { text: 'changed', runs: [B(0, 3)], runsCheck: textCheck('abc') })],
+      },
+    ]);
+    expect('runs' in lineByN(p1(), 1)).toBe(false);
+    expect('runs' in lineByN(p1(), 2)).toBe(false);
+    expect('runs' in byId('t')).toBe(false);
+  });
+
+  it('saves runs with the check of their text, and the record loads back the same', () => {
+    const lines = saveRuns(plain(p1().lines), 'en');
+    const boxes = saveRuns(plain(p1().boxes), 'text');
+    expect(lines[0]).toMatchObject({ en: 'one two three', runs: [B(4, 7)], runsCheck: textCheck('one two three') });
+    expect(boxes.find((b) => b.id === 'own')).toMatchObject({ runs: [I(0, 3)], runsCheck: textCheck('its own words') });
+    expect('runsCheck' in lines[1]).toBe(false);
+    loadProjectPages([{ id: 1, w: 800, h: 1200, lines, boxes }]);
+    expect(lineByN(p1(), 1).runs).toEqual([B(4, 7)]);
+    expect(byId('own').runs).toEqual([I(0, 3)]);
+  });
+
+  it('keeps a bold word bold after the box is made bold and regular again, through a reload', () => {
+    const b = byId('own');
+    setBoxText(b, 'its own words', p1(), { runs: [B(4, 7)] });
+    b.style.bold = true;
+    b.style.bold = false;
+    expect(byId('own').runs).toEqual([B(4, 7)]);
+    const record = { id: 1, w: 800, h: 1200, lines: saveRuns(plain(p1().lines), 'en'), boxes: saveRuns(plain(p1().boxes), 'text') };
+    record.boxes.find((x) => x.id === 'own').style.bold = true;
+    loadProjectPages([plain(record)]);
+    expect(byId('own').runs).toEqual([B(4, 7)]);
   });
 
   it('a box shows its line\'s runs, or its own beside its own words', () => {
@@ -203,5 +250,59 @@ describe('the AI text tool', () => {
     expect(r.ok, JSON.stringify(r)).toBe(true);
     expect(byId('own').runs).toEqual([I(0, 3)]);
     expect(boxText(byId('own'), p1())).toBe('its own new words');
+  });
+
+  it('the text rules keep the faces between two changes, each change made where it is', async () => {
+    bindGuide({ rules: { dashes: 'em', ellipsis: 'char' } }, () => {});
+    try {
+      const text = 'Wait -- no... okay';
+      setBoxText(byId('own'), text, p1(), { runs: [B(8, 10)] });
+      const r = await call('edit', { ops: [{ where: { ids: ['own'] }, do: 'apply_guide' }] });
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(boxText(byId('own'), p1())).toBe('Wait — no… okay');
+      // "no" is still the bold word, though both rules changed the text
+      // around it.
+      expect(byId('own').runs).toEqual([B(7, 9)]);
+      expect(r.result.ops[0].facesLost).toBeUndefined();
+    } finally {
+      unbindGuide();
+    }
+  });
+
+  it('a rule over letters in two faces says so', async () => {
+    bindGuide({ rules: { dashes: 'keep', ellipsis: 'char' } }, () => {});
+    try {
+      // The first dot bold, the other two not: the … can only be one face.
+      setBoxText(byId('own'), 'Well...', p1(), { runs: [B(4, 5)] });
+      const r = await call('edit', { ops: [{ where: { ids: ['own'] }, do: 'apply_guide' }] });
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(boxText(byId('own'), p1())).toBe('Well…');
+      expect(r.result.ops[0].facesLost.ids).toEqual(['own']);
+    } finally {
+      unbindGuide();
+    }
+  });
+
+  it('a split gives each part the faces of its own words, repeated words or not', async () => {
+    setBoxText(byId('own'), 'ha ha', p1(), { runs: [B(3, 5)] });
+    const r = await call('split', { id: 'own', parts: ['ha', 'ha'], at: [[600, 900]] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const [first, second] = r.result.ids.map(byId);
+    expect(boxText(first, p1())).toBe('ha');
+    expect(boxText(second, p1())).toBe('ha');
+    expect(boxRuns(first, p1())).toBe(null);
+    expect(boxRuns(second, p1())).toEqual([B(0, 2)]);
+  });
+});
+
+describe('the text fields and the IME pass the range they edited', () => {
+  it('a plain letter typed in front of a bold one, in the queue field, is plain', () => {
+    // As Queue.svelte passes it: the selection `beforeinput` saw, read
+    // against the text the edit left.
+    const ln = lineByN(p1(), 1);
+    setLineText(p1(), 1, 'one two three', { runs: [B(4, 5)] });
+    const span = editedSpan(ln.en, 'one ttwo three', 4, 4);
+    setLineText(p1(), 1, 'one ttwo three', { span });
+    expect(lineByN(p1(), 1).runs).toEqual([B(5, 6)]);
   });
 });

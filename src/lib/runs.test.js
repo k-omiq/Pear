@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeRuns, faceAt, faceSpans, toggleRuns, changedSpan, shiftRuns, putText, saveRuns, runsKey } from './runs.js';
+import { normalizeRuns, faceAt, faceSpans, toggleRuns, changedSpan, editedSpan, sliceRuns, shiftRuns, putText, saveRuns, runsKey, textCheck } from './runs.js';
 
 const B = { bold: true, italic: false };
 const I = { bold: false, italic: true };
@@ -61,8 +61,9 @@ describe('normalizeRuns', () => {
   it('gives the later of two overlapping runs the letters they share', () => {
     expect(normalizeRuns([run(0, 6), run(2, 4, I)], 'abcdef')).toEqual([run(0, 2), run(2, 4, I), run(4, 6)]);
   });
-  it('drops junk and a run in the box face', () => {
-    expect(normalizeRuns([null, { start: 'x', end: 3 }, run(0, 3, I)], 'abcdef', I)).toBe(null);
+  it('drops junk, and keeps a run whatever face the box is in', () => {
+    expect(normalizeRuns([null, { start: 'x', end: 3 }], 'abcdef')).toBe(null);
+    expect(normalizeRuns([run(0, 3, I)], 'abcdef')).toEqual([run(0, 3, I)]);
     expect(normalizeRuns([{ start: 1, end: 3, bold: 1 }], 'abcdef')).toEqual([{ start: 1, end: 3, bold: false, italic: false }]);
   });
 });
@@ -92,15 +93,17 @@ describe('toggleRuns', () => {
   it('turns a range bold, and off again when it all is', () => {
     const on = toggleRuns(null, t, 6, 11, 'bold', null);
     expect(on).toEqual([run(6, 11)]);
-    expect(toggleRuns(on, t, 6, 11, 'bold', null)).toBe(null);
+    // Off again is a regular run: a run is a face outright, so the word
+    // stays regular if the box is made bold.
+    expect(toggleRuns(on, t, 6, 11, 'bold', null)).toEqual([{ start: 6, end: 11, bold: false, italic: false }]);
   });
   it('is on for a range only partly bold, and keeps the other half of each face', () => {
     const runs = [run(0, 5, I), run(6, 8)];
     expect(toggleRuns(runs, t, 3, 11, 'bold', null)).toEqual([run(0, 3, I), run(3, 5, BI), run(5, 11)]);
   });
-  it('drops what comes to equal the box face', () => {
+  it('writes what the range comes to, even where it equals the box face', () => {
     expect(toggleRuns(null, t, 0, 5, 'bold', B)).toEqual([{ start: 0, end: 5, bold: false, italic: false }]);
-    expect(toggleRuns([{ start: 0, end: 5, bold: false, italic: false }], t, 0, 5, 'bold', B)).toBe(null);
+    expect(toggleRuns([{ start: 0, end: 5, bold: false, italic: false }], t, 0, 5, 'bold', B)).toEqual([run(0, 5)]);
   });
 });
 
@@ -110,6 +113,54 @@ describe('changedSpan', () => {
     expect(changedSpan('abc', 'abc')).toBe(null);
     expect(changedSpan('abc', 'xyz')).toEqual([0, 3]);
     expect(changedSpan('abcdef', 'abef')).toEqual([2, 4]);
+  });
+  it('never cuts a letter written as two UTF-16 units', () => {
+    // The two emoji share their first unit; the change is the whole letter.
+    expect(changedSpan('x😀y', 'x😃z')).toEqual([1, 4]);
+    expect(changedSpan('a😀', 'a😃')).toEqual([1, 3]);
+    // Their second units shared, from the end.
+    expect(changedSpan('\ud83d\ude00b', '\ud83e\ude00b')).toEqual([0, 2]);
+  });
+});
+
+describe('surrogate pairs and marks', () => {
+  it('a run that ended inside an emoji ends before it, after an edit and off disk', () => {
+    expect(shiftRuns([run(0, 3)], 'x😀y', 'x😃z')).toEqual([run(0, 1)]);
+    // A damaged file: edges inside a pair move back to the letter's start,
+    // and a run left with no letters goes.
+    expect(normalizeRuns([run(0, 2)], 'x😀')).toEqual([run(0, 1)]);
+    expect(normalizeRuns([run(2, 3)], 'x😀')).toEqual([run(1, 3)]);
+    expect(normalizeRuns([run(2, 2)], 'x😀')).toBe(null);
+  });
+  it('a run may end between a letter and its combining mark (a code point edge)', () => {
+    expect(normalizeRuns([run(0, 1)], 'e\u0301x')).toEqual([run(0, 1)]);
+    expect(changedSpan('e\u0301x', 'e\u0302x')).toEqual([1, 2]);
+  });
+});
+
+describe('editedSpan', () => {
+  it('reads the replaced range from the selection the edit began on', () => {
+    // A plain "b" typed in front of a bold one: the new letter is not bold.
+    expect(editedSpan('ab', 'abb', 1, 1)).toEqual([1, 1]);
+    expect(shiftRuns([run(1, 2)], 'ab', 'abb', [1, 1])).toEqual([run(2, 3)]);
+    // The guess from the text alone gets it wrong, which is why the span.
+    expect(shiftRuns([run(1, 2)], 'ab', 'abb')).toEqual([run(1, 3)]);
+    expect(editedSpan('abc', 'ac', 2, 2)).toEqual([1, 2]);
+    expect(editedSpan('abc', 'ab', 2, 2)).toEqual([2, 3]);
+    expect(editedSpan('hello world', 'hello there', 6, 11)).toEqual([6, 11]);
+  });
+  it('gives null when the selection does not explain the edit', () => {
+    expect(editedSpan('abc', 'xbc', 2, 2)).toBe(null);
+    expect(editedSpan('abc', 'abc', 1, 1)).toBe(null);
+    // Never through the middle of an emoji.
+    expect(editedSpan('a😀', 'a\ud83d', 3, 3)).toBe(null);
+  });
+});
+
+describe('sliceRuns', () => {
+  it('cuts the runs to a range, as runs of that range', () => {
+    expect(sliceRuns([run(0, 2), run(3, 5, I)], 3, 5)).toEqual([run(0, 2, I)]);
+    expect(sliceRuns([run(0, 2)], 3, 5)).toBe(null);
   });
 });
 
@@ -196,14 +247,22 @@ describe('putText', () => {
 });
 
 describe('saveRuns', () => {
-  it('leaves items with no runs untouched and normalises the rest', () => {
+  it('leaves items with no runs untouched, normalises the rest and adds their check', () => {
     const plain = { n: 1, en: 'x' };
     const lines = saveRuns([plain, { n: 2, en: 'abc', runs: [run(1, 9)] }, { n: 3, en: 'ab', runs: [] }], 'en');
     expect(lines[0]).toBe(plain);
-    expect(lines[1].runs).toEqual([run(1, 3)]);
+    expect(lines[0]).toEqual({ n: 1, en: 'x' });
+    expect(lines[1]).toEqual({ n: 2, en: 'abc', runs: [run(1, 3)], runsCheck: textCheck('abc') });
     expect('runs' in lines[2]).toBe(false);
+    expect('runsCheck' in lines[2]).toBe(false);
+    // A box's runs are saved whatever the box's own face.
     const boxes = saveRuns([{ text: null, runs: [run(0, 1)] }, { text: 'ab', style: { bold: true }, runs: [run(0, 2)] }], 'text');
     expect('runs' in boxes[0]).toBe(false);
-    expect('runs' in boxes[1]).toBe(false);
+    expect(boxes[1].runs).toEqual([run(0, 2)]);
+  });
+  it('checks a text by FNV-1a', () => {
+    expect(textCheck('')).toBe(0x811c9dc5);
+    expect(textCheck('a')).toBe(0xe40c292c);
+    expect(textCheck('foobar')).toBe(0xbf9cf968);
   });
 });

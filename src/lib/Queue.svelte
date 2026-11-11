@@ -63,7 +63,7 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns } from './runs.js';
+  import { copyRuns, editedSpan } from './runs.js';
   import { modKey } from './format.js';
   import { comboFor, defaultCombo, formatCombo, isMacKeyboard, pressed } from './shortcuts.svelte.js';
   import ReviewList from './ReviewList.svelte';
@@ -227,10 +227,24 @@
 
   // Both fields write through the store for the toolbar's burst undo; each
   // field's own Cmd+Z stack covers its keystrokes. Only English fits boxes.
+  // The English field and its selection as each edit begins: what that edit
+  // replaced is read from them (`editedSpan`) once it has landed, so the faces
+  // of the words (runs.js) move with the edit.
+  let enBefore = null;
+  function onTextareaBeforeInput(e) {
+    const el = e.currentTarget;
+    enBefore = { v: el.value, a: el.selectionStart, b: el.selectionEnd };
+  }
+
   function onTextareaInput(e, line, field = 'en') {
     const v = e.currentTarget.value;
     if (field === 'jp') setLineSource(p, line.n, v);
-    else setLineText(p, line.n, v);
+    else {
+      const was = enBefore;
+      enBefore = null;
+      const span = was && was.v === (line.en ?? '') ? editedSpan(was.v, v, was.a, was.b) : null;
+      setLineText(p, line.n, v, span ? { span } : undefined);
+    }
     // The faces the write left beside the English (runs.js), for a step back.
     const faces = field === 'jp' ? null : copyRuns(line.runs);
     recordFieldEdit(field === 'jp' ? sourceUndo : fieldUndo, v, { atomic: isAtomicInput(e.inputType), faces });
@@ -866,6 +880,7 @@
             placeholder="English…"
             aria-label="English for line {badge}"
             value={line.en ?? ''}
+            onbeforeinput={onTextareaBeforeInput}
             oninput={(e) => onTextareaInput(e, line)}
             onkeydown={(e) => onTextareaKey(e, line)}
           ></textarea>
