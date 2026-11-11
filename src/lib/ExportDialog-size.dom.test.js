@@ -50,6 +50,7 @@ afterEach(() => {
   cleanup();
   app.exportOpen = false;
   app.chapterRef = null;
+  app.projectLayout = 'pages';
   library.projects = [];
   loadProjectPages([]);
 });
@@ -96,6 +97,28 @@ describe('the Size row', () => {
     expect(calls.exports).toEqual([['PNG', 'all', 1]]);
     // The series' own choice is left as it was.
     expect(library.projects[0].exportScale).toBe(2);
+  });
+
+  it('dims All pages for a strip whose slices are past a WebP at 2x, names a Slice height, and lets one page go', async () => {
+    const tall = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, w: 800, h: 3000, lines: [], boxes: [] }));
+    const view = open({ exportScale: 2, pages: tall });
+    app.projectLayout = 'longstrip';
+    app.fmt = 'WebP';
+    await tick();
+    const [current, all] = view.container.querySelectorAll('.exp-card');
+    expect(all.disabled).toBe(true);
+    expect(current.disabled).toBe(false);
+    expect(text(view)).toContain('At 2x, set Slice height to 4096 or less.');
+    // 2x itself stays on: a single page of the strip fits.
+    expect(button(view, '2x').classList.contains('on')).toBe(true);
+    current.click();
+    await tick();
+    expect(calls.exports).toEqual([['WebP', 'current', 2]]);
+    // At Original there is nothing to say.
+    button(view, 'Original').click();
+    await tick();
+    expect(all.disabled).toBe(false);
+    expect(text(view)).not.toContain('Slice height to');
   });
 
   it('dims both for JSON, which has no pictures', async () => {

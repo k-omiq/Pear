@@ -35,6 +35,7 @@ import {
   normalizeChapterMode,
   normalizeLayout,
   normalizeOcrLanguage,
+  normalizeExportScale,
   toast,
   toastError,
   cancelChapterPlace,
@@ -668,7 +669,7 @@ async function freeDir(parent, name, taken) {
 // image with no margins, and re-reading them as separate pages - or the reverse -
 // describes art that does not exist. Anything unrecognised, including the
 // `undefined` every existing caller passes, is 'pages'.
-export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja' } = {}) {
+export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja', exportScale = 1 } = {}) {
   const taken = new Set(library.projects.map((p) => p.slug));
   const { slug, dir } = await freeDir(library.root, name, taken);
   await fsx.mkdir(dir);
@@ -683,6 +684,7 @@ export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja'
     coverPageId: null,
     layout: normalizedLayout,
     ocrLanguage: normalizeOcrLanguage(ocrLanguage),
+    exportScale: normalizeExportScale(exportScale),
     // Born empty and written so: a project with no registry of its own is what
     // `projectTags` reads as pre-registry and hands the legacy global list.
     tags: [],
@@ -874,16 +876,6 @@ export async function setProjectOcrLanguage(projectId, language) {
   await run;
   if (app.chapterRef?.projectId === projectId) app.projectOcrLanguage = next;
   return next;
-}
-
-// The export dialog's Size for a series: 1 (the page's own pixels) or 2 (twice
-// them each way). A series is exported the same way every time, so it is kept
-// with the series and not as a preference of the app. Absent, and anything
-// else, is 1: every project written before this existed exported at its own
-// size.
-export const EXPORT_SCALES = [1, 2];
-export function normalizeExportScale(scale) {
-  return EXPORT_SCALES.includes(scale) ? scale : 1;
 }
 
 // Queued behind the other record writes as the language is
@@ -1592,6 +1584,7 @@ export async function readChapterPackageSources(projectId, chapterId) {
       name: p?.name ?? '',
       layout: normalizeLayout(p?.layout),
       ocrLanguage: normalizeOcrLanguage(p?.ocrLanguage),
+      exportScale: normalizeExportScale(p?.exportScale),
     },
     raws,
     cleaned,

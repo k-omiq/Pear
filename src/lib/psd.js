@@ -10,7 +10,7 @@
 // Tauri webview / vite browser), so no explicit initializeCanvas call is needed.
 import { writePsd, readPsd } from 'ag-psd';
 import { markDeepKnockout, readDeepKnockout } from './psd-knockout.js';
-import { app, PAGE_W, PAGE_H, isLongstrip } from './store.svelte.js';
+import { app, PAGE_W, PAGE_H, isLongstrip, rescalePageGeometry } from './store.svelte.js';
 import { isTauri, pickFilesTauri } from './importer.js';
 import { renderBoxLayer, pageSpace, settleNoise, enginesSettled, enginesHeld, measureStrip, chapterNow, chapterHeld } from './exporter.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
@@ -1742,7 +1742,12 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column, scale = 
   // art's size above, and `serializePage` would state the defaults for it -
   // a 123x234 file saying its page is 850x1200, which the import believes and
   // the next measure of the art rescales every box out of.
-  const project = { key: PROJECT_KEY, schema: SCHEMA, page: { ...serializePage(p), w: W, h: H } };
+  //
+  // An enlarged document (Size 2x) says so (`docScale`): its page is still
+  // stated at the page's own size, and its art is the enlarged art, so an
+  // import has to know the two apart (`psdPageScale`). Absent is 1, and a
+  // file at the page's own size is written exactly as it was.
+  const project = { key: PROJECT_KEY, schema: SCHEMA, page: { ...serializePage(p), w: W, h: H }, ...(scale !== 1 ? { docScale: scale } : null) };
 
   enginesHeld(held);
   // And of the one chapter (`chapterNow`, exporter.js): a chapter closed
@@ -1831,7 +1836,11 @@ async function pageTextLayers(p, entries, W, H, scratch, tips, scale = 1) {
       const letters = renderBoxLayer({ ...e.box, style: lettersOnlyStyle(e.box.style) }, W, H, scratch, e.owner, scale, tips, e.dx, e.dy);
       const centre = [(e.box.x + e.box.w / 2 + (e.dx || 0)) * scale, (e.box.y + e.box.h / 2 + (e.dy || 0)) * scale];
       const frames = letters ? gradientFrames(letters, centre, Number(e.box.style.rotation) || 0) : null;
-      if (frames) rendered.frames = frames;
+      // Read off the document's pixels and stated in page px, the unit a
+      // stroke gradient's `grow` (`placedGradients`) and everything else
+      // `textLayerFor` places by is in.
+      const page = (v) => v.map((n) => n / scale);
+      if (frames) rendered.frames = scale === 1 ? frames : { page: page(frames.page), local: page(frames.local), centre: page(frames.centre) };
     }
     let layer = textLayerFor(e.owner, e.box, rendered, moved ? { dx: e.dx, dy: e.dy, W, H, w: sheet.w, h: sheet.h } : null);
     if (!layer) continue;
@@ -2474,6 +2483,28 @@ export function parsePagePsd(bytes, readOptions = {}) {
 
 const psdBytes = (url) => fetch(url).then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b));
 
+/**
+ * How much larger a Pear PSD's document is than the page its project states,
+ * `{ sx, sy }`: 1 and 1 for a file at the page's own size. Read from
+ * `docScale` where the export wrote it (Size 2x), else from the document's
+ * size against the page's, so a file of another size that does not say why
+ * is caught too. Its art is the document's: enlarged art, never the original.
+ */
+export function psdPageScale(project, psd) {
+  const page = project?.page;
+  const k = Number(project?.docScale);
+  if (k > 0 && k !== 1) return { sx: k, sy: k };
+  const sx = page?.w > 0 && psd?.width > 0 ? psd.width / page.w : 1;
+  const sy = page?.h > 0 && psd?.height > 0 ? psd.height / page.h : 1;
+  return { sx: Math.abs(sx - 1) < 1e-9 ? 1 : sx, sy: Math.abs(sy - 1) < 1e-9 ? 1 : sy };
+}
+
+// Why a Pear PSD would come in as something other than its own page.
+const enlargedPsd = (project) =>
+  Number(project?.docScale) > 1
+    ? `exported at ${project.docScale}x: its pages and its art are enlarged`
+    : 'its document is not the size of its page, and its art is resized';
+
 function psdPageName(index, suffix) {
   return `page-${String(index + 1).padStart(3, '0')}${suffix}.png`;
 }
@@ -2531,16 +2562,36 @@ export function numberBoxIds(pages) {
   return pages;
 }
 
-export async function chapterPagesFromPsdFiles(files) {
+//
+// A Pear PSD whose document is not its page's size (Size 2x, `psdPageScale`)
+// holds enlarged art, not the art the page was made from. It is refused, and
+// named in `problems`, unless the caller has asked the user and passes
+// `enlarged: true`; then it comes in at the document's size - the boxes
+// scaled with it now, so no later measure of the art moves them - and is
+// counted in `enlarged`. There is no path that brings such a file back into
+// an existing chapter: PSD import makes new chapters only (see above).
+export async function chapterPagesFromPsdFiles(files, { enlarged: allowEnlarged = false } = {}) {
   const list = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   const pages = [];
   const problems = [];
   let lossless = 0;
+  let enlarged = 0;
   for (const file of list) {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const { project, psd } = parsePagePsd(bytes);
+      const k = project ? psdPageScale(project, psd) : { sx: 1, sy: 1 };
+      const resized = k.sx !== 1 || k.sy !== 1;
+      if (resized && !allowEnlarged) {
+        problems.push(`${file.name} - ${enlargedPsd(project)}`);
+        continue;
+      }
       const page = project ? await reconstructFromProject(project, psd) : await reconstructForeign(psd);
+      if (resized) {
+        page.w = psd.width;
+        page.h = psd.height;
+        rescalePageGeometry(page, k.sx, k.sy);
+      }
       const built = await toChapterPage(page, pages.length);
       if (!built) {
         problems.push(`${file.name} - no page image in it`);
@@ -2548,6 +2599,7 @@ export async function chapterPagesFromPsdFiles(files) {
       }
       pages.push(built);
       if (project) lossless++;
+      if (resized) enlarged++;
     } catch (e) {
       problems.push(`${file.name} - ${e?.message || e}`);
     }
@@ -2556,6 +2608,7 @@ export async function chapterPagesFromPsdFiles(files) {
   return {
     pages,
     lossless,
+    enlarged,
     foreign: pages.length - lossless,
     cleanedOnly: pages.filter((pg) => pg.cleanedOnly).length,
     problems,

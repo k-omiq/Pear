@@ -1,9 +1,9 @@
 <script>
-  import { app, saveExportPrefs, isLongstrip, checks, openCheck } from './store.svelte.js';
-  import { exportImages, exportPreflight, scaleBlock } from './exporter.js';
+  import { app, saveExportPrefs, isLongstrip, checks, openCheck, normalizeExportScale } from './store.svelte.js';
+  import { exportImages, exportPreflight, scaleBlock, stripSliceBlock } from './exporter.js';
   import { SLICE_H_MIN, SLICE_H_MAX, SLICE_H_DEFAULT } from './editor/strip-cuts.js';
   import { maxPageWidth } from './editor/strip.js';
-  import { projectById, normalizeExportScale, setProjectExportScale } from './library.svelte.js';
+  import { projectById, setProjectExportScale } from './library.svelte.js';
 
   const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 
@@ -17,13 +17,15 @@
   const stored = $derived(normalizeExportScale(project?.exportScale));
   // Why 2x cannot be written for this chapter in this format, judged on the
   // pages whose size is known (the export measures the rest and asks again).
-  // A strip re-cut is judged as the slices it will be cut into.
-  const block2x = $derived(
-    scaleBlock(app.pages, app.fmt, 2, isLongstrip() && !isJson && app.fmt !== 'PSD' ? { strip: { width: maxPageWidth(app.pages), sliceH: app.stripSliceH || SLICE_H_DEFAULT } } : {}),
-  );
+  // A strip page is a slice the column's width.
+  const block2x = $derived(scaleBlock(app.pages, app.fmt, 2, isStrip ? { strip: { width: maxPageWidth(app.pages) } } : {}));
   // What the export is made at: the stored choice where it can be, else the
   // page's own size. JSON has no pixels.
   const scale = $derived(isJson || block2x ? 1 : stored);
+  // A whole strip re-cut at this Slice height, at this size: the one thing
+  // that can stop All pages while This page can go. The export checks every
+  // real cut again before it writes.
+  const blockAll = $derived(isStrip ? stripSliceBlock(app.pages, app.fmt, scale, maxPageWidth(app.pages), app.stripSliceH || SLICE_H_DEFAULT) : null);
   let sizeError = $state('');
   async function onSize(v) {
     if (!project || v === stored) return;
@@ -113,7 +115,7 @@
 
       <div class="grp">
         <span class="lbl" id="exp-size">Size</span>
-        <div class="seg" role="group" aria-labelledby="exp-size">
+        <div class="seg exp-size" role="group" aria-labelledby="exp-size">
           <button class:on={scale === 1} disabled={isJson || !project} onclick={() => onSize(1)}>Original</button>
           <button class:on={scale === 2} disabled={isJson || !project || !!block2x} onclick={() => onSize(2)}>2x</button>
         </div>
@@ -192,7 +194,7 @@
             <div class="t">This page</div>
             <div class="d">Page {app.pageIndex + 1} only</div>
           </button>
-          <button class="exp-card" onclick={() => go('all')}>
+          <button class="exp-card" disabled={!!blockAll} onclick={() => go('all')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="13" height="15" rx="2" /><path d="M8 2h11a2 2 0 0 1 2 2v13" /></svg>
             <div class="t">All pages</div>
             <div class="d">
@@ -204,6 +206,7 @@
             </div>
           </button>
         </div>
+        {#if blockAll}<div class="exp-sub">{blockAll}.</div>{/if}
       </div>
     </div>
   </div>

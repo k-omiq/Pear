@@ -3635,6 +3635,14 @@ describe('a series keeps its export size', () => {
     expect(projectById(p.id).exportScale).toBe(1);
   });
 
+  it('is set when a series is made with it, as one made from a package is', async () => {
+    const p = await createProject('From A Package', { exportScale: 2 });
+    expect(p.exportScale).toBe(2);
+    expect(projectJson(p.slug).exportScale).toBe(2);
+    const q = await createProject('Odd', { exportScale: 3 });
+    expect(projectJson(q.slug).exportScale).toBe(1);
+  });
+
   it('belongs to its own series only', async () => {
     const a = await createProject('Series A');
     const b = await createProject('Series B');
@@ -3814,7 +3822,7 @@ describe('chapter packages', () => {
   });
 
   it('readChapterPackageSources returns the record and every named file byte-for-byte', async () => {
-    const p = await createProject('Series', { layout: 'longstrip', ocrLanguage: 'zh' });
+    const p = await createProject('Series', { layout: 'longstrip', ocrLanguage: 'zh', exportScale: 2 });
     const c = await createChapterFromPages({
       projectId: p.id,
       number: 1,
@@ -3838,7 +3846,7 @@ describe('chapter packages', () => {
     expect(src.record.title).toBe('One');
     expect(src.record.pages).toHaveLength(2);
     expect(src.record.pages[0].boxes[0].id).toBe('b1');
-    expect(src.project).toEqual({ name: 'Series', layout: 'longstrip', ocrLanguage: 'zh' });
+    expect(src.project).toEqual({ name: 'Series', layout: 'longstrip', ocrLanguage: 'zh', exportScale: 2 });
     expect(src.raws.get('a.png')).toEqual(new Uint8Array([1, 2]));
     expect(src.raws.get('b.png')).toEqual(new Uint8Array([4, 5, 6]));
     expect(src.cleaned.get('a-c.png')).toEqual(new Uint8Array([3]));
