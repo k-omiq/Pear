@@ -483,15 +483,19 @@ fn pieces(c: &Crack, b: &BreakOff, stars: &[Star], size: f64, ink: (f64, f64, f6
                 let deg = dice.sign(item, 7) * (6.0 + 20.0 * share) * (0.5 + 0.5 * dice.u(item, 10));
                 (away.scale(len), deg)
             }
+            // Down from where it was, each piece as far as its own die says
+            // and farther the smaller it is, drifting a little out from the
+            // focus: neighbours keep apart as they fall. A few small ones
+            // are gone, more as Break off grows.
             Motion::Fall => {
-                // Gone: a few of the small ones.
-                if r < 0.15 * size && dice.u(item, 8) < 0.35 {
+                if r < 0.15 * size && dice.u(item, 8) < 0.15 + 0.35 * share {
                     out.push(Piece { outline, moved: None });
                     continue;
                 }
-                let drop = (ink.3 - mid.y) + r * (1.0 + 1.5 * share) * (0.8 + 0.4 * dice.u(item, 6)) + 0.1 * size;
-                let dx = away.x * size * 0.12 * dice.u(item, 9);
-                let deg = dice.sign(item, 7) * (10.0 + 40.0 * share) * (0.5 + 0.5 * dice.u(item, 10))
+                let small = (0.25 * size / r.max(1e-6)).clamp(1.0, 2.0);
+                let drop = size * (0.2 + 0.6 * share) * (0.8 + 0.4 * dice.u(item, 6)) * small;
+                let dx = away.x * size * 0.15 * share * dice.u(item, 9);
+                let deg = dice.sign(item, 7) * (8.0 + 32.0 * share) * (0.5 + 0.5 * dice.u(item, 10))
                     * (0.3 * size / r.max(1e-6)).min(1.0);
                 (Pt::new(dx, drop), deg)
             }

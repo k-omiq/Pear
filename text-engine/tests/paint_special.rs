@@ -609,3 +609,21 @@ fn apart_pieces_move_clearly_out_from_the_focus_farther_as_break_off_grows() {
         last = out;
     }
 }
+
+#[test]
+fn falling_pieces_drop_below_where_they_were_and_keep_apart() {
+    // Measured (font size 60): down 20.6 to 51.8 from 25 to 100 %, drift at
+    // most 11.3, overlap 0.24 to 0.46, against 0.44 to 0.65 for the first
+    // Fall, which dropped every piece to the letters' foot in one heap.
+    let mut last = 0.0;
+    for share in [0.25, 0.5, 0.75, 1.0] {
+        let (_, down, side, overlap, n, _) = motion_numbers(Motion::Fall, share);
+        assert!(down > last + 5.0, "{share}: down {down}");
+        assert!(side < 0.25 * SIZE, "{share}: below where it was, drift {side}");
+        assert!(overlap < 0.5 && (share > 0.9 || overlap < 0.4), "{share}: overlap {overlap}");
+        assert!(n > 0);
+        last = down;
+    }
+    // Some small ones are gone at the most.
+    assert!(motion_numbers(Motion::Fall, 1.0).5 > 0);
+}
