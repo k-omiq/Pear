@@ -373,10 +373,12 @@ describe('styleSchemaText', () => {
   // effects (crack, lightning, splash, scratches) of 2026-11-11, and to
   // 19700 the same day for the crack's focus and spread, the lightning's
   // core and glow and the splash's colour; to 19800 for the crack's break
-  // off and its motion, and to 19900 for the box stroke at the cuts.
-  it('describes every key, field and item in under 19900 characters', () => {
+  // off and its motion, and to 19900 for the box stroke at the cuts; to
+  // 20300 for the text outline at the cuts, the lightning's aim and the
+  // splash's landing (fix round 1, 2026-11-11).
+  it('describes every key, field and item in under 20300 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(19900);
+    expect(text.length).toBeLessThan(20300);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.

@@ -1329,6 +1329,10 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
     if cuts.is_some_and(|s| s.cut_strokes) {
         key = key.u64(32);
     }
+    // The glyph bands fill the cuts (v18), when they do.
+    if cuts.is_some_and(|s| s.fill_bands) {
+        key = key.u64(64);
+    }
     let key = key.bytes(&[u8::from(line)]).finish().ok_or(Error::BadSpec)?;
     if r.at != bytes.len() || (line && !request.job.curved) {
         return Err(Error::BadSpec);

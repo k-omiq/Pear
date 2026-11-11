@@ -80,7 +80,8 @@
   import { warpActive, meshMap, unwarpPoint } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
   import { meshWarper } from './warp-paint.js';
-  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull } from './contain.js';
+  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull, lettersInkRect } from './contain.js';
+  import { HANDLE_KINDS, ARM_LENGTH, handleFrame, handlePoint, dragHandle, dragArm, armEnd } from './special.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
@@ -2656,6 +2657,78 @@
     removeAnchor(i);
   }
 
+  // ---- the special effects' handles (special.js) ----
+  // While Effects ▸ Special is open, a point on the selected box for each
+  // effect that has one and is on: Crack's focus, Lightning's start with an
+  // arm the way it goes, Splash's landing. A drag writes the effect's
+  // numbers, as its sliders do, in one undo step.
+  const specialHandlesOn = $derived(
+    selected &&
+      !editing &&
+      !bulkOn &&
+      !brushArmed() &&
+      inspectorTab.id === 'effects' &&
+      effectsSubTab.id === 'special' &&
+      !boxLocked(box),
+  );
+  const specialHandles = $derived.by(() => {
+    if (!specialHandlesOn || !s.special) return [];
+    const out = [];
+    let ink;
+    for (const kind of HANDLE_KINDS) {
+      const fx = s.special[kind];
+      if (!fx?.on) continue;
+      if (kind === 'crack') ink ??= lettersInkRect(boxCandidate(box, text, runs));
+      const frame = handleFrame(kind, box, ink);
+      const p = handlePoint(fx, frame);
+      out.push({ kind, frame, p, arm: kind === 'lightning' ? armEnd(fx, p, ARM_LENGTH / z) : null });
+    }
+    return out;
+  });
+  const HANDLE_TITLES = {
+    crack: 'Crack focus: drag to set where the cracks gather',
+    lightning: 'Lightning start: drag to set where the bolts begin',
+    splash: 'Splash: drag to set where the paint lands',
+  };
+
+  // Drags a handle (`part` 'point') or the lightning's arm end ('arm').
+  function startSpecialDrag(e, kind, part) {
+    if (e.button !== 0 || !pageFrameEl) return;
+    const h = specialHandles.find((x) => x.kind === kind);
+    if (!h) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    focusPage(pg);
+    settleEdits();
+    const pid = e.pointerId;
+    const styleBefore = cloneStyle(box.style);
+    const pageId = pg.id;
+    const frame = h.frame;
+    const move = (ev) => {
+      if (ev.pointerId !== pid) return;
+      const fx = s.special?.[kind];
+      if (!fx) return;
+      const [x, y] = maskLocal(ev);
+      if (part === 'arm') dragArm(fx, handlePoint(fx, frame), { x, y });
+      else dragHandle(kind, fx, { x, y }, frame);
+      markUnsaved();
+    };
+    const ac = new AbortController();
+    const end = (ev) => {
+      if (ev.pointerId !== pid) return;
+      live.delete(ac);
+      ac.abort();
+      const after = cloneStyle(box.style);
+      if (JSON.stringify(after.special) === JSON.stringify(styleBefore.special)) return;
+      record({ t: 'style', pageId, boxId: box.id, before: styleBefore, after });
+    };
+    live.add(ac);
+    document.addEventListener('pointermove', move, { signal: ac.signal });
+    document.addEventListener('pointerup', end, { signal: ac.signal });
+    document.addEventListener('pointercancel', end, { signal: ac.signal });
+  }
+
   // The gizmo's polyline, in zoomed box-local px.
   const gizmoLine = $derived.by(() => {
     if (!pathGizmoOn) return null;
@@ -3973,6 +4046,23 @@
     </svg>
   {/if}
 
+  {#if specialHandles.length}
+    <!-- The special effects' handles (special.js): a point each, and the
+         lightning's arm. Stated in the box's own unflipped frame and carried
+         by its flip, as the picture is. -->
+    <svg class="special-gizmo" width={box.w * z} height={box.h * z} style={overlayMirror} aria-hidden="true">
+      {#each specialHandles as h (h.kind)}
+        {#if h.arm}
+          <line class="sarm" x1={h.p.x * z} y1={h.p.y * z} x2={h.arm.x * z} y2={h.arm.y * z} />
+          <circle class="send" cx={h.arm.x * z} cy={h.arm.y * z} r="4" />
+          <circle class="hit arm" data-kind={h.kind} cx={h.arm.x * z} cy={h.arm.y * z} r="9" onpointerdown={(e) => startSpecialDrag(e, h.kind, 'arm')}><title>Lightning direction: drag to aim the bolts</title></circle>
+        {/if}
+        <circle class="spt {h.kind}" cx={h.p.x * z} cy={h.p.y * z} r="6" />
+        <circle class="hit point" data-kind={h.kind} cx={h.p.x * z} cy={h.p.y * z} r="11" onpointerdown={(e) => startSpecialDrag(e, h.kind, 'point')}><title>{HANDLE_TITLES[h.kind]}</title></circle>
+      {/each}
+    </svg>
+  {/if}
+
   {#if liquifyOn}
     <!-- The surface that turns a drag into a liquify. Full-box and on top, the
          same shape the mask tool's capture rect has; without it the drag lands
@@ -4164,6 +4254,15 @@
      armed; it reaches past the box exactly as far as the mask image does. */
   /* Over every box on the page, so a shape can be drawn over any of them. */
   .draw-page { position: absolute; inset: 0; pointer-events: none; z-index: 40; }
+  /* The special effects' handles: only the marks take the pointer. */
+  .special-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 6; }
+  .special-gizmo .spt { stroke: #fff; stroke-width: 2; fill: #e33; }
+  .special-gizmo .spt.lightning { fill: #1e90ff; }
+  .special-gizmo .spt.splash { fill: #e6a100; }
+  .special-gizmo .sarm { stroke: #1e90ff; stroke-width: 2; }
+  .special-gizmo .send { fill: #fff; stroke: #1e90ff; stroke-width: 2; }
+  .special-gizmo .hit { fill: transparent; pointer-events: all; cursor: grab; }
+  .special-gizmo .hit:active { cursor: grabbing; }
   .mask-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
   .mask-gizmo .capture { fill: transparent; pointer-events: all; cursor: crosshair; touch-action: none; }
   .mask-gizmo .capture.move { cursor: move; }

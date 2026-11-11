@@ -39,7 +39,7 @@ use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
     paint_box, paint_box_kept, Affine, BoxKeys, Align, Band, BoxRequest, Clip, ClipMode, ClipShape, Effects,
-    BreakOff, Crack, Fade, FadePart, Motion, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
+    Aim, BreakOff, Crack, Fade, FadePart, Motion, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -631,6 +631,7 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             splash: None,
             scratches: None,
             cut_strokes: false,
+            fill_bands: false,
         });
         b.request.job.effects.special.as_mut().unwrap()
     }
@@ -645,7 +646,7 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     rows.push((
         "special_splash_stroke",
         Box::new(move |b| {
-            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, color: BLUE, seed: 5 });
+            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, color: BLUE, seed: 5, at: (0.5, 0.5), spread: 1.0 });
             b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
             b.lay_special_paint().unwrap();
         }),
@@ -659,7 +660,7 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     rows.push((
         "special_lightning",
         Box::new(move |b| {
-            special(b).lightning = Some(Lightning { amount: 0.6, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed: 4 });
+            special(b).lightning = Some(Lightning { amount: 0.6, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed: 4, aim: None });
             b.lay_special_paint().unwrap();
         }),
     ));
@@ -750,6 +751,45 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             special(b).scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
             let font = b.request.face.font;
             crisp(b, font);
+        }),
+    ));
+    // Fix round 1 (glyph wire v18): a crack and scratches with the glyph
+    // bands filling the cuts, two bands; a lightning aimed from a point; a
+    // splash pulled in to where it lands.
+    for (name, kind) in [("special_crack_bands_fill_cuts", 0), ("special_scratches_bands_fill_cuts", 1)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                if kind == 0 {
+                    sp.crack = Some(Crack { amount: 0.6, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                } else {
+                    sp.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+                }
+                sp.fill_bands = true;
+                b.request.job.bands = vec![Band { color: BLUE, opacity: 1.0, line: 12.0 }, Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+            }),
+        ));
+    }
+    rows.push((
+        "special_lightning_aimed",
+        Box::new(move |b| {
+            special(b).lightning = Some(Lightning {
+                amount: 0.6,
+                core: Rgba([255, 255, 255, 255]),
+                glow: BLUE,
+                glow_size: 1.0,
+                seed: 4,
+                aim: Some(Aim { at: (0.1, 0.2), angle: 0.6 }),
+            });
+            b.lay_special_paint().unwrap();
+        }),
+    ));
+    rows.push((
+        "special_splash_placed",
+        Box::new(move |b| {
+            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, color: BLUE, seed: 5, at: (0.2, 0.5), spread: 0.3 });
+            b.lay_special_paint().unwrap();
         }),
     ));
     // A soft fade at scale 2, on its page-anchored grid of cells, and a
