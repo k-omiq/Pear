@@ -45,7 +45,7 @@ use super::raster::{Part, Rasterizer};
 use super::shade::Shader;
 use super::sweep;
 use super::{
-    budget, finish, magnified, paint_job_with, plan, Exact, Planned, Raster, FLATTEN_TOLERANCE,
+    budget, finish, paint_job_with, plan, Exact, Planned, Raster, FLATTEN_TOLERANCE,
 };
 use super::{MAX_PIXELS, MAX_SIDE};
 use crate::engine::Engine;
@@ -60,7 +60,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 18;
+pub const BOX_WIRE_VERSION: u32 = 19;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -184,16 +184,19 @@ pub struct Tap {
     pub weight: f64,
 }
 
+/// What one shape of the mask does (wire v19, per shape).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipMode {
-    /// Only what the shapes cover is shown.
+    /// Keep: the letters show inside the union of the keep shapes, and
+    /// nowhere else when there is one.
     Include,
-    /// What the shapes cover is not.
+    /// Hide: what the shape covers is not shown.
     Exclude,
 }
 
-/// One shape of the mask (`style.clip.shapes`), in the box's own units from
-/// its top-left corner.
+/// One shape of the mask (`box.mask`, pinned to the page and taken into the
+/// box's own frame by the app), in the box's own units from its top-left
+/// corner.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipShape {
     Ellipse {
@@ -210,12 +213,35 @@ pub enum ClipShape {
     },
 }
 
+/// One shape of the mask and what it does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipPart {
+    pub mode: ClipMode,
+    pub shape: ClipShape,
+}
+
+/// The mask: the letters show inside the union of the keep shapes
+/// (everywhere, with none), less the union of the hide shapes. It is cut
+/// from the finished surface, after the box's warp, so the mesh never bends
+/// it (wire v19).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clip {
-    pub mode: ClipMode,
     /// The box's corner in job space: the shapes are stated from it.
     pub origin: Pt,
-    pub shapes: Vec<ClipShape>,
+    pub shapes: Vec<ClipPart>,
+}
+
+impl Clip {
+    /// A mask whose every shape does the one thing.
+    pub fn all(mode: ClipMode, origin: Pt, shapes: Vec<ClipShape>) -> Self {
+        Self {
+            origin,
+            shapes: shapes
+                .into_iter()
+                .map(|shape| ClipPart { mode, shape })
+                .collect(),
+        }
+    }
 }
 
 /// A decoded box job.
@@ -784,8 +810,21 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn shape(&mut self) -> Result<ClipShape, Error> {
-        Ok(match self.u32()? {
+    fn part(&mut self) -> Result<ClipPart, Error> {
+        let kind = self.u32()?;
+        let mode = match self.u32()? {
+            1 => ClipMode::Include,
+            2 => ClipMode::Exclude,
+            _ => return Err(Error::BadSpec),
+        };
+        Ok(ClipPart {
+            mode,
+            shape: self.shape(kind)?,
+        })
+    }
+
+    fn shape(&mut self, kind: u32) -> Result<ClipShape, Error> {
+        Ok(match kind {
             1 => ClipShape::Ellipse {
                 centre: self.pt()?,
                 rx: self.within(MAX_THROW)?,
@@ -829,12 +868,16 @@ impl<'a> Reader<'a> {
 ///       u32 n, then n points (f64 x, y from 0 to 255, u32 corner)
 /// f64 blur                     the whole-box blur; 0 for none
 /// u32 tap count, then per tap: f64 dx, dy, f64 weight
-/// u32 clip mode                0 none, 1 include, 2 exclude; when not 0:
+/// u32 mask (v19)              0 none; 1 then:
 ///     f64 ox, oy               the box's corner in job space
-///     u32 shape count, then per shape: u32 kind, then
+///     u32 shape count, then per shape: u32 kind, u32 op (1 keep, 2 hide),
+///     then by kind
 ///       1 ellipse: f64 cx, cy, rx, ry
 ///       2 polygon: u32 n, then n points (f64 x, y)
 ///       3 stroke:  f64 size, u32 n, then n points; one point is a dot
+///     The letters show inside the union of the keep shapes (everywhere,
+///     with none) less the union of the hide shapes. Before v19 one mode
+///     held for every shape and the box's mesh bent them.
 /// u32 blend                    the letters' mode
 /// f64 fill opacity             0 to 1
 /// u32 blending flags (v9)      1 Blend Interior Effects as Group,
@@ -995,9 +1038,10 @@ pub fn decode_box(bytes: &[u8]) -> Result<BoxRequest, Error> {
     decode_box_kept(bytes).map(|(request, _)| request)
 }
 
-/// [`decode_box`], and the key of the glyph job in it for
-/// [`paint_box_kept`]: of the job's own bytes as they are written.
-pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, kept::Key), Error> {
+/// [`decode_box`], and the keys [`paint_box_kept`] keeps its pieces under:
+/// the glyph job's, of its own bytes as they are written, and for a box with
+/// a mask the premask's, of every byte but the mask's.
+pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
     let mut r = Reader {
         bytes,
         at: 0,
@@ -1045,23 +1089,20 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, kept::Key), Error> {
             weight: r.upto(1.0)?,
         })
     }))?;
+    let mask_at = r.at;
     let clip = match r.u32()? {
         0 => None,
-        mode @ (1 | 2) => {
+        1 => {
             let origin = r.pt()?;
-            let n = r.count(usize::MAX, 4)?;
+            let n = r.count(usize::MAX, 8)?;
             Some(Clip {
-                mode: if mode == 1 {
-                    ClipMode::Include
-                } else {
-                    ClipMode::Exclude
-                },
                 origin,
-                shapes: budget::collect((0..n).map(|_| r.shape()))?,
+                shapes: budget::collect((0..n).map(|_| r.part()))?,
             })
         }
         _ => return Err(Error::BadSpec),
     };
+    let mask_end = r.at;
     let blend = Blend::from_u32(r.u32()?).ok_or(Error::BadSpec)?;
     let fill_opacity = r.upto(1.0)?;
     let mut blending = Blending::from_flags(r.u32()?).ok_or(Error::BadSpec)?;
@@ -1103,6 +1144,16 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, kept::Key), Error> {
         return Err(Error::BadSpec);
     }
     request.ink = ink;
+    let premask = match clip {
+        Some(_) => Some(
+            Hasher::new("box but its mask")
+                .bytes(&bytes[..mask_at])
+                .bytes(&bytes[mask_end..])
+                .finish()
+                .ok_or(Error::BadSpec)?,
+        ),
+        None => None,
+    };
     let request = BoxRequest {
         width,
         height,
@@ -1119,7 +1170,7 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, kept::Key), Error> {
         clip,
         request,
     };
-    Ok((request, key))
+    Ok((request, BoxKeys { job: key, premask }))
 }
 
 /// A circle of radius `r` about `c` as a closed polygon that stays within
@@ -1147,10 +1198,14 @@ fn disc(out: &mut Polys, c: Pt, rx: f64, ry: f64, tol: f64) {
 /// fills what its own contours wind round whichever way they run, and parts
 /// are united, so a stroke's segments and the discs at its joints make one
 /// line and not a darker patch where they overlap.
-fn clip_parts(clip: &Clip, tol: f64) -> Result<budget::Buffer<Polys>, Error> {
+fn clip_parts<'a>(
+    origin: Pt,
+    shapes: impl Iterator<Item = &'a ClipShape>,
+    tol: f64,
+) -> Result<budget::Buffer<Polys>, Error> {
     let mut out = budget::Buffer::new();
-    let at = |p: Pt| p.plus(clip.origin);
-    for shape in &clip.shapes {
+    let at = |p: Pt| p.plus(origin);
+    for shape in shapes {
         match shape {
             ClipShape::Ellipse { centre, rx, ry } => {
                 let mut polys = Polys::default();
@@ -1197,31 +1252,29 @@ fn clip_parts(clip: &Clip, tol: f64) -> Result<budget::Buffer<Polys>, Error> {
     Ok(out)
 }
 
-/// The mask's coverage over the surface: straight RGBA8 whose alpha is the
-/// share of each pixel the shapes cover, and the box of pixels it is for.
-/// `None` when the shapes cover nothing of the surface.
+/// The coverage of the mask's shapes of one `mode` over the surface:
+/// straight RGBA8 whose alpha is the share of each pixel they cover, and the
+/// box of pixels it is for. `None` when they cover nothing of the surface.
+/// The shapes are cut from the finished surface, after the box's warp: the
+/// app has taken them from the page into the box's frame, so the mesh does
+/// not bend them.
 fn clip_mask(
     clip: &Clip,
+    mode: ClipMode,
     request: &Request,
     surface: IBox,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<(Vec<u8>, IBox)>, Error> {
     let transform = &request.transform;
-    // The shapes are the box's, so the box's mesh bends them with its
-    // letters, and enlarges them as it does the letters (`magnified`).
-    let mesh = match &request.job.mesh {
-        Some(m) => m.map()?,
-        None => None,
-    };
-    let tol = FLATTEN_TOLERANCE / (transform.max_scale() * magnified(mesh.as_ref()));
+    let tol = FLATTEN_TOLERANCE / transform.max_scale();
     let mut parts = budget::Buffer::new();
-    for polys in clip_parts(clip, tol)?.iter() {
-        let placed = match (&mesh, polys.bounds()) {
-            (Some(m), Some(bounds)) => {
-                super::warp::bend(polys, |p| m.at(p), m.cut(bounds, tol), tol)?.map(transform)
-            }
-            _ => polys.map(transform),
-        };
+    let shapes = clip
+        .shapes
+        .iter()
+        .filter(|p| p.mode == mode)
+        .map(|p| &p.shape);
+    for polys in clip_parts(clip.origin, shapes, tol)?.iter() {
+        let placed = polys.map(transform);
         if !placed.is_empty() {
             budget::push(&mut parts, Part::plain(placed))?;
         }
@@ -1286,37 +1339,59 @@ pub fn paint_box_with(
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
-    paint(engine, request, rasterizer, true, Keep(None))
+    paint(engine, request, rasterizer, true, Keep(None, None))
+}
+
+/// What [`paint_box_kept`] keeps a box's pieces under, as
+/// [`decode_box_kept`] gives them from its bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxKeys {
+    /// The glyph job in the request: everything of `request.request` but
+    /// its ink.
+    pub job: kept::Key,
+    /// Everything of the box but its mask, for a box with one: the surface
+    /// before the mask is kept under it. None with no mask.
+    pub premask: Option<kept::Key>,
 }
 
 /// [`paint_box`], with what it works out kept for the next paint and what
 /// the paints before it kept read back (`super::kept`): the same pixels, to
-/// the byte, sooner. `job` is the key of the glyph job in `request`, as
-/// [`decode_box_kept`] gives it: everything of `request.request` but its
-/// ink. A box with brush ink keeps nothing (its tips are the engine's, and
-/// can change under a key).
+/// the byte, sooner. `keys` are the request's own, as [`decode_box_kept`]
+/// gives them. A box with brush ink keeps nothing (its tips are the
+/// engine's, and can change under a key).
 pub fn paint_box_kept(
     engine: &mut Engine,
     request: &mut BoxRequest,
-    job: kept::Key,
+    keys: BoxKeys,
 ) -> Result<Option<Raster>, Error> {
     let keep = if request.request.ink.is_some() {
         None
     } else {
         Hasher::new("box")
-            .key(job)
+            .key(keys.job)
             .u64(engine.stamp.0)
             .debug(&engine.rules)
             .finish()
     };
-    paint(engine, request, &Exact, true, Keep(keep))
+    // The engine's fonts and rules are in the premask's key as in every
+    // other piece's.
+    let premask = keep.and(keys.premask).and_then(|k| {
+        Hasher::new("premask")
+            .key(k)
+            .u64(engine.stamp.0)
+            .debug(&engine.rules)
+            .finish()
+    });
+    paint(engine, request, &Exact, true, Keep(keep, premask))
 }
 
 /// What a paint's pieces are kept under for the next one (`super::kept`):
-/// the key of the glyph job, the engine's fonts and its rules. None for a
-/// paint that keeps nothing and reads nothing back.
+/// the key of the glyph job, the engine's fonts and its rules; and for a box
+/// with a mask, the key of everything but the mask, which the surface before
+/// the mask is kept under. None for a paint that keeps nothing and reads
+/// nothing back.
 #[derive(Clone, Copy)]
-struct Keep(Option<kept::Key>);
+struct Keep(Option<kept::Key>, Option<kept::Key>);
 
 impl Keep {
     /// The key of what `paint_job_with` paints of `request` as it stands.
@@ -1473,7 +1548,7 @@ pub fn paint_box_copy_by_copy(
     request: &mut BoxRequest,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
-    paint(engine, request, rasterizer, false, Keep(None))
+    paint(engine, request, rasterizer, false, Keep(None, None))
 }
 
 /// Where a layer whose ink is `ink`, moved by `(dx, dy)` pixels, can leave
@@ -2263,393 +2338,422 @@ fn paint(
         return Ok(None);
     }
 
-    let mut s = Surface::new(width, height)?;
-    // Where anything has been laid on the surface, so that finding what of
-    // it has ink reads only that.
-    let mut laid: Option<IBox> = None;
-    let join = |laid: &mut Option<IBox>, b: IBox| *laid = Some(laid.map_or(b, |l| l.union(&b)));
-    // Shadows, the last first, so the first is on top of the rest. One
-    // layer serves them all, and a shadow like the one before it (an
-    // extrude's steps, a shake's copies) is the same layer moved again.
-    let mut order = budget::Buffer::new();
-    for sh in request.shadows.iter().rev().filter(|s| positive(s.opacity)) {
-        budget::push(&mut order, *sh)?;
-    }
-    let mut layer: Option<Surface> = None;
-    // Where the layer has ink, found once for every copy of it.
-    let mut ink: Option<IBox> = None;
-    // Where its rows have ink, for a layer laid more than once.
-    let mut runs: Option<sweep::Runs> = None;
-    let mut acc = budget::Buffer::new();
-    if !order.is_empty() {
-        acc = budget::filled(width * 4, 0.0f32)?;
-    }
-    let mut moves = budget::Buffer::new();
-    let mut painted_as: Option<(Rgba, f64, f64)> = None;
-    let job_silhouette = request.request.job.silhouette;
-    let job_grow = request.request.job.effects.grow;
-    // The letters' silhouette as a shadow painted it, kept for the outer
-    // glows when it is theirs too: not grown, and in an opaque colour, whose
-    // alpha is what black's would be. `Some(None)`: painted, and nothing.
-    let glows = request
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::OuterGlow(_)) && e.shows());
-    let mut silhouette: Option<Option<Raster>> = None;
-    // The surface with the shadows and the glows on it, as the last paint
-    // of the same ones left it (`super::kept`).
-    type Under = (Vec<u8>, Option<IBox>);
-    let page_key = match (&request.backdrop, keep.0) {
-        (Some(page), Some(_)) if !order.is_empty() || glows => {
-            Hasher::new("page").bytes(page).finish()
-        }
-        _ => None,
-    };
-    // With the shadows on it, and with the glows on it too. With no glow the
-    // first is all of it, and with no shadow the second is.
-    let shadows_key = keep.shadows(request, &order, see_through, page_key);
-    let glows_key = keep.glows(request, shadows_key, glows, scale, page_key);
-    let fits = |u: &std::rc::Rc<Under>| u.0.len() == width * height * 4;
-    let under_kept = glows_key.or(shadows_key).and_then(kept::get::<Under>).filter(fits);
-    // Short of that, with the shadows alone: the glows are laid again.
-    let shadows_kept = match (&under_kept, glows) {
-        (None, true) => shadows_key.and_then(kept::get::<Under>).filter(fits),
-        _ => None,
-    };
-    if let Some(u) = under_kept.as_ref().or(shadows_kept.as_ref()) {
+    // The surface before the mask, as the last paint of everything but the
+    // mask left it (`Keep`'s second key): a box with a mask kept to the
+    // page repaints as it is moved, and a move changes only where the mask
+    // falls, so a hit costs one shape raster and one multiply.
+    type Premask = (Vec<u8>, Option<IBox>);
+    let premask_kept = keep
+        .1
+        .and_then(kept::get::<Premask>)
+        .filter(|u| u.0.len() == width * height * 4);
+    let (mut s, laid) = if let Some(u) = premask_kept {
+        let mut s = Surface::new(width, height)?;
         s.data.copy_from_slice(&u.0);
-        laid = u.1;
-    }
-    let shadows_laid = under_kept.is_some() || shadows_kept.is_some();
-    let mut i = if shadows_laid { order.len() } else { 0 };
-    while let Some(sh) = order.get(i).copied() {
-        if sh.styled(see_through > 0.0) {
-            let knock = if sh.knockout { see_through } else { 0.0 };
-            if let Some(b) = lay_styled(
-                engine,
-                request,
-                rasterizer,
-                keep,
-                &sh,
-                &mut s,
-                scale,
-                thrown(&sh),
-                knock,
-                &mut acc,
-            )? {
-                join(&mut laid, b);
-            }
-            i += 1;
-            continue;
+        (s, u.1)
+    } else {
+        let mut s = Surface::new(width, height)?;
+        // Where anything has been laid on the surface, so that finding what of
+        // it has ink reads only that.
+        let mut laid: Option<IBox> = None;
+        let join = |laid: &mut Option<IBox>, b: IBox| *laid = Some(laid.map_or(b, |l| l.union(&b)));
+        // Shadows, the last first, so the first is on top of the rest. One
+        // layer serves them all, and a shadow like the one before it (an
+        // extrude's steps, a shake's copies) is the same layer moved again.
+        let mut order = budget::Buffer::new();
+        for sh in request.shadows.iter().rev().filter(|s| positive(s.opacity)) {
+            budget::push(&mut order, *sh)?;
         }
-        let key = layer_key(&sh);
-        if painted_as != Some(key) {
-            painted_as = Some(key);
-            ink = None;
-            runs = None;
-            request.request.job.silhouette = Some(sh.color);
-            request.request.job.effects.grow = sh.grow;
-            let kept_as = keep.layer(&request.request, sh.size, width, height);
-            // The layer as a paint before this one blurred it, and where
-            // the silhouette it was blurred from stood.
-            type Layer = (Vec<u8>, Option<IBox>);
-            let layer_kept = kept_as
-                .and_then(kept::get::<Layer>)
-                .filter(|l| l.0.len() == width * height * 4);
-            let painted = match &layer_kept {
-                Some(_) => Ok(None),
-                None => job_raster(engine, &request.request, rasterizer, keep),
-            };
-            request.request.job.silhouette = job_silhouette;
-            request.request.job.effects.grow = job_grow;
-            let layer = match &mut layer {
-                Some(l) => {
-                    l.clear();
-                    l
+        let mut layer: Option<Surface> = None;
+        // Where the layer has ink, found once for every copy of it.
+        let mut ink: Option<IBox> = None;
+        // Where its rows have ink, for a layer laid more than once.
+        let mut runs: Option<sweep::Runs> = None;
+        let mut acc = budget::Buffer::new();
+        if !order.is_empty() {
+            acc = budget::filled(width * 4, 0.0f32)?;
+        }
+        let mut moves = budget::Buffer::new();
+        let mut painted_as: Option<(Rgba, f64, f64)> = None;
+        let job_silhouette = request.request.job.silhouette;
+        let job_grow = request.request.job.effects.grow;
+        // The letters' silhouette as a shadow painted it, kept for the outer
+        // glows when it is theirs too: not grown, and in an opaque colour, whose
+        // alpha is what black's would be. `Some(None)`: painted, and nothing.
+        let glows = request
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::OuterGlow(_)) && e.shows());
+        let mut silhouette: Option<Option<Raster>> = None;
+        // The surface with the shadows and the glows on it, as the last paint
+        // of the same ones left it (`super::kept`).
+        type Under = (Vec<u8>, Option<IBox>);
+        let page_key = match (&request.backdrop, keep.0) {
+            (Some(page), Some(_)) if !order.is_empty() || glows => {
+                Hasher::new("page").bytes(page).finish()
+            }
+            _ => None,
+        };
+        // With the shadows on it, and with the glows on it too. With no glow the
+        // first is all of it, and with no shadow the second is.
+        let shadows_key = keep.shadows(request, &order, see_through, page_key);
+        let glows_key = keep.glows(request, shadows_key, glows, scale, page_key);
+        let fits = |u: &std::rc::Rc<Under>| u.0.len() == width * height * 4;
+        let under_kept = glows_key.or(shadows_key).and_then(kept::get::<Under>).filter(fits);
+        // Short of that, with the shadows alone: the glows are laid again.
+        let shadows_kept = match (&under_kept, glows) {
+            (None, true) => shadows_key.and_then(kept::get::<Under>).filter(fits),
+            _ => None,
+        };
+        if let Some(u) = under_kept.as_ref().or(shadows_kept.as_ref()) {
+            s.data.copy_from_slice(&u.0);
+            laid = u.1;
+        }
+        let shadows_laid = under_kept.is_some() || shadows_kept.is_some();
+        let mut i = if shadows_laid { order.len() } else { 0 };
+        while let Some(sh) = order.get(i).copied() {
+            if sh.styled(see_through > 0.0) {
+                let knock = if sh.knockout { see_through } else { 0.0 };
+                if let Some(b) = lay_styled(
+                    engine,
+                    request,
+                    rasterizer,
+                    keep,
+                    &sh,
+                    &mut s,
+                    scale,
+                    thrown(&sh),
+                    knock,
+                    &mut acc,
+                )? {
+                    join(&mut laid, b);
                 }
-                none => none.insert(Surface::new(width, height)?),
-            };
-            if let Some(kept_layer) = &layer_kept {
-                layer.data.copy_from_slice(&kept_layer.0);
-                if let Some(at) = kept_layer.1 {
-                    let reach = super::fx::tent::reach(super::fx::tent_width(sh.size, scale));
+                i += 1;
+                continue;
+            }
+            let key = layer_key(&sh);
+            if painted_as != Some(key) {
+                painted_as = Some(key);
+                ink = None;
+                runs = None;
+                request.request.job.silhouette = Some(sh.color);
+                request.request.job.effects.grow = sh.grow;
+                let kept_as = keep.layer(&request.request, sh.size, width, height);
+                // The layer as a paint before this one blurred it, and where
+                // the silhouette it was blurred from stood.
+                type Layer = (Vec<u8>, Option<IBox>);
+                let layer_kept = kept_as
+                    .and_then(kept::get::<Layer>)
+                    .filter(|l| l.0.len() == width * height * 4);
+                let painted = match &layer_kept {
+                    Some(_) => Ok(None),
+                    None => job_raster(engine, &request.request, rasterizer, keep),
+                };
+                request.request.job.silhouette = job_silhouette;
+                request.request.job.effects.grow = job_grow;
+                let layer = match &mut layer {
+                    Some(l) => {
+                        l.clear();
+                        l
+                    }
+                    none => none.insert(Surface::new(width, height)?),
+                };
+                if let Some(kept_layer) = &layer_kept {
+                    layer.data.copy_from_slice(&kept_layer.0);
+                    if let Some(at) = kept_layer.1 {
+                        let reach = super::fx::tent::reach(super::fx::tent_width(sh.size, scale));
+                        let drawn = IBox {
+                            x0: at.x0.saturating_sub(reach),
+                            y0: at.y0.saturating_sub(reach),
+                            x1: at.x1.saturating_add(reach),
+                            y1: at.y1.saturating_add(reach),
+                        };
+                        ink = layer.ink_in(drawn);
+                        let again = order.get(i + 1).is_some_and(|n| layer_key(n) == key);
+                        if let (Some(ink), true) = (ink, sweeps && again) {
+                            runs = Some(sweep::Runs::new(layer, ink)?);
+                        }
+                    }
+                }
+                let painted = painted?;
+                let shared = glows
+                    && silhouette.is_none()
+                    && sh.color.0[3] == 255
+                    && sh.grow.to_bits() == job_grow.to_bits();
+                if shared && painted.is_none() && layer_kept.is_none() {
+                    silhouette = Some(None);
+                }
+                if let Some(r) = painted {
+                    layer.draw(&r.data, r.width as usize, r.x, r.y);
+                    // A silhouette is one colour, so only its alpha needs the blur.
+                    let [red, green, blue, _] = sh.color.0;
+                    let width = super::fx::tent_width(sh.size, scale);
+                    blur::tent_flat(layer, width, [red, green, blue])?;
+                    if let (Some(key), Some(data)) = (kept_as, kept::copy(&layer.data)) {
+                        let at = IBox {
+                            x0: r.x,
+                            y0: r.y,
+                            x1: r.x.saturating_add(r.width as i32),
+                            y1: r.y.saturating_add(r.height as i32),
+                        };
+                        kept::put(key, (data, Some(at)), layer.data.len());
+                    }
+                    // The ink is the raster's, and as far round it as the blur
+                    // spread it.
+                    let reach = super::fx::tent::reach(width);
                     let drawn = IBox {
-                        x0: at.x0.saturating_sub(reach),
-                        y0: at.y0.saturating_sub(reach),
-                        x1: at.x1.saturating_add(reach),
-                        y1: at.y1.saturating_add(reach),
+                        x0: r.x.saturating_sub(reach),
+                        y0: r.y.saturating_sub(reach),
+                        x1: r.x.saturating_add(r.width as i32).saturating_add(reach),
+                        y1: r.y.saturating_add(r.height as i32).saturating_add(reach),
                     };
+                    if shared {
+                        silhouette = Some(Some(r));
+                    } else {
+                        drop(r);
+                    }
                     ink = layer.ink_in(drawn);
+                    // Finding the runs costs about what laying a copy along them
+                    // saves, so only a layer laid again finds them.
                     let again = order.get(i + 1).is_some_and(|n| layer_key(n) == key);
                     if let (Some(ink), true) = (ink, sweeps && again) {
                         runs = Some(sweep::Runs::new(layer, ink)?);
                     }
                 }
             }
-            let painted = painted?;
-            let shared = glows
-                && silhouette.is_none()
-                && sh.color.0[3] == 255
-                && sh.grow.to_bits() == job_grow.to_bits();
-            if shared && painted.is_none() && layer_kept.is_none() {
-                silhouette = Some(None);
-            }
-            if let Some(r) = painted {
-                layer.draw(&r.data, r.width as usize, r.x, r.y);
-                // A silhouette is one colour, so only its alpha needs the blur.
-                let [red, green, blue, _] = sh.color.0;
-                let width = super::fx::tent_width(sh.size, scale);
-                blur::tent_flat(layer, width, [red, green, blue])?;
-                if let (Some(key), Some(data)) = (kept_as, kept::copy(&layer.data)) {
-                    let at = IBox {
-                        x0: r.x,
-                        y0: r.y,
-                        x1: r.x.saturating_add(r.width as i32),
-                        y1: r.y.saturating_add(r.height as i32),
-                    };
-                    kept::put(key, (data, Some(at)), layer.data.len());
-                }
-                // The ink is the raster's, and as far round it as the blur
-                // spread it.
-                let reach = super::fx::tent::reach(width);
-                let drawn = IBox {
-                    x0: r.x.saturating_sub(reach),
-                    y0: r.y.saturating_sub(reach),
-                    x1: r.x.saturating_add(r.width as i32).saturating_add(reach),
-                    y1: r.y.saturating_add(r.height as i32).saturating_add(reach),
-                };
-                if shared {
-                    silhouette = Some(Some(r));
-                } else {
-                    drop(r);
-                }
-                ink = layer.ink_in(drawn);
-                // Finding the runs costs about what laying a copy along them
-                // saves, so only a layer laid again finds them.
-                let again = order.get(i + 1).is_some_and(|n| layer_key(n) == key);
-                if let (Some(ink), true) = (ink, sweeps && again) {
-                    runs = Some(sweep::Runs::new(layer, ink)?);
+            // The shadows after it laid from the same layer, opaque like it: an
+            // extrude's steps, laid in one pass when there are two or more.
+            let mut end = i + 1;
+            if sweeps && sh.opacity >= 1.0 {
+                while order
+                    .get(end)
+                    .is_some_and(|n| layer_key(n) == key && n.opacity >= 1.0)
+                {
+                    end += 1;
                 }
             }
-        }
-        // The shadows after it laid from the same layer, opaque like it: an
-        // extrude's steps, laid in one pass when there are two or more.
-        let mut end = i + 1;
-        if sweeps && sh.opacity >= 1.0 {
-            while order
-                .get(end)
-                .is_some_and(|n| layer_key(n) == key && n.opacity >= 1.0)
-            {
-                end += 1;
+            let (Some(layer), Some(ink)) = (&layer, ink) else {
+                i = end;
+                continue;
+            };
+            for n in &order[i..end] {
+                join(&mut laid, landed(ink, thrown(n)));
             }
-        }
-        let (Some(layer), Some(ink)) = (&layer, ink) else {
+            match &runs {
+                Some(runs) if end - i >= 2 => {
+                    moves.clear();
+                    for n in &order[i..end] {
+                        budget::push(&mut moves, thrown(n))?;
+                    }
+                    sweep::over_swept(&mut s, layer, ink, runs, &moves)?;
+                }
+                // A faded copy, as a shake's are: along the rows' runs.
+                Some(runs) => {
+                    sweep::over_runs(&mut s, layer, ink, runs, thrown(&sh), sh.opacity, &mut acc);
+                }
+                None => blur::over_moved_in(&mut s, layer, ink, thrown(&sh), sh.opacity, &mut acc),
+            }
             i = end;
-            continue;
-        };
-        for n in &order[i..end] {
-            join(&mut laid, landed(ink, thrown(n)));
         }
-        match &runs {
-            Some(runs) if end - i >= 2 => {
-                moves.clear();
-                for n in &order[i..end] {
-                    budget::push(&mut moves, thrown(n))?;
+        drop(layer);
+        let keep_under = |key: Option<kept::Key>, s: &Surface, laid: Option<IBox>| {
+            if let Some(key) = key {
+                if let Some(data) = kept::copy(&s.data) {
+                    kept::put(key, (data, laid), s.data.len());
                 }
-                sweep::over_swept(&mut s, layer, ink, runs, &moves)?;
             }
-            // A faded copy, as a shake's are: along the rows' runs.
-            Some(runs) => {
-                sweep::over_runs(&mut s, layer, ink, runs, thrown(&sh), sh.opacity, &mut acc);
-            }
-            None => blur::over_moved_in(&mut s, layer, ink, thrown(&sh), sh.opacity, &mut acc),
-        }
-        i = end;
-    }
-    drop(layer);
-    let keep_under = |key: Option<kept::Key>, s: &Surface, laid: Option<IBox>| {
-        if let Some(key) = key {
-            if let Some(data) = kept::copy(&s.data) {
-                kept::put(key, (data, laid), s.data.len());
-            }
-        }
-    };
-    if !shadows_laid {
-        keep_under(shadows_key, &s, laid);
-    }
-    drop(shadows_kept);
-    if glows && under_kept.is_none() {
-        let glow = match silhouette {
-            // A shadow painted it and it was nothing: no glow either.
-            Some(None) => None,
-            Some(painted) => lay_glows(engine, request, rasterizer, keep, &mut s, scale, painted)?,
-            None => lay_glows(engine, request, rasterizer, keep, &mut s, scale, None)?,
         };
-        if let Some(b) = glow {
-            join(&mut laid, b);
+        if !shadows_laid {
+            keep_under(shadows_key, &s, laid);
         }
-    }
-    if under_kept.is_none() {
-        keep_under(glows_key, &s, laid);
-    }
-    drop(under_kept);
+        drop(shadows_kept);
+        if glows && under_kept.is_none() {
+            let glow = match silhouette {
+                // A shadow painted it and it was nothing: no glow either.
+                Some(None) => None,
+                Some(painted) => lay_glows(engine, request, rasterizer, keep, &mut s, scale, painted)?,
+                None => lay_glows(engine, request, rasterizer, keep, &mut s, scale, None)?,
+            };
+            if let Some(b) = glow {
+                join(&mut laid, b);
+            }
+        }
+        if under_kept.is_none() {
+            keep_under(glows_key, &s, laid);
+        }
+        drop(under_kept);
 
-    // Over a page, one of the special eight takes Fill into its blend, and
-    // with Transparency Shapes Layer off the letters' own transparency too
-    // (`blend::lay_fill_shapeless`): their anti-aliased edges and any
-    // see-through colour, also at a whole Fill.
-    let special = blends
-        && request.backdrop.is_some()
-        && request.blend.fill_is_special()
-        && (request.fill_opacity < 1.0 || request.blending.shapeless);
-    // The box's own content alone, for Blend If's This Layer: its fill and
-    // outlines before any effect, not the shadows, glows or strokes round
-    // it (PhotoCraft judges a layer by its own content, `render_content`).
-    // The fill is there at its whole Fill, and a No Fill box's hidden fill
-    // is there too, whole (user decision 2026-11-09, No Fill reads as Fill
-    // 0 %): Photoshop judges a layer's pixels before Fill Opacity.
-    let mut this = if restricts && !request.blending.blend_if.this_is_full() {
-        Some(Content::new(width, height)?)
-    } else {
-        None
-    };
-    let Glyphs {
-        rasters: glyphs,
-        whole_fill,
-        outside,
-        bevels,
-    } = paint_glyphs(
-        engine, request, rasterizer, keep, carried, scale, special, &mut this,
-    )?;
-    let page = request
-        .backdrop
-        .as_deref()
-        .map(|pixels| Backdrop { pixels });
-    // The strokes' outside parts, then an Outer Bevel, under the letters:
-    // each in its own mode over what is under the box, the page too.
-    // PhotoCraft (`composite_with_effects_prepared`) paints them on the
-    // backdrop before the layer goes on; only the letters take the box's
-    // mode.
-    if let Some(o) = outside {
-        let place = Place {
-            transform,
-            tiles: &request.request.tiles,
-            grain: request.grain,
-            page: request.page,
-        };
-        effects::lay_outside(&mut s, &o, &request.effects, &place, page.as_ref())?;
-        let b = o.bounds().intersect(&surface);
-        if !b.is_empty() {
-            join(&mut laid, b);
-        }
-    }
-    if let Some(bv) = &bevels {
-        if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, false, page.as_ref())? {
-            join(&mut laid, b);
-        }
-    }
-    let mut own = if blends {
-        Some(Surface::new(width, height)?)
-    } else {
-        None
-    };
-    // A special-eight fill: at its whole Fill in its mode, with Fill in the
-    // blend; the outlines go over it below, at Fill 1.
-    if let (Some(fill), Some(own)) = (&whole_fill, own.as_mut()) {
-        own.draw(&fill.data, fill.width as usize, fill.x, fill.y);
-        let bx = IBox {
-            x0: fill.x,
-            y0: fill.y,
-            x1: fill.x.saturating_add(fill.width as i32),
-            y1: fill.y.saturating_add(fill.height as i32),
-        };
-        let lay_fill = if request.blending.shapeless {
-            blend::lay_fill_shapeless
+        // Over a page, one of the special eight takes Fill into its blend, and
+        // with Transparency Shapes Layer off the letters' own transparency too
+        // (`blend::lay_fill_shapeless`): their anti-aliased edges and any
+        // see-through colour, also at a whole Fill.
+        let special = blends
+            && request.backdrop.is_some()
+            && request.blend.fill_is_special()
+            && (request.fill_opacity < 1.0 || request.blending.shapeless);
+        // The box's own content alone, for Blend If's This Layer: its fill and
+        // outlines before any effect, not the shadows, glows or strokes round
+        // it (PhotoCraft judges a layer by its own content, `render_content`).
+        // The fill is there at its whole Fill, and a No Fill box's hidden fill
+        // is there too, whole (user decision 2026-11-09, No Fill reads as Fill
+        // 0 %): Photoshop judges a layer's pixels before Fill Opacity.
+        let mut this = if restricts && !request.blending.blend_if.this_is_full() {
+            Some(Content::new(width, height)?)
         } else {
-            blend::lay_fill_from
+            None
         };
-        lay_fill(
-            &mut s,
-            own,
-            bx,
-            1.0,
-            request.blend,
-            page.as_ref(),
-            0,
-            request.fill_opacity as f32,
-            request.grain,
-        );
-        own.clear();
-        join(&mut laid, bx);
-    }
-    drop(whole_fill);
-    for r in &glyphs {
-        let bx = IBox {
-            x0: r.x,
-            y0: r.y,
-            x1: r.x.saturating_add(r.width as i32),
-            y1: r.y.saturating_add(r.height as i32),
+        let Glyphs {
+            rasters: glyphs,
+            whole_fill,
+            outside,
+            bevels,
+        } = paint_glyphs(
+            engine, request, rasterizer, keep, carried, scale, special, &mut this,
+        )?;
+        let page = request
+            .backdrop
+            .as_deref()
+            .map(|pixels| Backdrop { pixels });
+        // The strokes' outside parts, then an Outer Bevel, under the letters:
+        // each in its own mode over what is under the box, the page too.
+        // PhotoCraft (`composite_with_effects_prepared`) paints them on the
+        // backdrop before the layer goes on; only the letters take the box's
+        // mode.
+        if let Some(o) = outside {
+            let place = Place {
+                transform,
+                tiles: &request.request.tiles,
+                grain: request.grain,
+                page: request.page,
+            };
+            effects::lay_outside(&mut s, &o, &request.effects, &place, page.as_ref())?;
+            let b = o.bounds().intersect(&surface);
+            if !b.is_empty() {
+                join(&mut laid, b);
+            }
+        }
+        if let Some(bv) = &bevels {
+            if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, false, page.as_ref())? {
+                join(&mut laid, b);
+            }
+        }
+        let mut own = if blends {
+            Some(Surface::new(width, height)?)
+        } else {
+            None
         };
-        match &mut own {
-            Some(own) => own.draw(&r.data, r.width as usize, r.x, r.y),
-            None => s.draw(&r.data, r.width as usize, r.x, r.y),
+        // A special-eight fill: at its whole Fill in its mode, with Fill in the
+        // blend; the outlines go over it below, at Fill 1.
+        if let (Some(fill), Some(own)) = (&whole_fill, own.as_mut()) {
+            own.draw(&fill.data, fill.width as usize, fill.x, fill.y);
+            let bx = IBox {
+                x0: fill.x,
+                y0: fill.y,
+                x1: fill.x.saturating_add(fill.width as i32),
+                y1: fill.y.saturating_add(fill.height as i32),
+            };
+            let lay_fill = if request.blending.shapeless {
+                blend::lay_fill_shapeless
+            } else {
+                blend::lay_fill_from
+            };
+            lay_fill(
+                &mut s,
+                own,
+                bx,
+                1.0,
+                request.blend,
+                page.as_ref(),
+                0,
+                request.fill_opacity as f32,
+                request.grain,
+            );
+            own.clear();
+            join(&mut laid, bx);
         }
-        join(&mut laid, bx);
-    }
-    drop(glyphs);
-    if let (Some(own), Some(bx)) = (&own, laid) {
-        blend::lay_from(
-            &mut s,
-            own,
-            bx,
-            1.0,
-            request.blend,
-            page.as_ref(),
-            0,
-            request.grain,
-        );
-    }
-    drop(own);
-    // An Emboss, a Pillow Emboss or a Stroke Emboss, over the finished
-    // letters: PhotoCraft shades the composited layer with them.
-    if let Some(bv) = &bevels {
-        if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, true, page.as_ref())? {
-            laid = Some(laid.map_or(b, |l| l.union(&b)));
+        drop(whole_fill);
+        for r in &glyphs {
+            let bx = IBox {
+                x0: r.x,
+                y0: r.y,
+                x1: r.x.saturating_add(r.width as i32),
+                y1: r.y.saturating_add(r.height as i32),
+            };
+            match &mut own {
+                Some(own) => own.draw(&r.data, r.width as usize, r.x, r.y),
+                None => s.draw(&r.data, r.width as usize, r.x, r.y),
+            }
+            join(&mut laid, bx);
         }
-    }
-    drop(bevels);
-    // Channels, then Blend If, on the whole box, effects and all, at its
-    // blend onto the page: before the whole-box blur, the smear and the
-    // mask, which Photoshop would do to the layer's pixels (a filter, a
-    // mask) and not to its blend.
-    if let (true, Some(page), Some(bx)) = (restricts, request.backdrop.as_deref(), laid) {
-        let this = this.as_ref().map(|t| t.data.as_slice());
-        blending::restrict(&mut s, bx, &request.blending, page, this);
-    }
-    drop(this);
-    blur::gaussian(&mut s, blur_sigma)?;
-    if !taps.is_empty() {
-        let mut moves = budget::Buffer::new();
-        for t in &taps {
-            let (dx, dy) = carried(t.dx, t.dy);
-            budget::push(
-                &mut moves,
-                Moved {
-                    dx,
-                    dy,
-                    weight: t.weight,
-                },
-            )?;
+        drop(glyphs);
+        if let (Some(own), Some(bx)) = (&own, laid) {
+            blend::lay_from(
+                &mut s,
+                own,
+                bx,
+                1.0,
+                request.blend,
+                page.as_ref(),
+                0,
+                request.grain,
+            );
         }
-        blur::sum_moved(&mut s, &moves)?;
-    }
+        drop(own);
+        // An Emboss, a Pillow Emboss or a Stroke Emboss, over the finished
+        // letters: PhotoCraft shades the composited layer with them.
+        if let Some(bv) = &bevels {
+            if let Some(b) = effects::lay_bevels(&mut s, bv, &request.effects, true, page.as_ref())? {
+                laid = Some(laid.map_or(b, |l| l.union(&b)));
+            }
+        }
+        drop(bevels);
+        // Channels, then Blend If, on the whole box, effects and all, at its
+        // blend onto the page: before the whole-box blur, the smear and the
+        // mask, which Photoshop would do to the layer's pixels (a filter, a
+        // mask) and not to its blend.
+        if let (true, Some(page), Some(bx)) = (restricts, request.backdrop.as_deref(), laid) {
+            let this = this.as_ref().map(|t| t.data.as_slice());
+            blending::restrict(&mut s, bx, &request.blending, page, this);
+        }
+        drop(this);
+        blur::gaussian(&mut s, blur_sigma)?;
+        if !taps.is_empty() {
+            let mut moves = budget::Buffer::new();
+            for t in &taps {
+                let (dx, dy) = carried(t.dx, t.dy);
+                budget::push(
+                    &mut moves,
+                    Moved {
+                        dx,
+                        dy,
+                        weight: t.weight,
+                    },
+                )?;
+            }
+            blur::sum_moved(&mut s, &moves)?;
+        }
+        if let Some(k) = keep.1 {
+            if let Some(data) = kept::copy(&s.data) {
+                let n = data.len();
+                kept::put(k, (data, laid), n);
+            }
+        }
+        (s, laid)
+    };
     if let Some(clip) = &request.clip {
-        let keep_outside = clip.mode == ClipMode::Exclude;
-        match clip_mask(clip, &request.request, surface, rasterizer)? {
-            Some((mask, bx)) => blur::mask(&mut s, &mask, bx, keep_outside),
-            // Shapes that cover nothing keep nothing, or cut nothing.
-            None if keep_outside => {}
-            None => s.clear(),
+        // Inside the keep shapes, when there are any: shapes that cover
+        // nothing of the surface keep nothing.
+        if clip.shapes.iter().any(|p| p.mode == ClipMode::Include) {
+            let keep = clip_mask(clip, ClipMode::Include, &request.request, surface, rasterizer)?;
+            match keep {
+                Some((mask, bx)) => blur::mask(&mut s, &mask, bx, false),
+                None => s.clear(),
+            }
+        }
+        // Less the hide shapes.
+        let hide = clip_mask(clip, ClipMode::Exclude, &request.request, surface, rasterizer)?;
+        if let Some((mask, bx)) = hide {
+            blur::mask(&mut s, &mask, bx, true);
         }
     }
 

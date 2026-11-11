@@ -57,8 +57,10 @@ import { presets } from '../../presets.svelte.js';
 import { sfxAvailable, sfxKinds, sfxPick, applySfxKind, clearSfx } from '../../sfx.js';
 import { WARP_PRESETS, WARP_PRESET_NOTES, warpPresetPts } from '../../warp-presets.js';
 import { originalOf, matchFor } from './footprint.js';
+import { bubbleLink } from '../../box-mask.js';
+import { clipToBubble } from '../../box-mask-actions.js';
 
-const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original', 'sfx_pick'];
+const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original', 'sfx_pick', 'clip_to_bubble'];
 const DO_NAMED = ['preset:', 'sfx_kind:', 'warp:'];
 // "warp:<kind>" alone bends by this much (percent of the kind's strongest).
 export const WARP_DEFAULT_AMOUNT = 50;
@@ -87,6 +89,7 @@ const DESCRIPTION = [
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "free" (balloon fit off and the outline dropped: text drawn on the art, an SFX or sign the finder wrapped in an outline, laid out from itself where it stands), "refit_outline" (find the bubble under the box again),',
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
+  '"clip_to_bubble" (comics only: the box\'s mask keeps its letters inside its bubble outline, a link that follows the outline when it is refit, finding the outline first when there is none; noBalloon names boxes with none),',
   '"outline_to_box" (an outline of the box\'s rectangle, grown to hold its text at the size it aims for with outline fit\'s air, or exactly the box when its width or height is held: geometry in the same op sets it first; shrunk in the result names a box that still fits only smaller), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
   '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in exactly its colours: its fill (its shade as a gradient), its outline at its width, or no outline when it had none, on colour and black-and-white pages alike; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
   '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type; a type is a layout only, the box keeps its font, fill and outlines; sfx_kinds lists them; seed and caption stay; paths, letter hand edits, the power/rough/momentum dials and every other style.sfx field go back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, with the dials it asks for), "clear_sfx" (SFX off, the box put back as it was before: look, size and the arc, ring or path it switched off);',
@@ -483,7 +486,7 @@ function writeNote(note, matches) {
   return ids;
 }
 
-const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text]);
+const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text, b.mask ?? null]);
 
 // A box laid out by outline fit (a margin set) is the solver's: Auto height on
 // and fit to box off. A series can have boxes born Fixed (Settings'
@@ -661,6 +664,10 @@ function writeDo(d, matches) {
     else if (d.kind === 'fit_balloon') {
       if (b.style.balloon === false) toggleBalloonFit(id, p);
       else if (!b.fit && !refitBalloon(id, p)) noBalloon.push(id);
+    }
+    else if (d.kind === 'clip_to_bubble') {
+      // Set, never toggled: a box that has the link keeps it.
+      if (!bubbleLink(b) && !clipToBubble(id, p)) noBalloon.push(id);
     }
     if (fingerprint(b) !== before) changed.push(id);
   }

@@ -23,6 +23,7 @@ import { flipTestPaint } from './refuse.js';
 import { renderPageCanvas, warpTexture } from '../../lib/exporter.js';
 import { pictureScale, pictureTexture, PICTURE_MAX_PX, PICTURE_DRAG_PX } from '../../lib/editor/box-picture.js';
 import { defaultStyle, normalizeStyle, strokesFromBands } from '../../lib/data.js';
+import { maskFromClip } from '../../lib/box-mask.js';
 import { boxText } from '../../lib/store.svelte.js';
 import { typeModel } from '../../lib/type-rows.js';
 import { rawOffset, domPoint } from '../../lib/edit-lines.js';
@@ -93,17 +94,23 @@ const COLS = 5;
 const CELL = { w: 310, h: 230 };
 const BOX = { w: 220, h: 110 };
 export function syntheticPages() {
-  const boxes = KINDS.map(([id, over, text = WORDS, at = {}], i) => ({
-    id,
-    lineN: null,
-    text,
-    x: (i % COLS) * CELL.w + (CELL.w - BOX.w) / 2 + (at.dx ?? 0),
-    y: Math.floor(i / COLS) * CELL.h + (CELL.h - BOX.h) / 2 + (at.dy ?? 0),
-    w: BOX.w,
-    h: BOX.h,
-    // Sizes are the test's own: the fit must not grow a box here.
-    style: style({ autoHeight: false, ...over }),
-  }));
+  const boxes = KINDS.map(([id, over, text = WORDS, at = {}], i) => {
+    const b = {
+      id,
+      lineN: null,
+      text,
+      x: (i % COLS) * CELL.w + (CELL.w - BOX.w) / 2 + (at.dx ?? 0),
+      y: Math.floor(i / COLS) * CELL.h + (CELL.h - BOX.h) / 2 + (at.dy ?? 0),
+      w: BOX.w,
+      h: BOX.h,
+      // Sizes are the test's own: the fit must not grow a box here.
+      style: style({ autoHeight: false, ...over }),
+    };
+    // A mask is stated the old way, in the style: carried to the page as a
+    // chapter load carries it.
+    b.mask = maskFromClip({ ...b, style: { ...b.style, clip: over.clip } });
+    return b;
+  });
   return [{ id: 1, w: COLS * CELL.w, h: Math.ceil(KINDS.length / COLS) * CELL.h, lines: [], boxes }];
 }
 

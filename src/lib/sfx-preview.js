@@ -314,10 +314,9 @@ export function paintStage(canvas, snap, dpr = 1, hint = null) {
   ctx.clearRect(0, 0, W, H);
   try {
     const style = normalizeStyle(snap.style);
-    // What belongs to the page and not to the lettering: hand-drawn ink and
-    // the visibility mask, which are the box's own geometry.
+    // What belongs to the page and not to the lettering: hand-drawn ink, the
+    // box's own geometry. (The mask is the box's and never in a style.)
     style.ink = { on: false, strokes: [] };
-    style.clip = { ...style.clip, on: false };
     const text = String(snap.text ?? '').trim() === '' ? CARD_WORD : snap.text;
     const box = previewBox(style, text, snap.w, snap.h, 'sfx-stage');
     const pad = STAGE_PAD * dpr;

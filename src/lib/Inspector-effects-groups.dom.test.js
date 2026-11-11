@@ -29,9 +29,9 @@ afterEach(() => {
   loadProjectPages([]);
 });
 
-function mounted(clip = {}) {
-  const style = normalizeStyle({ ...defaultStyle(), clip: { on: false, mode: 'exclude', brushSize: 20, shapes: [], ...clip } });
-  loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [{ n: 1, en: 'HELLO' }], boxes: [{ id: 'b', lineN: 1, text: null, x: 100, y: 100, w: 240, h: 90, style }] }]);
+function mounted(mask = {}) {
+  const style = normalizeStyle(defaultStyle());
+  loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [{ n: 1, en: 'HELLO' }], boxes: [{ id: 'b', lineN: 1, text: null, x: 100, y: 100, w: 240, h: 90, style, mask: { on: false, shapes: [], ...mask } }] }]);
   app.selectedId = 'b';
   setInspectorTab('effects');
   return render(Inspector);
@@ -84,7 +84,7 @@ describe('the Effects groups', () => {
     await tick();
     await fireEvent.click(view.getByRole('button', { name: 'Rectangle' }));
     expect(drawTool).toEqual({ target: 'mask', kind: 'rect' });
-    expect(view.container.textContent).toContain('Drag on the box to draw a rectangle.');
+    expect(view.container.textContent).toContain('Drag on the page to draw a rectangle.');
     await fireEvent.click(view.getByRole('button', { name: 'Move' }));
     expect(drawTool.kind).toBe('move');
     // The same tool again puts it down.

@@ -89,13 +89,12 @@ export const request = {
     { dx: -2.5, dy: 3.5, w: 0.625 },
   ],
   clip: {
-    mode: 'exclude',
     x: 13.5,
     y: 17.25,
     shapes: [
-      { kind: 'ellipse', cx: 21.5, cy: 22.5, rx: 5.5, ry: 6.5 },
-      { kind: 'poly', pts: [[1.5, 2.5], [30.5, 3.5], [4.5, 29.5]] },
-      { kind: 'stroke', size: 3.5, pts: [[7.5, 8.5], [9.5, 12.5]] },
+      { kind: 'ellipse', op: 'keep', cx: 21.5, cy: 22.5, rx: 5.5, ry: 6.5 },
+      { kind: 'poly', op: 'hide', pts: [[1.5, 2.5], [30.5, 3.5], [4.5, 29.5]] },
+      { kind: 'stroke', op: 'hide', size: 3.5, pts: [[7.5, 8.5], [9.5, 12.5]] },
     ],
   },
   blend: 'color-burn',

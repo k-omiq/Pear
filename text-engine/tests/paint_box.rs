@@ -13,7 +13,7 @@ use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 
 use mt_text::paint::{
-    decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape,
+    decode_box, decode_box_kept, paint_box, paint_box_kept, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipPart, ClipShape,
     Effects, Fill, Job, Mesh, Pt, Raster, Request, Rgba, Run, Shadow, Tap, BOX_MAGIC,
     BOX_WIRE_VERSION, MAGIC, WIRE_VERSION,
 };
@@ -402,11 +402,7 @@ fn taps_add_moved_copies() {
 }
 
 fn clip(mode: ClipMode, shapes: Vec<ClipShape>) -> Option<Clip> {
-    Some(Clip {
-        mode,
-        origin: Pt::new(0.0, 0.0),
-        shapes,
-    })
+    Some(Clip::all(mode, Pt::new(0.0, 0.0), shapes))
 }
 
 fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> ClipShape {
@@ -445,8 +441,30 @@ fn include_and_exclude_are_the_two_halves_of_the_picture() {
     assert_eq!(paint_box(&mut e, &mut b), Ok(None));
     b.clip = clip(ClipMode::Exclude, vec![rect(900.0, 900.0, 950.0, 950.0)]);
     assert_eq!(paint(&mut e, &mut b), whole);
+    // A mask with no keep shapes shows everything (v19).
     b.clip = clip(ClipMode::Include, Vec::new());
-    assert_eq!(paint_box(&mut e, &mut b), Ok(None));
+    assert_eq!(paint(&mut e, &mut b), whole);
+    // Keep and hide in one mask: inside the keep shapes, less the hide ones.
+    // The left half kept with its left quarter hidden is the second quarter.
+    let quarter = (f64::from(s.0) + mid) / 2.0;
+    b.clip = Some(Clip {
+        origin: Pt::new(0.0, 0.0),
+        shapes: vec![
+            ClipPart { mode: ClipMode::Include, shape: rect(0.0, 0.0, mid, 200.0) },
+            ClipPart { mode: ClipMode::Exclude, shape: rect(0.0, 0.0, quarter, 200.0) },
+        ],
+    });
+    let second = paint(&mut e, &mut b);
+    let i = inked(&second);
+    assert!(i.0 >= quarter.floor() as i32 && i.2 <= mid.ceil() as i32, "{i:?}");
+    for y in s.1..s.3 {
+        for x in s.0..s.2 {
+            let inside = f64::from(x) >= quarter.ceil() && f64::from(x) + 1.0 <= mid.floor();
+            if inside {
+                assert_eq!(px(&second, x, y), px(&whole, x, y), "{x},{y}");
+            }
+        }
+    }
 }
 
 /// A box that is one flat sheet of ink, to see a mask's own shape in.
@@ -550,18 +568,16 @@ fn a_mask_is_the_boxes_and_goes_where_the_box_goes() {
     let mut b = sheet(font);
     let shapes = vec![rect(10.0, 10.0, 50.0, 30.0)];
     // Stated from the box's corner.
-    b.clip = Some(Clip {
-        mode: ClipMode::Include,
-        origin: Pt::new(30.0, 40.0),
-        shapes: shapes.clone(),
-    });
+    b.clip = Some(Clip::all(ClipMode::Include, Pt::new(30.0, 40.0), shapes.clone()));
     assert_eq!(inked(&paint(&mut e, &mut b)), (40, 50, 80, 70));
     // Carried by the transform.
     b.request.transform = Affine::scale(2.0, 2.0);
     b.width = 400;
     b.height = 320;
     assert_eq!(inked(&paint(&mut e, &mut b)), (80, 100, 160, 140));
-    // And bent by the box's mesh: one that moves the box whole moves it.
+    // But not bent by the box's mesh (v19): the app pins the mask to the
+    // page and states it after the warp, so a mesh that moves the sheet
+    // leaves the mask where it is.
     b.request.transform = Affine::IDENTITY;
     let moved = |dx: f64, dy: f64| Mesh {
         cols: 1,
@@ -578,7 +594,7 @@ fn a_mask_is_the_boxes_and_goes_where_the_box_goes() {
         h: 160.0,
     };
     b.request.job.mesh = Some(moved(25.0, -15.0));
-    assert_eq!(inked(&paint(&mut e, &mut b)), (65, 35, 105, 55));
+    assert_eq!(inked(&paint(&mut e, &mut b)), (40, 50, 80, 70));
 }
 
 #[test]
@@ -770,21 +786,25 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     f(&mut b, 0.0);
     let weight_at = b.len();
     f(&mut b, 0.25);
+    // A mask (v19), each shape's kind then its op: 2, hide.
     let mode_at = b.len();
-    u(&mut b, 2);
+    u(&mut b, 1);
     f(&mut b, 10.0);
     f(&mut b, 20.0);
     u(&mut b, 3);
     u(&mut b, 1);
+    u(&mut b, 2);
     for v in [1.0, 2.0, 3.0, 4.0] {
         f(&mut b, v);
     }
+    u(&mut b, 2);
     u(&mut b, 2);
     u(&mut b, 3);
     for v in [0.0, 0.0, 9.0, 0.0, 0.0, 9.0] {
         f(&mut b, v);
     }
     u(&mut b, 3);
+    u(&mut b, 2);
     f(&mut b, 5.0);
     u(&mut b, 1);
     f(&mut b, 7.0);
@@ -994,10 +1014,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(
         r.clip,
-        Some(Clip {
-            mode: ClipMode::Exclude,
-            origin: Pt::new(10.0, 20.0),
-            shapes: vec![
+        Some(Clip::all(ClipMode::Exclude, Pt::new(10.0, 20.0), vec![
                 ClipShape::Ellipse {
                     centre: Pt::new(1.0, 2.0),
                     rx: 3.0,
@@ -1012,8 +1029,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                     size: 5.0,
                     pts: vec![Pt::new(7.0, 8.0)]
                 },
-            ],
-        })
+            ]))
     );
     assert_eq!(
         r.effects,
@@ -1127,7 +1143,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 18));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 19));
     assert_eq!(r.grain, (-3, 7));
 }
 
@@ -1186,8 +1202,8 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     exact[opacity_at + 60..opacity_at + 64].copy_from_slice(&5u32.to_le_bytes());
     let sh = decode_box(&exact).unwrap().shadows[0];
     assert!(sh.exact && sh.knockout);
-    // A mode, a magic, a version and a surface that are not ones.
-    assert_eq!(with_u(mode_at, 3), Some(Error::BadSpec));
+    // A mask, a magic, a version and a surface that are not ones.
+    assert_eq!(with_u(mode_at, 2), Some(Error::BadSpec));
     assert_eq!(with_u(0, MAGIC), Some(Error::BadSpec));
     assert_eq!(with_u(4, 1), Some(Error::BadSpec));
     assert_eq!(with_u(8, 0), Some(Error::BadSpec));
@@ -1198,8 +1214,10 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(28, 2), Some(Error::BadSpec));
     assert_eq!(with_u(blur_at + 8, 513), Some(Error::BadSpec));
     assert_eq!(with_u(mode_at + 20, 4097), Some(Error::BadSpec));
-    // A shape of no known kind.
+    // A shape of no known kind, and an op that is not keep or hide.
     assert_eq!(with_u(mode_at + 24, 9), Some(Error::BadSpec));
+    assert_eq!(with_u(mode_at + 28, 0), Some(Error::BadSpec));
+    assert_eq!(with_u(mode_at + 28, 3), Some(Error::BadSpec));
     // An effect of no known kind, a technique and a glow source that are
     // not ones, and a range past 1.
     assert_eq!(with_u(effects_at + 4, 5), Some(Error::BadSpec));
@@ -1405,17 +1423,19 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
     u(&mut b, 0);
     f(&mut b, 0.0);
     u(&mut b, 0);
-    u(&mut b, 2);
+    u(&mut b, 1);
     f(&mut b, 0.0);
     f(&mut b, 0.0);
     u(&mut b, shapes + 1);
     for i in 0..shapes {
         u(&mut b, 1);
+        u(&mut b, 2);
         for v in [-500.0 - f64::from(i % 50), -500.0, 1.0, 1.0] {
             f(&mut b, v);
         }
     }
     u(&mut b, 3);
+    u(&mut b, 2);
     f(&mut b, 1.0);
     u(&mut b, points);
     for i in 0..points {
@@ -3295,4 +3315,55 @@ fn the_grain_stays_on_the_page_when_the_surface_takes_more_room() {
     b.grain = (0, 0);
     let moved = paint(&mut e, &mut b);
     assert!(same(&moved) > 500, "{}", same(&moved));
+}
+
+/// A box with a mask keeps its picture before the mask (`premask`), keyed on
+/// every byte but the mask's: a move of the mask alone reads it back, and
+/// the paint it makes is the fresh paint's, byte for byte.
+#[test]
+fn a_moved_mask_reads_the_premask_back_and_paints_the_same() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    let (bytes, at) = wire(font);
+    let mode_at = at[3];
+    let (mut cold, keys) = decode_box_kept(&bytes).unwrap();
+    assert!(keys.premask.is_some());
+    let first = paint_box_kept(&mut e, &mut cold, keys).unwrap();
+    let mut fresh_first = decode_box(&bytes).unwrap();
+    assert_eq!(first, paint_box(&mut e, &mut fresh_first).unwrap());
+    // The mask moved 7 px right: only its bytes change.
+    let mut moved = bytes.clone();
+    moved[mode_at + 4..mode_at + 12].copy_from_slice(&17.0f64.to_le_bytes());
+    let (mut warm, moved_keys) = decode_box_kept(&moved).unwrap();
+    assert_eq!(moved_keys.premask, keys.premask);
+    let held = mt_text::paint::kept::bytes();
+    let second = paint_box_kept(&mut e, &mut warm, moved_keys).unwrap();
+    // Read back, not painted and kept again.
+    assert_eq!(mt_text::paint::kept::bytes(), held);
+    let mut fresh = decode_box(&moved).unwrap();
+    assert_eq!(second, paint_box(&mut e, &mut fresh).unwrap());
+    // A box with no mask has no premask key.
+    let (_, plain) = decode_box_kept(&masked_off(&bytes, mode_at)).unwrap();
+    assert!(plain.premask.is_none());
+}
+
+/// `bytes` with its mask taken out: the mask's u32 0 in place of the mask.
+fn masked_off(bytes: &[u8], mode_at: usize) -> Vec<u8> {
+    let (r, _) = decode_box_kept(bytes).unwrap();
+    let clip = r.clip.unwrap();
+    // u32 1, two f64, u32 count, then per shape u32 kind, u32 op and its
+    // numbers.
+    let mut len = 4 + 16 + 4;
+    for p in &clip.shapes {
+        len += 8 + match &p.shape {
+            ClipShape::Ellipse { .. } => 32,
+            ClipShape::Polygon(pts) => 4 + 16 * pts.len(),
+            ClipShape::Stroke { pts, .. } => 8 + 4 + 16 * pts.len(),
+        };
+    }
+    let mut out = bytes[..mode_at].to_vec();
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&bytes[mode_at + len..]);
+    out
 }

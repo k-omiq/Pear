@@ -25,7 +25,8 @@ import { boxCandidate, placeBlock } from './contain.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch, outlineRun, outlineBands, strokesFromBands } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
-import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
+import { strokeBands, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
+import { maskActive } from './box-mask.js';
 import { warpActive } from './warp.js';
 import { bakeRamp } from './gradient-ramp.js';
 import { withPageImages } from './page-images.js';
@@ -787,10 +788,11 @@ export function lettersOnlyStyle(s) {
 //   roughen  - a seeded pixel-displacement filter (roughen() in exporter.js)
 //              with nothing in Photoshop's type engine that produces it at
 //              all; there is no warp/style value that could stand in for it.
-//   clip     - the visibility mask hides part of the box's ink. A re-render
-//              has no mask, so Photoshop shows the letters the user erased.
-//              Only counted when the mask actually has shapes - `clipActive`
-//              is the one statement of that, shared with both renderers.
+//   mask     - the box's mask hides part of its ink. A re-render has no
+//              mask, so Photoshop shows the letters the user erased. It is
+//              the box's (`box.mask`), not the style's, so the caller asks
+//              `maskActive` beside this, the one statement shared with both
+//              renderers.
 //   blur     - a gaussian over the finished composite (fill + strokes +
 //              shadows together). Photoshop's type effects blur each effect on
 //              its own track; there is no whole-layer blur to ask for.
@@ -836,7 +838,6 @@ export function isRasterOnly(style) {
     s.roughen?.on ||
     // A wobble moves and turns each letter on its own: no type layer says that.
     s.wobble?.on ||
-    clipActive(s.clip) ||
     // Hand-drawn strokes are not something Photoshop's type engine can
     // re-render, so a box carrying them ships as pixels or loses them.
     inkActive(s.ink) ||
@@ -968,7 +969,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const onPage = own ? new Map(placedGradients(s, true).map(({ g }) => [g, turnedGradientPlacement(g, 0, own)])) : null;
   const turnPixels = (!!placed && [...placed.values()].some((q) => !q.fits)) || (!!onPage && [...onPage.values()].some((q) => !q.fits));
 
-  if (isRasterOnly(s) || turnPixels) {
+  if (isRasterOnly(s) || maskActive(box) || turnPixels) {
     // If the box paints no pixels (e.g. empty or whitespace-only text),
     // renderBoxLayer returns null. A layer with no imageData and no text object
     // causes ag-psd to crash during channel serialization. Safest guard:

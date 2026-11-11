@@ -291,6 +291,18 @@ const KINDS = {
       restoreFit(b, e, dir, pageById(e.pageId));
     },
   },
+  // The box's mask (`box.mask`, box-mask.js), page geometry kept outside the
+  // style: the whole mask on either side, null for none.
+  mask: {
+    label: 'that mask change',
+    apply(e, dir) {
+      const b = boxOf(e);
+      if (!b) throw missing(e);
+      const m = dir === 'undo' ? e.before : e.after;
+      b.mask = m ? structuredClone(m) : null;
+      reviewBox(b, pageById(e.pageId));
+    },
+  },
   // The Refit button (`refitBalloon`): the balloon fit, the rectangle, the size
   // and the solver record, all inside the two geometry records.
   refit: {

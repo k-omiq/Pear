@@ -98,10 +98,10 @@ import {
   motionBlurTaps,
   inkActive,
   inkBounds,
-  clipActive,
   clipShapesBounds,
 } from './text-paint.js';
 import { wobbleReach } from './paint-reach.js';
+import { maskActive, maskInBoxFrame } from './box-mask.js';
 import { warpActive, affineFromTriangle } from './warp.js';
 import { warpPlan } from './warp-paint.js';
 import { shapeBounds } from './balloon.js';
@@ -130,7 +130,7 @@ export const breaksWords = (box) => box?.auto?.locks?.width === true;
 
 // A box as the functions below take it.
 export function boxCandidate(box, text) {
-  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: keptBreaks(box), breakWords: breaksWords(box) };
+  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, mask: box.mask ?? null, breaks: keptBreaks(box), breakWords: breaksWords(box) };
 }
 
 // Glyph-by-glyph text - SFX lettering, the bezier path, the closed ring, the arc
@@ -154,12 +154,14 @@ export function curvedStyle(s) {
 //
 // The warp is a manual marker - as well as something the check counts - because
 // its geometry is the user's hand-placed mesh points in box-local px: grow the
-// box and the mesh no longer means what they drew. Hand-drawn ink and a mask's
-// shapes are the same kind of thing (OVF-7): box-local px measured from the
-// box's corner, which the ladder does not carry when it writes the box's new
-// rectangle. The text re-anchors inside the grown box; the strokes and the
-// mask stay pinned to its corner, so every growth step would slide the user's
-// lettering, or the cut-out, against the text it was drawn around. The ladder's
+// box and the mesh no longer means what they drew. Hand-drawn ink is the same
+// kind of thing (OVF-7): box-local px measured from the box's corner, which
+// the ladder does not carry when it writes the box's new rectangle. The text
+// re-anchors inside the grown box; the strokes stay pinned to its corner, so
+// every growth step would slide the user's lettering against the text it was
+// drawn around. A mask is pinned to the page instead, and the text cut around
+// it was placed against it by hand: the ladder moving the text would slide it
+// under the cut-out just the same. The ladder's
 // arithmetic is wrong for them as well: it grows a box by what its ANCHORED text
 // needs, and ink past the top or the left of a box moves with that corner
 // however far the box grows - so an inked box would grow to its limit for
@@ -183,7 +185,7 @@ function handPlaced(cand) {
   if (curvedStyle(s)) return REVIEW_REASONS.curve;
   if (warpActive(s, cand?.w, cand?.h)) return REVIEW_REASONS.warp;
   if (inkActive(s?.ink)) return REVIEW_REASONS.ink;
-  if (clipActive(s?.clip)) return REVIEW_REASONS.mask;
+  if (maskActive(cand)) return REVIEW_REASONS.mask;
   return null;
 }
 
@@ -454,12 +456,16 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
     const d = (Math.abs(Number(s.roughen.amount) || 0) + Math.max(0, Number(s.roughen.grit) || 0)) / 2;
     u = grow(u, d, d);
   }
-  if (clipActive(s.clip) && s.clip.mode === 'include') {
-    const m = clipShapesBounds(s.clip.shapes);
+  if (warpActive(s, cand.w, cand.h)) u = warpedRect(u, s.warp, cand.w, cand.h);
+  // Keep shapes show nothing outside them. The mask is pinned to the page
+  // and cut after the warp, in the box's own frame (`maskInBoxFrame`), so it
+  // is read here, where the rectangle is in that frame.
+  const keep = maskInBoxFrame(cand).filter((sh) => sh.op === 'keep');
+  if (keep.length) {
+    const m = clipShapesBounds(keep);
     u = m && cut(u, m.minX, m.minY, m.maxX, m.maxY);
     if (!u) return null;
   }
-  if (warpActive(s, cand.w, cand.h)) u = warpedRect(u, s.warp, cand.w, cand.h);
   if (s.flipH) u = { ...u, x0: cand.w - u.x1, x1: cand.w - u.x0 };
   if (s.flipV) u = { ...u, y0: cand.h - u.y1, y1: cand.h - u.y0 };
   return { x: u.x0, y: u.y0, w: u.x1 - u.x0, h: u.y1 - u.y0 };

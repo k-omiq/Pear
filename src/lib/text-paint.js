@@ -913,18 +913,19 @@ export function textFiltersActive(s) {
 // ---------------------------------------------------------------------------
 // The visibility mask.
 //
-// Paints the style's mask shapes as opaque ink into `ctx`, in the same
-// box-local page px the shapes are stored in. What the caller does with the
-// ink is the mode: the exporter composites it 'destination-in' (include) or
-// 'destination-out' (exclude) over the finished raster, the editor turns the
-// same drawing into a CSS mask-image. One painter, so the two masks are the
-// one mask.
-export function drawClipShapes(ctx, shapes) {
+// Paints mask shapes as opaque ink into `ctx`, in whatever frame the caller
+// has set up: the box's own (`maskInBoxFrame`) for a picture, the page for the
+// editor's outlines. With `op` only the shapes that do that ('keep' or 'hide')
+// are drawn. What the caller does with the ink is the op: `cutMask` composites
+// the keep shapes 'destination-in' and the hide shapes 'destination-out' over
+// the finished raster, as the engine does (stage 12).
+export function drawClipShapes(ctx, shapes, op = null) {
   ctx.fillStyle = '#fff';
   ctx.strokeStyle = '#fff';
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const sh of shapes ?? []) {
+    if (op && sh.op !== op) continue;
     if (sh.kind === 'ellipse') {
       ctx.beginPath();
       ctx.ellipse(sh.cx, sh.cy, sh.rx, sh.ry, 0, 0, Math.PI * 2);
@@ -976,19 +977,31 @@ export function clipShapesBounds(shapes) {
   return out;
 }
 
-// The same shapes moved by (dx, dy) box-local px, as new objects: what carries
-// a mask with its box when the box grows around it (`growAround`, contain.js).
-export function translateClipShapes(shapes, dx, dy) {
-  return (Array.isArray(shapes) ? shapes : []).map((sh) => {
-    if (sh?.kind === 'ellipse') return { ...sh, cx: sh.cx + dx, cy: sh.cy + dy };
-    if (Array.isArray(sh?.pts)) return { ...sh, pts: sh.pts.map((q) => [q[0] + dx, q[1] + dy]) };
-    return sh;
-  });
-}
-
-// Whether the mask changes anything at all: on, with at least one shape.
-export function clipActive(clip) {
-  return !!(clip?.on && (clip.shapes?.length ?? 0) > 0);
+// The canvas twin of the engine's mask: `canvas`, a finished picture in the
+// box's own frame (after its warp) with the box's corner at (ox, oy) page px
+// and `ss` canvas px to the page px, keeps what is inside the union of the
+// keep shapes (all of it, with none) and loses what is inside the union of
+// the hide shapes. `shapes` are `maskInBoxFrame`'s.
+export function cutMask(canvas, shapes, ox, oy, ss) {
+  if (!shapes?.length) return;
+  const octx = canvas.getContext('2d');
+  for (const op of ['keep', 'hide']) {
+    if (!shapes.some((sh) => sh.op === op)) continue;
+    const m = document.createElement('canvas');
+    m.width = canvas.width;
+    m.height = canvas.height;
+    const mctx = m.getContext('2d');
+    mctx.scale(ss, ss);
+    mctx.translate(ox, oy);
+    drawClipShapes(mctx, shapes, op);
+    octx.save();
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    octx.globalCompositeOperation = op === 'keep' ? 'destination-in' : 'destination-out';
+    octx.drawImage(m, 0, 0);
+    octx.restore();
+    m.width = 0;
+    m.height = 0;
+  }
 }
 
 // ---------------------------------------------------------------------------

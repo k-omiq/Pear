@@ -57,7 +57,6 @@
     patternTileCanvas,
     motionBlurPreviewTaps,
     drawClipShapes,
-    clipActive,
     inkActive,
     drawInk,
     ensureNoisePhase,
@@ -82,7 +81,8 @@
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
-  import { drawKindFor, clearDrawTool } from './box-draw-tool.svelte.js';
+  import { drawTool, drawSettings, clearDrawTool } from './box-draw-tool.svelte.js';
+  import { maskActive, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
@@ -364,8 +364,10 @@
   const MASK_EXPAND = 300;
 
   // The mask as a CSS mask-image, drawn by the same painter the exporter
-  // composites with (drawClipShapes). Exclude paints the world white and
-  // erases the shapes; include paints only the shapes.
+  // composites with (drawClipShapes), in the box's own frame, which is the
+  // frame CSS masks the element in: the keep shapes (the world, with none),
+  // less the hide shapes. The shapes are pinned to the page, so a move of the
+  // box builds it again.
   //
   // A blob URL, not a data URL, and that is the point of the shape below: a
   // data URL cannot be revoked, so every rebuild left its decoded bitmap in
@@ -376,6 +378,10 @@
   // does happen the old URL is revoked the moment the new one lands, which is
   // what lets the renderer give the old bitmap back.
   const MASK_STEP = 32;
+  // The mask's shapes in the box's own frame (`maskInBoxFrame`), and whether
+  // it does anything: what the picture's key, this image and the overlay read.
+  const maskOn = $derived(maskActive(box));
+  const maskFrame = $derived(maskOn ? maskInBoxFrame(box) : []);
   let maskUrl = $state('');
   let maskW = $state(0); // page px the mask image spans, MASK_EXPAND included
   let maskH = $state(0);
@@ -396,7 +402,7 @@
     // on screen unmasked - excluded text shown - until it lands; standing, it
     // is there on the edit's first frame. What stands is a blob URL: the
     // encoded PNG of a flat mask, which nothing decodes until CSS applies it.
-    if (!clipActive(s.clip)) {
+    if (!maskOn) {
       maskKey = '';
       maskSeq++;
       setMask('', 0, 0);
@@ -405,7 +411,8 @@
     const qz = Math.min(1, Math.max(0.125, Math.round(z * 8) / 8));
     const w = Math.ceil((box.w + MASK_EXPAND * 2) / MASK_STEP) * MASK_STEP;
     const h = Math.ceil((box.h + MASK_EXPAND * 2) / MASK_STEP) * MASK_STEP;
-    const key = JSON.stringify([s.clip.shapes, s.clip.mode, qz, w, h]);
+    const shapes = maskFrame;
+    const key = JSON.stringify([shapes, qz, w, h]);
     if (key === maskKey) return;
     maskKey = key;
     const cnv = document.createElement('canvas');
@@ -415,14 +422,13 @@
     if (!ctx) return;
     ctx.scale(cnv.width / w, cnv.height / h);
     ctx.translate(MASK_EXPAND, MASK_EXPAND);
-    if (s.clip.mode === 'include') {
-      drawClipShapes(ctx, s.clip.shapes);
-    } else {
+    if (shapes.some((sh) => sh.op === 'keep')) drawClipShapes(ctx, shapes, 'keep');
+    else {
       ctx.fillStyle = '#fff';
       ctx.fillRect(-MASK_EXPAND, -MASK_EXPAND, w, h);
-      ctx.globalCompositeOperation = 'destination-out';
-      drawClipShapes(ctx, s.clip.shapes);
     }
+    ctx.globalCompositeOperation = 'destination-out';
+    drawClipShapes(ctx, shapes, 'hide');
     const seq = ++maskSeq;
     if (typeof cnv.toBlob === 'function') {
       // Async, so the standing mask holds the frame until the new one is
@@ -447,7 +453,7 @@
     };
   });
   const maskCss = $derived.by(() => {
-    if (!clipActive(s.clip) || !maskUrl) return '';
+    if (!maskOn || !maskUrl) return '';
     const sz = `${maskW * z}px ${maskH * z}px`;
     const pos = `${-MASK_EXPAND * z}px ${-MASK_EXPAND * z}px`;
     return (
@@ -657,8 +663,8 @@
   //
   // This is the substitution the PSD export already makes for a box Photoshop
   // cannot re-render, and it costs the same things: no caret and no selection.
-  // See `onDblClick` below. The mask tools still work: `maskShapePoint` carries
-  // the pointer back through the mesh.
+  // See `onDblClick` below. The mask tools still work: their shapes are page
+  // px, cut from the picture after the mesh.
   //
   // With the Rust engine drawing, this is how EVERY box at rest is shown
   // (`engineShown`): the same canvas, the same effect, the same release. Two
@@ -733,7 +739,13 @@
   let placeHeld = $state(null);
   const pageGradKey = $derived(placeHeld ? placeHeld.grad : pageGradLive);
   const patternTileKey = $derived(placeHeld ? placeHeld.tiles : patternTileLive);
-  const engineKey = $derived(
+  // Everything of the picture's key but the mask, and the key itself. A box
+  // with a mask on is painted again as it moves, since its mask stays on the
+  // page while the letters slide under it: the mask's shapes in the box's own
+  // frame (`maskFrame`) are in the key. Nothing else of it changes with a
+  // move, so the engine reads the picture before the mask back (its premask
+  // piece) and only cuts the mask again.
+  const engineRest = $derived(
     engineWanted
       ? pictureOn
         ? pictureKey({
@@ -758,6 +770,7 @@
         : PICTURE_OFF
       : '',
   );
+  const engineKey = $derived(engineRest && engineRest !== PICTURE_OFF && maskOn ? `${engineRest}|M${JSON.stringify(maskFrame)}` : engineRest);
   // The key of the picture the box is to be, whichever paint makes it: the
   // engine's, or the old one a warped box has with the switch off (and, with
   // it on, while it is being typed into).
@@ -809,7 +822,27 @@
   }
   // An IME's text is not the box's until the composition ends, so the box
   // is painted with it standing in for its own.
-  const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText } : box);
+  //
+  // A box with a mask is painted where it stood when the rest of its key last
+  // changed (`grainHold`), its mask carried to stay where it is on the page
+  // relative to it. The letters are the same wherever the box stands, and
+  // what is anchored to the page (the grain of a noise or a glow) stays put
+  // under a move as it does for a box with no mask, whose picture a move
+  // never repaints: so a move changes only the mask's bytes, and the engine's
+  // premask piece is read back. The file is always painted where the box is.
+  let grainHold = null;
+  const paintedBox = () => {
+    let b = editing && composeText != null ? { ...box, text: composeText } : box;
+    if (!maskOn) return b;
+    if (grainHold?.key !== engineRest) grainHold = { key: engineRest, x: box.x, y: box.y };
+    const dx = grainHold.x - box.x;
+    const dy = grainHold.y - box.y;
+    if (!dx && !dy) return b;
+    // The bubble link resolved first (`maskOnPage`): the outline it follows
+    // is the box's, and the box's fit does not move here.
+    const mask = translateMask({ on: true, shapes: maskOnPage(box) }, dx, dy);
+    return { ...b, x: grainHold.x, y: grainHold.y, mask };
+  };
   // `key` is the picture key this paint is for: the effect's paints have one,
   // and only those may go to the paint worker (`paintFull`). `worker` false
   // paints here whatever the box is: the fallback for a paint the worker did
@@ -1764,6 +1797,9 @@
       placeHeld = null;
 
       if (box.x !== before.x || box.y !== before.y) {
+        // The mask stays on the page, so a move changes what a keep shape
+        // lets the check count.
+        if (maskOn) reviewBox(box, pg);
         record({ t: 'move', pageId, boxId: box.id, before, after: moveGeom(box) });
       }
     };
@@ -2094,17 +2130,21 @@
   // ---- mask drawing ----
   //
   // The armed tool comes from the Inspector (box-draw-tool.svelte.js). While
-  // one is armed for the mask and this box is selected, a transparent overlay
-  // takes the pointer and turns gestures into mask shapes, committed one per
-  // gesture with one undo record each, like the path gizmo's drags.
-  // A warped box takes them too: a mask shape is stated in box-local px and is
-  // applied to the texture BEFORE the mesh carries it, so the pointer is taken
-  // back through the mesh on the way in (`maskShapePoint`) and the outlines
-  // forward through it on the way out (`maskOutline`).
-  const maskKind = $derived(drawKindFor('mask'));
-  const maskArmed = $derived(selected && !editing && !bulkOn && s.clip?.on && maskKind);
+  // one is armed for this box's mask and the box is selected, a transparent
+  // layer over the whole page takes the pointer and turns gestures into
+  // shapes, committed one per gesture with one undo record each. The shapes
+  // are page px (`box.mask`, box-mask.js): pinned to the page, never to the
+  // box, so the pointer is taken to the page and nothing else, and a shape
+  // may be drawn anywhere on it.
+  const drawTarget = $derived(drawTool.target === 'mask' ? drawTool.target : null);
+  const drawKind = $derived(drawTarget ? drawTool.kind : null);
+  // Kept as the mask's names: the liquify ring and the key handler read them.
+  const maskKind = $derived(drawKind);
+  const drawModel = $derived(drawTarget ? box[drawTarget] : null);
+  const drawShown = $derived(selected && !editing && !bulkOn && !!box.mask?.on);
+  const maskArmed = $derived(drawShown && !!drawModel?.on && !!drawKind);
 
-  // The gesture in progress: a shape being drawn, not yet in the style; the
+  // The gesture in progress: a shape being drawn, not yet in the box; the
   // polygon's corners so far; the shape the Move tool has picked (its index)
   // and how far a Move drag has carried it, or every shape when `idx` is null;
   // and where the pointer is, for the brush's ring.
@@ -2113,7 +2153,7 @@
   // the index may name another shape, and the pick is dropped.
   const maskDraft = $state({ shape: null, poly: null, picked: null, pickedIn: null, moving: null, at: null });
   $effect(() => {
-    const list = s.clip?.shapes;
+    const list = box.mask?.shapes;
     untrack(() => {
       if (maskDraft.picked !== null && list !== maskDraft.pickedIn) maskDraft.picked = null;
     });
@@ -2135,73 +2175,52 @@
     return screenPoint(ev.clientX, ev.clientY, pageFrameEl.getBoundingClientRect(), app.zoom, box);
   }
 
-  // The same point in the frame the mask shapes, the warp mesh and the path
-  // are stored in: unflipped, because all three are applied before the flip
-  // (`wrapMirror`), so what they move lands - once mirrored with the box -
-  // under the pointer that moved it.
+  // The same point in the frame the warp mesh and the path are stored in:
+  // unflipped, because both are applied before the flip (`wrapMirror`), so
+  // what they move lands - once mirrored with the box - under the pointer
+  // that moved it.
   function maskLocal(ev) {
     return flipPoint(maskPoint(ev), box);
   }
 
-  // The mesh the mask is carried through on screen, or null for a box that is
-  // not warped. The shapes are cut from the texture before the mesh moves it,
-  // so a pointer on the deformed picture is taken back through the mesh to
-  // the texture point under it (`maskShapePoint`), and a stored shape is drawn
-  // forward through it (`maskOutline`) to sit on the cut it makes.
-  const maskMesh = $derived(warped ? meshMap(s.warp.pts, s.warp.cols, s.warp.rows, box.w, box.h) : null);
-
-  function maskShapePoint(ev) {
-    const p = maskLocal(ev);
-    return maskMesh ? unwarpPoint(s.warp.pts, s.warp.cols, s.warp.rows, box.w, box.h, p[0], p[1]) : p;
+  // A pointer event in page px, the frame the mask's shapes are stored in.
+  function pagePoint(ev) {
+    const r = pageFrameEl.getBoundingClientRect();
+    return [(ev.clientX - r.left) / app.zoom, (ev.clientY - r.top) / app.zoom];
   }
 
-  // Stored points as an SVG points list at the zoom. Through a mesh, a
-  // straight edge in the texture is a curve on screen, so each edge is cut
-  // into steps of a few page px before it is carried.
-  function maskOutline(pts, closed = false) {
-    let out = pts;
-    if (maskMesh) {
-      out = [];
-      const n = closed ? pts.length : pts.length - 1;
-      for (let i = 0; i < n; i++) {
-        const [ax, ay] = pts[i];
-        const [bx, by] = pts[(i + 1) % pts.length];
-        const k = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 4));
-        for (let t = 0; t < k; t++) out.push(maskMesh.at(ax + ((bx - ax) * t) / k, ay + ((by - ay) * t) / k));
-      }
-      if (!closed && pts.length) out.push(maskMesh.at(...pts[pts.length - 1]));
-    }
-    return out.map(([px, py]) => `${px * z},${py * z}`).join(' ');
-  }
+  // Stored page points as an SVG points list at the zoom.
+  const outline = (pts) => pts.map(([px, py]) => `${px * z},${py * z}`).join(' ');
 
-  // An ellipse as the polygon `maskOutline` can carry through a mesh.
-  function ellipsePts(sh) {
-    const n = 48;
-    return Array.from({ length: n }, (_, i) => {
-      const a = (i / n) * Math.PI * 2;
-      return [sh.cx + sh.rx * Math.cos(a), sh.cy + sh.ry * Math.sin(a)];
-    });
-  }
+  // A model as plain data, for the undo record.
+  const plainOf = (m) => (m ? $state.snapshot(m) : null);
 
-  // A shape changes the verdict as well as the picture: an include mask cuts
-  // the ink the check counts (contain.js), and the fit effect does not read the
-  // mask, so the flag is brought up to date here. Every mask gesture ends
-  // here - a new shape, a move, a removal - as one style record.
+  // A shape changes the verdict as well as the picture: a keep shape cuts the
+  // ink the check counts (contain.js), and the fit effect does not read the
+  // mask, so the flag is brought up to date here. Every gesture ends here - a
+  // new shape, a move, a removal - as one record.
   function commitMaskShapes(next) {
-    const styleBefore = cloneStyle(box.style);
-    s.clip.shapes = next;
+    const target = drawTarget ?? 'mask';
+    const before = plainOf(box[target]);
+    box[target] = { ...(box[target] ?? { on: true }), shapes: next };
     markUnsaved();
     reviewBox(box, pg);
-    record({ t: 'style', pageId: pg.id, boxId: box.id, before: styleBefore, after: cloneStyle(box.style) });
+    record({ t: target, pageId: pg.id, boxId: box.id, before, after: plainOf(box[target]) });
   }
+  // A new shape takes what the panel set for the next one: the mask's op.
   function commitMaskShape(shape) {
-    commitMaskShapes([...s.clip.shapes, shape]);
+    if (box.mask.shapes.length >= MASK_SHAPES_MAX) {
+      toast(`A mask holds ${MASK_SHAPES_MAX} shapes at most`);
+      return;
+    }
+    commitMaskShapes([...box.mask.shapes, { ...shape, op: drawSettings.mask.op }]);
   }
 
-  // A shape carried by (dx, dy), in the frame it is stored in.
+  // A shape carried by (dx, dy) page px. A bubble link follows its outline,
+  // not the pointer.
   function movedShape(sh, dx, dy) {
-    if (sh.kind === 'ellipse') return { ...sh, cx: sh.cx + dx, cy: sh.cy + dy };
-    return { ...sh, pts: sh.pts.map(([x, y]) => [x + dx, y + dy]) };
+    if (sh.kind === 'bubble') return sh;
+    return translateMask({ shapes: [sh] }, dx, dy).shapes[0];
   }
 
   // The four corners of the rectangle two points span, as the polygon the
@@ -2210,12 +2229,20 @@
     return [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]];
   }
 
-  // The topmost shape under a point, or null. Searched from the last drawn,
-  // the one drawn over the rest.
+  // The shapes as they are drawn on the page, one for each stored shape and in
+  // its order: a bubble link as its inset outline (null with no outline).
+  const pageShapes = $derived.by(() => {
+    if (!box.mask) return [];
+    return box.mask.shapes.map((sh) => (sh.kind === 'bubble' ? (maskOnPage({ ...box, mask: { shapes: [sh] } })[0] ?? null) : sh));
+  });
+
+  // The topmost shape under a page point, or null. Searched from the last
+  // drawn, the one drawn over the rest.
   function maskShapeAt(p) {
     const [x, y] = p;
-    for (let i = s.clip.shapes.length - 1; i >= 0; i--) {
-      const sh = s.clip.shapes[i];
+    for (let i = pageShapes.length - 1; i >= 0; i--) {
+      const sh = pageShapes[i];
+      if (!sh) continue;
       if (sh.kind === 'ellipse') {
         if (sh.rx > 0 && sh.ry > 0 && ((x - sh.cx) / sh.rx) ** 2 + ((y - sh.cy) / sh.ry) ** 2 <= 1) return i;
       } else if (sh.kind === 'poly') {
@@ -2246,7 +2273,7 @@
     if (e.button !== 0 || !maskArmed || !pageFrameEl) return;
     e.preventDefault();
     e.stopPropagation();
-    const p = maskShapePoint(e);
+    const p = pagePoint(e);
     const kind = maskKind;
     // The polygon is click-built rather than dragged; the rest are drags.
     if (kind === 'poly') {
@@ -2258,18 +2285,18 @@
     const start = p;
     if (kind === 'move') {
       // A press on a shape picks it and drags it alone; a press on empty
-      // space drags them all. The shapes stay where they are in the style
+      // space drags them all. The shapes stay where they are in the box
       // until the pointer comes up, so a drag is one record and no repaint
       // per move: the overlay shows them carried meanwhile.
       maskDraft.picked = maskShapeAt(p);
-      maskDraft.pickedIn = s.clip.shapes;
+      maskDraft.pickedIn = box.mask.shapes;
       maskDraft.moving = { idx: maskDraft.picked, dx: 0, dy: 0 };
-    } else if (kind === 'brush') maskDraft.shape = { kind: 'stroke', size: s.clip.brushSize, pts: [p] };
+    } else if (kind === 'brush') maskDraft.shape = { kind: 'stroke', size: drawSettings.mask.size, pts: [p] };
     else if (kind === 'rect') maskDraft.shape = { kind: 'poly', pts: rectPts(p, p) };
     else maskDraft.shape = { kind: 'ellipse', cx: p[0], cy: p[1], rx: 0, ry: 0 };
     const move = (ev) => {
       if (ev.pointerId !== pid) return;
-      const q = maskShapePoint(ev);
+      const q = pagePoint(ev);
       if (maskDraft.moving) {
         maskDraft.moving.dx = q[0] - start[0];
         maskDraft.moving.dy = q[1] - start[1];
@@ -2298,9 +2325,9 @@
       if (mv) {
         // A press that did not travel moved nothing, and records nothing.
         if (ev.type === 'pointercancel' || Math.hypot(mv.dx, mv.dy) < 0.5) return;
-        commitMaskShapes(s.clip.shapes.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
+        commitMaskShapes(box.mask.shapes.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
         // The moved shape is still the one picked, in the list just made.
-        maskDraft.pickedIn = s.clip.shapes;
+        maskDraft.pickedIn = box.mask.shapes;
         return;
       }
       const sh = maskDraft.shape;
@@ -2309,7 +2336,7 @@
       // A shape too small to see was a slip, not a shape.
       if (sh.kind === 'ellipse' && (sh.rx < 1 || sh.ry < 1)) return;
       if (kind === 'rect' && (Math.abs(sh.pts[2][0] - sh.pts[0][0]) < 1 || Math.abs(sh.pts[2][1] - sh.pts[0][1]) < 1)) return;
-      commitMaskShape(sh);
+      commitMaskShape($state.snapshot(sh));
     };
     live.add(ac);
     document.addEventListener('pointermove', move, { signal: ac.signal });
@@ -2317,19 +2344,78 @@
     document.addEventListener('pointercancel', end, { signal: ac.signal });
   }
 
-  // Where the pointer is over the capture surface, in the screen frame the
-  // ring is drawn in (as liquify's).
+  // Where the pointer is over the capture surface, page px, for the ring.
   function onMaskPointerMove(e) {
-    if (maskArmed) maskDraft.at = maskPoint(e);
+    if (maskArmed) maskDraft.at = pagePoint(e);
   }
   function onMaskPointerLeave() {
     maskDraft.at = null;
   }
   const maskRing = $derived(
     maskArmed && maskKind === 'brush' && maskDraft.at
-      ? { x: maskDraft.at[0], y: maskDraft.at[1], d: s.clip.brushSize * z }
+      ? { x: maskDraft.at[0], y: maskDraft.at[1], d: drawSettings.mask.size * z }
       : null,
   );
+
+  function onMaskDblClick(e) {
+    if (maskKind !== 'poly' || !maskDraft.poly) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pts = maskDraft.poly;
+    maskDraft.poly = null;
+    if (pts.length >= 3) commitMaskShape({ kind: 'poly', pts });
+  }
+  // A new tool starts with nothing in hand.
+  $effect(() => {
+    void maskKind;
+    untrack(() => {
+      maskDraft.poly = null;
+      maskDraft.picked = null;
+    });
+  });
+  $effect(() => {
+    if (!maskArmed) {
+      maskDraft.poly = null;
+      maskDraft.shape = null;
+      maskDraft.picked = null;
+      maskDraft.moving = null;
+      maskDraft.at = null;
+      return;
+    }
+    // Escape drops a polygon half built, and with none puts the tool down.
+    // Delete and Backspace remove the shape the Move tool picked. Both are
+    // taken in the capture phase and stopped there, because the window's own
+    // handler reads Escape as "deselect" and Delete as "delete the box".
+    // A key pressed in a field is the field's, and one pressed in an open
+    // popover or menu (a colour picker) is the popover's, which closes on it.
+    const onKey = (e) => {
+      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="listbox"]')) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (maskDraft.poly) maskDraft.poly = null;
+        else clearDrawTool();
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null && box.mask.shapes === maskDraft.pickedIn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const i = maskDraft.picked;
+        maskDraft.picked = null;
+        if (i < box.mask.shapes.length) commitMaskShapes(box.mask.shapes.filter((_, j) => j !== i));
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  // Everything the page layer outlines: the shapes as drawn (a Move drag
+  // carrying them meanwhile), plus the draft.
+  const maskShapesShown = $derived.by(() => {
+    if (!drawShown) return null;
+    const mv = maskDraft.moving;
+    const out = pageShapes.map((sh, i) => (sh && mv && (mv.idx === null || mv.idx === i) && box.mask.shapes[i].kind !== 'bubble' ? movedShape(sh, mv.dx, mv.dy) : sh));
+    if (maskDraft.shape) out.push({ ...maskDraft.shape, op: drawSettings.mask.op });
+    return out;
+  });
 
   // ---- liquify ----
   //
@@ -2445,65 +2531,6 @@
   });
 
   // Double-click closes the polygon.
-  function onMaskDblClick(e) {
-    if (maskKind !== 'poly' || !maskDraft.poly) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const pts = maskDraft.poly;
-    maskDraft.poly = null;
-    if (pts.length >= 3) commitMaskShape({ kind: 'poly', pts });
-  }
-  // A new tool starts with nothing in hand.
-  $effect(() => {
-    void maskKind;
-    untrack(() => {
-      maskDraft.poly = null;
-      maskDraft.picked = null;
-    });
-  });
-  $effect(() => {
-    if (!maskArmed) {
-      maskDraft.poly = null;
-      maskDraft.shape = null;
-      maskDraft.picked = null;
-      maskDraft.moving = null;
-      maskDraft.at = null;
-      return;
-    }
-    // Escape drops a polygon half built, and with none puts the tool down.
-    // Delete and Backspace remove the shape the Move tool picked. Both are
-    // taken in the capture phase and stopped there, because the window's own
-    // handler reads Escape as "deselect" and Delete as "delete the box".
-    // A key pressed in a field is the field's, and one pressed in an open
-    // popover or menu (a colour picker) is the popover's, which closes on it.
-    const onKey = (e) => {
-      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="listbox"]')) return;
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        if (maskDraft.poly) maskDraft.poly = null;
-        else clearDrawTool();
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null && s.clip.shapes === maskDraft.pickedIn) {
-        e.preventDefault();
-        e.stopPropagation();
-        const i = maskDraft.picked;
-        maskDraft.picked = null;
-        if (i < s.clip.shapes.length) commitMaskShapes(s.clip.shapes.filter((_, j) => j !== i));
-      }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  });
-
-  // Everything the mask overlay draws: committed shapes plus the draft.
-  const maskShapesShown = $derived.by(() => {
-    if (!(selected && !editing && !bulkOn && s.clip?.on)) return null;
-    const mv = maskDraft.moving;
-    const out = mv ? s.clip.shapes.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)) : [...s.clip.shapes];
-    if (maskDraft.shape) out.push(maskDraft.shape);
-    return out;
-  });
-
   // Right-click on a path anchor removes it.
   function onAnchorContextMenu(e, i) {
     e.preventDefault();
@@ -3714,65 +3741,6 @@
     </svg>
   {/if}
 
-  {#if maskShapesShown}
-    <!-- The mask overlay: committed shapes (and the drag in progress) drawn
-         as outlines so the user can see what they have painted, plus - while
-         a tool is armed - a full-coverage capture surface that turns the
-         pointer into shapes. Outside the clip wrapper on purpose: the
-         outlines must stay visible where the mask has hidden the letters. -->
-    <!-- Mirrored with the box, as the mask it outlines is. -->
-    <svg
-      class="mask-gizmo"
-      class:excl={s.clip.mode === 'exclude'}
-      width={box.w * z}
-      height={box.h * z}
-      style={overlayMirror}
-      aria-hidden="true"
-    >
-      {#if maskArmed}
-        <rect
-          class="capture"
-          class:move={maskKind === 'move'}
-          x={-MASK_EXPAND * z}
-          y={-MASK_EXPAND * z}
-          width={(box.w + MASK_EXPAND * 2) * z}
-          height={(box.h + MASK_EXPAND * 2) * z}
-          onpointerdown={onMaskPointerDown}
-          onpointermove={onMaskPointerMove}
-          onpointerenter={onMaskPointerMove}
-          onpointerleave={onMaskPointerLeave}
-          ondblclick={onMaskDblClick}
-        />
-      {/if}
-      {#each maskShapesShown as sh, i (i)}
-        {@const picked = maskKind === 'move' && maskDraft.picked === i}
-        {#if sh.kind === 'ellipse' && !maskMesh}
-          <ellipse class:picked cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
-        {:else if sh.kind === 'ellipse' || sh.kind === 'poly'}
-          <polygon class:picked points={maskOutline(sh.kind === 'ellipse' ? ellipsePts(sh) : sh.pts, true)} />
-        {:else}
-          <polyline class="stroke" class:picked points={maskOutline(sh.pts)} style="stroke-width:{sh.size * z}px" />
-        {/if}
-      {/each}
-      {#if maskDraft.poly}
-        <polyline class="draft" points={maskOutline(maskDraft.poly)} />
-        {#each maskDraft.poly as p, i (i)}
-          {@const [px, py] = maskMesh ? maskMesh.at(p[0], p[1]) : p}
-          <circle class="vert" cx={px * z} cy={py * z} r="3.5" />
-        {/each}
-      {/if}
-    </svg>
-  {/if}
-
-  {#if maskRing}
-    <!-- The brush's own circle, its width at the zoom, as liquify's. -->
-    <div
-      class="liq-ring"
-      style="left:{maskRing.x * z}px;top:{maskRing.y * z}px;width:{maskRing.d}px;height:{maskRing.d}px"
-      aria-hidden="true"
-    ></div>
-  {/if}
-
   {#if liquifyOn}
     <!-- The surface that turns a drag into a liquify. Full-box and on top, the
          same shape the mask tool's capture rect has; without it the drag lands
@@ -3836,6 +3804,55 @@
     {/if}
   {/if}
 </div>
+
+{#if maskShapesShown}
+  <!-- The mask's page layer: a sibling of the box, over the whole page, since
+       the shapes are pinned to the page and may lie anywhere on it. It
+       outlines every shape (and the drag in progress) so the user can see what
+       they have painted where the mask has hidden the letters, and - while a
+       tool is armed - takes the pointer over the whole page. -->
+  <div class="draw-page" class:armed={maskArmed} aria-hidden="true">
+    <svg class="mask-gizmo" width="100%" height="100%">
+      {#if maskArmed}
+        <rect
+          class="capture"
+          class:move={maskKind === 'move'}
+          x="0"
+          y="0"
+          width="100%"
+          height="100%"
+          onpointerdown={onMaskPointerDown}
+          onpointermove={onMaskPointerMove}
+          onpointerenter={onMaskPointerMove}
+          onpointerleave={onMaskPointerLeave}
+          ondblclick={onMaskDblClick}
+        />
+      {/if}
+      {#each maskShapesShown as sh, i (i)}
+        {#if sh}
+          {@const picked = maskKind === 'move' && maskDraft.picked === i}
+          {#if sh.kind === 'ellipse'}
+            <ellipse class:picked class:hide={sh.op === 'hide'} cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
+          {:else if sh.kind === 'poly'}
+            <polygon class:picked class:hide={sh.op === 'hide'} points={outline(sh.pts)} />
+          {:else}
+            <polyline class="stroke" class:picked class:hide={sh.op === 'hide'} points={outline(sh.pts)} style="stroke-width:{sh.size * z}px" />
+          {/if}
+        {/if}
+      {/each}
+      {#if maskDraft.poly}
+        <polyline class="draft" points={outline(maskDraft.poly)} />
+        {#each maskDraft.poly as p, i (i)}
+          <circle class="vert" cx={p[0] * z} cy={p[1] * z} r="3.5" />
+        {/each}
+      {/if}
+    </svg>
+    {#if maskRing}
+      <!-- The brush's own circle, its width at the zoom, as liquify's. -->
+      <div class="liq-ring" style="left:{maskRing.x * z}px;top:{maskRing.y * z}px;width:{maskRing.d}px;height:{maskRing.d}px"></div>
+    {/if}
+  </div>
+{/if}
 
 <style>
   /* The layer stack. Every layer holds the same lines and lays out identically;
@@ -3913,13 +3930,15 @@
      An exclude shape is filled darker than an include one: darker is the ink
      that goes away. The capture rect is the drawing surface while a tool is
      armed; it reaches past the box exactly as far as the mask image does. */
+  /* Over every box on the page, so a shape can be drawn over any of them. */
+  .draw-page { position: absolute; inset: 0; pointer-events: none; z-index: 40; }
   .mask-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
   .mask-gizmo .capture { fill: transparent; pointer-events: all; cursor: crosshair; touch-action: none; }
   .mask-gizmo .capture.move { cursor: move; }
   .mask-gizmo ellipse, .mask-gizmo polygon { fill: color-mix(in srgb, var(--tintline) 8%, transparent); stroke: var(--tintline); stroke-width: 1; }
   .mask-gizmo .stroke { fill: none; stroke: color-mix(in srgb, var(--tintline) 14%, transparent); stroke-linecap: round; stroke-linejoin: round; }
-  .mask-gizmo.excl ellipse, .mask-gizmo.excl polygon { fill: color-mix(in srgb, var(--tintline) 22%, transparent); }
-  .mask-gizmo.excl .stroke { stroke: color-mix(in srgb, var(--tintline) 30%, transparent); }
+  .mask-gizmo ellipse.hide, .mask-gizmo polygon.hide { fill: color-mix(in srgb, var(--tintline) 22%, transparent); }
+  .mask-gizmo .stroke.hide { stroke: color-mix(in srgb, var(--tintline) 30%, transparent); }
   .mask-gizmo .picked { stroke-width: 2.5; stroke-dasharray: 5 3; }
   .mask-gizmo .stroke.picked { stroke: var(--tint); stroke-dasharray: none; }
   .mask-gizmo .draft { fill: none; stroke: var(--tintline); stroke-width: 1.5; stroke-dasharray: 4 3; }

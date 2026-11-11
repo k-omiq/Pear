@@ -13,6 +13,7 @@ import { fsx } from '../fsx.js';
 import { normalizeStyle, plainStyle } from '../data.js';
 import { toast, toastError, DOC_SAVE_MS, rescalePageGeometry, rescaleStyle, rescaleAuto, scaleFit, lengthScale } from '../store.svelte.js';
 import { scaleStroke } from '../brush.js';
+import { scaleMask } from '../box-mask.js';
 import { remapLineStack } from '../reading-order.js';
 import {
   takeStack,
@@ -331,6 +332,9 @@ export function rescaleEntry(entry, sx, sy) {
   } else if (e.t === 'style') {
     e.before = rescaleStyle(e.before, sx, sy);
     e.after = rescaleStyle(e.after, sx, sy);
+  } else if (e.t === 'mask') {
+    e.before = scaleMask(e.before, sx, sy);
+    e.after = scaleMask(e.after, sx, sy);
   }
   if (e.geomBefore) e.geomBefore = scaleGeom(e.geomBefore, sx, sy);
   if (e.geomAfter) e.geomAfter = scaleGeom(e.geomAfter, sx, sy);

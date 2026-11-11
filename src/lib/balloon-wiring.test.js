@@ -2315,13 +2315,15 @@ describe('placement chooses the size (FIT-1)', () => {
     });
 
     it('is never solved once it carries hand-drawn ink or a mask', () => {
-      for (const over of [
-        { ink: { on: true, strokes: [{ pts: [[10, 10, 1], [50, 10, 1]], size: 6, color: '#000000' }] } },
-        { clip: { on: true, mode: 'exclude', shapes: [{ kind: 'ellipse', cx: 20, cy: 20, rx: 5, ry: 5 }] } },
+      // The mask is the box's, pinned to the page: put on the box, not its style.
+      for (const [over, mask] of [
+        [{ ink: { on: true, strokes: [{ pts: [[10, 10, 1], [50, 10, 1]], size: 6, color: '#000000' }] } }, null],
+        [{}, { on: true, shapes: [{ kind: 'ellipse', op: 'hide', cx: 20, cy: 20, rx: 5, ry: 5 }] }],
       ]) {
         ready = false;
         const b = placeAt(32);
         Object.assign(b.style, normalizeStyle({ ...b.style, ...over }));
+        if (mask) b.mask = mask;
         const before = geomOf(b);
         ready = true;
         noteFontsChanged();

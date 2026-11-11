@@ -23,6 +23,8 @@
   import { untrack } from 'svelte';
   import { app, page, lineByN, boxLocked, isTranslateMode } from '../store.svelte.js';
   import { hasCopiedStyle } from '../presets.svelte.js';
+  import { isComics } from '../prefs.svelte.js';
+  import { bubbleLink } from '../box-mask.js';
   import { runShortcut, hasShortcutHandler, comboFor, formatCombo } from '../shortcuts.svelte.js';
   import { anchoredOverlay } from '../anchored-overlay.svelte.js';
 
@@ -96,6 +98,7 @@
       keyed('box.layoutLock', 'Lock', true, { checked: locked }),
       keyed('box.approveOutline', 'Approve outline', !!b.fit && b.outline?.approved !== 'user'),
       keyed('bubble.centre', 'Centre in bubble', !!b.fit && !locked),
+      ...(isComics() ? [keyed('mask.clipToBubble', 'Clip to bubble', true, { checked: !!bubbleLink(b) })] : []),
       { sep: true },
       keyed('box.duplicate', 'Duplicate'),
       keyed('style.copy', 'Copy style'),

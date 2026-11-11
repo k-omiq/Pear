@@ -25,19 +25,6 @@ const array = (desc, items, limits = {}) => ({ type: 'array', desc, items, ...li
 // each with its own switch in the list.
 const instanceOn = () => ({ ...boolean('false=off, kept'), optional: true });
 const instances = (desc, item) => array(desc, item, { maxItems: FX_INSTANCES_MAX });
-// A list item that is one of several shapes, told apart by one field (`key`),
-// which every item names, also when an index patch changes one: the validator
-// cannot see which kind the stored item is. Each variant is an `object`; the
-// key is added to its fields as a one-value enum.
-const union = (desc, key, variants) => ({
-  type: 'union',
-  desc,
-  key,
-  variants: Object.fromEntries(Object.entries(variants).map(([name, v]) => [
-    name,
-    { ...v, fields: { [key]: choice(`${key} ${name}`, [name]), ...v.fields } },
-  ])),
-});
 // An object several fields take whole: `styleSchemaText` prints its fields
 // the first time and points back to that path after.
 const shared = (name, entry) => ({ ...entry, shape: name });
@@ -51,8 +38,9 @@ const point = (desc) => array(desc, number('px'), { minItems: 2, maxItems: 2 });
 
 // Geometry the agent writes, all in box-local page px: the origin is the box's
 // top-left corner, x runs right and y down, the same space normalizeStyle and
-// the renderers read `path.pts` and `clip.shapes` in. Coordinates are not
-// clamped (a path or a mask may reach past the box) and have no bounds here.
+// the renderers read `path.pts` in. Coordinates are not clamped (a path may
+// reach past the box) and have no bounds here. The mask is the box's, pinned
+// to the page and not in the style; the agent's `edit` sets its bubble clip.
 // The caps on list lengths are only there to stop a runaway list.
 const contourField = () => shared('contour', object('edge falloff (Rust)', {
   preset: listed('CONTOUR', 'contour', [...CONTOUR_PRESETS, 'custom']),
@@ -150,8 +138,6 @@ const patternFields = () => ({
 // An effect's pattern is always on: `on` is read only, true as stored.
 const effectPatternFields = () => ({ ...patternFields(), on: readOnly('set through the effect; always on here', true) });
 const PATH_MAX_ANCHORS = 64;
-const MASK_MAX_SHAPES = 64;
-const MASK_MAX_POINTS = 256;
 
 // Bounds and choices mirror normalizeStyle and its helpers, not Inspector
 // sliders. Flat fields (lineHeight, curve, roughen, etc.) are passed through
@@ -326,26 +312,6 @@ export const STYLE_SCHEMA = {
       ox: number('out handle dx'),
       oy: number('out handle dy'),
     }, ['x', 'y']), { minItems: 2, maxItems: PATH_MAX_ANCHORS }),
-  }),
-  clip: object('painted visibility mask', {
-    on: boolean('enable mask'),
-    mode: choice('hide/keep painted areas', ['exclude', 'include']),
-    brushSize: number('mask brush page px', 2, 200),
-    shapes: array('painted areas, box px', union('area', 'kind', {
-      ellipse: object('ellipse', {
-        cx: number('centre x'),
-        cy: number('centre y'),
-        rx: number('x radius', 1),
-        ry: number('y radius', 1),
-      }, ['cx', 'cy', 'rx', 'ry']),
-      poly: object('closed polygon', {
-        pts: array('corners', point('[x, y]'), { minItems: 3, maxItems: MASK_MAX_POINTS }),
-      }, ['pts']),
-      stroke: object('brush line', {
-        size: number('brush px', 1, 200),
-        pts: array('line points', point('[x, y]'), { minItems: 1, maxItems: MASK_MAX_POINTS }),
-      }, ['size', 'pts']),
-    }), { maxItems: MASK_MAX_SHAPES }),
   }),
   ink: object('hand-drawn box-local ink', {
     on: boolean('enable ink'),
@@ -574,14 +540,6 @@ export function validateStylePatch(patch, stored = null) {
         return;
       case 'object':
         return fields(value, entry.fields, path, whole ? entry.required : null, ctx);
-      case 'union': {
-        if (!isObject(value)) return fail(path, 'expected an object');
-        const kinds = Object.keys(entry.variants);
-        const kind = value[entry.key];
-        if (!Object.hasOwn(value, entry.key)) return fail(at(path, entry.key), `expected one of: ${kinds.join(', ')}`, `every item names its ${entry.key}, also in an index patch`);
-        if (!kinds.includes(kind)) return fail(at(path, entry.key), `expected one of: ${kinds.join(', ')}`);
-        return check(value, entry.variants[kind], path, whole, ctx);
-      }
       case 'array':
         if (Array.isArray(value)) {
           if (entry.minItems !== undefined && value.length < entry.minItems) fail(path, `expected at least ${entry.minItems} items`);
@@ -637,7 +595,7 @@ export function validateStylePatch(patch, stored = null) {
 }
 
 /** Compact dotted paths for embedding directly in an AI tool description.
- * A union's variants print under `path[kind=name]`; a field a new item must
+ * A field a new item must
  * carry says `required`; a list of plain values (a point) says what it holds
  * on its own line rather than a line per value.
  */
@@ -646,7 +604,7 @@ export function styleSchemaText() {
   const lists = new Map();
   // Where each shared object was printed whole.
   const shapes = new Map();
-  const scalar = (e) => !e.fields && !e.items && !e.variants;
+  const scalar = (e) => !e.fields && !e.items;
   function walk(entry, path, required = false) {
     if (entry.shape && shapes.has(entry.shape)) {
       lines.push(`${path}: ${entry.type} like ${shapes.get(entry.shape)} - ${entry.desc}`);
@@ -658,7 +616,6 @@ export function styleSchemaText() {
       type += ` ${entry.list}`;
       lists.set(entry.list, entry.values);
     } else if (entry.type === 'enum') type += ` ${entry.values.join('|')}`;
-    if (entry.type === 'union') type += ` by ${entry.key}: ${Object.keys(entry.variants).join('|')}`;
     if (entry.min !== undefined || entry.max !== undefined) type += ` ${entry.min ?? '-inf'}..${entry.max ?? 'inf'}`;
     if (entry.type === 'array' && (entry.minItems !== undefined || entry.maxItems !== undefined)) {
       type += ` ${entry.minItems ?? 0}..${entry.maxItems ?? 'inf'} items`;
@@ -671,12 +628,6 @@ export function styleSchemaText() {
       for (const [key, field] of Object.entries(e.fields)) walk(field, at(base, key), !!e.required?.includes(key));
     };
     if (entry.fields) children(entry, path);
-    if (entry.variants) {
-      for (const [name, v] of Object.entries(entry.variants)) {
-        const base = `${path.replace(/\[\]$/, '')}[${entry.key}=${name}]`;
-        children({ ...v, fields: Object.fromEntries(Object.entries(v.fields).filter(([k]) => k !== entry.key)) }, base);
-      }
-    }
     if (entry.items && !scalar(entry.items)) {
       const itemPath = `${path}[]`;
       if (entry.items.fields) children(entry.items, itemPath);

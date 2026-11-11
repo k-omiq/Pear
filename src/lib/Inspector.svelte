@@ -91,12 +91,14 @@
   import ValueSlider from './ValueSlider.svelte';
   import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
-  import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
+  import { setFxDefault, clearFxDefault, isComics } from './prefs.svelte.js';
   import { layoutShape } from './balloon.js';
   import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
   import { wavePath } from './bezier-path.js';
-  import { drawKindFor, setDrawTool, clearDrawTool } from './box-draw-tool.svelte.js';
+  import { drawKindFor, setDrawTool, clearDrawTool, drawSettings } from './box-draw-tool.svelte.js';
+  import { bubbleLink, BUBBLE_INSET_MAX, MASK_BRUSH_MIN, MASK_BRUSH_MAX } from './box-mask.js';
+  import { setMaskOn, clearMaskShapes, clipToBubble, slideBubbleInset } from './box-mask-actions.js';
   import { regridWarp } from './warp-gizmo.js';
   import { liquifyTool, setLiquifyMode, LIQUIFY_RADIUS_MIN, LIQUIFY_RADIUS_MAX } from './liquify-tool.svelte.js';
   import { LIQUIFY_MODES } from './liquify.js';
@@ -216,9 +218,9 @@
     ['move', 'Move'],
   ];
   const MASK_HINT = {
-    brush: 'Drag on the box to paint a shape.',
-    rect: 'Drag on the box to draw a rectangle.',
-    ellipse: 'Drag on the box to draw an ellipse.',
+    brush: 'Drag on the page to paint a shape.',
+    rect: 'Drag on the page to draw a rectangle.',
+    ellipse: 'Drag on the page to draw an ellipse.',
     poly: 'Click the corners. Double-click to close, Esc to drop it.',
     move: 'Drag a shape to move it, or empty space to move all. Delete removes the picked shape.',
   };
@@ -2668,40 +2670,43 @@
 
         {#if effectsTab === 'mask'}
           {@const maskKind = drawKindFor('mask')}
+          {@const mk = box.mask}
+          {@const maskOn = !!mk?.on}
+          {@const link = bubbleLink(box)}
           <div class="switch-row">
             <button
               type="button"
               class="switch"
-              class:on={s.clip.on}
+              class:on={maskOn}
               role="switch"
-              aria-checked={s.clip.on}
+              aria-checked={maskOn}
               aria-label="Mask"
               onclick={() => {
-                s.clip.on = !s.clip.on;
-                if (!s.clip.on && maskKind) clearDrawTool();
-                touch();
+                setMaskOn(box, page(), !maskOn);
+                if (!box.mask?.on && maskKind) clearDrawTool();
               }}
             ><span class="knob"></span></button>
             <span class="lbl2">Mask</span>
           </div>
-          <div class="insp-sub-body" class:disabled={!s.clip.on} style="padding:0;border:none;gap:11px">
-            <div class="seg">
+          <div class="insp-sub-body" class:disabled={!maskOn} style="padding:0;border:none;gap:11px">
+            <!-- What the next shape does. Each shape keeps its own. -->
+            <div class="seg" role="group" aria-label="Next shape">
               <button
                 type="button"
-                class:on={s.clip.mode === 'exclude'}
-                aria-pressed={s.clip.mode === 'exclude'}
-                disabled={!s.clip.on}
-                title="Shapes hide the text under them"
-                onclick={() => { s.clip.mode = 'exclude'; touch(); }}
-              >Exclude</button>
+                class:on={drawSettings.mask.op === 'hide'}
+                aria-pressed={drawSettings.mask.op === 'hide'}
+                disabled={!maskOn}
+                title="The next shape hides the text under it"
+                onclick={() => (drawSettings.mask.op = 'hide')}
+              >Hide</button>
               <button
                 type="button"
-                class:on={s.clip.mode === 'include'}
-                aria-pressed={s.clip.mode === 'include'}
-                disabled={!s.clip.on}
-                title="Only text under the shapes stays visible"
-                onclick={() => { s.clip.mode = 'include'; touch(); }}
-              >Include</button>
+                class:on={drawSettings.mask.op === 'keep'}
+                aria-pressed={drawSettings.mask.op === 'keep'}
+                disabled={!maskOn}
+                title="The next shape keeps the text under it, and the text outside every keep shape is hidden"
+                onclick={() => (drawSettings.mask.op = 'keep')}
+              >Keep</button>
             </div>
             <div class="seg" role="group" aria-label="Mask tool">
               {#each MASK_KINDS as [k, label] (k)}
@@ -2709,24 +2714,35 @@
                   type="button"
                   class:on={maskKind === k}
                   aria-pressed={maskKind === k}
-                  disabled={!s.clip.on}
+                  disabled={!maskOn}
                   onclick={() => setDrawTool('mask', k)}
                 >{label}</button>
               {/each}
             </div>
-            {@render sliderRow('Brush size', 'Brush size, page px', s.clip.brushSize, (v) => setVal(s.clip, 'brushSize', v), { min: 2, max: 200, unit: 'px', aria: 'Brush size', disabled: !s.clip.on })}
-            <div class="insp-none">{MASK_HINT[maskKind] ?? 'Pick a tool, then draw on the box.'}</div>
+            {@render sliderRow('Brush size', 'Brush size, page px', drawSettings.mask.size, (v) => (drawSettings.mask.size = v), { min: MASK_BRUSH_MIN, max: MASK_BRUSH_MAX, unit: 'px', aria: 'Brush size', disabled: !maskOn })}
+            {#if isComics()}
+              <div class="mask-row">
+                <button
+                  type="button"
+                  class="rbtn"
+                  class:on={!!link}
+                  aria-pressed={!!link}
+                  title={link ? 'Stop clipping the text to its bubble' : 'Keep the text inside its bubble outline, and follow the outline when it changes'}
+                  onclick={() => clipToBubble(box.id, page())}
+                >Clip to bubble</button>
+              </div>
+              {#if link}
+                {@render sliderRow('Inset', 'How far inside the bubble outline the clip runs, page px', link.inset, (v) => slideBubbleInset(box, page(), v), { min: 0, max: BUBBLE_INSET_MAX, unit: 'px', aria: 'Bubble inset' })}
+              {/if}
+            {/if}
+            <div class="insp-none">{MASK_HINT[maskKind] ?? 'Pick a tool, then draw anywhere on the page.'}</div>
             <div class="mask-row">
-              <span class="mask-count">{s.clip.shapes.length} shape(s)</span>
+              <span class="mask-count">{mk?.shapes.length ?? 0} {mk?.shapes.length === 1 ? 'shape' : 'shapes'}</span>
               <button
                 type="button"
                 class="rbtn"
-                disabled={!s.clip.shapes.length}
-                onclick={() => {
-                  if (!s.clip.shapes.length) return;
-                  s.clip.shapes = [];
-                  touch();
-                }}
+                disabled={!mk?.shapes.length}
+                onclick={() => clearMaskShapes(box, page())}
               >Clear shapes</button>
             </div>
           </div>
@@ -3535,5 +3551,9 @@
   .mask-count {
     font-size: 11.5px;
     color: var(--t3);
+  }
+  /* Clip to bubble while the link stands: a soft fill, no weight change. */
+  .mask-row .rbtn.on {
+    background: var(--accent-soft);
   }
 </style>

@@ -18,6 +18,12 @@ export const DRAW_KINDS = ['brush', 'rect', 'ellipse', 'poly', 'move', 'erase'];
 
 export const drawTool = $state({ target: null, kind: null });
 
+// What the next shape of each target is drawn with, set in its panel: for
+// the mask, its op (Hide or Keep) and the brush's width, page px. Session
+// state like the tool: a setting of the hand, not of any box, so it is not
+// saved and no box carries it.
+export const drawSettings = $state({ mask: { op: 'hide', size: 20 } });
+
 // The Effects sub-tab whose panel arms each target. A tool is put down when
 // its panel is no longer the one in front (`inspector-tabs.svelte.js`): an
 // armed tool takes the box's pointer, and a tool nobody can see would leave

@@ -17,8 +17,7 @@ import {
   motionBlurTaps,
   motionBlurPreviewTaps,
   applyTextFilters,
-  drawClipShapes,
-  clipActive,
+  cutMask,
   inkActive,
   inkTipTable,
   inkBounds,
@@ -38,6 +37,7 @@ import { BOLD_WEIGHT_MIN, BOLD_WEIGHT_MAX, ITALIC_ANGLE_MIN, ITALIC_ANGLE_MAX, I
 import { warpBoxCanvas, warpExtent, warpPlan, MAX_DEVICE_AREA } from './warp-paint.js';
 import { settleBoxTips } from './brush-tips.js';
 import { backdropPixels, boxToPage, BACKDROP_MAX_PX } from './backdrop.js';
+import { maskActive, maskInBoxFrame } from './box-mask.js';
 import { styleReach, wobbleReach } from './paint-reach.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
@@ -77,7 +77,7 @@ export async function exportPreflight(pages = app.pages) {
   for (const p of pages ?? []) {
     for (const b of p?.boxes ?? []) {
       // Empty raster-only boxes produce no layer in textLayerFor either.
-      if (isRasterOnly(b.style) && (String(boxText(b, p) ?? '').trim() || inkActive(b.style?.ink))) raster++;
+      if ((isRasterOnly(b.style) || maskActive(b)) && (String(boxText(b, p) ?? '').trim() || inkActive(b.style?.ink))) raster++;
     }
   }
   return { items, boxes: boxes.size, lines, text: text.size, raster };
@@ -1092,8 +1092,11 @@ function paintBoxJob(ctx, box, L, foot, coarse = false, under = null, tips = nul
     page: sheet?.w > 0 && sheet?.h > 0 && pageGradients(s) ? { toPage: boxToPage(box, L, sheet.at ?? under?.at ?? null), w: sheet.w, h: sheet.h } : null,
     blur: s.blur > 0 ? s.blur : 0,
     taps: mb?.on ? taps(mb.x, mb.y, mb.amount) : [],
-    // The mask's shapes are the box's own, so the box's corner goes with them.
-    clip: clipActive(s.clip) ? { mode: s.clip.mode === 'include' ? 'include' : 'exclude', x: L.ox, y: L.oy, shapes: s.clip.shapes } : null,
+    // The mask is pinned to the page and cut from the finished picture, after
+    // the warp: its shapes in the box's own frame, from the box's corner.
+    // Where a texture warp bends the picture afterwards, `warpTexture` cuts
+    // it there instead (`maskAfterWarp`).
+    clip: maskActive(box) && !maskAfterWarp(box, L) ? { x: L.ox, y: L.oy, shapes: maskInBoxFrame(box) } : null,
     // The brush ink, painted with the letters (`boxInJob` lets it in only
     // where the painter does that).
     ink: inkSpec(s, L, tips),
@@ -1208,7 +1211,7 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
     };
     const on = sheet?.snap ? { ...sheet, at: { x: snap(box.x, foot.ox, s.flipH), y: snap(box.y, foot.oy, s.flipV) } } : sheet;
     const ink = paintBoxJob(ctx, box, L, foot, coarse, !F && warpActive(s, box.w, box.h) ? null : page, tips, on);
-    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, ink };
+    return { canvas: cnv, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, ink, masked: !maskAfterWarp(box, L) };
   }
   paintShadows(ctx, box, L, SS, foot);
   paintBox(ctx, box, L);
@@ -1238,32 +1241,24 @@ export function renderBoxTexture(box, p, tips, scale = 2, maxPx = Infinity, maxS
     cnv.width = 0;
     cnv.height = 0;
   }
-  // The visibility mask, last of all: it decides what of the finished picture
-  // - blur, smear and crumple included - is shown at all, exactly as the
-  // editor's CSS mask sits outside its filter list. Shapes are box-local page
-  // px; (L.ox, L.oy) is the box's top-left inside the footprint.
-  if (clipActive(s.clip)) {
-    const m = document.createElement('canvas');
-    m.width = out.width;
-    m.height = out.height;
-    const mctx = m.getContext('2d');
-    mctx.scale(SS, SS);
-    mctx.translate(L.ox, L.oy);
-    drawClipShapes(mctx, s.clip.shapes);
-    const octx = out.getContext('2d');
-    octx.save();
-    octx.setTransform(1, 0, 0, 1, 0, 0);
-    octx.globalCompositeOperation = s.clip.mode === 'include' ? 'destination-in' : 'destination-out';
-    octx.drawImage(m, 0, 0);
-    octx.restore();
-    m.width = 0;
-    m.height = 0;
-  }
+  // The mask, last of all: it decides what of the finished picture - blur,
+  // smear and crumple included - is shown at all. It is pinned to the page and
+  // never bent, so a box the texture warp bends afterwards is cut there
+  // (`warpTexture`). (foot.ox, foot.oy) is the box's corner in this canvas.
+  if (maskActive(box) && !maskAfterWarp(box, L)) cutMask(out, maskInBoxFrame(box), foot.ox, foot.oy, SS);
   // The page px the bitmap spans, which is the footprint exactly wherever it
   // lands on whole pixels - at 2 always - and a fraction of a pixel more where
   // the size above was rounded up, so a caller that places or stretches the
   // bitmap by these numbers maps one texture pixel to `1 / SS` page px.
-  return { canvas: out, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, ink: null };
+  return { canvas: out, ox: foot.ox, oy: foot.oy, cw: pw / SS, ch: ph / SS, ss: SS, warped: !!F, ink: null, masked: !maskAfterWarp(box, L) };
+}
+
+// Whether a box's mask has to wait for the texture warp: a warped box whose
+// painter does not bend it in the job (`meshInJob`, the layout's `mesh`) is
+// bent by `warpTexture` afterwards, and the mask, pinned to the page, is cut
+// from the bent picture, never bent with it.
+function maskAfterWarp(box, L) {
+  return maskActive(box) && !L.mesh && warpActive(box.style, box.w, box.h);
 }
 
 // Whether a box's roughening goes to the glyph painter in the job, to move
@@ -1319,8 +1314,7 @@ export function meshInJob(box) {
     engineDraws() &&
     glyphPainter().mesh === true &&
     warpActive(s, box.w, box.h) &&
-    (!inkActive(s.ink) || boxInJob(box)) &&
-    (!clipActive(s.clip) || glyphPainter().box === true)
+    (!inkActive(s.ink) || boxInJob(box))
   );
 }
 
@@ -1370,6 +1364,16 @@ export function warpTexture(tex, box, release = true, gpu = null, maxPx = Infini
   // Bent already, by the painter (`renderBoxTexture`).
   if (tex.warped) return keep;
   if (!warpActive(s, box.w, box.h)) return keep;
+  // The mask waits for the bend (`maskAfterWarp`) and is cut from it here, on
+  // the canvas: the GPU's frame is the gesture's WebGL canvas, which has no 2D
+  // context to cut, so a masked box takes the canvas path.
+  const cut = tex.masked === false && maskActive(box);
+  if (cut) gpu = null;
+  const shapes = cut ? maskInBoxFrame(box) : null;
+  const masked = (r) => {
+    if (cut) cutMask(r.canvas, shapes, r.ox, r.oy, r.canvas.width / r.cw);
+    return r;
+  };
   const opts = {
     warp: s.warp,
     w: box.w,
@@ -1385,8 +1389,12 @@ export function warpTexture(tex, box, release = true, gpu = null, maxPx = Infini
   const warped = warpBoxCanvas(tex.canvas, opts);
   // Null means the mesh does nothing (or cannot be drawn), and the texture
   // already in hand is the answer - unwarped output stays byte for byte what it
-  // was before this pass existed.
-  if (!warped) return keep;
+  // was before this pass existed. Cut once: a gesture's texture comes back
+  // here at every frame.
+  if (!warped) {
+    if (cut) tex.masked = true;
+    return masked(keep);
+  }
   if (release) {
     // The texture has been copied into the warped canvas and nothing else holds
     // it. A box's footprint is megapixels; handing them back here is the same
@@ -1394,7 +1402,7 @@ export function warpTexture(tex, box, release = true, gpu = null, maxPx = Infini
     tex.canvas.width = 0;
     tex.canvas.height = 0;
   }
-  return { canvas: warped.canvas, ox: warped.ox, oy: warped.oy, cw: warped.cw, ch: warped.ch };
+  return masked({ canvas: warped.canvas, ox: warped.ox, oy: warped.oy, cw: warped.cw, ch: warped.ch });
 }
 
 /**
@@ -1605,7 +1613,7 @@ function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null) {
     boxEffects(s).length > 0 ||
     (s.blur ?? 0) > 0 ||
     (s.motionBlur?.on && ((s.motionBlur.x ?? 0) !== 0 || (s.motionBlur.y ?? 0) !== 0)) ||
-    clipActive(s.clip) ||
+    maskActive(box) ||
     inkActive(s.ink) ||
     // No fill is a cut out of the bands, and a cut made straight on the page
     // would take the page with it.

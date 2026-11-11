@@ -81,7 +81,7 @@ const okSize = (v) => (isNum(v) && v > 0 ? v : null);
 // tag saved off a box laid out plain would otherwise turn the smart breaker
 // off for every later box of the tag without anyone choosing that.
 const BOX_STYLE_KEYS = new Set([
-  'size', 'path', 'clip', 'ink', 'warp', 'circle', 'sfx', 'rotation', 'flipH', 'flipV', 'curve',
+  'size', 'path', 'ink', 'warp', 'circle', 'sfx', 'rotation', 'flipH', 'flipV', 'curve',
   'shape', 'minOrphan', 'hyphenate', 'margin', 'balloon', 'autoHeight',
 ]);
 export const TAG_STYLE_KEYS = Object.keys(defaultStyle()).filter((k) => !BOX_STYLE_KEYS.has(k));

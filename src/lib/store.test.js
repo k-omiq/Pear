@@ -1218,7 +1218,6 @@ const BULK_VALUES = () => ({
   strokeEffects: [{ size: 4, position: 'outside', blend: 'normal', opacity: 1, fill: 'gradient', color: '#000000', gradient: { style: 'shapeburst', stops: [{ color: '#111111', pos: 0, opacity: 1 }, { color: '#eeeeee', pos: 1, opacity: 1 }] } }],
   blur: 7,
   motionBlur: { on: true, x: 3, y: -1, amount: 8 },
-  clip: { on: true, mode: 'include', brushSize: 30, shapes: [{ kind: 'ellipse', cx: 10, cy: 10, rx: 5, ry: 5 }] },
   circle: { on: true, angle: 90, inside: true },
   curve: 33,
   'roughen.on': true,
@@ -1286,7 +1285,7 @@ describe('the bulk edit mask', () => {
   // fails this. Geometry cannot appear because x/y/w/h live on the box, not the
   // style - which is also why they stay the Inspector's.
   it('covers every leaf of the style, and nothing that is not one', () => {
-    // `gradient`, `pattern`, `strokes`, `shadows`, `motionBlur`, `clip` and
+    // `gradient`, `pattern`, `strokes`, `shadows`, `motionBlur` and
     // `circle` are leaves in their own right - a bulk edit moves a whole
     // gradient, smear or stroke list, never one field of one stroke. `path`,
     // `ink` and `warp` are box-local geometry - drawn against this box, by

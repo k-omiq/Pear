@@ -23,7 +23,9 @@ import { installFakeCanvas } from '../test/fake-canvas.js';
 const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', size: 30, ...over });
 const MASKED = {
   id: 'masked', lineN: null, text: 'WAIT FOR ME\nOVER THERE', x: 100, y: 200, w: 240, h: 90,
-  style: style({ clip: { on: true, mode: 'exclude', brushSize: 20, shapes: [{ kind: 'ellipse', cx: 120, cy: 45, rx: 80, ry: 30 }] } }),
+  style: style(),
+  // Pinned to the page: the box's own (120, 45) is page (220, 245).
+  mask: { on: true, shapes: [{ kind: 'ellipse', op: 'hide', cx: 220, cy: 245, rx: 80, ry: 30 }] },
 };
 const task = () => new Promise((resolve) => setTimeout(resolve, 0));
 // The wrapper's style, as jsdom writes it back.
@@ -124,7 +126,7 @@ describe('a masked box, from the picture to the editable', () => {
     const before = MASKED_BY.exec(m.wrap())[1];
     endEdit(m.box.text);
     await tick();
-    m.box.style.clip.shapes = [...m.box.style.clip.shapes, { kind: 'ellipse', cx: 10, cy: 10, rx: 5, ry: 5 }];
+    m.box.mask.shapes = [...m.box.mask.shapes, { kind: 'ellipse', op: 'hide', cx: 110, cy: 210, rx: 5, ry: 5 }];
     await tick();
     await task();
     await tick();
