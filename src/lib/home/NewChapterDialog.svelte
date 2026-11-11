@@ -309,6 +309,8 @@
         createdProject = await createProject(newProjectName.trim(), {
           layout: newProjectLayout,
           ocrLanguage: newProjectOcrLanguage,
+          // A series made from a package exports as the one it came from.
+          exportScale: isPackage ? pkgSummary?.exportScale : 1,
         });
       }
       const pid = createdProject ? createdProject.id : target;

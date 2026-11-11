@@ -183,7 +183,7 @@ describe('a new project', () => {
     await fireEvent.click(view.getByRole('button', { name: 'Chinese' }));
     await pick(view);
     await create(view);
-    expect(mock.createProject).toHaveBeenCalledWith('New', { layout: 'pages', ocrLanguage: 'zh' });
+    expect(mock.createProject).toHaveBeenCalledWith('New', { layout: 'pages', ocrLanguage: 'zh', exportScale: 1 });
     expect(mock.createChapter.mock.calls[0][0]).toMatchObject({ projectId: 'new', number: 1 });
   });
 
@@ -365,5 +365,23 @@ describe('comics use and an empty project', () => {
     await pick(view);
     await create(view);
     expect(mock.setEmptyProjectLayout).not.toHaveBeenCalled();
+  });
+});
+
+// Export at 2x is a series setting: a series made from a package takes the
+// Size of the series the package came from.
+describe('a new series from a package', () => {
+  it('exports at the Size of the series the package came from', async () => {
+    mock.pickChapterSource.mockResolvedValue({ package: new File(['zip'], 'seven.mtchapter') });
+    mock.inspectPackage.mockResolvedValue({
+      pkg: { manifest: {} },
+      summary: { number: 7, title: 'Seven', pageCount: 2, projectName: 'Sharp', layout: 'longstrip', ocrLanguage: 'ko', exportScale: 2, fonts: [], tags: [] },
+    });
+    mock.importChapterPackage.mockResolvedValue({ chapter: { id: 'chapter', number: 7 } });
+    const view = await mount();
+    await newProject(view);
+    await choose(view, 'Choose images…');
+    await create(view, mock.importChapterPackage);
+    expect(mock.createProject).toHaveBeenCalledWith('Sharp', { layout: 'longstrip', ocrLanguage: 'ko', exportScale: 2 });
   });
 });

@@ -44,7 +44,7 @@ import { styleReach, placedWobbleReach } from './paint-reach.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { snapshotExportPages, withExportPageImages, setExportPageSize } from './export-pages.svelte.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
-import { planStripCuts, SLICE_H_DEFAULT } from './editor/strip-cuts.js';
+import { planStripCuts, SLICE_H_DEFAULT, SLICE_H_MIN, MAX_SLICE_RATIO } from './editor/strip-cuts.js';
 import { cleanRowFlags, cleanRowBands } from './strip-reslice.js';
 import { PREP_CANVAS_SIDE, PREP_CHUNK_H, prepCanvas, releasePrepCanvas } from './prep-images.js';
 // The detected-text JSON serialiser lives in a leaf module so the library can
@@ -1582,7 +1582,13 @@ async function encodeCanvas(canvas, fmt) {
 // `scale` supersamples the whole page (2 = 2x pixel dims); because text is
 // already rendered 2x internally, an outer scale maps that bitmap 1:1 to device
 // pixels - so 2x output stays genuinely sharp, not a soft upscale.
-export async function renderPageCanvas(p, scale = 1) {
+//
+// `enlarged` is the export's Size 2x (`renderPageBlob`): the art is resized
+// with the canvas's high-quality filter and an upright box's picture is laid
+// as an exact copy (`layUpright`). Off, a scaled page is drawn as it always
+// was, which is what the agent's pictures (agent/render.js) are made from.
+export async function renderPageCanvas(p, scale = 1, { enlarged = false } = {}) {
+  const exact = enlarged && scale > 1;
   p = snapshotExportPages([p])[0];
   // Never `p.w` directly: an unmeasured page is 0, and a 0x0 canvas exports as
   // a broken file with a success toast over it. See `pageSpace`.
@@ -1611,6 +1617,11 @@ export async function renderPageCanvas(p, scale = 1) {
   if (base) {
     try {
       const img = await loadImage(base);
+      // An enlarged page (Size 2x) is the art resized once, smoothly, and
+      // nothing more: Pear changes text, not art. At scale 1 the art lands on
+      // its own pixels and the default is left alone, so those bytes are as
+      // they were.
+      if (exact) ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, W, H);
       art = { image: img, W, H, src: base };
     } catch {
@@ -1621,7 +1632,7 @@ export async function renderPageCanvas(p, scale = 1) {
   for (const box of p.boxes ?? []) {
     ctx.save();
     ctx.globalAlpha = box.style.opacity ?? 1;
-    paintBoxOnPage(ctx, box, p, tips, art, { w: W, h: H });
+    paintBoxOnPage(ctx, box, p, tips, art, { w: W, h: H }, exact);
     ctx.restore();
   }
   // The page is drawn and every blend has read it: its decoded picture goes
@@ -1641,7 +1652,9 @@ export async function renderPageCanvas(p, scale = 1) {
 // in the frame that route paints in. Null for the PSD's layers
 // (`renderBoxLayer`): Photoshop blends those from their `blendMode`.
 // `sheet` is the page as the route knows it (`paintBoxJob`), `{ w, h }`.
-function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null) {
+// `exact` is an enlarged export's page (Size 2x): an upright box's picture
+// lands on its device pixels one for one and is laid as a copy (`layUpright`).
+function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null, exact = false) {
   const s = box.style;
   const rot = s.rotation || 0;
   const opaque = (s.opacity ?? 1) >= 0.999;
@@ -1730,15 +1743,23 @@ function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null) {
       const originX = Math.round(box.x - ox);
       const originY = Math.round(box.y - oy);
       if (flipped) {
-        // Mirror the bitmap around the box center.
+        // Mirror the bitmap around the box center. On an exact page the
+        // centre is moved onto a half device pixel (at most a quarter of one
+        // away): the mirror of a whole-pixel bitmap about it lands on whole
+        // pixels again, so it is laid as a copy too. Elsewhere it is the box's
+        // own centre, as it always was.
+        const k = exact ? deviceScale(ctx) : 0;
+        const pivot = (v) => (k > 1 ? Math.round(v * 2 * k) / (2 * k) : v);
+        const cx = pivot(box.x + box.w / 2);
+        const cy = pivot(box.y + box.h / 2);
         ctx.save();
-        ctx.translate(box.x + box.w / 2, box.y + box.h / 2);
+        ctx.translate(cx, cy);
         ctx.scale(fx, fy);
-        ctx.translate(-(box.x + box.w / 2), -(box.y + box.h / 2));
-        ctx.drawImage(bc, originX, originY, cw, ch);
+        ctx.translate(-cx, -cy);
+        layUpright(ctx, bc, originX, originY, cw, ch, exact);
         ctx.restore();
       } else {
-        ctx.drawImage(bc, originX, originY, cw, ch);
+        layUpright(ctx, bc, originX, originY, cw, ch, exact);
       }
     } else {
       // Rotated raster fallback (roughened/translucent/masked): downsample the
@@ -1757,6 +1778,39 @@ function paintBoxOnPage(ctx, box, p, tips, art = null, sheet = null) {
     bc.width = 0;
     bc.height = 0;
   }
+}
+
+// Device px per page px of a context's transform (its x axis), or 0 where
+// the context cannot say.
+function deviceScale(ctx) {
+  const m = ctx.getTransform?.();
+  return m ? Math.hypot(m.a, m.b) : 0;
+}
+
+// An upright box's picture onto the page at (x, y), `w` x `h` page px. On an
+// enlarged export's page (`exact`, Size 2x: 2 device px per page px, the
+// scale every picture is painted at) each texel lands on one device pixel,
+// and it is laid with no filter: the file holds the picture's pixels exactly.
+// A smoothing filter is not a copy even at 1:1 (Skia's high quality is a
+// cubic that softens there). Anywhere else - the page's own size, where the
+// picture is scaled down 2:1, and any page not drawn for Size 2x - it is the
+// same smoothed draw as always: the copy needs a scale above 1, so the page's
+// own size can never take it.
+function layUpright(ctx, bc, x, y, w, h, exact = false) {
+  const m = exact ? ctx.getTransform?.() : null;
+  const whole = (v) => Math.abs(v - Math.round(v)) < 1e-6;
+  const copy =
+    !!m && m.b === 0 && m.c === 0 && Math.abs(m.a) > 1 && Math.abs(m.d) > 1 &&
+    Math.abs(m.a) * w === bc.width && Math.abs(m.d) * h === bc.height &&
+    whole(m.a * x + m.e) && whole(m.d * y + m.f);
+  if (!copy) {
+    ctx.drawImage(bc, x, y, w, h);
+    return;
+  }
+  const smoothing = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(bc, x, y, w, h);
+  ctx.imageSmoothingEnabled = smoothing;
 }
 
 // Render a single box to its own compact, transparent canvas with the exact
@@ -1791,7 +1845,8 @@ export function renderBoxLayer(box, W, H, scratch, p, scale = 1, tips, dx = 0, d
   // is laid over `sheet`.
   const drawn = watchDraws(ctx);
   try {
-    paintBoxOnPage(ctx, box, p, tips, null, sheet);
+    // Only the export's Size 2x asks a layer for a scale above 1.
+    paintBoxOnPage(ctx, box, p, tips, null, sheet, scale > 1);
   } finally {
     drawn.stop();
   }
@@ -1926,9 +1981,10 @@ export function watchDraws(ctx) {
   };
 }
 
-// Render one page to a Blob in the requested raster format (native resolution).
-async function renderPageBlob(p, fmt) {
-  const canvas = await renderPageCanvas(p);
+// Render one page to a Blob in the requested raster format, at the page's own
+// size or `scale` times it (Size 2x).
+async function renderPageBlob(p, fmt, scale = 1) {
+  const canvas = await renderPageCanvas(p, scale, { enlarged: true });
   const blob = await encodeCanvas(canvas, fmt);
   // Hand the page's pixels back before the caller allocates the next page's.
   // Same reasoning as the strip exporter: a local canvas is collectable, but
@@ -2150,7 +2206,8 @@ export async function renderStripSliceCanvas(pages, tops, y0, y1, scale = 1, che
     ctx.save();
     ctx.translate(x, y);
     ctx.globalAlpha = box.style.opacity ?? 1;
-    paintBoxOnPage(ctx, box, p, tips, arts.get(p) ?? null, sheet);
+    // Only the export's Size 2x asks a slice for a scale above 1.
+    paintBoxOnPage(ctx, box, p, tips, arts.get(p) ?? null, sheet, scale > 1);
     ctx.restore();
   }
   return canvas;
@@ -2161,7 +2218,7 @@ export async function renderStripSliceCanvas(pages, tops, y0, y1, scale = 1, che
 // boxes are preserved.
 // `column` is the copied pages of the document the export holds:
 // `app.pages` by the time this runs can be another chapter's.
-async function renderStripPageBlob(p, fmt, column, check) {
+async function renderStripPageBlob(p, fmt, column, check, scale = 1) {
   const pages = column?.length ? column : [p];
   const idx = pages.findIndex((pg) => pg?.id === p?.id);
   // The current source boundary and the column width use the same measured
@@ -2169,7 +2226,7 @@ async function renderStripPageBlob(p, fmt, column, check) {
   // it does not retain the whole chapter's decoded artwork.
   const { tops } = await measureStrip(pages, check);
   const top = idx >= 0 ? tops[idx] ?? 0 : 0;
-  const canvas = await renderStripSliceCanvas(pages, tops, top, top + (p.h || PAGE_H), 1, check);
+  const canvas = await renderStripSliceCanvas(pages, tops, top, top + (p.h || PAGE_H), scale, check);
   const blob = await encodeCanvas(canvas, fmt);
   canvas.width = 0;
   canvas.height = 0;
@@ -2185,16 +2242,91 @@ async function renderStripPageBlob(p, fmt, column, check) {
 // the chapter either way.
 const RASTER = new Set(['PNG', 'JPG', 'WebP']);
 
+// ---------- Size 2x: what a file can hold ----------
+//
+// Measured in WKWebView on macOS (2026-11-10): a canvas side works up to
+// 65,536 px and more, but past 268,435,456 px of area (16384 x 16384) a canvas
+// is made at the size asked for and draws nothing, with no error. A page past
+// it would be written as a blank file under a success toast. The engine's
+// encoders have sides of their own (`JPEG_MAX_SIDE`, `WEBP_MAX_SIDE` in
+// text-engine/src/abi_encode.rs): past them the page falls back to the
+// webview's encoder, which writes JPEG at 4:2:0 and PNG for WebP. A PSD's
+// layers are drawn on page-size canvases, so it has the area limit too.
+// These are asked of an enlarged export only: at the page's own size nothing
+// is checked that was not checked before.
+export const CANVAS_MAX_AREA = 16384 * 16384;
+const FORMAT_MAX_SIDE = { JPG: 65535, WebP: 16384 };
+
+// Whether a picture of `w` x `h` page px, `scale` times enlarged, can be
+// written as `fmt`.
+export function scaledFits(w, h, scale, fmt) {
+  const W = Math.round(w * scale);
+  const H = Math.round(h * scale);
+  const side = FORMAT_MAX_SIDE[fmt] ?? Infinity;
+  return W * H <= CANVAS_MAX_AREA && W <= side && H <= side;
+}
+
+// Why these pages cannot be exported at `scale` as `fmt`, or null when they
+// can: the first page past a limit, as the user counts pages (`first` is the
+// number of `pages[0]`). A page not measured yet is not judged here; the
+// export measures it and asks again before it writes anything. In a strip
+// every file is the column's width (`strip.width`). A strip's re-cut slices
+// are judged apart (`stripSliceBlock`): they are files of their own height.
+export function scaleBlock(pages, fmt, scale, { strip = null, first = 1 } = {}) {
+  if (scale === 1 || fmt === 'JSON') return null;
+  const width = (p) => (strip ? Math.max(strip.width || 0, p.w) : p.w);
+  const at = (pages ?? []).findIndex((p) => p?.w > 0 && p?.h > 0 && !scaledFits(width(p), p.h, scale, fmt));
+  if (at >= 0) return `Page ${first + at} is too large for ${scale}x`;
+  return null;
+}
+
+// The tallest slice, page px, a strip `width` page px wide can be written in
+// at `scale` as `fmt`.
+function tallestSlice(width, scale, fmt) {
+  const W = Math.max(1, Math.round(width * scale));
+  const side = FORMAT_MAX_SIDE[fmt] ?? Infinity;
+  return Math.floor(Math.min(side, CANVAS_MAX_AREA / W) / scale);
+}
+
+// The tallest Slice height (the user's setting, page px) whose slices all fit
+// at `scale`: a cut may land up to `MAX_SLICE_RATIO` times it below the last
+// (`planStripCuts`). Under `SLICE_H_MIN`, no setting fits.
+export function stripSliceLimit(width, scale, fmt) {
+  return Math.floor(tallestSlice(width, scale, fmt) / MAX_SLICE_RATIO);
+}
+
+// Why a whole strip cannot be re-cut at `sliceH` and written at `scale` as
+// `fmt`, or null: judged by the tallest a cut may make a slice, and saying a
+// Slice height that works. For All pages only; one page of a strip is that
+// page's own slice (`scaleBlock`), and the export checks every real cut again
+// before it writes (`exportStripImages`).
+export function stripSliceBlock(pages, fmt, scale, width, sliceH) {
+  if (scale === 1 || !RASTER.has(fmt) || !(sliceH > 0) || !(width > 0)) return null;
+  const tallest = Math.min(stripOffsets(pages).total, sliceH * MAX_SLICE_RATIO);
+  if (!(tallest > 0) || scaledFits(width, tallest, scale, fmt)) return null;
+  const limit = stripSliceLimit(width, scale, fmt);
+  return limit >= SLICE_H_MIN ? `At ${scale}x, set Slice height to ${limit} or less` : `This strip is too wide for ${scale}x`;
+}
+
 // The whole-chapter strip export. Called only from `exportImages`, which already
 // holds `app.exporting` across it.
-async function exportStripImages(fmt, held, chapter, pages) {
-  const { tops, total } = await measureStrip(pages, () => chapterHeld(chapter));
+async function exportStripImages(fmt, held, chapter, pages, scale = 1) {
+  const { tops, total, width } = await measureStrip(pages, () => chapterHeld(chapter));
   const target = app.stripSliceH > 0 ? app.stripSliceH : SLICE_H_DEFAULT;
   const cleanRows = await stripCleanBands(pages, () => { enginesHeld(held); chapterHeld(chapter); });
   const { cuts, warnings } = planStripCuts(pages, target, undefined, cleanRows);
   if (!(total > 0) || cuts.length < 2) {
     toast('Nothing to export: this chapter has no page art to slice.');
     return false;
+  }
+  // Every slice is judged before the first is written: a slice past a limit
+  // is a blank file, and a chapter written up to one is half a chapter.
+  if (scale !== 1) {
+    const over = cuts.findIndex((y, i) => i > 0 && !scaledFits(width, y - cuts[i - 1], scale, fmt));
+    if (over > 0) {
+      const limit = stripSliceLimit(width, scale, fmt);
+      throw new Error(`Slice ${over} is too large for ${scale}x${limit >= SLICE_H_MIN ? `. Set Slice height to ${limit} or less` : ''}`);
+    }
   }
   const ext = EXT[fmt];
   const n = cuts.length - 1;
@@ -2214,7 +2346,7 @@ async function exportStripImages(fmt, held, chapter, pages) {
     for (let i = 0; i < n; i++) {
       const same = () => chapterHeld(chapter, written);
       same();
-      const canvas = await renderStripSliceCanvas(pages, tops, cuts[i], cuts[i + 1], 1, same);
+      const canvas = await renderStripSliceCanvas(pages, tops, cuts[i], cuts[i + 1], scale, same);
       const blob = await encodeCanvas(canvas, fmt);
       // Hand the slice's pixels back before the next one is allocated. A canvas
       // held only by a local is collectable anyway, but "eventually" is not a
@@ -2494,7 +2626,10 @@ function exportFailure(error, written) {
 }
 
 // Public entry: scope = 'current' | 'page' | 'all', fmt = PNG|JPG|WebP|PSD|JSON.
-export async function exportImages(fmt, scope) {
+// `scale` is the dialog's Size: 1 is the page's own pixels, 2 is twice them
+// each way (text laid at the pixels it is painted at, art enlarged once). JSON
+// has no pixels and takes no scale.
+export async function exportImages(fmt, scope, scale = 1) {
   if (app.exporting) return false;
   app.exporting = true;
   let written = 0;
@@ -2538,12 +2673,26 @@ export async function exportImages(fmt, scope) {
     // round-trips through the JSON importer in a single pick.
     if (fmt === 'JSON') return await exportTextJson(scope, held, pages, chapter);
 
+    // An enlarged export is judged before anything is written, on every page
+    // it writes: the dialog judged the pages it knew the size of, and a page
+    // nobody has opened is measured here, one picture at a time.
+    if (scale !== 1) {
+      await measureStrip(longstrip ? column : pages, () => chapterHeld(chapter));
+      chapterHeld(chapter);
+      // The pages; a whole strip's re-cut slices are checked cut by cut
+      // once they are planned (`exportStripImages`).
+      const strip = longstrip && RASTER.has(fmt) ? { width: maxPageWidth(column) } : null;
+      const first = scope === 'all' ? 1 : chapter.pages.indexOf(selected) + 1;
+      const why = scaleBlock(pages, fmt, scale, { strip, first });
+      if (why) throw new Error(why);
+    }
+
     // A whole longstrip chapter is one column, and the files it ships as are
     // slices of that column rather than its source pages. Only 'all' - a single
     // page is still a single page, and the user asking for "this page" in a
     // strip is asking for the slice they are looking at, not a re-cut of it.
     if (longstrip && scope === 'all' && RASTER.has(fmt)) {
-      return await exportStripImages(fmt, held, chapter, column);
+      return await exportStripImages(fmt, held, chapter, column, scale);
     }
 
     const baseName = sanitizeExportName(app.exportName);
@@ -2574,16 +2723,16 @@ export async function exportImages(fmt, scope) {
             // it round-trips losslessly (one .psd per page). Lazily imported so
             // ag-psd isn't pulled into the raster-export path.
             const { buildPagePsd } = await import('./psd.js');
-            const bytes = await buildPagePsd(p, { chapter, column: longstrip ? column : null });
+            const bytes = await buildPagePsd(p, { chapter, column: longstrip ? column : null, scale });
             // Written straight from these bytes under Tauri (`blobBytes`):
             // a Blob of them is a second copy of a file that can run to
             // hundreds of megabytes, and reading it back is a third.
             return isTauri() ? bytes : new Blob([bytes], { type: MIME.PSD });
           }
           if (longstrip && RASTER.has(fmt)) {
-            return await renderStripPageBlob(p, fmt, column, () => chapterHeld(chapter, written));
+            return await renderStripPageBlob(p, fmt, column, () => chapterHeld(chapter, written), scale);
           }
-          return await renderPageBlob(p, fmt);
+          return await renderPageBlob(p, fmt, scale);
         });
       } catch (e) {
         // A PSD finds the switch itself, and knows of no file but its own.

@@ -10,7 +10,7 @@
 // Tauri webview / vite browser), so no explicit initializeCanvas call is needed.
 import { writePsd, readPsd } from 'ag-psd';
 import { markDeepKnockout, readDeepKnockout } from './psd-knockout.js';
-import { app, PAGE_W, PAGE_H, isLongstrip } from './store.svelte.js';
+import { app, PAGE_W, PAGE_H, isLongstrip, rescalePageGeometry } from './store.svelte.js';
 import { isTauri, pickFilesTauri } from './importer.js';
 import { renderBoxLayer, pageSpace, settleNoise, enginesSettled, enginesHeld, measureStrip, chapterNow, chapterHeld } from './exporter.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
@@ -59,8 +59,11 @@ function loadImage(src) {
 
 // Decode any image source (object URL / data URL) to raw RGBA ImageData at its
 // natural size, unless (w,h) force a target size. Raw pixels - no lossy
-// re-encode - are what we hand to ag-psd.
-async function imageDataFromSrc(src, w, h) {
+// re-encode - are what we hand to ag-psd. `smooth` asks for the canvas's
+// high-quality resize: an enlarged document's art (Size 2x), resized once and
+// not otherwise touched. Left off, the resize is the canvas default it always
+// was.
+async function imageDataFromSrc(src, w, h, smooth = false) {
   const img = await loadImage(src);
   const cw = w || img.naturalWidth || img.width;
   const ch = h || img.naturalHeight || img.height;
@@ -68,6 +71,7 @@ async function imageDataFromSrc(src, w, h) {
   cnv.width = cw;
   cnv.height = ch;
   const ctx = cnv.getContext('2d');
+  if (smooth) ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, cw, ch);
   const data = ctx.getImageData(0, 0, cw, ch);
   // The pixels are read: the page-size canvas and the decoded picture go
@@ -1746,7 +1750,12 @@ export function writePagePsd(doc) {
 // reaches over the seam. Its pages are measured first, as the strip export
 // measures them, and the fonts waited for are those of every page whose boxes
 // the file paints.
-export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
+//
+// `scale` is the export's Size (`exportImages`): at 2 the document is twice
+// the page each way, every raster layer is the box's picture at the pixels it
+// is painted at (`renderBoxLayer`), the art is enlarged once, and each type
+// layer is the same layer stated in the larger document (`scaleTypeLayer`).
+export async function buildPagePsd(p, { chapter = chapterNow(), column, scale = 1 } = {}) {
   chapterHeld(chapter);
   // A batch supplies its original copy, including strip neighbours. A direct
   // single-page build takes its own copy before measurement/font/image awaits.
@@ -1786,7 +1795,7 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   const scratch = document.createElement('canvas');
   let textLayers;
   try {
-    textLayers = (await pageTextLayers(p, entries, W, H, scratch, tips)).map((e) => e.layer);
+    textLayers = (await pageTextLayers(p, entries, W, H, scratch, tips, scale)).map((e) => e.layer);
   } finally {
     // A page-size canvas, given back before the base layers are decoded.
     scratch.width = 0;
@@ -1816,9 +1825,11 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   // pagePsdDocument), so pushing Cleaned first put the untouched art back on
   // top of the cleaned plate and hid the cleaning.
   const baseLayers = [];
+  const DW = Math.round(W * scale);
+  const DH = Math.round(H * scale);
   if (p.raw) {
     try {
-      const data = await imageDataFromSrc(p.raw, W, H);
+      const data = await imageDataFromSrc(p.raw, DW, DH, scale !== 1);
       baseLayers.push({ name: 'Raw', left: 0, top: 0, right: data.width, bottom: data.height, imageData: data });
     } catch {
       /* skip */
@@ -1826,7 +1837,7 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   }
   if (p.cleaned) {
     try {
-      const data = await imageDataFromSrc(p.cleaned, W, H);
+      const data = await imageDataFromSrc(p.cleaned, DW, DH, scale !== 1);
       baseLayers.push({ name: 'Cleaned', left: 0, top: 0, right: data.width, bottom: data.height, imageData: data });
     } catch {
       /* skip */
@@ -1838,13 +1849,18 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   // art's size above, and `serializePage` would state the defaults for it -
   // a 123x234 file saying its page is 850x1200, which the import believes and
   // the next measure of the art rescales every box out of.
-  const project = { key: PROJECT_KEY, schema: SCHEMA, page: { ...serializePage(p), w: W, h: H } };
+  //
+  // An enlarged document (Size 2x) says so (`docScale`): its page is still
+  // stated at the page's own size, and its art is the enlarged art, so an
+  // import has to know the two apart (`psdPageScale`). Absent is 1, and a
+  // file at the page's own size is written exactly as it was.
+  const project = { key: PROJECT_KEY, schema: SCHEMA, page: { ...serializePage(p), w: W, h: H }, ...(scale !== 1 ? { docScale: scale } : null) };
 
   enginesHeld(held);
   // And of the one chapter (`chapterNow`, exporter.js): a chapter closed
   // while this was built took its pictures, and its neighbours, with it.
   chapterHeld(chapter);
-  return writePagePsd(pagePsdDocument({ w: W, h: H, textLayers, baseLayers, project }));
+  return writePagePsd(pagePsdDocument({ w: DW, h: DH, textLayers, baseLayers, project }));
 }
 
 // The pages a strip page's lettering is laid out among: the open chapter's,
@@ -1909,28 +1925,93 @@ function pageLayerBoxes(p, column) {
 // own box, and for a neighbour's its own page, sized as the strip export
 // sizes it (`pageSpace`): one size, handed to both the pixels and the live
 // layer, so the two agree.
-async function pageTextLayers(p, entries, W, H, scratch, tips) {
+//
+// At `scale` (Size 2x) the rasters are drawn into the larger document, so
+// their bounds, and the frames read off them, are its pixels; the type layer
+// is written in page px as always and then stated in the document's
+// (`scaleTypeLayer`).
+async function pageTextLayers(p, entries, W, H, scratch, tips, scale = 1) {
   const out = [];
   for (const e of entries) {
     const moved = e.owner !== p;
     const sheet = moved ? await pageSpace(e.owner) : { w: W, h: H };
-    const rendered = renderBoxLayer(e.box, W, H, scratch, e.owner, 1, tips, e.dx, e.dy, sheet);
+    const rendered = renderBoxLayer(e.box, W, H, scratch, e.owner, scale, tips, e.dx, e.dy, sheet);
     if (e.owner !== p && !rendered) continue;
     // A turned box with an effect gradient: its letters alone, for the
     // frames the gradient is placed by (`gradientFrames`).
     if (rendered && needsGradientFrames(e.box.style)) {
-      const letters = renderBoxLayer({ ...e.box, style: lettersOnlyStyle(e.box.style) }, W, H, scratch, e.owner, 1, tips, e.dx, e.dy);
-      const centre = [e.box.x + e.box.w / 2 + (e.dx || 0), e.box.y + e.box.h / 2 + (e.dy || 0)];
+      const letters = renderBoxLayer({ ...e.box, style: lettersOnlyStyle(e.box.style) }, W, H, scratch, e.owner, scale, tips, e.dx, e.dy);
+      const centre = [(e.box.x + e.box.w / 2 + (e.dx || 0)) * scale, (e.box.y + e.box.h / 2 + (e.dy || 0)) * scale];
       const frames = letters ? gradientFrames(letters, centre, Number(e.box.style.rotation) || 0) : null;
-      if (frames) rendered.frames = frames;
+      // Read off the document's pixels and stated in page px, the unit a
+      // stroke gradient's `grow` (`placedGradients`) and everything else
+      // `textLayerFor` places by is in.
+      const page = (v) => v.map((n) => n / scale);
+      if (frames) rendered.frames = scale === 1 ? frames : { page: page(frames.page), local: page(frames.local), centre: page(frames.centre) };
     }
-    const layer = textLayerFor(e.owner, e.box, rendered, moved ? { dx: e.dx, dy: e.dy, W, H, w: sheet.w, h: sheet.h } : null);
+    let layer = textLayerFor(e.owner, e.box, rendered, moved ? { dx: e.dx, dy: e.dy, W, H, w: sheet.w, h: sheet.h } : null);
     if (!layer) continue;
     if (layer.text && moved) {
       const t = layer.text.transform;
       layer.text.transform = [t[0], t[1], t[2], t[3], t[4] + e.dx, t[5] + e.dy];
     }
+    if (scale !== 1) layer = scaleTypeLayer(layer, scale, !rendered);
     out.push({ ...e, rendered, layer });
+  }
+  return out;
+}
+
+// The effect fields Photoshop states in pixels of the document: a stroke's,
+// glow's, shadow's and satin's Size, a shadow's and satin's Distance, a
+// bevel's Size and Soften. Choke is written in the same `Pixels` wrapper but
+// holds a percent (`textLayerFor`), and gradient offsets and scales are
+// percents of the layer, so none of those move.
+const FX_PIXEL_FIELDS = ['size', 'distance', 'soften'];
+
+/**
+ * A layer from `textLayerFor`, written in page px, stated in a document `k`
+ * times the page each way (Size 2x): the type layer's place and frame, its
+ * point size, leading and indents, and every effect length move by `k`, so
+ * Photoshop's own re-render lands on the pixels laid under it. Tracking is in
+ * thousandths of an em and stays. The bounds are the raster's, already in the
+ * document's pixels, unless `bounds` says they are the box's own rect (a box
+ * with no raster). Returns a new layer; the image data is shared.
+ */
+export function scaleTypeLayer(layer, k, bounds = false) {
+  const out = { ...layer };
+  if (bounds) for (const key of ['left', 'top', 'right', 'bottom']) out[key] = Math.round(layer[key] * k);
+  if (layer.effects) {
+    const fx = (e) => {
+      const next = { ...e };
+      for (const f of FX_PIXEL_FIELDS) if (e?.[f]?.units === 'Pixels') next[f] = { ...e[f], value: e[f].value * k };
+      return next;
+    };
+    out.effects = Object.fromEntries(Object.entries(layer.effects).map(([key, v]) => [key, Array.isArray(v) ? v.map(fx) : fx(v)]));
+  }
+  const t = layer.text;
+  if (t) {
+    const sized = (st) => {
+      const next = { ...st };
+      if (typeof st.fontSize === 'number') next.fontSize = st.fontSize * k;
+      if (typeof st.leading === 'number') next.leading = st.leading * k;
+      return next;
+    };
+    out.text = {
+      ...t,
+      transform: [t.transform[0], t.transform[1], t.transform[2], t.transform[3], t.transform[4] * k, t.transform[5] * k],
+      boxBounds: t.boxBounds.map((v) => v * k),
+      style: sized(t.style),
+      ...(t.styleRuns ? { styleRuns: t.styleRuns.map((r) => ({ ...r, style: sized(r.style) })) } : null),
+      ...(t.paragraphStyleRuns
+        ? {
+            paragraphStyleRuns: t.paragraphStyleRuns.map((r) => {
+              const st = { ...r.style };
+              for (const f of ['startIndent', 'endIndent']) if (typeof st[f] === 'number') st[f] *= k;
+              return { ...r, style: st };
+            }),
+          }
+        : null),
+    };
   }
   return out;
 }
@@ -2519,6 +2600,28 @@ export function parsePagePsd(bytes, readOptions = {}) {
 
 const psdBytes = (url) => fetch(url).then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b));
 
+/**
+ * How much larger a Pear PSD's document is than the page its project states,
+ * `{ sx, sy }`: 1 and 1 for a file at the page's own size. Read from
+ * `docScale` where the export wrote it (Size 2x), else from the document's
+ * size against the page's, so a file of another size that does not say why
+ * is caught too. Its art is the document's: enlarged art, never the original.
+ */
+export function psdPageScale(project, psd) {
+  const page = project?.page;
+  const k = Number(project?.docScale);
+  if (k > 0 && k !== 1) return { sx: k, sy: k };
+  const sx = page?.w > 0 && psd?.width > 0 ? psd.width / page.w : 1;
+  const sy = page?.h > 0 && psd?.height > 0 ? psd.height / page.h : 1;
+  return { sx: Math.abs(sx - 1) < 1e-9 ? 1 : sx, sy: Math.abs(sy - 1) < 1e-9 ? 1 : sy };
+}
+
+// Why a Pear PSD would come in as something other than its own page.
+const enlargedPsd = (project) =>
+  Number(project?.docScale) > 1
+    ? `exported at ${project.docScale}x: its pages and its art are enlarged`
+    : 'its document is not the size of its page, and its art is resized';
+
 function psdPageName(index, suffix) {
   return `page-${String(index + 1).padStart(3, '0')}${suffix}.png`;
 }
@@ -2576,16 +2679,36 @@ export function numberBoxIds(pages) {
   return pages;
 }
 
-export async function chapterPagesFromPsdFiles(files) {
+//
+// A Pear PSD whose document is not its page's size (Size 2x, `psdPageScale`)
+// holds enlarged art, not the art the page was made from. It is refused, and
+// named in `problems`, unless the caller has asked the user and passes
+// `enlarged: true`; then it comes in at the document's size - the boxes
+// scaled with it now, so no later measure of the art moves them - and is
+// counted in `enlarged`. There is no path that brings such a file back into
+// an existing chapter: PSD import makes new chapters only (see above).
+export async function chapterPagesFromPsdFiles(files, { enlarged: allowEnlarged = false } = {}) {
   const list = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   const pages = [];
   const problems = [];
   let lossless = 0;
+  let enlarged = 0;
   for (const file of list) {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const { project, psd } = parsePagePsd(bytes);
+      const k = project ? psdPageScale(project, psd) : { sx: 1, sy: 1 };
+      const resized = k.sx !== 1 || k.sy !== 1;
+      if (resized && !allowEnlarged) {
+        problems.push(`${file.name} - ${enlargedPsd(project)}`);
+        continue;
+      }
       const page = project ? await reconstructFromProject(project, psd) : await reconstructForeign(psd);
+      if (resized) {
+        page.w = psd.width;
+        page.h = psd.height;
+        rescalePageGeometry(page, k.sx, k.sy);
+      }
       const built = await toChapterPage(page, pages.length);
       if (!built) {
         problems.push(`${file.name} - no page image in it`);
@@ -2593,6 +2716,7 @@ export async function chapterPagesFromPsdFiles(files) {
       }
       pages.push(built);
       if (project) lossless++;
+      if (resized) enlarged++;
     } catch (e) {
       problems.push(`${file.name} - ${e?.message || e}`);
     }
@@ -2601,6 +2725,7 @@ export async function chapterPagesFromPsdFiles(files) {
   return {
     pages,
     lossless,
+    enlarged,
     foreign: pages.length - lossless,
     cleanedOnly: pages.filter((pg) => pg.cleanedOnly).length,
     problems,

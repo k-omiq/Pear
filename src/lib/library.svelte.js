@@ -36,6 +36,7 @@ import {
   normalizeChapterMode,
   normalizeLayout,
   normalizeOcrLanguage,
+  normalizeExportScale,
   toast,
   toastError,
   cancelChapterPlace,
@@ -390,6 +391,7 @@ function projectFieldsOf(raw) {
     // may still set it (`setEmptyProjectLayout`). Absent on every other
     // project, which no guess ever touches.
     layoutGuessed: raw.layoutGuessed === true,
+    exportScale: normalizeExportScale(raw.exportScale),
     ...projectTags(raw),
     guide: sanitizeGuide(raw.guide),
   };
@@ -676,7 +678,7 @@ async function freeDir(parent, name, taken) {
 // `undefined` every existing caller passes, is 'pages'.
 // `layoutGuessed`: the caller asked no layout, so `layout` is only a default
 // (see projectFieldsOf).
-export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja', layoutGuessed = false } = {}) {
+export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja', layoutGuessed = false, exportScale = 1 } = {}) {
   const taken = new Set(library.projects.map((p) => p.slug));
   const { slug, dir } = await freeDir(library.root, name, taken);
   await fsx.mkdir(dir);
@@ -692,6 +694,7 @@ export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja'
     layout: normalizedLayout,
     ...(layoutGuessed ? { layoutGuessed: true } : null),
     ocrLanguage: normalizeOcrLanguage(ocrLanguage),
+    exportScale: normalizeExportScale(exportScale),
     // Born empty and written so: a project with no registry of its own is what
     // `projectTags` reads as pre-registry and hands the legacy global list.
     tags: [],
@@ -810,7 +813,7 @@ async function writeProjectRecordNow(p, patch) {
   });
 }
 
-const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'tags', 'tagSizes', 'guide'];
+const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide'];
 
 // The record as this window would write it from its catalogue entry.
 const recordFields = (p) => ({
@@ -821,6 +824,7 @@ const recordFields = (p) => ({
   layout: normalizeLayout(p.layout),
   layoutGuessed: p.layoutGuessed === true,
   ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
+  exportScale: normalizeExportScale(p.exportScale),
   ...seriesFields(p),
 });
 
@@ -833,7 +837,7 @@ const recordBase = new WeakMap();
 function adoptRecord(p, fields, mine) {
   const sameAs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   let series = false;
-  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'tags', 'tagSizes', 'guide']) {
+  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide']) {
     if (!(k in fields) || sameAs(fields[k], mine[k])) continue;
     p[k] = fields[k];
     if (k === 'tags' || k === 'tagSizes' || k === 'guide') series = true;
@@ -923,6 +927,23 @@ async function holdsChapter(dir) {
     if (e.isDirectory && (await fsx.exists(await fsx.join(dir, e.name, 'chapter.json')))) return true;
   }
   return false;
+}
+
+// Queued behind the other record writes as the language is
+// (`setProjectOcrLanguage`): a tag or guide write racing this one would put
+// the old size back on disk.
+export async function setProjectExportScale(projectId, scale) {
+  const p = projectById(projectId);
+  if (!p || p.unreadable) throw new Error('No such readable project');
+  const next = normalizeExportScale(scale);
+  const run = recordWrite.then(async () => {
+    const record = await writeProjectRecord(p, { exportScale: next });
+    p.exportScale = next;
+    p.updatedAt = record.updatedAt;
+  });
+  recordWrite = run.catch(() => {});
+  await run;
+  return next;
 }
 
 export const deleteChapter = guarded(async function deleteChapter(projectId, chapterId) {
@@ -1614,6 +1635,7 @@ export async function readChapterPackageSources(projectId, chapterId) {
       name: p?.name ?? '',
       layout: normalizeLayout(p?.layout),
       ocrLanguage: normalizeOcrLanguage(p?.ocrLanguage),
+      exportScale: normalizeExportScale(p?.exportScale),
     },
     raws,
     cleaned,
