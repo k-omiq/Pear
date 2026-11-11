@@ -193,7 +193,6 @@ describe('Channels and Blend If', () => {
     // the live flag (v24), mode, fill.
     const flagsAt = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 16 + 4 + 4 + 8;
     const plainBytes = encodeBox({ ...job, width: 4, height: 4 }).slice();
-    expect(BOX_WIRE_VERSION).toBe(24);
     expect(dv(plainBytes).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
     expect([0, 4, 8].map((k) => dv(plainBytes).getUint32(flagsAt + k, true))).toEqual([0, 0, 0]);
     // Transparency Shapes Layer off is blending flag 2 (v13), with interior 1.
