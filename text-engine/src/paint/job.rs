@@ -10,7 +10,7 @@
 use super::geom::{Affine, IBox, Pt};
 use super::roughen::Roughen;
 use super::shade::Premul;
-use super::special::{BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
+use super::special::{Aim, BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 use super::stroke::Join;
 use super::warp::{Mesh, MAX_MESH_SIDE};
 use super::BoldDraw;
@@ -407,7 +407,7 @@ pub const MAX_RUN_FACES: usize = 16;
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 17;
+pub const WIRE_VERSION: u32 = 18;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -616,13 +616,31 @@ impl<'a> Reader<'a> {
         }
         let kinds = self.u32()?;
         // 16 (v16): the crack's pieces break off; only with a crack. 32 (v17): a
-        // box's strokes are cut through; only with a crack or scratches.
-        if kinds & 15 == 0 || kinds > 63 || (kinds & 16 != 0 && kinds & 1 == 0) || (kinds & 32 != 0 && kinds & 9 == 0) {
+        // box's strokes are cut through; only with a crack or scratches. 64
+        // (v18): the glyph bands fill the cuts; only with a crack or
+        // scratches. 128 (v18): the lightning is aimed; only with a
+        // lightning. 256 (v18): the splash is placed; only with a splash.
+        if kinds & 15 == 0
+            || kinds > 511
+            || (kinds & 16 != 0 && kinds & 1 == 0)
+            || (kinds & 96 != 0 && kinds & 9 == 0)
+            || (kinds & 128 != 0 && kinds & 2 == 0)
+            || (kinds & 256 != 0 && kinds & 4 == 0)
+        {
             return Err(Error::BadSpec);
         }
         let share = |v: f64, lo: f64, hi: f64| if (lo..=hi).contains(&v) { Ok(v) } else { Err(Error::BadSpec) };
         let turn = |v: f64| if v.is_finite() && v.abs() <= 64.0 { Ok(v) } else { Err(Error::BadSpec) };
-        let mut sp = Special { rect, crack: None, break_off: None, lightning: None, splash: None, scratches: None, cut_strokes: kinds & 32 != 0 };
+        let mut sp = Special {
+            rect,
+            crack: None,
+            break_off: None,
+            lightning: None,
+            splash: None,
+            scratches: None,
+            cut_strokes: kinds & 32 != 0,
+            fill_bands: kinds & 64 != 0,
+        };
         if kinds & 1 != 0 {
             let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
             let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
@@ -645,12 +663,26 @@ impl<'a> Reader<'a> {
             let amount = share(self.f64()?, 0.0, 1.0)?;
             let (core, glow) = (self.rgba()?, self.rgba()?);
             let glow_size = share(self.f64()?, 0.0, 3.0)?;
-            sp.lightning = Some(Lightning { amount, core, glow, glow_size, seed: self.u32()? });
+            let seed = self.u32()?;
+            let aim = if kinds & 128 != 0 {
+                let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
+                Some(Aim { at, angle: turn(self.f64()?)? })
+            } else {
+                None
+            };
+            sp.lightning = Some(Lightning { amount, core, glow, glow_size, seed, aim });
         }
         if kinds & 4 != 0 {
             let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
             let color = self.rgba()?;
-            sp.splash = Some(Splash { amount, size, color, seed: self.u32()? });
+            let seed = self.u32()?;
+            let (at, spread) = if kinds & 256 != 0 {
+                let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
+                (at, share(self.f64()?, 0.0, 1.0)?)
+            } else {
+                ((0.5, 0.5), 1.0)
+            };
+            sp.splash = Some(Splash { amount, size, color, seed, at, spread });
         }
         if kinds & 8 != 0 {
             let (amount, angle) = (share(self.f64()?, 0.0, 1.0)?, turn(self.f64()?)?);

@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 17
+export const WIRE_VERSION = 18
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -472,7 +472,9 @@ function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', wei
 
 // (v14) The special effects (special.js in the app), after the faces and
 // (v15: the crack's focus and spread, the lightning's core, glow and glow
-// size, the splash's colour; v16: kind 16, a crack's pieces breaking off)
+// size, the splash's colour; v16: kind 16, a crack's pieces breaking off;
+// v17: kind 32, box strokes cut through; v18: kind 64, glyph bands fill
+// the cuts, 128, an aimed lightning, 256, a placed splash)
 // only for a job that has one, which says so with flag 256: the box in job
 // space, then each effect's numbers. The engine makes the shapes from them
 // (special.rs), so only these cross.
@@ -488,7 +490,17 @@ function special(sp) {
   // `outline`); no payload. Without it a box stroke outlines each cut.
   const through = sp.cutStrokes ? 32 : 0
   if (through && !sp.crack && !sp.scratches) throw new Error('mt-text: strokes cut through need a crack or scratches')
-  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0) | breaks | through
+  // 64 (v18): the glyph bands fill the cuts (special.js `bandOutline`); no
+  // payload. Without it a glyph band is cut through.
+  const bandFills = sp.fillBands ? 64 : 0
+  if (bandFills && !sp.crack && !sp.scratches) throw new Error('mt-text: bands filling the cuts need a crack or scratches')
+  // 128 (v18): the lightning is aimed, its start and heading after its own
+  // numbers. A lightning without it writes what v17 wrote.
+  const aimed = sp.lightning?.aim ? 128 : 0
+  // 256 (v18): the splash is placed, where it lands and its spread after
+  // its own numbers.
+  const placed = sp.splash?.at ? 256 : 0
+  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0) | breaks | through | bandFills | aimed | placed
   if (!(kinds & 15)) throw new Error('mt-text: a special block needs an effect')
   f64(r.x)
   f64(r.y)
@@ -528,12 +540,22 @@ function special(sp) {
     rgba(sp.lightning.glow)
     share(sp.lightning.glowSize, 'lightning glow', 0, 3)
     seed(sp.lightning.seed)
+    if (aimed) {
+      share(sp.lightning.aim.x, 'lightning x')
+      share(sp.lightning.aim.y, 'lightning y')
+      angle(sp.lightning.aim.angle)
+    }
   }
   if (sp.splash) {
     share(sp.splash.amount, 'splash amount')
     share(sp.splash.size, 'splash size', 0.01, 4)
     rgba(sp.splash.color)
     seed(sp.splash.seed)
+    if (placed) {
+      share(sp.splash.at.x, 'splash x')
+      share(sp.splash.at.y, 'splash y')
+      share(sp.splash.at.spread, 'splash spread')
+    }
   }
   if (sp.scratches) {
     share(sp.scratches.amount, 'scratches amount')

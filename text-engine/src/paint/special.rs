@@ -64,6 +64,18 @@ pub struct Lightning {
     /// 0 to 3 times the default glow.
     pub glow_size: f64,
     pub seed: u32,
+    /// Where the bolts start and the way they go (glyph wire v18, kind
+    /// 128): shares of the box (0 to 1 each way) and radians, 0 along the
+    /// line. `None` lays the first-built bolts, across the box from side to
+    /// side.
+    pub aim: Option<Aim>,
+}
+
+/// A lightning's start and heading (`Lightning::aim`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aim {
+    pub at: (f64, f64),
+    pub angle: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +87,13 @@ pub struct Splash {
     /// The paint's colour.
     pub color: Rgba,
     pub seed: u32,
+    /// Where the paint lands (glyph wire v18, kind 256): shares of the box
+    /// (0 to 1 each way).
+    pub at: (f64, f64),
+    /// 0 to 1: how far from `at` the splats spread. 1, the first-built
+    /// look, lays one to each equal stretch of the box wherever `at` is;
+    /// less pulls them in to `at`.
+    pub spread: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,8 +159,15 @@ pub struct Special {
     /// (wire kind 32): `false`, the first-built look, outlines each cut (the
     /// strokes read the cut letters); `true` cuts them through as a glyph
     /// band is (the strokes read the letters whole, the cuts are taken out
-    /// after). A glyph band is always cut through.
+    /// after).
     pub cut_strokes: bool,
+    /// What the glyph bands (the text's own outlines) do at those cuts
+    /// (glyph wire v18, kind 64): `false`, the first-built look, cuts them
+    /// through; `true` lays each band again inside the cuts, no further than
+    /// its half line from a cut's edge and its reach round the letters, so
+    /// a cut narrower than the outline reads as a line in its colour, as a
+    /// box stroke's does (`paint::band_fills`).
+    pub fill_bands: bool,
 }
 
 impl Special {
@@ -673,11 +699,20 @@ fn splats(s: &Splash, w: f64, h: f64, size: f64) -> Vec<PaintMark> {
     // where the letters are.
     let splats = 1 + (a * 3.0).round() as usize;
     let mut item = 0usize;
+    let spread = s.spread.clamp(0.0, 1.0);
+    let focus = Pt::new(s.at.0.clamp(0.0, 1.0) * w, s.at.1.clamp(0.0, 1.0) * h);
     for i in 0..splats {
-        let c = Pt::new(
+        let even = Pt::new(
             (i as f64 + 0.2 + 0.6 * dice.u(i, 0)) / splats as f64 * w,
             h * (0.3 + 0.4 * dice.u(i, 1)),
         );
+        // Pulled in to where the paint lands by the spread; spread over the
+        // box, the even point itself, to the bit.
+        let c = if spread >= 1.0 {
+            even
+        } else {
+            Pt::new(focus.x + (even.x - focus.x) * spread, focus.y + (even.y - focus.y) * spread)
+        };
         let r = u * (0.2 + 0.1 * a) * (0.75 + 0.5 * dice.u(i, 2));
         marks.push(mark(splat(c, r, dice, i)));
         // Droplets thrown out of it, smaller the farther they go, each a
@@ -748,6 +783,31 @@ fn bolts(l: &Lightning, w: f64, h: f64, size: f64) -> Vec<PaintMark> {
     let count = 1 + (a * 2.0 + 0.2).round() as usize;
     let inside = |p: Pt| p.x < -0.08 * w || p.x > 1.08 * w;
     for i in 0..count {
+        if let Some(aim) = l.aim {
+            // From the start, the way it is aimed, each bolt a little off
+            // the heading, until it has gone as far along the heading as
+            // the box (8 % past it every way) reaches that way: a zigzag
+            // that wanders out to the side goes on.
+            let from = Pt::new(aim.at.0.clamp(0.0, 1.0) * w, aim.at.1.clamp(0.0, 1.0) * h);
+            let fan = if count > 1 { (i as f64 / (count - 1) as f64 - 0.5) * 0.2 } else { 0.0 };
+            let heading = aim.angle + fan + dice.pm(i, 3) * 0.08;
+            let dir = Pt::new(heading.cos(), heading.sin());
+            let far = |v: f64, lo: f64, hi: f64, from: f64| {
+                if v > 1e-9 {
+                    (hi - from) / v
+                } else if v < -1e-9 {
+                    (lo - from) / v
+                } else {
+                    f64::INFINITY
+                }
+            };
+            let limit = far(dir.x, -0.08 * w, 1.08 * w, from.x).min(far(dir.y, -0.08 * h, 1.08 * h, from.y)).max(size);
+            let past = |p: Pt| p.minus(from).dot(dir) > limit;
+            let main = on_heading(zig(from, heading, size * 0.24, limit * 1.6, 0.95, dice, 100 + i, past), from, dir, size * 0.5);
+            forks(&main, a, size, dice, i, &mut lines);
+            lines.push((main, 1.0));
+            continue;
+        }
         // Slanted across the word: from high on one side to low on the
         // other, or the other way, so a bolt crosses the letters' height.
         let (hi, lo) = (h * (0.1 + 0.3 * dice.u(i, 0)), h * (0.6 + 0.3 * dice.u(i, 1)));
@@ -755,33 +815,62 @@ fn bolts(l: &Lightning, w: f64, h: f64, size: f64) -> Vec<PaintMark> {
         let (from, to) = if i % 2 == 0 { (Pt::new(-0.05 * w, y0), Pt::new(1.05 * w, y1)) } else { (Pt::new(1.05 * w, y0), Pt::new(-0.05 * w, y1)) };
         let heading = (to.y - from.y).atan2(to.x - from.x);
         let main = zig(from, heading, size * 0.24, (to.x - from.x).hypot(to.y - from.y) * 1.3, 0.95, dice, 100 + i, inside);
-        // Forks off its corners, more with the amount.
-        let forks = (1.0 + a * 4.0).round() as usize;
-        for f in 0..forks {
-            let item = 1000 + i * 50 + f;
-            if main.len() < 4 {
-                break;
-            }
-            let k = 1 + (dice.u(item, 0) * (main.len() - 2) as f64) as usize;
-            let p = main[k - 1];
-            let hd = (main[k].y - p.y).atan2(main[k].x - p.x);
-            let fd = hd + dice.sign(item, 1) * (0.45 + 0.6 * dice.u(item, 2));
-            let fl = size * (0.6 + 1.2 * dice.u(item, 3)) * (0.7 + 0.5 * a);
-            let fork = zig(main[k], fd, size * 0.18, fl, 0.9, dice, 3000 + item, |_| false);
-            if a > 0.55 && fork.len() > 2 && dice.u(item, 4) < a {
-                let m = fork.len() / 2;
-                let q = fork[m - 1];
-                let h2 = (fork[m].y - q.y).atan2(fork[m].x - q.x) - dice.sign(item, 5) * (0.5 + 0.5 * dice.u(item, 6));
-                lines.push((zig(fork[m], h2, size * 0.14, fl * 0.5, 0.9, dice, 7000 + item, |_| false), 0.5));
-            }
-            lines.push((fork, 0.75));
-        }
+        forks(&main, a, size, dice, i, &mut lines);
         lines.push((main, 1.0));
     }
+    lay_bolts(l, &lines, size, core_w, body_w, glow)
+}
+
+/// A bolt's points held to its heading: the slow wander to the side (each
+/// point's offset from the line from `from` along `dir`, averaged over its
+/// neighbours two either side) taken out, the zigzag kept. The start stays
+/// where it is, the hold coming in over the first `ramp` of the way.
+fn on_heading(pts: Vec<Pt>, from: Pt, dir: Pt, ramp: f64) -> Vec<Pt> {
+    let side = Pt::new(-dir.y, dir.x);
+    let n = pts.len();
+    let offs: Vec<f64> = pts.iter().map(|p| p.minus(from).dot(side)).collect();
+    (0..n)
+        .map(|k| {
+            let (a, b) = (k.saturating_sub(2), (k + 2).min(n - 1));
+            let wander = offs[a..=b].iter().sum::<f64>() / (b - a + 1) as f64;
+            let hold = (pts[k].minus(from).dot(dir) / ramp.max(1e-9)).clamp(0.0, 1.0);
+            pts[k].minus(side.scale(wander * hold))
+        })
+        .collect()
+}
+
+/// The forks off bolt `i`'s corners (`main`), more with the amount, pushed
+/// to `lines` before it.
+fn forks(main: &[Pt], a: f64, size: f64, dice: Dice, i: usize, lines: &mut Vec<(Vec<Pt>, f64)>) {
+    let forks = (1.0 + a * 4.0).round() as usize;
+    for f in 0..forks {
+        let item = 1000 + i * 50 + f;
+        if main.len() < 4 {
+            break;
+        }
+        let k = 1 + (dice.u(item, 0) * (main.len() - 2) as f64) as usize;
+        let p = main[k - 1];
+        let hd = (main[k].y - p.y).atan2(main[k].x - p.x);
+        let fd = hd + dice.sign(item, 1) * (0.45 + 0.6 * dice.u(item, 2));
+        let fl = size * (0.6 + 1.2 * dice.u(item, 3)) * (0.7 + 0.5 * a);
+        let fork = zig(main[k], fd, size * 0.18, fl, 0.9, dice, 3000 + item, |_| false);
+        if a > 0.55 && fork.len() > 2 && dice.u(item, 4) < a {
+            let m = fork.len() / 2;
+            let q = fork[m - 1];
+            let h2 = (fork[m].y - q.y).atan2(fork[m].x - q.x) - dice.sign(item, 5) * (0.5 + 0.5 * dice.u(item, 6));
+            lines.push((zig(fork[m], h2, size * 0.14, fl * 0.5, 0.9, dice, 7000 + item, |_| false), 0.5));
+        }
+        lines.push((fork, 0.75));
+    }
+}
+
+/// Every line of a lightning as marks: the glow under everything, then the
+/// bodies, then the cores.
+fn lay_bolts(l: &Lightning, lines: &[(Vec<Pt>, f64)], size: f64, core_w: f64, body_w: f64, glow: f64) -> Vec<PaintMark> {
     let mut marks = Vec::with_capacity(lines.len() * 3);
     // The glow under everything, then the bodies, then the cores.
     if glow > 0.0 {
-        for (pts, k) in &lines {
+        for (pts, k) in lines {
             marks.push(PaintMark {
                 shape: ClipShape::Stroke { size: body_w * k * (1.0 + 0.6 * glow), pts: pts.clone() },
                 color: l.glow,
@@ -791,7 +880,7 @@ fn bolts(l: &Lightning, w: f64, h: f64, size: f64) -> Vec<PaintMark> {
             });
         }
     }
-    for (pts, k) in &lines {
+    for (pts, k) in lines {
         let tip = if *k < 1.0 { 0.35 } else { 0.75 };
         marks.push(PaintMark {
             shape: ClipShape::Polygon(ribbon(pts, |t| body_w * k * (1.0 - (1.0 - tip) * t))),
@@ -801,7 +890,7 @@ fn bolts(l: &Lightning, w: f64, h: f64, size: f64) -> Vec<PaintMark> {
             erase: false,
         });
     }
-    for (pts, k) in &lines {
+    for (pts, k) in lines {
         let tip = if *k < 1.0 { 0.3 } else { 0.7 };
         marks.push(PaintMark {
             shape: ClipShape::Polygon(ribbon(pts, |t| core_w * k * (1.0 - (1.0 - tip) * t))),
