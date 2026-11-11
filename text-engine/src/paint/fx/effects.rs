@@ -1624,8 +1624,15 @@ fn mark_hash(h: Hasher, k: &PaintMark) -> Hasher {
     let h = h
         .u64(u64::from(u32::from_le_bytes(k.color.0)))
         .f64(k.opacity)
-        .f64(k.soft)
         .u64(u64::from(k.erase));
+    shape_hash(h, k)
+}
+
+/// What a mark's coverage is made from: its shape and its softness. Its
+/// colour, opacity and whether it erases are laid on the coverage after
+/// (`paint_layer`), so a slider of those reads the coverage back.
+fn shape_hash(h: Hasher, k: &PaintMark) -> Hasher {
+    let h = h.f64(k.soft);
     match &k.shape {
         ClipShape::Ellipse { centre, rx, ry } => h.u64(1).f64(centre.x).f64(centre.y).f64(*rx).f64(*ry),
         ClipShape::Polygon(pts) => pts
@@ -1688,7 +1695,7 @@ fn paint_layer(
             continue;
         }
         let mark_key = key.and_then(|k| {
-            mark_hash(Hasher::new("paint mark").key(k), mark)
+            shape_hash(Hasher::new("paint mark").key(k), mark)
                 .f64(pm.origin.x)
                 .f64(pm.origin.y)
                 .debug(&transform)
@@ -2215,7 +2222,10 @@ fn interior_at(
                 )?;
             }
             (Some(Effect::Paint(pm)), Some(full)) => {
-                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale, keys.of_effect("paint", i))? {
+                // Each mark's coverage is keyed on its own shape (`shape_hash`),
+                // so the parent key is the letters' shape alone: a colour or an
+                // opacity moved reads every coverage back.
+                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale, keys.of_shape("paint"))? {
                     lay_with(
                         &mut lay,
                         full,

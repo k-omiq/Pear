@@ -232,3 +232,64 @@ fn the_mask_cuts_after_the_paint() {
     let out = paint_box(&mut e, &mut b).unwrap();
     assert_eq!(px(&out, l.0, l.1)[3], 0);
 }
+
+/// A soft mark's blur steps in job units: the editor at scale 2 and an
+/// export at 3 grade the same edge alike, and its colour and opacity are laid
+/// on the kept coverage, so a slider of either reads the coverage back.
+#[test]
+fn a_soft_mark_grades_alike_at_every_scale_and_its_colour_is_laid_on_kept_coverage() {
+    use mt_text::paint::kept;
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    kept::set_ceiling(kept::KEPT_BYTES);
+    let at = |e: &mut Engine, scale: f64, marks: Vec<PaintMark>| {
+        let mut b = painted(font, marks);
+        b.request.transform = Affine::scale(scale, scale);
+        b.width = (260.0 * scale) as u32;
+        b.height = (160.0 * scale) as u32;
+        b.lay_lightning().unwrap();
+        paint_box(e, &mut b).unwrap()
+    };
+    let soft = || vec![mark(RED, 1.0, 12.0, false, rect(-200.0, -200.0, 120.0, 400.0))];
+    let (two, three) = (at(&mut e, 2.0, soft()), at(&mut e, 3.0, soft()));
+    let (p2, p3) = (at(&mut e, 2.0, Vec::new()), at(&mut e, 3.0, Vec::new()));
+    // Along a row through the stems, at job points both scales hold whole
+    // ink: the red is the mark's coverage there.
+    let mut worst = 0u8;
+    let mut seen = 0;
+    for k in 0..240 {
+        let x = 40.0 + f64::from(k) * 0.75;
+        let (x2, x3) = ((x * 2.0) as i32, (x * 3.0) as i32);
+        if px(&p2, x2, 156)[3] != 255 || px(&p3, x3, 234)[3] != 255 {
+            continue;
+        }
+        let (a, b) = (px(&two, x2, 156)[0], px(&three, x3, 234)[0]);
+        if a > 0 && a < 255 {
+            seen += 1;
+        }
+        worst = worst.max(a.abs_diff(b));
+    }
+    eprintln!("soft mark at 2 and 3: worst {worst} over {seen} graded points");
+    assert!(seen > 10, "{seen}");
+    // Measured: 3 (6 when each scale snapped its own blur step).
+    assert!(worst <= 3, "{worst}");
+    // Another colour and opacity: the coverage is read back, nothing new kept.
+    kept::clear();
+    let mut b = painted(font, soft());
+    let keys = mt_text::paint::BoxKeys {
+        job: kept::Hasher::new("t job").u64(5).finish().unwrap(),
+        premask: None,
+        cover: None,
+    };
+    mt_text::paint::paint_box_kept(&mut e, &mut b, keys).unwrap();
+    let held = kept::bytes();
+    let hits = kept::hits();
+    let mut c = painted(font, vec![mark(BLUE, 0.5, 12.0, false, rect(-200.0, -200.0, 120.0, 400.0))]);
+    let blue = mt_text::paint::paint_box_kept(&mut e, &mut c, keys).unwrap();
+    // The mark's coverage is read back (one hit more than the glyph
+    // raster's), and the picture is the fresh one.
+    assert!(kept::hits() >= hits + 2, "{} {}", kept::hits(), hits);
+    assert!(kept::bytes() >= held);
+    let fresh = paint_box(&mut e, &mut painted(font, vec![mark(BLUE, 0.5, 12.0, false, rect(-200.0, -200.0, 120.0, 400.0))])).unwrap();
+    assert_eq!(blue, fresh);
+}
