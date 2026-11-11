@@ -209,3 +209,25 @@ it('the Inspector size field steps with its buttons and arrows', async () => {
   expect(b.style.size).toBe(200);
   expect(field.value).toBe('200');
 });
+
+// ===========================================================================
+// A page pick and Escape
+// ===========================================================================
+// An armed pick (a line's box being drawn, a pattern being taken) ends on
+// Escape wherever the caret is: the typing test further down the ladder would
+// otherwise hand the key to the field and leave the page waiting for a drag.
+
+it('Escape in a text field ends an armed page pick', async () => {
+  await openEditor();
+  const { pageRectPick } = await import('./lib/page-rect-pick.svelte.js');
+  const onCancel = vi.fn();
+  pageRectPick.start({ hint: 'Drag', onCancel });
+  const field = document.createElement('textarea');
+  document.body.appendChild(field);
+  field.focus();
+  arrow(field, 'Escape');
+  expect(onCancel).toHaveBeenCalledWith('escape');
+  expect(pageRectPick.active).toBe(false);
+  // With no pick waiting, Escape in the field is the field's again.
+  expect(arrow(field, 'Escape').defaultPrevented).toBe(false);
+});

@@ -58,7 +58,7 @@ import { drawRead } from './draw-read.svelte.js';
 import { openSettings } from './settings-tabs.svelte.js';
 import { panels, setHidden, showPanel } from './editor/panels.svelte.js';
 import { setInspectorTab } from './inspector-tabs.svelte.js';
-import { showActiveRow } from './Queue.svelte';
+import { showActiveRow, drawLineBox, deleteLineWithUndo } from './Queue.svelte';
 import { exportImages } from './exporter.js';
 import { goProject, goLibrary } from './route.svelte.js';
 
@@ -71,6 +71,8 @@ const fitted = () => boxSelected() && !!byId(app.selectedId)?.fit;
 // Translate chapters detect too. General use has no detection at all.
 const canDetect = () => isComics() && app.loaded && sidecarReady() && !app.detecting;
 const paged = () => typeset() && !isLongstrip() && app.pages.length > 1;
+// A translate chapter's typing pane with a line in it to act on.
+const activeLine = () => app.loaded && isTranslateChapter() && page().activeLineN != null && !!lineByN(page(), page().activeLineN);
 // The series sections of Settings are there only while a chapter is open.
 const inChapter = () => !!app.chapterRef;
 
@@ -235,6 +237,10 @@ const RUNS = {
   'ocr.draw': { when: () => true, run: () => { drawRead.open = true; } },
 
   'translate.cleaned': { when: () => isTranslateChapter() && app.translateTypeset, run: () => { app.viewCleaned = !app.viewCleaned; } },
+  // The typing pane's active line. Delete's keys are the row's own (Queue.svelte);
+  // this is the action they name, for whatever runs it by id.
+  'line.delete': { when: activeLine, run: () => deleteLineWithUndo(page().activeLineN) },
+  'line.drawBox': { when: activeLine, run: () => drawLineBox(page().activeLineN) },
 
   'chapter.export': { when: () => typeset() && !app.exporting, run: () => { app.exportOpen = true; } },
   'chapter.saveJson': { when: () => app.loaded && !app.exporting, run: () => { exportImages('JSON', 'all'); } },

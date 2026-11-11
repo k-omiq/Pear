@@ -66,6 +66,7 @@ import { forgetPagePixels } from './page-pixels.js';
 import { forgetArt } from './page-art.svelte.js';
 import { forgetBackdrops } from './backdrop.js';
 import { bindPatternTiles, forgetPickedTiles, PATTERNS_DIR } from './pattern-tiles.svelte.js';
+import { pageRectPick } from './page-rect-pick.svelte.js';
 
 const ROOT_KEY = 'mt.libraryRoot';
 const SCHEMA = 1;
@@ -2840,6 +2841,8 @@ export function closeChapter() {
   openSeq++;
   // And async chapter work with it, before the images below are released.
   cancelChapterPlace();
+  // A box still waiting to be dragged on a page that is about to go.
+  pageRectPick.cancel('closed');
   // The check list is derived from the pages, so this has to run before they go:
   // it is what the project screen shows beside this chapter until the chapter is
   // next opened or edited.
