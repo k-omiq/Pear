@@ -2918,14 +2918,17 @@
           {/each}
           <!-- What the outlines do at the cuts: with a crack or scratches on
                and any outline, the text's own (a glyph band) or a box
-               stroke. One row sets both keys (special.js `outlineKinds`). -->
+               stroke (special.js `outlineKinds`). With one of them, one row,
+               which sets both keys, so an outline added later does the same.
+               With both, a row each, named. -->
           {#if sp && specialCuts(s)}
             {@const ok = outlineKinds(s, outlineRun(s).bands.length > 0, boxEffects(s).some((fx) => fx.kind === 'stroke'))}
-            {#if ok.any}
-              {@render segRow('Outline', 'What the outline does where Crack or Scratches cut', [['fills-cuts', 'Fills cuts', 'The outline goes round each cut: a thin crack reads as a line in its colour'], ['cut-through', 'Cut through', 'The outline is cut like the letters: the page shows through']], ok.current, (v) => { sp.outline = v; sp.bandOutline = v; touch(); }, 'Special outline')}
-              {#if ok.current == null}
-                <p class="nofill-note">Mixed: the stroke fills the cuts, the text outline is cut through. Pick one for both.</p>
-              {/if}
+            {@const cutChoices = [['fills-cuts', 'Fills cuts', 'The outline goes round each cut: a thin crack reads as a line in its colour'], ['cut-through', 'Cut through', 'The outline is cut like the letters: the page shows through']]}
+            {#if ok.both}
+              {@render segRow('Plain outline', 'What the plain strokes at the head of the Stroke list (Outside, one colour, Normal) do where Crack or Scratches cut', cutChoices, ok.band, (v) => { sp.bandOutline = v; touch(); }, 'Special plain outline')}
+              {@render segRow('Other strokes', 'What the other strokes in the Stroke list do where Crack or Scratches cut', cutChoices, ok.stroke, (v) => { sp.outline = v; touch(); }, 'Special other strokes')}
+            {:else if ok.any}
+              {@render segRow('Outline', 'What the outline does where Crack or Scratches cut', cutChoices, ok.current, (v) => { sp.outline = v; sp.bandOutline = v; touch(); }, 'Special outline')}
             {:else}
               <p class="nofill-note">Outline: add an outline (Stroke tab) to choose whether it fills the cuts.</p>
             {/if}

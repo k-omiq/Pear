@@ -77,7 +77,7 @@
     patternFillStyle,
   } from './text-paint.js';
   import { pageArtSrc, artImage, artReady } from './page-art.svelte.js';
-  import { warpActive, meshMap, unwarpPoint } from './warp.js';
+  import { warpActive, meshMap, unwarpPoint, unwarpWith } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
   import { meshWarper } from './warp-paint.js';
   import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull, lettersInkRect } from './contain.js';
@@ -1323,7 +1323,9 @@
       effectsSubTab.id === 'warp' &&
       !boxLocked(box),
   );
-  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn && !pathGizmoOn && !locked);
+  // The special effects' points stand them down too (`specialHandles`): a
+  // lightning starts on the left edge by default, on the W handle.
+  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn && !pathGizmoOn && !specialPointsOn && !locked);
   // The end of the handle gesture in flight (`startTransform`), or null.
   let transformEnd = null;
   $effect(() => {
@@ -2671,6 +2673,18 @@
       effectsSubTab.id === 'special' &&
       !boxLocked(box),
   );
+  //
+  // The effects are laid in the box's texture, before its warp mesh, which
+  // then bends them with the letters. So a point is stated before the mesh
+  // (`p`) and shown where the mesh carries it (`at`), and a pointer is taken
+  // back through the mesh (`unwarpWith`) before it is written. A point the
+  // mesh does not carry anywhere (past a perspective's horizon) has no handle.
+  const specialMesh = $derived(warped ? meshMap(s.warp.pts, s.warp.cols, s.warp.rows, box.w, box.h) : null);
+  const meshed = (p) => {
+    if (!specialMesh) return p;
+    const q = specialMesh.at(p.x, p.y);
+    return q && Number.isFinite(q[0]) && Number.isFinite(q[1]) ? { x: q[0], y: q[1] } : null;
+  };
   const specialHandles = $derived.by(() => {
     if (!specialHandlesOn || !s.special) return [];
     const out = [];
@@ -2681,10 +2695,14 @@
       if (kind === 'crack') ink ??= lettersInkRect(boxCandidate(box, text, runs));
       const frame = handleFrame(kind, box, ink);
       const p = handlePoint(fx, frame);
-      out.push({ kind, frame, p, arm: kind === 'lightning' ? armEnd(fx, p, ARM_LENGTH / z) : null });
+      const at = meshed(p);
+      if (!at) continue;
+      const arm = kind === 'lightning' ? meshed(armEnd(fx, p, ARM_LENGTH / z)) : null;
+      out.push({ kind, frame, p, at, arm });
     }
     return out;
   });
+  const specialPointsOn = $derived(specialHandles.length > 0);
   const HANDLE_TITLES = {
     crack: 'Crack focus: drag to set where the cracks gather',
     lightning: 'Lightning start: drag to set where the bolts begin',
@@ -2709,8 +2727,11 @@
       if (ev.pointerId !== pid) return;
       const fx = s.special?.[kind];
       if (!fx) return;
-      const [x, y] = maskLocal(ev);
-      if (part === 'arm') dragArm(fx, handlePoint(fx, frame), { x, y });
+      const from = handlePoint(fx, frame);
+      const q = unwarpWith(specialMesh, box.w, box.h, ...maskLocal(ev), { hint: [from.x, from.y] });
+      if (!q) return;
+      const [x, y] = q;
+      if (part === 'arm') dragArm(fx, from, { x, y });
       else dragHandle(kind, fx, { x, y }, frame);
       markUnsaved();
     };
@@ -4049,16 +4070,16 @@
   {#if specialHandles.length}
     <!-- The special effects' handles (special.js): a point each, and the
          lightning's arm. Stated in the box's own unflipped frame and carried
-         by its flip, as the picture is. -->
+         by its warp mesh and its flip, as the picture is. -->
     <svg class="special-gizmo" width={box.w * z} height={box.h * z} style={overlayMirror} aria-hidden="true">
       {#each specialHandles as h (h.kind)}
         {#if h.arm}
-          <line class="sarm" x1={h.p.x * z} y1={h.p.y * z} x2={h.arm.x * z} y2={h.arm.y * z} />
+          <line class="sarm" x1={h.at.x * z} y1={h.at.y * z} x2={h.arm.x * z} y2={h.arm.y * z} />
           <circle class="send" cx={h.arm.x * z} cy={h.arm.y * z} r="4" />
           <circle class="hit arm" data-kind={h.kind} cx={h.arm.x * z} cy={h.arm.y * z} r="9" onpointerdown={(e) => startSpecialDrag(e, h.kind, 'arm')}><title>Lightning direction: drag to aim the bolts</title></circle>
         {/if}
-        <circle class="spt {h.kind}" cx={h.p.x * z} cy={h.p.y * z} r="6" />
-        <circle class="hit point" data-kind={h.kind} cx={h.p.x * z} cy={h.p.y * z} r="11" onpointerdown={(e) => startSpecialDrag(e, h.kind, 'point')}><title>{HANDLE_TITLES[h.kind]}</title></circle>
+        <circle class="spt {h.kind}" cx={h.at.x * z} cy={h.at.y * z} r="6" />
+        <circle class="hit point" data-kind={h.kind} cx={h.at.x * z} cy={h.at.y * z} r="11" onpointerdown={(e) => startSpecialDrag(e, h.kind, 'point')}><title>{HANDLE_TITLES[h.kind]}</title></circle>
       {/each}
     </svg>
   {/if}
