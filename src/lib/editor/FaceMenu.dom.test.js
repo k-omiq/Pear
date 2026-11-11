@@ -44,10 +44,12 @@ afterEach(() => {
 async function opened(a, f) {
   // The text the focus goes back to.
   const text = document.createElement('div');
-  text.contentEditable = 'true';
+  text.setAttribute('contenteditable', 'true');
   text.tabIndex = 0;
+  text.textContent = 'one two three';
   document.body.append(text);
   text.focus();
+  getSelection().setBaseAndExtent(text.firstChild, a, text.firstChild, f);
   const view = render(FaceMenu);
   setTypingSel('b', 'one two three', a, f);
   openFaceMenu(40, 50);
@@ -88,6 +90,17 @@ describe('the menu of the selected words\' faces', () => {
     expect(view.container.querySelector('.face-menu')).toBe(null);
     expect(document.activeElement).toBe(text);
     expect(app.pages[0].boxes[0].runs).toEqual([B(4, 7)]);
+  });
+
+  it('gives the words their selection back with the focus, which WebKit would put at the start', async () => {
+    const { menu, text } = await opened(4, 7);
+    // What WebKit does to the editable's selection while a menu item has the focus.
+    getSelection().collapse(text.firstChild, 0);
+    menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await tick();
+    const s = getSelection();
+    expect([s.anchorOffset, s.focusOffset]).toEqual([4, 7]);
+    expect(s.anchorNode === text.firstChild).toBe(true);
   });
 
   it('goes with the selection', async () => {
