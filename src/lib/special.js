@@ -29,8 +29,11 @@
 // Known limit: the pattern is laid over the letters' ink box, so it is
 // redrawn when the text or the box size changes; Seed re-rolls it.
 //
-// A crack or scratches cut the box's own strokes through as they cut a
-// glyph band: one look whatever stroke the box has.
+// What a box's own stroke (one the Rust engine lays, not a glyph band) does
+// where a crack or scratches cut, the special effects' `outline`: 'fills-cuts'
+// (the default, the first-built look) outlines each cut, so the cracks read
+// as lines in the stroke's colour; 'cut-through' cuts the stroke as a glyph
+// band is, and the page shows through. A glyph band is always cut through.
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
@@ -47,6 +50,9 @@ export const SPECIAL_GLOW_MAX = 300;
 // they go, and loses a few small ones. The index is the wire's (paint.mjs).
 // A style from before the choice reads as 'fall'.
 export const BREAK_MOTIONS = ['apart', 'fall'];
+
+// What a box stroke does at the cuts (`outline`); the first is the default.
+export const SPECIAL_OUTLINES = ['fills-cuts', 'cut-through'];
 const motionOf = (v) => (BREAK_MOTIONS.includes(v) ? v : 'fall');
 
 // How far a broken-off piece may travel, in its font size (and, falling,
@@ -72,6 +78,7 @@ export function defaultSpecial() {
     lightning: { on: false, amount: 40, core: '#ffffff', glow: '#1e90ff', glowSize: 100, seed: 1 },
     splash: { on: false, amount: 40, size: 100, color: '#e63946', seed: 1 },
     scratches: { on: false, amount: 40, angle: -15, seed: 1 },
+    outline: 'fills-cuts',
   };
 }
 
@@ -118,6 +125,7 @@ export function normalizeSpecial(src) {
       seed: seedOf(s.splash?.seed, d.splash.seed),
     },
     scratches: { on: s.scratches?.on === true, amount: amount(s.scratches, 'scratches'), angle: angleOf(s.scratches?.angle, d.scratches.angle), seed: seedOf(s.scratches?.seed, d.scratches.seed) },
+    outline: SPECIAL_OUTLINES.includes(s.outline) ? s.outline : d.outline,
   };
 }
 
@@ -126,6 +134,11 @@ export function shownSpecial(style) {
   const sp = style?.special;
   if (!sp) return [];
   return SPECIAL_KINDS.filter((k) => sp[k]?.on === true && sp[k].amount > 0);
+}
+
+// Whether `style` cuts its letters (a crack or scratches draws).
+export function specialCuts(style) {
+  return shownSpecial(style).some((k) => k === 'crack' || k === 'scratches');
 }
 
 // Whether any special effect draws on this style.
@@ -153,5 +166,7 @@ export function specialJob(style, rect) {
     else if (k === 'lightning') out[k] = { ...base, core: e.core, glow: e.glow, glowSize: e.glowSize / 100 };
     else out[k] = { ...base, angle: rad(e.angle) };
   }
+  // On the wire only when it is not the default, and only with cuts.
+  if (sp.outline === 'cut-through' && specialCuts(style)) out.cutStrokes = true;
   return out;
 }

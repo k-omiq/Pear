@@ -91,12 +91,12 @@
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
   import ValueSlider from './ValueSlider.svelte';
-  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX, SPECIAL_GLOW_MAX } from './special.js';
+  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX, SPECIAL_GLOW_MAX, specialCuts } from './special.js';
   import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
   import { setFxDefault, clearFxDefault, isComics } from './prefs.svelte.js';
   import { layoutShape } from './balloon.js';
-  import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
+  import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES, boxEffects } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
   import { wavePath } from './bezier-path.js';
   import { drawKindFor, setDrawTool, clearDrawTool, drawSettings } from './box-draw-tool.svelte.js';
@@ -2899,6 +2899,12 @@
               </div>
             {/if}
           {/each}
+          <!-- What a box stroke does at the cuts: only with a crack or
+               scratches on and a stroke the engine lays as a box stroke (a
+               glyph band is always cut through). -->
+          {#if sp && specialCuts(s) && boxEffects(s).some((fx) => fx.kind === 'stroke')}
+            {@render segRow('Outline', 'What the box stroke does where Crack or Scratches cut', [['fills-cuts', 'Fills cuts', 'The stroke outlines each cut: the cracks read as lines in its colour'], ['cut-through', 'Cut through', 'The stroke is cut like the letters: the page shows through']], sp.outline === 'cut-through' ? 'cut-through' : 'fills-cuts', (v) => setVal(sp, 'outline', v), 'Special outline')}
+          {/if}
         {/if}
 
         {#if effectsTab === 'edges'}

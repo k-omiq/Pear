@@ -38,8 +38,8 @@ afterEach(() => {
   setEffectsSubTab('stroke');
 });
 
-function mounted(rust = true, special = {}) {
-  const style = normalizeStyle({ ...defaultStyle(), special });
+function mounted(rust = true, special = {}, more = {}) {
+  const style = normalizeStyle({ ...defaultStyle(), special, ...more });
   loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [{ n: 1, en: 'HELLO' }], boxes: [{ id: 'b', lineN: 1, text: null, x: 100, y: 100, w: 240, h: 90, style }] }]);
   app.chapterRef = { projectId: 'p', chapterId: 'c' };
   app.selectedId = 'b';
@@ -135,6 +135,37 @@ describe('the Special panel', () => {
     expect(records()).toBe(base + 1);
     undo();
     expect(again.box().style.special.crack.motion).toBe('fall');
+  });
+
+  it('Outline shows only with cuts and a box stroke, reads Fills cuts by default, and a pick is one undo step', async () => {
+    const k0 = defaultStyle().strokeEffects[0];
+    const boxStroke = { strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, position: 'center' }] };
+    const band = { strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, position: 'outside' }] };
+    const cases = [
+      [{ crack: { on: true } }, {}, false],
+      [{ crack: { on: true } }, band, false],
+      [{ lightning: { on: true } }, boxStroke, false],
+      [{ scratches: { on: true } }, boxStroke, true],
+    ];
+    for (const [special, more, shown] of cases) {
+      const { view } = mounted(true, special, more);
+      await tick();
+      expect(!!view.queryByRole('group', { name: 'Special outline' }), JSON.stringify(special)).toBe(shown);
+      cleanup();
+    }
+    const { view, box } = mounted(true, { crack: { on: true } }, boxStroke);
+    await tick();
+    const fills = view.getByRole('button', { name: 'Fills cuts' });
+    const through = view.getByRole('button', { name: 'Cut through' });
+    expect(fills.getAttribute('aria-pressed')).toBe('true');
+    const base = records();
+    await fireEvent.pointerDown(through);
+    await fireEvent.click(through);
+    settleEdits();
+    expect(box().style.special.outline).toBe('cut-through');
+    expect(records()).toBe(base + 1);
+    undo();
+    expect(box().style.special.outline).toBe('fills-cuts');
   });
 
   it('under the browser engine, the switches are dimmed and the group says why; one on can still go off', async () => {

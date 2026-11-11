@@ -63,18 +63,21 @@ function texture(box) {
 const same = (a, b) => a.width === b.width && a.height === b.height && a.data.equals(b.data);
 
 describe('the model', () => {
-  it('reads anything as four rows, off, in range', () => {
+  it('reads anything as four rows, off, in range, and the box stroke at the cuts', () => {
     const n = normalizeSpecial({ crack: { on: true, amount: 300, size: 1, seed: -4 }, lightning: { core: 'blue', glowSize: 999 }, splash: { color: '#ABCDEF' } });
     expect(n.crack).toEqual({ on: true, amount: 100, size: 10, x: 50, y: 50, spread: 100, breakOff: 0, motion: 'fall', seed: 0 });
     expect(normalizeSpecial({ crack: { motion: 'apart' } }).crack.motion).toBe('apart');
     expect(normalizeSpecial({ crack: { motion: 'spin' } }).crack.motion).toBe('fall');
+    expect(n.outline).toBe('fills-cuts');
+    expect(normalizeSpecial({ outline: 'cut-through' }).outline).toBe('cut-through');
+    expect(normalizeSpecial({ outline: 'over' }).outline).toBe('fills-cuts');
     expect(n.lightning.on).toBe(false);
     expect(n.lightning.core).toBe('#ffffff');
     expect(n.lightning.glowSize).toBe(300);
     expect(n.splash.color).toBe('#abcdef');
     // A lightning saved with one colour keeps it as its glow.
     expect(normalizeSpecial({ lightning: { color: '#FF0000' } }).lightning.glow).toBe('#ff0000');
-    expect(Object.keys(n)).toEqual(['crack', 'lightning', 'splash', 'scratches']);
+    expect(Object.keys(n)).toEqual(['crack', 'lightning', 'splash', 'scratches', 'outline']);
     expect(style().special).toEqual(normalizeSpecial(undefined));
   });
 
@@ -126,6 +129,11 @@ describe('the glyph wire (v16)', () => {
     expect(brk.readUInt32LE(KINDS)).toBe(17);
     expect(brk.readDoubleLE(none.length)).toBe(0.5);
     expect(brk.readUInt32LE(none.length + 8)).toBe(1);
+    // 32: the box's strokes cut through, no payload; only with cuts.
+    const cut = Buffer.from(encodeJob(req({ ...job, special: { rect, crack, cutStrokes: true } })));
+    expect(cut.length).toBe(none.length);
+    expect(cut.readUInt32LE(KINDS)).toBe(33);
+    expect(() => encodeJob(req({ ...job, special: { rect, lightning: { amount: 0.5, core: [255, 255, 255, 255], glow: [0, 0, 255, 255], glowSize: 1, seed: 1 }, cutStrokes: true } }))).toThrow(/crack or scratches/);
     // At 0 the style sends no break off at all.
     const s0 = style({ special: { crack: { ...ON.crack, breakOff: 0 } } });
     expect('breakOff' in specialJob(s0, rect).crack).toBe(false);
@@ -133,6 +141,13 @@ describe('the glyph wire (v16)', () => {
     expect(specialJob(s5, rect).crack.breakOff).toEqual({ share: 0.5, motion: 1 });
     const apart = style({ special: { crack: { ...ON.crack, breakOff: 50, motion: 'apart' } } });
     expect(specialJob(apart, rect).crack.breakOff).toEqual({ share: 0.5, motion: 0 });
+    // The box stroke at the cuts: on the wire only when cut through, and
+    // only with cuts.
+    expect('cutStrokes' in specialJob(s5, rect)).toBe(false);
+    const through = style({ special: { crack: ON.crack, outline: 'cut-through' } });
+    expect(specialJob(through, rect).cutStrokes).toBe(true);
+    const bolt = style({ special: { lightning: ON.lightning, outline: 'cut-through' } });
+    expect('cutStrokes' in specialJob(bolt, rect)).toBe(false);
   });
 });
 
@@ -141,6 +156,24 @@ describe('painted over the whole box', () => {
     const plain = texture(boxOf(LOOK));
     const fx = texture(boxOf({ ...LOOK, special: { [k]: ON[k] } }));
     expect(same(plain, fx)).toBe(false);
+  });
+
+  it('a box stroke outlines the cuts or is cut through, each its own picture, and a switch misses the kept one', () => {
+    const k0 = defaultStyle().strokeEffects[0];
+    const stroked = (outline, kind = 'crack') => ({ strokeEffects: [{ ...k0, on: true, size: 4, opacity: 1, color: '#000000', position: 'center' }], special: { [kind]: ON[kind], outline } });
+    for (const kind of ['crack', 'scratches']) {
+      const fills = texture(boxOf(stroked('fills-cuts', kind)));
+      const through = texture(boxOf(stroked('cut-through', kind)));
+      const again = texture(boxOf(stroked('fills-cuts', kind)));
+      expect(same(fills, through), kind).toBe(false);
+      expect(same(fills, again), kind).toBe(true);
+      // Cut through, the stroke loses ink at the cuts.
+      const ink = (t) => { let n = 0; for (let i = 3; i < t.data.length; i += 4) n += t.data[i]; return n; };
+      expect(ink(through), kind).toBeLessThan(ink(fills));
+    }
+    // Without a box stroke the choice changes nothing.
+    const bare = (outline) => texture(boxOf({ special: { crack: ON.crack, outline } }));
+    expect(same(bare('fills-cuts'), bare('cut-through'))).toBe(true);
   });
 
   it('is the same picture wherever the box stands', () => {
