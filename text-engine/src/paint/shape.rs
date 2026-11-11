@@ -15,6 +15,7 @@ use super::budget;
 use super::job::Align;
 use crate::engine::{Engine, Face, FontId, ShapeMode, Synth};
 use crate::Error;
+use core::ops::Range;
 
 /// One glyph, placed relative to the start of its run.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,11 +68,45 @@ pub fn shape_run(
     if text.len() > budget::MAX_RUN_BYTES {
         return Err(Error::BadSpec);
     }
-    let mode = ShapeMode {
+    engine.measure_line(face, text, mode_for(letter_spacing))?;
+    place(engine, face.size, letter_spacing)
+}
+
+/// [`shape_run`] for a line set in several faces: `spans` are `(face,
+/// start..end)`, UTF-16 units of `text`, in order and end to end, all at one
+/// size. The line is cut at every span and then where coverage changes, as
+/// `Engine::measure_spans` measures it for the layout, and each piece is
+/// placed after the ones before it. So nothing kerns across a change of
+/// face, the letter spacing still follows every cluster of the line, and the
+/// glyphs land where the measured widths say. `BadSpec` for spans that do
+/// not cover the text.
+pub fn shape_spans(
+    engine: &mut Engine,
+    spans: &[(Face, Range<u32>)],
+    text: &str,
+    letter_spacing: f64,
+) -> Result<ShapedRun, Error> {
+    if text.len() > budget::MAX_RUN_BYTES {
+        return Err(Error::BadSpec);
+    }
+    let Some((first, _)) = spans.first() else {
+        return Err(Error::BadSpec);
+    };
+    let size = first.size;
+    engine.measure_spans(spans, text, mode_for(letter_spacing))?;
+    place(engine, size, letter_spacing)
+}
+
+// Spaced text has its optional ligatures off, as the breaker measures it.
+fn mode_for(letter_spacing: f64) -> ShapeMode {
+    ShapeMode {
         no_ligatures: letter_spacing != 0.0,
         ..ShapeMode::MEASURE
-    };
-    engine.measure_line(face, text, mode)?;
+    }
+}
+
+// The glyphs of the line the engine last measured, placed part after part.
+fn place(engine: &Engine, size: f64, letter_spacing: f64) -> Result<ShapedRun, Error> {
     let mut glyphs = budget::Buffer::new();
     super::budget::reserve(&mut glyphs, engine.line.len())?;
     let mut origin = 0.0f64;
@@ -79,8 +114,8 @@ pub fn shape_run(
     let mut at = 0usize;
     for part in engine.parts() {
         let upem = f64::from(engine.font(part.font)?.info.units_per_em);
-        let scale = face.size / upem;
-        let extra = engine.bold_extra(part.synth, face.size);
+        let scale = size / upem;
+        let extra = engine.bold_extra(part.synth, size);
         let mut pen = 0i64;
         for (n, g) in engine.line[part.glyphs.clone()].iter().enumerate() {
             budget::push(
@@ -93,7 +128,7 @@ pub fn shape_run(
                         + (pen + i64::from(g.x_offset)) as f64 * scale
                         + f64::from(gaps) * letter_spacing,
                     y: -f64::from(g.y_offset) * scale,
-                    size: face.size,
+                    size,
                     synth: part.synth,
                     cluster: g.cluster,
                 },
@@ -114,7 +149,7 @@ pub fn shape_run(
     }
     Ok(ShapedRun {
         glyphs,
-        advance: engine.line_advance(face.size)? + f64::from(gaps) * letter_spacing,
+        advance: engine.line_advance(size)? + f64::from(gaps) * letter_spacing,
     })
 }
 

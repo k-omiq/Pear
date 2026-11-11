@@ -49,9 +49,9 @@
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns, editedSpan } from './runs.js';
+  import { copyRuns, editedSpan, runsKey } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
-  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
+  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, lineFaces, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
     strokeBands,
     rgba,
@@ -756,6 +756,10 @@
             scale: pictureRes,
             fonts: app.fontsVersion,
             tiles: patternTileKey,
+            // The faces of the words, which the picture is painted in; none
+            // while an IME composes, as the composed picture is in the box
+            // face (`paintedBox`).
+            runs: composeText == null ? runs : null,
             light: lightKey,
             // Crisp letter edges, which the painter reads from the setting.
             edges: crispFor(s) ? 'crisp' : '',
@@ -773,7 +777,9 @@
       ? engineKey
       : warped
         ? JSON.stringify({ ...s, ink: 0 }) +
-          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}`
+          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}` +
+          // The faces of the words, which the warped picture is painted in.
+          (runs?.length ? `|R${runsKey(runs)}` : '')
         : '',
   );
   const warpKey = $derived(failed ? '' : wantedKey);
@@ -816,7 +822,9 @@
   }
   // An IME's text is not the box's until the composition ends, so the box
   // is painted with it standing in for its own.
-  const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText } : box);
+  // While an IME composes, the picture is of its text in the box's face: the
+  // runs index the words before it, not these.
+  const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText, runs: null } : box);
   // `key` is the picture key this paint is for: the effect's paints have one,
   // and only those may go to the paint worker (`paintFull`). `worker` false
   // paints here whatever the box is: the fallback for a paint the worker did
@@ -1529,9 +1537,8 @@
       const cased = applyCase(text, s);
       return brokenLines(cased, s, s.size, keptBreaks(box)) ?? layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), opts);
     }
-    // Words in several faces: broken by the faces' widths (`casedRuns`). The
-    // lines below are still drawn in the box face, here and in the picture,
-    // until the painter sets each run in its own (C3).
+    // Words in several faces: broken by the faces' widths (`casedRuns`), and
+    // drawn in them (`lineCuts` below, and the picture's job).
     const c = casedRuns(text, runs, s);
     return (
       brokenLines(c.text, s, s.size, keptBreaks(box), c.runs) ??
@@ -1552,6 +1559,12 @@
     return lineIndents(shaped, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size));
   });
   const indentCss = (i) => (indents ? `padding-${s.align}:${indents[i] * z}px;` : '');
+  // Each line's stretches in their faces (`lineFaces`), for a layout with runs:
+  // the line drawn as one span per stretch, each with its weight and slant, so
+  // the browser draws what it measured - each stretch alone. Null for every
+  // line of a box without runs, which is drawn as the one string it was.
+  const faceCss = (st) => `font-weight:${st.bold ? 700 : 400};font-style:${st.italic ? 'italic' : 'normal'};`;
+  const lineCuts = $derived(shaped?.runs ? shaped.map((_, i) => lineFaces(shaped, i, s)?.map((p) => ({ ...p, css: faceCss(p.style) })) ?? null) : null);
 
   // How far the centred block moves so its INK, not its line boxes, is centred
   // in the box - the exporter's `inkShiftY`. Measured at the page size and
@@ -2671,7 +2684,7 @@
 
   // Draws the lines, restoring both raw selection endpoints, or selects all.
   function drawEdit(node, caret, anchor = caret) {
-    drawEditLines(node, text, editSegs, hangWidth, indents && { side: s.align, px: indents.map((v) => v * z) });
+    drawEditLines(node, text, editSegs, hangWidth, indents && { side: s.align, px: indents.map((v) => v * z) }, editSegs ? lineCuts : null);
     const sel = window.getSelection();
     if (caret == null) {
       const r = document.createRange();
@@ -3668,7 +3681,7 @@
       <div class="txt shaped stack" style="{textStyle}{stackTransform}{filterCss}">
         {#each layers as ly, li (li)}
           <div class="tlayer" class:base={li === 0} style={ly.css}>
-            {#each shaped as ln, i (i)}<div class="tline" style="{ly.line}{indentCss(i)}">{ln === '' ? '\u200b' : ln}</div>{/each}
+            {#each shaped as ln, i (i)}<div class="tline" style="{ly.line}{indentCss(i)}">{#if lineCuts?.[i]}{#each lineCuts[i] as p, j (j)}<span style={p.css}>{ln.slice(p.start, p.end)}</span>{/each}{:else}{ln === '' ? '\u200b' : ln}{/if}</div>{/each}
           </div>
         {/each}
       </div>

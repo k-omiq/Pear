@@ -47,3 +47,5 @@ everything_turned_30 ac6da1432cc1c34e
 wobble 15109a1b5a85b3b0
 wobble_tilt_stroke_shadow 56a751b1da6960f9
 wobble_with_sfx_shake 0489468988283c80
+runs_two_faces 00f762654d14138f
+runs_two_faces_stroke_shadow 6289f18314f85a6a

@@ -626,6 +626,7 @@ fn inked(font: FontId, text: &str) -> BoxRequest {
                 ..Stroke::default()
             }],
         )),
+        faces: Default::default(),
     };
     BoxRequest::new(200, 160, request)
 }

@@ -309,12 +309,41 @@ pub struct Request {
     /// The box's brush ink, painted with the letters in every pass of the
     /// box job (`super::ink`). Only a box job carries it.
     pub ink: Option<super::ink::Ink>,
+    /// The faces of a text set in several (v13): empty for a job in one face,
+    /// which is every job without the block.
+    pub faces: RunFaces,
 }
+
+/// A straight job's lines set in more faces than `face` (v13): the faces, at
+/// the request's size, and for each run the stretches of its text each is
+/// set in. A run with no stretches is set in `face`, as before. Each line is
+/// shaped through [`crate::engine::Engine::measure_spans`], the measure the
+/// layout broke it by, so a bold word paints exactly as wide as it measured.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunFaces {
+    pub faces: Vec<Face>,
+    /// One list per run (or none at all): `(index into faces, UTF-16 range
+    /// of the run's text)`, in order and end to end.
+    pub spans: Vec<Vec<(u32, core::ops::Range<u32>)>>,
+}
+
+impl RunFaces {
+    /// The stretches of run `i` with their faces, or `None` when the run is
+    /// set in the job's face alone.
+    pub fn of(&self, i: usize) -> Option<Vec<(Face, core::ops::Range<u32>)>> {
+        let list = self.spans.get(i).filter(|l| !l.is_empty())?;
+        Some(list.iter().map(|(k, r)| (self.faces[*k as usize], r.clone())).collect())
+    }
+}
+
+/// Most faces one job's lines can be set in: four faces of one family, and
+/// room for fallback-built faces of more families later.
+pub const MAX_RUN_FACES: usize = 16;
 
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 12;
+pub const WIRE_VERSION: u32 = 13;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -508,6 +537,37 @@ impl<'a> Reader<'a> {
         }))
     }
 
+    // The v13 block of a job set in several faces (see `decode`). Whether a
+    // stretch list covers its run's text is the shaper's to check
+    // (`Engine::measure_spans`), which refuses one that does not.
+    fn run_faces(&mut self, runs: usize, size: f64) -> Result<RunFaces, Error> {
+        let n = self.count(12)?;
+        if n == 0 || n > MAX_RUN_FACES {
+            return Err(Error::BadSpec);
+        }
+        let faces = super::budget::collect((0..n).map(|_| {
+            Ok(Face {
+                font: self.u32()?,
+                synth: Synth::from_bits(self.u32()?),
+                chain: self.u32()?,
+                size,
+            })
+        }))?;
+        if self.u32()? as usize != runs {
+            return Err(Error::BadSpec);
+        }
+        let spans = super::budget::collect((0..runs).map(|_| {
+            super::budget::collect((0..self.count(12)?).map(|_| {
+                let (k, a, b) = (self.u32()?, self.u32()?, self.u32()?);
+                if k as usize >= n || b < a {
+                    return Err(Error::BadSpec);
+                }
+                Ok((k, a..b))
+            }))
+        }))?;
+        Ok(RunFaces { faces, spans })
+    }
+
     fn tiles(&mut self) -> Result<Vec<Tile>, Error> {
         super::budget::collect((0..self.count(8)?).map(|_| {
             let (width, height) = (self.u32()?, self.u32()?);
@@ -548,6 +608,13 @@ impl<'a> Reader<'a> {
 ///                              u32 run flags (1 afterimage), fill,
 ///                              u32 byte length, UTF-8 text
 /// u32 tile count, then per tile: u32 width, u32 height, RGBA8 pixels
+/// (v13) only for a straight job whose lines are set in several faces, and
+///     nothing at all otherwise, so a job in one face is the bytes it was:
+///     u32 face count (1 to 16), then per face: u32 font, u32 synth bits,
+///     u32 fallback chain, all at the job's size;
+///     u32 run count (the job's), then per run: u32 stretch count (0 for a
+///     run in the job's face), then per stretch: u32 face index, u32 first
+///     and one-past-last UTF-16 unit of the run's text
 ///
 /// fill: u32 kind, then
 ///   0 none
@@ -700,6 +767,15 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         })
     }))?;
     let tiles = r.tiles()?;
+    let faces = if r.at < bytes.len() {
+        r.run_faces(runs.len(), size)?
+    } else {
+        RunFaces::default()
+    };
+    // A curve is one glyph a run, laid out in the box's face: no stretches.
+    if flags & 1 != 0 && !faces.faces.is_empty() {
+        return Err(Error::BadSpec);
+    }
     if r.at != bytes.len() {
         return Err(Error::BadSpec);
     }
@@ -737,6 +813,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         transform: Affine(m),
         tiles,
         ink: None,
+        faces,
     })
 }
 

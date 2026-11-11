@@ -27,6 +27,7 @@ import { boxInJob, renderBoxTexture, warpTexture } from '../exporter.js';
 import { glyphPainter } from '../text-engine/index.js';
 import { paintWorkerAllowed } from '../text-engine/paint-mirror.js';
 import { inkActive, pageGradients, usesBackdrop } from '../text-paint.js';
+import { runsKey } from '../runs.js';
 
 // The most pixels one box's canvas holds: 8 megapixels, 32 MB of RGBA.
 //
@@ -566,7 +567,7 @@ export const PICTURE_OFF = 'e|off';
  * The ink block is not stringified here - it is the heaviest part of a style
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
-export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '', edges = '' }) {
+export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '', edges = '', runs = null }) {
   const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
@@ -580,6 +581,9 @@ export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, f
     // stands on it, turned and mirrored (`pageGradientKey`).
     (page ? `|P${page}` : '') +
     // Crisp letter edges (text-edges.svelte.js).
-    (edges ? `|E${edges}` : '')
+    (edges ? `|E${edges}` : '') +
+    // The faces of the words (runs.js): a word made bold is a new picture.
+    // None is no part at all, so a box without runs has the key it had.
+    (runs?.length ? `|R${runsKey(runs)}` : '')
   );
 }

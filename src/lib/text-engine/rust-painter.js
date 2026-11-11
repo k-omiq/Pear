@@ -90,6 +90,9 @@ export function createRustGlyphPainter(rust, options = {}) {
       font: face.font,
       size: face.size,
       synth: face.flags,
+      // The faces a line set in several is painted in, resolved as the box's
+      // own is: the engine that measured the lines draws them.
+      ...(job.faces?.length ? { faces: job.faces.map((f) => rust.handle(f)) } : null),
       boldDraw: options.boldDraw ?? 'rule',
       weight: options.weight ?? 0,
       transform,

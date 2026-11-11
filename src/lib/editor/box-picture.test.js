@@ -88,6 +88,15 @@ describe('what the picture is made from, as a key', () => {
     expect(pictureKey(of({ style: style({ flipH: true }) }))).toBe(base);
     expect(pictureKey(of({ style: style({ flipV: true }) }))).toBe(base);
   });
+  it('is a new picture when a word changes face, and the same key with no runs', () => {
+    const bold = [{ start: 0, end: 5, bold: true, italic: false }];
+    expect(pictureKey(of({ runs: null }))).toBe(base);
+    expect(pictureKey(of({ runs: [] }))).toBe(base);
+    const k = pictureKey(of({ runs: bold }));
+    expect(k).not.toBe(base);
+    expect(pictureKey(of({ runs: [{ ...bold[0], italic: true }] }))).not.toBe(k);
+    expect(pictureKey(of({ runs: [{ ...bold[0], end: 4 }] }))).not.toBe(k);
+  });
   it('has no place for where the box is: there is nothing to pass', () => {
     expect(Object.keys(of())).not.toContain('x');
     expect(pictureKey({ ...of(), x: 10, y: 20 })).toBe(base);

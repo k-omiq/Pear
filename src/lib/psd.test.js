@@ -364,6 +364,18 @@ describe('textLayerFor', () => {
     expect(layer.imageData).toBe(rendered.imageData);
   });
 
+  it('ships a box with words in another face as pixels, until its type layer can say the faces (C5)', () => {
+    const bold = { start: 0, end: 1, bold: true, italic: false };
+    const layer = textLayerFor(page, { ...box(baseStyle), runs: [bold] }, rendered);
+    expect('text' in layer).toBe(false);
+    expect(layer.imageData).toBe(rendered.imageData);
+    // A run in the box's own face draws nothing else: the type layer stays.
+    expect(textLayerFor(page, { ...box({ ...baseStyle, bold: true }), runs: [bold] }, rendered).text).toBeTruthy();
+    // A box reading its line takes the line's runs.
+    const lined = { lines: [{ n: 4, en: 'hi', runs: [bold] }] };
+    expect('text' in textLayerFor(lined, { ...box(baseStyle), text: null, lineN: 4 }, rendered)).toBe(false);
+  });
+
   it('marks the raster-only layer name so it reads as deliberate, not broken', () => {
     const layer = textLayerFor(page, box({ ...baseStyle, curve: 10 }), rendered);
     expect(layer.name).toBe('hi [raster, not editable in Photoshop]');
