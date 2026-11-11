@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { textCheck } from './runs.js';
 import { readPsd, writePsd, initializeCanvas } from 'ag-psd';
 import {
   buildPagePsd,
@@ -6,6 +7,7 @@ import {
   numberBoxIds,
   pagePsdDocument,
   serializePage,
+  reconstructFromProject,
   textLayerFor,
   writePagePsd,
   fontRequestFor,
@@ -97,6 +99,30 @@ describe('serializePage', () => {
       boxes: [],
     });
     expect(out.lines[0].tags).toEqual(['shout', 'sfx']);
+  });
+
+  it('carries the faces of words with the check of their text, and the import keeps only those that still match', async () => {
+    const bold = { start: 0, end: 4, bold: true, italic: false };
+    const lined = { start: 0, end: 2, bold: false, italic: true, font: 'Anime Ace' };
+    const out = serializePage({
+      id: 3,
+      w: 8,
+      h: 8,
+      lines: [{ n: 1, type: 'dialogue', jp: '', en: 'hi there', runs: [lined] }, { n: 2, type: 'dialogue', jp: '', en: 'plain' }],
+      boxes: [{ lineN: null, text: 'BOOM now', x: 0, y: 0, w: 1, h: 1, style: {}, runs: [bold] }, { lineN: 1, text: null, x: 0, y: 0, w: 1, h: 1, style: {} }],
+    });
+    expect(out.lines[0]).toMatchObject({ runs: [lined], runsCheck: textCheck('hi there') });
+    expect(out.boxes[0]).toMatchObject({ runs: [bold], runsCheck: textCheck('BOOM now') });
+    expect('runs' in out.lines[1] || 'runsCheck' in out.lines[1]).toBe(false);
+    expect('runs' in out.boxes[1] || 'runsCheck' in out.boxes[1]).toBe(false);
+
+    // Back in, as the chapter it becomes saves them; words changed outside the
+    // app (the JSON edited) leave their runs behind.
+    const back = await reconstructFromProject({ page: out }, null);
+    expect(back.lines[0]).toMatchObject({ runs: [lined], runsCheck: textCheck('hi there') });
+    expect(back.boxes[0]).toMatchObject({ runs: [bold], runsCheck: textCheck('BOOM now') });
+    const edited = await reconstructFromProject({ page: { ...out, boxes: [{ ...out.boxes[0], text: 'BANG now' }] } }, null);
+    expect('runs' in edited.boxes[0] || 'runsCheck' in edited.boxes[0]).toBe(false);
   });
 
   it('leaves `tags` off a line that has none, rather than writing an empty array', () => {
@@ -364,7 +390,10 @@ describe('textLayerFor', () => {
     expect(layer.imageData).toBe(rendered.imageData);
   });
 
-  it('ships a box with words in another face as pixels, until its type layer can say the faces (C5)', () => {
+  // Here the browser engine measures and nothing says which font drew a letter,
+  // so a type layer could not state the faces exactly (psd.engine.test.js has
+  // the live layer the Rust engine makes).
+  it('ships a box with words in another face as pixels when the faces cannot be stated', () => {
     const bold = { start: 0, end: 1, bold: true, italic: false };
     const layer = textLayerFor(page, { ...box(baseStyle), runs: [bold] }, rendered);
     expect('text' in layer).toBe(false);
