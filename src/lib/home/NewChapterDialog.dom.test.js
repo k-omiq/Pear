@@ -17,7 +17,8 @@ vi.mock('../library.svelte.js', () => ({
 }));
 vi.mock('../route.svelte.js', () => ({ goEditor: mock.goEditor }));
 vi.mock('../importer.js', () => ({ pickImageFiles: mock.pickImageFiles, pickJsonFile: mock.pickJsonFile, readTranslations: mock.readTranslations }));
-vi.mock('../package-flow.js', () => ({ pickPackageFile: vi.fn(), inspectPackage: vi.fn(), importChapterPackage: vi.fn() }));
+const flow = vi.hoisted(() => ({ pickPackageFile: vi.fn(), inspectPackage: vi.fn(), importChapterPackage: vi.fn() }));
+vi.mock('../package-flow.js', () => flow);
 vi.mock('../store.svelte.js', () => ({ toast: mock.toast, toastError: mock.toastError }));
 vi.mock('../page-prep.js', () => ({ preparePageFiles: mock.preparePageFiles }));
 vi.mock('../strip-reslice.js', () => ({
@@ -83,7 +84,25 @@ describe('page preparation in new chapter import', () => {
     await fireEvent.click(view.getByRole('checkbox', { name: 'Split spreads' }));
     await create(view);
     expect(mock.preparePageFiles).toHaveBeenCalledWith([raw], expect.objectContaining({ ocrLanguage: 'zh' }));
-    expect(mock.createProject).toHaveBeenCalledWith('New', { layout: 'pages', ocrLanguage: 'zh' });
+    expect(mock.createProject).toHaveBeenCalledWith('New', { layout: 'pages', ocrLanguage: 'zh', exportScale: 1 });
+  });
+
+  it('makes a series from a package with the Size of the series the package came from', async () => {
+    const pkgFile = new File(['zip'], 'seven.mtchapter');
+    flow.pickPackageFile.mockResolvedValue(pkgFile);
+    flow.inspectPackage.mockResolvedValue({
+      pkg: { manifest: {} },
+      summary: { number: 7, title: 'Seven', pageCount: 2, projectName: 'Sharp', layout: 'longstrip', ocrLanguage: 'ko', exportScale: 2, fonts: [], tags: [] },
+    });
+    flow.importChapterPackage.mockResolvedValue({ chapter: { id: 'chapter', number: 7 } });
+    const view = await mount();
+    await fireEvent.change(view.getByRole('combobox'), { target: { value: '__new__' } });
+    await fireEvent.click(view.getByRole('button', { name: 'Package', exact: true }));
+    await fireEvent.click(view.getByRole('button', { name: 'Choose a .mtchapter…' }));
+    await waitFor(() => expect(view.getByRole('button', { name: 'seven.mtchapter - change' })).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'Create', exact: true }));
+    await waitFor(() => expect(flow.importChapterPackage).toHaveBeenCalledOnce());
+    expect(mock.createProject).toHaveBeenCalledWith('Sharp', { layout: 'longstrip', ocrLanguage: 'ko', exportScale: 2 });
   });
 
   it('disables selected preparation options when cleaned pages are attached and preserves positional pairing', async () => {

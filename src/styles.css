@@ -849,8 +849,9 @@ input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; he
 .seg button:not(:last-child){ border-right:1px solid var(--line); }
 .seg button:hover{ color:var(--text); }
 .seg button.on{ background:var(--accent); color:var(--accent-fg); }
-/* A segment that cannot be chosen now is dimmed, never hidden (DESIGN.md). */
-.seg button:disabled{ opacity:.5; cursor:default; }
+/* The export dialog's Size: a size that cannot be written is dimmed, never
+   hidden (DESIGN.md). Scoped: other segmented rows keep their own look. */
+.seg.exp-size button:disabled{ opacity:.5; cursor:default; }
 .seg button svg{ width:15px; height:15px; }
 /* The Inspector's three sizing modes: words, sharing the row evenly. */
 .seg.sizing button{ flex:1 1 0; min-width:0; padding:0 4px; font-size:11.5px; overflow:hidden; text-overflow:ellipsis; }
@@ -1366,6 +1367,7 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
   background:var(--surface); border:1px solid var(--line2); border-radius:9px; color:var(--text);
 }
 .exp-card:hover{ border-color:var(--accent); background:var(--accent-soft); }
+.exp-card:disabled{ opacity:.5; cursor:default; border-color:var(--line2); background:var(--surface); }
 .exp-card svg{ width:26px; height:26px; color:var(--accent); margin-bottom:2px; }
 .exp-card .t{ font-size:13px; font-weight:600; }
 .exp-card .d{ font-size:11px; color:var(--t2); }

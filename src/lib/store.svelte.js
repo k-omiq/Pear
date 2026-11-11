@@ -4219,6 +4219,16 @@ export const OCR_LANGUAGES = ['ja', 'zh', 'ko'];
 export const normalizeOcrLanguage = (language) =>
   OCR_LANGUAGES.includes(language) ? language : 'ja';
 
+// ---------- the series' export size ----------
+//
+// The export dialog's Size: 1 (the page's own pixels) or 2 (twice them each
+// way). A series is exported the same way every time, so it is kept with the
+// series (project.json) and not as a preference of the app. Absent, and
+// anything else, is 1: every project written before this existed exported at
+// its own size.
+export const EXPORT_SCALES = [1, 2];
+export const normalizeExportScale = (scale) => (EXPORT_SCALES.includes(scale) ? scale : 1);
+
 // Make `p` the current page, if it is not already. In a strip every page is on
 // screen at once, so a click, a drag or a caret can land on a page the index is
 // not pointing at - and the index is what selection, the undo stack and the

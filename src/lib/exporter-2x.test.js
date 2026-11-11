@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { app, loadProjectPages, setFontSource } from './store.svelte.js';
-import { exportImages, scaleBlock, scaledFits, CANVAS_MAX_AREA } from './exporter.js';
+import { exportImages, scaleBlock, scaledFits, stripSliceBlock, stripSliceLimit, CANVAS_MAX_AREA } from './exporter.js';
+import { SLICE_H_DEFAULT } from './editor/strip-cuts.js';
 import { scaleTypeLayer } from './psd.js';
 import { releaseAllPageImages } from './page-images.js';
 import { jobs } from './jobs.svelte.js';
@@ -42,18 +43,46 @@ describe('what a 2x file can hold', () => {
     expect(scaleBlock([{ w: 0, h: 0 }], 'PNG', 2)).toBe(null);
   });
 
-  it('judges a strip re-cut as its column width and its tallest slice', () => {
-    const pages = Array.from({ length: 10 }, () => ({ w: 800, h: 3000 }));
+  it('judges a strip’s pages by the column’s width, not their own', () => {
+    expect(scaleBlock([{ w: 400, h: 8000 }], 'PNG', 2)).toBe(null);
+    expect(scaleBlock([{ w: 400, h: 8000 }], 'PNG', 2, { strip: { width: 9000 } })).toBe('Page 1 is too large for 2x');
+    // A page of the strip that fits is let go, whatever Slice height says:
+    // the slices are the whole chapter's, judged apart.
+    expect(scaleBlock([{ w: 800, h: 3000 }], 'WebP', 2, { strip: { width: 800 } })).toBe(null);
+  });
+});
+
+describe('what a 2x strip’s slices can hold', () => {
+  const pages = Array.from({ length: 10 }, () => ({ w: 800, h: 3000 }));
+
+  it('is its column width and the tallest slice its Slice height can cut', () => {
     // Slices of 4000 can be cut up to 8000 tall: 16,000 px at 2x, inside
     // a PNG and a WebP.
-    expect(scaleBlock(pages, 'PNG', 2, { strip: { width: 800, sliceH: 4000 } })).toBe(null);
-    expect(scaleBlock(pages, 'WebP', 2, { strip: { width: 800, sliceH: 4000 } })).toBe(null);
-    // Up to 10,000 tall: past a WebP's side at 2x, not a PNG's.
-    expect(scaleBlock(pages, 'WebP', 2, { strip: { width: 800, sliceH: 5000 } })).toBe('Slice height is too large for 2x');
-    expect(scaleBlock(pages, 'PNG', 2, { strip: { width: 800, sliceH: 5000 } })).toBe(null);
-    // A page the column's width, not its own, in a strip.
-    expect(scaleBlock([{ w: 400, h: 8000 }], 'PNG', 2)).toBe(null);
-    expect(scaleBlock([{ w: 400, h: 8000 }], 'PNG', 2, { strip: { width: 9000, sliceH: 0 } })).toBe('Page 1 is too large for 2x');
+    expect(stripSliceBlock(pages, 'PNG', 2, 800, 4000)).toBe(null);
+    expect(stripSliceBlock(pages, 'WebP', 2, 800, 4000)).toBe(null);
+    // Up to 10,000 tall: past a WebP's side at 2x, not a PNG's. The reason
+    // names a height that works: 16,384 / 2 / 2.
+    expect(stripSliceBlock(pages, 'WebP', 2, 800, 5000)).toBe('At 2x, set Slice height to 4096 or less');
+    expect(stripSliceBlock(pages, 'PNG', 2, 800, 5000)).toBe(null);
+    expect(stripSliceLimit(800, 2, 'WebP')).toBe(4096);
+    // The default height, 8000, in a WebP.
+    expect(stripSliceBlock(pages, 'WebP', 2, 800, SLICE_H_DEFAULT)).toBe('At 2x, set Slice height to 4096 or less');
+  });
+
+  it('judges a short strip by its own height, not the height a slice could be', () => {
+    // One page, 3000 tall: no cut can be taller than the strip.
+    expect(stripSliceBlock([{ w: 800, h: 3000 }], 'WebP', 2, 800, SLICE_H_DEFAULT)).toBe(null);
+  });
+
+  it('says so when no Slice height can fit the column’s width', () => {
+    // 40,000 wide is 80,000 at 2x: under 3,356 rows fit WebKit's area, under
+    // the shortest Slice height can cut.
+    expect(stripSliceBlock(pages, 'PNG', 2, 40000, SLICE_H_DEFAULT)).toBe('This strip is too wide for 2x');
+  });
+
+  it('judges nothing at the page’s own size, nor for a PSD', () => {
+    expect(stripSliceBlock(pages, 'WebP', 1, 800, 5000)).toBe(null);
+    expect(stripSliceBlock(pages, 'PSD', 2, 800, 5000)).toBe(null);
   });
 });
 
@@ -154,6 +183,35 @@ describe('an export at 2x', () => {
     app.pageIndex = 0;
     expect(await exportImages('JPG', 'current', 2)).toBe(true);
     expect(downloaded).toEqual(['ch01-11.jpg']);
+  });
+});
+
+describe('a strip export at 2x', () => {
+  const strip = () => Array.from({ length: 4 }, (_, i) => ({ id: i + 1, w: 800, h: 3000, lines: [], boxes: [] }));
+  afterEach(() => {
+    app.stripSliceH = SLICE_H_DEFAULT;
+  });
+
+  it('writes one page of a strip at the default Slice height in a WebP', async () => {
+    app.projectLayout = 'longstrip';
+    loadProjectPages(strip());
+    app.pageIndex = 1;
+    const seen = sizes();
+    expect(await exportImages('WebP', 'current', 2)).toBe(true);
+    // The page, at twice the strip's width and its own height twice.
+    expect(seen[0]).toEqual([1600, 6000]);
+    expect(downloaded).toEqual(['ch01-2.webp']);
+  });
+
+  it('refuses a whole strip whose cut slice is past a WebP at 2x, naming a Slice height that works', async () => {
+    app.projectLayout = 'longstrip';
+    // Cut about every 9,000 px: 18,000 at 2x, past a WebP's side.
+    app.stripSliceH = 9000;
+    loadProjectPages(strip());
+    const seen = sizes();
+    expect(await exportImages('WebP', 'all', 2)).toBe(false);
+    expect(seen).toEqual([]);
+    expect(app.toast.msg).toMatch(/^Export failed: Slice 1 is too large for 2x\. Set Slice height to 4096 or less\. 0 files were written\.$/);
   });
 });
 
