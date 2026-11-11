@@ -601,39 +601,100 @@ export function unwarpPoint(pts, cols, rows, w, h, x, y) {
 
 // `unwarpPoint` through a mesh already built (`meshMap`, null for none), for
 // a caller that carries many points through one box's mesh.
-export function unwarpWith(m, w, h, x, y) {
+//
+// `opts.bounds` ([x0, y0, x1, y1], box-local) is where an answer may lie: a
+// point a fold or a far sheet of the mesh carries onto (x, y) from outside
+// it is not one (null). `opts.hint` (box-local) is where the caller expects
+// the answer, such as the previous point of a stroke: Newton starts there
+// first, and of several points the mesh carries onto (x, y) the one nearest
+// the hint wins.
+export function unwarpWith(m, w, h, x, y, opts = null) {
   const tx = +x;
   const ty = +y;
   if (!Number.isFinite(tx) || !Number.isFinite(ty)) return [tx, ty];
   if (!m) return [tx, ty];
-  if (m.back) return m.back(tx, ty);
-  const W = Number(w);
-  const H = Number(h);
+  const bounds = opts?.bounds ?? null;
+  const ok = (p) => !!p && (!bounds || (p[0] >= bounds[0] && p[1] >= bounds[1] && p[0] <= bounds[2] && p[1] <= bounds[3]));
+  if (m.back) {
+    const p = m.back(tx, ty);
+    return ok(p) ? p : null;
+  }
+  const seeds = seedsOf(m, Number(w), Number(h), bounds);
   const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
-  // Seeds on a grid over the box and past it, nearest first.
-  const N = 12;
-  const seeds = [];
-  for (let j = 0; j <= N; j++) {
-    for (let i = 0; i <= N; i++) {
-      const sx = -W + (3 * W * i) / N;
-      const sy = -H + (3 * H * j) / N;
-      seeds.push([miss(m.at(sx, sy)), sx, sy]);
+  const hint = opts?.hint && Number.isFinite(opts.hint[0]) && Number.isFinite(opts.hint[1]) ? opts.hint : null;
+  if (hint) {
+    // Newton from the hint, taken when it stays on the hint's sheet: the
+    // straight step from the hint to the answer carries onto the straight
+    // step from where the hint goes to (x, y) (`oneStep`). Near a crease
+    // Newton can jump across to another sheet, and then the seeds decide.
+    const from = m.at(hint[0], hint[1]);
+    const p = newtonBack(m, tx, ty, hint[0], hint[1], miss(from));
+    if (ok(p) && oneStep(m, hint, p, from, [tx, ty])) return p;
+  }
+  // The seeds nearest (x, y) first. Near a fold the nearest can lead Newton
+  // into the crease, where the map turns back and no step gets closer,
+  // although the point is reached from the fold's other side; the next seeds
+  // start in other places. With no hint the first that converges is the
+  // answer, with one the converged answer nearest it.
+  const n = seeds.at.length;
+  const d = new Float64Array(n);
+  for (let i = 0; i < n; i++) d[i] = miss(seeds.at[i]);
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => d[a] - d[b]);
+  let best = null;
+  let bestD = Infinity;
+  for (let s = 0; s < Math.min(UNWARP_SEEDS, n); s++) {
+    const [sx, sy] = seeds.from[order[s]];
+    const p = newtonBack(m, tx, ty, sx, sy, d[order[s]]);
+    if (!ok(p)) continue;
+    if (!hint) return p;
+    const e = Math.hypot(p[0] - hint[0], p[1] - hint[1]);
+    if (e < bestD) {
+      bestD = e;
+      best = p;
     }
   }
-  seeds.sort((a, b) => a[0] - b[0]);
-  // Near a fold the nearest seed can lead Newton into the crease, where the
-  // map turns back and no step gets closer, although the point is reached
-  // from the fold's other side. The next seeds start in other places; the
-  // first that converges is the answer.
-  const tries = Math.min(UNWARP_SEEDS, seeds.length);
-  for (let s = 0; s < tries; s++) {
-    const p = newtonBack(m, tx, ty, seeds[s][1], seeds[s][2], seeds[s][0]);
-    if (p) return p;
-  }
-  return null;
+  return best;
 }
 const UNWARP_TOLERANCE = 1e-3;
 const UNWARP_SEEDS = 8;
+
+// Whether the box's straight step from `a` to `b` carries onto the page's
+// straight step from `pa` to `pb` (where the map takes them): each quarter
+// point within half that page step, and at least 1 px. A step onto another
+// sheet of a fold carries forward somewhere else entirely.
+export function oneStep(m, a, b, pa, pb) {
+  const tol = Math.max(1, Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / 2);
+  for (const t of [0.25, 0.5, 0.75]) {
+    const f = m.at(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+    if (!(Math.hypot(f[0] - (pa[0] + (pb[0] - pa[0]) * t), f[1] - (pa[1] + (pb[1] - pa[1]) * t)) <= tol)) return false;
+  }
+  return true;
+}
+
+// The seeds of `unwarpWith` for mesh `m`: a 13 x 13 grid over `bounds` (else
+// the box and a box's width and height past it on every side, where the map
+// continues straight) and where each goes (`at`). Kept with the mesh object.
+const seedMemo = new WeakMap();
+function seedsOf(m, W, H, bounds) {
+  const key = bounds ? bounds.join(',') : `${W},${H}`;
+  const hit = seedMemo.get(m);
+  if (hit?.key === key) return hit.out;
+  const [x0, y0, x1, y1] = bounds ?? [-W, -H, 2 * W, 2 * H];
+  const N = 12;
+  const from = [];
+  const at = [];
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      const sx = x0 + ((x1 - x0) * i) / N;
+      const sy = y0 + ((y1 - y0) * j) / N;
+      from.push([sx, sy]);
+      at.push(m.at(sx, sy));
+    }
+  }
+  const out = { from, at };
+  seedMemo.set(m, { key, out });
+  return out;
+}
 
 // Newton's method on `m.at` from (px, py), whose miss is `r`, each step
 // shortened until it gets closer: the box-local point within

@@ -156,3 +156,43 @@ describe('a full box can still be erased', () => {
     expect(paintRoomFor(p, false)).toBe(null);
   });
 });
+
+// A folded mesh carries more than one box point onto some page points: a
+// mark keeps to one sheet and to the box, never joining two sheets with a
+// long segment or jumping a point to a sheet nobody sees.
+describe('a folded mesh', () => {
+  // The middle dot dragged right and down: the right half folds back over
+  // itself.
+  const FOLD = { on: true, cols: 2, rows: 2, pts: [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]] };
+  const folded = () => ({ id: 'b', x: 0, y: 0, w: 100, h: 100, style: { ...style({ warp: FOLD }), size: 20 } });
+  const longest = (pts) => Math.max(0, ...pts.slice(1).map((q, i) => Math.hypot(q[0] - pts[i][0], q[1] - pts[i][1])));
+
+  it('a stroke across the fold keeps to one sheet: no segment longer than two page steps', () => {
+    const box = folded();
+    const runs = marksFromPage(box, [stroke([[0, 60], [120, 60]])]);
+    expect(runs.length).toBeGreaterThan(0);
+    for (const r of runs) {
+      // The page step is 4 px; on the box a step is no longer than 8.
+      expect(longest(r.pts)).toBeLessThanOrEqual(8);
+      for (const q of r.pts) {
+        // Inside the box and its margin (half the font size here), and on the line drawn.
+        expect(q[0] >= -10 && q[0] <= 110 && q[1] >= -10 && q[1] <= 110).toBe(true);
+        expect(Math.abs(shown(box, q)[1] - 60)).toBeLessThan(1e-3);
+      }
+    }
+  });
+
+  it('a mark moved 1 px moves about 1 px, never onto another sheet', () => {
+    const box = folded();
+    for (const y of [5, 7, 10, 20]) {
+      const pts = Array.from({ length: 26 }, (_, i) => [40 + i * 2, y]);
+      const mark = stroke(pts);
+      const [out] = moveMarks(box, [mark], 0, 1, 0);
+      if (out === mark) continue; // stayed, whole: allowed
+      expect(out.pts).toHaveLength(pts.length);
+      // Each point is still within a few px of where it stood.
+      out.pts.forEach((q, i) => expect(Math.hypot(q[0] - pts[i][0], q[1] - pts[i][1])).toBeLessThan(5));
+      expect(longest(out.pts)).toBeLessThan(8);
+    }
+  });
+});

@@ -572,47 +572,69 @@ function strokeThroughMesh(sh, mesh, map) {
 // drew at the stroke's middle; a width per point would need the engine to
 // take one (its stroke has a single size), or one stroke cut into many
 // marks, which a pick, a move and an undo would then see as many.
-export function bendShape(sh, at) {
-  const runs = bendRuns(sh, at);
+//
+// `at(p, prev)` is handed the point before it in the run, `{ p, q }` (where
+// it was and where `at` put it), or null at a run's start: a map with more
+// than one answer for a point takes the one near `prev.q`. `joins(prev, p,
+// q)`, when given, says whether q follows prev in one piece of the shape;
+// where it does not (the next point is on another sheet of a folded mesh),
+// the shape is cut there as at a gap.
+export function bendShape(sh, at, joins = null) {
+  const runs = bendRuns(sh, at, joins);
   return runs && runs.length === 1 && runs[0].whole ? runs[0].shape : null;
 }
 
 // A brush stroke carried by `at` as `bendShape` does, cut where `at` cannot
 // carry a point: one stroke for each stretch it carries, never a straight
 // segment across a gap. Any other shape is `bendShape`'s, or nothing.
-export function bendStrokeRuns(sh, at) {
+export function bendStrokeRuns(sh, at, joins = null) {
   if (sh.kind !== 'stroke') {
-    const one = bendShape(sh, at);
+    const one = bendShape(sh, at, joins);
     return one ? [one] : [];
   }
-  return (bendRuns(sh, at) ?? []).map((r) => r.shape);
+  return (bendRuns(sh, at, joins) ?? []).map((r) => r.shape);
 }
 
-function bendRuns(sh, at) {
-  // Each stretch of points `at` carries; `whole` when nothing was dropped.
-  const carry = (pts) => {
+function bendRuns(sh, at, joins) {
+  // Each stretch of points `at` carries in one piece; `whole` when nothing
+  // was dropped or cut. `qs[i]` is where pts[i] went, null where it did not.
+  const carry = (pts, closedShape = false) => {
     const runs = [[]];
+    const qs = [];
     let whole = true;
+    let prev = null;
     for (const p of pts) {
-      const q = at(p);
-      if (q && Number.isFinite(q[0]) && Number.isFinite(q[1])) runs[runs.length - 1].push(q);
-      else {
+      const raw = at(p, prev);
+      const q = raw && Number.isFinite(raw[0]) && Number.isFinite(raw[1]) ? raw : null;
+      qs.push(q);
+      if (q && prev && joins && !joins(prev, p, q)) {
         whole = false;
+        runs.push([]);
+      }
+      if (q) {
+        runs[runs.length - 1].push(q);
+        prev = { p, q };
+      } else {
+        whole = false;
+        prev = null;
         if (runs[runs.length - 1].length) runs.push([]);
       }
     }
-    return { runs: runs.filter((r) => r.length), whole };
+    // A closed shape's closing edge is one piece too.
+    if (closedShape && whole && joins && prev && qs[0] && !joins(prev, pts[0], qs[0])) whole = false;
+    return { runs: runs.filter((r) => r.length), qs, whole };
   };
   if (sh.kind === 'stroke') {
     const pts = densify(sh.pts, false);
-    const { runs, whole } = carry(pts);
+    const { runs, qs, whole } = carry(pts);
     if (!runs.length) return null;
-    const safe = { at: (x, y) => at([x, y]) ?? [NaN, NaN] };
     let k = NaN;
     const mid = pts.length >> 1;
     for (let d = 0; d <= mid + 1 && !Number.isFinite(k); d++) {
       for (const i of [mid - d, mid + d]) {
-        if (i < 0 || i >= pts.length || Number.isFinite(k)) continue;
+        if (i < 0 || i >= pts.length || Number.isFinite(k) || !qs[i]) continue;
+        const near = { p: pts[i], q: qs[i] };
+        const safe = { at: (x, y) => at([x, y], near) ?? [NaN, NaN] };
         const v = widthScale(safe, pts[i], null);
         if (Number.isFinite(v) && v > 0) k = v;
       }
@@ -622,7 +644,7 @@ function bendRuns(sh, at) {
   }
   // A closed shape with a point it cannot carry is not drawn at all.
   const closed = (pts, make) => {
-    const { runs, whole } = carry(pts);
+    const { runs, whole } = carry(pts, true);
     return whole && runs.length === 1 && runs[0].length >= 3 ? [{ shape: make(runs[0]), whole }] : null;
   };
   if (sh.kind === 'ellipse') {
