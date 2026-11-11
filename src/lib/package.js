@@ -53,7 +53,7 @@ const familySegment = (name) => String(name).replace(/[\\/]+/g, '_').trim() || '
 // input:
 //   record        the chapter.json record (pages with file/cleaned/w/h/lines/detect/boxes)
 //   translations  string, the derived text JSON (optional)
-//   project       { name, layout, ocrLanguage }
+//   project       { name, layout, ocrLanguage, exportScale }
 //   raws          Map<fileName, Uint8Array>   every page.file must be present
 //   cleaned       Map<fileName, Uint8Array>   every page.cleaned must be present
 //   patterns      Map<fileName, Uint8Array>   picked pattern tiles; only the ones
@@ -126,6 +126,9 @@ export function buildChapterPackage({
       name: project.name ?? '',
       layout: project.layout ?? 'pages',
       ocrLanguage: project.ocrLanguage ?? 'ja',
+      // The series' export Size, so a series made from the package exports
+      // as the one it came from (store.svelte.js `normalizeExportScale`).
+      exportScale: project.exportScale === 2 ? 2 : 1,
     },
     chapter: {
       number: record.number ?? 0,
