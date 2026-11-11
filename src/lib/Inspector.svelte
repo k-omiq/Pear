@@ -24,6 +24,7 @@
     outlineState,
     toast,
     resizeBox,
+    fitWarpToBox,
     setBoxSizing,
     boxLocked,
     setBoxLocked,
@@ -2602,7 +2603,12 @@
               role="switch"
               aria-checked={s.warp.on}
               aria-label="Transform"
-              onclick={() => { s.warp.on = !s.warp.on; touch(); }}
+              onclick={() => {
+                s.warp.on = !s.warp.on;
+                // A mesh laid out while it was off fits the box again.
+                if (s.warp.on) fitWarpToBox(box);
+                touch();
+              }}
             ><span class="knob"></span></button>
             <span class="lbl2">Transform</span>
           </div>

@@ -132,6 +132,7 @@ import { measureChapterFits } from './chapter-fit.js';
 // its own defaults, so `setTool` can disarm it without the two ever cycling.
 import { setBrushMode } from './brush-tool.svelte.js';
 import { scaleStroke } from './brush.js';
+import { scaleMesh, warpForSize } from './warp.js';
 import { translateStrokes } from './brush-board.svelte.js';
 import { setGlobalLight } from './text-paint.js';
 import { normalizeMask, maskFromClip, scaleMask, maskActive, follows, scaleFollowing } from './box-mask.js';
@@ -923,12 +924,15 @@ export function boxEditRecords(key, before, after, geom) {
   const geomOf = (snap) => {
     const g = fitOf(snap);
     if (snap.style?.ink?.on) g.ink = structuredClone(snap.style.ink);
+    // A dragged mesh is scaled with the box (`resizeBox`), so it goes back
+    // with the rectangle, as the ink does.
+    if (snap.style?.warp?.pts?.length) g.warp = structuredClone(snap.style.warp);
     return g;
   };
   const fit = { geomBefore: fitOf(before), geomAfter: fitOf(after) };
   const moved = geom && ['x', 'y', 'w', 'h'].some((k) => before[k] !== after[k]);
   const typed = before.text !== after.text || runsKey(before.runs) !== runsKey(after.runs);
-  const look = (st, ink) => JSON.stringify({ ...st, size: null, ...(ink ? { ink: null } : null) });
+  const look = (st, ink) => JSON.stringify({ ...st, size: null, ...(ink ? { ink: null, warp: null } : null) });
   const same = (ink) => look(before.style, ink) === look(after.style, ink);
   const carried = (moved && same(true)) || (typed && same(false));
   if (JSON.stringify(before.style) !== JSON.stringify(after.style) && !carried) {
@@ -4234,7 +4238,25 @@ export function rescaleStyle(st, sx, sy) {
   // Paint is drawn on the letters, in the box's own frame: it scales with
   // them, on a page rescale and on a scale of the box.
   if (st.paint && typeof st.paint === 'object') out.paint = scalePaint(st.paint, sx, sy);
+  // The mesh is box-local px over the box rect, which scales per axis; its
+  // size stamp with it (`warpForSize`).
+  if (st.warp && typeof st.warp === 'object' && Array.isArray(st.warp.pts) && st.warp.pts.length) {
+    out.warp = { ...st.warp, pts: scaleMesh(st.warp.pts, sx, sy) };
+    if (+st.warp.w > 0 && +st.warp.h > 0) Object.assign(out.warp, { w: st.warp.w * sx, h: st.warp.h * sy });
+  }
   return out;
+}
+
+// The box's mesh carried to the box's size (`warpForSize`): for a mesh that
+// comes back into use after the box was laid out with it switched off. True
+// when it changed anything.
+export function fitWarpToBox(b) {
+  const w = b?.style?.warp;
+  if (!w) return false;
+  const next = warpForSize(w, b.w, b.h);
+  if (next === w) return false;
+  b.style.warp = next;
+  return true;
 }
 
 
@@ -7456,8 +7478,10 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     // not compound: each sets the factor from the start. Ink is scaled below.
     const from = base?.style ?? b.style;
     const k = scale;
-    const st = rescaleStyle({ ...from, ink: null }, k, k);
+    // The mesh too is scaled below, from the gesture's own (`fitMesh`).
+    const st = rescaleStyle({ ...from, ink: null, warp: null }, k, k);
     delete st.ink;
+    delete st.warp;
     st.size = Math.min(200, Math.max(6, Math.round(from.size * k * 2) / 2));
     if (from.fitMax > 0) st.fitMax = Math.min(200, Math.max(6, Math.round(from.fitMax * k * 2) / 2));
     Object.assign(b.style, st);
@@ -7507,6 +7531,19 @@ export function resizeBox(pageId, boxId, geom, base = null) {
       };
     }
   }
+  // The mesh warp too, from the mesh the gesture found, so the steps of a
+  // drag do not compound. Its points are box-local px over the box rect: left
+  // where they were, the painter squeezes the text back into the old rect and
+  // the transform gizmo's handles sit on that, not on the box's corners.
+  // A mesh stamped at another size (laid out while switched off) is first
+  // brought to the size the gesture found (`warpForSize`).
+  const baseWarp = base ? base.style?.warp : b.style?.warp;
+  const fitMesh = () => {
+    if (!(ow > 0) || !(oh > 0)) return;
+    const from = warpForSize(baseWarp, ow, oh);
+    if (!Array.isArray(from?.pts) || !from.pts.length) return;
+    b.style.warp = { ...b.style.warp, pts: scaleMesh(from.pts, b.w / ow, b.h / oh), w: b.w, h: b.h };
+  };
   const widened = nw !== b.w;
   // A new place and nothing else - the Inspector's X or Y - is a move, and
   // keeps a standing solve as a drag does (`moveBoxTo`).
@@ -7544,6 +7581,7 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     if (!scale && nh !== oh) b.auto.locks.height = true;
   }
   if (moveOnly || hand || !canMeasure()) {
+    fitMesh();
     reviewBox(b, p);
     return b;
   }
@@ -7551,6 +7589,7 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     // The text was not set in the new box: owed for when the face lands, as
     // an edit's fit is (`autoFitBox`). A Fixed box has no fit to owe.
     if (mode !== 'fixed') holdFit(b);
+    fitMesh();
     reviewBox(b, p);
     return b;
   }
@@ -7560,6 +7599,9 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // Anything else - a Fixed box, a scale, a height typed in - is never left
   // shorter than its text and its ink: it grows to hold them (`refitBox`).
   else refitBox(b, p);
+  // A box with a mesh switched off is laid out like any other, and its height
+  // follows the text above: the mesh is fitted to the height it ends at.
+  fitMesh();
   return b;
 }
 

@@ -1749,7 +1749,16 @@ export function normalizeWarp(src) {
       pts.push([x, y]);
     }
   }
-  return { on: src?.on === true, cols, rows, pts: pts.length === want ? pts : [] };
+  const out = { on: src?.on === true, cols, rows, pts: pts.length === want ? pts : [] };
+  // The box size the points were made for (`warpForSize`, warp.js), kept only
+  // beside points and only as a real size; a file without it reads as before.
+  const sw = +src?.w;
+  const sh = +src?.h;
+  if (out.pts.length && sw > 0 && sh > 0 && Number.isFinite(sw) && Number.isFinite(sh)) {
+    out.w = sw;
+    out.h = sh;
+  }
+  return out;
 }
 
 // Every procedural pattern, in the engine's own order (`PATTERN_NAMES` in
