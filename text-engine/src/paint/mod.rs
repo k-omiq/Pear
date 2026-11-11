@@ -1057,6 +1057,11 @@ fn paint_letters(
     // Every run's glyphs, and for each run the frame its fill is stated in.
     let mut glyphs = Glyphs::default();
     let mut runs = budget::Buffer::new();
+    // The letters' ink in job space, before they are fitted to the device
+    // grid (Crisp): what a special effect is laid over, the same at every
+    // scale.
+    let mut ink: Option<(f64, f64, f64, f64)> = None;
+    let shaping = job.effects.special.is_some_and(|s| s.shapes_letters());
     budget::reserve(&mut runs, job.runs.len())?;
     // Where each run's letters start in the count a wobble keys them by.
     let bases = match job.effects.wobble {
@@ -1134,6 +1139,11 @@ fn paint_letters(
                 })
             }),
         )?;
+        if shaping && !run.ghost {
+            if let Some(b) = glyphs.bounds_of(from..glyphs.len()) {
+                ink = Some(ink.map_or(b, |a| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))));
+            }
+        }
         if let Some(grid) = crisp {
             let entry = engine.font(face.font)?;
             let per_unit = face.size / f64::from(entry.info.units_per_em);
@@ -1156,10 +1166,6 @@ fn paint_letters(
     // cut is cut from everything, last.
     let special = match job.effects.special.filter(Special::shapes_letters) {
         Some(sp) => {
-            let ink = (0..job.runs.len())
-                .filter(|&i| !job.runs[i].ghost)
-                .filter_map(|i| glyphs.bounds_of(runs[i].0.clone()))
-                .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
             match ink {
                 Some(ink) => Some(special::letter_shapes(&sp, face.size, ink)?),
                 None => None,

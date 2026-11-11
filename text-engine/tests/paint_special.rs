@@ -770,3 +770,39 @@ fn broken_pieces_are_read_back_at_a_whole_pixel_offset() {
     }
     kept::set_ceiling(kept::KEPT_BYTES);
 }
+
+/// A crack is laid over the letters' ink before Crisp fits them to the
+/// device grid, so the same pieces break whatever the scale and Crisp:
+/// the letters' shapes painted once are read back at scale 1 and 2, Crisp
+/// on and off (one ink box, one key).
+#[test]
+fn the_same_pieces_break_at_every_scale() {
+    use mt_text::paint::Pt;
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    let make = |scale: f64, crisp: Option<Pt>| {
+        let mut b = boxed(font, breaking(0.6, Motion::Apart, (0.5, 0.5), 1.0));
+        b.request.job.effects.crisp = crisp;
+        // Off the grid, so Crisp moves the letters' tops and baseline.
+        b.request.face = Face::new(font, 61.7);
+        b.request.job.runs[0].y = 100.7;
+        b.request.transform = Affine::scale(scale, scale);
+        b.width = (360.0 * scale) as u32;
+        b.height = (160.0 * scale) as u32;
+        b
+    };
+    kept::set_ceiling(kept::KEPT_BYTES);
+    for (scale, crisp) in [(1.0, Some(Pt::new(0.0, 0.0))), (2.0, Some(Pt::new(0.0, 0.0))), (2.0, None)] {
+        // Cold, then after the letters were painted at scale 1, Crisp off.
+        kept::clear();
+        let h = kept::hits();
+        paint(&mut engine, make(scale, crisp));
+        let cold = kept::hits() - h;
+        kept::clear();
+        paint(&mut engine, make(1.0, None));
+        let h = kept::hits();
+        paint(&mut engine, make(scale, crisp));
+        let after = kept::hits() - h;
+        assert!(after > cold, "{scale} {crisp:?}: the shapes read back ({cold} cold, {after} after)");
+    }
+}
