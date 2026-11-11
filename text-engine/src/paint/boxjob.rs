@@ -1466,7 +1466,6 @@ pub(crate) fn shapes_alpha<'a>(
     surface: IBox,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Map>, Error> {
-    use super::raster::{strip_of, STRIP_ROWS};
     let tol = FLATTEN_TOLERANCE / transform.max_scale();
     let mut parts = budget::Buffer::new();
     for polys in clip_parts(origin, shapes, tol)?.iter() {
@@ -1485,34 +1484,7 @@ pub(crate) fn shapes_alpha<'a>(
     if bx.is_empty() {
         return Ok(None);
     }
-    let w = bx.width();
-    let mut data = budget::filled(w.checked_mul(bx.height()).ok_or(Error::BadSpec)?, 0u8)?;
-    let mut coverage = rasterizer.prepare(&planned.parts, bx)?;
-    let stride = w + 2;
-    let strip = STRIP_ROWS as usize;
-    let mut cov = budget::filled(stride * strip, 0.0f32)?;
-    let mut spans = budget::filled(strip, (0u32, 0u32))?;
-    let mut y = bx.y0;
-    while y < bx.y1 {
-        let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
-        let rows = (y_end - y) as usize;
-        cov[..stride * rows].fill(0.0);
-        coverage.render(y, y_end, &mut cov[..stride * rows], stride, &mut spans)?;
-        for (r, &(a, b)) in spans[..rows].iter().enumerate() {
-            let (a, b) = (a as usize, (b as usize).min(w));
-            if a >= b {
-                continue;
-            }
-            let row = &mut data[((y - bx.y0) as usize + r) * w..][..w];
-            for (o, &c) in row[a..b].iter_mut().zip(&cov[r * stride + a..r * stride + b]) {
-                // As the composite stores one opaque white layer's alpha.
-                if c > 0.0 {
-                    *o = blur::to_u8(if c < 1.0 { c } else { 1.0 } * 255.0);
-                }
-            }
-        }
-        y = y_end;
-    }
+    let data = super::alpha_bytes(&planned.parts, bx, rasterizer)?;
     Ok(Some(Map { data: data.into_vec(), bx }))
 }
 

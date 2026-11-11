@@ -77,6 +77,8 @@ use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
 
 use compose::{compose, Layer};
+use kept::Hasher;
+use std::rc::Rc;
 use shade::Shader;
 
 use crate::engine::{BoldAdvance, Engine, Face, WEBKIT_BOLD_ADVANCE};
@@ -1200,7 +1202,7 @@ fn paint_letters(
     let shapes = special.as_deref();
     let planned = plan_letters(&layers, &ghosts, &letters, shapes)?;
     match shapes.filter(|sh| !sh.pieces.is_empty()) {
-        Some(sh) => break_off(planned, &layers, &ghosts, &letters, sh, rasterizer),
+        Some(sh) => break_off(planned, &layers, sh, rasterizer),
         None => finish_planned(planned, within(job.effects.cuts), rasterizer),
     }
 }
@@ -1290,24 +1292,205 @@ fn plan_letters<'a>(
     Ok(planned)
 }
 
-/// The letters with a crack's pieces broken off (`special::Piece`):
-/// `planned` (the letters where they stand) less every piece's outline, a
-/// clean hole, and over them each piece that is not gone: the letters laid
-/// again with the piece's rigid move, fill, bands, afterimages and cuts all
-/// moved alike, kept inside its outline (less those laid before it), both
-/// rastered where the piece lies, so its edges are as sharp as the
-/// letters'. A box's own strokes read the letters whole with the holes
-/// among the cuts (`Cuts`), so they are cut through at the holes too.
+/// The letters with a crack's pieces broken off (`special::Piece`).
+///
+/// `planned` (the letters where they stand, every layer this pass lays) is
+/// rastered once: that picture, less every piece's outline (a clean hole),
+/// is what stays. Each piece that is not gone is the same picture read
+/// under the piece's rigid move (fill, bands, afterimages and cuts all
+/// moved alike, as one picture), kept inside its outline rastered where it
+/// lies (less the pieces laid before it), so its broken edge is as sharp as
+/// the letters'. A piece moved by whole pixels is the picture's bytes; a
+/// turned one is read between pixels. The letters are planned and rastered
+/// once a pass, however many pieces there are, and the holes and the
+/// pieces' outlines once a paint (`broken`), however many passes read them.
+///
+/// A box's own strokes read the letters whole with the holes among the cuts
+/// (`Cuts`), so they are cut through at the holes too.
 fn break_off<'a>(
-    mut planned: budget::Buffer<Planned<'a>>,
+    planned: budget::Buffer<Planned<'a>>,
     l: &Layers<'a>,
-    ghosts: &[usize],
-    letters: &[usize],
     shapes: &special::Shapes,
     rasterizer: &dyn Rasterizer,
 ) -> Result<Option<Raster>, Error> {
     let fx = &l.job.effects;
-    let outlines = |pieces: &[special::Piece]| {
+    let clip = within(fx.cuts);
+    let Some(body) = finish_planned(planned, clip, rasterizer)? else {
+        // Nothing to carry: with the cuts alone, the holes are cuts still.
+        let geom = broken(l, shapes, rasterizer)?;
+        return match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip))) {
+            (Cuts::Alone(_), Some(h)) => h.opaque().map(Some),
+            _ => Ok(None),
+        };
+    };
+    let geom = broken(l, shapes, rasterizer)?;
+    let have = IBox {
+        x0: body.x,
+        y0: body.y,
+        x1: body.x + body.width as i32,
+        y1: body.y + body.height as i32,
+    };
+    // Each piece, read from the letters as they stand, no further than
+    // where they land.
+    let mut laid = budget::Buffer::new();
+    for piece in geom.pieces.iter().flatten() {
+        let Some(cover) = piece.cover.within(clip) else {
+            continue;
+        };
+        let Some(ahead) = piece.back.invert() else {
+            continue;
+        };
+        let bx = cover.bx.intersect(&carried(have, &ahead));
+        if bx.is_empty() {
+            continue;
+        }
+        let data = read_moved(&body, AlphaIn { bx, of: cover.of }, &piece.back)?;
+        budget::push(
+            &mut laid,
+            Raster {
+                x: bx.x0,
+                y: bx.y0,
+                width: bx.width() as u32,
+                height: bx.height() as u32,
+                data,
+            },
+        )?;
+        budget::check()?;
+    }
+    // The holes: taken out of the letters; with the cuts alone, laid among
+    // the cuts; with the letters uncut, nothing.
+    let mut out = body;
+    match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip))) {
+        (Cuts::Made, Some(h)) => erase_by(&mut out, h),
+        (Cuts::Alone(_), Some(h)) => out = over(out, &h.opaque()?)?,
+        _ => {}
+    }
+    // The pieces over it, in one raster as big as all of them.
+    let mut u = IBox {
+        x0: out.x,
+        y0: out.y,
+        x1: out.x + out.width as i32,
+        y1: out.y + out.height as i32,
+    };
+    for r in laid.iter() {
+        u = u.union(&IBox { x0: r.x, y0: r.y, x1: r.x + r.width as i32, y1: r.y + r.height as i32 });
+    }
+    let (width, height) = (u.width(), u.height());
+    if width > MAX_SIDE as usize || height > MAX_SIDE as usize || width * height > MAX_PIXELS {
+        return Err(Error::BadSpec);
+    }
+    if (u.x0, u.y0, width, height) != (out.x, out.y, out.width as usize, out.height as usize) {
+        let mut data = budget::filled(width * height * 4, 0u8)?.into_vec();
+        let ob = IBox { x0: out.x, y0: out.y, x1: out.x + out.width as i32, y1: out.y + out.height as i32 };
+        let row = ob.width() * 4;
+        for y in 0..ob.height() {
+            let at = ((ob.y0 - u.y0) as usize + y) * width * 4 + (ob.x0 - u.x0) as usize * 4;
+            data[at..at + row].copy_from_slice(&out.data[y * row..(y + 1) * row]);
+        }
+        out = Raster { x: u.x0, y: u.y0, width: width as u32, height: height as u32, data };
+    }
+    for r in laid.iter() {
+        let sb = IBox { x0: r.x, y0: r.y, x1: r.x + r.width as i32, y1: r.y + r.height as i32 };
+        lay_over(&mut out.data, u, &r.data, sb);
+    }
+    Ok(Some(out))
+}
+
+/// The box of device pixels `bx` can reach carried by `m`, a pixel wider
+/// each way for the reading between pixels.
+fn carried(bx: IBox, m: &Affine) -> IBox {
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (x, y) in [(bx.x0, bx.y0), (bx.x1, bx.y0), (bx.x0, bx.y1), (bx.x1, bx.y1)] {
+        let p = m.apply(Pt::new(f64::from(x), f64::from(y)));
+        (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
+    }
+    let at = |v: f64| v.clamp(-1e9, 1e9) as i32;
+    IBox {
+        x0: at(x0.floor()) - 1,
+        y0: at(y0.floor()) - 1,
+        x1: at(x1.ceil()) + 1,
+        y1: at(y1.ceil()) + 1,
+    }
+}
+
+/// Coverage over a box of device pixels, one byte a pixel.
+struct Alpha {
+    bx: IBox,
+    a: budget::Buffer<u8>,
+}
+
+/// A view of an [`Alpha`] cut to a box.
+#[derive(Clone, Copy)]
+struct AlphaIn<'a> {
+    bx: IBox,
+    of: &'a Alpha,
+}
+
+impl Alpha {
+    fn at(&self, x: i32, y: i32) -> u8 {
+        self.a[((y - self.bx.y0) as usize) * self.bx.width() + (x - self.bx.x0) as usize]
+    }
+
+    /// The part of it inside `clip`, or all of it with none.
+    fn within(&self, clip: Option<IBox>) -> Option<AlphaIn<'_>> {
+        let bx = clip.map_or(self.bx, |c| self.bx.intersect(&c));
+        (!bx.is_empty()).then_some(AlphaIn { bx, of: self })
+    }
+}
+
+impl AlphaIn<'_> {
+    /// As an opaque black raster, as a cut alone is laid.
+    fn opaque(&self) -> Result<Raster, Error> {
+        let (w, h) = (self.bx.width(), self.bx.height());
+        let mut data = budget::filled(w * h * 4, 0u8)?;
+        for y in 0..h {
+            for x in 0..w {
+                data[(y * w + x) * 4 + 3] = self.of.at(self.bx.x0 + x as i32, self.bx.y0 + y as i32);
+            }
+        }
+        Ok(Raster {
+            x: self.bx.x0,
+            y: self.bx.y0,
+            width: w as u32,
+            height: h as u32,
+            data: data.into_vec(),
+        })
+    }
+}
+
+/// A piece where it lies: its outline's coverage there (less the pieces
+/// laid before it), and the map from a device pixel there back to where it
+/// was.
+struct PieceAt {
+    cover: Alpha,
+    back: Affine,
+}
+
+/// What every pass of a paint reads of a crack's pieces: the holes they
+/// leave (`None` with none) and each piece where it lies (`None` for one
+/// that is gone or covers nothing).
+struct Broken {
+    holes: Option<Alpha>,
+    pieces: budget::Buffer<Option<PieceAt>>,
+}
+
+impl Broken {
+    fn bytes(&self) -> usize {
+        self.holes.as_ref().map_or(0, |h| h.a.len()) + self.pieces.iter().flatten().map(|p| p.cover.a.len() + 48).sum::<usize>()
+    }
+}
+
+/// The holes and the pieces' outlines of `shapes` as `l` places them,
+/// rastered once a paint: kept under the shapes' own key and the frame, so
+/// each pass of the box reads them back. Bent letters are not kept.
+fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer) -> Result<Rc<Broken>, Error> {
+    let key = shapes.key.filter(|_| l.bends.is_empty()).and_then(|k| {
+        Hasher::new("broken").key(k).debug(&l.transform.0).f64(l.tol).finish()
+    });
+    if let Some(hit) = key.and_then(kept::get::<Rc<Broken>>) {
+        return Ok(Rc::clone(&*hit));
+    }
+    let outlines = |pieces: &mut dyn Iterator<Item = &special::Piece>| {
         let mut p = Polys::default();
         for piece in pieces {
             piece.outline.iter().for_each(|&v| p.push(v));
@@ -1315,140 +1498,172 @@ fn break_off<'a>(
         }
         p
     };
-    let holes = outlines(&shapes.pieces);
-    if matches!(fx.cuts, Cuts::Alone(_)) || !planned.is_empty() {
-        if let Some(mut p) = poly_plan(&holes, l.bends, l.transform, l.tiles, l.tol)? {
-            match fx.cuts {
-                Cuts::Made => p.erase = true,
-                Cuts::Alone(_) => {}
-                Cuts::Skipped => p.alpha = 0.0,
-            }
-            if p.alpha > 0.0 {
-                budget::push(&mut planned, p)?;
-            }
-        }
-    }
-    let mut out = finish_planned(planned, within(fx.cuts), rasterizer)?;
-    // How far past a glyph's outline its layers reach (its widest band, a
-    // grow, the weight): a glyph farther than that from a piece has nothing
-    // inside it, so a piece lays only the glyphs near it. Bent letters move
-    // off their outlines, so they lay them all.
-    let reach = l.job.bands.iter().map(|b| b.line / 2.0).fold(0.0, f64::max)
-        + fx.grow.max(0.0)
-        + fx.negative.map_or(0.0, |n| n.grow.max(0.0))
-        + l.weight
-        + 1.0;
-    let near = |outline: &[Pt]| -> Option<Vec<(core::ops::Range<usize>, Affine)>> {
-        if !l.bends.is_empty() {
-            return None;
-        }
-        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-        for v in outline {
-            (x0, y0, x1, y1) = (x0.min(v.x), y0.min(v.y), x1.max(v.x), y1.max(v.y));
-        }
-        let hit = |g: usize| {
-            l.glyphs.bounds_of(g..g + 1).is_some_and(|b| {
-                b.0 - reach <= x1 && b.2 + reach >= x0 && b.1 - reach <= y1 && b.3 + reach >= y0
-            })
+    let alpha = |polys: &Polys, t: &Affine| -> Result<Option<Alpha>, Error> {
+        let Some(p) = poly_plan(polys, l.bends, t, l.tiles, l.tol)? else {
+            return Ok(None);
         };
-        let all = 0..l.glyphs.len();
-        // None near: every run empty.
-        let lo = all.clone().find(|&g| hit(g)).unwrap_or(0);
-        let hi = all.rev().find(|&g| hit(g)).map_or(0, |g| g + 1);
-        Some(
-            l.runs
-                .iter()
-                .map(|(r, f)| {
-                    let (a, b) = (r.start.max(lo), r.end.min(hi));
-                    (a..b.max(a), *f)
-                })
-                .collect(),
-        )
+        let a = alpha_bytes(&p.parts, p.bx, rasterizer)?;
+        Ok(Some(Alpha { bx: p.bx, a }))
     };
+    let holes = alpha(&outlines(&mut shapes.pieces.iter()), l.transform)?;
+    let to_job = l.transform.invert();
+    let bound = |o: &[Pt]| {
+        o.iter().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, v| {
+            (b.0.min(v.x), b.1.min(v.y), b.2.max(v.x), b.3.max(v.y))
+        })
+    };
+    let mut pieces = budget::Buffer::new();
     for (i, piece) in shapes.pieces.iter().enumerate() {
-        let Some(m) = piece.moved else {
-            continue;
-        };
-        let moved = l.transform.after(&m);
-        let own = outlines(core::slice::from_ref(piece));
-        let Some(mask) = poly_plan(&own, l.bends, &moved, l.tiles, l.tol)? else {
-            continue;
-        };
-        let bx = match within(fx.cuts) {
-            Some(c) => mask.bx.intersect(&c),
-            None => mask.bx,
-        };
-        if bx.is_empty() {
-            continue;
-        }
-        let mut cover = budget::Buffer::new();
-        budget::push(&mut cover, mask)?;
-        // The pieces before it that overlap it (the same move takes both).
-        let bound = |o: &[Pt]| {
-            o.iter().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, v| {
-                (b.0.min(v.x), b.1.min(v.y), b.2.max(v.x), b.3.max(v.y))
-            })
-        };
-        let b = bound(&piece.outline);
-        let mut earlier = Polys::default();
-        for e in &shapes.pieces[..i] {
-            let c = bound(&e.outline);
-            if c.0 <= b.2 && c.2 >= b.0 && c.1 <= b.3 && c.3 >= b.1 {
-                e.outline.iter().for_each(|&v| earlier.push(v));
-                earlier.close();
+        let at = match (piece.moved, to_job) {
+            (Some(m), Some(to_job)) => {
+                let moved = l.transform.after(&m);
+                match (moved.after(&to_job).invert(), alpha(&outlines(&mut core::iter::once(piece)), &moved)?) {
+                    (Some(back), Some(mut cover)) => {
+                        // Less the pieces before it that overlap it (the
+                        // same move takes both).
+                        let b = bound(&piece.outline);
+                        let mut earlier = shapes.pieces[..i].iter().filter(|e| {
+                            let c = bound(&e.outline);
+                            c.0 <= b.2 && c.2 >= b.0 && c.1 <= b.3 && c.3 >= b.1
+                        });
+                        if let Some(e) = alpha(&outlines(&mut earlier), &moved)? {
+                            let both = cover.bx.intersect(&e.bx);
+                            for y in both.y0..both.y1 {
+                                for x in both.x0..both.x1 {
+                                    let k = e.at(x, y);
+                                    if k > 0 {
+                                        let i = ((y - cover.bx.y0) as usize) * cover.bx.width() + (x - cover.bx.x0) as usize;
+                                        cover.a[i] = blur::div255(u32::from(cover.a[i]) * u32::from(255 - k)) as u8;
+                                    }
+                                }
+                            }
+                        }
+                        Some(PieceAt { cover, back })
+                    }
+                    _ => None,
+                }
             }
-        }
-        if let Some(mut e) = poly_plan(&earlier, l.bends, &moved, l.tiles, l.tol)? {
-            e.erase = true;
-            budget::push(&mut cover, e)?;
-        }
-        let cover = finish(cover, bx, rasterizer)?;
-        let runs = near(&piece.outline);
-        let li = Layers {
-            job: l.job,
-            glyphs: l.glyphs,
-            runs: runs.as_deref().unwrap_or(l.runs),
-            bends: l.bends,
-            transform: &moved,
-            tiles: l.tiles,
-            tol: l.tol,
-            weight: l.weight,
+            _ => None,
         };
-        // Its cuts: only the crack lines that cross its box.
-        let mut cuts = Polys::default();
-        for c in shapes.cuts.contours() {
-            let cb = bound(c);
-            if cb.0 <= b.2 && cb.2 >= b.0 && cb.1 <= b.3 && cb.3 >= b.1 {
-                c.iter().for_each(|&v| cuts.push(v));
-                cuts.close();
-            }
-        }
-        let own_cuts = special::Shapes { cuts, ..special::Shapes::default() };
-        let copy = plan_letters(&li, ghosts, letters, Some(&own_cuts))?;
-        if copy.is_empty() {
-            continue;
-        }
-        let mut data = finish(copy, bx, rasterizer)?;
-        for (px, c) in data.chunks_exact_mut(4).zip(cover.chunks_exact(4)) {
-            let a = u32::from(c[3]);
-            if a != 255 {
-                px.iter_mut().for_each(|ch| *ch = ((u32::from(*ch) * a + 127) / 255) as u8);
-            }
-        }
-        let piece = Raster {
-            x: bx.x0,
-            y: bx.y0,
-            width: bx.width() as u32,
-            height: bx.height() as u32,
-            data,
-        };
-        out = Some(match out {
-            Some(under) => over(under, &piece)?,
-            None => piece,
-        });
+        budget::push(&mut pieces, at)?;
         budget::check()?;
     }
+    let out = Rc::new(Broken { holes, pieces });
+    if let Some(k) = key {
+        kept::put(k, Rc::clone(&out), out.bytes());
+    }
     Ok(out)
+}
+
+/// `parts` filled by the non-zero rule over `bx`, one byte of coverage a
+/// pixel, row by row: what one opaque white layer's alpha would be.
+pub(crate) fn alpha_bytes(parts: &[Part], bx: IBox, rasterizer: &dyn Rasterizer) -> Result<budget::Buffer<u8>, Error> {
+    use raster::{strip_of, STRIP_ROWS};
+    let w = bx.width();
+    let mut data = budget::filled(w.checked_mul(bx.height()).ok_or(Error::BadSpec)?, 0u8)?;
+    let mut coverage = rasterizer.prepare(parts, bx)?;
+    let stride = w + 2;
+    let strip = STRIP_ROWS as usize;
+    let mut cov = budget::filled(stride * strip, 0.0f32)?;
+    let mut spans = budget::filled(strip, (0u32, 0u32))?;
+    let mut y = bx.y0;
+    while y < bx.y1 {
+        let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
+        let rows = (y_end - y) as usize;
+        cov[..stride * rows].fill(0.0);
+        coverage.render(y, y_end, &mut cov[..stride * rows], stride, &mut spans)?;
+        for (r, &(a, b)) in spans[..rows].iter().enumerate() {
+            let (a, b) = (a as usize, (b as usize).min(w));
+            if a >= b {
+                continue;
+            }
+            let row = &mut data[((y - bx.y0) as usize + r) * w..][..w];
+            for (o, &c) in row[a..b].iter_mut().zip(&cov[r * stride + a..r * stride + b]) {
+                // As the composite stores one opaque white layer's alpha.
+                if c > 0.0 {
+                    *o = blur::to_u8(if c < 1.0 { c } else { 1.0 } * 255.0);
+                }
+            }
+        }
+        y = y_end;
+    }
+    Ok(data)
+}
+
+/// `r` less `cut`'s coverage, where they meet.
+fn erase_by(r: &mut Raster, cut: AlphaIn<'_>) {
+    let rw = r.width as i32;
+    let bx = cut.bx.intersect(&IBox { x0: r.x, y0: r.y, x1: r.x + rw, y1: r.y + r.height as i32 });
+    for y in bx.y0..bx.y1 {
+        for x in bx.x0..bx.x1 {
+            let a = u32::from(cut.of.at(x, y));
+            if a == 0 {
+                continue;
+            }
+            let at = (((y - r.y) * rw + x - r.x) * 4) as usize;
+            for c in &mut r.data[at..at + 4] {
+                *c = blur::div255(u32::from(*c) * (255 - a)) as u8;
+            }
+        }
+    }
+}
+
+/// The pixels of `cover`'s box read from `src` where `back` (device to
+/// device) takes each pixel's centre, kept to `cover`. A move by whole
+/// pixels reads `src`'s bytes as they are; otherwise each is read between
+/// the four pixels round it.
+fn read_moved(src: &Raster, cover: AlphaIn<'_>, back: &Affine) -> Result<Vec<u8>, Error> {
+    let bx = cover.bx;
+    let (w, h) = (bx.width(), bx.height());
+    let mut data = budget::filled(w * h * 4, 0u8)?.into_vec();
+    let [a, b, c, d, e, f] = back.0;
+    let (sw, sh) = (src.width as i32, src.height as i32);
+    let at = |x: i32, y: i32| -> [u32; 4] {
+        if x < 0 || y < 0 || x >= sw || y >= sh {
+            return [0; 4];
+        }
+        let i = ((y * sw + x) * 4) as usize;
+        [0, 1, 2, 3].map(|k| u32::from(src.data[i + k]))
+    };
+    let whole = |v: f64| (v - v.round()).abs() < 1e-9;
+    let shift = (a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 && whole(e) && whole(f))
+        .then(|| (e.round() as i32, f.round() as i32));
+    for y in 0..h {
+        let py = bx.y0 + y as i32;
+        for x in 0..w {
+            let px = bx.x0 + x as i32;
+            let k = cover.of.at(px, py);
+            if k == 0 {
+                continue;
+            }
+            let v = match shift {
+                Some((dx, dy)) => at(px + dx - src.x, py + dy - src.y),
+                None => {
+                    // The source point, in `src`'s pixels, less half a pixel
+                    // to the centres.
+                    let (cx, cy) = (f64::from(px) + 0.5, f64::from(py) + 0.5);
+                    let sx = a * cx + c * cy + e - 0.5 - f64::from(src.x);
+                    let sy = b * cx + d * cy + f - 0.5 - f64::from(src.y);
+                    let (x0, y0) = (sx.floor(), sy.floor());
+                    let fx = ((sx - x0) * 256.0).round() as u32;
+                    let fy = ((sy - y0) * 256.0).round() as u32;
+                    let (x0, y0) = (x0 as i32, y0 as i32);
+                    let (p, q, r, s) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+                    [0, 1, 2, 3].map(|i| {
+                        let top = p[i] * (256 - fx) + q[i] * fx;
+                        let bottom = r[i] * (256 - fx) + s[i] * fx;
+                        ((top * (256 - fy) + bottom * fy + 32768) >> 16).min(255)
+                    })
+                }
+            };
+            let o = (y * w + x) * 4;
+            let k = u32::from(k);
+            for i in 0..4 {
+                data[o + i] = if k == 255 { v[i] as u8 } else { ((v[i] * k + 127) / 255) as u8 };
+            }
+        }
+    }
+    Ok(data)
 }
 
 /// `top` laid over `under` (both premultiplied), in one raster as big as

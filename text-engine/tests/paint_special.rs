@@ -520,3 +520,35 @@ fn a_cut_box_stroke_kept_is_the_fresh_one_to_the_byte() {
     }
     kept::set_ceiling(kept::KEPT_BYTES);
 }
+
+/// The holes and the pieces' outlines are rastered once a paint and shared
+/// by every pass of the box (fill, bands, a box stroke's whole letters and
+/// cuts alone): kept or made again for each pass, the picture is the same
+/// to the byte, both motions, with a band, a box stroke and a shadow.
+#[test]
+fn broken_pieces_shared_by_the_passes_paint_the_same_bytes() {
+    let mut engine = Engine::new();
+    let font = load(&mut engine);
+    for motion in [Motion::Apart, Motion::Fall] {
+        let make = || {
+            let mut b = boxed(font, breaking(0.75, motion, (0.5, 0.5), 1.0));
+            b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+            b.shadows = vec![mt_text::paint::Shadow { color: BLACK, opacity: 0.5, x: 4.0, y: 5.0, ..Default::default() }];
+            b.effects = vec![Effect::Stroke(Stroke {
+                size: 3.0,
+                position: Position::Outside,
+                opacity: 1.0,
+                blend: Blend::Multiply,
+                paint: Paint::Fill(Fill::Solid(BLUE)),
+                seed: 0,
+            })];
+            b
+        };
+        kept::set_ceiling(0);
+        let alone = paint(&mut engine, make());
+        kept::set_ceiling(kept::KEPT_BYTES);
+        kept::clear();
+        let shared = paint(&mut engine, make());
+        assert!(alone == shared, "{motion:?}");
+    }
+}

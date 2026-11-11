@@ -30,7 +30,7 @@ use super::boxjob::ClipShape;
 use super::fx::effects::PaintMark;
 use super::geom::{Affine, Polys, Pt};
 use super::job::Rgba;
-use super::kept::{self, Hasher};
+use super::kept::{self, Hasher, Key};
 use crate::seeded::noise;
 use crate::Error;
 
@@ -143,6 +143,9 @@ pub struct Shapes {
     /// The crack's broken-off pieces, in the order they are laid: a later
     /// one never takes what an earlier one took.
     pub pieces: Vec<Piece>,
+    /// What these are kept under (`letter_shapes`), so what is made of them
+    /// can be kept by it.
+    pub key: Option<Key>,
 }
 
 /// One broken-off piece: its outline in job space, where it was, and the
@@ -278,6 +281,7 @@ pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Resu
         scratches(&s, size, ink, &mut out.cuts);
     }
     super::budget::check()?;
+    out.key = key;
     let out = Rc::new(out);
     if let Some(k) = key {
         let outlines: usize = out.pieces.iter().map(|p| p.outline.len()).sum();
