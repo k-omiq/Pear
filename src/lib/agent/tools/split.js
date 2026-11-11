@@ -25,6 +25,9 @@ import { fitPolygon, intervalsAt } from '../../outline-geom.js';
 import { matchesOf, checksOf, fitsFor, typesetMatches } from './edit.js';
 import { sizesOf } from './check.js';
 import { withPagePixels } from '../render.js';
+import { follows, withFollow, normalizeMask } from '../../box-mask.js';
+import { normalizeFade } from '../../box-fade.js';
+import { record } from '../../editor/history.svelte.js';
 
 export const MAX_PARTS = 4;
 
@@ -124,9 +127,21 @@ defineTool({
       // Through editBoxes, which records them for the undo. Paint marks were
       // laid over the whole text's letters in the box's frame: on a part they
       // would sit over other words, so every part starts with none. Mask and
-      // fade shapes are pinned to the page over the first part's bubble: the
-      // parts after it drop the drawn ones and keep a bubble link, which
-      // follows each part's own bubble.
+      // fade shapes lie over the first part's bubble: the parts after it drop
+      // the drawn ones and keep a bubble link, which follows each part's own
+      // bubble. On the first part they stay where they are on the page, also
+      // when they move with the box: pinned for the layout below and moving
+      // with it again after (`unpinFirst`), one record each.
+      const first = boxes[0];
+      const followed = ['mask', 'fade'].filter((k) => follows(first[k])).map((k) => [k, JSON.parse(JSON.stringify(first[k]))]);
+      for (const [k] of followed) first[k] = withFollow(first, first[k], false);
+      const unpinFirst = () => {
+        for (const [k, before] of followed) {
+          const after = (k === 'mask' ? normalizeMask : normalizeFade)(withFollow(first, first[k], true));
+          first[k] = after;
+          record({ t: k, pageId: p.id, boxId: first.id, before, after: JSON.parse(JSON.stringify(after)) });
+        }
+      };
       editBoxes(
         boxes.map((box) => ({ page: p, box })),
         (box) => {
@@ -165,6 +180,7 @@ defineTool({
         how[order.indexOf(i)] = refitBalloon(box.id, p) ? 'found' : 'none';
       }
       typesetMatches(matchesOf(ids));
+      unpinFirst();
       return { ids, how };
     }));
     if (!out) throw new ToolError('the box could not be copied', 'is a chapter open in typeset mode?');

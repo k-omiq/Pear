@@ -134,7 +134,7 @@ import { setBrushMode } from './brush-tool.svelte.js';
 import { scaleStroke } from './brush.js';
 import { translateStrokes } from './brush-board.svelte.js';
 import { setGlobalLight } from './text-paint.js';
-import { normalizeMask, maskFromClip, scaleMask, maskActive } from './box-mask.js';
+import { normalizeMask, maskFromClip, scaleMask, maskActive, follows, scaleFollowing } from './box-mask.js';
 import { normalizeFade } from './box-fade.js';
 import { stripPageExtent, stripDragYBounds } from './editor/strip.js';
 import { revealInStrip, revealRectInStrip } from './editor/strip-sync.svelte.js';
@@ -1803,6 +1803,14 @@ export const fitGeom = (b) => ({
   h: b.h,
   size: b.style.size,
   ...(b.auto ? { auto: $state.snapshot(b.auto) } : null),
+});
+
+// A mask or a fade that moves with the box scales with it on a scale
+// (`resizeBox`): the part of a scale's geometry an undo puts back besides
+// `fitGeom`. Empty for a box with neither.
+export const followGeom = (b) => ({
+  ...(follows(b.mask) ? { mask: $state.snapshot(b.mask) } : null),
+  ...(follows(b.fade) ? { fade: $state.snapshot(b.fade) } : null),
 });
 
 // ===== the flag's own commands =====
@@ -7056,7 +7064,8 @@ function boxSnapshot(src, p) {
       w: src.w,
       h: src.h,
       style: cloneStyle(src.style),
-      // The mask, pinned to the page: the copy takes it at the same page spot.
+      // The mask and the fade: a pinned one at the same page spot, one that
+      // moves with the box (`follow`) at the same spot on the copy.
       ...(src.mask ? { mask: $state.snapshot(src.mask) } : {}),
       ...(src.fade ? { fade: $state.snapshot(src.fade) } : {}),
       lines: place && !place.isCurve && place.lines?.length ? [...place.lines] : null,
@@ -7416,6 +7425,7 @@ export function setBoxInk(pageId, boxId, strokes) {
 // `geom.scale` is the one way a gesture changes the size: the box and every
 // length drawn in it - the size, the outline, the tracking, the shadows -
 // times one factor, as Photoshop's Cmd-drag on a text box does.
+const scaleStarts = new WeakMap();
 export function resizeBox(pageId, boxId, geom, base = null) {
   const p = pageById(pageId) ?? page();
   const b = p?.boxes.find((x) => x.id === boxId);
@@ -7451,6 +7461,18 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     st.size = Math.min(200, Math.max(6, Math.round(from.size * k * 2) / 2));
     if (from.fitMax > 0) st.fitMax = Math.min(200, Math.max(6, Math.round(from.fitMax * k * 2) / 2));
     Object.assign(b.style, st);
+    // A mask and a fade that move with the box scale with it, as its paint
+    // does, from where the gesture found them: kept against the gesture's
+    // style, the one object every step of a drag hands in.
+    if (follows(b.mask) || follows(b.fade)) {
+      let start = base?.style ? scaleStarts.get(base.style) : null;
+      if (!start) {
+        start = { mask: b.mask ? $state.snapshot(b.mask) : null, fade: b.fade ? $state.snapshot(b.fade) : null };
+        if (base?.style) scaleStarts.set(base.style, start);
+      }
+      if (follows(start.mask)) b.mask = scaleFollowing(start.mask, k, k);
+      if (follows(start.fade)) b.fade = scaleFollowing(start.fade, k, k);
+    }
   }
   // The floors, from any caller, at the size the text is now set at: a side
   // never leaves a line hanging out of the box, and a Fixed box is never left

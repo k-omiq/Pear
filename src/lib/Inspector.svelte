@@ -101,7 +101,7 @@
   import { wavePath } from './bezier-path.js';
   import { drawKindFor, setDrawTool, clearDrawTool, drawSettings } from './box-draw-tool.svelte.js';
   import { bubbleLink, BUBBLE_INSET_MAX, MASK_BRUSH_MIN, MASK_BRUSH_MAX } from './box-mask.js';
-  import { setMaskOn, clearMaskShapes, clipToBubble, slideBubbleInset, setFadeOn, clearFadeShapes } from './box-mask-actions.js';
+  import { setMaskOn, setMaskFollow, clearMaskShapes, clipToBubble, slideBubbleInset, setFadeOn, setFadeFollow, clearFadeShapes } from './box-mask-actions.js';
   import { regridWarp } from './warp-gizmo.js';
   import { liquifyTool, setLiquifyMode, LIQUIFY_RADIUS_MIN, LIQUIFY_RADIUS_MAX } from './liquify-tool.svelte.js';
   import { LIQUIFY_MODES } from './liquify.js';
@@ -2986,6 +2986,19 @@
             <span class="lbl2">Mask</span>
           </div>
           <div class="insp-sub-body" class:disabled={!maskOn} style="padding:0;border:none;gap:11px">
+            <div class="switch-row" title="Off: the shapes stay put on the page. On: they move, turn and scale with the box">
+              <button
+                type="button"
+                class="switch"
+                class:on={mk?.follow === true}
+                role="switch"
+                aria-checked={mk?.follow === true}
+                aria-label="Mask moves with box"
+                disabled={!maskOn}
+                onclick={() => setMaskFollow(box, page(), mk?.follow !== true)}
+              ><span class="knob"></span></button>
+              <span class="lbl2">Moves with box</span>
+            </div>
             <!-- What the next shape does. Each shape keeps its own. -->
             <div class="seg" role="group" aria-label="Next shape">
               <button
@@ -3072,6 +3085,19 @@
             <span class="lbl2">Fade</span>
           </div>
           <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+            <div class="switch-row" title="Off: the shapes stay put on the page. On: they move, turn and scale with the box">
+              <button
+                type="button"
+                class="switch"
+                class:on={fd?.follow === true}
+                role="switch"
+                aria-checked={fd?.follow === true}
+                aria-label="Fade moves with box"
+                disabled={off}
+                onclick={() => setFadeFollow(box, page(), fd?.follow !== true)}
+              ><span class="knob"></span></button>
+              <span class="lbl2">Moves with box</span>
+            </div>
             <div class="seg" role="group" aria-label="Fade tool">
               {#each MASK_KINDS as [k, label] (k)}
                 <button
