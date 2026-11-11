@@ -5,7 +5,6 @@
     boxText,
     deleteBox,
     beginEdit,
-    cloneStyle,
     page,
     previewBoxFont,
     endFontPreview,
@@ -129,7 +128,7 @@
     effectsTabsIn,
     EFFECTS_GROUPS,
   } from './inspector-tabs.svelte.js';
-  import { presets, savePreset, removePreset } from './presets.svelte.js';
+  import { presets, savePreset, removePreset, presetLook } from './presets.svelte.js';
   import {
     tabIcons,
     iconRotate,
@@ -1026,16 +1025,12 @@
   $effect(() => {
     if (naming && presetNameEl) presetNameEl.focus();
   });
-  // A preset is a look, not a placement: the same three keys paste-style leaves
-  // alone stay alone here too, or picking a preset silently un-rotates and
-  // un-mirrors a box that was placed by hand.
-  const PRESET_SKIP = ['rotation', 'flipH', 'flipV'];
+  // What of the preset reaches the box: `presetLook` says why some keys stay.
   function applyPreset(id) {
     presetId = id;
     const p = presets.list.find((x) => x.id === id);
     if (!p) return;
-    const next = cloneStyle(p.style);
-    for (const k of PRESET_SKIP) delete next[k];
+    const next = presetLook(p);
     Object.assign(box.style, next);
     touch();
     // A picked tile from another chapter is written into this one.

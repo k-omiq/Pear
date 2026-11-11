@@ -529,6 +529,26 @@ function strokeThroughMesh(sh, mesh, map) {
   return out;
 }
 
+// One shape carried by `at` (a page or box point to a point) where the map
+// bends, as one shape: its edges cut into steps of 4 px first so they follow
+// the bend, an ellipse as the polygon of its ring, a brush's points the same
+// and its width scaled by how much the map widens a line at its middle
+// (`widthScale`). Whatever else the shape carries goes with it.
+export function bendShape(sh, at) {
+  if (sh.kind === 'stroke') {
+    const pts = densify(sh.pts, false);
+    const mid = pts[pts.length >> 1] ?? sh.pts[0];
+    const k = mid ? widthScale({ at: (x, y) => at([x, y]) }, mid, null) : 1;
+    return { ...sh, size: sh.size * k, pts: pts.map(at) };
+  }
+  if (sh.kind === 'ellipse') {
+    const { cx: _cx, cy: _cy, rx: _rx, ry: _ry, ...rest } = sh;
+    return { ...rest, kind: 'poly', pts: densify(ellipseRing(sh), true).map(at) };
+  }
+  if (sh.kind === 'poly') return { ...sh, pts: densify(sh.pts, true).map(at) };
+  return sh;
+}
+
 export function maskFromClip(box) {
   const clip = box?.style?.clip;
   if (!clip || typeof clip !== 'object') return null;

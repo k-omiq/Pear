@@ -17,10 +17,15 @@
 // after the overlays and inside the letters only): there is no canvas twin,
 // so under the browser engine the paint is kept and not shown.
 
-import { normalizeMaskShape, revOf, MASK_SHAPES_MAX } from './box-mask.js';
+import { normalizeMaskShape, revOf, pageToBox, boxToPage, shapesInBoxFrame, shapesOnPage, shiftedShapes, bendShape, MASK_SHAPES_MAX } from './box-mask.js';
 import { fadeShapeSize } from './box-fade.js';
+import { meshMap, unwarpWith } from './warp.js';
 
+// The most colour marks a box holds. Erasers do not count against it: a box
+// full of marks can always have one taken off. They have a ceiling of their
+// own, as many again, so a file cannot hand the engine a list without end.
 export const PAINT_MARKS_MAX = MASK_SHAPES_MAX;
+export const PAINT_ERASERS_MAX = MASK_SHAPES_MAX;
 export const PAINT_COLOR_DEFAULT = '#e33b2e';
 
 const clamp = (v, lo, hi, d) => {
@@ -48,12 +53,76 @@ export function normalizePaintMark(m) {
 // none.
 export function normalizePaint(p) {
   const marks = [];
+  const room = { colour: PAINT_MARKS_MAX, erase: PAINT_ERASERS_MAX };
   for (const m of Array.isArray(p?.marks) ? p.marks : []) {
     const n = normalizePaintMark(m);
-    if (n) marks.push(n);
-    if (marks.length >= PAINT_MARKS_MAX) break;
+    const k = n?.erase ? 'erase' : 'colour';
+    if (n && room[k] > 0) {
+      marks.push(n);
+      room[k]--;
+    }
+    if (!room.colour && !room.erase) break;
   }
   return { on: p?.on === true, marks };
+}
+
+// Whether one more mark of this kind fits (`erase` for an eraser), and the
+// words to say when it does not.
+export function paintRoomFor(paint, erase) {
+  const n = (paint?.marks ?? []).filter((m) => !!m.erase === !!erase).length;
+  if (erase) return n < PAINT_ERASERS_MAX ? null : `The paint holds ${PAINT_ERASERS_MAX} eraser strokes at most`;
+  return n < PAINT_MARKS_MAX ? null : `The paint holds ${PAINT_MARKS_MAX} marks at most`;
+}
+
+// ---- the frame the marks are stored in ----
+//
+// The paint is laid in the box's texture: its own frame before the warp mesh
+// (a perspective is a mesh of one cell), which the mesh then bends with the
+// letters. So a page point reaches a mark's frame through the box's turn and
+// flips (`pageToBox`) and then back through the mesh (`unwarpWith`, exact to
+// a hair for every mesh kind), and a mark is shown on the page the other way.
+// A box with no mesh maps straight, and an ellipse stays one unless it turns.
+
+function meshOf(box) {
+  const w = box?.style?.warp;
+  return w?.on && Array.isArray(w.pts) ? meshMap(w.pts, w.cols, w.rows, box.w, box.h) : null;
+}
+
+// Shapes drawn on the page (page px), as marks in the paint's frame, one for
+// each and in their order.
+export function marksFromPage(box, shapes) {
+  const m = meshOf(box);
+  if (!m) return shapesInBoxFrame(box, shapes);
+  const at = (p) => unwarpWith(m, box.w, box.h, ...pageToBox(box, p));
+  return shapes.map((sh) => bendShape(sh, at));
+}
+
+// The marks on the page as the box stands, one for each and in their order:
+// what the tool shows and picks from.
+export function marksOnPage(box, marks) {
+  const m = meshOf(box);
+  if (!m) return shapesOnPage(box, marks);
+  const at = (p) => boxToPage(box, m.at(p[0], p[1]));
+  return marks.map((sh) => bendShape(sh, at));
+}
+
+// The marks with mark `idx` (every mark for null) moved (dx, dy) page px as
+// the pointer moved it. The others stay as stored; on a box with no mesh the
+// moved one is the same shape moved in the box's frame, an ellipse still one.
+export function moveMarks(box, marks, idx, dx, dy) {
+  const pick = (i) => idx === null || idx === i;
+  const m = meshOf(box);
+  if (!m) {
+    const o = pageToBox(box, [0, 0]);
+    const q = pageToBox(box, [dx, dy]);
+    const v = [q[0] - o[0], q[1] - o[1]];
+    return marks.map((mk, i) => (pick(i) ? shiftedShapes([mk], v)[0] : mk));
+  }
+  const at = (p) => {
+    const [x, y] = boxToPage(box, m.at(p[0], p[1]));
+    return unwarpWith(m, box.w, box.h, ...pageToBox(box, [x + dx, y + dy]));
+  };
+  return marks.map((mk, i) => (pick(i) ? bendShape(mk, at) : mk));
 }
 
 // Whether the paint lays any colour: on, with a mark that is not an eraser.

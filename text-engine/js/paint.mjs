@@ -94,6 +94,13 @@ export const BOLD_DRAW = { rule: 0, outset: 1, smear: 2 }
 /** The largest `request.weight` the engine accepts, in device pixels. */
 export const MAX_WEIGHT = 64
 
+/**
+ * The largest blur, soft edge or size the engine reads (boxjob.rs
+ * `MAX_BLUR`), in job units. A soft edge is sent clamped to it, so a large
+ * mark at its softest never makes the engine refuse the whole box.
+ */
+export const MAX_BLUR = 4096
+
 // One buffer for every job, grown when a job does not fit. A job past
 // `WIRE_KEEP` (a backdrop, a big picked tile) grows it to the job's size, and
 // the buffer goes back to its small self once that job is in the engine
@@ -937,7 +944,7 @@ function fadeShape(sh) {
   if (!kind) return false
   u32(kind)
   f64(Math.min(1, Math.max(0, sh.strength || 0)))
-  f64(Math.max(0, sh.soft || 0))
+  f64(Math.min(MAX_BLUR, Math.max(0, sh.soft || 0)))
   shapeData(sh, kind)
   return true
 }
@@ -956,7 +963,7 @@ function paintMarks(fx) {
     u32(kind)
     rgba(m.color)
     f64(Math.min(1, Math.max(0, m.opacity || 0)))
-    f64(Math.max(0, m.soft || 0))
+    f64(Math.min(MAX_BLUR, Math.max(0, m.soft || 0)))
     u32(m.erase ? 1 : 0)
     shapeData(m, kind)
   }

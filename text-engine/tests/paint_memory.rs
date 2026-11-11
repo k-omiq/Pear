@@ -10,8 +10,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use mt_text::paint::fx::blend::Blend;
+use mt_text::paint::fx::effects::{Effect, Marks, PaintMark};
 use mt_text::paint::{
-    paint_box, Affine, Align, BoxRequest, ClipShape, Effects, Fade, FadePart, Fill, Job, Pt,
+    paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, ClipShape, Effects, Fade, FadePart, Fill, Job, Pt,
     Request, Rgba, Run,
 };
 use mt_text::{Engine, Face, FontId};
@@ -151,5 +152,61 @@ fn the_fade_holds_one_group_and_one_shape_at_a_time() {
             // rastered at a time are most of it: the count does not show.
             assert!(rows[1] < rows[0] + rows[0] / 4, "{rows:?}");
         }
+    }
+}
+
+fn soft_mark(cx: f64, cy: f64, rx: f64, ry: f64) -> PaintMark {
+    // Soft 100: a quarter of the mark's size, as the app sends it.
+    PaintMark {
+        shape: ClipShape::Ellipse { centre: Pt::new(cx, cy), rx, ry },
+        color: Rgba([230, 40, 30, 255]),
+        opacity: 1.0,
+        soft: 2.0 * rx.min(ry) / 4.0,
+        erase: false,
+    }
+}
+
+/// A soft mark is rastered and blurred on a piece of its own size, at a
+/// fraction of the surface's resolution once its blur is wide, and the
+/// blurred pieces are kept: one large mark at soft 100 holds a few MB, and a
+/// repaint reads it back.
+#[test]
+fn a_soft_mark_holds_a_piece_of_its_own_size() {
+    let _one = ONE.lock().unwrap();
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    let cases: [(&str, Vec<PaintMark>); 2] = [
+        ("one large soft-100 mark", vec![soft_mark(300.0, 200.0, 290.0, 190.0)]),
+        (
+            "20 soft-100 marks",
+            (0..20).map(|i| soft_mark(40.0 + (i % 5) as f64 * 120.0, 60.0 + (i / 5) as f64 * 90.0, 40.0, 30.0)).collect(),
+        ),
+    ];
+    let keys = || BoxKeys {
+        job: mt_text::paint::kept::Hasher::new("t job").u64(7).finish().unwrap(),
+        premask: None,
+        cover: None,
+    };
+    for (name, marks) in cases {
+        let make = |marks: &[PaintMark]| {
+            let mut b = big(font);
+            b.effects.push(Effect::Paint(Marks { origin: Pt::new(0.0, 0.0), marks: marks.to_vec() }));
+            b
+        };
+        mt_text::paint::kept::clear();
+        let mut b = make(&marks);
+        let (cold, cold_ms, r) = peak(|| paint_box_kept(&mut e, &mut b, keys()).unwrap());
+        assert!(r.is_some());
+        assert_eq!(r, paint_box(&mut e, &mut make(&marks)).unwrap());
+        // One more mark: the ones before are read back.
+        let mut more = marks.clone();
+        more.push(soft_mark(500.0, 320.0, 30.0, 20.0));
+        let mut b = make(&more);
+        let (_, more_ms, r2) = peak(|| paint_box_kept(&mut e, &mut b, keys()).unwrap());
+        assert_eq!(r2, paint_box(&mut e, &mut make(&more)).unwrap());
+        eprintln!("paint, {name}: peak {:.1} MB, {cold_ms:.1} ms; one more mark {more_ms:.1} ms", cold as f64 / 1e6);
+        // The surface (3.8 MB), the layer (as big), the pieces.
+        assert!(cold < 20_000_000, "{cold}");
     }
 }
