@@ -81,9 +81,10 @@
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
-  import { drawTool, drawSettings, clearDrawTool } from './box-draw-tool.svelte.js';
-  import { maskActive, frameKey, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
+  import { drawTool, drawSettings, clearDrawTool, DRAW_TARGETS } from './box-draw-tool.svelte.js';
+  import { maskActive, frameKey, shapesInBoxFrame, shapesOnPage, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
   import { fadeActive } from './box-fade.js';
+  import { paintKey } from './box-paint.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
@@ -792,7 +793,7 @@
     engineWanted
       ? engineKey
       : warped
-        ? JSON.stringify({ ...s, ink: 0 }) +
+        ? JSON.stringify({ ...s, ink: 0, paint: paintKey(s.paint) }) +
           `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}`
         : '',
   );
@@ -2152,15 +2153,30 @@
   // are page px (`box.mask`, box-mask.js): pinned to the page, never to the
   // box, so the pointer is taken to the page and nothing else, and a shape
   // may be drawn anywhere on it.
-  const drawTarget = $derived(drawTool.target === 'mask' || drawTool.target === 'fade' ? drawTool.target : null);
+  // The paint's marks (`style.paint`, box-paint.js) are drawn with the same
+  // gestures on the same layer, in page px, and stored in the box's own
+  // frame: carried onto the page to be shown and picked (`shapesOnPage`),
+  // and back into the box's frame when a gesture commits.
+  const drawTarget = $derived(DRAW_TARGETS.includes(drawTool.target) ? drawTool.target : null);
   // Whose shapes the page layer shows: the armed tool's, or with none armed
   // the mask's, which a selected box with a mask on always outlines.
   const shownTarget = $derived(drawTarget ?? 'mask');
   const drawKind = $derived(drawTarget ? drawTool.kind : null);
   // Kept as the mask's names: the liquify ring and the key handler read them.
   const maskKind = $derived(drawKind);
-  const drawModel = $derived(drawTarget ? box[drawTarget] : null);
-  const drawShown = $derived(selected && !editing && !bulkOn && !!box[shownTarget]?.on);
+  const modelOf = (t) => (t === 'paint' ? box.style.paint : box[t]);
+  const drawModel = $derived(drawTarget ? modelOf(drawTarget) : null);
+  const drawShown = $derived(selected && !editing && !bulkOn && !!modelOf(shownTarget)?.on);
+  // The shown target's shapes in page px, one for each stored shape and in
+  // its order.
+  const shownList = $derived.by(() => {
+    if (shownTarget !== 'paint') return box[shownTarget]?.shapes;
+    const marks = box.style.paint?.marks;
+    return drawShown && marks ? shapesOnPage(box, marks) : marks;
+  });
+  // The stored list itself, what a pick is made in: the paint's page list is
+  // made again whenever the box moves, its marks are not.
+  const shownStored = () => (shownTarget === 'paint' ? box.style.paint?.marks : box[shownTarget]?.shapes);
   const maskArmed = $derived(drawShown && !!drawModel?.on && !!drawKind);
 
   // The gesture in progress: a shape being drawn, not yet in the box; the
@@ -2172,7 +2188,7 @@
   // the index may name another shape, and the pick is dropped.
   const maskDraft = $state({ shape: null, poly: null, picked: null, pickedIn: null, moving: null, at: null });
   $effect(() => {
-    const list = box[shownTarget]?.shapes;
+    const list = shownStored();
     untrack(() => {
       if (maskDraft.picked !== null && list !== maskDraft.pickedIn) maskDraft.picked = null;
     });
@@ -2220,6 +2236,15 @@
   // new shape, a move, a removal - as one record.
   function commitMaskShapes(next) {
     const target = drawTarget ?? 'mask';
+    if (target === 'paint') {
+      // Back into the box's own frame, and recorded as a style edit: the
+      // paint is the style's.
+      const before = cloneStyle(box.style);
+      box.style.paint = { ...(box.style.paint ?? { on: true }), marks: shapesInBoxFrame(box, next) };
+      markUnsaved();
+      record({ t: 'style', pageId: pg.id, boxId: box.id, before, after: cloneStyle(box.style) });
+      return;
+    }
     const before = plainOf(box[target]);
     box[target] = { ...(box[target] ?? { on: true }), shapes: next };
     markUnsaved();
@@ -2229,12 +2254,17 @@
   }
   // A new shape takes what the panel set for the next one: the mask's op,
   // or the fade's strength and soft edge.
+  // The paint's: its colour, opacity and soft edge, and the eraser's flag.
   const nextShapeSet = () =>
-    shownTarget === 'fade' ? { strength: drawSettings.fade.strength, soft: drawSettings.fade.soft } : { op: drawSettings.mask.op };
+    shownTarget === 'paint'
+      ? { color: drawSettings.paint.color, opacity: drawSettings.paint.opacity, soft: drawSettings.paint.soft, ...(drawKind === 'erase' ? { erase: true } : {}) }
+      : shownTarget === 'fade'
+        ? { strength: drawSettings.fade.strength, soft: drawSettings.fade.soft }
+        : { op: drawSettings.mask.op };
   function commitMaskShape(shape) {
-    const shapes = box[shownTarget].shapes;
+    const shapes = shownList;
     if (shapes.length >= MASK_SHAPES_MAX) {
-      toast(`A ${shownTarget} holds ${MASK_SHAPES_MAX} shapes at most`);
+      toast(shownTarget === 'paint' ? `The paint holds ${MASK_SHAPES_MAX} marks at most` : `A ${shownTarget} holds ${MASK_SHAPES_MAX} shapes at most`);
       return;
     }
     commitMaskShapes([...shapes, { ...shape, ...nextShapeSet() }]);
@@ -2256,6 +2286,7 @@
   // The shapes as they are drawn on the page, one for each stored shape and in
   // its order: a bubble link as its inset outline (null with no outline).
   const pageShapes = $derived.by(() => {
+    if (shownTarget === 'paint') return shownList ?? [];
     const m = box[shownTarget];
     if (!m) return [];
     return m.shapes.map((sh) => (sh.kind === 'bubble' ? (maskOnPage({ ...box, mask: { shapes: [sh] } })[0] ?? null) : sh));
@@ -2314,9 +2345,9 @@
       // until the pointer comes up, so a drag is one record and no repaint
       // per move: the overlay shows them carried meanwhile.
       maskDraft.picked = maskShapeAt(p);
-      maskDraft.pickedIn = box[shownTarget].shapes;
+      maskDraft.pickedIn = shownStored();
       maskDraft.moving = { idx: maskDraft.picked, dx: 0, dy: 0 };
-    } else if (kind === 'brush') maskDraft.shape = { kind: 'stroke', size: drawSettings[shownTarget].size, pts: [p] };
+    } else if (kind === 'brush' || kind === 'erase') maskDraft.shape = { kind: 'stroke', size: drawSettings[shownTarget].size, pts: [p] };
     else if (kind === 'rect') maskDraft.shape = { kind: 'poly', pts: rectPts(p, p) };
     else maskDraft.shape = { kind: 'ellipse', cx: p[0], cy: p[1], rx: 0, ry: 0 };
     const move = (ev) => {
@@ -2328,7 +2359,7 @@
         return;
       }
       if (!maskDraft.shape) return;
-      if (kind === 'brush') {
+      if (kind === 'brush' || kind === 'erase') {
         const last = maskDraft.shape.pts[maskDraft.shape.pts.length - 1];
         if (Math.hypot(q[0] - last[0], q[1] - last[1]) > 1.5) maskDraft.shape.pts.push(q);
       } else if (kind === 'rect') {
@@ -2350,9 +2381,9 @@
       if (mv) {
         // A press that did not travel moved nothing, and records nothing.
         if (ev.type === 'pointercancel' || Math.hypot(mv.dx, mv.dy) < 0.5) return;
-        commitMaskShapes(box[shownTarget].shapes.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
+        commitMaskShapes(shownList.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
         // The moved shape is still the one picked, in the list just made.
-        maskDraft.pickedIn = box[shownTarget].shapes;
+        maskDraft.pickedIn = shownStored();
         return;
       }
       const sh = maskDraft.shape;
@@ -2377,7 +2408,7 @@
     maskDraft.at = null;
   }
   const maskRing = $derived(
-    maskArmed && maskKind === 'brush' && maskDraft.at
+    maskArmed && (maskKind === 'brush' || maskKind === 'erase') && maskDraft.at
       ? { x: maskDraft.at[0], y: maskDraft.at[1], d: drawSettings[shownTarget].size * z }
       : null,
   );
@@ -2420,12 +2451,12 @@
         e.stopPropagation();
         if (maskDraft.poly) maskDraft.poly = null;
         else clearDrawTool();
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null && box[shownTarget].shapes === maskDraft.pickedIn) {
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null && shownStored() === maskDraft.pickedIn) {
         e.preventDefault();
         e.stopPropagation();
         const i = maskDraft.picked;
         maskDraft.picked = null;
-        const shapes = box[shownTarget].shapes;
+        const shapes = shownList;
         if (i < shapes.length) commitMaskShapes(shapes.filter((_, j) => j !== i));
       }
     };
@@ -2438,7 +2469,7 @@
   const maskShapesShown = $derived.by(() => {
     if (!drawShown) return null;
     const mv = maskDraft.moving;
-    const out = pageShapes.map((sh, i) => (sh && mv && (mv.idx === null || mv.idx === i) && box[shownTarget].shapes[i].kind !== 'bubble' ? movedShape(sh, mv.dx, mv.dy) : sh));
+    const out = pageShapes.map((sh, i) => (sh && mv && (mv.idx === null || mv.idx === i) && shownList[i].kind !== 'bubble' ? movedShape(sh, mv.dx, mv.dy) : sh));
     if (maskDraft.shape) out.push({ ...maskDraft.shape, ...nextShapeSet() });
     return out;
   });
@@ -3837,7 +3868,7 @@
        outlines every shape (and the drag in progress) so the user can see what
        they have painted where the mask has hidden the letters, and - while a
        tool is armed - takes the pointer over the whole page. -->
-  <div class="draw-page" class:armed={maskArmed} class:fade={shownTarget === 'fade'} aria-hidden="true">
+  <div class="draw-page" class:armed={maskArmed} class:fade={shownTarget === 'fade'} class:paint={shownTarget === 'paint'} aria-hidden="true">
     <svg class="mask-gizmo" width="100%" height="100%">
       {#if maskArmed}
         <rect
@@ -3858,11 +3889,11 @@
         {#if sh}
           {@const picked = maskKind === 'move' && maskDraft.picked === i}
           {#if sh.kind === 'ellipse'}
-            <ellipse class:picked class:hide={sh.op === 'hide'} cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
+            <ellipse class:picked class:hide={sh.op === 'hide' || sh.erase} cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
           {:else if sh.kind === 'poly'}
-            <polygon class:picked class:hide={sh.op === 'hide'} points={outline(sh.pts)} />
+            <polygon class:picked class:hide={sh.op === 'hide' || sh.erase} points={outline(sh.pts)} />
           {:else}
-            <polyline class="stroke" class:picked class:hide={sh.op === 'hide'} points={outline(sh.pts)} style="stroke-width:{sh.size * z}px" />
+            <polyline class="stroke" class:picked class:hide={sh.op === 'hide' || sh.erase} points={outline(sh.pts)} style="stroke-width:{sh.size * z}px" />
           {/if}
         {/if}
       {/each}

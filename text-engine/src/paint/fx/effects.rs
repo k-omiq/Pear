@@ -20,7 +20,9 @@
 //! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors for the
 //! order and the compositing it follows, MIT licence (see `THIRD_PARTY.md`).
 
-use super::super::blur::{to_u8, Surface};
+use super::super::blur::{self, to_u8, Surface};
+use super::super::boxjob::{shapes_mask, ClipShape};
+use super::super::raster::Exact;
 use super::super::geom::{Affine, IBox, Pt};
 use super::super::job::{Fill, Rgba, Tile};
 use super::super::shade::Shader;
@@ -220,6 +222,36 @@ pub enum Effect {
     Satin(Satin),
     Stroke(Stroke),
     Bevel(Bevel),
+    Paint(Marks),
+}
+
+/// One mark of paint over the letters (box wire v21): colour laid on the
+/// letters' fill where its shape lies, or paint taken away there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintMark {
+    pub shape: ClipShape,
+    /// Straight; its alpha is not read.
+    pub color: Rgba,
+    /// 0 to 1.
+    pub opacity: f64,
+    /// The edge's softness: a gaussian's sigma, job units. Zero is a hard
+    /// edge.
+    pub soft: f64,
+    /// Takes the paint under it away instead of laying colour.
+    pub erase: bool,
+}
+
+/// Paint over the letters (box wire v21): marks drawn on the box, in the
+/// order they were drawn, rastered into one layer of colour and laid on the
+/// fill after the overlays, inside the letters only. The strokes' inside
+/// parts, the inner shadows and glows lie over it; outlines, shadows and
+/// outer glows keep their own colours. The marks move with the box, unlike
+/// the mask and the fade, which are pinned to the page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Marks {
+    /// The box's corner in job space: the marks are stated from it.
+    pub origin: Pt,
+    pub marks: Vec<PaintMark>,
 }
 
 impl Effect {
@@ -237,6 +269,15 @@ impl Effect {
             Effect::Satin(s) => s.opacity,
             Effect::Stroke(s) => s.opacity * f64::from(u8::from(s.size > 0.0)),
             Effect::Bevel(b) => b.highlight.opacity.max(b.shadow.opacity),
+            // Only a mark that lays colour shows: an eraser over nothing
+            // takes nothing away.
+            Effect::Paint(m) => {
+                if m.marks.iter().any(|k| !k.erase && k.opacity > 0.0) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
         }
     }
 
@@ -1579,7 +1620,126 @@ impl Keys {
 
 /// The key of one effect's settings.
 pub(crate) fn effect_key(e: &Effect) -> Option<Key> {
-    Hasher::new("effect").debug(e).finish()
+    match e {
+        // A brush mark holds hundreds of points: their bytes, not their
+        // text.
+        Effect::Paint(m) => {
+            let mut h = Hasher::new("paint marks").f64(m.origin.x).f64(m.origin.y);
+            for k in &m.marks {
+                h = h
+                    .u64(u64::from(u32::from_le_bytes(k.color.0)))
+                    .f64(k.opacity)
+                    .f64(k.soft)
+                    .u64(u64::from(k.erase));
+                h = match &k.shape {
+                    ClipShape::Ellipse { centre, rx, ry } => {
+                        h.u64(1).f64(centre.x).f64(centre.y).f64(*rx).f64(*ry)
+                    }
+                    ClipShape::Polygon(pts) => pts
+                        .iter()
+                        .fold(h.u64(2).u64(pts.len() as u64), |h, p| h.f64(p.x).f64(p.y)),
+                    ClipShape::Stroke { size, pts } => pts
+                        .iter()
+                        .fold(h.u64(3).f64(*size).u64(pts.len() as u64), |h, p| {
+                            h.f64(p.x).f64(p.y)
+                        }),
+                };
+            }
+            h.finish()
+        }
+        _ => Hasher::new("effect").debug(e).finish(),
+    }
+}
+
+/// The paint's marks rastered into one layer over the interior's frame
+/// (`w` by `h` device pixels, its corner at device `dev`), premultiplied,
+/// each mark laid over the ones before it or, an eraser, taking them away.
+/// A soft mark is rastered past the frame by its blur's reach, so its edge
+/// comes in from outside the frame as it would on a larger one. `None`
+/// when nothing is left.
+fn paint_layer(
+    pm: &Marks,
+    w: usize,
+    h: usize,
+    dev: (i32, i32),
+    place: &Place<'_>,
+    scale: f64,
+) -> Result<Option<Surface>, Error> {
+    let mut out: Option<Surface> = None;
+    for mark in &pm.marks {
+        if !(mark.opacity > 0.0) || (mark.erase && out.is_none()) {
+            continue;
+        }
+        let sigma = mark.soft * scale;
+        let soft = sigma >= 0.5 && sigma.is_finite();
+        let r = if soft { blur::blur_reach(sigma) + 1 } else { 0 };
+        let transform = Affine::translate(f64::from(r - dev.0), f64::from(r - dev.1))
+            .after(&place.transform);
+        let grown = IBox {
+            x0: 0,
+            y0: 0,
+            x1: w as i32 + 2 * r,
+            y1: h as i32 + 2 * r,
+        };
+        let Some((cov, bx)) =
+            shapes_mask(pm.origin, core::iter::once(&mark.shape), &transform, grown, &Exact)?
+        else {
+            continue;
+        };
+        // The coverage, blurred for a soft mark, on a piece of its own: its
+        // box grown by the blur's reach, its corner `at` in the grown frame.
+        let at = (bx.x0 - r, bx.y0 - r);
+        let (cw, ch) = (bx.width() + 2 * r as usize, bx.height() + 2 * r as usize);
+        let mut c = Surface::new(cw, ch)?;
+        let bw = bx.width();
+        for y in 0..bx.height() {
+            for x in 0..bw {
+                let a = cov[(y * bw + x) * 4 + 3];
+                let i = ((y + r as usize) * cw + x + r as usize) * 4;
+                c.data[i..i + 4].fill(a);
+            }
+        }
+        drop(cov);
+        if soft {
+            blur::gaussian(&mut c, sigma)?;
+        }
+        let o = match out.as_mut() {
+            Some(o) => o,
+            None => out.insert(Surface::new(w, h)?),
+        };
+        let k = (mark.opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        let [cr, cg, cb, _] = mark.color.0;
+        for y in 0..ch as i32 {
+            // The piece's row on the frame: the grown frame less the reach.
+            let fy = at.1 + y - r;
+            if fy < 0 || fy >= h as i32 {
+                continue;
+            }
+            for x in 0..cw as i32 {
+                let fx = at.0 + x - r;
+                if fx < 0 || fx >= w as i32 {
+                    continue;
+                }
+                let v = u32::from(c.data[(y as usize * cw + x as usize) * 4 + 3]);
+                let a = (v * k + 127) / 255;
+                if a == 0 {
+                    continue;
+                }
+                let q = &mut o.data[(fy as usize * w + fx as usize) * 4..][..4];
+                if mark.erase {
+                    for ch in q.iter_mut() {
+                        *ch = ((u32::from(*ch) * (255 - a) + 127) / 255) as u8;
+                    }
+                } else {
+                    for (ch, s) in q.iter_mut().zip([cr, cg, cb, 255]) {
+                        *ch = ((u32::from(s) * a + u32::from(*ch) * (255 - a) + 127) / 255) as u8;
+                    }
+                }
+            }
+        }
+        budget::check()?;
+    }
+    Ok(out.filter(|o| o.data.chunks_exact(4).any(|p| p[3] != 0)))
 }
 
 /// A map as it is kept: its size and its values.
@@ -1967,11 +2127,13 @@ fn interior_at(
     };
     // What is laid on the fill, in the order it is laid: the Pattern
     // Overlays (0), the Gradient Overlays (1), the Colour Overlays (2), the
-    // Satins (3), the Inner Glows (4), the group's fade (5), the Inner
-    // Shadows (6) and the strokes' inside parts, the bottom one first (7).
+    // paint over the letters (8, wire v21, numbered last so the others keep
+    // their numbers), the Satins (3), the Inner Glows (4), the group's fade
+    // (5), the Inner Shadows (6) and the strokes' inside parts, the bottom
+    // one first (7).
     const FADE: usize = usize::MAX;
     let mut order: Vec<(u8, usize)> = Vec::new();
-    for phase in 0..8u8 {
+    for phase in [0u8, 1, 2, 8, 3, 4, 5, 6, 7] {
         if phase == 5 {
             // Grouped: Fill Opacity fades the fill and what is on it so far.
             if group {
@@ -1985,6 +2147,7 @@ fn interior_at(
                 (0, Effect::PatternOverlay(_))
                     | (1, Effect::GradientOverlay(_))
                     | (2, Effect::ColorOverlay(_))
+                    | (8, Effect::Paint(_))
                     | (3, Effect::Satin(_))
                     | (4, Effect::InnerGlow(_))
                     | (6, Effect::InnerShadow(_))
@@ -2003,7 +2166,7 @@ fn interior_at(
         if phase > 1 {
             overlay_depth = None;
         }
-        if phase > 2 {
+        if (3..8).contains(&phase) {
             full = None;
         }
         if j < start {
@@ -2041,6 +2204,34 @@ fn interior_at(
                     0,
                     place.grain,
                 )?;
+            }
+            (Some(Effect::Paint(pm)), Some(full)) => {
+                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale)? {
+                    lay_with(
+                        &mut lay,
+                        full,
+                        (0, 0),
+                        dev,
+                        &|_, _, i| {
+                            let p = &layer.data[i * 4..i * 4 + 4];
+                            if p[3] == 0 {
+                                return [0.0; 4];
+                            }
+                            let a = f32::from(p[3]);
+                            [
+                                f32::from(p[0]) / a,
+                                f32::from(p[1]) / a,
+                                f32::from(p[2]) / a,
+                                a / 255.0,
+                            ]
+                        },
+                        1.0,
+                        Blend::Normal,
+                        None,
+                        0,
+                        place.grain,
+                    )?;
+                }
             }
             (Some(Effect::Satin(st)), _) => {
                 let m = kept_map(keys.of_effect("satin", i), || {

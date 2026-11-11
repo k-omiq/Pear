@@ -54,6 +54,7 @@ import { buildTextJson } from './text-json.js';
 import { fsx } from './fsx.js';
 import { chapterOpenSeq } from './library.svelte.js';
 import { startJob, finishJob } from './jobs.svelte.js';
+import { paintMarksForEngine } from './box-paint.js';
 export { buildTextJson };
 
 // A box can have several reasons, but the export names places to look rather
@@ -1126,6 +1127,9 @@ function effectPaints(box, L, effects) {
   // A curved box's fill spans the box (`glyphJob`).
   const rect = L.isCurve ? { x: L.ox, y: L.oy, w: box.w, h: box.h } : fillRect(box, L);
   return effects.map((fx) => {
+    // The paint's marks are stated from the box's corner, in the box's own
+    // frame, as the mask's shapes are.
+    if (fx.kind === 'paint') return { kind: 'paint', x: L.ox, y: L.oy, marks: paintMarksForEngine(fx.paint) };
     if (fx.kind === 'bevel' && fx.texture?.pattern) {
       const { pattern, ...texture } = fx.texture;
       return { ...fx, texture: { ...texture, fill: screenFill({ ...L.s, pattern }, rect, null, page) } };

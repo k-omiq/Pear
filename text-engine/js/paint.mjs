@@ -467,7 +467,8 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // v19: the mask states each shape's op (keep or hide), and is cut after the
 // box's warp, so the engine no longer bends it by the mesh.
 // v20: the fade, after the mask: shapes that take some of the opacity.
-export const BOX_WIRE_VERSION = 20
+// v21: paint over the letters, effect kind 10.
+export const BOX_WIRE_VERSION = 21
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
@@ -569,7 +570,7 @@ function contourRecord(contour) {
   u32(id)
 }
 
-const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7, satin: 8, bevel: 9 }
+const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7, satin: 8, bevel: 9, paint: 10 }
 // Bevel & Emboss's Style and Technique by the number the engine reads
 // (`BevelStyle::from_u32`, `BevelTechnique::from_u32` in fx/bevel.rs).
 export const BEVEL_STYLE_IDS = Object.freeze({ inner: 0, outer: 1, emboss: 2, pillow: 3, stroke: 4 })
@@ -711,6 +712,7 @@ function effectRecord(fx, tileIndex) {
   if (!kind) throw new Error(`mt-text: unknown effect ${JSON.stringify(fx.kind)}`)
   u32(kind)
   if (kind === 9) return bevelRecord(fx, tileIndex)
+  if (kind === 10) return paintMarks(fx)
   if (kind === 5) {
     const position = STROKE_POSITION[fx.position ?? 'outside']
     if (position === undefined) throw new Error(`mt-text: unknown stroke position ${JSON.stringify(fx.position)}`)
@@ -905,6 +907,26 @@ function fadeShape(sh) {
   f64(Math.max(0, sh.soft || 0))
   shapeData(sh, kind)
   return true
+}
+
+// Paint over the letters (v21, effect kind 10): the box's corner in job space
+// and the marks in the box's own frame (`paintMarksForEngine`), in the order
+// drawn, each its kind, colour, opacity (0 to 1), soft edge (a gaussian's
+// sigma), whether it erases, and its shape's numbers.
+function paintMarks(fx) {
+  const marks = (fx.marks ?? []).filter((m) => shapeKind(m))
+  f64(fx.x ?? 0)
+  f64(fx.y ?? 0)
+  u32(marks.length)
+  for (const m of marks) {
+    const kind = shapeKind(m)
+    u32(kind)
+    rgba(m.color)
+    f64(Math.min(1, Math.max(0, m.opacity || 0)))
+    f64(Math.max(0, m.soft || 0))
+    u32(m.erase ? 1 : 0)
+    shapeData(m, kind)
+  }
 }
 
 // A shape's numbers, by its kind.

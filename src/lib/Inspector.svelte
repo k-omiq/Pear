@@ -217,6 +217,24 @@
     ['poly', 'Polygon'],
     ['move', 'Move'],
   ];
+  // The paint's tools: the shapes, then the eraser, a brush that takes paint
+  // away. The marks are the box's, so they are drawn on it and move with it.
+  const PAINT_KINDS = [
+    ['brush', 'Brush'],
+    ['rect', 'Rectangle'],
+    ['ellipse', 'Ellipse'],
+    ['poly', 'Polygon'],
+    ['erase', 'Eraser'],
+    ['move', 'Move'],
+  ];
+  const PAINT_HINT = {
+    brush: 'Drag over the letters to paint.',
+    rect: 'Drag over the letters to fill a rectangle.',
+    ellipse: 'Drag over the letters to fill an ellipse.',
+    poly: 'Click the corners. Double-click to fill it, Esc to drop it.',
+    erase: 'Drag over the paint to take it away.',
+    move: 'Drag a mark to move it, or empty space to move all. Delete removes the picked mark.',
+  };
   const MASK_HINT = {
     brush: 'Drag on the page to paint a shape.',
     rect: 'Drag on the page to draw a rectangle.',
@@ -2798,6 +2816,84 @@
                 disabled={!fd?.shapes.length}
                 onclick={() => clearFadeShapes(box, page())}
               >Clear shapes</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if effectsTab === 'colour'}
+          <!-- Paint over the letters: marks of colour on the letters' fill,
+               drawn on the box and moving with it. Only the Rust engine
+               paints them, so under the browser engine the controls are
+               dimmed and the hint says why; the switch can still turn the
+               paint off. -->
+          {@const paintKind = drawKindFor('paint')}
+          {@const pt = s.paint}
+          {@const paintOn = !!pt?.on}
+          {@const off = !paintOn || !rustBoxes}
+          <div class="switch-row" title="Paint colour over the letters">
+            <button
+              type="button"
+              class="switch"
+              class:on={paintOn}
+              role="switch"
+              aria-checked={paintOn}
+              aria-label="Colour"
+              disabled={!rustBoxes && !paintOn}
+              onclick={() => {
+                s.paint = { marks: [], ...(s.paint ?? {}), on: !paintOn };
+                touch();
+                if (!s.paint.on && paintKind) clearDrawTool();
+              }}
+            ><span class="knob"></span></button>
+            <span class="lbl2">Colour</span>
+          </div>
+          <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+            <div class="seg" role="group" aria-label="Paint tool">
+              {#each PAINT_KINDS as [k, label] (k)}
+                <button
+                  type="button"
+                  class:on={paintKind === k}
+                  aria-pressed={paintKind === k}
+                  disabled={off}
+                  onclick={() => setDrawTool('paint', k)}
+                >{label}</button>
+              {/each}
+            </div>
+            <div class="grp">
+              <span class="lbl">Colour</span>
+              <div class="color-field">
+                <ColorPicker value={drawSettings.paint.color} label="Paint colour" size={24} unclipped onchange={(hex) => (drawSettings.paint.color = hex)} />
+                <input
+                  type="text"
+                  class="hex"
+                  value={drawSettings.paint.color}
+                  aria-label="Paint colour hex"
+                  disabled={off}
+                  oninput={hexInput}
+                  onchange={(e) => {
+                    const raw = String(e.target.value ?? '').trim();
+                    const ok = /^#?[0-9a-f]{6}$/i.test(raw);
+                    if (ok) drawSettings.paint.color = (raw.startsWith('#') ? raw : '#' + raw).toLowerCase();
+                    hexFlag(e.target, !ok);
+                  }}
+                />
+              </div>
+            </div>
+            {@render sliderRow('Brush size', 'Brush size, page px', drawSettings.paint.size, (v) => (drawSettings.paint.size = v), { min: MASK_BRUSH_MIN, max: MASK_BRUSH_MAX, unit: 'px', aria: 'Paint brush size', disabled: off })}
+            {@render sliderRow('Opacity', 'How strong the colour of the next mark is', drawSettings.paint.opacity, (v) => (drawSettings.paint.opacity = v), { min: 1, max: 100, unit: '%', aria: 'Paint opacity', disabled: off })}
+            {@render sliderRow('Soft edge', 'How soft the edge of the next mark is, percent of its size', drawSettings.paint.soft, (v) => (drawSettings.paint.soft = v), { min: 0, max: 100, unit: '%', aria: 'Paint soft edge', disabled: off })}
+            <div class="insp-none">{rustBoxes ? (PAINT_HINT[paintKind] ?? 'Pick a tool, then draw over the letters.') : 'Only the Rust engine paints colour over the letters.'}</div>
+            <div class="mask-row">
+              <span class="mask-count">{pt?.marks.length ?? 0} {pt?.marks.length === 1 ? 'mark' : 'marks'}</span>
+              <button
+                type="button"
+                class="rbtn"
+                disabled={!pt?.marks.length}
+                onclick={() => {
+                  s.paint = { ...s.paint, marks: [] };
+                  touch();
+                }}
+              >Clear paint</button>
             </div>
           </div>
         {/if}

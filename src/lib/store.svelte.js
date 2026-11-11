@@ -139,6 +139,7 @@ import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
 import { sfxAvailable, sfxActive, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
+import { scalePaint } from './box-paint.js';
 
 export { PAGE_W, PAGE_H };
 
@@ -3975,6 +3976,9 @@ export function rescaleStyle(st, sx, sy) {
       strokes: st.ink.strokes.map((k) => scaleStroke(k, sx, sy)),
     };
   }
+  // Paint is drawn on the letters, in the box's own frame: it scales with
+  // them, on a page rescale and on a scale of the box.
+  if (st.paint && typeof st.paint === 'object') out.paint = scalePaint(st.paint, sx, sy);
   return out;
 }
 

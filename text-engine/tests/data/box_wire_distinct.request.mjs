@@ -142,6 +142,17 @@ export const request = {
       contour: { preset: 'cone-inverted', aa: true, range: 0.5625 },
       texture: { depth: 3.5, invert: true, fill: { kind: 'solid', color: '#13579b' } },
     },
+    // v21: paint over the letters, one mark of each kind.
+    {
+      kind: 'paint',
+      x: 6.25,
+      y: -8.75,
+      marks: [
+        { kind: 'stroke', color: '#a1b2c3', opacity: 0.15625, soft: 2.75, size: 4.25, pts: [[1.5, 2.5], [3.5, 4.75]] },
+        { kind: 'poly', color: '#c3d4e5', opacity: 0.96875, soft: 0, erase: true, pts: [[10.5, 11.5], [12.5, 11.75], [13.25, 14.5]] },
+        { kind: 'ellipse', color: '#e5f6a7', opacity: 0.40625, soft: 0.625, cx: 21.5, cy: 22.25, rx: 5.75, ry: 3.125 },
+      ],
+    },
   ],
 }
 

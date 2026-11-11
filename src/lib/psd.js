@@ -576,6 +576,8 @@ function effectsNeedPixels(s) {
   return boxEffects(s).some(
     (fx) =>
       fx.kind === 'patternOverlay' ||
+      // Paint over the letters is no layer style Photoshop has.
+      fx.kind === 'paint' ||
       (fx.kind === 'stroke' && fx.paint?.kind === 'pattern') ||
       (fx.kind === 'bevel' && (fx.texture || (fx.contour && !linearContour(fx.contour)))),
   );

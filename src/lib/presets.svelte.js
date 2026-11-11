@@ -159,7 +159,7 @@ export const hasCopiedStyle = () => clipboardStyle != null;
 // corner, which on another box would be someone else's lettering drawn over it
 // and the target's own work thrown away (see `applyBoxDefaults`, which keeps a
 // new box from inheriting them for the same reason).
-const EXCLUDED_KEYS = ['rotation', 'flipH', 'flipV', 'ink', 'path', 'warp'];
+const EXCLUDED_KEYS = ['rotation', 'flipH', 'flipV', 'ink', 'paint', 'path', 'warp'];
 // And what a paste leaves alone on a MANUAL box (`isAutoBox`): the switches that
 // made it manual. Pasted over, a box the user sized by hand or bent onto an arc
 // would turn auto and be re-sized by the paste's own fit. Onto an auto box they

@@ -238,3 +238,60 @@ describe('the draw tool on a faded box', () => {
     expect(b.fade.shapes[0]).toMatchObject({ kind: 'stroke', size: 33 });
   });
 });
+
+// The paint's marks are drawn on the same page layer and stored in the box's
+// own frame: from the box's corner, unmirrored, so they move with it.
+describe('the draw tool painting over the letters', () => {
+  async function mountPaint(kind, marks = [], style = {}) {
+    const { mask: _m, ...box } = BOX([]);
+    box.style = normalizeStyle({ ...box.style, ...style, paint: { on: true, marks } });
+    loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [box] }]);
+    const pg = page();
+    const view = render(TextBox, { box: pg.boxes[0], pageFrameEl: document.createElement('div'), pg });
+    selectBox('b');
+    await tick();
+    setDrawTool('paint', kind);
+    await tick();
+    return { b: pg.boxes[0], capture: () => view.container.querySelector('.mask-gizmo .capture'), q: (s) => view.container.querySelector(s) };
+  }
+
+  it('Rectangle adds a mark in the box\'s frame with the panel\'s colour, opacity and soft edge, as one style step', async () => {
+    Object.assign(drawSettings.paint, { color: '#00aa44', opacity: 60, soft: 10 });
+    const { b, capture, q } = await mountPaint('rect');
+    expect(q('.draw-page.paint')).not.toBeNull();
+    await drag(capture(), [110, 210], [190, 260]);
+    expect(b.style.paint.marks).toEqual([{ kind: 'poly', color: '#00aa44', opacity: 60, soft: 10, pts: [[10, 10], [90, 10], [90, 60], [10, 60]] }]);
+    expect(b.mask ?? null).toBe(null);
+    undo();
+    await tick();
+    expect(page().boxes[0].style.paint.marks).toEqual([]);
+  });
+
+  it('a mirrored box stores the mark mirrored, so it lands under the pointer once flipped', async () => {
+    const { b, capture } = await mountPaint('rect', [], { flipH: true });
+    await drag(capture(), [110, 210], [190, 260]);
+    // The box is 240 wide: page x 110 is 10 in from its left edge, which the
+    // mirror puts 10 in from its right.
+    expect(b.style.paint.marks[0].pts).toEqual([[230, 10], [150, 10], [150, 60], [230, 60]]);
+  });
+
+  it('the Eraser draws a brush mark that takes paint away', async () => {
+    drawSettings.paint.size = 18;
+    const { b, capture } = await mountPaint('erase');
+    await drag(capture(), [150, 250], [180, 260]);
+    expect(b.style.paint.marks[0]).toMatchObject({ kind: 'stroke', size: 18, erase: true, pts: [[50, 50], [80, 60]] });
+  });
+
+  it('Move carries a mark and Delete removes it, each as a style step', async () => {
+    const mark = { kind: 'ellipse', color: '#ff0000', opacity: 100, soft: 0, cx: 50, cy: 50, rx: 20, ry: 20 };
+    const { b, capture } = await mountPaint('move', [mark]);
+    await drag(capture(), [150, 250], [170, 255]);
+    expect(b.style.paint.marks).toEqual([{ ...mark, cx: 70, cy: 55 }]);
+    expect(key('Delete').defaultPrevented).toBe(true);
+    await tick();
+    expect(b.style.paint.marks).toEqual([]);
+    undo();
+    await tick();
+    expect(page().boxes[0].style.paint.marks).toEqual([{ ...mark, cx: 70, cy: 55 }]);
+  });
+});

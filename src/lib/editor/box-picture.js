@@ -27,6 +27,7 @@ import { boxInJob, renderBoxTexture, warpTexture } from '../exporter.js';
 import { glyphPainter } from '../text-engine/index.js';
 import { paintWorkerAllowed } from '../text-engine/paint-mirror.js';
 import { inkActive, pageGradients, usesBackdrop } from '../text-paint.js';
+import { paintKey } from '../box-paint.js';
 
 // The most pixels one box's canvas holds: 8 megapixels, 32 MB of RGBA.
 //
@@ -569,7 +570,9 @@ export const PICTURE_OFF = 'e|off';
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
 export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '', edges = '' }) {
-  const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
+  // The paint's marks by their revision (`paintKey`): a brush's points are
+  // never turned to text here.
+  const drawn = { ...style, ink: 0, paint: paintKey(style.paint), rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
     `${lines ? lines.join('\n') : ''}|${indents ? indents.join(',') : ''}|${scale}|${fonts}` +
