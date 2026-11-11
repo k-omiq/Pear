@@ -247,6 +247,13 @@ describe('box', () => {
     expect(drawn).toEqual({ mask: { on: true, shapes: 1, bubbleLink: true }, fade: { on: false, shapes: 1 }, paint: { on: true, marks: 1 } });
   });
 
+  it('says when a mask or a fade moves with the box', async () => {
+    const b = app.pages[0].boxes[0];
+    b.mask = { on: true, follow: true, shapes: [{ kind: 'poly', op: 'hide', pts: [[0, 0], [9, 0], [0, 9]] }] };
+    const { drawn } = await read('box', { id: 'b1' });
+    expect(drawn.mask).toEqual({ on: true, shapes: 1, follows: true });
+  });
+
   it.each([{}, { id: '' }, { id: 2 }, { id: 'b10' }])('returns a useful error for %j', async (args) => {
     expect(await callTool('box', args)).toMatchObject({ ok: false, error: expect.any(String), hint: expect.any(String) });
   });

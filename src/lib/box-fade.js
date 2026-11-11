@@ -20,7 +20,7 @@
 // canvas afterwards (the warp gizmo's drag frames, and a perspective corner
 // pulled past the horizon). There the fade bends with the letters. Accepted.
 
-import { normalizeMaskShape, shapesInBoxFrame, memoFrame, pinShiftOf, shiftedShapes, follows, modelShapesOnPage, MASK_SHAPES_MAX } from './box-mask.js';
+import { normalizeMaskShape, shapesInBoxFrame, memoFrame, pinShiftOf, shiftedShapes, follows, MASK_SHAPES_MAX } from './box-mask.js';
 
 export const FADE_STRENGTH_DEFAULT = 50;
 export const FADE_SOFT_DEFAULT = 30;
@@ -57,14 +57,62 @@ export function fadeActive(box) {
 }
 
 // A shape's size, page px: what its soft edge is a percent of. A brush's is
-// its width; a polygon's and an ellipse's the shorter side of their bounds,
-// so a soft edge of 100 reaches the middle of a long thin shape too.
+// its width; an ellipse's its shorter diameter; a polygon's its least width
+// (`polyWidth`), the same at every turn, so a fade that moves with its box
+// keeps its soft edge when the box turns. A soft edge of 100 reaches the
+// middle of a long thin shape too. For an upright rectangle it is the
+// shorter side, as it always was.
 export function fadeShapeSize(sh) {
+  if (sh.kind === 'stroke') return sh.size;
+  if (sh.kind === 'ellipse') return 2 * Math.min(sh.rx, sh.ry);
+  return polyWidth(sh.pts);
+}
+
+// The shorter side of a shape's bounds, page px: the size the paint's soft
+// edge is a percent of (box-paint.js), stated in the box's frame.
+export function boundsSize(sh) {
   if (sh.kind === 'stroke') return sh.size;
   if (sh.kind === 'ellipse') return 2 * Math.min(sh.rx, sh.ry);
   const xs = sh.pts.map((p) => p[0]);
   const ys = sh.pts.map((p) => p[1]);
   return Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+}
+
+// The least width of a polygon: of its convex hull, the narrowest of the
+// strips between an edge's line and the point furthest from it.
+export function polyWidth(pts) {
+  const hull = convexHull(pts);
+  if (hull.length < 3) return 0;
+  let best = Infinity;
+  for (let i = 0; i < hull.length; i++) {
+    const [ax, ay] = hull[i];
+    const [bx, by] = hull[(i + 1) % hull.length];
+    const len = Math.hypot(bx - ax, by - ay);
+    if (len < 1e-9) continue;
+    let far = 0;
+    for (const [x, y] of hull) far = Math.max(far, Math.abs((bx - ax) * (y - ay) - (by - ay) * (x - ax)) / len);
+    best = Math.min(best, far);
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+// Andrew's monotone chain.
+function convexHull(pts) {
+  const p = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
 }
 
 // The blur a shape's soft edge is, page px (a gaussian's sigma): a quarter of
@@ -96,13 +144,12 @@ export function heldFadeInBoxFrame(box) {
     const shapes = box.fade.shapes;
     // "Moves with box" (box-mask.js `follows`): stored in the box's frame
     // already, and moved back by a held move, which carries only the
-    // page's shapes. The soft edge is still worked out on the page, as the
-    // shape stands there, so the switch never changes it.
+    // page's shapes. A shape's size is the same at any turn
+    // (`fadeShapeSize`), so the switch and a turn keep the soft edge.
     if (follows(box.fade)) {
       const v = pinShiftOf(box);
       const own = v ? shiftedShapes(shapes, [-v[0], -v[1]]) : shapes;
-      const onPage = modelShapesOnPage(box, box.fade);
-      return own.map((sh, i) => ({ ...sh, strength: shapes[i].strength / 100, soft: fadeSigma(onPage[i]) }));
+      return own.map((sh, i) => ({ ...sh, strength: shapes[i].strength / 100, soft: fadeSigma(shapes[i]) }));
     }
     return shapesInBoxFrame(box, shapes).map((sh, i) => ({ ...sh, strength: shapes[i].strength / 100, soft: fadeSigma(shapes[i]) }));
   });

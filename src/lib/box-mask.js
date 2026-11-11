@@ -505,7 +505,7 @@ export function revOf(o) {
 // outline it follows.
 //
 // A following model's drawn shapes do not read where the box stands: its key
-// has the turn, and the place only for a bubble link, and the held move (`pinMove`), which
+// has the place only for a bubble link, and the held move (`pinMove`), which
 // `unpinned` takes them back by.
 export function frameKey(box, o) {
   const hasLink = !!o?.shapes?.some?.((sh) => sh.kind === 'bubble');
@@ -514,8 +514,7 @@ export function frameKey(box, o) {
   if (follows(o)) {
     const m = box.pinMove;
     const held = Array.isArray(m) && (m[0] || m[1]) ? `:H${m[0]},${m[1]}` : '';
-    // The turn too: a fade's soft edge is measured on the page (box-fade.js).
-    return `${head}:F${Number(box.style?.rotation) || 0}${hasLink ? `:${placeKey(box)}${link}` : ''}${held}`;
+    return `${head}:F${hasLink ? `:${placeKey(box)}${link}` : ''}${held}`;
   }
   return `${head}:${placeKey(box)}${link}`;
 }

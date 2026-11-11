@@ -295,3 +295,29 @@ describe('the draw tool painting over the letters', () => {
     expect(page().boxes[0].style.paint.marks).toEqual([{ ...mark, cx: 70, cy: 55 }]);
   });
 });
+
+// Moves with box (fix round 1): the shapes are stored in the box's own
+// frame, box-local from its corner at (100, 200).
+describe('the draw tool on a mask that moves with its box', () => {
+  async function mountFollow(kind, shapes) {
+    const r = await mount(kind, shapes);
+    r.b.mask = { ...r.b.mask, follow: true };
+    await tick();
+    return r;
+  }
+  const LOCAL = { kind: 'ellipse', op: 'hide', cx: 50, cy: 50, rx: 20, ry: 20 };
+
+  it('a new shape is stored box-local, and the others are left as stored', async () => {
+    const { b, capture } = await mountFollow('rect', [LOCAL]);
+    await drag(capture(), [110, 210], [190, 260]);
+    expect(b.mask.shapes[0]).toEqual(LOCAL);
+    expect(b.mask.shapes[1]).toEqual({ kind: 'poly', op: 'hide', pts: [[10, 10], [90, 10], [90, 60], [10, 60]] });
+  });
+
+  it('Move picks a shape where it is shown on the page, and stores where it went box-local', async () => {
+    const { b, capture } = await mountFollow('move', [LOCAL]);
+    // Shown at page (150, 250).
+    await drag(capture(), [150, 250], [170, 255]);
+    expect(b.mask.shapes[0]).toEqual({ ...LOCAL, cx: 70, cy: 55 });
+  });
+});
