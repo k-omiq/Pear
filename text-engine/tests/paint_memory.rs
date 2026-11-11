@@ -102,6 +102,7 @@ fn big(font: FontId) -> BoxRequest {
         transform: Affine::scale(2.0, 2.0),
         tiles: Vec::new(),
         ink: None,
+        faces: Default::default(),
     };
     let mut b = BoxRequest::new(1200, 800, request);
     b.blend = Blend::Normal;

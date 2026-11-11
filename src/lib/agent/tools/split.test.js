@@ -198,7 +198,10 @@ describe('two bubbles drawn overlapping', () => {
 
 describe('the pieces', () => {
   it('parts are the text\'s own words, capitals aside', () => {
-    expect(partsOf('Hey you. Come here!', ['HEY YOU.', 'come here!'])).toEqual(['Hey you.', 'Come here!']);
+    expect(partsOf('Hey you. Come here!', ['HEY YOU.', 'come here!'])).toEqual([
+      { text: 'Hey you.', start: 0, end: 8 },
+      { text: 'Come here!', start: 9, end: 19 },
+    ]);
     expect(partsOf('Hey you. Come here!', ['Hey you.', 'Go away!'])).toBeNull();
   });
 

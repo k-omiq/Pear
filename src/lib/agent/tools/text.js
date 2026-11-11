@@ -6,10 +6,11 @@
 // source (an OCR fix), or one box's own words. Each box showing a changed
 // line is laid out again for its new words, and each page is one undo step.
 
-import { defineTool, ToolError } from '../registry.js';
+import { defineTool, ToolError, nearest } from '../registry.js';
 import { parsePages } from '../select.js';
 import { untrusted } from '../fence.js';
-import { app, lineByN, lineText, boxText, editBoxes, setBoxText, writeLineText, isTranslateMode, boxLocked } from '../../store.svelte.js';
+import { app, lineByN, lineText, boxText, boxRuns, editBoxes, setBoxText, setRangesFace, writeLineText, isTranslateMode, boxLocked, allFonts } from '../../store.svelte.js';
+import { faceSpans } from '../../runs.js';
 import { lineTags } from '../../tags.svelte.js';
 import { readsLine, lineLocked, matchesOf, handToSolver, heldBreaks, breaksDropped, reportOf } from './edit.js';
 
@@ -183,5 +184,89 @@ defineTool({
       }),
       ...breaksDropped(pages, held),
     };
+  },
+});
+
+// The stretches of a box's words set in a face other than the box's own
+// (runs.js), as the agent reads them: UTF-16 offsets into the box's text, the
+// letters (fenced), and the face. Null when every letter is in the box face.
+export function boxFaces(b, p) {
+  const text = boxText(b, p) ?? '';
+  const s = b.style ?? {};
+  const out = faceSpans(boxRuns(b, p), text.length, s)
+    .filter((r) => r.end > r.start && (r.bold !== !!s.bold || r.italic !== !!s.italic || (r.font && r.font !== s.font)))
+    .map((r) => ({ start: r.start, end: r.end, text: untrusted(text.slice(r.start, r.end)), bold: r.bold, italic: r.italic, ...(r.font && r.font !== s.font ? { font: r.font } : null) }));
+  return out.length ? out : null;
+}
+
+// Every `[start, end)` of `words` in `text`, or only the nth (1-based).
+function wordRanges(text, words, nth) {
+  const out = [];
+  for (let at = text.indexOf(words); at >= 0 && words; at = text.indexOf(words, at + words.length)) out.push([at, at + words.length]);
+  return nth ? out.slice(nth - 1, nth) : out;
+}
+
+defineTool({
+  name: 'face',
+  description:
+    'Set bold, italic or the typeface of part of one box\'s words, the way a letterer stresses one word in a line. id: the box. Which words: start and end (UTF-16 offsets into the box\'s text, end exclusive; box shows the text and its faces), or words: an exact, case-sensitive piece of the text, every place it appears unless nth (1-based) picks one. ' +
+    'What: bold and/or italic (true or false), font (an exact family from fonts; null is the box\'s own), or clear: true (back to the box\'s face). A range is widened to whole letters. One undo step for the user. The face of the whole box stays edit set.style. Returns the ranges set and the box\'s faces after.',
+  input: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id'],
+    properties: {
+      id: { type: 'string', minLength: 1 },
+      start: { type: 'integer', minimum: 0 },
+      end: { type: 'integer', minimum: 0 },
+      words: { type: 'string', minLength: 1, maxLength: MAX_CHARS },
+      nth: { type: 'integer', minimum: 1 },
+      bold: { type: 'boolean' },
+      italic: { type: 'boolean' },
+      font: { type: ['string', 'null'] },
+      clear: { const: true },
+    },
+  },
+  write: true,
+  run({ id, start, end, words, nth, bold, italic, font, clear }, ctx) {
+    const i = app.pages.findIndex((p) => p.boxes?.some((b) => b.id === id));
+    if (i < 0) throw new ToolError(`no box "${id}"`, 'query or lines list the box ids.');
+    const p = app.pages[i];
+    const b = p.boxes.find((x) => x.id === id);
+    if (boxLocked(b)) throw new ToolError(`box ${id} is locked`, 'the user locked it to hold it as it is; ask them before changing it');
+    const text = boxText(b, p) ?? '';
+    let ranges;
+    if (words != null) {
+      if (start != null || end != null) throw new ToolError('give start and end, or words, not both');
+      ranges = wordRanges(text, words, nth);
+      if (!ranges.length) throw new ToolError(`the box's text has no "${words}"${nth ? ` ${nth} times` : ''}`, 'words matches the exact letters, case included; box shows its text.');
+    } else {
+      if (start == null || end == null) throw new ToolError('give start and end, or words', 'face: { id: "b12", words: "never", bold: true }');
+      if (!(start < end) || end > text.length) throw new ToolError(`start and end must be 0 <= start < end <= ${text.length}`);
+      ranges = [[start, end]];
+    }
+    let change;
+    if (clear) {
+      if (bold != null || italic != null || font !== undefined) throw new ToolError('clear goes alone', 'clear: true puts the words back in the box face.');
+      change = { clear: true };
+    } else {
+      const set = {};
+      if (bold != null) set.bold = bold;
+      if (italic != null) set.italic = italic;
+      if (font !== undefined) {
+        if (font === null) set.font = null;
+        else {
+          const names = [...new Set(allFonts().map((f) => f.name))];
+          const hit = names.find((n) => n === font) ?? names.find((n) => n.toLowerCase() === font.toLowerCase());
+          if (!hit) throw new ToolError(`no font "${font}"`, `close: ${nearest(font, names).join(', ') || '(none)'}. The fonts tool lists exact names.`);
+          // The box's own family is the box's face, not a run of it.
+          set.font = hit === b.style?.font ? null : hit;
+        }
+      }
+      if (!Object.keys(set).length) throw new ToolError('nothing to set', 'give bold, italic, font or clear: true.');
+      change = { set };
+    }
+    const done = ctx.write([p], () => setRangesFace(b, ranges, change, p));
+    return { id, page: i + 1, outcome: done ? 'changed' : 'nothing needed', ranges: done ?? ranges, faces: boxFaces(b, p) };
   },
 });

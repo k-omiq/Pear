@@ -82,7 +82,7 @@
 // (DET-4). The solver cannot tell; the store checks before it asks.
 
 import { placeBlock, placeAtHeight, containBox, inkHeight, fitBox, CONTAIN_TOL, REVIEW_REASONS } from './contain.js';
-import { applyCase, lineWidth, textInset, blockYFor, layoutLines, withFamiliesHeld } from './measure.js';
+import { applyCase, casedRuns, lineWidth, lineWidthAt, sliceWidth, widestWord, textInset, blockYFor, layoutLines, withFamiliesHeld } from './measure.js';
 import { interiorLineWidths, inscribedRect, balloonFrame, safetyInset, layoutShape } from './balloon.js';
 import { neededHeight, BALANCED_DEFAULTS, ovalProfile } from './typeset.js';
 import { normalizeFit } from './data.js';
@@ -180,7 +180,7 @@ function rowsFit(ctx, c, place) {
   const rows = R?.shape ? interiorLineWidths(R.shape, place.lineH, n, valignOf(s), { top }) : null;
   const mid = R?.shape ? R.cx : c.x + c.w / 2;
   return place.lines.every((line, i) => {
-    const w = lineWidth(line, s, s.size);
+    const w = widthAt(place.lines, i, s);
     const x = c.x + place.lineX[i];
     const left = s.align === 'left' ? x : s.align === 'right' ? x - w : x - w / 2;
     const room = rows ? rows[i] : c.w;
@@ -232,7 +232,7 @@ function onPage(ctx, c) {
 // most of a solve. A box whose width is its own may still pass, wider.
 function trial(ctx, size, w, own = !ctx.R?.shape, probe = false) {
   const style = size === ctx.style.size ? ctx.style : { ...ctx.style, size };
-  const base = { x: 0, y: 0, w, h: 0, style, text: ctx.text, fit: ctx.R?.shape ?? null };
+  const base = { x: 0, y: 0, w, h: 0, style, text: ctx.text, runs: ctx.runs, fit: ctx.R?.shape ?? null };
   const stop = probe && !own && ctx.R?.shape && !ctx.lk.height ? linesThatFit(ctx, style) : null;
   const place = placeBlock(frame(ctx, base, ctx.minH), stop === null ? NO_CACHE : { cache: false, stopAbove: stop });
   if (!place) return { ok: false };
@@ -315,14 +315,16 @@ function widthsAt(ctx, size) {
 // few pixels of slack can put just short of the line count it was aiming for.
 function ownWidths(ctx, size) {
   const s = { ...ctx.style, size };
-  const text = applyCase(ctx.text, s);
+  // A text in several faces measures its words and paragraphs where they are
+  // (`casedRuns`, `sliceWidth`); one in a single face as it always did.
+  const { text, runs } = ctx.runs ? casedRuns(ctx.text, ctx.runs, s) : { text: applyCase(ctx.text, s), runs: null };
   const lh = size * (s.lineHeight > 0 ? s.lineHeight : 1);
   const hug = (w) => Math.max(ctx.minW, Math.ceil(w) + 2 * ctx.ti);
-  const word = widestOf(text.split(/\s+/), s);
+  const word = runs ? widestWord(text, runs, s, size) : widestOf(text.split(/\s+/), s);
   const out = [];
-  let cw = Math.ceil(widestOf(text.split('\n'), s));
+  let cw = Math.ceil(runs ? widestParagraph(text, runs, s) : widestOf(text.split('\n'), s));
   while (cw >= Math.ceil(word)) {
-    const lines = layoutLines(text, s, size, cw, null, NO_CACHE);
+    const lines = layoutLines(text, s, size, cw, null, runs ? { ...NO_CACHE, runs } : NO_CACHE);
     if (out.length && lines.length > BALANCED_DEFAULTS.maxLines) break;
     const lw = widestOf(lines, s);
     out.push({ w: hug(lw), score: score(ctx, lines, lw, lines.length * lh) });
@@ -332,7 +334,22 @@ function ownWidths(ctx, size) {
   return out.sort((a, b) => a.score - b.score || a.w - b.w).map((c) => c.w);
 }
 
-const widestOf = (lines, s) => lines.reduce((m, l) => Math.max(m, lineWidth(l, s, s.size)), 0);
+const widestOf = (lines, s) => lines.reduce((m, l, i) => Math.max(m, widthAt(lines, i, s)), 0);
+
+// A line of a layout as `lineWidth` measures it - by its offsets and faces
+// when the layout has runs (`lineWidthAt`), else by its string.
+const widthAt = (lines, i, s) => (lines.spans ? lineWidthAt(lines, i, s, s.size) : lineWidth(lines[i], s, s.size));
+
+// The widest paragraph of a cased text with runs, each set on one line.
+function widestParagraph(text, runs, s) {
+  let widest = 0;
+  let at = 0;
+  for (const para of text.split('\n')) {
+    widest = Math.max(widest, sliceWidth(text, runs, s, s.size, at, at + para.length));
+    at += para.length + 1;
+  }
+  return widest;
+}
 
 // Lower is better. The block's aspect - its widest line over its height -
 // against the aspect a balloon line is set to (`BALANCED_DEFAULTS`). On the
@@ -351,7 +368,7 @@ function score(ctx, lines, blockW, blockH) {
 // against the profile's, 0 for a block that is the oval exactly - and for any
 // block of one or two lines, which no breaking can taper.
 function offOval(lines, s) {
-  const ws = lines.map((l) => lineWidth(l, s, s.size));
+  const ws = lines.map((_, i) => widthAt(lines, i, s));
   const max = Math.max(0, ...ws);
   if (!(max > 0) || ws.length < 2) return 0;
   const want = ovalProfile(ws.length);
@@ -475,9 +492,12 @@ function roundest(ctx, size, t, floor) {
 // rather than "cannot fit above minimum size", which reads as too many words.
 function wideWord(ctx, t) {
   const s = t.place.s;
-  return t.place.lines.some((line) => {
+  const lines = t.place.lines;
+  return lines.some((line, i) => {
     const word = line.trim();
-    return word !== '' && !/\s/.test(word) && lineWidth(word, s, s.size) + 2 * ctx.ti > t.c.w + CONTAIN_TOL;
+    if (word === '' || /\s/.test(word)) return false;
+    // A line with offsets is the word itself, measured in its faces.
+    return (lines.spans ? lineWidthAt(lines, i, s, s.size) : lineWidth(word, s, s.size)) + 2 * ctx.ti > t.c.w + CONTAIN_TOL;
   });
 }
 
@@ -527,7 +547,8 @@ export function solveLayout(args) {
   return withFamiliesHeld(() => solve(args));
 }
 
-function solve({ text, style, refSize, region, locks, opts } = {}) {
+// `runs` are the faces of `text` (runs.js), null for none.
+function solve({ text, style, refSize, region, locks, opts, runs } = {}) {
   const o = opts ?? {};
   const ref = Number(refSize) > 0 ? Number(refSize) : Number(style?.size);
   if (!style || !(ref > 0)) return null;
@@ -539,6 +560,7 @@ function solve({ text, style, refSize, region, locks, opts } = {}) {
   const minH = Number(o.minH) > 0 ? Number(o.minH) : 0;
   const ctx = {
     text: str,
+    runs: runs?.length ? runs : null,
     style: { ...style, size: ref },
     R,
     lk: locksOf(locks, box),

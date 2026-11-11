@@ -39,7 +39,7 @@ use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
     paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
-    Fill, Job, Pt, Raster, Request, Rgba, Run, Shadow, Tap, Wobble,
+    Fill, Job, Pt, Raster, Request, Rgba, Run, RunFaces, Shadow, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -105,6 +105,7 @@ fn base(font: FontId) -> BoxRequest {
             transform: Affine::IDENTITY,
             tiles: Vec::new(),
             ink: None,
+            faces: Default::default(),
         },
     )
 }
@@ -594,6 +595,29 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
     };
     rows.push(("curve_as_one_line", arc(true)));
     rows.push(("curve_letter_by_letter", arc(false)));
+    // A line set in two faces (wire v13): the H in a synthesised bold, the I
+    // in the job's face, and the same with a stroke and a shadow, which see
+    // the letters of both faces as letters.
+    let two_faces = |b: &mut BoxRequest| {
+        let regular = b.request.face;
+        let bold = Face {
+            synth: mt_text::Synth::from_bits(1),
+            ..regular
+        };
+        b.request.faces = RunFaces {
+            faces: vec![regular, bold],
+            spans: vec![vec![(1, 0..1), (0, 1..2)]],
+        };
+    };
+    rows.push(("runs_two_faces", Box::new(two_faces)));
+    rows.push((
+        "runs_two_faces_stroke_shadow",
+        Box::new(move |b| {
+            two_faces(b);
+            b.shadows = vec![shadow(5.0, 6.0)];
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
     rows
 }
 
@@ -710,6 +734,7 @@ fn job_key(b: &BoxRequest) -> Key {
         .debug(&(r.face.font, r.face.size.to_bits(), r.face.synth, r.face.chain))
         .debug(&r.bold_draw)
         .debug(&r.weight)
+        .debug(&r.faces)
         .u64(r.tiles.len() as u64);
     for t in &r.tiles {
         h = h.debug(&(t.width, t.height)).debug(&t.texels);

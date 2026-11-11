@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { textEngine, setTextEngine, onTextEngineChange, glyphPainter, setGlyphPainter } from './text-engine/index.js';
 import {
   canMeasure, lineWidth, charWidths, fontMetrics, lineInk, glyphInk, layoutLines, wrapLines,
-  wrapLinesDOM, blockInk, baselineInLine, faceFor, setTypesetEnabled, typesetEnabled, layoutMemoSize,
+  wrapLinesDOM, blockInk, baselineInLine, faceFor, setTypesetEnabled, typesetEnabled, layoutMemoSize, lineFaces, clearLayoutMemo,
 } from './measure.js';
 import { createBrowserTextEngine, browserFaceReady } from './text-engine/browser.js';
 
@@ -193,6 +193,82 @@ it('keeps readiness tied to the live font set even when no canvas was available 
   vi.stubGlobal('document', { fonts: { check: () => false, load } });
   expect(browserFaceReady(faceFor(style, 20))).toBe(false);
   expect(load).toHaveBeenCalledWith(faceFor(style, 20).key);
+});
+
+describe('a face the font set loads for a run', () => {
+  // A face of its own per test, by its key, which is all the set is asked
+  // by: what the set made of a load is kept.
+  const faceOf = (font) => ({ ...faceFor(style, 20), key: `bold 20px "${font}"` });
+
+  it('is loaded once, and is ready once the load ends, however it ends', async () => {
+    let fail;
+    const load = vi.fn(() => new Promise((_, no) => (fail = no)));
+    vi.stubGlobal('document', { fonts: { check: () => false, load } });
+    const face = faceOf('Errs Once');
+    expect(browserFaceReady(face)).toBe(false);
+    // Asked again while it loads: no second load.
+    expect(browserFaceReady(face)).toBe(false);
+    expect(load).toHaveBeenCalledTimes(1);
+    // The file will not load: the browser draws what it has (a synthetic
+    // style), and the face is not waited on or asked for again.
+    fail(new Error('NetworkError'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(browserFaceReady(face)).toBe(true);
+    expect(browserFaceReady(face)).toBe(true);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells the engine\'s font listeners when a load ends', async () => {
+    const listeners = new Map();
+    const fonts = {
+      status: 'loaded',
+      check: () => false,
+      load: vi.fn(() => Promise.resolve([])),
+      addEventListener: (t, cb) => listeners.set(t, cb),
+      removeEventListener: () => {},
+    };
+    vi.stubGlobal('document', { fonts, createElement: () => ({ getContext: () => ({ measureText: () => ({ width: 0 }) }) }) });
+    const e = createBrowserTextEngine();
+    const heard = vi.fn();
+    const off = e.onFontsChange(heard);
+    expect(e.faceReady(faceOf('Arrives Later'))).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(e.faceReady(faceOf('Arrives Later'))).toBe(true);
+    off();
+  });
+});
+
+describe('the faces of a layout, and the paint after it', () => {
+  const B = (start, end) => ({ start, end, bold: true, italic: false });
+  const plain = { ...style, bold: false, italic: false };
+
+  it('keeps the readiness the layout used until the layouts are dropped, and asks the store to drop them when the face comes', async () => {
+    const e = fakeEngine();
+    let boldReady = false;
+    e.faceReady = vi.fn((face) => !face.bold || boldReady);
+    setTextEngine(e);
+    setTypesetEnabled(true);
+    clearLayoutMemo();
+    const { app } = await import('./store.svelte.js');
+    const lines = layoutLines('HELLO WORLD', plain, 20, 1000, null, { runs: [B(0, 5)] });
+    // Not ready: the line is in the box's face alone.
+    expect(lineFaces(lines, 0, plain)).toBe(null);
+    // The face is in, but nothing has said so: the paint asks what the
+    // layout asked, and gets the answer its widths were measured by.
+    boldReady = true;
+    expect(lineFaces(lines, 0, plain)).toBe(null);
+    // The engine's fonts change: the store is told, once, after the event.
+    const was = app.fontsVersion;
+    e.fontsChanged();
+    e.fontsChanged();
+    expect(app.fontsVersion).toBe(was);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(app.fontsVersion).toBe(was + 1);
+    // And a layout made now is in the bold face.
+    const again = layoutLines('HELLO WORLD', plain, 20, 1000, null, { runs: [B(0, 5)] });
+    expect(lineFaces(again, 0, plain).map((p) => [p.start, p.end, p.style.bold])).toEqual([[0, 5, true], [5, 11, false]]);
+  });
 });
 
 it('hands plain wrapping back to the greedy breaker if the measuring engine outlives the DOM', () => {

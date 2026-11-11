@@ -82,6 +82,9 @@ import {
   rekeyBreaks,
   sizeToCover,
   lineWidth,
+  lineWidthAt,
+  widestWord,
+  casedRuns,
   brokenLines,
   breaksFor,
   contentWidth,
@@ -138,6 +141,7 @@ import { VOICE_ROLES, ROLE_TAGS, ART_SIZED_ROLES } from './lettering.js';
 import { glossaryMisses } from './glossary.js';
 import { ruleBreaks } from './text-rules.js';
 import { applyStylePatch } from './style-patch.js';
+import { putText, copyRuns, runsField, runsKey, wholeLetters, rangeFace, patchRuns, clearRuns } from './runs.js';
 import { sfxAvailable, sfxActive, sfxKind, sfxPick, sfxPickText, sfxDefaultText, sfxPlacement, applySfxKind, looksJapanese } from './sfx.js';
 import { scalePaint } from './box-paint.js';
 
@@ -208,6 +212,13 @@ function detectMaskField(m) {
 function sanitizeLine(l) {
   const out = { ...l };
   if (l?.placed) out.placed = true;
+  // The faces of the English (runs.js), which they index: off disk they are
+  // only trusted when their check is this English's (an older app may have
+  // changed the words and kept them) and once normalised against it. None is
+  // no key at all, and the check is never kept in memory.
+  delete out.runs;
+  delete out.runsCheck;
+  Object.assign(out, runsField(l?.runs, out.en, l?.runsCheck));
   if (out.jp != null && typeof out.jp !== 'string') delete out.jp;
   if (typeof out.jp2 !== 'string' || !out.jp2) delete out.jp2;
   if (typeof out.speaker !== 'string' || !out.speaker) delete out.speaker;
@@ -249,9 +260,9 @@ function givePlainWrap(b, p) {
   const style = plainStyle(b.style);
   if (style === b.style) return;
   const text = b.auto?.stamp ? boxText(b, p) : null;
-  const stood = text != null && solveStands(b, text);
+  const stood = text != null && solveStands(b, text, p);
   b.style = style;
-  if (stood) b.auto.stamp = solveStamp(b, text);
+  if (stood) b.auto.stamp = solveStamp(b, text, p);
 }
 
 // `plain`: the chapter was laid out plain, and every box takes that wrap as its
@@ -355,6 +366,9 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
           id,
           lineN: b.lineN,
           text: b.text ?? null,
+          // The faces of the box's own words (runs.js), only beside words it
+          // owns: a box reading its line reads the line's.
+          ...runsField(b.runs, b.text, b.runsCheck),
           x: b.x,
           y: b.y,
           w: b.w,
@@ -757,24 +771,60 @@ export function boxOwnText(b, p = page()) {
   if (b?.lineN != null && b.lineN < 0) return lineByN(p ?? page(), b.lineN)?.en ?? null;
   return b?.text ?? null;
 }
+
+// The faces of the text a box shows (runs.js), read where `boxText` reads the
+// text: the box's own beside its own words, else its line's. Null for none.
+export function boxRuns(b, p = page()) {
+  if (!b) return null;
+  if (b.text != null) return b.runs ?? null;
+  return lineByN(p ?? page(), b.lineN)?.runs ?? null;
+}
+// The faces of `text` as box `b` on page `p` lays it out: the box's own
+// (`boxRuns`) while `text` is the text it shows, and none for any other text
+// (a composition, a text being tried). Every layout the store asks for a box
+// goes through this, so the box's faces reach the breaker and the checks.
+function runsFor(b, p, text) {
+  const runs = boxRuns(b, p);
+  return runs && text === boxText(b, p) ? runs : null;
+}
+// `text` cased as `b`'s style draws it, with its faces carried through the
+// case change (`casedRuns`): what the held-lines keys are made from. A text
+// with no runs is `applyCase` alone, as before.
+function casedFor(b, p, text) {
+  const runs = runsFor(b, p, text);
+  return runs ? casedRuns(text, runs, b.style) : { text: applyCase(text, b.style), runs: null };
+}
+// The faces beside `boxOwnText`, from the same field.
+export function boxOwnRuns(b, p = page()) {
+  if (b?.lineN != null && b.lineN < 0) return lineByN(p ?? page(), b.lineN)?.runs ?? null;
+  return b?.text != null ? (b.runs ?? null) : null;
+}
 // `opts.fit: false` writes the text and fits nothing - for the history, which
 // puts back the geometry it recorded rather than deriving one (see `restoreFit`
 // in history.svelte.js). A fit run first would be a ladder that can move, widen
 // and shrink the box, overwritten a moment later by the record.
+//
+// The faces go with the words (`putText` in runs.js): shifted through the
+// edit, by `opts.span` - the range of the old text the edit replaced, which
+// typing knows exactly - or by the common prefix and suffix; or, for a caller
+// putting back a recorded state, set to `opts.runs` outright.
 export function setBoxText(b, v, p = page(), opts) {
   if (!b) return;
   const fit = opts?.fit !== false;
+  const how = { span: opts?.span, runs: opts?.runs };
   if (b.lineN != null && b.lineN < 0) {
     const ln = lineByN(p ?? page(), b.lineN);
     // A free box whose line has gone is a document that has already lost the
     // text; writing `b.text` here would resurrect it as an override nothing
     // else in the app knows how to reach.
-    if (ln) ln.en = v ?? '';
+    if (ln) putText(ln, 'en', v ?? '', how);
     // Same reason as below: the text changed, so the box may no longer fit it.
     if (fit) autoFitBox(b, p);
     return;
   }
-  b.text = v;
+  // From what the box showed: a queue-placed box writing its first override
+  // starts from its line's words and faces.
+  putText(b, 'text', v, { ...how, from: { text: boxText(b, p), runs: boxRuns(b, p) } });
   if (fit) autoFitBox(b, p);
 }
 function clamp(v, a, b) {
@@ -799,6 +849,7 @@ export function boxEdited(b, p = page()) {
 export const boxSnap = (b, p = page()) => ({
   style: cloneStyle(b.style),
   text: boxOwnText(b, p),
+  runs: copyRuns(boxOwnRuns(b, p)),
   x: b.x,
   y: b.y,
   w: b.w,
@@ -832,7 +883,7 @@ export function boxEditRecords(key, before, after, geom) {
   };
   const fit = { geomBefore: fitOf(before), geomAfter: fitOf(after) };
   const moved = geom && ['x', 'y', 'w', 'h'].some((k) => before[k] !== after[k]);
-  const typed = before.text !== after.text;
+  const typed = before.text !== after.text || runsKey(before.runs) !== runsKey(after.runs);
   const look = (st, ink) => JSON.stringify({ ...st, size: null, ...(ink ? { ink: null } : null) });
   const same = (ink) => look(before.style, ink) === look(after.style, ink);
   const carried = (moved && same(true)) || (typed && same(false));
@@ -840,7 +891,7 @@ export function boxEditRecords(key, before, after, geom) {
     out.push({ t: 'style', ...key, before: before.style, after: after.style, ...fit });
   }
   if (moved) out.push({ t: 'resize', ...key, before: geomOf(before), after: geomOf(after) });
-  if (typed) out.push({ t: 'text', ...key, before: before.text ?? null, after: after.text, ...fit });
+  if (typed) out.push({ t: 'text', ...key, before: before.text ?? null, after: after.text, ...runsRecord(before.runs, after.runs), ...fit });
   // A change to what the solver aims for and nothing else - the size aimed
   // for, the least size, a lock, held lines - is an edit too, and the entry's
   // geometry carries the record back on an undo. Not a solve's own bookkeeping
@@ -902,6 +953,54 @@ export function editBoxes(targets, mutate, { always = false, solve = false, ...e
   return changed;
 }
 
+// ---------- the faces of part of a box's words (runs.js) ----------
+// A face command on `[a, f)` of the words box `b` shows: `change` is
+// `{ toggle: 'bold' | 'italic' }` (all of it set becomes none of it, anything
+// else becomes all of it), `{ font: name | null }` (a family, or the box's),
+// `{ set: { bold?, italic?, font? } }` (each named part set as given), or
+// `{ clear: true }` (back to the box's face). The range is widened to whole
+// letters first (`wholeLetters`). One undo step; a locked box is refused with
+// the toast that says so. The range it acted on, or null when nothing
+// changed.
+//
+// The faces sit beside the words they index: on the box for its own words,
+// on the line for a box reading its line (one `line` step, as the queue
+// writes it).
+export function setRangeFace(b, a, f, change, p = page()) {
+  return setRangesFace(b, [[a, f]], change, p)?.[0] ?? null;
+}
+
+// `setRangeFace` on several ranges of the same box at once, still one undo
+// step (the agent's `face` tool sets every match of a word in one call). The
+// ranges it acted on, widened, or null when nothing changed.
+export function setRangesFace(b, ranges, change, p = page()) {
+  if (!b || !p || refuseLocked(b)) return null;
+  const text = boxText(b, p) ?? '';
+  const face = { bold: !!b.style?.bold, italic: !!b.style?.italic };
+  const runs = boxRuns(b, p);
+  let next = runs;
+  const done = [];
+  for (const [a, f] of ranges) {
+    const [lo, hi] = wholeLetters(text, a, f);
+    if (lo === hi) continue;
+    if (change?.clear) next = clearRuns(next, text, lo, hi);
+    else if (change?.toggle === 'bold' || change?.toggle === 'italic') {
+      const now = rangeFace(next, text, lo, hi, face)[change.toggle];
+      next = patchRuns(next, text, lo, hi, { [change.toggle]: now !== true }, face);
+    } else if (change && 'font' in change) next = patchRuns(next, text, lo, hi, { font: change.font || null }, face);
+    else if (change?.set) next = patchRuns(next, text, lo, hi, change.set, face);
+    else return null;
+    done.push([lo, hi]);
+  }
+  if (!done.length || runsKey(next) === runsKey(runs)) return null;
+  if (b.text == null && b.lineN != null && b.lineN >= 0 && lineByN(p, b.lineN)) {
+    settleLine();
+    setLineText(p, b.lineN, text, { runs: next });
+    settleLine();
+  } else editBoxes([{ page: p, box: b }], (box, pg) => setBoxText(box, text, pg, { runs: next, fit: false }));
+  return done;
+}
+
 // ---------- a queue line's translation, typed into the queue ----------
 // The queue's own field writes the line, and every box reading that line is
 // fitted to it, as `setBoxText` fits the one box it writes. Here rather than in
@@ -918,13 +1017,15 @@ export function editBoxes(targets, mutate, { always = false, solve = false, ...e
 const LINE_SETTLE_MS = 400;
 let linePending = null; // { pageId, lineN, before, geoms }
 let lineT = null;
-export function setLineText(p, n, v) {
+// `opts.span` / `opts.runs` say how the faces go with the words, as for
+// `setBoxText`.
+export function setLineText(p, n, v, opts) {
   const ln = p ? lineByN(p, n) : null;
   if (!ln) return;
   settleSource();
   if (linePending && (linePending.lineN !== n || linePending.pageId !== p.id)) settleLine();
-  linePending ??= { pageId: p.id, lineN: n, before: ln.en ?? '', geoms: lineBoxGeoms(p, n) };
-  ln.en = v;
+  linePending ??= { pageId: p.id, lineN: n, before: ln.en ?? '', runsBefore: copyRuns(ln.runs), geoms: lineBoxGeoms(p, n) };
+  putText(ln, 'en', v, { span: opts?.span, runs: opts?.runs });
   fitLineBoxes(p, n);
   markUnsaved();
   clearTimeout(lineT);
@@ -1030,12 +1131,18 @@ function settleLine() {
   const ln = pg ? lineByN(pg, pend.lineN) : null;
   if (!ln) return;
   const after = ln.en ?? '';
-  if (after === pend.before) return;
+  if (after === pend.before && runsKey(ln.runs) === runsKey(pend.runsBefore)) return;
   const now = new Map(lineBoxGeoms(pg, pend.lineN).map((g) => [g.boxId, g.geom]));
   const boxes = pend.geoms
     .filter((g) => now.has(g.boxId))
     .map((g) => ({ boxId: g.boxId, geomBefore: g.geom, geomAfter: now.get(g.boxId) }));
-  recordEdit({ t: 'line', pageId: pend.pageId, lineN: pend.lineN, before: pend.before, after, boxes });
+  recordEdit({ t: 'line', pageId: pend.pageId, lineN: pend.lineN, before: pend.before, after, ...runsRecord(pend.runsBefore, ln.runs), boxes });
+}
+// The faces on either side of a `text` or `line` entry, only when either side
+// has any: an entry for words with no faces is written as it always was, and
+// the history reads a missing side as none.
+export function runsRecord(before, after) {
+  return before?.length || after?.length ? { runsBefore: copyRuns(before), runsAfter: copyRuns(after) } : null;
 }
 function fitLineBoxes(p, n) {
   for (const b of p?.boxes ?? []) if (b.lineN === n) autoFitBox(b, p);
@@ -1128,7 +1235,7 @@ export function autoFitBox(b, p = page(), { solve = false } = {}) {
     reviewBox(b, p);
     return false;
   }
-  keepHeldLines(b, boxText(b, p));
+  keepHeldLines(b, boxText(b, p), p);
   if (!canMeasure()) return false;
   // An edit's fit: the box is the user's from here, and no longer one the
   // notice counts as the engine's doing.
@@ -1142,7 +1249,7 @@ export function autoFitBox(b, p = page(), { solve = false } = {}) {
   noteSizeEdit(b, p);
   const text = boxText(b, p);
   if (sfxActive(b.style)) return hugSfxBox(b, p, text);
-  const cand = boxCandidate(b, text);
+  const cand = boxCandidate(b, text, runsFor(b, p, text));
   if (b.style.fitText && !handPlacedBox(cand)) return fitTextToBox(b, p, cand);
   if (!isAutoBox(cand)) {
     reviewBox(b, p);
@@ -1178,7 +1285,7 @@ function hugBox(b, p, cand) {
     b.h = next.h;
     changed = true;
   }
-  reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text)) : place);
+  reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text, cand.runs)) : place);
   fitted(b, was);
   return changed;
 }
@@ -1190,7 +1297,7 @@ function hugBox(b, p, cand) {
 // fits the letters to the box.
 const SFX_AIR = 0.12; // ems of air past the ink, inside the box
 function hugSfxBox(b, p, text) {
-  const ink = boxInkRect(boxCandidate(b, text));
+  const ink = boxInkRect(boxCandidate(b, text, runsFor(b, p, text)));
   let changed = false;
   if (ink) {
     const cx = b.w / 2;
@@ -1267,10 +1374,11 @@ export function setBoxSizing(b, mode, p = page()) {
 // matches) and yet still hold the box's size and width (auto-layout.js
 // `locksOf`), and setting them again matches what is stored and changes
 // nothing.
-function keepHeldLines(b, text) {
+function keepHeldLines(b, text, p) {
   const a = b.auto;
   if (!a?.locks?.breaks || !a.breaks) return;
-  const held = rekeyBreaks(a.breaks, applyCase(text, b.style), b.style, b.style.size);
+  const c = casedFor(b, p, text);
+  const held = rekeyBreaks(a.breaks, c.text, b.style, b.style.size, c.runs);
   if (held && held !== a.breaks) a.breaks = held;
   else if (!held) {
     delete a.breaks;
@@ -1406,7 +1514,7 @@ export const reviewOf = (b, p) => (b?.review && !handPlacedBox(b) ? b.review : n
 // text leaves, and the reason names what the solver ran out of.
 function solverReview(b, p) {
   const a = b?.auto;
-  if (!a?.on || a.status !== 'overflow' || !isAutoBox(b) || !solveStands(b, boxText(b, p))) return null;
+  if (!a?.on || a.status !== 'overflow' || !isAutoBox(b) || !solveStands(b, boxText(b, p), p)) return null;
   return { kind: 'overflow', overflow: { l: 0, t: 0, r: 0, b: 0 }, reason: a.reason ?? REVIEW_REASONS.minSize };
 }
 
@@ -1429,8 +1537,11 @@ function solverReview(b, p) {
 // a block anchored to one edge lands at the other - away from the rows the
 // balloon gave it.
 const STAMP_STYLE = ['font', 'size', 'bold', 'italic', 'align', 'valign', 'lineHeight', 'letterSpacing', 'uppercase', 'shape', 'balloon', 'hyphenate', 'minOrphan', 'margin', 'rotation', 'flipH', 'flipV'];
-function solveStamp(b, text) {
+function solveStamp(b, text, p) {
   const s = b.style;
+  // The faces of the words are layout inputs too (runs.js); a box with none
+  // is stamped as it always was.
+  const runs = runsFor(b, p, text);
   const key = JSON.stringify([
     String(text ?? ''),
     b.x,
@@ -1440,12 +1551,13 @@ function solveStamp(b, text) {
     textInset(s),
     b.fit ?? null,
     ...STAMP_STYLE.map((k) => s[k] ?? null),
+    ...(runs ? [runsKey(runs)] : []),
   ]);
   let h = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193);
   return (h >>> 0).toString(36);
 }
-const solveStands = (b, text) => !!b.auto?.stamp && b.auto.stamp === solveStamp(b, text);
+const solveStands = (b, text, p) => !!b.auto?.stamp && b.auto.stamp === solveStamp(b, text, p, p);
 
 // The verdict alone: check the box as it stands and bring its flag up to date.
 // Moves nothing. The reason a flag already carries is kept - it was written by
@@ -1461,7 +1573,7 @@ const solveStands = (b, text) => !!b.auto?.stamp && b.auto.stamp === solveStamp(
 // it stands (`placeBlock`), so the lines are not measured twice.
 export function reviewBox(b, p = page(), place) {
   if (!b?.style || !canMeasure() || boxFaceArriving(b, p)) return;
-  const cand = boxCandidate(b, boxText(b, p));
+  const cand = boxCandidate(b, boxText(b, p), boxRuns(b, p));
   const v = containBox(cand, place ?? placeBlock(cand));
   if (v.fits) {
     writeReview(b, null);
@@ -1477,7 +1589,7 @@ export function reviewBox(b, p = page(), place) {
 // the height, and that only upward.
 export function refitBox(b, p = page()) {
   if (!b?.style || !canMeasure() || boxFaceArriving(b, p)) return false;
-  const cand = boxCandidate(b, boxText(b, p));
+  const cand = boxCandidate(b, boxText(b, p), boxRuns(b, p));
   const place = placeBlock(cand);
   // Text on a curve has no lines to count, and is never an auto box.
   return growAndReview(b, p, cand, place, place.isCurve ? 0 : place.lines.length);
@@ -1506,7 +1618,7 @@ export function refitBox(b, p = page()) {
 // lines the component has just broken, not a second break.
 export function autoFitBoxTo(b, lineCount, p = page()) {
   if (!b?.style || !canMeasure() || boxFaceArriving(b, p)) return false;
-  const cand = boxCandidate(b, boxText(b, p));
+  const cand = boxCandidate(b, boxText(b, p), boxRuns(b, p));
   return growAndReview(b, p, cand, placeBlock(cand), lineCount);
 }
 
@@ -1521,10 +1633,10 @@ function growAndReview(b, p, cand, place, lineCount) {
   // For a chapter the Rust engine fits for the first time: what this writes
   // is the engine's doing, when the box is still as the engine last left it.
   const was = fitting(b);
-  const held = solveStands(b, cand.text);
+  const held = solveStands(b, cand.text, p);
   const changed = holdsItsText(cand) && !boxLocked(b) ? growHeightTo(b, lineCount, p, cand, place) : false;
-  if (changed && held) b.auto.stamp = solveStamp(b, cand.text);
-  reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text)) : place);
+  if (changed && held) b.auto.stamp = solveStamp(b, cand.text, p);
+  reviewBox(b, p, changed ? placeAtHeight(place, boxCandidate(b, cand.text, cand.runs)) : place);
   fitted(b, was);
   noteRelaid(b, place);
   return changed;
@@ -1623,7 +1735,7 @@ export function fitBoxNow(boxId = app.selectedId, p = page()) {
   const geomBefore = fitGeom(b);
   const reviewBefore = b.review;
   const text = boxText(b, p);
-  const cand = boxCandidate(b, text);
+  const cand = boxCandidate(b, text, runsFor(b, p, text));
   const reason = manualReason(cand);
   let changed;
   if ((reason === REVIEW_REASONS.ink || reason === REVIEW_REASONS.mask) && !String(text ?? '').trim()) {
@@ -2182,7 +2294,7 @@ function linesBefore() {
           const text = boxText(b, p);
           if (!b.style || !/\S/.test(String(text ?? ''))) continue;
           if (engine.loading?.() || engine.faceReady?.(faceFor(b.style, b.style.size)) === false) continue;
-          const place = placeBlock(boxCandidate(b, text));
+          const place = placeBlock(boxCandidate(b, text, runsFor(b, p, text)));
           if (!place.isCurve && Array.isArray(place.lines)) out.set(b, place.lines.slice());
         } catch {
           /* not known */
@@ -2741,7 +2853,7 @@ export function solvePending(p, boxes = p?.boxes) {
 function solveOnePending(b, p) {
   const a = b.auto;
   const text = boxText(b, p);
-  if (!a.on || !isAutoBox(b) || !/\S/.test(text) || !solveStands(b, text)) {
+  if (!a.on || !isAutoBox(b) || !/\S/.test(text) || !solveStands(b, text, p)) {
     a.status = null;
     return false;
   }
@@ -3475,6 +3587,8 @@ let pendingPlace = null;
 // typing is only possible while somebody still remembers the text it started
 // from.
 let editBefore = undefined;
+// And the faces beside that text (runs.js), so the entry puts them back too.
+let editRunsBefore = null;
 // And the box's fitted geometry at that same moment, for the same span of the
 // session. Typing is the commonest way a box grows, so a `text` entry has to
 // carry the height either side of it or an undo hands back the short text in the
@@ -3572,8 +3686,10 @@ function freeLineRecord(p, b) {
 function settleText() {
   const id = app.editingId;
   const before = editBefore;
+  const runsBefore = editRunsBefore;
   if (id == null) {
     editBefore = undefined;
+    editRunsBefore = null;
     return;
   }
   const b = byId(id);
@@ -3588,17 +3704,19 @@ function settleText() {
   // record nothing.
   const geomBefore = editGeomBefore;
   editBefore = b ? boxOwnText(b) : undefined;
+  editRunsBefore = b ? copyRuns(boxOwnRuns(b)) : null;
   editGeomBefore = b ? fitGeom(b) : null;
   if (before === undefined) return;
   if (pendingPlace?.id === id) return;
   const now = b ? boxOwnText(b) : null;
-  if (!b || now === before) return;
+  if (!b || (now === before && runsKey(editRunsBefore) === runsKey(runsBefore))) return;
   recordEdit({
     t: 'text',
     pageId: page().id,
     boxId: id,
     before: before ?? null,
     after: now,
+    ...runsRecord(runsBefore, editRunsBefore),
     geomBefore,
     geomAfter: fitGeom(b),
   });
@@ -3751,6 +3869,7 @@ export function beginEdit(id, opts) {
   if (!already) {
     const b = byId(id);
     editBefore = boxOwnText(b);
+    editRunsBefore = copyRuns(boxOwnRuns(b));
     editGeomBefore = b ? fitGeom(b) : null;
   }
 }
@@ -3766,6 +3885,8 @@ export function endEdit(commitText, beforeText) {
   // has already ended the edit must not clear the before-text of an edit that
   // has since begun. Whoever ended it took this with them.
   editBefore = undefined;
+  const runsBefore = editRunsBefore;
+  editRunsBefore = null;
   // Taken before the commit below, because that is what grows the box.
   const geomBefore = editGeomBefore;
   editGeomBefore = null;
@@ -3811,13 +3932,15 @@ export function endEdit(commitText, beforeText) {
     settlePending();
     return;
   }
-  if (before !== undefined && commitText != null && commitText !== before) {
+  const runsAfter = boxOwnRuns(b);
+  if (before !== undefined && commitText != null && (commitText !== before || runsKey(runsAfter) !== runsKey(runsBefore))) {
     recordEdit({
       t: 'text',
       pageId: page().id,
       boxId: id,
       before: before ?? null,
       after: commitText,
+      ...runsRecord(runsBefore, runsAfter),
       // Null when the caller supplied its own before-text without ever having
       // opened an edit session here (`endEdit('hi', '')`), which is a caller
       // that knows the text and cannot know the geometry. The history falls back
@@ -4035,7 +4158,7 @@ export function rescalePageGeometry(p, sx, sy) {
     // whose text may live on a line it does not have: its stamp stays as
     // recorded, like every other recorded stamp.
     const text = b.auto?.stamp && Array.isArray(p.lines) ? boxText(b, p) : null;
-    const stood = text != null && solveStands(b, text);
+    const stood = text != null && solveStands(b, text, p);
     b.x *= sx;
     b.y *= sy;
     b.w *= sx;
@@ -4055,7 +4178,7 @@ export function rescalePageGeometry(p, sx, sy) {
     // A new object, for the reason `rescaleStyle` returns one.
     if (b.auto) {
       b.auto = rescaleAuto(b.auto, sx, sy);
-      if (stood) b.auto.stamp = solveStamp(b, text);
+      if (stood) b.auto.stamp = solveStamp(b, text, p);
     }
     seeSize(b);
   }
@@ -4323,11 +4446,14 @@ export function applyDetection(result, target = null) {
     result.lines.map((l) => {
       const jp = l.jp ?? '';
       const was = before.get(l.n);
+      const keeps = !!was && (was.jp ?? '') === jp;
       return {
         n: l.n,
         type: l.type,
         jp,
-        en: was && (was.jp ?? '') === jp ? (was.en ?? '') : '',
+        en: keeps ? (was.en ?? '') : '',
+        // The kept English keeps its faces (runs.js); new words have none.
+        ...(keeps && was.runs?.length ? { runs: copyRuns(was.runs) } : null),
         // A second reader that disagreed (OCR-1); detect-post.js drops it
         // when the two readings agree.
         ...(typeof l.jp2 === 'string' && l.jp2 ? { jp2: l.jp2 } : {}),
@@ -4958,7 +5084,7 @@ function bornBox(p, ln, imgX, imgY, measured) {
     // whatever path - hands it to the ladder instead (`solvePending`).
     if (measurable && !solvable) {
       b.auto.status = 'pending';
-      b.auto.stamp = solveStamp(b, text);
+      b.auto.stamp = solveStamp(b, text, p);
     }
   }
   return b;
@@ -4981,10 +5107,11 @@ function bornBox(p, ln, imgX, imgY, measured) {
 // side drag, which changes the width and never the size.
 function solveBox(b, p, text, at, stay = false, holdSize = false) {
   const a = b.auto;
-  keepHeldLines(b, text);
+  keepHeldLines(b, text, p);
   const region = b.fit ?? { kind: 'hint', x: at.x, y: at.y, w: 0, h: 0 };
   const r = solveLayout({
     text,
+    runs: runsFor(b, p, text),
     style: b.style,
     refSize: holdSize ? b.style.size : a.refSize,
     region,
@@ -5015,7 +5142,7 @@ function solveBox(b, p, text, at, stay = false, holdSize = false) {
   // (`solverReview`), for as long as the box is the one solved here.
   b.auto.status = r.status;
   b.auto.reason = r.reasons[0] ?? null;
-  b.auto.stamp = solveStamp(b, text);
+  b.auto.stamp = solveStamp(b, text, p);
   writeReview(b, r.review);
   return true;
 }
@@ -5127,8 +5254,8 @@ export function edgeDragFloor(b, dir, lineCount, p = page()) {
 // width changes (`resizeBox`), unless a lock holds them, and the width is the
 // user's, so a word too wide for it is split (`breaksWords`) - every box a
 // resize reaches is given the record that says so (`resizeBox`).
-const rebrokenAt = (b, w, text) => {
-  const c = boxCandidate({ ...b, w }, text);
+const rebrokenAt = (b, w, text, p) => {
+  const c = boxCandidate({ ...b, w }, text, runsFor(b, p, text));
   if (w === b.w) return c;
   return { ...c, ...(b.auto?.locks?.breaks ? null : { breaks: null }), breakWords: true };
 };
@@ -5138,7 +5265,7 @@ const rebrokenAt = (b, w, text) => {
 // change floors the height at, worked out before the drag moves the edge.
 export function heightFloorAt(b, w, p = page()) {
   if (!b?.style || !canMeasure() || handPlacedBox(b)) return EDGE_DRAG_MIN;
-  const lines = placeBlock(rebrokenAt(b, w, boxText(b, p))).lines?.length;
+  const lines = placeBlock(rebrokenAt(b, w, boxText(b, p), p)).lines?.length;
   return lines ? edgeDragFloor(b, 's', lines, p) : EDGE_DRAG_MIN;
 }
 
@@ -5163,10 +5290,14 @@ export function edgeDragWidthFloor(b, p = page()) {
   if (!s || !(s.size > 0) || !canMeasure() || handPlacedBox(b)) return EDGE_DRAG_MIN_W;
   const text = boxText(b, p);
   if (!/\S/.test(text ?? '') || faceArriving(s, text)) return EDGE_DRAG_MIN_W;
-  const cased = applyCase(text, s);
-  const held = b.auto?.locks?.breaks ? brokenLines(cased, s, s.size, keptBreaks(b)) : null;
+  const { text: cased, runs } = casedFor(b, p, text);
+  const held = b.auto?.locks?.breaks ? brokenLines(cased, s, s.size, keptBreaks(b), runs) : null;
   let widest = 0;
-  for (const piece of held ?? cased.split(/\s+/)) widest = Math.max(widest, lineWidth(piece, s, s.size));
+  // A text in several faces measures its held lines and its words where they
+  // are (`lineWidthAt`, `widestWord`); four letters' worth below stays the box
+  // face's average, a floor and not a measure.
+  if (runs) widest = held ? Math.max(0, ...held.map((_, i) => lineWidthAt(held, i, s, s.size))) : widestWord(cased, runs, s, s.size);
+  else for (const piece of held ?? cased.split(/\s+/)) widest = Math.max(widest, lineWidth(piece, s, s.size));
   const inset = textInset(s) * 2;
   const whole = Math.max(EDGE_DRAG_MIN_W, Math.ceil(widest + inset));
   // Four characters at the text's own average advance - or the whole text on
@@ -5180,10 +5311,11 @@ export function edgeDragWidthFloor(b, p = page()) {
   if (held || s.hyphenate === false || (s.shape ?? 'auto') === 'off') return Math.max(whole, least);
   // Whether the lines broken at width `w` all fit it. A curve has no lines.
   const fits = (w) => {
-    const place = placeBlock(rebrokenAt(b, w, text));
+    const place = placeBlock(rebrokenAt(b, w, text, p));
     if (!place || place.isCurve) return false;
     const room = contentWidth(w, place.s) + 0.5;
-    return place.lines.every((line) => lineWidth(line.trim(), place.s, place.s.size) <= room);
+    const lines = place.lines;
+    return lines.every((line, i) => (lines.spans ? lineWidthAt(lines, i, place.s, place.s.size) : lineWidth(line.trim(), place.s, place.s.size)) <= room);
   };
   let lo = least, hi = Math.max(whole, least);
   if (fits(lo)) return lo;
@@ -5217,7 +5349,7 @@ export function snugWidthFor(b, p = page()) {
   if (!s || !(s.size > 0) || !(b.w > 0) || !canMeasure() || boxLocked(b) || s.fitText || sfxActive(s)) return null;
   const text = boxText(b, p);
   if (!/\S/.test(text ?? '') || faceArriving(s, text)) return null;
-  const cand = boxCandidate(b, text);
+  const cand = boxCandidate(b, text, runsFor(b, p, text));
   if (handPlacedBox(cand)) return null;
   const place = placeBlock(cand);
   if (!place || place.isCurve || !place.lines?.length) return null;
@@ -5844,7 +5976,7 @@ function setBoxOutline(b, p, fit, outline, geomBefore = refitGeom(b)) {
   setOutline(b, outline);
   applyBubbleInk(b, p);
   const text = boxText(b, p);
-  const auto = isAutoBox(boxCandidate(b, text));
+  const auto = isAutoBox(boxCandidate(b, text, runsFor(b, p, text)));
   if (auto && !b.auto && b.style.size > 0) b.auto = normalizeAuto({ refSize: b.style.size });
   const solved = auto && b.auto?.on ? resolveBox(b, p, text, false) : null;
   if (solved == null) {
@@ -5942,9 +6074,9 @@ const CENTRE_NEAR = 0.25;
 // The middle of the box's glyph ink in page coordinates: mirrored by the box's
 // flips and turned with it about its centre, as the export draws it. The box's
 // own centre for a curve, which has no straight block to measure.
-function inkCentre(b, text) {
+function inkCentre(b, text, p) {
   const s = b.style;
-  const place = placeBlock(boxCandidate(b, text));
+  const place = placeBlock(boxCandidate(b, text, runsFor(b, p, text)));
   const r = linesInkRect(place);
   let ix = r ? (r.x0 + r.x1) / 2 : b.w / 2;
   let iy = r ? (r.y0 + r.y1) / 2 : b.h / 2;
@@ -5974,12 +6106,12 @@ export function centreTextInOutline(boxId = app.selectedId, p = page()) {
   const text = boxText(b, p);
   const before = fitGeom(b);
   for (let i = 0; i < CENTRE_ROUNDS; i++) {
-    const c = inkCentre(b, text);
+    const c = inkCentre(b, text, p);
     const dx = tx - c.x;
     const dy = ty - c.y;
     if (Math.abs(dx) < CENTRE_NEAR && Math.abs(dy) < CENTRE_NEAR) break;
     moveBoxTo(b, b.x + dx, b.y + dy, p);
-    autoFitBoxTo(b, inkCentre(b, text).lines, p);
+    autoFitBoxTo(b, inkCentre(b, text, p).lines, p);
   }
   const after = fitGeom(b);
   if (after.x === before.x && after.y === before.y && after.h === before.h) {
@@ -6098,7 +6230,7 @@ export function commitOutlinePoints(boxId, pts, p = page(), geomBefore = null) {
 // matches was laid out for inputs it no longer has.
 export function isLayoutStale(b, p = page()) {
   if (!b?.auto?.stamp || b.auto.status === 'pending') return false;
-  return !solveStands(b, boxText(b, p));
+  return !solveStands(b, boxText(b, p), p);
 }
 
 // "Keep current layouts": the boxes stand as they are, and their stamps say so.
@@ -6106,7 +6238,7 @@ export function keepCurrentLayouts(p = page()) {
   let n = 0;
   for (const b of p?.boxes ?? []) {
     if (!isLayoutStale(b, p)) continue;
-    b.auto.stamp = solveStamp(b, boxText(b, p));
+    b.auto.stamp = solveStamp(b, boxText(b, p), p);
     n++;
   }
   if (n) markUnsaved();
@@ -6614,7 +6746,7 @@ function boxSnapshot(src, p) {
   const from = lineByN(p, src.lineN);
   const tags = lineTags(from);
   const text = boxText(src, p);
-  const place = src.auto ? placeBlock(boxCandidate(src, text)) : null;
+  const place = src.auto ? placeBlock(boxCandidate(src, text, runsFor(src, p, text))) : null;
   return {
     box: {
       x: src.x,
@@ -6633,7 +6765,7 @@ function boxSnapshot(src, p) {
       // Whether the box is still the solve's answer. The copy is the same solve
       // somewhere else - its fit moves with it - so it keeps the answer the way
       // a moved box does (`moveBoxTo`), and only then.
-      solved: !!src.auto && src.auto.status !== 'pending' && solveStands(src, text),
+      solved: !!src.auto && src.auto.status !== 'pending' && solveStands(src, text, p),
     },
     line: {
       type: from?.type ?? 'dialogue',
@@ -6642,6 +6774,9 @@ function boxSnapshot(src, p) {
       // override its line with `box.text`, and a legacy free box has no line at
       // all, so `boxText` is the only reader that answers for every case.
       en: text,
+      // The faces of those words (runs.js), from where `boxText` read them:
+      // a copy is the box with its words, and its words with their faces.
+      ...(boxRuns(src, p) ? { runs: copyRuns(boxRuns(src, p)) } : null),
       ...(tags.length ? { tags: [...tags] } : null),
     },
   };
@@ -6652,6 +6787,8 @@ function boxSnapshot(src, p) {
 function placeSnapshot(p, snap, x, y, select = true) {
   const ln = { n: nextFreeLineN(p), ...snap.line };
   if (ln.tags) ln.tags = [...ln.tags];
+  // Copied again for the reason the tags are: one clipboard pasted twice.
+  if (ln.runs) ln.runs = copyRuns(ln.runs);
   p.lines.push(ln);
   const src = snap.box;
   const b = {
@@ -6681,10 +6818,11 @@ function placeSnapshot(p, snap, x, y, select = true) {
     // any box draws): with no balloon rows to break on, the copy would
     // otherwise break again at its own width and stop looking like the box
     // it was copied from. Lines chosen for the source's balloon go with it.
-    const kept = src.lines ? breaksFor(applyCase(ln.en, b.style), b.style, b.style.size, src.lines) : null;
+    const cased = src.lines ? casedFor(b, p, ln.en) : null;
+    const kept = src.lines ? breaksFor(cased.text, b.style, b.style.size, src.lines, cased.runs) : null;
     if (kept) b.auto.breaks = { ...kept, scaled: true };
     else delete b.auto.breaks;
-    if (src.solved) b.auto.stamp = solveStamp(b, ln.en);
+    if (src.solved) b.auto.stamp = solveStamp(b, ln.en, p);
   }
   snugNewBox(b, p);
   // The copy's own verdict, before the record takes its snapshot. Not the
@@ -6924,7 +7062,7 @@ export function addSfxBox(a, b, target = null) {
 // Answers whether the box changed.
 function holdInk(b, p) {
   if (!canMeasure()) return false;
-  const g = growAround(boxCandidate(b, boxText(b, p)));
+  const g = growAround(boxCandidate(b, boxText(b, p), boxRuns(b, p)));
   if (!g) return false;
   const s = b.style;
   if (s.ink?.strokes?.length) s.ink = { ...s.ink, strokes: translateStrokes(s.ink.strokes, g.dx, g.dy) };
@@ -7000,7 +7138,7 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // they could fall otherwise - the inset does not scale, and a measure need
   // not scale exactly with the size.
   const text = scale && !reshaped && b.auto ? boxText(b, p) : null;
-  const keepLines = text != null ? placeBlock(boxCandidate(b, text)) : null;
+  const keepLines = text != null ? placeBlock(boxCandidate(b, text, runsFor(b, p, text))) : null;
   if (scale) {
     // Against the style the gesture started from, so the steps of a drag do
     // not compound: each sets the factor from the start. Ink is scaled below.
@@ -7065,7 +7203,8 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // A scale keeps the lines it found (`scaled`), keyed to the new size.
   if ((widened || scale) && b.auto?.breaks && !b.auto.locks?.breaks) delete b.auto.breaks;
   if (keepLines?.lines?.length && !keepLines.isCurve) {
-    const kept = breaksFor(applyCase(text, b.style), b.style, b.style.size, keepLines.lines);
+    const cased = casedFor(b, p, text);
+    const kept = breaksFor(cased.text, b.style, b.style.size, keepLines.lines, cased.runs);
     if (kept) b.auto.breaks = { ...kept, scaled: true };
   }
   // A width or a height set by hand is the box's from here on: the solver -
@@ -7091,7 +7230,7 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     reviewBox(b, p);
     return b;
   }
-  const cand = boxCandidate(b, boxText(b, p));
+  const cand = boxCandidate(b, boxText(b, p), boxRuns(b, p));
   if (mode === 'fit') fitTextToBox(b, p, cand);
   else if (mode === 'auto' && (reshaped || (widened && nh === oh))) hugBox(b, p, cand);
   // Anything else - a Fixed box, a scale, a height typed in - is never left
@@ -7143,10 +7282,10 @@ export const moveGeom = (b) => ({
 
 export function moveBoxTo(b, x, y, p = page()) {
   const text = b.auto?.stamp && b.auto.status !== 'pending' ? boxText(b, p) : null;
-  const stood = text != null && solveStands(b, text);
+  const stood = text != null && solveStands(b, text, p);
   b.x = x;
   b.y = y;
-  if (stood) b.auto.stamp = solveStamp(b, text);
+  if (stood) b.auto.stamp = solveStamp(b, text, p);
 }
 
 // ---------- keyboard nudge ----------

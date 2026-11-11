@@ -15,6 +15,7 @@
     rememberStyle,
     settleEdits,
     setBoxText,
+    boxRuns,
     refitBox,
     autoFitBoxTo,
     fitGeom,
@@ -32,6 +33,8 @@
     fontPreviewing,
   } from './store.svelte.js';
   import { openBoxMenu } from './editor/BoxMenu.svelte';
+  import { openFaceMenu } from './editor/FaceMenu.svelte';
+  import { typingSel, setTypingSel, clearTypingSel } from './typing-selection.svelte.js';
   import { stripDragYBounds } from './editor/strip.js';
 
   import { untrack, flushSync } from 'svelte';
@@ -44,11 +47,13 @@
     resyncField,
     undoField,
     redoField,
+    fieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
+  import { copyRuns, editedSpan, runsKey, shiftRuns, patchRuns } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
-  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
+  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, lineFaces, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
     strokeBands,
     rgba,
@@ -144,7 +149,9 @@
     // is not reactive: this is what says they changed.
     app.fontsVersion;
     try {
-      return typeModel(box, composeText ?? text);
+      // A composition is laid out with the faces the words around it keep
+      // (`liveRuns`).
+      return typeModel(box, composeText ?? text, liveRuns);
     } catch {
       return null;
     }
@@ -307,6 +314,8 @@
   const bulkTarget = $derived(isBulkTarget(box.id));
   const s = $derived(box.style);
   const text = $derived(boxText(box, pg));
+  // The faces of those words (runs.js), from where `boxText` read them.
+  const runs = $derived(boxRuns(box, pg));
 
   const line = $derived(box.lineN != null ? lineByN(pg, box.lineN) : null);
   const jp = $derived(line?.jp ?? '');
@@ -772,6 +781,9 @@
             scale: pictureRes,
             fonts: app.fontsVersion,
             tiles: patternTileKey,
+            // The faces of the words, which the picture is painted in, moved
+            // over what an IME has in hand (`liveRuns`).
+            runs: liveRuns,
             light: lightKey,
             // Crisp letter edges, which the painter reads from the setting.
             edges: crispFor(s) ? 'crisp' : '',
@@ -794,7 +806,9 @@
       ? engineKey
       : warped
         ? JSON.stringify({ ...s, ink: 0, paint: paintKey(s.paint) }) +
-          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}`
+          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}` +
+          // The faces of the words, which the warped picture is painted in.
+          (runs?.length ? `|R${runsKey(runs)}` : '')
         : '',
   );
   const warpKey = $derived(failed ? '' : wantedKey);
@@ -845,9 +859,10 @@
   // under a move as it does for a box with no mask, whose picture a move
   // never repaints: so a move changes only how far the mask has moved, and
   // the engine's premask piece and its raster of the mask are read back. The file is always painted where the box is.
+  // The faces go with it, moved over the composed letters (`liveRuns`).
   let grainHold = null;
   const paintedBox = () => {
-    let b = editing && composeText != null ? { ...box, text: composeText } : box;
+    let b = editing && composeText != null ? { ...box, text: composeText, runs: liveRuns } : box;
     if (!maskOn && !fadeOn) return b;
     if (grainHold?.key !== engineRest) grainHold = { key: engineRest, x: box.x, y: box.y };
     const dx = grainHold.x - box.x;
@@ -1541,6 +1556,15 @@
   // An IME's text is not the box's until the composition ends, but it is on
   // the curve while it is being composed: the editable holds it by then.
   let composeText = $state(null);
+  // What the composition began on: the text, and the raw range the IME was
+  // given (`onCompositionStart`).
+  let composeFrom = null;
+  // The faces of the words while an IME composes: the box's own runs moved
+  // over the composed letters as the edit at its end will move them (the
+  // range it was given, `editedSpan`; a guess from the text when that does not
+  // explain it), so the rest of the box keeps its faces and its line breaks.
+  // The box's runs at any other time.
+  const liveRuns = $derived(composeText == null ? runs : (shiftRuns(runs, composeFrom?.v ?? text, composeText, composeFrom ? (editedSpan(composeFrom.v, composeText, composeFrom.a, composeFrom.b) ?? undefined) : undefined) ?? null));
   const layout = $derived.by(() => {
     if ((editing && !curveEdit) || !curved) return null;
     const t = applyCase(editing ? (composeText ?? text) : text, s);
@@ -1566,10 +1590,17 @@
     // The lines an outline fit chose, while they are this text's, face's and
     // size's (`brokenLines`); otherwise line breaking from the box's
     // dimensions and balloon fit.
-    const cased = applyCase(text, s);
+    const opts = breaksWords(box) ? { breakWords: true } : undefined;
+    if (!runs) {
+      const cased = applyCase(text, s);
+      return brokenLines(cased, s, s.size, keptBreaks(box)) ?? layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), opts);
+    }
+    // Words in several faces: broken by the faces' widths (`casedRuns`), and
+    // drawn in them (`lineCuts` below, and the picture's job).
+    const c = casedRuns(text, runs, s);
     return (
-      brokenLines(cased, s, s.size, keptBreaks(box)) ??
-      layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), breaksWords(box) ? { breakWords: true } : undefined)
+      brokenLines(c.text, s, s.size, keptBreaks(box), c.runs) ??
+      layoutLines(c.text, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), { ...opts, runs: c.runs })
     );
   });
 
@@ -1586,6 +1617,12 @@
     return lineIndents(shaped, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size));
   });
   const indentCss = (i) => (indents ? `padding-${s.align}:${indents[i] * z}px;` : '');
+  // Each line's stretches in their faces (`lineFaces`), for a layout with runs:
+  // the line drawn as one span per stretch, each with its weight and slant, so
+  // the browser draws what it measured - each stretch alone. Null for every
+  // line of a box without runs, which is drawn as the one string it was.
+  const faceCss = (st) => `${st.font !== s.font ? `font-family:${fontCssFor(st.font)};` : ''}font-weight:${st.bold ? 700 : 400};font-style:${st.italic ? 'italic' : 'normal'};`;
+  const lineCuts = $derived(shaped?.runs ? shaped.map((_, i) => lineFaces(shaped, i, s)?.map((p) => ({ ...p, css: faceCss(p.style) })) ?? null) : null);
 
   // How far the centred block moves so its INK, not its line boxes, is centred
   // in the box - the exporter's `inkShiftY`. Measured at the page size and
@@ -1642,7 +1679,7 @@
     // font picker has the keys, and placing the block again costs a frame.
     if (!hitsOn || !shaped || fontPreviewing(box.id)) return null;
     app.fontsVersion;
-    const r = blockReach(placeBlock(boxCandidate(box, text)));
+    const r = blockReach(placeBlock(boxCandidate(box, text, runs)));
     if (!r || !(r.x1 > r.x0) || (r.x0 >= 0 && r.y0 >= 0 && r.x1 <= box.w && r.y1 <= box.h)) return null;
     return r;
   });
@@ -2638,6 +2675,19 @@
   // offsets (anchor, focus), which is what the caret on the curve is drawn from.
   let editEl = null;
   let edSel = $state(null);
+  // The selection, for the face commands (typing-selection.svelte.js), for as
+  // long as the box is typed into.
+  $effect(() => {
+    if (!editing || !edSel) return;
+    setTypingSel(box.id, text, edSel.a, edSel.f);
+  });
+  $effect(() => {
+    if (!editing) return;
+    const id = box.id;
+    return () => {
+      if (typingSel.boxId === id) clearTypingSel();
+    };
+  });
 
   // Whether this edit has been a picture at any time: what the editable's
   // teardown has to put back then, and with the switch off never true.
@@ -2703,6 +2753,9 @@
       text;
       effSize;
       effLs;
+      // The faces the lines are drawn in, set by a command with the words as
+      // they were: drawn again, the selection kept.
+      lineCuts;
       // WITH THE ENGINE DRAWING, the effect that keeps the editable's own
       // caret under the drawn one (`alignNative`). It is made HERE, as this
       // effect's child, for two reasons. It then runs after this one has
@@ -2747,7 +2800,7 @@
       untrack(() => {
         if (first) {
           first = false;
-          resyncField(fieldUndo, text);
+          resyncField(fieldUndo, text, copyRuns(boxRuns(box)));
           node.focus();
           drawEdit(node, null);
         } else {
@@ -2763,7 +2816,7 @@
 
   // Draws the lines, restoring both raw selection endpoints, or selects all.
   function drawEdit(node, caret, anchor = caret) {
-    drawEditLines(node, text, editSegs, hangWidth, indents && { side: s.align, px: indents.map((v) => v * z) });
+    drawEditLines(node, text, editSegs, hangWidth, indents && { side: s.align, px: indents.map((v) => v * z) }, editSegs ? lineCuts : null);
     const sel = window.getSelection();
     if (caret == null) {
       const r = document.createRange();
@@ -2801,25 +2854,43 @@
     return a == null || b == null ? null : [Math.min(a, b), Math.max(a, b)];
   }
 
-  // setBoxText routes text to line for free-typed boxes.
-  function commitEdit(v, caret, inputType) {
+  // setBoxText routes text to line for free-typed boxes. `at` is the range
+  // the edit replaced, when it is known, so the faces move with this edit.
+  function commitEdit(v, caret, inputType, at) {
     if (v === text) return;
     keyed();
     caretNext = caret;
-    setBoxText(box, v);
-    recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(inputType) });
+    const runs = pendingRuns(v, at);
+    setBoxText(box, v, page(), runs ? { runs } : { span: at });
+    recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(inputType), faces: copyRuns(boxRuns(box)) });
     markUnsaved();
   }
 
   function applyEdit(node, span, inputType, data) {
     if (typeFlat && !composing) span = editStops(node.textContent, span);
     const r = rawEdit(node.textContent, span, inputType, data);
-    if (r) commitEdit(r.v, r.caret, inputType);
+    if (r) commitEdit(r.v, r.caret, inputType, r.span);
+  }
+
+  // A face asked for at the caret (`typingSel.pending`, Bold or Italic with
+  // nothing selected) put on the letters typed there now: the runs the edit
+  // leaves, or null for an edit it does not touch. The letters typed after
+  // them take their face from the letter before, as any typed letter does.
+  function pendingRuns(v, at) {
+    const pend = typingSel.pending;
+    if (!pend || pend.boxId !== box.id || pend.text !== text || !at || at[0] !== pend.at || at[1] !== pend.at || v.length <= text.length) return null;
+    const face = { bold: !!s.bold, italic: !!s.italic };
+    const moved = shiftRuns(boxRuns(box), text, v, at);
+    return patchRuns(moved, v, pend.at, pend.at + v.length - text.length, pend.patch, face) ?? [];
   }
 
   function onEditBeforeInput(e) {
     const t = e.inputType;
     if (e.isComposing || t.includes('Composition')) return;
+    // The browser's own Bold and Italic (Cmd+B in an editable) would write
+    // markup into the words: the faces are the editor's commands' to set
+    // (`text.bold`), which the key reaches through the shortcut registry.
+    if (t.startsWith('format')) return e.preventDefault();
     // On a picture, while a composition is open the text is the IME's and the
     // browser's (`composing`: an input can arrive in the middle of one without
     // saying so). Nothing is cut from the picture's rows then, and the box's
@@ -2858,11 +2929,17 @@
 
   // Whatever the browser did change - a composition, an input it would not let
   // be cancelled - is read back as raw text, and the lines drawn again.
-  function readBack(node) {
+  //
+  // `from`, for the end of a composition: the text and the raw range the IME
+  // was given when it began, so what it replaced is known (`editedSpan`) and
+  // the faces of the words (runs.js) move with it; without it, or when it does
+  // not explain the change, the range is guessed from the text alone.
+  function readBack(node, from = null) {
     if (!node.isConnected) return;
     const caret = caretNow(node);
     const v = node.textContent;
-    if (v !== text) commitEdit(v, caret ?? v.length, 'insertText');
+    const span = from && from.v === text ? editedSpan(from.v, v, from.a, from.b) : null;
+    if (v !== text) commitEdit(v, caret ?? v.length, 'insertText', span ?? undefined);
     else drawEdit(node, caret ?? v.length);
   }
   function onEditInput(e) {
@@ -2872,11 +2949,15 @@
       composeText = e.currentTarget.textContent;
     }
   }
-  function onCompositionStart() {
+  function onCompositionStart(e) {
     clearTimeout(compositionTimer);
     compositionTimer = null;
     compositionVersion++;
     composing = true;
+    // On a picture the selection is the picture's own (`edSel`); in the DOM
+    // lines it is the browser's.
+    const at = typing && edSel ? [Math.min(edSel.a, edSel.f), Math.max(edSel.a, edSel.f)] : e?.currentTarget ? editSpan(e.currentTarget) : null;
+    composeFrom = at ? { v: text, a: at[0], b: at[1] } : null;
     // A drag/menu that began before composition cannot go on changing its
     // selection, even if the picture falls back to DOM text in the meantime.
     if (pictureEdit) {
@@ -2899,7 +2980,9 @@
       if (pictured) compositionTimer = null;
       composeText = null;
       if (composeAt) composeAt = null;
-      readBack(node);
+      const from = composeFrom;
+      composeFrom = null;
+      readBack(node, from);
     };
     if (pictured) {
       clearTimeout(compositionTimer);
@@ -2907,7 +2990,23 @@
     } else setTimeout(finish);
   }
 
+  // The right button on the editable itself (the lines in the DOM, with the
+  // engine not drawing): on selected words of flat text, the menu of their
+  // faces; anywhere else the system's, with Paste.
+  function onEditContextMenu(e) {
+    if (curved || composing || !edSel || edSel.a === edSel.f) return;
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) return;
+    const inside = [...sel.getRangeAt(0).getClientRects()].some((r) => e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+    if (!inside) return;
+    e.preventDefault();
+    openFaceMenu(e.clientX, e.clientY);
+  }
+
   function onEditBlur(e) {
+    // To the menu of the selected words' faces, which hands the focus back:
+    // the edit, and its selection, go on.
+    if (e.relatedTarget?.closest?.('.face-menu')) return;
     if (pictureEdit) clearComposition();
     composeText = null;
     endEdit(e.currentTarget.textContent);
@@ -2944,7 +3043,7 @@
     if (next == null) return;
     keyed();
     caretNext = caretAfter(node.textContent, next);
-    setBoxText(box, next);
+    setBoxText(box, next, page(), { runs: fieldFaces(fieldUndo) });
     markUnsaved();
   }
 
@@ -3294,6 +3393,16 @@
     const held = editEl.textContent;
     const lo = edSel ? Math.min(edSel.a, edSel.f) : 0;
     const hi = edSel ? Math.max(edSel.a, edSel.f) : 0;
+    // On selected words of flat text: the menu of their faces. Anywhere else
+    // the system's, with Paste.
+    if (typeFlat && lo < hi) {
+      const o = offsetAt(typed.rows, ...maskLocal(e)).o;
+      if (o >= lo && o <= hi) {
+        e.preventDefault();
+        openFaceMenu(e.clientX, e.clientY);
+        return;
+      }
+    }
     if (typeCurve) {
       const p = typeCurvePoint(e);
       const o = curveRaw(caretNearest(typeGlyphs, ...p));
@@ -3744,12 +3853,13 @@
         ondragstart={(e) => e.preventDefault()}
         onblur={onEditBlur}
         onkeydown={onEditKey}
+        oncontextmenu={onEditContextMenu}
       ></div>
     {:else if !pictured && !layout}
       <div class="txt shaped stack" style="{textStyle}{stackTransform}{filterCss}">
         {#each layers as ly, li (li)}
           <div class="tlayer" class:base={li === 0} style={ly.css}>
-            {#each shaped as ln, i (i)}<div class="tline" style="{ly.line}{indentCss(i)}">{ln === '' ? '\u200b' : ln}</div>{/each}
+            {#each shaped as ln, i (i)}<div class="tline" style="{ly.line}{indentCss(i)}">{#if lineCuts?.[i]}{#each lineCuts[i] as p, j (j)}<span style={p.css}>{ln.slice(p.start, p.end)}</span>{/each}{:else}{ln === '' ? '\u200b' : ln}{/if}</div>{/each}
           </div>
         {/each}
       </div>

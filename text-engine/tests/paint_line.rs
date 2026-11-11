@@ -57,6 +57,7 @@ fn request(face: Face, curved: bool, line: bool, runs: Vec<Run>) -> Request {
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
         ink: None,
+        faces: Default::default(),
     }
 }
 

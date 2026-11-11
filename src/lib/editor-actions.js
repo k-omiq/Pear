@@ -40,7 +40,12 @@ import {
   lineByN,
   snugSelectedBox,
   snugPageBoxes,
+  boxText,
+  boxRuns,
+  setRangeFace,
 } from './store.svelte.js';
+import { typingSel, selectedRange, askPending, askFacePick } from './typing-selection.svelte.js';
+import { faceAt } from './runs.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
 import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
 import { prefs, isComics } from './prefs.svelte.js';
@@ -76,6 +81,40 @@ function editStyle(mutate) {
 const flip = (key) => () => editStyle((s) => { s[key] = !s[key]; });
 const set = (key, v) => () => editStyle((s) => { s[key] = v; });
 const effect = (key) => () => editStyle((s) => { if (s[key]) s[key].on = !s[key].on; else return false; });
+// The words a face command acts on (typing-selection.svelte.js): the range
+// selected in the box typed into, or in the Inspector's field for the
+// selected box; a bare caret only while the box itself is typed into.
+function faceTarget() {
+  if (!typeset()) return null;
+  const id = app.editingId ?? app.selectedId;
+  const b = id != null ? byId(id) : null;
+  const text = b ? (boxText(b) ?? '') : '';
+  const r = b ? selectedRange(b.id, text) : null;
+  return r ? { b, text, r, caret: r[0] === r[1], typing: app.editingId === b.id } : null;
+}
+const faceRange = () => {
+  const t = faceTarget();
+  return t && !t.caret ? t : null;
+};
+// Bold or Italic: on the selected words; at a bare caret, for the letters
+// typed next (`askPending`: the face asked for there, else the one the
+// letter before has); with nothing typed into, the whole box, as before. A
+// key pressed in a text field with nothing selected there (the queue's, the
+// Inspector's) is not about the whole box, and falls through.
+const inField = (e) => !!e?.target?.closest?.('input, textarea, [contenteditable="true"]');
+const faceToggle = (key) => (e) => {
+  const t = faceTarget();
+  if (t && !t.caret) return void setRangeFace(t.b, t.r[0], t.r[1], { toggle: key });
+  if (t?.typing) {
+    const at = t.r[0];
+    const pend = typingSel.pending;
+    const asked = pend?.boxId === t.b.id && pend.at === at && key in pend.patch ? pend.patch[key] : null;
+    const now = asked ?? faceAt(boxRuns(t.b), at > 0 ? at - 1 : at, t.b.style)[key];
+    return void askPending(t.b.id, t.text, at, { [key]: !now });
+  }
+  if (!boxSelected() || inField(e)) return false;
+  return flip(key)();
+};
 const wrap180 = (v) => ((((v + 180) % 360) + 360) % 360) - 180;
 const rotate = (d) => () => editStyle((s) => { s.rotation = wrap180(Math.round((s.rotation ?? 0) + d)); });
 
@@ -106,8 +145,10 @@ const retryable = () => jobs.items.findLast((j) => !j.running && j.failed.length
 const SETTINGS_SERIES = new Set(['series', 'styles', 'guide']);
 
 const RUNS = {
-  'text.bold': { when: boxSelected, run: flip('bold') },
-  'text.italic': { when: boxSelected, run: flip('italic') },
+  'text.bold': { when: () => boxSelected() || !!faceTarget(), run: faceToggle('bold') },
+  'text.italic': { when: () => boxSelected() || !!faceTarget(), run: faceToggle('italic') },
+  'text.typeface': { when: () => !!faceRange(), run: () => { const t = faceRange(); askFacePick(t.b.id, t.text, t.r[0], t.r[1]); } },
+  'text.clearFace': { when: () => !!faceRange(), run: () => { const t = faceRange(); setRangeFace(t.b, t.r[0], t.r[1], { clear: true }); } },
   'text.uppercase': { when: boxSelected, run: flip('uppercase') },
   'text.alignLeft': { when: boxSelected, run: set('align', 'left') },
   'text.alignCenter': { when: boxSelected, run: set('align', 'center') },
@@ -178,7 +219,7 @@ const RUNS = {
 
 // The handlers for `RUNS`, for App.svelte to register while the editor runs.
 export function editorActionHandlers() {
-  return Object.fromEntries(Object.entries(RUNS).map(([id, a]) => [id, () => (a.when() ? a.run() : false)]));
+  return Object.fromEntries(Object.entries(RUNS).map(([id, a]) => [id, (e) => (a.when() ? a.run(e) : false)]));
 }
 
 // What each component-owned action needs before it can do anything. Their

@@ -36,7 +36,9 @@
 const WS = /\s/;
 
 // `text` is the raw text, `cased` is `applyCase(text, style)` - what the lines
-// were broken from - and `lines` is what `layoutLines` returned for it.
+// were broken from - and `lines` is what `layoutLines` returned for it. A
+// layout with runs says where each line is (`lines.spans`), and those offsets
+// are used as they are rather than found again by searching.
 export function editLines(text, cased, lines) {
   const raw = String(text ?? '');
   // The breaker sees a tab as a space (`layoutLines`), and so does this.
@@ -49,7 +51,13 @@ export function editLines(text, cased, lines) {
     let pos;
     let body;
     let hyphen = false;
-    if (line === '') {
+    const sp = lines.spans?.[i];
+    if (sp) {
+      pos = sp[0];
+      body = t.slice(sp[0], sp[1]);
+      hyphen = line.length > body.length;
+      if (pos < c || (hyphen ? body + '-' : body) !== line) return null;
+    } else if (line === '') {
       // A blank paragraph: it starts after the newline that ends the one
       // before it. The first line is only blank when the whole text is.
       if (i === 0) pos = 0;
@@ -133,7 +141,13 @@ function findLine(t, c, line) {
 // the edge they are aligned to (`lineIndents`), zoomed, one per seg - padded on
 // that side, as the drawn `.tline`s are, so the text does not move when the
 // edit starts or ends.
-export function drawEditLines(node, text, segs, width, indent = null) {
+//
+// `faces`, when given, is one list per seg of the stretches its line is set
+// in, `[{ start, end, css }]` from the line's start (TextBox.svelte's
+// `lineCuts`): the body is drawn as one span per stretch with that css, as
+// the `.tline`s are, so a bold word stays bold while it is typed in. The
+// head and tail stay text of the line, so the Returns are where they were.
+export function drawEditLines(node, text, segs, width, indent = null, faces = null) {
   const doc = node.ownerDocument;
   const put = (el, str) => str && el.append(str);
   const hang = (el, str, side) => {
@@ -158,7 +172,18 @@ export function drawEditLines(node, text, segs, width, indent = null) {
     if (i === 0 && h) put((before = div('el edge start')), g.head.slice(0, h));
     else put(el, g.head.slice(0, h));
     hang(el, g.head.slice(h), 'marginLeft');
-    put(el, g.body);
+    const cut = faces?.[i];
+    if (!cut) put(el, g.body);
+    else {
+      for (const p of cut) {
+        const str = g.body.slice(p.start, Math.min(p.end, g.body.length));
+        if (!str) continue;
+        const sp = doc.createElement('span');
+        sp.style.cssText = p.css;
+        sp.textContent = str;
+        el.append(sp);
+      }
+    }
     if (g.hyphen) el.append(Object.assign(doc.createElement('span'), { className: 'ehy' }));
     const t = g.tail.indexOf('\n');
     hang(el, t < 0 ? g.tail : g.tail.slice(0, t), 'marginRight');
@@ -246,5 +271,7 @@ export function rawEdit(v, [a, b], t, data) {
       else b = stepChar(v, a, 1);
     }
   } else return null;
-  return { v: v.slice(0, a) + ins + v.slice(b), caret: a + ins.length };
+  // `span` is the range of `v` the edit replaced, so the faces of the text
+  // (runs.js) are shifted through this exact edit rather than a guess at it.
+  return { v: v.slice(0, a) + ins + v.slice(b), caret: a + ins.length, span: [a, b] };
 }

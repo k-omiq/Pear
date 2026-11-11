@@ -376,10 +376,10 @@ describe('overrides', () => {
     expect(lookupShortcut(press('KeyD', { mod: true }))).toBe(null);
     expect(setCombo('bubble.centre', 'Mod+d').ok).toBe(true);
     // Nothing to take away is not a write.
-    expect(clearCombo('text.bold')).toBe(false);
-    setCombo('text.bold', 'Mod+b');
-    expect(clearCombo('text.bold')).toBe(true);
-    expect(prefs.shortcuts['text.bold']).toBeUndefined();
+    expect(clearCombo('text.typeface')).toBe(false);
+    setCombo('text.typeface', 'Mod+Alt+y');
+    expect(clearCombo('text.typeface')).toBe(true);
+    expect(prefs.shortcuts['text.typeface']).toBeUndefined();
     resetCombo('box.duplicate');
     expect(conflictFor('Mod+d', 'box.duplicate')?.id).toBe('bubble.centre');
     resetAllCombos();

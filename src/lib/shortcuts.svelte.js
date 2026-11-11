@@ -298,8 +298,10 @@ const DEFS = [
   // in Fit to box they step the most the fit may grow to.
   { id: 'box.sizeUp', label: 'Bigger text', group: 'Text', combo: 'Mod+Shift+.', keywords: 'size font larger increase', ...T },
   { id: 'box.sizeDown', label: 'Smaller text', group: 'Text', combo: 'Mod+Shift+,', keywords: 'size font reduce decrease', ...T },
-  { id: 'text.bold', label: 'Bold', group: 'Text', combo: null, keywords: 'weight', ...T },
-  { id: 'text.italic', label: 'Italic', group: 'Text', combo: null, keywords: 'slant oblique', ...T },
+  { id: 'text.bold', label: 'Bold', group: 'Text', combo: 'Mod+b', keywords: 'weight selected words', ...T },
+  { id: 'text.italic', label: 'Italic', group: 'Text', combo: 'Mod+i', keywords: 'slant oblique selected words', ...T },
+  { id: 'text.typeface', label: 'Typeface…', group: 'Text', combo: null, keywords: 'font family selected words', ...T },
+  { id: 'text.clearFace', label: 'Clear typeface', group: 'Text', combo: null, keywords: 'regular plain reset font selected words', ...T },
   { id: 'text.uppercase', label: 'All caps', group: 'Text', combo: null, keywords: 'uppercase capitals', ...T },
   { id: 'text.alignLeft', label: 'Align left', group: 'Text', combo: null, keywords: 'justify', ...T },
   { id: 'text.alignCenter', label: 'Align centre', group: 'Text', combo: null, keywords: 'justify center middle', ...T },
