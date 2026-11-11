@@ -6,8 +6,8 @@ use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::blending::{Blending, Range};
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
-    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
-    PaintOverlay, Position, Satin, Stroke, Technique,
+    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Marks, Overlay, Paint,
+    PaintMark, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
@@ -3604,4 +3604,105 @@ fn a_rest_paint_after_any_move_is_the_cold_paint() {
             assert_eq!(read, fresh, "turn {turn}, soft {soft}, scale {scale}, ({sx}, {sy})");
         }
     }
+}
+
+/// A box of "HI" on the wire with special effects: a crack of `crack`, a
+/// lightning of `bolt` and a splash of `splash` (amounts), over the box.
+fn special_box(font: u32, crack: f64, bolt: f64, splash: f64) -> Vec<u8> {
+    let mut job = job_bytes(font);
+    let mut b = shadowed(font, 0);
+    b.truncate(b.len() - job.len() - 4);
+    // The job's flags: 256, the special effects, after the (no) tiles.
+    job[88..92].copy_from_slice(&256u32.to_le_bytes());
+    for v in [0.0, 0.0, 200.0, 160.0] {
+        f(&mut job, v);
+    }
+    u(&mut job, 1 | 2 | 4);
+    for v in [crack, 1.0, 0.5, 0.5, 1.0] {
+        f(&mut job, v);
+    }
+    u(&mut job, 3);
+    f(&mut job, bolt);
+    job.extend_from_slice(&[255, 255, 255, 255]);
+    job.extend_from_slice(&[0, 0, 255, 255]);
+    f(&mut job, 1.0);
+    u(&mut job, 4);
+    f(&mut job, splash);
+    f(&mut job, 0.8);
+    job.extend_from_slice(&[0, 160, 0, 255]);
+    u(&mut job, 5);
+    u(&mut b, job.len() as u32);
+    b.extend_from_slice(&job);
+    b
+}
+
+/// Lightning and Splash are paint laid on the letters after, so a change of
+/// theirs keeps the letters' key and reads the letters back; a change of
+/// Crack, which cuts the letters, does not (commit 0417cac). Each paint is
+/// the fresh paint of its bytes.
+#[test]
+fn a_lightning_or_splash_change_keeps_the_letters_and_a_crack_change_does_not() {
+    use mt_text::paint::kept;
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    kept::set_ceiling(kept::KEPT_BYTES);
+    kept::clear();
+    let kept_paint = |e: &mut Engine, bytes: &[u8]| {
+        let (mut b, keys) = decode_box_kept(bytes).unwrap();
+        let hits = kept::hits();
+        let r = paint_box_kept(e, &mut b, keys).unwrap();
+        let fresh = paint_box(e, &mut decode_box(bytes).unwrap()).unwrap();
+        assert_eq!(r, fresh);
+        (keys.job, kept::hits() - hits)
+    };
+    let (first, _) = kept_paint(&mut e, &special_box(font, 0.5, 0.4, 0.3));
+    // The same bytes again: what a change that keeps the letters reads back.
+    let (_, again) = kept_paint(&mut e, &special_box(font, 0.5, 0.4, 0.3));
+    assert!(again > 0);
+    for (what, bytes) in [("lightning", special_box(font, 0.5, 0.7, 0.3)), ("splash", special_box(font, 0.5, 0.4, 0.6))] {
+        let (key, hits) = kept_paint(&mut e, &bytes);
+        assert_eq!(key, first, "{what}: the letters' key");
+        assert!(hits > 0, "{what}: the letters read back");
+    }
+    let (key, _) = kept_paint(&mut e, &special_box(font, 0.55, 0.4, 0.3));
+    assert_ne!(key, first, "a crack change cuts the letters otherwise");
+}
+
+/// A paint mark's coverage is keyed on its shape and the frame it is
+/// rastered in, not on the page grain the letters' shape key holds: a box
+/// moved by whole pixels on the page (its grain) reads the mark's coverage
+/// back, and paints what a fresh paint there does (commit 0417cac).
+#[test]
+fn paint_marks_are_read_back_after_a_whole_pixel_move() {
+    use mt_text::paint::kept::{self, Hasher};
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    kept::set_ceiling(kept::KEPT_BYTES);
+    let boxed = |marks: bool, grain: (i32, i32)| {
+        let mut b = plain(font);
+        b.grain = grain;
+        if marks {
+            b.effects = vec![Effect::Paint(Marks {
+                origin: Pt::new(0.0, 0.0),
+                marks: vec![
+                    PaintMark { shape: ClipShape::Ellipse { centre: Pt::new(60.0, 70.0), rx: 20.0, ry: 16.0 }, color: BLUE, opacity: 1.0, soft: 4.0, erase: false },
+                    PaintMark { shape: ClipShape::Stroke { size: 6.0, pts: vec![Pt::new(80.0, 60.0), Pt::new(100.0, 96.0)] }, color: BLACK, opacity: 0.8, soft: 0.0, erase: false },
+                ],
+            })];
+        }
+        b
+    };
+    // What a move reads back of each: the marked box less the plain one is
+    // the marks' coverage.
+    let mut moved_hits = |marks: bool| {
+        kept::clear();
+        let keys = BoxKeys { job: Hasher::new("t job").u64(u64::from(marks)).finish().unwrap(), premask: None, cover: None };
+        paint_box_kept(&mut e, &mut boxed(marks, (0, 0)), keys).unwrap();
+        let hits = kept::hits();
+        let read = paint_box_kept(&mut e, &mut boxed(marks, (7, -3)), keys).unwrap();
+        assert_eq!(read, paint_box(&mut e, &mut boxed(marks, (7, -3))).unwrap(), "marks {marks}");
+        kept::hits() - hits
+    };
+    let (with, without) = (moved_hits(true), moved_hits(false));
+    assert!(with >= without + 2, "the two marks read back: {with} against {without}");
 }
