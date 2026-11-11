@@ -296,6 +296,31 @@ describe('unwarpPoint', () => {
     expect(unwarpPoint(flat, 2, 2, W, H, 50, 10)).toBe(null);
   });
 
+  it('finds every point a folded mesh reaches, even where Newton stalls in the crease', () => {
+    // The middle dot dragged far right and down: the right half folds back
+    // over itself. From the nearest seed, Newton stops in the crease for some
+    // of these points; each is still reached, from the fold's other side.
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    let lost = 0;
+    for (let y = 0; y <= 100; y += 4) {
+      for (let x = 0; x <= 100; x += 4) {
+        const [qx, qy] = m.at(x, y);
+        const back = unwarpPoint(fold, 2, 2, W, H, qx, qy);
+        if (!back) {
+          lost++;
+          continue;
+        }
+        const [bx, by] = m.at(back[0], back[1]);
+        expect(Math.hypot(bx - qx, by - qy)).toBeLessThanOrEqual(1e-3);
+      }
+    }
+    expect(lost).toBe(0);
+    // The point Newton stalled on from its nearest seed.
+    const [qx, qy] = m.at(62, 7);
+    expect(unwarpPoint(fold, 2, 2, W, H, qx, qy)).not.toBe(null);
+  });
+
   it('undoes a one-cell parallelogram (the affine map)', () => {
     const shear = [[0, 0], [100, 0], [30, 100], [130, 100]];
     roundTrip(shear, 1, 1, W, H, [[65, 50], [0, 0], [200, -40]]);

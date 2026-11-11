@@ -588,7 +588,8 @@ export function warpPoint(pts, cols, rows, w, h, x, y) {
 // and height past it on every side, where the map continues straight), then
 // Newton's method on `meshMap`'s own `at`, each step shortened until it gets
 // closer. A mesh folded over itself has more than one answer; this finds the
-// one nearest where the search began. Where nothing converges (past a fold,
+// one nearest where the search began (the next seeds are tried when the
+// nearest stalls in a fold's crease). Where nothing converges (past a fold,
 // or out where the map never reaches) it is null: a point the mesh does not
 // carry onto (x, y) is dropped by the caller, never placed somewhere wrong.
 // A four-handle perspective has a closed form (`homographyBack`), exact, and
@@ -609,23 +610,37 @@ export function unwarpWith(m, w, h, x, y) {
   const W = Number(w);
   const H = Number(h);
   const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
-  let best = null;
-  let bestD = Infinity;
+  // Seeds on a grid over the box and past it, nearest first.
   const N = 12;
+  const seeds = [];
   for (let j = 0; j <= N; j++) {
     for (let i = 0; i <= N; i++) {
       const sx = -W + (3 * W * i) / N;
       const sy = -H + (3 * H * j) / N;
-      const d = miss(m.at(sx, sy));
-      if (d < bestD) {
-        bestD = d;
-        best = [sx, sy];
-      }
+      seeds.push([miss(m.at(sx, sy)), sx, sy]);
     }
   }
-  let [px, py] = best;
+  seeds.sort((a, b) => a[0] - b[0]);
+  // Near a fold the nearest seed can lead Newton into the crease, where the
+  // map turns back and no step gets closer, although the point is reached
+  // from the fold's other side. The next seeds start in other places; the
+  // first that converges is the answer.
+  const tries = Math.min(UNWARP_SEEDS, seeds.length);
+  for (let s = 0; s < tries; s++) {
+    const p = newtonBack(m, tx, ty, seeds[s][1], seeds[s][2], seeds[s][0]);
+    if (p) return p;
+  }
+  return null;
+}
+const UNWARP_TOLERANCE = 1e-3;
+const UNWARP_SEEDS = 8;
+
+// Newton's method on `m.at` from (px, py), whose miss is `r`, each step
+// shortened until it gets closer: the box-local point within
+// `UNWARP_TOLERANCE` px of (tx, ty), or null where it stops short.
+function newtonBack(m, tx, ty, px, py, r) {
+  const miss = (p) => Math.hypot(p[0] - tx, p[1] - ty);
   let f = m.at(px, py);
-  let r = bestD;
   const e = 1e-3;
   for (let k = 0; k < 40 && r > 1e-7; k++) {
     const fx = m.at(px + e, py);
@@ -662,7 +677,6 @@ export function unwarpWith(m, w, h, x, y) {
   // Converged: within a thousandth of a px of the point asked for.
   return r <= UNWARP_TOLERANCE ? [px, py] : null;
 }
-const UNWARP_TOLERANCE = 1e-3;
 
 // Whether a style's warp changes anything, which is the question every renderer
 // asks before it pays for a texture pass.
