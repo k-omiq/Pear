@@ -12,6 +12,7 @@ import {
   boxToPage,
   bubbleOutline,
   bubbleClip,
+  crossesItself,
   frameKey,
   MASK_SHAPES_MAX,
 } from './box-mask.js';
@@ -199,11 +200,30 @@ describe('the old mask, in the style, comes to the page', () => {
     for (const sh of level) expect(sh.size).toBeLessThan(6 * 1.2);
   });
 
+  it('a warped box: a wide ellipse keeps steps of 4 px or less', () => {
+    // The sliding mesh of the test above; an ellipse of radius 2000 needs
+    // over 3000 points, past the old cap of 1024.
+    const pts = [];
+    for (let r = 0; r <= 2; r++) for (let c = 0; c <= 2; c++) pts.push([c * 100 + 20, r * 60 + 10]);
+    const box = boxOf({ style: { warp: { on: true, cols: 2, rows: 2, pts }, clip: clip('include', [{ kind: 'ellipse', cx: 100, cy: 60, rx: 2000, ry: 1500 }]) } });
+    const ring = maskFromClip(box).shapes[0].pts;
+    expect(ring.length).toBeGreaterThan(3000);
+    let worst = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, ay] = ring[i];
+      const [bx, by] = ring[(i + 1) % ring.length];
+      worst = Math.max(worst, Math.hypot(bx - ax, by - ay));
+    }
+    expect(worst).toBeLessThanOrEqual(4 + 1e-9);
+  });
+
   it('a style with no mask has none, and an empty switched-on one keeps its switch', () => {
     expect(maskFromClip(boxOf())).toBe(null);
     expect(maskFromClip(boxOf({ style: { clip: { on: true, mode: 'exclude', shapes: [] } } }))).toEqual({ on: true, shapes: [] });
   });
 });
+
+const signed = (pts) => pts.reduce((a, p, i) => a + p[0] * pts[(i + 1) % pts.length][1] - pts[(i + 1) % pts.length][0] * p[1], 0) / 2;
 
 describe('the bubble link', () => {
   const square = (x0, y0, s) => ({ kind: 'poly', pts: [[x0, y0], [x0 + s, y0], [x0 + s, y0 + s], [x0, y0 + s]] });
@@ -228,6 +248,25 @@ describe('the bubble link', () => {
     const flat = { ...box, fit: { kind: 'poly', pts: [[0, 0], [50, 0], [100, 0]] } };
     expect(maskActive(flat)).toBe(false);
     expect(maskInBoxFrame(flat)).toEqual([]);
+  });
+
+  it('an inset that folds over itself is not used, though its total area kept its sign', () => {
+    // A square with a 4 px tab: inset 5 px, the tab's sides swap and run
+    // back along the base. A square with a pointed spike: its sides pass
+    // each other. The square keeps the total area positive both times.
+    const tab = [[0, 0], [100, 0], [100, 100], [52, 100], [52, 160], [48, 160], [48, 100], [0, 100]];
+    const spike = [[0, 0], [100, 0], [100, 100], [53, 100], [50, 170], [47, 100], [0, 100]];
+    for (const pts of [tab, spike]) {
+      const inner = insetPolygon(pts, 5);
+      expect(crossesItself(inner)).toBe(true);
+      expect(Math.sign(signed(inner))).toBe(1);
+      expect(bubbleClip(pts, 5)).toEqual(pts);
+    }
+    // A plain square insets as before, and a point said twice is no fold.
+    const sq = [[0, 0], [100, 0], [100, 100], [0, 100]];
+    expect(crossesItself(sq)).toBe(false);
+    expect(crossesItself([[0, 0], [100, 0], [100, 0], [100, 100], [0, 100]])).toBe(false);
+    close(bubbleClip(sq, 5), [[5, 5], [95, 5], [95, 95], [5, 95]]);
   });
 
   it('a page rescale scales the inset with the outline', () => {

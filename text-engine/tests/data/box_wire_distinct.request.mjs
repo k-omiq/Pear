@@ -107,6 +107,8 @@ export const request = {
       { kind: 'stroke', strength: 0.8125, soft: 0, size: 4.5, pts: [[5.5, 6.5], [15.5, 16.5]] },
     ],
   },
+  // How far a held box's mask and fade have moved (v23).
+  pinShift: [3.25, -1.75],
   blend: 'color-burn',
   fillOpacity: 0.6875,
   blendInterior: true,

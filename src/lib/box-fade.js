@@ -17,7 +17,7 @@
 // canvas afterwards (the warp gizmo's drag frames, and a perspective corner
 // pulled past the horizon). There the fade bends with the letters. Accepted.
 
-import { normalizeMaskShape, shapesInBoxFrame, MASK_SHAPES_MAX } from './box-mask.js';
+import { normalizeMaskShape, shapesInBoxFrame, memoFrame, pinShiftOf, shiftedShapes, MASK_SHAPES_MAX } from './box-mask.js';
 
 export const FADE_STRENGTH_DEFAULT = 50;
 export const FADE_SOFT_DEFAULT = 30;
@@ -77,9 +77,20 @@ export function fadeSigma(sh) {
 // mapped there as the mask's are, with its strength as a share and its soft
 // edge as a sigma. The sigma is worked out on the page, where the shape was
 // drawn: the box's frame is the page turned and moved, so lengths are the
-// same. Empty for a fade that does nothing.
+// same. Empty for a fade that does nothing. For a held box (`pinMove`) they
+// are moved on by its move.
 export function fadeInBoxFrame(box) {
+  return shiftedShapes(heldFadeInBoxFrame(box), pinShiftOf(box));
+}
+
+// `fadeInBoxFrame` as the box stands, whatever its `pinMove`, worked out once
+// for each fade and place (`memoFrame`): what the engine takes, with the move
+// apart. The list is shared; nobody may change it.
+const heldFades = new WeakMap();
+export function heldFadeInBoxFrame(box) {
   if (!fadeActive(box)) return [];
-  const shapes = box.fade.shapes;
-  return shapesInBoxFrame(box, shapes).map((sh, i) => ({ ...sh, strength: shapes[i].strength / 100, soft: fadeSigma(shapes[i]) }));
+  return memoFrame(heldFades, box, box.fade, () => {
+    const shapes = box.fade.shapes;
+    return shapesInBoxFrame(box, shapes).map((sh, i) => ({ ...sh, strength: shapes[i].strength / 100, soft: fadeSigma(shapes[i]) }));
+  });
 }
