@@ -72,6 +72,27 @@ describe('a warped box, where the mesh does not reach', () => {
     expect(moved).toBe(m);
   });
 
+  it('a mark moved partly past the line stays whole where it was', () => {
+    const box = boxOf({ style: { warp: NARROW } });
+    // A stroke near the line: moved down, its lower end crosses it and its
+    // upper end does not.
+    const [m] = marksFromPage(box, [stroke([[195, 150], [205, 215]])]);
+    const [moved] = moveMarks(box, [m], 0, 0, 40);
+    expect(moved).toBe(m);
+  });
+
+  it('a stroke drawn across the gap is cut there, never joined by a straight line', () => {
+    const box = boxOf({ style: { warp: NARROW } });
+    // In, out past the line, and back in: two strokes, each wholly carried.
+    const runs = marksFromPage(box, [stroke([[185, 120], [200, 300], [215, 120]])]);
+    expect(runs.length).toBe(2);
+    for (const r of runs) {
+      for (const p of r.pts) expect(boxToPage(box, warpPoint(NARROW.pts, 1, 1, 200, 120, p[0], p[1]))[1]).toBeLessThan(230);
+    }
+    // A closed shape with a point past the line is not drawn at all.
+    expect(marksFromPage(box, [{ kind: 'poly', pts: [[190, 120], [210, 120], [200, 300]], color: '#ff0000', opacity: 100, soft: 0 }])).toEqual([]);
+  });
+
   it('shows the marks from one carry until the marks, the mesh or the box change', () => {
     const box = boxOf({ style: { warp: BENT } });
     const marks = marksFromPage(box, [stroke([[150, 100], [200, 120]])]);

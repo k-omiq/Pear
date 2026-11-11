@@ -17,7 +17,7 @@
 // after the overlays and inside the letters only): there is no canvas twin,
 // so under the browser engine the paint is kept and not shown.
 
-import { normalizeMaskShape, revOf, pageToBox, boxToPage, shapesInBoxFrame, shapesOnPage, shiftedShapes, bendShape, MASK_SHAPES_MAX } from './box-mask.js';
+import { normalizeMaskShape, revOf, pageToBox, boxToPage, shapesInBoxFrame, shapesOnPage, shiftedShapes, bendShape, bendStrokeRuns, MASK_SHAPES_MAX } from './box-mask.js';
 import { fadeShapeSize } from './box-fade.js';
 import { meshMap, unwarpWith } from './warp.js';
 
@@ -96,7 +96,9 @@ export function marksFromPage(box, shapes) {
   const m = meshOf(box);
   if (!m) return shapesInBoxFrame(box, shapes);
   const at = (p) => unwarpWith(m, box.w, box.h, ...pageToBox(box, p));
-  return shapes.map((sh) => bendShape(sh, at)).filter(Boolean);
+  // A stroke drawn partly where the mesh does not reach is cut there, never
+  // joined across the gap; any other shape with such a point is dropped.
+  return shapes.flatMap((sh) => bendStrokeRuns(sh, at));
 }
 
 // The marks on the page as the box stands, one for each and in their order:
@@ -135,7 +137,8 @@ export function moveMarks(box, marks, idx, dx, dy) {
     const [x, y] = boxToPage(box, m.at(p[0], p[1]));
     return unwarpWith(m, box.w, box.h, ...pageToBox(box, [x + dx, y + dy]));
   };
-  // A mark moved where the mesh does not reach stays where it was.
+  // A mark moved even partly where the mesh does not reach stays where it
+  // was, whole (`bendShape` is null unless every point is carried).
   return marks.map((mk, i) => (pick(i) ? (bendShape(mk, at) ?? mk) : mk));
 }
 
