@@ -561,7 +561,46 @@ export function meshMap(pts, cols, rows, w, h) {
     }
     return { kind: 'affine', at: (x, y) => affineWarpPoint(pts, 1, 1, W, H, x, y) };
   }
-  return { kind: 'smooth', at: (x, y) => smoothPoint(pts, c, r, W, H, +x, +y) };
+  const at = (x, y) => smoothPoint(pts, c, r, W, H, +x, +y);
+  const folds = (b = null) => foldsOf(pts, `${c},${r},${W},${H}`, at, b ?? [-W / 4, -H / 4, (5 * W) / 4, (5 * H) / 4]);
+  return { kind: 'smooth', at, folds };
+}
+
+// Whether a smooth mesh may fold over itself within `b` ([x0, y0, x1, y1],
+// box-local: the bounds answers may lie in, else the box and a quarter of it
+// past each side): its Jacobian (by `jacOf`) sampled on a 25 x 25 grid there
+// changes sign, or comes near nothing (under a fiftieth of its largest)
+// anywhere, where a thin fold could hide between the samples. A mesh that
+// cannot fold has one sheet, and `oneStep` and `unwarpWith` skip the sheet
+// tests there. Kept with the point list, which outlives the mesh objects
+// built from it.
+const foldMemo = new WeakMap();
+function foldsOf(pts, mesh, at, b) {
+  const key = `${mesh}|${b.join(',')}`;
+  const hit = foldMemo.get(pts);
+  if (hit?.key === key) return hit.out;
+  const m = { at };
+  const N = 24;
+  let lo = Infinity;
+  let hi = 0;
+  let sign = 0;
+  let out = false;
+  for (let j = 0; j <= N && !out; j++) {
+    for (let i = 0; i <= N; i++) {
+      const d = detOf(jacOf(m, [b[0] + ((b[2] - b[0]) * i) / N, b[1] + ((b[3] - b[1]) * j) / N]));
+      const s = Math.sign(d);
+      if (!s || (sign && s !== sign)) {
+        out = true;
+        break;
+      }
+      sign = s;
+      lo = Math.min(lo, Math.abs(d));
+      hi = Math.max(hi, Math.abs(d));
+    }
+  }
+  out ||= lo < hi / 50;
+  foldMemo.set(pts, { key, out });
+  return out;
 }
 
 // Where the box-local point (x, y) ends up once the mesh has been applied, as a
@@ -637,7 +676,7 @@ export function unwarpWith(m, w, h, x, y, opts = null) {
     // Newton can jump across to another sheet, and then the seeds decide.
     const from = m.at(given[0], given[1]);
     const p = newtonBack(m, tx, ty, given[0], given[1], miss(from));
-    if (ok(p) && oneStep(m, given, p, from, [tx, ty])) return p;
+    if (ok(p) && oneStep(m, given, p, from, [tx, ty], bounds)) return p;
   }
   // The seeds nearest (x, y) first. Near a fold the nearest can lead Newton
   // into the crease, where the map turns back and no step gets closer,
@@ -650,7 +689,7 @@ export function unwarpWith(m, w, h, x, y, opts = null) {
   const W = Number(w);
   const H = Number(h);
   const hint = given ?? [tx, ty];
-  const upright = given ? 0 : turnOf(m, [W / 2, H / 2]);
+  const upright = given || !m.folds?.(bounds) ? 0 : turnOf(m, [W / 2, H / 2]);
   const n = seeds.at.length;
   const d = new Float64Array(n);
   for (let i = 0; i < n; i++) d[i] = miss(seeds.at[i]);
@@ -678,28 +717,62 @@ const BOUNDS_SLACK = 1e-6;
 
 // Whether the box's straight step from `a` to `b` carries onto the page's
 // straight step from `pa` to `pb` (where the map takes them): each quarter
-// point within half that page step, and at least 1 px, and both ends on one
-// sheet - the map turned the same way at each (the sign of its Jacobian,
-// which a fold's crease flips). A step onto another sheet of a fold carries
-// forward somewhere else, or turned over.
-export function oneStep(m, a, b, pa, pb) {
-  if (turnOf(m, a) !== turnOf(m, b)) return false;
-  const tol = Math.max(1, Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / 2);
+// point within half that page step, and at least 1 px. On a mesh that may
+// fold within `bounds` (`m.folds`; as for `unwarpWith`), also on one sheet: the map turned the same way (the sign
+// of its Jacobian, which a fold's crease flips) at both ends and at each
+// quarter point, since a step can cross a turned-over strip and come back;
+// and no longer than 4 times, plus 1 px, the box step the map's Jacobian at
+// `a` gives for that page step, since where a crease ends the map is nearly
+// flat and a far point there passes the rest. A step onto another sheet of a
+// fold carries forward somewhere else, or turned over.
+export function oneStep(m, a, b, pa, pb, bounds = null) {
+  const ja = m.folds?.(bounds) ? jacOf(m, a) : null;
+  const turn = ja ? Math.sign(detOf(ja)) : 0;
+  if (ja && turnOf(m, b) !== turn) return false;
+  const sx = pb[0] - pa[0];
+  const sy = pb[1] - pa[1];
+  const tol = Math.max(1, Math.hypot(sx, sy) / 2);
   for (const t of [0.25, 0.5, 0.75]) {
-    const f = m.at(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
-    if (!(Math.hypot(f[0] - (pa[0] + (pb[0] - pa[0]) * t), f[1] - (pa[1] + (pb[1] - pa[1]) * t)) <= tol)) return false;
+    const q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const f = m.at(q[0], q[1]);
+    if (!(Math.hypot(f[0] - (pa[0] + sx * t), f[1] - (pa[1] + sy * t)) <= tol)) return false;
+    if (ja && Math.sign(detOf(jacOf(m, q, f))) !== turn) return false;
+  }
+  if (ja) {
+    const [A, B, C, D] = ja;
+    const dt = detOf(ja);
+    const want = Math.hypot((D * sx - B * sy) / dt, (A * sy - C * sx) / dt);
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 4 * want + 1) return false;
   }
   return true;
 }
 
 // The way the map turns at box point `p`: the sign of its Jacobian's
-// determinant, by differences a thousandth of a px along (as Newton's).
+// determinant.
 function turnOf(m, p) {
+  return Math.sign(detOf(jacOf(m, p)));
+}
+const detOf = ([a, b, c, d]) => a * d - b * c;
+
+// The map's Jacobian at box point `p` ([dx/dx, dx/dy, dy/dx, dy/dy]), by
+// differences a thousandth of a px along (as Newton's); `f` is where `p`
+// goes, when known. The last 8 are kept per mesh: a stroke's point is asked
+// about by its own step and by the next.
+const jacMemo = new WeakMap();
+function jacOf(m, p, f = null) {
+  let c = jacMemo.get(m);
+  if (!c) jacMemo.set(m, (c = { x: new Float64Array(8).fill(NaN), y: new Float64Array(8).fill(NaN), v: [], i: 0 }));
+  for (let s = 0; s < 8; s++) if (c.x[s] === p[0] && c.y[s] === p[1]) return c.v[s];
   const e = 1e-3;
-  const f = m.at(p[0], p[1]);
+  f ??= m.at(p[0], p[1]);
   const fx = m.at(p[0] + e, p[1]);
   const fy = m.at(p[0], p[1] + e);
-  return Math.sign((fx[0] - f[0]) * (fy[1] - f[1]) - (fy[0] - f[0]) * (fx[1] - f[1]));
+  const v = [(fx[0] - f[0]) / e, (fy[0] - f[0]) / e, (fx[1] - f[1]) / e, (fy[1] - f[1]) / e];
+  c.x[c.i] = p[0];
+  c.y[c.i] = p[1];
+  c.v[c.i] = v;
+  c.i = (c.i + 1) % 8;
+  return v;
 }
 
 // The seeds of `unwarpWith` for mesh `m`: a 13 x 13 grid over `bounds` (else
