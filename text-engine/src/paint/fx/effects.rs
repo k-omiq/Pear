@@ -20,8 +20,8 @@
 //! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors for the
 //! order and the compositing it follows, MIT licence (see `THIRD_PARTY.md`).
 
-use super::super::blur::{self, to_u8, Surface};
-use super::super::boxjob::{shapes_mask, ClipShape};
+use super::super::blur::{to_u8, Surface};
+use super::super::boxjob::{fade_map, ClipShape, Fade, FadePart, Map as Coverage};
 use super::super::raster::Exact;
 use super::super::geom::{Affine, IBox, Pt};
 use super::super::job::{Fill, Rgba, Tile};
@@ -1618,34 +1618,33 @@ impl Keys {
     }
 }
 
+/// A paint mark's bytes hashed on: a brush mark holds hundreds of points,
+/// so their numbers, not their text.
+fn mark_hash(h: Hasher, k: &PaintMark) -> Hasher {
+    let h = h
+        .u64(u64::from(u32::from_le_bytes(k.color.0)))
+        .f64(k.opacity)
+        .f64(k.soft)
+        .u64(u64::from(k.erase));
+    match &k.shape {
+        ClipShape::Ellipse { centre, rx, ry } => h.u64(1).f64(centre.x).f64(centre.y).f64(*rx).f64(*ry),
+        ClipShape::Polygon(pts) => pts
+            .iter()
+            .fold(h.u64(2).u64(pts.len() as u64), |h, p| h.f64(p.x).f64(p.y)),
+        ClipShape::Stroke { size, pts } => pts
+            .iter()
+            .fold(h.u64(3).f64(*size).u64(pts.len() as u64), |h, p| h.f64(p.x).f64(p.y)),
+    }
+}
+
 /// The key of one effect's settings.
 pub(crate) fn effect_key(e: &Effect) -> Option<Key> {
     match e {
         // A brush mark holds hundreds of points: their bytes, not their
         // text.
         Effect::Paint(m) => {
-            let mut h = Hasher::new("paint marks").f64(m.origin.x).f64(m.origin.y);
-            for k in &m.marks {
-                h = h
-                    .u64(u64::from(u32::from_le_bytes(k.color.0)))
-                    .f64(k.opacity)
-                    .f64(k.soft)
-                    .u64(u64::from(k.erase));
-                h = match &k.shape {
-                    ClipShape::Ellipse { centre, rx, ry } => {
-                        h.u64(1).f64(centre.x).f64(centre.y).f64(*rx).f64(*ry)
-                    }
-                    ClipShape::Polygon(pts) => pts
-                        .iter()
-                        .fold(h.u64(2).u64(pts.len() as u64), |h, p| h.f64(p.x).f64(p.y)),
-                    ClipShape::Stroke { size, pts } => pts
-                        .iter()
-                        .fold(h.u64(3).f64(*size).u64(pts.len() as u64), |h, p| {
-                            h.f64(p.x).f64(p.y)
-                        }),
-                };
-            }
-            h.finish()
+            let h = Hasher::new("paint marks").f64(m.origin.x).f64(m.origin.y);
+            m.marks.iter().fold(h, mark_hash).finish()
         }
         _ => Hasher::new("effect").debug(e).finish(),
     }
@@ -1654,9 +1653,16 @@ pub(crate) fn effect_key(e: &Effect) -> Option<Key> {
 /// The paint's marks rastered into one layer over the interior's frame
 /// (`w` by `h` device pixels, its corner at device `dev`), premultiplied,
 /// each mark laid over the ones before it or, an eraser, taking them away.
-/// A soft mark is rastered past the frame by its blur's reach, so its edge
-/// comes in from outside the frame as it would on a larger one. `None`
-/// when nothing is left.
+///
+/// Each mark's coverage is the fade's map of it alone (`fade_map`, at full
+/// strength): a hard mark rastered as it is, a soft one rastered and blurred
+/// on a piece of its own box grown by the blur's reach, at a fraction of the
+/// frame's resolution once the blur is wide enough to take out what the
+/// smaller raster loses, and read back over the frame. Its grid is anchored
+/// to the box's corner, so the room round the letters does not move it.
+/// With `key` (a kept interior's shape key) each mark's coverage is kept, so
+/// a repaint, or one more mark, rasters only what changed. `None` when
+/// nothing is left.
 fn paint_layer(
     pm: &Marks,
     w: usize,
@@ -1664,64 +1670,67 @@ fn paint_layer(
     dev: (i32, i32),
     place: &Place<'_>,
     scale: f64,
+    key: Option<Key>,
 ) -> Result<Option<Surface>, Error> {
+    let area = IBox {
+        x0: 0,
+        y0: 0,
+        x1: w as i32,
+        y1: h as i32,
+    };
+    let transform =
+        Affine::translate(-f64::from(dev.0), -f64::from(dev.1)).after(&place.transform);
+    let [_, _, _, _, tx, ty] = place.transform.0;
+    let grain = (dev.0 - tx.round() as i32, dev.1 - ty.round() as i32);
     let mut out: Option<Surface> = None;
     for mark in &pm.marks {
         if !(mark.opacity > 0.0) || (mark.erase && out.is_none()) {
             continue;
         }
-        let sigma = mark.soft * scale;
-        let soft = sigma >= 0.5 && sigma.is_finite();
-        let r = if soft { blur::blur_reach(sigma) + 1 } else { 0 };
-        let transform = Affine::translate(f64::from(r - dev.0), f64::from(r - dev.1))
-            .after(&place.transform);
-        let grown = IBox {
-            x0: 0,
-            y0: 0,
-            x1: w as i32 + 2 * r,
-            y1: h as i32 + 2 * r,
+        let mark_key = key.and_then(|k| {
+            mark_hash(Hasher::new("paint mark").key(k), mark)
+                .f64(pm.origin.x)
+                .f64(pm.origin.y)
+                .debug(&transform)
+                .i32(grain.0)
+                .i32(grain.1)
+                .u64(w as u64)
+                .u64(h as u64)
+                .f64(scale)
+                .finish()
+        });
+        let cov = match mark_key.and_then(kept::get::<std::rc::Rc<Option<Coverage>>>) {
+            Some(hit) => std::rc::Rc::clone(&*hit),
+            None => {
+                let one = Fade {
+                    origin: pm.origin,
+                    shapes: vec![FadePart {
+                        strength: 1.0,
+                        soft: mark.soft,
+                        shape: mark.shape.clone(),
+                    }],
+                };
+                let cov = std::rc::Rc::new(fade_map(&one, &transform, scale, grain, area, &Exact)?);
+                if let Some(k) = mark_key {
+                    let bytes = cov.as_ref().as_ref().map_or(0, |m| m.bx.width() * m.bx.height());
+                    kept::put(k, std::rc::Rc::clone(&cov), bytes);
+                }
+                cov
+            }
         };
-        let Some((cov, bx)) =
-            shapes_mask(pm.origin, core::iter::once(&mark.shape), &transform, grown, &Exact)?
-        else {
+        let Some(cov) = cov.as_ref() else {
             continue;
         };
-        // The coverage, blurred for a soft mark, on a piece of its own: its
-        // box grown by the blur's reach, its corner `at` in the grown frame.
-        let at = (bx.x0 - r, bx.y0 - r);
-        let (cw, ch) = (bx.width() + 2 * r as usize, bx.height() + 2 * r as usize);
-        let mut c = Surface::new(cw, ch)?;
-        let bw = bx.width();
-        for y in 0..bx.height() {
-            for x in 0..bw {
-                let a = cov[(y * bw + x) * 4 + 3];
-                let i = ((y + r as usize) * cw + x + r as usize) * 4;
-                c.data[i..i + 4].fill(a);
-            }
-        }
-        drop(cov);
-        if soft {
-            blur::gaussian(&mut c, sigma)?;
-        }
         let o = match out.as_mut() {
             Some(o) => o,
             None => out.insert(Surface::new(w, h)?),
         };
         let k = (mark.opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
         let [cr, cg, cb, _] = mark.color.0;
-        for y in 0..ch as i32 {
-            // The piece's row on the frame: the grown frame less the reach.
-            let fy = at.1 + y - r;
-            if fy < 0 || fy >= h as i32 {
-                continue;
-            }
-            for x in 0..cw as i32 {
-                let fx = at.0 + x - r;
-                if fx < 0 || fx >= w as i32 {
-                    continue;
-                }
-                let v = u32::from(c.data[(y as usize * cw + x as usize) * 4 + 3]);
-                let a = (v * k + 127) / 255;
+        let bx = cov.bx.intersect(&area);
+        for fy in bx.y0..bx.y1 {
+            for fx in bx.x0..bx.x1 {
+                let a = (cov.at(fx, fy) * k + 127) / 255;
                 if a == 0 {
                     continue;
                 }
@@ -2206,7 +2215,7 @@ fn interior_at(
                 )?;
             }
             (Some(Effect::Paint(pm)), Some(full)) => {
-                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale)? {
+                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale, keys.of_effect("paint", i))? {
                     lay_with(
                         &mut lay,
                         full,

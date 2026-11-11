@@ -82,9 +82,9 @@
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
   import { drawTool, drawSettings, clearDrawTool, DRAW_TARGETS } from './box-draw-tool.svelte.js';
-  import { maskActive, frameKey, shapesInBoxFrame, shapesOnPage, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
+  import { maskActive, frameKey, maskInBoxFrame, maskOnPage, translateMask, MASK_SHAPES_MAX } from './box-mask.js';
   import { fadeActive } from './box-fade.js';
-  import { paintKey } from './box-paint.js';
+  import { paintKey, marksFromPage, marksOnPage, moveMarks, paintRoomFor } from './box-paint.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
@@ -2153,9 +2153,10 @@
   // box, so the pointer is taken to the page and nothing else, and a shape
   // may be drawn anywhere on it.
   // The paint's marks (`style.paint`, box-paint.js) are drawn with the same
-  // gestures on the same layer, in page px, and stored in the box's own
-  // frame: carried onto the page to be shown and picked (`shapesOnPage`),
-  // and back into the box's frame when a gesture commits.
+  // gestures on the same layer, in page px, and stored in the box's texture
+  // (its own frame before a warp mesh): carried onto the page to be shown
+  // and picked (`marksOnPage`), and a gesture's new or moved mark carried
+  // back when it commits, the rest left as stored.
   const drawTarget = $derived(DRAW_TARGETS.includes(drawTool.target) ? drawTool.target : null);
   // Whose shapes the page layer shows: the armed tool's, or with none armed
   // the mask's, which a selected box with a mask on always outlines.
@@ -2171,7 +2172,7 @@
   const shownList = $derived.by(() => {
     if (shownTarget !== 'paint') return box[shownTarget]?.shapes;
     const marks = box.style.paint?.marks;
-    return drawShown && marks ? shapesOnPage(box, marks) : marks;
+    return drawShown && marks ? marksOnPage(box, marks) : marks;
   });
   // The stored list itself, what a pick is made in: the paint's page list is
   // made again whenever the box moves, its marks are not.
@@ -2235,15 +2236,6 @@
   // new shape, a move, a removal - as one record.
   function commitMaskShapes(next) {
     const target = drawTarget ?? 'mask';
-    if (target === 'paint') {
-      // Back into the box's own frame, and recorded as a style edit: the
-      // paint is the style's.
-      const before = cloneStyle(box.style);
-      box.style.paint = { ...(box.style.paint ?? { on: true }), marks: shapesInBoxFrame(box, next) };
-      markUnsaved();
-      record({ t: 'style', pageId: pg.id, boxId: box.id, before, after: cloneStyle(box.style) });
-      return;
-    }
     const before = plainOf(box[target]);
     box[target] = { ...(box[target] ?? { on: true }), shapes: next };
     markUnsaved();
@@ -2260,13 +2252,29 @@
       : shownTarget === 'fade'
         ? { strength: drawSettings.fade.strength, soft: drawSettings.fade.soft }
         : { op: drawSettings.mask.op };
+  // The paint's marks as `marks` (the paint's frame), recorded as a style
+  // edit: the paint is the style's.
+  function commitPaint(marks) {
+    const before = cloneStyle(box.style);
+    box.style.paint = { ...(box.style.paint ?? { on: true }), marks };
+    markUnsaved();
+    record({ t: 'style', pageId: pg.id, boxId: box.id, before, after: cloneStyle(box.style) });
+  }
   function commitMaskShape(shape) {
     const shapes = shownList;
+    const set = nextShapeSet();
+    if (shownTarget === 'paint') {
+      // An eraser counts against a ceiling of its own, so a full box can
+      // still have paint taken off it.
+      const full = paintRoomFor(box.style.paint, set.erase);
+      if (full) return toast(full);
+      return commitPaint([...shownStored(), ...marksFromPage(box, [{ ...shape, ...set }])]);
+    }
     if (shapes.length >= MASK_SHAPES_MAX) {
-      toast(shownTarget === 'paint' ? `The paint holds ${MASK_SHAPES_MAX} marks at most` : `A ${shownTarget} holds ${MASK_SHAPES_MAX} shapes at most`);
+      toast(`A ${shownTarget} holds ${MASK_SHAPES_MAX} shapes at most`);
       return;
     }
-    commitMaskShapes([...shapes, { ...shape, ...nextShapeSet() }]);
+    commitMaskShapes([...shapes, { ...shape, ...set }]);
   }
 
   // A shape carried by (dx, dy) page px. A bubble link follows its outline,
@@ -2380,7 +2388,8 @@
       if (mv) {
         // A press that did not travel moved nothing, and records nothing.
         if (ev.type === 'pointercancel' || Math.hypot(mv.dx, mv.dy) < 0.5) return;
-        commitMaskShapes(shownList.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
+        if (shownTarget === 'paint') commitPaint(moveMarks(box, shownStored(), mv.idx, mv.dx, mv.dy));
+        else commitMaskShapes(shownList.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
         // The moved shape is still the one picked, in the list just made.
         maskDraft.pickedIn = shownStored();
         return;
@@ -2456,7 +2465,9 @@
         const i = maskDraft.picked;
         maskDraft.picked = null;
         const shapes = shownList;
-        if (i < shapes.length) commitMaskShapes(shapes.filter((_, j) => j !== i));
+        if (i >= shapes.length) return;
+        if (shownTarget === 'paint') commitPaint(shownStored().filter((_, j) => j !== i));
+        else commitMaskShapes(shapes.filter((_, j) => j !== i));
       }
     };
     window.addEventListener('keydown', onKey, true);

@@ -119,6 +119,18 @@ describe('split', () => {
     expect(boxText(pageById(1).boxes[0], pageById(1))).toBe(TEXT);
   });
 
+  it('takes the paint marks off every part, in the same undo step', async () => {
+    load({ kind: 'poly', pts: joinedOutline() });
+    const marks = { on: true, marks: [{ kind: 'stroke', size: 6, pts: [[10, 10], [60, 30]], color: '#ff0000', opacity: 100, soft: 0 }] };
+    box('a').style.paint = structuredClone(marks);
+    const r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for me!'] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    for (const b of r.result.ids.map(box)) expect(b.style.paint).toEqual({ on: false, marks: [] });
+    undo();
+    expect(pageById(1).boxes).toHaveLength(1);
+    expect(box('a').style.paint).toEqual(marks);
+  });
+
   it('refuses parts that are not the text, and a single bubble with nowhere to put the rest', async () => {
     load({ kind: 'ellipse', cx: 200, cy: 200, rx: 80, ry: 70 });
     let r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for him!'] });

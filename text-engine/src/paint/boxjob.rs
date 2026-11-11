@@ -1494,9 +1494,9 @@ fn shape_box(origin: Pt, shape: &ClipShape, t: &Affine) -> Option<IBox> {
 
 /// One byte a pixel over `bx`: what a mask's or a fade's shapes cover there.
 /// Nothing outside it.
-struct Map {
+pub(crate) struct Map {
     data: Vec<u8>,
-    bx: IBox,
+    pub(crate) bx: IBox,
 }
 
 impl Map {
@@ -1509,7 +1509,7 @@ impl Map {
     }
 
     #[inline(always)]
-    fn at(&self, x: i32, y: i32) -> u32 {
+    pub(crate) fn at(&self, x: i32, y: i32) -> u32 {
         let b = &self.bx;
         if x < b.x0 || y < b.y0 || x >= b.x1 || y >= b.y1 {
             return 0;
@@ -1537,7 +1537,7 @@ impl Map {
 /// few small pieces, not the area. A shape is rastered only when its group
 /// is, from its box alone till then, so what is held at once is one group's
 /// raster and one shape's, however many shapes there are.
-fn fade_map(
+pub(crate) fn fade_map(
     fade: &Fade,
     transform: &Affine,
     scale: f64,

@@ -111,10 +111,15 @@ defineTool({
       if (ids.some((x) => !x)) return null;
       const boxes = ids.map((x) => p.boxes.find((bb) => bb.id === x));
       // The words first, so each outline below is laid out for its own part.
-      // Through editBoxes, which records them for the undo.
+      // Through editBoxes, which records them for the undo. Paint marks were
+      // laid over the whole text's letters in the box's frame: on a part they
+      // would sit over other words, so every part starts with none.
       editBoxes(
         boxes.map((box) => ({ page: p, box })),
-        (box) => setBoxText(box, pieces[boxes.indexOf(box)], p, { fit: false }),
+        (box) => {
+          if (box.style.paint?.marks?.length || box.style.paint?.on) box.style.paint = { on: false, marks: [] };
+          setBoxText(box, pieces[boxes.indexOf(box)], p, { fit: false });
+        },
         // The AI lays the box out as a placement does (`autoFitBox`).
         { solve: true },
       );

@@ -75,13 +75,14 @@ const okSize = (v) => (isNum(v) && v > 0 ? v : null);
 // What a tag's style patch may hold (LET-1): any style key but these.
 // Geometry and transforms belong to the box, even when its lettering comes
 // from a tag - a path, a clip, ink, a warp mesh or an SFX recipe were drawn
-// for one box's text, and a rotation for one balloon. Size has its own
+// for one box's text, and a rotation for one balloon; paint marks were laid
+// over one box's letters, in its own frame. Size has its own
 // reference and floor beside the patch. And the five line-breaking keys are
 // the typesetting defaults' (Settings, or the series' override, FLOW-13): a
 // tag saved off a box laid out plain would otherwise turn the smart breaker
 // off for every later box of the tag without anyone choosing that.
 const BOX_STYLE_KEYS = new Set([
-  'size', 'path', 'ink', 'warp', 'circle', 'sfx', 'rotation', 'flipH', 'flipV', 'curve',
+  'size', 'path', 'ink', 'paint', 'warp', 'circle', 'sfx', 'rotation', 'flipH', 'flipV', 'curve',
   'shape', 'minOrphan', 'hyphenate', 'margin', 'balloon', 'autoHeight',
 ]);
 export const TAG_STYLE_KEYS = Object.keys(defaultStyle()).filter((k) => !BOX_STYLE_KEYS.has(k));

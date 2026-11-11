@@ -76,6 +76,19 @@ export function parsePresets(raw) {
 // Load persisted presets on module initialization.
 loadPresets();
 
+// What picking a preset lays on a box: its style less the keys that belong
+// to the box. A preset is a look, not a placement: the same three keys
+// paste-style leaves alone stay alone, or picking a preset silently
+// un-rotates and un-mirrors a box placed by hand. And paint marks were drawn
+// over one box's letters: a preset saved from a painted box does not stamp
+// them on another, and any preset leaves a painted box's marks as they are.
+const PRESET_SKIP = ['rotation', 'flipH', 'flipV', 'paint'];
+export function presetLook(p) {
+  const next = cloneStyle(p.style);
+  for (const k of PRESET_SKIP) delete next[k];
+  return next;
+}
+
 export function savePreset(name, style) {
   const cleanName = String(name ?? '').trim();
   // An empty or whitespace-only name cannot identify a preset in the UI.

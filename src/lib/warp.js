@@ -569,10 +569,15 @@ export function warpPoint(pts, cols, rows, w, h, x, y) {
 // the closest point it reached. Unchanged for an identity mesh, like
 // `warpPoint`.
 export function unwarpPoint(pts, cols, rows, w, h, x, y) {
+  return unwarpWith(meshMap(pts, cols, rows, w, h), w, h, x, y);
+}
+
+// `unwarpPoint` through a mesh already built (`meshMap`, null for none), for
+// a caller that carries many points through one box's mesh.
+export function unwarpWith(m, w, h, x, y) {
   const tx = +x;
   const ty = +y;
   if (!Number.isFinite(tx) || !Number.isFinite(ty)) return [tx, ty];
-  const m = meshMap(pts, cols, rows, w, h);
   if (!m) return [tx, ty];
   const W = Number(w);
   const H = Number(h);
