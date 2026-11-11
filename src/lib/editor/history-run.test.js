@@ -92,3 +92,18 @@ describe('an entry from before Layer Styles', () => {
     expect(migrateEntry(cur)).toBe(cur);
   });
 });
+
+describe('an entry with special effects of an older shape', () => {
+  it('reads them as this build does, so an undo never sends a lightning without a core', async () => {
+    const { specialJob } = await import('../special.js');
+    const style = normalizeStyle(defaultStyle());
+    // Before the core and glow, and before the crack's focus and spread.
+    style.special = { crack: { on: true, amount: 40, size: 100, seed: 1 }, lightning: { on: true, amount: 40, angle: 20, color: '#1e90ff', seed: 1 } };
+    const out = migrateEntry({ t: 'delete', pageId: 1, box: { id: 'a', style } });
+    const sp = out.box.style.special;
+    expect(sp.lightning).toMatchObject({ core: '#ffffff', glow: '#1e90ff' });
+    expect(sp.crack).toMatchObject({ x: 50, y: 50, spread: 100, breakOff: 0 });
+    const job = specialJob(out.box.style, { x: 0, y: 0, w: 10, h: 10 });
+    expect(job.lightning.core).toBe('#ffffff');
+  });
+});

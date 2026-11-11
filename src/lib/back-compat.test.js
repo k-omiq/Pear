@@ -28,6 +28,7 @@ const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, posi
 import { parsePresets } from './presets.svelte.js';
 import { normalizeTranslations } from './importer.js';
 import { migrateEntry, migrateDoc } from './editor/history-file.svelte.js';
+import { normalizeSpecial } from './special.js';
 import { app, loadProjectPages, pageById, byId } from './store.svelte.js';
 import { sanitizeGuide, emptyGuide } from './guide.svelte.js';
 import { initHistory, loadStack, undo, redo, resetHistory } from './editor/history.svelte.js';
@@ -1215,7 +1216,7 @@ describe('a chapter laid out under the old chapter switch', () => {
     // A style of this build: since review F2 a style with no Layer Styles
     // fields is one from before them, and goes through normalizeStyle, so the
     // identity checks below need those fields to mean "left as recorded".
-    const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {}, wobble: {}, paint: {}, special: {} };
+    const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {}, wobble: {}, paint: {}, special: normalizeSpecial(undefined) };
     const smart = { shape: 'auto', hyphenate: true, balloon: true, shadows: [], gradient: {}, pattern: { fade: {} }, ...layerStyles };
     const entries = [
       { t: 'style', before: { ...smart, color: '#000' }, after: { ...smart, color: '#f00' } },
