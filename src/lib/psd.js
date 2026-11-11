@@ -22,7 +22,7 @@ import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor, lin
 import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
-import { runFamilies, normalizeRuns, textCheck, runsField } from './runs.js';
+import { runFamilies, normalizeRuns, textCheck, runsField, faceOf } from './runs.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch, outlineRun, outlineBands, strokesFromBands } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
@@ -440,7 +440,10 @@ function boxRunsFor(p, box) {
 // pixels when that cannot be stated exactly.
 function setInFaces(p, box) {
   const s = box.style;
-  return !!boxRunsFor(p, box)?.some((r) => r.bold !== !!s?.bold || r.italic !== !!s?.italic || (!!r.font && r.font !== s?.font));
+  return !!boxRunsFor(p, box)?.some((r) => {
+    const f = faceOf(r, s);
+    return f.bold !== !!s?.bold || f.italic !== !!s?.italic || (!!f.font && f.font !== s?.font);
+  });
 }
 
 // A CSS family list like "'Bangers', cursive" → a plausible PostScript name.

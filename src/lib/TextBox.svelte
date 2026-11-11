@@ -15,6 +15,7 @@
     rememberStyle,
     settleEdits,
     setBoxText,
+    setBoxRuns,
     boxRuns,
     refitBox,
     autoFitBoxTo,
@@ -34,7 +35,7 @@
   } from './store.svelte.js';
   import { openBoxMenu } from './editor/BoxMenu.svelte';
   import { openFaceMenu } from './editor/FaceMenu.svelte';
-  import { typingSel, setTypingSel, clearTypingSel } from './typing-selection.svelte.js';
+  import { typingSel, setTypingSel, clearTypingSel, onEditAway, endEditIfAway, keepsEdit } from './typing-selection.svelte.js';
   import { stripDragYBounds } from './editor/strip.js';
 
   import { untrack, flushSync } from 'svelte';
@@ -48,6 +49,7 @@
     undoField,
     redoField,
     fieldFaces,
+    recordFieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
@@ -2574,10 +2576,25 @@
     if (!editing || !edSel) return;
     setTypingSel(box.id, text, edSel.a, edSel.f);
   });
+  // The focus on a control that sets the faces keeps the edit
+  // (`onEditBlur`); once it lands anywhere else - a press, a Tab, the control
+  // closing with nowhere to give it back - the edit ends as a blur ends it.
   $effect(() => {
     if (!editing) return;
     const id = box.id;
+    const off = onEditAway(() => {
+      if (app.editingId !== id || !editEl) return;
+      if (pictureEdit) clearComposition();
+      composeText = null;
+      endEdit(editEl.textContent);
+    });
+    const check = () => setTimeout(endEditIfAway);
+    document.addEventListener('focusin', check, true);
+    document.addEventListener('pointerdown', check, true);
     return () => {
+      off();
+      document.removeEventListener('focusin', check, true);
+      document.removeEventListener('pointerdown', check, true);
       if (typingSel.boxId === id) clearTypingSel();
     };
   });
@@ -2897,9 +2914,10 @@
   }
 
   function onEditBlur(e) {
-    // To the menu of the selected words' faces, which hands the focus back:
-    // the edit, and its selection, go on.
-    if (e.relatedTarget?.closest?.('.face-menu')) return;
+    // To a control that sets the words' faces (the faces menu, the
+    // Inspector's B, I and family): the edit, and its selection, go on until
+    // the focus is elsewhere (`onEditAway`).
+    if (keepsEdit(e.relatedTarget)) return;
     if (pictureEdit) clearComposition();
     composeText = null;
     endEdit(e.currentTarget.textContent);
@@ -2931,14 +2949,35 @@
   }
 
   // One step of the field's own undo; the caret goes where the text changed.
+  // A step that changed only the faces (a command on selected words) puts
+  // them back where the command wrote them, and the selection stays.
   function stepField(node, redo) {
+    const was = node.textContent;
     const next = redo ? redoField(fieldUndo) : undoField(fieldUndo);
     if (next == null) return;
     keyed();
-    caretNext = caretAfter(node.textContent, next);
+    if (next === was) {
+      setBoxRuns(box, fieldFaces(fieldUndo), page());
+      return;
+    }
+    caretNext = caretAfter(was, next);
     setBoxText(box, next, page(), { runs: fieldFaces(fieldUndo) });
     markUnsaved();
   }
+
+  // A face set on the words while they are typed into is a command, not a
+  // keystroke, and writes nothing to the field's own undo: it is recorded
+  // here as a step of the same words with the new faces, so Cmd+Z takes the
+  // face back before any typing.
+  $effect(() => {
+    if (!editing) return;
+    const key = runsKey(boxRuns(box));
+    const t = text;
+    untrack(() => {
+      if (t !== fieldUndo.stack[fieldUndo.i] || key === runsKey(fieldFaces(fieldUndo))) return;
+      recordFieldFaces(fieldUndo, copyRuns(boxRuns(box)));
+    });
+  });
 
   // ----- typing on the curve -----
   // The editable nobody sees wraps the raw text at the box's width, so where

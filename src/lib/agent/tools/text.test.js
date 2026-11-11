@@ -117,7 +117,8 @@ describe('edit set.text', () => {
 });
 
 describe('face', () => {
-  const B = (start, end, extra = {}) => ({ start, end, bold: true, italic: false, ...extra });
+  // A run names only what differs from the box's face (runs.js).
+  const B = (start, end, extra = {}) => ({ start, end, bold: true, ...extra });
 
   it('sets bold on a word of a line-reading box, on its line, shown in box, one undo step', async () => {
     const r = await call('face', { id: 'a', words: 'there', bold: true });
@@ -139,12 +140,12 @@ describe('face', () => {
     expect(font).toBeTruthy();
     expect((await call('face', { id: 'own', start: 0, end: 2, italic: true })).ok).toBe(true);
     const own = () => pageById(1).boxes.find((b) => b.id === 'own');
-    expect(own().runs).toEqual([{ start: 0, end: 2, bold: false, italic: true }]);
+    expect(own().runs).toEqual([{ start: 0, end: 2, italic: true }]);
     const bad = await call('face', { id: 'own', start: 0, end: 2, font: 'No Such Font Here' });
     expect(bad.ok).toBe(false);
     expect(JSON.stringify(bad)).toMatch(/no font/);
     expect((await call('face', { id: 'own', start: 0, end: 2, font: font.toUpperCase() })).ok).toBe(true);
-    expect(own().runs).toEqual([{ start: 0, end: 2, bold: false, italic: true, font }]);
+    expect(own().runs).toEqual([{ start: 0, end: 2, italic: true, font }]);
     expect((await call('face', { id: 'own', start: 0, end: 3, clear: true })).ok).toBe(true);
     expect(own().runs).toBeUndefined();
   });

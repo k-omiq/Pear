@@ -17,7 +17,7 @@
   // It is the review list's sibling and sits under it, so it wears the same
   // clothes: the rules below are that component's, copied because a
   // component's styles are its own.
-  import { app, missingFonts, fontNameFor, fontByName, gotoPage, selectBox, boxText, isLongstrip } from './store.svelte.js';
+  import { app, missingFonts, boxFamilies, fontNameFor, fontByName, gotoPage, selectBox, boxText, isLongstrip } from './store.svelte.js';
   import { engineSwitch, boxesBorrowingLetters, boxLetters, lettersWereAskedFor, whyFontMissing, engineHasNoFont } from './engine-switch.svelte.js';
   import { revealInStrip } from './editor/strip-sync.svelte.js';
   import { plural } from './format.js';
@@ -25,8 +25,8 @@
   // This is mounted for the whole session, so what each list listens to is
   // what it costs.
   //
-  // `missing` walks every box of the chapter and reads one thing of each, its
-  // font name. It is made again when a box changes font, when a box or a page
+  // `missing` walks every box of the chapter and reads one thing of each, the
+  // families it is set in (its font and its runs' fonts). It is made again when a box changes font, when a box or a page
   // comes or goes, and when the font lists or the one signal a face arriving
   // raises change - so it clears the moment the family is loaded. Not when a
   // box is typed in, moved, resized or restyled (FontNotice-cost.dom.test.js).
@@ -49,8 +49,24 @@
   // no engine: the user's fonts the engine could not take, with why (they are
   // the reason it has nothing), and the names nothing on this machine has.
   const idle = $derived(engineHasNoFont());
+  // Each box's families are kept by themselves as one string, the way
+  // `letters` keeps each box's answer below: a keystroke moves the runs of the
+  // box's words (a new list) but not which families they name, so the kept
+  // string comes out the same and `missing` is not made again. Made in one
+  // derived and read in another, for the reason given there.
+  const families = new WeakMap();
+  function keepFamilies(b, p) {
+    if (families.get(b)?.page === p) return;
+    const key = $derived(boxFamilies(b, p).join('\n'));
+    families.set(b, { page: p, get list() { return key ? key.split('\n') : []; } });
+  }
+  const familyCells = $derived.by(() => {
+    for (const p of app.pages) for (const b of p.boxes ?? []) keepFamilies(b, p);
+    return {};
+  });
   const missing = $derived.by(() => {
-    const all = missingFonts(app.pages);
+    familyCells;
+    const all = missingFonts(app.pages, (b, p) => families.get(b)?.list ?? boxFamilies(b, p));
     return idle ? all.filter((m) => WHY[whyFontMissing(m.name)] || !fontByName(m.name)) : all;
   });
   // box -> what its text borrows, kept. The answers live as long as this
@@ -122,7 +138,7 @@
     for (const m of missing) {
       let first = null;
       app.pages.some((pg, pageIndex) => {
-        const b = pg.boxes.find((x) => x.style?.font === m.name);
+        const b = pg.boxes.find((x) => boxFamilies(x, pg).includes(m.name));
         if (b) first = { pageIndex, boxId: b.id };
         return !!b;
       });

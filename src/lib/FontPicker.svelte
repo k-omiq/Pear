@@ -26,9 +26,13 @@
    *   compact?: boolean,
    *   onpick: (name: string | null) => void,
    *   onpreview?: (name: string | null) => void,
+   *   keepsEdit?: boolean,
    * }}
    */
-  let { value = null, label = 'Font', id, unset = null, compact = false, onpick, onpreview } = $props();
+  // `keepsEdit`: the list may take the focus from a box being typed into
+  // without ending its edit (typing-selection.svelte.js), as the Inspector's
+  // family control does while it sets the face of selected words.
+  let { value = null, label = 'Font', id, unset = null, compact = false, onpick, onpreview, keepsEdit = false } = $props();
 
   /** @type {HTMLElement | undefined} */
   let root = $state();
@@ -320,6 +324,7 @@
       bind:this={panel}
       use:portal
       class="fp-panel"
+      data-keeps-edit={keepsEdit || undefined}
       style:left="{floating.x}px"
       style:top="{floating.y}px"
       style:width="{floating.w}px"

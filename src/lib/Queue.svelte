@@ -60,10 +60,12 @@
     undoField,
     redoField,
     fieldFaces,
+    recordFieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { copyRuns, fieldSpans } from './runs.js';
+  import { copyRuns, fieldSpans, runsKey } from './runs.js';
+  import { setLineSel, clearLineSel } from './typing-selection.svelte.js';
   import { modKey } from './format.js';
   import { comboFor, defaultCombo, formatCombo, isMacKeyboard, pressed } from './shortcuts.svelte.js';
   import ReviewList from './ReviewList.svelte';
@@ -216,6 +218,26 @@
     resyncField(fieldUndo, v, copyRuns(activeLine?.runs));
   });
 
+  // Words selected in the English field: the face commands' target in a
+  // typeset chapter (editor-actions.js), the line's words.
+  function noteLineSel(e, line) {
+    const el = e.currentTarget;
+    if (el.value !== (line.en ?? '')) return;
+    setLineSel(p.id, line.n, el.value, el.selectionStart, el.selectionEnd);
+  }
+  // A face set on the words while the field holds them is a step of its own,
+  // the same words with the new faces, so the field's Cmd+Z takes it back
+  // before any typing.
+  $effect(() => {
+    const activeLine = p.lines.find((l) => l.n === p.activeLineN);
+    const key = runsKey(activeLine?.runs);
+    const v = activeLine?.en ?? '';
+    untrack(() => {
+      if (!activeLine || fieldOwner !== activeLine || v !== fieldUndo.stack[fieldUndo.i] || key === runsKey(fieldFaces(fieldUndo))) return;
+      recordFieldFaces(fieldUndo, copyRuns(activeLine.runs));
+    });
+  });
+
   $effect(() => {
     const activeLine = p.lines.find((l) => l.n === p.activeLineN);
     const key = activeLine ?? null;
@@ -252,6 +274,12 @@
     const next = e.shiftKey ? redoField(u) : undoField(u);
     if (next == null) return;
     const el = e.currentTarget;
+    // Only the faces changed (Bold on the selected words): they go back, and
+    // the selection stays.
+    if (field !== 'jp' && next === el.value) {
+      setLineText(p, line.n, next, { runs: fieldFaces(u) });
+      return;
+    }
     const caret = caretAfter(el.value, next);
     el.value = next;
     el.setSelectionRange(caret, caret);
@@ -879,6 +907,10 @@
             oncompositionend={enSpans.end}
             oninput={(e) => onTextareaInput(e, line)}
             onkeydown={(e) => onTextareaKey(e, line)}
+            onselect={(e) => noteLineSel(e, line)}
+            onkeyup={(e) => noteLineSel(e, line)}
+            onmouseup={(e) => noteLineSel(e, line)}
+            onblur={clearLineSel}
           ></textarea>
         </span>
         {#if !translate}<span class="dot {placed ? 'placed' : 'unplaced'}" title={placed ? 'Placed' : 'Unplaced'}></span>{/if}

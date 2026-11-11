@@ -54,3 +54,47 @@ export function askFacePick(id, text, a, f) {
   faceAsk.f = Math.max(a, f);
   faceAsk.turn++;
 }
+
+// ----- the edit while a control that sets faces has the focus -----
+// A box typed into keeps its edit (and its selection) while the focus is on a
+// control that sets the faces of its words: the faces menu, the Inspector's
+// B, I and family, the family list. Those carry `data-keeps-edit`. Once the
+// focus is in neither the box nor such a control, the edit ends as a blur
+// would have ended it. The box typed into says how (`onEditAway`); anyone
+// closing such a control without handing the focus back asks
+// (`endEditIfAway`).
+let away = null;
+export function onEditAway(fn) {
+  away = fn;
+  return () => {
+    if (away === fn) away = null;
+  };
+}
+export const keepsEdit = (el) => !!el?.closest?.('.txt.editable, [data-keeps-edit]');
+// Once per edit: two closes in the same moment (a press away that also blurs
+// the menu) both ask, and the edit has ended after the first.
+export function endEditIfAway() {
+  if (!away || keepsEdit(globalThis.document?.activeElement)) return;
+  const fn = away;
+  away = null;
+  fn();
+}
+
+// ----- words selected in a queue line's English field -----
+// The queue writes a line's words, not a box's, so its selection is kept apart:
+// line `n` of page `pageId` while its English is `text`. Only while the field
+// has the focus (cleared on its blur), so a face command finds it only then.
+export const lineSel = $state({ pageId: null, n: null, text: '', a: 0, f: 0 });
+export function setLineSel(pageId, n, text, a, f) {
+  lineSel.pageId = pageId;
+  lineSel.n = n;
+  lineSel.text = text;
+  lineSel.a = Math.min(a, f);
+  lineSel.f = Math.max(a, f);
+}
+export function clearLineSel() {
+  lineSel.pageId = null;
+  lineSel.n = null;
+  lineSel.text = '';
+  lineSel.a = lineSel.f = 0;
+}
