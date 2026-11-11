@@ -414,6 +414,17 @@ function boxTextFor(p, box) {
   return ln.en ?? ln.natural ?? ln.stylised ?? ln.text ?? '';
 }
 
+// Whether a box's words are set in a face other than its own anywhere
+// (runs.js), read from the page as `boxTextFor` reads the words. Such a box
+// ships as pixels for now: its type layer would need a style run per face
+// (C5), and one that says the box's face over a bold word re-renders wrong in
+// Photoshop.
+function setInFaces(p, box) {
+  const runs = box.text != null ? box.runs : (p.lines ?? []).find((l) => l.n === box.lineN && l.en != null)?.runs;
+  const s = box.style;
+  return !!runs?.some((r) => r.bold !== !!s?.bold || r.italic !== !!s?.italic);
+}
+
 // A CSS family list like "'Bangers', cursive" → a plausible PostScript name.
 // Fonts substitute in Photoshop anyway; the embedded JSON keeps the exact
 // family for lossless re-import.
@@ -968,7 +979,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const onPage = own ? new Map(placedGradients(s, true).map(({ g }) => [g, turnedGradientPlacement(g, 0, own)])) : null;
   const turnPixels = (!!placed && [...placed.values()].some((q) => !q.fits)) || (!!onPage && [...onPage.values()].some((q) => !q.fits));
 
-  if (isRasterOnly(s) || turnPixels) {
+  if (isRasterOnly(s) || turnPixels || setInFaces(p, box)) {
     // If the box paints no pixels (e.g. empty or whitespace-only text),
     // renderBoxLayer returns null. A layer with no imageData and no text object
     // causes ag-psd to crash during channel serialization. Safest guard:

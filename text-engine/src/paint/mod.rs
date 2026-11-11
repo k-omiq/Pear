@@ -57,8 +57,8 @@ pub use boxjob::{
 use geom::positive;
 pub use geom::{Affine, IBox, Polys, Pt};
 pub use job::{
-    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, Wobble,
-    Stop, Tile, MAGIC, MAX_WOBBLE_AMOUNT, MAX_WOBBLE_TILT, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
+    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, RunFaces,
+    Wobble, Stop, Tile, MAGIC, MAX_RUN_FACES, MAX_WOBBLE_AMOUNT, MAX_WOBBLE_TILT, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
 };
 pub(crate) use outline::glyph_polys;
 pub use outline::FLATTEN_TOLERANCE;
@@ -67,7 +67,7 @@ pub use raster::{Coverage, Exact, Part, PlainScratch, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
-pub use shape::{align_offset, curved_origin, shape_run, Placed, ShapedRun};
+pub use shape::{align_offset, curved_origin, shape_run, shape_spans, Placed, ShapedRun};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
@@ -902,9 +902,14 @@ fn paint_letters(
     } = request;
     let face: Face = *face;
     let bold_draw = bold_draw.unwrap_or(BoldDraw::for_rule(engine.rules.bold_advance));
-    // Validate both handles even when the job has no runs or draws nothing.
+    // Validate both handles even when the job has no runs or draws nothing,
+    // and those of every face its lines are set in.
     engine.font(face.font)?;
     engine.check_chain(face.chain)?;
+    for f in &request.faces.faces {
+        engine.font(f.font)?;
+        engine.check_chain(f.chain)?;
+    }
     if !transform.is_finite() || transform.invert().is_none() || !positive(face.size) {
         return Ok(None);
     }
@@ -957,9 +962,18 @@ fn paint_letters(
     // them (`Wobbling`). Afterimages are not counted and do not wobble: a
     // trail's copies of a letter are not letters of the text.
     let mut letters = 0usize;
-    for run in &job.runs {
+    for (i, run) in job.runs.iter().enumerate() {
         let spacing = if job.curved { 0.0 } else { job.letter_spacing };
-        let shaped = shape_run(engine, face, &run.text, spacing)?;
+        // A line set in several faces is shaped by its stretches, each in
+        // its face: what the layout measured it by. From here on its glyphs
+        // are glyphs like any other - each names its own font and synthetic
+        // style, as a letter borrowed from a fallback font always has - so
+        // the bands, the fill, a wobble, a mesh and a mask need nothing of
+        // their own for it.
+        let shaped = match request.faces.of(i) {
+            Some(spans) => shape_spans(engine, &spans, &run.text, spacing)?,
+            None => shape_run(engine, face, &run.text, spacing)?,
+        };
         let frame = if job.curved {
             // translate(x, y); rotate(rot); the glyph centred on the origin.
             let (sin, cos) = run.rot.sin_cos();
@@ -1257,6 +1271,7 @@ mod hardening_tests {
             transform: Affine::IDENTITY,
             tiles: vec![],
             ink: None,
+            faces: Default::default(),
             job: job::Job {
                 curved: false,
                 align: job::Align::Left,

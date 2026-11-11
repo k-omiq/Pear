@@ -141,7 +141,13 @@ function findLine(t, c, line) {
 // the edge they are aligned to (`lineIndents`), zoomed, one per seg - padded on
 // that side, as the drawn `.tline`s are, so the text does not move when the
 // edit starts or ends.
-export function drawEditLines(node, text, segs, width, indent = null) {
+//
+// `faces`, when given, is one list per seg of the stretches its line is set
+// in, `[{ start, end, css }]` from the line's start (TextBox.svelte's
+// `lineCuts`): the body is drawn as one span per stretch with that css, as
+// the `.tline`s are, so a bold word stays bold while it is typed in. The
+// head and tail stay text of the line, so the Returns are where they were.
+export function drawEditLines(node, text, segs, width, indent = null, faces = null) {
   const doc = node.ownerDocument;
   const put = (el, str) => str && el.append(str);
   const hang = (el, str, side) => {
@@ -166,7 +172,18 @@ export function drawEditLines(node, text, segs, width, indent = null) {
     if (i === 0 && h) put((before = div('el edge start')), g.head.slice(0, h));
     else put(el, g.head.slice(0, h));
     hang(el, g.head.slice(h), 'marginLeft');
-    put(el, g.body);
+    const cut = faces?.[i];
+    if (!cut) put(el, g.body);
+    else {
+      for (const p of cut) {
+        const str = g.body.slice(p.start, Math.min(p.end, g.body.length));
+        if (!str) continue;
+        const sp = doc.createElement('span');
+        sp.style.cssText = p.css;
+        sp.textContent = str;
+        el.append(sp);
+      }
+    }
     if (g.hyphen) el.append(Object.assign(doc.createElement('span'), { className: 'ehy' }));
     const t = g.tail.indexOf('\n');
     hang(el, t < 0 ? g.tail : g.tail.slice(0, t), 'marginRight');

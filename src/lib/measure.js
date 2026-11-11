@@ -821,13 +821,39 @@ export function casedRuns(text, runs, style) {
 // The style a run's letters are measured in: the box's, with the run's face.
 // Kept per style so the memo keys `fontShorthand` builds come from one object
 // a face, and nothing is made per measurement.
+//
+// A face the engine is still loading (a bold file of the family on its way)
+// is measured - and so painted, and its carets placed, all through here - in
+// the box's own face until it is ready; the fonts-changed signal that comes
+// with it lays the box out and paints it again.
 const faceStyles = new WeakMap();
 function faceStyle(style, f) {
   if (!!style.bold === f.bold && !!style.italic === f.italic) return style;
   let kept = faceStyles.get(style);
   if (!kept) faceStyles.set(style, (kept = []));
   const i = (f.bold ? 2 : 0) + (f.italic ? 1 : 0);
-  return (kept[i] ??= { ...style, bold: f.bold, italic: f.italic });
+  const fs = (kept[i] ??= { ...style, bold: f.bold, italic: f.italic });
+  return engine?.faceReady?.(faceFor(fs, fs.size)) === false ? style : fs;
+}
+
+// The faces line `k` of a layout is drawn in: `[{ start, end, style }]`,
+// UTF-16 offsets into the line's own string (an added hyphen in the face of
+// the letter before it), end to end, each with the style to draw that
+// stretch in - or null for a line drawn in the box's face alone, which is
+// every line of a layout without runs. The painters, the line DOM and the
+// carets all read it, so they cut a line exactly where its measure did.
+export function lineFaces(lines, k, style) {
+  const sp = lines?.spans?.[k];
+  if (!sp || !lines.runs || !style) return null;
+  const str = String(lines[k] ?? '');
+  const out = [];
+  for (const p of piecesOf(lines.source, lines.runs, style, sp[0], sp[1], str.length > sp[1] - sp[0])) {
+    const fs = faceStyle(style, p);
+    const last = out[out.length - 1];
+    if (last && last.style === fs) last.end = p.end;
+    else out.push({ start: p.start, end: p.end, style: fs });
+  }
+  return out.length === 1 && out[0].style === style ? null : out;
 }
 
 // `[s, e)` of `text` - plus an added hyphen, set in the face of the letter
