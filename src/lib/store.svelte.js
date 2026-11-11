@@ -132,7 +132,7 @@ import { measureChapterFits } from './chapter-fit.js';
 // its own defaults, so `setTool` can disarm it without the two ever cycling.
 import { setBrushMode } from './brush-tool.svelte.js';
 import { scaleStroke } from './brush.js';
-import { scaleMesh } from './warp.js';
+import { scaleMesh, warpForSize } from './warp.js';
 import { translateStrokes } from './brush-board.svelte.js';
 import { setGlobalLight } from './text-paint.js';
 import { normalizeMask, maskFromClip, scaleMask, maskActive } from './box-mask.js';
@@ -924,12 +924,15 @@ export function boxEditRecords(key, before, after, geom) {
   const geomOf = (snap) => {
     const g = fitOf(snap);
     if (snap.style?.ink?.on) g.ink = structuredClone(snap.style.ink);
+    // A dragged mesh is scaled with the box (`resizeBox`), so it goes back
+    // with the rectangle, as the ink does.
+    if (snap.style?.warp?.pts?.length) g.warp = structuredClone(snap.style.warp);
     return g;
   };
   const fit = { geomBefore: fitOf(before), geomAfter: fitOf(after) };
   const moved = geom && ['x', 'y', 'w', 'h'].some((k) => before[k] !== after[k]);
   const typed = before.text !== after.text || runsKey(before.runs) !== runsKey(after.runs);
-  const look = (st, ink) => JSON.stringify({ ...st, size: null, ...(ink ? { ink: null } : null) });
+  const look = (st, ink) => JSON.stringify({ ...st, size: null, ...(ink ? { ink: null, warp: null } : null) });
   const same = (ink) => look(before.style, ink) === look(after.style, ink);
   const carried = (moved && same(true)) || (typed && same(false));
   if (JSON.stringify(before.style) !== JSON.stringify(after.style) && !carried) {
@@ -4227,7 +4230,25 @@ export function rescaleStyle(st, sx, sy) {
   // Paint is drawn on the letters, in the box's own frame: it scales with
   // them, on a page rescale and on a scale of the box.
   if (st.paint && typeof st.paint === 'object') out.paint = scalePaint(st.paint, sx, sy);
+  // The mesh is box-local px over the box rect, which scales per axis; its
+  // size stamp with it (`warpForSize`).
+  if (st.warp && typeof st.warp === 'object' && Array.isArray(st.warp.pts) && st.warp.pts.length) {
+    out.warp = { ...st.warp, pts: scaleMesh(st.warp.pts, sx, sy) };
+    if (+st.warp.w > 0 && +st.warp.h > 0) Object.assign(out.warp, { w: st.warp.w * sx, h: st.warp.h * sy });
+  }
   return out;
+}
+
+// The box's mesh carried to the box's size (`warpForSize`): for a mesh that
+// comes back into use after the box was laid out with it switched off. True
+// when it changed anything.
+export function fitWarpToBox(b) {
+  const w = b?.style?.warp;
+  if (!w) return false;
+  const next = warpForSize(w, b.w, b.h);
+  if (next === w) return false;
+  b.style.warp = next;
+  return true;
 }
 
 
@@ -7447,8 +7468,10 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     // not compound: each sets the factor from the start. Ink is scaled below.
     const from = base?.style ?? b.style;
     const k = scale;
-    const st = rescaleStyle({ ...from, ink: null }, k, k);
+    // The mesh too is scaled below, from the gesture's own (`fitMesh`).
+    const st = rescaleStyle({ ...from, ink: null, warp: null }, k, k);
     delete st.ink;
+    delete st.warp;
     st.size = Math.min(200, Math.max(6, Math.round(from.size * k * 2) / 2));
     if (from.fitMax > 0) st.fitMax = Math.min(200, Math.max(6, Math.round(from.fitMax * k * 2) / 2));
     Object.assign(b.style, st);
@@ -7490,10 +7513,14 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // drag do not compound. Its points are box-local px over the box rect: left
   // where they were, the painter squeezes the text back into the old rect and
   // the transform gizmo's handles sit on that, not on the box's corners.
-  const basePts = base ? base.style?.warp?.pts : b.style?.warp?.pts;
+  // A mesh stamped at another size (laid out while switched off) is first
+  // brought to the size the gesture found (`warpForSize`).
+  const baseWarp = base ? base.style?.warp : b.style?.warp;
   const fitMesh = () => {
-    if (!Array.isArray(basePts) || !basePts.length || !(ow > 0) || !(oh > 0)) return;
-    b.style.warp = { ...b.style.warp, pts: scaleMesh(basePts, b.w / ow, b.h / oh) };
+    if (!(ow > 0) || !(oh > 0)) return;
+    const from = warpForSize(baseWarp, ow, oh);
+    if (!Array.isArray(from?.pts) || !from.pts.length) return;
+    b.style.warp = { ...b.style.warp, pts: scaleMesh(from.pts, b.w / ow, b.h / oh), w: b.w, h: b.h };
   };
   const widened = nw !== b.w;
   // A new place and nothing else - the Inspector's X or Y - is a move, and

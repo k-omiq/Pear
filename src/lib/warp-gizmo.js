@@ -21,9 +21,9 @@
 // the rotation is already applied to it, and the zoom is one multiply at the
 // point of drawing.
 
-import { identityMesh, isIdentityMesh, resampleMesh, meshMap } from './warp.js';
+import { identityMesh, isIdentityMesh, resampleMesh, meshMap, warpForSize } from './warp.js';
 import { WARP_MIN_GRID, WARP_MAX_GRID } from './data.js';
-import { cloneStyle, markUnsaved, reviewBox, pageById } from './store.svelte.js';
+import { cloneStyle, markUnsaved, reviewBox, pageById, fitWarpToBox } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
 
 // The handle's radius on SCREEN, px, and it is screen px on purpose: a handle
@@ -214,6 +214,8 @@ export function movedPts(pts, i, x, y) {
 // eighty-one identity points into the file for a warp nobody has touched would
 // only make the document bigger.
 export function regridWarp(warp, cols, rows, w, h) {
+  // A mesh stamped at another size is read at this one first.
+  warp = warpForSize(warp, w, h);
   const oldCols = gridN(warp?.cols);
   const oldRows = gridN(warp?.rows);
   const c = gridN(cols);
@@ -225,11 +227,12 @@ export function regridWarp(warp, cols, rows, w, h) {
   if (!had || isIdentityMesh(pts, oldCols, oldRows, w, h)) {
     return { on, cols: c, rows: r, pts: [] };
   }
+  // Stamped with the size it was worked out at (`warpForSize`, warp.js).
   if (c === oldCols && r === oldRows) {
-    return { on, cols: c, rows: r, pts: pts.map((p) => [+p[0], +p[1]]) };
+    return { on, cols: c, rows: r, pts: pts.map((p) => [+p[0], +p[1]]), w: +w, h: +h };
   }
   const next = resampleMesh(pts, oldCols, oldRows, c, r, w, h);
-  return { on, cols: c, rows: r, pts: next.length === same ? next : [] };
+  return next.length === same ? { on, cols: c, rows: r, pts: next, w: +w, h: +h } : { on, cols: c, rows: r, pts: [] };
 }
 
 // A mesh that has come back to identity is stored as no mesh at all, so that a
@@ -238,7 +241,12 @@ export function regridWarp(warp, cols, rows, w, h) {
 // mesh that does nothing.
 function normalisePts(warp, w, h) {
   if (!Array.isArray(warp?.pts) || !warp.pts.length) return;
-  if (isIdentityMesh(warp.pts, warp.cols, warp.rows, w, h)) warp.pts = [];
+  if (isIdentityMesh(warp.pts, warp.cols, warp.rows, w, h)) {
+    warp.pts = [];
+    // An empty mesh carries no size stamp (`warpForSize`).
+    delete warp.w;
+    delete warp.h;
+  }
 }
 
 // ===========================================================================
@@ -253,9 +261,17 @@ function normalisePts(warp, w, h) {
 //
 // Hands back the snapshot the other two gestures need. Nothing is recorded
 // here: a gesture is one history step and this is only its beginning.
+//
+// First of all, before even the snapshot, the stored mesh is carried to the
+// box as it is now (`fitWarpToBox`): a mesh laid out while it was switched
+// off is a correction, not part of this gesture, and an undo must not take
+// the box back to a mesh that no longer fits it.
 export function beginWarpDrag(box) {
+  fitWarpToBox(box);
   const before = cloneStyle(box.style);
   box.style.warp.pts = gizmoPts(box.style.warp, box.w, box.h);
+  box.style.warp.w = box.w;
+  box.style.warp.h = box.h;
   return before;
 }
 
@@ -356,6 +372,8 @@ export function resetWarp(box, pageId) {
   if (!Array.isArray(w.pts) || !w.pts.length) return false;
   const before = cloneStyle(box.style);
   w.pts = [];
+  delete w.w;
+  delete w.h;
   markUnsaved();
   reviewBox(box, pageById(pageId) ?? undefined);
   record({ t: 'style', pageId, boxId: box.id, before, after: cloneStyle(box.style) });
