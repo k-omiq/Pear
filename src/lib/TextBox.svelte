@@ -20,6 +20,7 @@
     refitBox,
     autoFitBoxTo,
     fitGeom,
+    followGeom,
     moveGeom,
     moveBoxTo,
     focusPage,
@@ -1847,7 +1848,7 @@
         ? clamp(oy + (ev.clientY - sy) / zz, stripBounds.min, stripBounds.max)
         : clamp(oy + (ev.clientY - sy) / zz, -box.h + 20, dims.h - 20);
       moveBoxTo(box, x, y, pg);
-      if (maskOn || fadeOn) moveLive = true;
+      if ((maskOn || fadeOn) && pinnedToPage(box)) moveLive = true;
       markUnsaved();
     };
 
@@ -1902,6 +1903,8 @@
     // The rectangle and the size, and the solver's record: a width drag locks the
     // width and re-sets the text in it, and the undo has to take both back.
     const o = fitGeom(box);
+    // A mask or fade that moves with the box, which a scale scales.
+    const followStart = dir === 'rot' ? null : followGeom(box);
     const isRot = dir === 'rot';
     const hasInk = !!(box.style?.ink?.on && box.style?.ink?.strokes?.length);
     const inkBefore = hasInk ? cloneStyle(box.style).ink : null;
@@ -2026,7 +2029,7 @@
       const styleAfter = cloneStyle(box.style);
       if (JSON.stringify(styleAfter) !== JSON.stringify(styleStart)) {
         markUnsaved();
-        record({ t: 'style', pageId, boxId: box.id, before: styleStart, after: styleAfter, geomBefore: o, geomAfter: fitGeom(box) });
+        record({ t: 'style', pageId, boxId: box.id, before: styleStart, after: styleAfter, geomBefore: { ...o, ...followStart }, geomAfter: { ...fitGeom(box), ...followGeom(box) } });
         return;
       }
       const before = { ...o };

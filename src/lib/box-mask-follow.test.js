@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { app, loadProjectPages, page, fitGeom, resizeBox, moveBoxTo } from './store.svelte.js';
+import { app, loadProjectPages, page, fitGeom, followGeom, resizeBox, moveBoxTo } from './store.svelte.js';
+import { rescaleDoc } from './editor/history-file.svelte.js';
 import { initHistory, resetHistory, undo, redo, record } from './editor/history.svelte.js';
 import { setMaskFollow, setFadeFollow, clipToBubble } from './box-mask-actions.js';
 import { maskInBoxFrame, maskOnPage, modelShapesOnPage, modelShapesFromPage, withFollow, frameKey, pinnedToPage, bubbleLink } from './box-mask.js';
@@ -41,7 +42,7 @@ afterEach(() => {
 });
 
 describe('the switch', () => {
-  it('converts the mask so nothing moves on screen, both ways', () => {
+  it('converts the mask on a turned, flipped box so nothing moves on screen, both ways', () => {
     const b = b0();
     const page0 = maskOnPage(b);
     const frame0 = maskInBoxFrame(b);
@@ -61,6 +62,19 @@ describe('the switch', () => {
     setFadeFollow(b, page(), true);
     expect(b.fade.follow).toBe(true);
     near(fadeInBoxFrame(b), before);
+  });
+
+  it('keeps a long thin soft fade as soft as it was, on the switch and on a turn', () => {
+    // A 100 x 10 strip, soft 100: its size is its width, 10, at any turn.
+    const strip = { kind: 'poly', pts: [[150, 150], [250, 150], [250, 160], [150, 160]], strength: 50, soft: 100 };
+    loadProjectPages([{ id: 1, w: 1000, h: 800, lines: [], boxes: [box({ style: style({ rotation: 45 }), mask: null, fade: { on: true, shapes: [strip] } })] }]);
+    const b = b0();
+    const sigma = fadeInBoxFrame(b)[0].soft;
+    expect(sigma).toBe(2.5);
+    setFadeFollow(b, page(), true);
+    expect(fadeInBoxFrame(b)[0].soft).toBe(sigma);
+    b.style.rotation = 10;
+    expect(fadeInBoxFrame(b)[0].soft).toBe(sigma);
   });
 
   it('is one undo step each, and redo puts it back', () => {
@@ -91,10 +105,8 @@ describe('moving with the box', () => {
     b.style.rotation = -45;
     b.style.flipV = true;
     expect(maskInBoxFrame(b)).toEqual(mf);
-    // A turn keeps the shapes; the soft edge is measured on the page, so it
-    // may change a little with the turn.
-    const noSoft = (l) => l.map(({ soft: _s, ...r }) => r);
-    expect(noSoft(fadeInBoxFrame(b))).toEqual(noSoft(ff));
+    // The soft edge too: a shape's size is the same at any turn.
+    expect(fadeInBoxFrame(b)).toEqual(ff);
     // A pinned mask on the same move does change in the box's frame.
     const p = { ...b, mask: withFollow(b, b.mask, false) };
     const moved = { ...p, x: p.x + 40 };
@@ -118,16 +130,32 @@ describe('moving with the box', () => {
     setFadeFollow(b, page(), true);
     const before = JSON.stringify([b.mask, b.fade]);
     const stroke = b.mask.shapes[1];
-    const o = fitGeom(b);
+    const o = { ...fitGeom(b), ...followGeom(b) };
     const styleStart = JSON.parse(JSON.stringify(b.style));
     // Two steps of one drag: each from the start, never compounded.
     resizeBox(1, 'a', { scale: 1.5, w: 180, h: 120 }, { w: o.w, h: o.h, style: styleStart });
     resizeBox(1, 'a', { scale: 2, w: 240, h: 160 }, { w: o.w, h: o.h, style: styleStart });
     expect(b0().mask.shapes[1].size).toBeCloseTo(stroke.size * 2);
     expect(b0().mask.shapes[1].pts[0][0]).toBeCloseTo(stroke.pts[0][0] * 2);
-    record({ t: 'style', pageId: 1, boxId: 'a', before: styleStart, after: JSON.parse(JSON.stringify(b0().style)), geomBefore: o, geomAfter: fitGeom(b0()) });
+    record({ t: 'style', pageId: 1, boxId: 'a', before: styleStart, after: JSON.parse(JSON.stringify(b0().style)), geomBefore: o, geomAfter: { ...fitGeom(b0()), ...followGeom(b0()) } });
     undo();
     expect(JSON.stringify([b0().mask, b0().fade])).toBe(before);
+  });
+
+  it('the geometry a scale records holds the mask and fade, and a page rescale of the history scales them', () => {
+    const b = b0();
+    expect(followGeom(b)).toEqual({});
+    setMaskFollow(b, page(), true);
+    setFadeFollow(b, page(), true);
+    const g = { ...fitGeom(b), ...followGeom(b) };
+    expect(fitGeom(b)).not.toHaveProperty('mask');
+    const entry = { t: 'style', pageId: 1, boxId: 'a', before: b.style, after: b.style, geomBefore: g, geomAfter: g };
+    const doc = rescaleDoc({ version: 1, pages: { 1: { undo: [JSON.parse(JSON.stringify(entry))], redo: [] } } }, [{ pageId: 1, sx: 2, sy: 2 }]);
+    const out = doc.pages[1].undo[0].geomBefore;
+    expect(out.mask.follow).toBe(true);
+    expect(out.mask.shapes[1].pts[0][0]).toBeCloseTo(g.mask.shapes[1].pts[0][0] * 2);
+    expect(out.mask.shapes[1].size).toBeCloseTo(g.mask.shapes[1].size * 2);
+    expect(out.fade.shapes[0].pts[0][1]).toBeCloseTo(g.fade.shapes[0].pts[0][1] * 2);
   });
 
   it('a pinned mask does not scale with the box', () => {

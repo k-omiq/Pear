@@ -121,8 +121,9 @@ async function sfxHint(line) {
 }
 
 // What the user drew on a box, as counts only (the shapes stay out of the
-// read-out): its mask and fade (page-pinned, with a bubble link or not) and
-// its colour paint. Nothing when it has none.
+// read-out): its mask and fade (pinned to the page, or `follows` when they
+// move with the box; with a bubble link or not) and its colour paint.
+// Nothing when it has none.
 function drawnOn(b) {
   const out = {};
   const shapes = (o) => (Array.isArray(o?.shapes) ? o.shapes : []);
@@ -130,7 +131,7 @@ function drawnOn(b) {
     const list = shapes(b[k]);
     if (!list.length) continue;
     const link = list.some((sh) => sh?.kind === 'bubble');
-    out[k] = { on: b[k].on === true, shapes: list.length - (link ? 1 : 0), ...(link ? { bubbleLink: true } : null) };
+    out[k] = { on: b[k].on === true, shapes: list.length - (link ? 1 : 0), ...(link ? { bubbleLink: true } : null), ...(b[k].follow === true ? { follows: true } : null) };
   }
   const marks = b.style?.paint?.marks;
   if (Array.isArray(marks) && marks.length) out.paint = { on: b.style.paint.on === true, marks: marks.length };

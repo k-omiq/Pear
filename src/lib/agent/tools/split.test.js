@@ -152,6 +152,28 @@ describe('split', () => {
     expect(box('a').mask).toEqual(mask);
   });
 
+  it('a first part whose mask and fade move with it keeps them on the page through the layout, and still moving with it', async () => {
+    load({ kind: 'poly', pts: joinedOutline() });
+    const a = box('a');
+    const local = [[10, 10], [60, 10], [10, 60]];
+    a.mask = { on: true, follow: true, shapes: [{ kind: 'poly', op: 'hide', pts: local }] };
+    a.fade = { on: true, follow: true, shapes: [{ kind: 'poly', pts: local, strength: 70, soft: 0 }] };
+    const page0 = local.map(([x, y]) => [a.x + x, a.y + y]);
+    const before = JSON.parse(JSON.stringify([a.mask, a.fade, a.x, a.y]));
+    const r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for me!'] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const first = box(r.result.ids[0]);
+    for (const k of ['mask', 'fade']) {
+      expect(first[k].follow).toBe(true);
+      first[k].shapes[0].pts.forEach(([x, y], i) => {
+        expect(first.x + x).toBeCloseTo(page0[i][0]);
+        expect(first.y + y).toBeCloseTo(page0[i][1]);
+      });
+    }
+    undo();
+    expect(JSON.parse(JSON.stringify([box('a').mask, box('a').fade, box('a').x, box('a').y]))).toEqual(before);
+  });
+
   it('every part keeps the special effects; the paint marks, drawn mask and fade still go as above', async () => {
     // A whole-box copy (duplicate, paste, a split part) carries style.special:
     // it is the look of the box, laid over whatever text it holds. What was

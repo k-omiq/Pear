@@ -1803,8 +1803,12 @@ export const fitGeom = (b) => ({
   h: b.h,
   size: b.style.size,
   ...(b.auto ? { auto: $state.snapshot(b.auto) } : null),
-  // A mask or a fade that moves with the box scales with it (`resizeBox`),
-  // so the geometry an undo puts back carries it.
+});
+
+// A mask or a fade that moves with the box scales with it on a scale
+// (`resizeBox`): the part of a scale's geometry an undo puts back besides
+// `fitGeom`. Empty for a box with neither.
+export const followGeom = (b) => ({
   ...(follows(b.mask) ? { mask: $state.snapshot(b.mask) } : null),
   ...(follows(b.fade) ? { fade: $state.snapshot(b.fade) } : null),
 });
@@ -7060,7 +7064,8 @@ function boxSnapshot(src, p) {
       w: src.w,
       h: src.h,
       style: cloneStyle(src.style),
-      // The mask, pinned to the page: the copy takes it at the same page spot.
+      // The mask and the fade: a pinned one at the same page spot, one that
+      // moves with the box (`follow`) at the same spot on the copy.
       ...(src.mask ? { mask: $state.snapshot(src.mask) } : {}),
       ...(src.fade ? { fade: $state.snapshot(src.fade) } : {}),
       lines: place && !place.isCurve && place.lines?.length ? [...place.lines] : null,
