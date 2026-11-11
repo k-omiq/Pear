@@ -789,7 +789,7 @@ function runOp(c) {
     if (r.unsplit?.length) out.notSplit = { ids: r.unsplit, why: 'no neck found in the outline; draw the outline (set.outline) instead' };
     if (r.noOriginal?.length) out.noOriginal = { ids: r.noOriginal, why: 'no original found where the cleaner worked (no cleaned image, or nothing cleaned there): laid on the detected line instead, at its size; turn and colour it by eye (view source "raw")' };
     if (r.shrunk?.length) out.shrunk = { boxes: r.shrunk, why: 'the outline was made for the size each box aims for (ref), and its text still fits only smaller (size): allow it (sizing.min), give the box more room (geometry, then outline_to_box again), or a shorter line' };
-    if (r.facesLost?.length) out.facesLost = { ids: r.facesLost, why: 'a text rule replaced letters set in more than one face (bold or italic on part of them); the new letters are in the box face: check those boxes\' bold and italic' };
+    if (r.facesLost?.length) out.facesLost = { ids: r.facesLost, why: 'a text rule replaced letters set in more than one face (bold, italic or another typeface on part of them); the new letters are in the box face: check those boxes\' faces (box shows them, face sets them)' };
     if (r.noBalloon?.length) out.noBalloon = { ids: r.noBalloon, why: 'no balloon found under the box (the box now lays out in a rectangle if it had an outline); draw the outline (set.outline) instead' };
     if (c.do.kind === 'approve_outline') {
       const open = c.matches.filter((m) => !m.box.fit).length;

@@ -115,3 +115,49 @@ describe('edit set.text', () => {
     expect(pageById(1).boxes.find((b) => b.id === 'a').text).toBeNull();
   });
 });
+
+describe('face', () => {
+  const B = (start, end, extra = {}) => ({ start, end, bold: true, italic: false, ...extra });
+
+  it('sets bold on a word of a line-reading box, on its line, shown in box, one undo step', async () => {
+    const r = await call('face', { id: 'a', words: 'there', bold: true });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.result).toMatchObject({ outcome: 'changed', ranges: [[5, 10]], faces: [{ start: 5, end: 10, text: { untrusted: 'there' }, bold: true, italic: false }] });
+    const p = pageById(1);
+    expect(lineByN(p, 1).runs).toEqual([B(5, 10)]);
+    const read = await call('box', { id: 'a' });
+    expect(read.result.faces).toEqual([{ start: 5, end: 10, text: { untrusted: 'there' }, bold: true, italic: false }]);
+    // A box in its own face says nothing of faces.
+    expect('faces' in (await call('box', { id: 'b' })).result).toBe(false);
+    settleEdits();
+    undo();
+    expect(lineByN(p, 1).runs).toBeUndefined();
+  });
+
+  it('sets by offsets, a typeface by exact name, and clears', async () => {
+    const font = app.fonts.builtin[0]?.name ?? app.fonts.system[0]?.name;
+    expect(font).toBeTruthy();
+    expect((await call('face', { id: 'own', start: 0, end: 2, italic: true })).ok).toBe(true);
+    const own = () => pageById(1).boxes.find((b) => b.id === 'own');
+    expect(own().runs).toEqual([{ start: 0, end: 2, bold: false, italic: true }]);
+    const bad = await call('face', { id: 'own', start: 0, end: 2, font: 'No Such Font Here' });
+    expect(bad.ok).toBe(false);
+    expect(JSON.stringify(bad)).toMatch(/no font/);
+    expect((await call('face', { id: 'own', start: 0, end: 2, font: font.toUpperCase() })).ok).toBe(true);
+    expect(own().runs).toEqual([{ start: 0, end: 2, bold: false, italic: true, font }]);
+    expect((await call('face', { id: 'own', start: 0, end: 3, clear: true })).ok).toBe(true);
+    expect(own().runs).toBeUndefined();
+  });
+
+  it('picks one place with nth, and refuses what it cannot do', async () => {
+    loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [], boxes: [box('x', null, { text: 'no no NO' }), box('lk', null, { text: 'hi', locked: true })] }]);
+    const r = await call('face', { id: 'x', words: 'no', nth: 2, bold: true });
+    expect(r.result.ranges).toEqual([[3, 5]]);
+    expect((await call('face', { id: 'x', words: 'yes', bold: true })).ok).toBe(false);
+    expect((await call('face', { id: 'x', start: 2, end: 99, bold: true })).ok).toBe(false);
+    expect((await call('face', { id: 'x', words: 'no' })).ok).toBe(false);
+    expect((await call('face', { id: 'lk', start: 0, end: 2, bold: true })).ok).toBe(false);
+    // Already as asked: nothing written.
+    expect((await call('face', { id: 'x', words: 'no', nth: 2, bold: true })).result.outcome).toBe('nothing needed');
+  });
+});

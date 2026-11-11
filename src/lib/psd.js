@@ -18,10 +18,11 @@ import { settleBoxTips } from './brush-tips.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { fontCssFor, fontNameFor, reviewOf, fontsSettling, fontMissing } from './store.svelte.js';
 import { resolveFace, postScriptNameFor } from './fonts.js';
-import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor } from './measure.js';
+import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor, lineFaces } from './measure.js';
 import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
 import { boxCandidate, placeBlock } from './contain.js';
+import { runFamilies, normalizeRuns, textCheck, runsField } from './runs.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch, outlineRun, outlineBands, strokesFromBands } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
@@ -327,6 +328,13 @@ function extractProject(xmp) {
 // Exported for psd.test.js, which is the only place the free-line and tag
 // fields below can be pinned from node: everything downstream of here wants a
 // canvas.
+// `{ runs, runsCheck }` for runs indexing `text`, as a page is saved; nothing
+// when there are none.
+function savedRuns(runs, text) {
+  const out = typeof text === 'string' ? normalizeRuns(runs, text) : null;
+  return out ? { runs: out, runsCheck: textCheck(text) } : null;
+}
+
 export function serializePage(p) {
   return {
     id: p.id,
@@ -352,6 +360,9 @@ export function serializePage(p) {
       jp: l.jp ?? '',
       en: l.en ?? '',
       ...(Array.isArray(l.tags) ? { tags: l.tags.slice() } : null),
+      // The faces of words in the translation (runs.js), with the check of the
+      // text they index, as chapter.json saves them; only on a line with runs.
+      ...savedRuns(l.runs, l.en),
     })),
     boxes: (p.boxes ?? []).map((b) => ({
       lineN: b.lineN,
@@ -382,6 +393,8 @@ export function serializePage(p) {
       auto: normalizeAuto(b.auto),
       // The user's lock, only on a locked box.
       ...(b.locked === true ? { locked: true } : null),
+      // The faces of the box's own words, as for a line's.
+      ...savedRuns(b.runs, b.text),
     })),
     detect: p.detect
       ? {
@@ -414,15 +427,20 @@ function boxTextFor(p, box) {
   return ln.en ?? ln.natural ?? ln.stylised ?? ln.text ?? '';
 }
 
-// Whether a box's words are set in a face other than its own anywhere
-// (runs.js), read from the page as `boxTextFor` reads the words. Such a box
-// ships as pixels for now: its type layer would need a style run per face
-// (C5), and one that says the box's face over a bold word re-renders wrong in
-// Photoshop.
-function setInFaces(p, box) {
+// The faces of a box's words (runs.js), read from the page as `boxTextFor`
+// reads the words: the box's own for a box with its own words, the line's for
+// one that shows its line's translation.
+function boxRunsFor(p, box) {
   const runs = box.text != null ? box.runs : (p.lines ?? []).find((l) => l.n === box.lineN && l.en != null)?.runs;
+  return runs?.length ? runs : null;
+}
+
+// Whether a box's words are set in a face other than its own anywhere. Such a
+// box's type layer states a face per stretch (`faceRuns`), or the box ships as
+// pixels when that cannot be stated exactly.
+function setInFaces(p, box) {
   const s = box.style;
-  return !!runs?.some((r) => r.bold !== !!s?.bold || r.italic !== !!s?.italic || (!!r.font && r.font !== s?.font));
+  return !!boxRunsFor(p, box)?.some((r) => r.bold !== !!s?.bold || r.italic !== !!s?.italic || (!!r.font && r.font !== s?.font));
 }
 
 // A CSS family list like "'Bangers', cursive" → a plausible PostScript name.
@@ -898,7 +916,9 @@ export const REVIEW_MARK = ' [needs review]';
 // the network for such a box and says nothing, as it always has.
 const FONT_MISSING_OPEN = ' [font missing: ';
 export const fontMissingMark = (name) => `${FONT_MISSING_OPEN}${String(name).replace(/[\[\]]/g, '')}]`;
-const FONT_MISSING_TAIL = / \[font missing: [^\]]*\]$/;
+// One mark per missing family: the box's, then those of words in another
+// typeface.
+const FONT_MISSING_TAIL = /( \[font missing: [^\]]*\])+$/;
 
 // Written onto the name of a type layer some of whose letters are not drawn in
 // the font the box is set in: the face lacks them (kana in a Latin lettering
@@ -938,6 +958,55 @@ function borrowedRuns(s, content) {
   }));
 }
 
+// The stretches of a type layer's text in a box set in several faces (runs.js),
+// as ag-psd `styleRuns`: each stretch names the font the Rust engine drew it in
+// and whether the engine emboldened or slanted that font, so Photoshop sets a
+// bold word in the bold face it was drawn in and a word in another family in
+// that family. Letters another family lent (`borrowedRuns`) are named the same
+// way, piece by piece. `place` is the block the layer's text was made of: its
+// lines carry their faces (`lineFaces`), and the layer's text is those lines
+// joined by hard returns, which stay in the run before them.
+//
+// Null when the stretches cannot be stated exactly, and the box then ships as
+// pixels: the browser engine is drawing (it cannot say which font drew a
+// letter, nor what it synthesised), there is no measurer to break the lines
+// with, or the engine does not hold a face's family.
+function faceRuns(s, place) {
+  if (!engineDraws() || !place?.lines?.runs) return null;
+  const engine = textEngine();
+  const lines = place.lines;
+  const out = [];
+  let lent = false;
+  const put = (length, style) => {
+    if (length <= 0) return;
+    const last = out[out.length - 1];
+    if (last && last.key === style.key) last.length += length;
+    else out.push({ length, key: style.key, style: style.style });
+  };
+  for (let k = 0; k < lines.length; k++) {
+    const str = String(lines[k]);
+    const pieces = lineFaces(lines, k, s) ?? [{ start: 0, end: str.length, style: s }];
+    for (const piece of pieces) {
+      const runs = drawnRuns(engine, faceFor(piece.style, s.size), str.slice(piece.start, piece.end), { source: true });
+      if (!runs) return null;
+      for (const r of runs) {
+        lent ||= !r.own;
+        const name = r.postScriptName || engineFallbackName(engine, r);
+        put(r.end - r.start, { key: `${name}|${r.fauxBold ? 1 : 0}${r.fauxItalic ? 1 : 0}`, style: { font: { name }, fauxBold: r.fauxBold, fauxItalic: r.fauxItalic } });
+      }
+    }
+    // The hard return between two lines is nobody's glyph: it stays in the
+    // stretch before it, so the runs cover the text with no stretch of its own.
+    if (k < lines.length - 1) {
+      if (out.length) out[out.length - 1].length += 1;
+      else return null;
+    }
+  }
+  if (!out.length) return null;
+  // `lent`: whether another family lent letters, which the layer's name says.
+  return { runs: out.map(({ length, style }) => ({ length, style })), lent };
+}
+
 // Build one layer for a box. The common case is a live, editable Photoshop
 // type layer backed by the box's exact pixels (`rendered`, from
 // renderBoxLayer) as its cached rasterization, so it displays pixel-identical
@@ -965,7 +1034,10 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const raw = boxTextFor(p, box);
   // The review flag, then - with the Rust engine drawing - that the box's font
   // is not on this machine and what it shows is the stand-in.
-  const flag = (reviewOf(box, p) ? REVIEW_MARK : '') + (engineDraws() && fontMissing(s.font) ? fontMissingMark(s.font) : '');
+  // A family some of its words are set in (runs.js) that is not here is said
+  // the same way: those words show the stand-in too.
+  const missing = engineDraws() ? [s.font, ...runFamilies(boxRunsFor(p, box))].filter((f, i, all) => f && all.indexOf(f) === i && fontMissing(f)) : [];
+  const flag = (reviewOf(box, p) ? REVIEW_MARK : '') + missing.map(fontMissingMark).join('');
   // A turned box's effect gradients, placed against the page bounds; one
   // whose scale Photoshop cannot hold ships the box's pixels.
   const frames = needsGradientFrames(s) ? (rendered?.frames ?? boxGradientFrames(box)) : null;
@@ -979,7 +1051,14 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const onPage = own ? new Map(placedGradients(s, true).map(({ g }) => [g, turnedGradientPlacement(g, 0, own)])) : null;
   const turnPixels = (!!placed && [...placed.values()].some((q) => !q.fits)) || (!!onPage && [...onPage.values()].some((q) => !q.fits));
 
-  if (isRasterOnly(s) || turnPixels || setInFaces(p, box)) {
+  // A box in several faces is a type layer only when every stretch of it can
+  // say the font it was drawn in (`faceRuns`); otherwise it is the pixels.
+  const runs = boxRunsFor(p, box);
+  const inFaces = !isRasterOnly(s) && !turnPixels && setInFaces(p, box);
+  const placedFaces = inFaces && canMeasure() ? placeBlock(boxCandidate(box, raw, runs)) : null;
+  const faced = inFaces ? faceRuns(s, placedFaces) : null;
+
+  if (isRasterOnly(s) || turnPixels || (inFaces && !faced)) {
     // If the box paints no pixels (e.g. empty or whitespace-only text),
     // renderBoxLayer returns null. A layer with no imageData and no text object
     // causes ag-psd to crash during channel serialization. Safest guard:
@@ -1047,7 +1126,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
   // to), so all of them agree by construction. It needs a canvas to measure
   // with; without one (the node test environment) the paragraph goes in
   // unbroken, as it always did.
-  const place = canMeasure() ? placeBlock(boxCandidate(box, raw)) : null;
+  const place = placedFaces ?? (canMeasure() ? placeBlock(boxCandidate(box, raw, runs)) : null);
   const content = place ? place.lines.join('\n') : applyCase(raw, s);
   const rot = ((s.rotation || 0) * Math.PI) / 180;
   const cos = Math.cos(rot);
@@ -1112,7 +1191,9 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const fontSize = s.size;
   const tracking = s.size > 0 ? Math.round(((s.letterSpacing || 0) / s.size) * 1000) : 0;
   const face = fontRequestFor(s);
-  const borrowed = borrowedRuns(s, content);
+  // A box in several faces states every stretch's font, the borrowed letters'
+  // among them; a box in one face states only the letters another family lent.
+  const borrowed = faced?.runs ?? borrowedRuns(s, content);
 
   // Photoshop type layers require real layer effects for stroke and drop shadow.
   // Photoshop always re-renders a live type layer from its internal engine data
@@ -1416,7 +1497,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const hasEffects = Object.keys(effects).length > 0;
 
   return {
-    name: `${name}${flag}${borrowed ? BORROWED_MARK : ''}`,
+    name: `${name}${flag}${(faced ? faced.lent : borrowed) ? BORROWED_MARK : ''}`,
     ...bounds,
     imageData: rendered ? rendered.imageData : undefined,
     opacity: s.opacity ?? 1,
@@ -1863,7 +1944,9 @@ async function layerToUrl(layer) {
 
 // Rebuild a full page object from the embedded project JSON (lossless path).
 // Object URLs for raw/cleaned are regenerated from the PSD base rasters.
-async function reconstructFromProject(project, psd) {
+// Exported for psd.test.js: a page with neither raster touches no layer, so
+// what it makes of the JSON is reachable from node.
+export async function reconstructFromProject(project, psd) {
   const sp = project.page;
   const page = {
     id: sp.id,
@@ -1871,8 +1954,11 @@ async function reconstructFromProject(project, psd) {
     cleaned: null,
     w: sp.w,
     h: sp.h,
-    lines: (sp.lines ?? []).map((l) => ({ ...l })),
-    boxes: (sp.boxes ?? []).map((b) => ({ ...b, style: { ...b.style } })),
+    // Runs only where their check is the text's (`runsField`), kept as a
+    // chapter saves them: the page goes on to become a chapter on disk
+    // (`chapterPagesFromPsdFiles`), which reads them back by that check.
+    lines: (sp.lines ?? []).map(({ runs, runsCheck, ...l }) => ({ ...l, ...savedRuns(runsField(runs, l.en, runsCheck)?.runs, l.en) })),
+    boxes: (sp.boxes ?? []).map(({ runs, runsCheck, ...b }) => ({ ...b, style: { ...b.style }, ...savedRuns(runsField(runs, b.text, runsCheck)?.runs, b.text) })),
     detect: sp.detect
       ? { panels: (sp.detect.panels ?? []).slice(), boxes: (sp.detect.boxes ?? []).map((d) => ({ ...d })) }
       : null,
@@ -2679,7 +2765,7 @@ export async function psdSelfTest(p) {
         textGroup.children.every((l, i) => {
           const { box, owner } = layerBoxes[i] ?? {};
           if (!l.text || !box) return true; // raster-only layers carry no text
-          const want = placeBlock(boxCandidate(box, boxTextFor(owner, box))).lines;
+          const want = placeBlock(boxCandidate(box, boxTextFor(owner, box), boxRunsFor(owner, box))).lines;
           return l.text.text === want.join('\n');
         });
       if (!report.checks.shapedBreaksInText) report.ok = false;

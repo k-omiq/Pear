@@ -227,6 +227,18 @@ describe('packagePagesForImport', () => {
     expect(pages[0].note).toBe('');
   });
 
+  it('carries the faces of words in a box and in a translated line, with their checks (C5)', () => {
+    const input = sampleInput();
+    const pg = input.record.pages[0];
+    pg.lines[0] = { ...pg.lines[0], en: 'big b', runs: [{ start: 0, end: 3, bold: true, italic: false, font: 'Anime Ace' }], runsCheck: 'c1' };
+    pg.boxes.push({ id: 'b2', lineN: null, text: 'oh no', runs: [{ start: 3, end: 5, bold: false, italic: true }], runsCheck: 'c2', x: 0, y: 0, w: 50, h: 20, style: { font: 'Wild Words', size: 20 } });
+    const pages = packagePagesForImport(readChapterPackage(buildChapterPackage(input)));
+    expect(pages[0].lines[0].runs).toEqual(pg.lines[0].runs);
+    expect(pages[0].lines[0].runsCheck).toBe('c1');
+    expect(pages[0].boxes[1].runs).toEqual(pg.boxes[1].runs);
+    expect(pages[0].boxes[1].runsCheck).toBe('c2');
+  });
+
   it('carries the page note (TXT-7)', () => {
     const input = sampleInput();
     input.record.pages[0].note = 'Flashback';
@@ -242,6 +254,16 @@ describe('fontFamiliesUsed', () => {
     ];
     const tags = [{ name: 'sfx', style: { font: 'C' } }, { name: 'x', style: {} }];
     expect(fontFamiliesUsed(pages, tags)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('collects the typeface of words set in another family, in a box or in its line', () => {
+    const pages = [
+      {
+        lines: [{ n: 1, runs: [{ start: 0, end: 2, bold: true, italic: false, font: 'D' }] }],
+        boxes: [{ style: { font: 'A' }, runs: [{ start: 0, end: 1, bold: false, italic: false, font: 'E' }, { start: 1, end: 2, bold: true, italic: false }] }],
+      },
+    ];
+    expect(fontFamiliesUsed(pages, [])).toEqual(['A', 'E', 'D']);
   });
 });
 
