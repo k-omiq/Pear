@@ -917,6 +917,38 @@ export function scaleMesh(pts, sx, sy) {
   return pts.map((p) => [+p?.[0] * kx, +p?.[1] * ky]);
 }
 
+// THE SIZE STAMP. `warp.w` / `warp.h` are the box size the stored points were
+// made for. Every path that resizes a box with its mesh switched ON scales the
+// mesh itself (`resizeBox`, `rescaleStyle`), but a box whose mesh is switched
+// OFF is laid out like any other box - auto height, a refit, a shrink to its
+// text, the solver - and none of those know about a mesh nobody can see. The
+// stamp says what size it was, so the mesh can be carried to the box as it is
+// now when it comes back into use (the switch, the gizmo's first press).
+//
+// The warp block as it should be for a box of w x h: points scaled from the
+// stamp to w x h, an unstamped mesh stamped at w x h (a file from before the
+// stamp reads exactly as it did), and an empty mesh with no stamp at all, so
+// "never touched" stays one stored form. Hands back the same object when
+// nothing needs to change, so a caller can tell.
+export function warpForSize(warp, w, h) {
+  if (!warp || typeof warp !== 'object') return warp;
+  const W = +w;
+  const H = +h;
+  const has = Array.isArray(warp.pts) && warp.pts.length > 0;
+  const stamped = 'w' in warp || 'h' in warp;
+  if (!has) {
+    if (!stamped) return warp;
+    const { w: _w, h: _h, ...rest } = warp;
+    return rest;
+  }
+  if (!(W > 0) || !(H > 0)) return warp;
+  const sw = +warp.w;
+  const sh = +warp.h;
+  if (!(sw > 0) || !(sh > 0)) return { ...warp, w: W, h: H };
+  if (sw === W && sh === H) return warp;
+  return { ...warp, pts: scaleMesh(warp.pts, W / sw, H / sh), w: W, h: H };
+}
+
 // Whether a style's warp changes anything, which is the question every renderer
 // asks before it pays for a texture pass.
 //
