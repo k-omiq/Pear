@@ -31,15 +31,15 @@ use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::blending::{Blending, Range};
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
-    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
-    PaintOverlay, Position, Satin, Stroke, Technique,
+    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Marks, Overlay, Paint,
+    PaintMark, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
     paint_box, paint_box_kept, Affine, BoxKeys, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
-    Crack, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
+    Crack, Fade, FadePart, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -660,6 +660,56 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
         Box::new(move |b| {
             special(b).lightning = Some(Lightning { amount: 0.6, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed: 4 });
             b.lay_special_paint().unwrap();
+        }),
+    ));
+    // Scratches cutting a box's own stroke through, and a crack (no pieces
+    // out) cutting a stroke centred on the outline, whose inside part reads
+    // the letters whole.
+    rows.push((
+        "special_scratches_stroke",
+        Box::new(move |b| {
+            special(b).scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    rows.push((
+        "special_crack_stroke_centre",
+        Box::new(move |b| {
+            special(b).crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            b.effects = vec![stroke(4.0, Position::Center, Paint::Color(BLACK))];
+        }),
+    ));
+    // A soft fade at scale 2, on its page-anchored grid of cells, and a
+    // soft paint mark over the letters.
+    rows.push((
+        "fade_soft_scale_two",
+        Box::new(|b| {
+            b.request.transform = Affine::scale(2.0, 2.0);
+            b.width = 400;
+            b.height = 320;
+            b.fade = Some(Fade {
+                origin: Pt::new(0.0, 0.0),
+                shapes: vec![FadePart {
+                    strength: 0.7,
+                    soft: 6.0,
+                    shape: ClipShape::Polygon(vec![Pt::new(30.0, 80.0), Pt::new(150.0, 76.0), Pt::new(150.0, 120.0), Pt::new(30.0, 120.0)]),
+                }],
+            });
+        }),
+    ));
+    rows.push((
+        "paint_mark_soft",
+        Box::new(|b| {
+            b.effects = vec![Effect::Paint(Marks {
+                origin: Pt::new(0.0, 0.0),
+                marks: vec![PaintMark {
+                    shape: ClipShape::Ellipse { centre: Pt::new(70.0, 70.0), rx: 30.0, ry: 22.0 },
+                    color: BLUE,
+                    opacity: 0.9,
+                    soft: 5.0,
+                    erase: false,
+                }],
+            })];
         }),
     ));
     rows
