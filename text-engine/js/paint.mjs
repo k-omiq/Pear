@@ -1401,10 +1401,14 @@ export function patternSwatch(engine, { width, height, fill: f, tiles }) {
   return { width: raster.width, height: raster.height, data: raster.data }
 }
 
-/** Whether this wasm paints box jobs of the version this loader writes. */
+/**
+ * Whether this wasm paints box jobs of the version this loader writes. A box
+ * job carries the glyph job, so the glyph wire version must match too.
+ */
 export function paintsBoxes(engine) {
   const ex = engine?.exports
   return typeof ex?.mt_paint_box === 'function' && ex.mt_paint_box_wire_version?.() === BOX_WIRE_VERSION
+    && ex.mt_paint_wire_version?.() === WIRE_VERSION
 }
 
 /**
