@@ -747,6 +747,11 @@ export function glyphJob(box, L) {
   if (L.isCurve) {
     const cx = L.ox + box.w / 2;
     const cy = L.oy + box.h / 2;
+    // An arc, a circle or a path is one line cut into its clusters
+    // (`lineClusters`): a painter that paints whole boxes shapes the runs as
+    // that line again, so the letters keep its ligatures and contextual
+    // forms. An SFX letter is shaped on its own, by design.
+    if (!s.sfx?.on) job.line = true;
     // A curved box has no wrapped lines, so its gradient spans the box - which
     // is what 'box' scope means and the only scope the curved path has.
     const rect = { x: L.ox, y: L.oy, w: box.w, h: box.h };

@@ -59,6 +59,8 @@ export const request = {
   transform: [1.25, 0.5, -0.25, 1.5, 11, 13],
   job: {
     curved: true,
+    // One line's clusters (box wire v22).
+    line: true,
     align: 'center',
     letterSpacing: 1.75,
     silhouette: null,

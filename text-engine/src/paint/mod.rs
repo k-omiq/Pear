@@ -69,7 +69,7 @@ pub use raster::{Coverage, Exact, Part, PlainScratch, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
-pub use shape::{align_offset, curved_origin, shape_run, Placed, ShapedRun};
+pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, Placed, ShapedRun};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
@@ -1030,9 +1030,21 @@ fn paint_letters(
         Some(w) => wobble_bases(&job.runs, w.copies)?,
         None => Vec::new(),
     };
+    // A curved line's runs, shaped as the line (`Effects::line`); `None`
+    // shapes each run on its own. An afterimage is an SFX letter's, never a
+    // line's.
+    let mut line = None;
+    if job.curved && job.effects.line && !job.runs.iter().any(|r| r.ghost) {
+        let texts = job.runs.iter().map(|r| r.text.as_str());
+        line = shape::shape_line_runs(engine, face, texts, job.letter_spacing != 0.0)?
+            .map(IntoIterator::into_iter);
+    }
     for (i, run) in job.runs.iter().enumerate() {
         let spacing = if job.curved { 0.0 } else { job.letter_spacing };
-        let shaped = shape_run(engine, face, &run.text, spacing)?;
+        let shaped = match line.as_mut().and_then(Iterator::next) {
+            Some(shaped) => shaped,
+            None => shape_run(engine, face, &run.text, spacing)?,
+        };
         let frame = if job.curved {
             // translate(x, y); rotate(rot); the glyph centred on the origin.
             let (sin, cos) = run.rot.sin_cos();

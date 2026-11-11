@@ -64,11 +64,24 @@ pub fn shape_run(
     text: &str,
     letter_spacing: f64,
 ) -> Result<ShapedRun, Error> {
+    shape_with(engine, face, text, letter_spacing, letter_spacing != 0.0)
+}
+
+/// [`shape_run`], with the ligatures on or off by the caller's word rather
+/// than by the spacing: a curved line is shaped with none of its own (the
+/// gaps are in its letters' places) and its ligatures as its spacing says.
+fn shape_with(
+    engine: &mut Engine,
+    face: Face,
+    text: &str,
+    letter_spacing: f64,
+    no_ligatures: bool,
+) -> Result<ShapedRun, Error> {
     if text.len() > budget::MAX_RUN_BYTES {
         return Err(Error::BadSpec);
     }
     let mode = ShapeMode {
-        no_ligatures: letter_spacing != 0.0,
+        no_ligatures,
         ..ShapeMode::MEASURE
     };
     engine.measure_line(face, text, mode)?;
@@ -116,6 +129,95 @@ pub fn shape_run(
         glyphs,
         advance: engine.line_advance(face.size)? + f64::from(gaps) * letter_spacing,
     })
+}
+
+/// The runs of a curved line (`Effects::line`) shaped as the one line they
+/// are, so kerning between letters, ligatures and contextual alternates (a
+/// bouncy font's `calt`) hold on a curve as on a straight line. Each run is
+/// one cluster of the line, in order, as the app lays them out
+/// (`lineClusters` in measure.js, which reads the same shaping through
+/// `mt_line_carets`); each comes back as its own run: the line's glyphs of
+/// that cluster, placed from the cluster's pen, and as its advance the
+/// distance to the next cluster's pen, kerning included, which is what the
+/// letter is centred by.
+///
+/// `no_ligatures` is the line's letter spacing being set: a spaced line has
+/// none, as a straight one has none.
+///
+/// `None` when the runs are not the line's clusters one for one (a run that
+/// starts inside a cluster, or one with no glyph, or a line whose clusters
+/// do not run forwards), or the line is longer than a run may be: the
+/// caller then shapes each run on its own, as every curved run was before.
+pub fn shape_line_runs<'t>(
+    engine: &mut Engine,
+    face: Face,
+    texts: impl Iterator<Item = &'t str> + Clone,
+    no_ligatures: bool,
+) -> Result<Option<budget::Buffer<ShapedRun>>, Error> {
+    let len: usize = texts.clone().map(str::len).sum();
+    if len > budget::MAX_RUN_BYTES {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    budget::reserve_raw(&mut bytes, len)?;
+    // Where each run starts in the line, in UTF-16 units (a cluster's unit).
+    let mut starts: budget::Buffer<u32> = budget::Buffer::new();
+    let mut at16 = 0u32;
+    for text in texts {
+        if text.is_empty() {
+            return Ok(None);
+        }
+        budget::push(&mut starts, at16)?;
+        at16 += text.encode_utf16().count() as u32;
+        bytes.extend_from_slice(text.as_bytes());
+    }
+    // Whole runs of `str` end to end are a `str`.
+    let line = core::str::from_utf8(&bytes).map_err(|_| Error::BadSpec)?;
+    let shaped = shape_with(engine, face, line, 0.0, no_ligatures)?;
+    // Each glyph's pen: its origin less its own x offset, as
+    // `mt_line_carets` reads it.
+    let mut pens: budget::Buffer<f64> = budget::Buffer::new();
+    budget::reserve(&mut pens, shaped.glyphs.len())?;
+    for (placed, glyph) in shaped.glyphs.iter().zip(engine.line.iter()) {
+        let upem = f64::from(engine.font(placed.font)?.info.units_per_em);
+        budget::push(&mut pens, placed.x - f64::from(glyph.x_offset) * (face.size / upem))?;
+    }
+    let glyphs = &shaped.glyphs;
+    if glyphs.windows(2).any(|w| w[1].cluster < w[0].cluster) {
+        return Ok(None);
+    }
+    let mut out = budget::Buffer::new();
+    budget::reserve(&mut out, starts.len())?;
+    let mut g = 0usize;
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(at16);
+        let from = g;
+        while g < glyphs.len() && glyphs[g].cluster < end {
+            g += 1;
+        }
+        if from == g || glyphs[from].cluster != start {
+            return Ok(None);
+        }
+        let pen = pens[from];
+        let next = pens.get(g).copied().unwrap_or(shaped.advance);
+        let mut run = ShapedRun {
+            glyphs: budget::Buffer::new(),
+            advance: next - pen,
+        };
+        budget::reserve(&mut run.glyphs, g - from)?;
+        for placed in &glyphs[from..g] {
+            budget::push(
+                &mut run.glyphs,
+                Placed {
+                    x: placed.x - pen,
+                    cluster: placed.cluster - start,
+                    ..*placed
+                },
+            )?;
+        }
+        budget::push(&mut out, run)?;
+    }
+    Ok(Some(out))
 }
 
 /// Canvas `textAlign`: how far the run's start lies from the anchor.

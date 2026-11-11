@@ -468,7 +468,9 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // box's warp, so the engine no longer bends it by the mesh.
 // v20: the fade, after the mask: shapes that take some of the opacity.
 // v21: paint over the letters, effect kind 10.
-export const BOX_WIRE_VERSION = 21
+// v22: the line flag before the glyph job: a curved job's runs are the
+// clusters of one line and are shaped as it (`job.line`).
+export const BOX_WIRE_VERSION = 22
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
@@ -1127,6 +1129,9 @@ export function encodeBox(request) {
     u8.set(backdrop, at)
     at += backdrop.length
   } else u32(0)
+  // v22: whether the curved job's runs are one line's clusters. Only a box
+  // job can say so; the glyph wire has no place for it.
+  u32(request.job?.curved && request.job.line === true ? 1 : 0)
   const lenAt = at
   u32(0)
   writeJob(request, collector)

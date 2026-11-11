@@ -444,6 +444,7 @@ fn wire(font: u32, text: &str, flags: u32) -> (Vec<u8>, usize, usize) {
     let stroke_at = b.len();
     stroke_bytes(&mut b, flags, &LINE);
     u(&mut b, 0); // no page
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font, text);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -476,6 +477,7 @@ fn a_box_job_reads_its_ink() {
     none.truncate(ink_at);
     u(&mut none, 0);
     u(&mut none, 0);
+    u(&mut none, 0); // not one line (v22)
     let job = job_bytes(0, "HI");
     u(&mut none, job.len() as u32);
     none.extend_from_slice(&job);

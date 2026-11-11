@@ -165,6 +165,12 @@ pub struct Effects {
     /// numbers of its own (`Wobble`). `None` leaves every letter where the
     /// shaper put it.
     pub wobble: Option<Wobble>,
+    /// Curved text only: the runs are the clusters of one line, in order,
+    /// and are shaped as that line (`shape_line_runs`), so a curve keeps the
+    /// line's kerning, ligatures and contextual alternates. A box's job sets
+    /// it (box wire v22); a job on the glyph wire has no place for it and
+    /// shapes each run on its own, as an SFX letter is.
+    pub line: bool,
 }
 
 /// Letters that jump about: each letter is moved up or down by up to
@@ -222,6 +228,7 @@ impl Default for Effects {
             slant: 0.0,
             crisp: None,
             wobble: None,
+            line: false,
         }
     }
 }
@@ -757,6 +764,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
                 slant,
                 crisp,
                 wobble,
+                line: false,
             },
             runs,
         },

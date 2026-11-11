@@ -287,7 +287,60 @@ export function glyphsMissing(style, text) {
   }
 }
 
-// Per-character advances (width incl. letterSpacing is added by caller).
+// `text` as one line, cut into what a curve places one at a time: one entry
+// per code point, so a glyph index is still a code point (curve-caret.js).
+// With an engine that tells where its clusters fall (`lineCarets`, the Rust
+// engine), the line is shaped whole, as the painter shapes it for a curved
+// box (`shape_line_runs`): a cluster - a letter and its marks, or a
+// ligature - is drawn by its first code point, which carries the cluster's
+// text and its advance, kerning with the next cluster included; the code
+// points after it in the cluster carry '' and no width. Otherwise each code
+// point is measured on its own, as every curve was before.
+//
+// `ls` is the letter spacing in the same px: it turns the ligatures off, as
+// it does on a straight line, and is not in the widths.
+export function lineClusters(text, style, sizePx, ls = 0) {
+  const chars = text ? [...text] : [];
+  if (!chars.length || sizePx <= 0) return { chars: [], widths: [] };
+  if (!engine) return { chars, widths: chars.map(() => sizePx * 0.55) };
+  const face = faceFor(style, sizePx);
+  const whole = typeof engine.lineCarets === 'function' ? wholeLine(engine.lineCarets(face, text, ls), chars, ls) : null;
+  return whole ?? { chars, widths: chars.map((ch) => engine.advance(face, ch)) };
+}
+
+// The clusters `lineCarets` found, per code point, or null where they do not
+// run forwards from the line's start (right-to-left text): such a line is
+// measured a code point at a time.
+function wholeLine(c, chars, ls) {
+  const n = c?.at?.length ?? 0;
+  if (!n || c.at[0] !== 0) return null;
+  for (let k = 1; k < n; k++) if (!(c.at[k] > c.at[k - 1])) return null;
+  const out = { chars: [], widths: [] };
+  let k = 0;
+  let at = 0;
+  let lead = -1;
+  for (let i = 0; i < chars.length; i++) {
+    if (k < n && c.at[k] === at) {
+      lead = out.chars.length;
+      // From this cluster's pen to the next one's, less the gap the spacing
+      // put after it.
+      const next = k + 1 < n ? c.x[k + 1] : c.advance;
+      out.chars.push(chars[i]);
+      out.widths.push(next - c.x[k] - ls);
+      k++;
+    } else if (lead >= 0) {
+      out.chars[lead] += chars[i];
+      out.chars.push('');
+      out.widths.push(0);
+    } else return null;
+    at += chars[i].length;
+  }
+  return k === n ? out : null;
+}
+
+// Per-character advances, each measured alone (width incl. letterSpacing is
+// added by caller): what a wrapped line's hidden head or tail takes up while
+// it is typed into. A curve places the line's clusters (`lineClusters`).
 export function charWidths(text, style, sizePx) {
   if (!text || sizePx <= 0) return [];
   if (!engine) return [...text].map(() => sizePx * 0.55);
@@ -301,11 +354,10 @@ export function charWidths(text, style, sizePx) {
 // For DOM: place each span at box center, then translate(x,y) rotate(rot).
 export function arcLayout(text, style, sizePx) {
   if (!text || sizePx <= 0 || !style || (style.size ?? 0) <= 0) return [];
-  const chars = [...text];
-  const widths = charWidths(text, style, sizePx);
   // Guard against missing letterSpacing or zero style.size causing NaN
   const ls = (Number(style?.letterSpacing) || 0) * (style.size > 0 ? sizePx / style.size : 0);
-  const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, chars.length - 1) * ls;
+  const { chars, widths } = lineClusters(text, style, sizePx, ls);
+  const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, leadCount(chars) - 1) * ls;
   if (!Number.isFinite(total) || total <= 0) return [];
   const curve = Number(style?.curve) || 0;
   const maxAng = Math.max((Math.abs(curve) / 100) * 2.4, 1e-4);
@@ -323,9 +375,17 @@ export function arcLayout(text, style, sizePx) {
       rot: sign * a, // radians
       w: widths[i],
     });
-    cum += widths[i] + ls;
+    // The spacing falls between clusters, so not inside one.
+    cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
   }
   return out;
+}
+
+// How many clusters a `lineClusters` line has: the code points that draw.
+function leadCount(chars) {
+  let n = 0;
+  for (const ch of chars) if (ch !== '') n++;
+  return n;
 }
 
 // Lay out characters around a FULL circle, closed exactly: the radius comes
@@ -354,14 +414,14 @@ export function arcLayout(text, style, sizePx) {
 // `size` and `letterSpacing` do.
 export function circleLayout(text, style, sizePx) {
   if (!text || sizePx <= 0 || !style || (style.size ?? 0) <= 0) return [];
-  const chars = [...text];
-  const widths = charWidths(text, style, sizePx);
   const scale = style.size > 0 ? sizePx / style.size : 0;
   const ls = (Number(style?.letterSpacing) || 0) * scale;
+  const { chars, widths } = lineClusters(text, style, sizePx, ls);
   const fixed = Math.max(0, Number(style.circle?.r) || 0) * scale;
   const ink = widths.reduce((a, b) => a + b, 0);
-  // The closed ring pays a gap per character; the open arc pays the line's n-1.
-  const total = ink + (fixed > 0 ? Math.max(0, chars.length - 1) : chars.length) * ls;
+  const n = leadCount(chars);
+  // The closed ring pays a gap per cluster; the open arc pays the line's n-1.
+  const total = ink + (fixed > 0 ? Math.max(0, n - 1) : n) * ls;
   if (!Number.isFinite(total) || total <= 0) return [];
   const R = fixed > 0 ? fixed : total / (2 * Math.PI);
   // A fixed ring is centred on `angle`; the closed one starts there.
@@ -383,7 +443,8 @@ export function circleLayout(text, style, sizePx) {
       rot: inside ? th - Math.PI : th,
       w: widths[i],
     });
-    cum += widths[i] + ls;
+    // The spacing falls between clusters, so not inside one.
+    cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
   }
   return out;
 }
@@ -539,11 +600,10 @@ export function pathLayout(text, style, sizePx, boxW, boxH) {
   const pts = style?.path?.pts;
   if (!text || sizePx <= 0 || !style || (style.size ?? 0) <= 0) return [];
   if (!Array.isArray(pts) || pts.length < 2) return [];
-  const chars = [...text];
-  const widths = charWidths(text, style, sizePx);
   const scale = sizePx / style.size;
   const ls = (Number(style?.letterSpacing) || 0) * scale;
-  const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, chars.length - 1) * ls;
+  const { chars, widths } = lineClusters(text, style, sizePx, ls);
+  const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, leadCount(chars) - 1) * ls;
   if (!Number.isFinite(total) || total <= 0) return [];
   const baked = bakePath(pts, scale);
   if (!(baked.total > 0)) return [];
@@ -562,7 +622,8 @@ export function pathLayout(text, style, sizePx, boxW, boxH) {
       rot: Math.atan2(at.tan[1], at.tan[0]),
       w: widths[i],
     });
-    cum += widths[i] + ls;
+    // The spacing falls between clusters, so not inside one.
+    cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
   }
   return out;
 }
