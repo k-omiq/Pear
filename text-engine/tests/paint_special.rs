@@ -322,7 +322,7 @@ fn pieces_break_off_the_same_cracks_and_never_past_the_padding() {
             assert_eq!(sh.cuts.pts, cuts.cuts.pts);
             assert!(sh.pieces.len() > last, "{motion:?} {share}: more pieces as it goes up");
             last = sh.pieces.len();
-            let down = sp.rect[3] + BREAK_DROP * SIZE;
+            let down = BREAK_DROP * SIZE;
             let side = BREAK_SIDE * SIZE;
             for p in &sh.pieces {
                 let Some(m) = p.moved else {
@@ -690,4 +690,44 @@ fn falling_pieces_drop_below_where_they_were_and_keep_apart() {
     }
     // Some small ones are gone at the most.
     assert!(motion_numbers(Motion::Fall, 1.0).5 > 0);
+}
+
+/// The padding the app gives broken-off pieces (special.js) is the reach
+/// the engine keeps them to.
+#[test]
+fn break_reach_matches_the_app() {
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/special.js")).unwrap();
+    let read = |name: &str| -> f64 {
+        let at = js.find(&format!("export const {name} = ")).unwrap_or_else(|| panic!("{name} in special.js"));
+        let rest = &js[at + name.len() + 16..];
+        rest[..rest.find(';').unwrap()].trim().parse().unwrap()
+    };
+    assert!((read("BREAK_SIDE") - BREAK_SIDE).abs() < 1e-9);
+    assert!((read("BREAK_DROP") - BREAK_DROP).abs() < 1e-9, "js {} rust {BREAK_DROP}", read("BREAK_DROP"));
+}
+
+/// Where pieces land does not hang on the box's height, and the farthest
+/// fall at every Break off is within the drop the paint is padded for.
+#[test]
+fn pieces_land_the_same_whatever_the_box_height() {
+    const INK: (f64, f64, f64, f64) = (40.0, 55.0, 330.0, 100.0);
+    for motion in [Motion::Apart, Motion::Fall] {
+        for share in [0.25, 0.5, 0.75, 1.0] {
+            let at = |h: f64| {
+                let sp = Special { rect: [0.0, 0.0, 360.0, h], crack: Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 }), break_off: Some(BreakOff { share, motion }), lightning: None, splash: None, scratches: None, cut_strokes: false };
+                letter_shapes(&sp, SIZE, INK).unwrap()
+            };
+            let (low, tall) = (at(120.0), at(900.0));
+            assert_eq!(low.pieces.len(), tall.pieces.len());
+            for (a, b) in low.pieces.iter().zip(&tall.pieces) {
+                assert_eq!(a.moved.map(|m| m.0), b.moved.map(|m| m.0), "{motion:?} {share}");
+                if let Some(m) = a.moved {
+                    for &v in &a.outline {
+                        let d = m.apply(v).minus(v);
+                        assert!(d.y <= BREAK_DROP * SIZE + 1e-6 && d.x.abs() <= BREAK_SIDE * SIZE + 1e-6);
+                    }
+                }
+            }
+        }
+    }
 }

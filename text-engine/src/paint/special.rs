@@ -106,11 +106,22 @@ pub struct BreakOff {
     pub motion: Motion,
 }
 
-/// The farthest a piece moves sideways or up, in font sizes; falling, down,
-/// the box's height and `BREAK_DROP` font sizes more (special.js
-/// `breakReach` pads the paint by as much).
+// How far a falling piece drops, in font sizes: (base + share) times its
+// die (0.8 to 1.2) times how much smaller than a quarter size it is (up to
+// twice).
+const DROP_BASE: f64 = 0.2;
+const DROP_SHARE: f64 = 0.6;
+const DROP_SMALL_MOST: f64 = 2.0;
+/// Room for a piece's corners as it turns, in font sizes.
+const TURN_ROOM: f64 = 0.5;
+
+/// The farthest a piece moves sideways or up, in font sizes. Apart moves one
+/// out by up to 0.52 of the size and turns it; past this the move shrinks.
 pub const BREAK_SIDE: f64 = 0.5;
-pub const BREAK_DROP: f64 = 1.0;
+/// The farthest a falling piece moves down, in font sizes: its largest drop
+/// and the room it turns in. The paint is padded by as much (special.js
+/// `breakReach`, the same number, `break_reach_matches_the_app` checks).
+pub const BREAK_DROP: f64 = (DROP_BASE + DROP_SHARE) * 1.2 * DROP_SMALL_MOST + TURN_ROOM;
 
 /// The special effects of a box (glyph wire v15). Every job of the box
 /// carries them, so a shadow is cast from the cracked letters.
@@ -266,9 +277,8 @@ pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Resu
         .f64(ink.1)
         .f64(ink.2)
         .f64(ink.3);
-    // Pieces fall by the box's height.
     if let Some(b) = sp.break_off {
-        key = key.debug(&b).f64(sp.rect[3]);
+        key = key.debug(&b);
     }
     let key = key.finish();
     if let Some(hit) = key.and_then(kept::get::<Rc<Shapes>>) {
@@ -280,7 +290,7 @@ pub fn letter_shapes(sp: &Special, size: f64, ink: (f64, f64, f64, f64)) -> Resu
         let want = sp.break_off.filter(|b| b.share > 0.0);
         crack(&c, size, ink, &mut out.cuts, want.map(|_| &mut stars));
         if let Some(b) = want {
-            out.pieces = pieces(&c, &b, &stars, size, ink, sp.rect[3]);
+            out.pieces = pieces(&c, &b, &stars, size, ink);
         }
     }
     if let Some(s) = sp.scratches {
@@ -401,7 +411,7 @@ fn crack(
 /// lies between two neighbouring arms of a point, from the point out along
 /// them and closed by a jagged break. The densest cracks break first. On a
 /// stream of its own, so the cracks are the same whatever breaks.
-fn pieces(c: &Crack, b: &BreakOff, stars: &[Star], size: f64, ink: (f64, f64, f64, f64), box_h: f64) -> Vec<Piece> {
+fn pieces(c: &Crack, b: &BreakOff, stars: &[Star], size: f64, ink: (f64, f64, f64, f64)) -> Vec<Piece> {
     let share = b.share.clamp(0.0, 1.0);
     let u = size * c.size.clamp(0.01, MAX_SPECIAL_SIZE);
     if !(share > 0.0) || !(u > 0.0) || stars.is_empty() {
@@ -432,7 +442,7 @@ fn pieces(c: &Crack, b: &BreakOff, stars: &[Star], size: f64, ink: (f64, f64, f6
     let side = BREAK_SIDE * size;
     let (up, down) = match b.motion {
         Motion::Apart => (side, side),
-        Motion::Fall => (side, box_h.max(0.0) + BREAK_DROP * size),
+        Motion::Fall => (side, BREAK_DROP * size),
     };
     let mut out = Vec::with_capacity(n);
     for &(_, i, j) in &wedges[..n] {
@@ -498,8 +508,8 @@ fn pieces(c: &Crack, b: &BreakOff, stars: &[Star], size: f64, ink: (f64, f64, f6
                     out.push(Piece { outline, moved: None });
                     continue;
                 }
-                let small = (0.25 * size / r.max(1e-6)).clamp(1.0, 2.0);
-                let drop = size * (0.2 + 0.6 * share) * (0.8 + 0.4 * dice.u(item, 6)) * small;
+                let small = (0.25 * size / r.max(1e-6)).clamp(1.0, DROP_SMALL_MOST);
+                let drop = size * (DROP_BASE + DROP_SHARE * share) * (0.8 + 0.4 * dice.u(item, 6)) * small;
                 let dx = away.x * size * 0.15 * share * dice.u(item, 9);
                 let deg = dice.sign(item, 7) * (8.0 + 32.0 * share) * (0.5 + 0.5 * dice.u(item, 10))
                     * (0.3 * size / r.max(1e-6)).min(1.0);
