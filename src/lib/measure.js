@@ -306,14 +306,46 @@ export function glyphsMissing(style, text) {
 // room in the line, as `glyphInk` gives them from a glyph shaped alone, so a
 // footprint is measured where the painter draws the letter - half a kern
 // along, and as the contextual form the line chose.
+//
+// A line shaped whole is kept with the font's measurements (`keptFor`), and
+// says so (`whole`); its `inks` are asked of the engine the first time they
+// are read and kept with it, so a layout nobody reads the ink of (the
+// editor's curve under the engine's picture) never pays for them. The answer
+// is shared; nobody may change it.
 export function lineClusters(text, style, sizePx, ls = 0) {
   const chars = text ? [...text] : [];
   if (!chars.length || sizePx <= 0) return { chars: [], widths: [] };
   if (!engine) return { chars, widths: chars.map(() => sizePx * 0.55) };
   const face = faceFor(style, sizePx);
+  const memo = typeof engine.lineCarets === 'function' ? (keptFor(face.key)?.line ?? null) : null;
+  const key = `${ls}|${text}`;
+  const hit = memo?.get(key);
+  if (hit) return hit;
   const whole = typeof engine.lineCarets === 'function' ? wholeLine(engine.lineCarets(face, text, ls), chars, ls) : null;
-  if (whole && typeof engine.lineInks === 'function') whole.inks = clusterInks(engine.lineInks(face, text, ls), whole.chars, chars);
-  return whole ?? { chars, widths: chars.map((ch) => engine.advance(face, ch)) };
+  if (whole) {
+    whole.whole = true;
+    if (typeof engine.lineInks === 'function') {
+      const e = engine;
+      let inks;
+      Object.defineProperty(whole, 'inks', {
+        enumerable: true,
+        get: () => (inks === undefined ? (inks = clusterInks(e.lineInks(face, text, ls), whole.chars, chars)) : inks),
+      });
+    }
+    if (memo) keep(memo, key, whole);
+    return whole;
+  }
+  return { chars, widths: chars.map((ch) => engine.advance(face, ch)) };
+}
+
+// A curved layout's entry `g` for cluster `i` of `line` (a `lineClusters`
+// answer): a line shaped whole marks it (`whole`) and gives it the line's ink
+// for that cluster (`ink`), read only when it is asked for.
+function placedOf(g, line, i) {
+  if (!line.whole) return g;
+  g.whole = true;
+  if ('inks' in line) Object.defineProperty(g, 'ink', { enumerable: true, configurable: true, get: () => line.inks?.[i] });
+  return g;
 }
 
 // `lineInks` laid on a `wholeLine`'s entries by UTF-16 offset, as `glyphInk`
@@ -382,7 +414,8 @@ export function arcLayout(text, style, sizePx) {
   if (!text || sizePx <= 0 || !style || (style.size ?? 0) <= 0) return [];
   // Guard against missing letterSpacing or zero style.size causing NaN
   const ls = (Number(style?.letterSpacing) || 0) * (style.size > 0 ? sizePx / style.size : 0);
-  const { chars, widths, inks } = lineClusters(text, style, sizePx, ls);
+  const line = lineClusters(text, style, sizePx, ls);
+  const { chars, widths } = line;
   const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, leadCount(chars) - 1) * ls;
   if (!Number.isFinite(total) || total <= 0) return [];
   const curve = Number(style?.curve) || 0;
@@ -394,14 +427,19 @@ export function arcLayout(text, style, sizePx) {
   for (let i = 0; i < chars.length; i++) {
     const centerOff = cum + widths[i] / 2;
     const a = (centerOff - total / 2) / R;
-    out.push({
-      ch: chars[i],
-      x: R * Math.sin(a),
-      y: sign * (R - R * Math.cos(a)),
-      rot: sign * a, // radians
-      w: widths[i],
-      ...(inks ? { ink: inks[i] } : null),
-    });
+    out.push(
+      placedOf(
+        {
+          ch: chars[i],
+          x: R * Math.sin(a),
+          y: sign * (R - R * Math.cos(a)),
+          rot: sign * a, // radians
+          w: widths[i],
+        },
+        line,
+        i,
+      ),
+    );
     // The spacing falls between clusters, so not inside one.
     cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
   }
@@ -443,7 +481,8 @@ export function circleLayout(text, style, sizePx) {
   if (!text || sizePx <= 0 || !style || (style.size ?? 0) <= 0) return [];
   const scale = style.size > 0 ? sizePx / style.size : 0;
   const ls = (Number(style?.letterSpacing) || 0) * scale;
-  const { chars, widths, inks } = lineClusters(text, style, sizePx, ls);
+  const line = lineClusters(text, style, sizePx, ls);
+  const { chars, widths } = line;
   const fixed = Math.max(0, Number(style.circle?.r) || 0) * scale;
   const ink = widths.reduce((a, b) => a + b, 0);
   const n = leadCount(chars);
@@ -463,14 +502,19 @@ export function circleLayout(text, style, sizePx) {
     // o'clock, which is where `angle` 0 starts.
     const t = (cum + widths[i] / 2 - half) / R;
     const th = inside ? a0 + Math.PI - t : a0 + t;
-    out.push({
-      ch: chars[i],
-      x: R * Math.sin(th),
-      y: -R * Math.cos(th),
-      rot: inside ? th - Math.PI : th,
-      w: widths[i],
-      ...(inks ? { ink: inks[i] } : null),
-    });
+    out.push(
+      placedOf(
+        {
+          ch: chars[i],
+          x: R * Math.sin(th),
+          y: -R * Math.cos(th),
+          rot: inside ? th - Math.PI : th,
+          w: widths[i],
+        },
+        line,
+        i,
+      ),
+    );
     // The spacing falls between clusters, so not inside one.
     cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
   }
@@ -630,7 +674,8 @@ export function pathLayout(text, style, sizePx, boxW, boxH) {
   if (!Array.isArray(pts) || pts.length < 2) return [];
   const scale = sizePx / style.size;
   const ls = (Number(style?.letterSpacing) || 0) * scale;
-  const { chars, widths, inks } = lineClusters(text, style, sizePx, ls);
+  const line = lineClusters(text, style, sizePx, ls);
+  const { chars, widths } = line;
   const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, leadCount(chars) - 1) * ls;
   if (!Number.isFinite(total) || total <= 0) return [];
   const baked = bakePath(pts, scale);
@@ -643,14 +688,19 @@ export function pathLayout(text, style, sizePx, boxW, boxH) {
   let cum = 0;
   for (let i = 0; i < chars.length; i++) {
     const at = pathAt(baked, start + cum + widths[i] / 2);
-    out.push({
-      ch: chars[i],
-      x: at.x - hw,
-      y: at.y - hh,
-      rot: Math.atan2(at.tan[1], at.tan[0]),
-      w: widths[i],
-      ...(inks ? { ink: inks[i] } : null),
-    });
+    out.push(
+      placedOf(
+        {
+          ch: chars[i],
+          x: at.x - hw,
+          y: at.y - hh,
+          rot: Math.atan2(at.tan[1], at.tan[0]),
+          w: widths[i],
+        },
+        line,
+        i,
+      ),
+    );
     // The spacing falls between clusters, so not inside one.
     cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
   }
@@ -1225,7 +1275,8 @@ function plainRunLines(text, measure, width) {
 // advance read back for a loaded face would be a size solved against a font
 // nobody sees (DET-4).
 const MEASURE_MEMO_MAX = 40000;
-// font -> { adv: Map(string -> advance), ink: Map(string -> metrics), fns: Map(spacing -> `lineWidthIn`) }
+// font -> { adv: Map(string -> advance), ink: Map(string -> metrics), fns: Map(spacing -> `lineWidthIn`),
+//          line: Map(spacing|text -> `lineClusters`) }
 const measureMemo = new Map();
 let measureMemoSize = 0;
 function clearMeasureMemo() {
@@ -1257,7 +1308,7 @@ function keptFor(font) {
   if (engine?.loading()) return null;
   let k = measureMemo.get(font);
   if (k) measureMemo.delete(font);
-  else k = { adv: new Map(), ink: new Map(), fns: new Map() };
+  else k = { adv: new Map(), ink: new Map(), fns: new Map(), line: new Map() };
   // Last in the map is last used, so the trim below drops the oldest first.
   measureMemo.set(font, k);
   return k;
@@ -1300,12 +1351,13 @@ function trimMeasureMemo() {
   for (const [font, k] of measureMemo) {
     if (measureMemoSize <= MEASURE_MEMO_MAX / 2 || --left === 0) break;
     measureMemo.delete(font);
-    measureMemoSize -= k.adv.size + k.ink.size;
+    measureMemoSize -= k.adv.size + k.ink.size + k.line.size;
   }
   if (measureMemoSize > MEASURE_MEMO_MAX) {
     for (const k of measureMemo.values()) {
       k.adv.clear();
       k.ink.clear();
+      k.line.clear();
     }
     measureMemoSize = 0;
   }
