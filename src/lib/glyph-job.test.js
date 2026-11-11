@@ -29,6 +29,19 @@ const gradient = (extra = {}) => ({
 const stops = [{ pos: 0, color: '#123456' }, { pos: 1, color: 'rgba(171,205,239,0.5)' }];
 const straightRuns = [{ text: 'AB', x: 12, y: 43 }, { text: 'CD', x: 18, y: 67 }];
 
+describe('a curve says it is one line by where its layout came from', () => {
+  // An SFX box whose placement the engine refused is laid out as an arc
+  // (contain.js `placeBlock`), its letters a line's clusters: the painter
+  // shapes them as that line. Letters the SFX layout placed are not one.
+  it('an arc, an SFX box laid out as one included, is a line; SFX letters are not', () => {
+    const sfx = { ...style(), sfx: { ...defaultStyle().sfx, on: true }, curve: 20 };
+    const arc = layout(sfx, { isCurve: true, lines: null, layout: [{ ch: 'A', x: 0, y: 0, rot: 0, w: 10 }] });
+    expect(glyphJob(box, arc).line).toBe(true);
+    expect(glyphJob(box, { ...arc, sfx: true }).line).toBeUndefined();
+    expect(glyphJob(box, layout(style())).line).toBeUndefined();
+  });
+});
+
 describe('glyph jobs are plain data', () => {
   it('describes straight text and two stroke bands in paint order', () => {
     const s = { ...style(), strokeEffects: [out('#fff', 2, 0.7), out('#000', 5, 0.4)] };
@@ -101,7 +114,7 @@ describe('glyph jobs are plain data', () => {
     const curve = { isCurve: true, layout: [{ ch: 'A', x: 5, y: 2, rot: 0.3 }] };
     expect(glyphJob(box, layout(style())).line).toBeUndefined();
     const sfx = { ...style(), sfx: { ...defaultStyle().sfx, on: true } };
-    expect(glyphJob(box, layout(sfx, curve)).line).toBeUndefined();
+    expect(glyphJob(box, layout(sfx, { ...curve, sfx: true })).line).toBeUndefined();
     expect(glyphJob(box, layout(style(), curve)).line).toBe(true);
   });
 });

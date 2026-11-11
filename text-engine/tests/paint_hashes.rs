@@ -566,6 +566,34 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
                 .collect();
         }),
     ));
+    // A curve through the box job: "AVA" as three letters on a slight arc,
+    // shaped as one line (box wire v22, `Effects::line`) and each alone.
+    // The kerned pairs make the two different pictures.
+    let arc = |line: bool| -> Mutate {
+        Box::new(move |b| {
+            let job = &mut b.request.job;
+            job.curved = true;
+            job.effects.line = line;
+            job.runs = [("A", 50.0, 92.0, -0.12), ("V", 90.0, 88.0, 0.0), ("A", 130.0, 92.0, 0.12)]
+                .iter()
+                .map(|&(text, x, y, rot)| Run {
+                    text: text.to_owned(),
+                    x,
+                    y,
+                    rot,
+                    sx: 1.0,
+                    sy: 1.0,
+                    skew: 0.0,
+                    drip: 0.0,
+                    pen: 1.0,
+                    ghost: false,
+                    fill: None,
+                })
+                .collect();
+        })
+    };
+    rows.push(("curve_as_one_line", arc(true)));
+    rows.push(("curve_letter_by_letter", arc(false)));
     rows
 }
 

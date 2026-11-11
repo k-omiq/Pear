@@ -331,6 +331,14 @@ export async function createRustTextEngine(source, options = {}) {
       ? (face, text, letterSpacing = 0) => low.lineCarets(resolve(face), text, Number(letterSpacing) || 0)
       : undefined,
     /**
+     * Each cluster's ink in a line shaped whole, as a curved line is
+     * painted (text-engine/js/engine.mjs `lineInks`). Absent on a wasm built
+     * before the export existed: a caller asks first.
+     */
+    lineInks: low.hasLineInks
+      ? (face, text, letterSpacing = 0) => low.lineInks(resolve(face), text, Number(letterSpacing) || 0)
+      : undefined,
+    /**
      * SFX lettering (sfx.js): `sfxPlace(face, text, params)` lays the text's
      * groups along their paths (engine.mjs says what comes back),
      * `sfxKinds()` is the engine's table of the twelve sound types,

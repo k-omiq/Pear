@@ -1,6 +1,6 @@
 // Native-resolution raster export via canvas 2D. PNG is lossless.
 import { app, page, toast, toastError, boxText, saveExportPrefs, isLongstrip, fontsSettling, fontsGated, checks, checkItems, PAGE_W, PAGE_H } from './store.svelte.js';
-import { faceFor, textInset, contentWidth, glyphInk } from './measure.js';
+import { faceFor, textInset, contentWidth, placedInk } from './measure.js';
 import { glyphPainter, engineDraws, enginesNow, enginesAre, wobbleDrawn } from './text-engine/index.js';
 import { encodesPages, encodePage } from '../../text-engine/js/encode.mjs';
 import { crispFor } from './text-edges.svelte.js';
@@ -347,7 +347,7 @@ function layoutBox(box, p) {
       const cx = box.w / 2;
       const cy = box.h / 2;
       for (const g of layout) {
-        const k = glyphInk(g.ch, s, s.size);
+        const k = placedInk(g, s, s.size);
         if (!k) continue;
         const b = back(g);
         for (const t of b > 0 ? [0, b] : [0]) {
@@ -469,7 +469,7 @@ function layoutBox(box, p) {
   // Where each line's baseline sits inside its line box - the browser's own
   // placement, so the raster draws the glyphs where the editor does.
   const baseY = isCurve ? 0 : place.baseY;
-  return { s, lineH, baseY, pad, padL, padT, padR, padB, isCurve, lines, layout, caption, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
+  return { s, lineH, baseY, pad, padL, padT, padR, padB, isCurve, sfx: !!place.sfx, lines, layout, caption, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
 }
 
 // The caption beside an SFX (`style.sfx.caption`): a line of small straight
@@ -750,8 +750,10 @@ export function glyphJob(box, L) {
     // An arc, a circle or a path is one line cut into its clusters
     // (`lineClusters`): a painter that paints whole boxes shapes the runs as
     // that line again, so the letters keep its ligatures and contextual
-    // forms. An SFX letter is shaped on its own, by design.
-    if (!s.sfx?.on) job.line = true;
+    // forms. Letters the SFX layout placed are shaped on their own, by
+    // design; an SFX box whose placement the engine refused is laid out as
+    // a curve, and is one.
+    if (!L.sfx) job.line = true;
     // A curved box has no wrapped lines, so its gradient spans the box - which
     // is what 'box' scope means and the only scope the curved path has.
     const rect = { x: L.ox, y: L.oy, w: box.w, h: box.h };

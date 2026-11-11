@@ -171,3 +171,39 @@ fn runs_that_are_not_the_lines_clusters_are_shaped_one_by_one() {
         .unwrap();
     assert_eq!(line, apart);
 }
+
+#[test]
+fn a_character_the_font_lacks_is_one_cluster_of_the_line() {
+    let mut e = Engine::new();
+    let font = load(&mut e, "DejaVuSans.ttf");
+    let face = Face::new(font, 48.0);
+    // U+10FFFD is in no font: the line draws the font's .notdef there.
+    let text = "AV\u{10FFFD}AV";
+    let parts = letters(text);
+    let runs = shape_line_runs(&mut e, face, parts.iter().map(String::as_str), false)
+        .unwrap()
+        .expect("one run per letter, the missing one too");
+    assert_eq!(runs.len(), parts.len());
+    assert!(runs.iter().all(|r| r.glyphs.len() == 1));
+    let line = shape_run(&mut e, face, text, 0.0).unwrap();
+    let sum: f64 = runs.iter().map(|r| r.advance).sum();
+    assert!((sum - line.advance).abs() < 1e-9);
+    // Its ink is measured as the line has it, cluster for cluster.
+    let inks = e.cluster_inks(face, text, false).unwrap();
+    assert_eq!(inks.len(), parts.len());
+    assert!(inks[2].1.has_ink, "the .notdef box has ink");
+    // Bent to nothing, it paints the straight line, the missing letter and all.
+    let (x0, base) = (20.0, 80.0);
+    let straight = paint_job(&mut e, &request(face, false, false, vec![run(text, x0, base)]))
+        .unwrap()
+        .unwrap();
+    let mut pen = x0;
+    let mut placed = Vec::new();
+    for (p, r) in parts.iter().zip(runs.iter()) {
+        let (_, dy) = curved_origin(&e, face, r.advance).unwrap();
+        placed.push(run(p, pen + r.advance / 2.0, base - dy));
+        pen += r.advance;
+    }
+    let curved = paint_job(&mut e, &request(face, true, true, placed)).unwrap().unwrap();
+    assert!(same(&curved, &straight), "the line drawn letter by letter moved");
+}

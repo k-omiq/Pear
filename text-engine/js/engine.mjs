@@ -371,6 +371,30 @@ function wrap(instance) {
       return { at, x, length: view.getFloat64(n * 16, true), advance: view.getFloat64(n * 16 + 8, true) }
     },
 
+    /** Whether this wasm has `lineInks` (it is newer than the ABI number). */
+    hasLineInks: typeof ex.mt_line_inks === 'function',
+
+    /**
+     * The ink of each cluster of a line shaped whole, as the painter paints
+     * a curved line's letters (`Engine::cluster_inks`): per cluster, in
+     * drawing order, its UTF-16 offset and its ink from the middle of the
+     * room the line gives it, on the `middle` baseline, as `glyphInk`
+     * measures a glyph alone. Empty for a line whose clusters do not run
+     * forwards. Letter spacing turns the ligatures off, as for the painter.
+     * @returns {{ at: number, left: number, right: number, ascent: number, descent: number, hasInk: boolean }[]}
+     */
+    lineInks(face, text, letterSpacing = 0) {
+      if (!ex.mt_line_inks) throw new Error('mt-text: this wasm has no mt_line_inks; run npm run build:engine')
+      const n = check(ex.mt_line_inks(face.font, face.size, face.flags, putText(text), letterSpacing), 'lineInks')
+      const view = new DataView(memory.buffer, ex.mt_out_ptr(), n * 48)
+      const out = new Array(n)
+      for (let i = 0; i < n; i++) {
+        const f = (k) => view.getFloat64(i * 48 + k * 8, true)
+        out[i] = { at: f(0), left: f(1), right: f(2), ascent: f(3), descent: f(4), hasInk: f(5) === 1 }
+      }
+      return out
+    },
+
     /**
      * Whether this wasm has the sound-type SFX calls (`sfxPlace`, `sfxKinds`,
      * `sfxPick`, `sfxResolve`, `sfxOutline` and the handles' maths). All or

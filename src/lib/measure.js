@@ -299,13 +299,38 @@ export function glyphsMissing(style, text) {
 //
 // `ls` is the letter spacing in the same px: it turns the ligatures off, as
 // it does on a straight line, and is not in the widths.
+//
+// Shaped whole, a cluster's ink is the line's too (`inks`, one per code point,
+// null after a cluster's first; `lineInks`): offsets from the middle of its
+// room in the line, as `glyphInk` gives them from a glyph shaped alone, so a
+// footprint is measured where the painter draws the letter - half a kern
+// along, and as the contextual form the line chose.
 export function lineClusters(text, style, sizePx, ls = 0) {
   const chars = text ? [...text] : [];
   if (!chars.length || sizePx <= 0) return { chars: [], widths: [] };
   if (!engine) return { chars, widths: chars.map(() => sizePx * 0.55) };
   const face = faceFor(style, sizePx);
   const whole = typeof engine.lineCarets === 'function' ? wholeLine(engine.lineCarets(face, text, ls), chars, ls) : null;
+  if (whole && typeof engine.lineInks === 'function') whole.inks = clusterInks(engine.lineInks(face, text, ls), whole.chars, chars);
   return whole ?? { chars, widths: chars.map((ch) => engine.advance(face, ch)) };
+}
+
+// `lineInks` laid on a `wholeLine`'s entries by UTF-16 offset, as `glyphInk`
+// shapes its answer; null when the two do not name the same clusters.
+function clusterInks(found, out, chars) {
+  const inks = [];
+  let k = 0;
+  let at = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] === '') inks.push(null);
+    else {
+      const f = found[k++];
+      if (!f || f.at !== at) return null;
+      inks.push(/\S/.test(out[i]) ? { left: -f.left, right: f.right, ascent: f.ascent, descent: f.descent } : null);
+    }
+    at += chars[i].length;
+  }
+  return k === found.length ? inks : null;
 }
 
 // The clusters `lineCarets` found, per code point, or null where they do not
@@ -356,7 +381,7 @@ export function arcLayout(text, style, sizePx) {
   if (!text || sizePx <= 0 || !style || (style.size ?? 0) <= 0) return [];
   // Guard against missing letterSpacing or zero style.size causing NaN
   const ls = (Number(style?.letterSpacing) || 0) * (style.size > 0 ? sizePx / style.size : 0);
-  const { chars, widths } = lineClusters(text, style, sizePx, ls);
+  const { chars, widths, inks } = lineClusters(text, style, sizePx, ls);
   const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, leadCount(chars) - 1) * ls;
   if (!Number.isFinite(total) || total <= 0) return [];
   const curve = Number(style?.curve) || 0;
@@ -374,6 +399,7 @@ export function arcLayout(text, style, sizePx) {
       y: sign * (R - R * Math.cos(a)),
       rot: sign * a, // radians
       w: widths[i],
+      ...(inks ? { ink: inks[i] } : null),
     });
     // The spacing falls between clusters, so not inside one.
     cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
@@ -416,7 +442,7 @@ export function circleLayout(text, style, sizePx) {
   if (!text || sizePx <= 0 || !style || (style.size ?? 0) <= 0) return [];
   const scale = style.size > 0 ? sizePx / style.size : 0;
   const ls = (Number(style?.letterSpacing) || 0) * scale;
-  const { chars, widths } = lineClusters(text, style, sizePx, ls);
+  const { chars, widths, inks } = lineClusters(text, style, sizePx, ls);
   const fixed = Math.max(0, Number(style.circle?.r) || 0) * scale;
   const ink = widths.reduce((a, b) => a + b, 0);
   const n = leadCount(chars);
@@ -442,6 +468,7 @@ export function circleLayout(text, style, sizePx) {
       y: -R * Math.cos(th),
       rot: inside ? th - Math.PI : th,
       w: widths[i],
+      ...(inks ? { ink: inks[i] } : null),
     });
     // The spacing falls between clusters, so not inside one.
     cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
@@ -602,7 +629,7 @@ export function pathLayout(text, style, sizePx, boxW, boxH) {
   if (!Array.isArray(pts) || pts.length < 2) return [];
   const scale = sizePx / style.size;
   const ls = (Number(style?.letterSpacing) || 0) * scale;
-  const { chars, widths } = lineClusters(text, style, sizePx, ls);
+  const { chars, widths, inks } = lineClusters(text, style, sizePx, ls);
   const total = widths.reduce((a, b) => a + b, 0) + Math.max(0, leadCount(chars) - 1) * ls;
   if (!Number.isFinite(total) || total <= 0) return [];
   const baked = bakePath(pts, scale);
@@ -621,6 +648,7 @@ export function pathLayout(text, style, sizePx, boxW, boxH) {
       y: at.y - hh,
       rot: Math.atan2(at.tan[1], at.tan[0]),
       w: widths[i],
+      ...(inks ? { ink: inks[i] } : null),
     });
     // The spacing falls between clusters, so not inside one.
     cum += chars[i + 1] === '' ? widths[i] : widths[i] + ls;
@@ -757,6 +785,13 @@ export function lineInk(line, style, sizePx) {
 // The stand-in is the stand-in advance wide and one em tall, centred - the em
 // square is what 'middle' centres, and the stand-in font's ascent and descent
 // are exactly one em between them.
+// A placed curved glyph's ink (an `arcLayout`, `circleLayout` or
+// `pathLayout` entry, at the size it was laid out at): the line's, when the
+// line was shaped whole (`lineClusters`), else the glyph's shaped alone.
+export function placedInk(g, style, sizePx) {
+  return g.ink !== undefined ? g.ink : glyphInk(g.ch, style, sizePx);
+}
+
 export function glyphInk(ch, style, sizePx) {
   const str = String(ch ?? '');
   if (!/\S/.test(str) || !(sizePx > 0) || !style) return null;

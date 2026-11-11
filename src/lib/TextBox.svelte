@@ -3646,14 +3646,18 @@
   {:else if layout}
       <!-- Curved text is placed glyph by glyph, so each layer of the stack is a
            full set of glyph spans; they are all absolutely positioned already, so
-           no layer has to hold the others up. -->
+           no layer has to hold the others up. A line the engine shaped whole
+           (`g.ink`, measure.js `lineClusters`) centres each cluster on the
+           room the line gives it, kerning included: its span is that wide
+           and starts the letter at its left, so the browser's letter, shaped
+           alone, stands at the line's pen and not half a kern off. -->
       <div class="arcstack" style={filterCss}>
         {#each layers as ly, li (li)}
           <div class="arc" style={ly.arc}>
             {#each layout as g, i (i)}
               <span
                 class="arc-ch"
-                style="{textStyle}{ly.bg
+                style="{textStyle}{g.ink !== undefined && Number.isFinite(g.w) ? `width:${g.w}px;text-align:left;` : ''}{ly.bg
                   ? `${ly.bg}background-size:${ly.tile ? `${ly.tile}px ${ly.tile}px` : `${box.w * z}px ${box.h * z}px`};background-position:${-((box.w * z) / 2 + g.x - g.w / 2)}px ${-((box.h * z) / 2 + g.y - effSize / 2)}px;`
                   : ''}transform:translate(calc(-50% + {g.x}px), calc(-50% + {g.y}px)) rotate({g.rot}rad){g.sx != null ? ` scale(${g.sx}, ${g.sy ?? 1}) skewX(${g.skew ?? 0}rad)` : ''}"
               >{g.ch}</span>
