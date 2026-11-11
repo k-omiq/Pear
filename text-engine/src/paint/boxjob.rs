@@ -61,7 +61,7 @@ pub const BOX_MAGIC: u32 = 0x4250_544d;
 /// and a loader that agree on it must read the same bytes. v11 broke this
 /// once: 7858367 added shadow flag 4 (exact) with no bump, so a wasm from
 /// before it reads v11 and refuses every SFX copy's shadow.
-pub const BOX_WIRE_VERSION: u32 = 23;
+pub const BOX_WIRE_VERSION: u32 = 24;
 
 /// A guard, not a design limit: the app writes at most 129 taps. Shadows and
 /// the mask's shapes and points have no count of their own: the app lets a
@@ -303,6 +303,10 @@ pub struct BoxRequest {
     /// it by this. Kept, the mask and the fade are then read at the move's
     /// offset rather than rastered again (`Cover`).
     pub pin_shift: Pt,
+    /// The paint is a frame of a live move (wire v24): only then may the
+    /// kept mask and fade be read between whole pixels (`Cover::lay`). Any
+    /// other paint with a part-pixel move rasters them where they are.
+    pub pin_live: bool,
     /// The letters' own blend mode (Blending Options). It blends with the
     /// page only where a `backdrop` is given; with none it is Normal.
     pub blend: Blend,
@@ -365,6 +369,7 @@ impl BoxRequest {
             clip: None,
             fade: None,
             pin_shift: Pt::new(0.0, 0.0),
+            pin_live: false,
             blend: Blend::Normal,
             fill_opacity: 1.0,
             blending: Blending::default(),
@@ -998,6 +1003,8 @@ impl<'a> Reader<'a> {
 /// f64 x, y (v23)               how far the mask's and the fade's shapes have
 ///                              moved from where they are stated, job units
 ///                              (`BoxRequest::pin_shift`)
+/// u32 live (v24)               1: a frame of a live move, which may read the
+///                              kept mask between pixels; 0 any other paint
 /// u32 blend                    the letters' mode
 /// f64 fill opacity             0 to 1
 /// u32 blending flags (v9)      1 Blend Interior Effects as Group,
@@ -1250,6 +1257,14 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
     // v23: how far the mask's and the fade's shapes have moved.
     let shift_at = r.at;
     let pin_shift = Pt::new(r.within(MAX_THROW)?, r.within(MAX_THROW)?);
+    // v24: a frame of a live move, which alone may read the mask between
+    // pixels. Outside every key: the picture is the same either way, to
+    // within the edge a live frame may soften.
+    let pin_live = match r.u32()? {
+        0 => false,
+        1 => true,
+        _ => return Err(Error::BadSpec),
+    };
     // The mask and the fade: what a move of a box with either changes.
     let mask_end = r.at;
     let blend = Blend::from_u32(r.u32()?).ok_or(Error::BadSpec)?;
@@ -1340,6 +1355,7 @@ pub fn decode_box_kept(bytes: &[u8]) -> Result<(BoxRequest, BoxKeys), Error> {
         clip,
         fade,
         pin_shift,
+        pin_live,
         request,
     };
     request.lay_lightning()?;
@@ -1900,10 +1916,17 @@ fn lay_cover(
     };
     // Kept as the `Rc` it is used through, so a miss hands the same piece to
     // the store and to this paint without a copy.
+    // Only a live move frame may be approximate: any other paint reads the
+    // kept cover at a whole-pixel offset only, where the read is the raster,
+    // and rasters it fresh otherwise.
+    let whole = |cv: &Cover| {
+        let off = |d: f64| ((d * 256.0).round() as i64).rem_euclid(256) != 0;
+        !off(at.0 - cv.at.0) && !off(at.1 - cv.at.1)
+    };
     let kept = key
         .and_then(kept::get::<std::rc::Rc<Cover>>)
         .map(|cv| std::rc::Rc::clone(&*cv))
-        .filter(|cv| fits(cv));
+        .filter(|cv| fits(cv) && (request.pin_live || whole(cv)));
     let cover = match kept {
         Some(cv) => cv,
         None => {

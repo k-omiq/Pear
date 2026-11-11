@@ -863,6 +863,10 @@
   // the engine's premask piece and its raster of the mask are read back. The file is always painted where the box is.
   // The faces go with it, moved over the composed letters (`liveRuns`).
   let grainHold = null;
+  // A move drag in hand (`startMove`): its frames alone may read the kept
+  // mask between pixels (`liveMove`, wire v24). Every other paint is exact,
+  // and the drag let go paints once more without it.
+  let moveLive = $state(false);
   const paintedBox = () => {
     let b = editing && composeText != null ? { ...box, text: composeText, runs: liveRuns } : box;
     if (!maskOn && !fadeOn) return b;
@@ -874,7 +878,7 @@
     // which does not move here) and the move goes apart: the engine reads
     // the raster it keeps of them at the move (`pinShiftOf`), and a move
     // frame never walks the shapes.
-    return { ...b, x: grainHold.x, y: grainHold.y, pinMove: [dx, dy] };
+    return { ...b, x: grainHold.x, y: grainHold.y, pinMove: [dx, dy], ...(moveLive ? { liveMove: true } : {}) };
   };
   // `key` is the picture key this paint is for: the effect's paints have one,
   // and only those may go to the paint worker (`paintFull`). `worker` false
@@ -1112,6 +1116,7 @@
     resizing;
     sfxDragging;
     keying;
+    moveLive;
     if (!el) {
       // Warp switched off, or the box is going away: hand the pixels back and
       // forget what was drawn, so switching it on again paints the new canvas.
@@ -1841,6 +1846,7 @@
         ? clamp(oy + (ev.clientY - sy) / zz, stripBounds.min, stripBounds.max)
         : clamp(oy + (ev.clientY - sy) / zz, -box.h + 20, dims.h - 20);
       moveBoxTo(box, x, y, pg);
+      if (maskOn || fadeOn) moveLive = true;
       markUnsaved();
     };
 
@@ -1850,6 +1856,12 @@
       ac.abort();
       underHeld = null;
       placeHeld = null;
+      // The last frame may have read the mask between pixels: one paint at
+      // rest, exact, where the box was let go.
+      if (moveLive) {
+        warpDrawn = '';
+        moveLive = false;
+      }
 
       if (box.x !== before.x || box.y !== before.y) {
         // The mask stays on the page, so a move changes what a keep shape

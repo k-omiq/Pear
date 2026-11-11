@@ -115,7 +115,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 23, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 24, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(r.grain, (-1_234_567, 89_012));
     assert_eq!(
@@ -212,6 +212,8 @@ fn every_field_of_the_box_comes_back_as_itself() {
     );
     // v23: how far they have moved against a held box.
     assert_eq!(r.pin_shift, Pt::new(3.25, -1.75));
+    // v24: a frame of a live move.
+    assert!(r.pin_live);
     assert_eq!((r.blend, r.fill_opacity), (Blend::ColorBurn, 0.6875));
     assert!(r.blending.interior);
     // Transparency Shapes Layer off (v13): flag 2.
