@@ -614,7 +614,10 @@ export function unwarpWith(m, w, h, x, y, opts = null) {
   if (!Number.isFinite(tx) || !Number.isFinite(ty)) return [tx, ty];
   if (!m) return [tx, ty];
   const bounds = opts?.bounds ?? null;
-  const ok = (p) => !!p && (!bounds || (p[0] >= bounds[0] && p[1] >= bounds[1] && p[0] <= bounds[2] && p[1] <= bounds[3]));
+  // A millionth of a px of slack: a point on the bounds' edge, which Newton
+  // reaches only to its tolerance, is inside.
+  const e = BOUNDS_SLACK;
+  const ok = (p) => !!p && (!bounds || (p[0] >= bounds[0] - e && p[1] >= bounds[1] - e && p[0] <= bounds[2] + e && p[1] <= bounds[3] + e));
   if (m.back) {
     const p = m.back(tx, ty);
     return ok(p) ? p : null;
@@ -671,6 +674,7 @@ export function unwarpWith(m, w, h, x, y, opts = null) {
 }
 const UNWARP_TOLERANCE = 1e-3;
 const UNWARP_SEEDS = 8;
+const BOUNDS_SLACK = 1e-6;
 
 // Whether the box's straight step from `a` to `b` carries onto the page's
 // straight step from `pa` to `pb` (where the map takes them): each quarter
