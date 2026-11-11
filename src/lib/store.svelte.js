@@ -132,6 +132,7 @@ import { measureChapterFits } from './chapter-fit.js';
 // its own defaults, so `setTool` can disarm it without the two ever cycling.
 import { setBrushMode } from './brush-tool.svelte.js';
 import { scaleStroke } from './brush.js';
+import { scaleMesh } from './warp.js';
 import { translateStrokes } from './brush-board.svelte.js';
 import { setGlobalLight } from './text-paint.js';
 import { normalizeMask, maskFromClip, scaleMask, maskActive } from './box-mask.js';
@@ -7485,6 +7486,15 @@ export function resizeBox(pageId, boxId, geom, base = null) {
       };
     }
   }
+  // The mesh warp too, from the mesh the gesture found, so the steps of a
+  // drag do not compound. Its points are box-local px over the box rect: left
+  // where they were, the painter squeezes the text back into the old rect and
+  // the transform gizmo's handles sit on that, not on the box's corners.
+  const basePts = base ? base.style?.warp?.pts : b.style?.warp?.pts;
+  const fitMesh = () => {
+    if (!Array.isArray(basePts) || !basePts.length || !(ow > 0) || !(oh > 0)) return;
+    b.style.warp = { ...b.style.warp, pts: scaleMesh(basePts, b.w / ow, b.h / oh) };
+  };
   const widened = nw !== b.w;
   // A new place and nothing else - the Inspector's X or Y - is a move, and
   // keeps a standing solve as a drag does (`moveBoxTo`).
@@ -7522,6 +7532,7 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     if (!scale && nh !== oh) b.auto.locks.height = true;
   }
   if (moveOnly || hand || !canMeasure()) {
+    fitMesh();
     reviewBox(b, p);
     return b;
   }
@@ -7529,6 +7540,7 @@ export function resizeBox(pageId, boxId, geom, base = null) {
     // The text was not set in the new box: owed for when the face lands, as
     // an edit's fit is (`autoFitBox`). A Fixed box has no fit to owe.
     if (mode !== 'fixed') holdFit(b);
+    fitMesh();
     reviewBox(b, p);
     return b;
   }
@@ -7538,6 +7550,9 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // Anything else - a Fixed box, a scale, a height typed in - is never left
   // shorter than its text and its ink: it grows to hold them (`refitBox`).
   else refitBox(b, p);
+  // A box with a mesh switched off is laid out like any other, and its height
+  // follows the text above: the mesh is fitted to the height it ends at.
+  fitMesh();
   return b;
 }
 
