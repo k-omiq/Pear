@@ -2,7 +2,7 @@
 // What a proposal is on disk, checked on the way in. No imports, so the store
 // can read proposals at load without a cycle (proposals.svelte.js does the
 // rest).
-export const MAX_PER_PAGE = 40;
+export const MAX_PER_PAGE = 200;
 const MAX_TEXT = 2000;
 
 let seq = 0;
@@ -22,6 +22,9 @@ export function sanitizeOne(x) {
     by: typeof x.by === 'string' && x.by ? x.by.slice(0, 24) : 'ai',
     ...(typeof x.reason === 'string' && x.reason ? { reason: x.reason.slice(0, 300) } : null),
     ...(typeof x.run === 'string' && x.run ? { run: x.run.slice(0, 40) } : null),
+    // A line's source when it was made: a line number reused for other words
+    // (a re-detect, a new import) makes the proposal stale, not wrong.
+    ...(typeof x.src === 'string' ? { src: x.src.slice(0, MAX_TEXT) } : null),
   };
 }
 

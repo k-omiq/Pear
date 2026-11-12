@@ -14,7 +14,7 @@
 // Proposals live on the page (`p.proposals`) and are saved in chapter.json,
 // but never in exports or packages. Taking one rejects the rest for the same
 // words; taking one is an ordinary text edit, one undo step.
-import { app, pageById, lineByN, lineText, boxText, editBoxes, setBoxText, writeLineText, markUnsaved, settleEdits } from './store.svelte.js';
+import { app, pageById, lineByN, lineText, boxText, editBoxes, setBoxText, writeLineText, markUnsaved, settleEdits, boxLocked } from './store.svelte.js';
 
 import { MAX_PER_PAGE, sanitizeOne, newId } from './proposal-data.js';
 export { sanitizeProposals } from './proposal-data.js';
@@ -40,9 +40,12 @@ export function propose(p, target, text, { by = 'ai', reason = '', run = '' } = 
   if (base == null) return null;
   if (text === base) return null;
   p.proposals ??= [];
+  // Proposals whose words are gone (a deleted box or line) go first.
+  p.proposals = p.proposals.filter((x) => targetText(p, x.target) != null);
+  const src = target.line != null ? (lineByN(p, target.line)?.jp ?? '') : undefined;
   const same = p.proposals.find((x) => sameTarget(x.target, target) && x.text === text);
   if (same) return same;
-  const pr = sanitizeOne({ id: newId(), target, text, base, by, reason, run });
+  const pr = sanitizeOne({ id: newId(), target, text, base, by, reason, run, src });
   if (!pr) return null;
   if (p.proposals.length >= MAX_PER_PAGE) p.proposals.shift();
   p.proposals.push(pr);
@@ -59,7 +62,19 @@ const find = (pageId, id) => {
 // Whether a proposal still applies as made: its words are still its base.
 export function isStale(p, pr) {
   const now = targetText(p, pr.target);
-  return now == null || now !== pr.base;
+  return now == null || now !== pr.base || srcMoved(p, pr);
+}
+
+// The line under that number now holds other source words.
+const srcMoved = (p, pr) => pr.target.line != null && pr.src != null && (lineByN(p, pr.target.line)?.jp ?? '') !== pr.src;
+
+// A locked box, or a line a locked box shows, keeps its words.
+function targetLocked(p, target) {
+  if (target.box != null) {
+    const b = p.boxes?.find((x) => x.id === target.box);
+    return !!b && boxLocked(b);
+  }
+  return (p.boxes ?? []).some((b) => b.lineN === target.line && boxLocked(b));
 }
 
 // Use: the words become the proposal's. Refused ('stale') while the words
@@ -74,7 +89,8 @@ export function acceptProposal(pageId, id, { force = false } = {}) {
     rejectProposal(pageId, id);
     return 'gone';
   }
-  if (now !== pr.base && !force) return 'stale';
+  if ((now !== pr.base || srcMoved(p, pr)) && !force) return 'stale';
+  if (targetLocked(p, pr.target)) return 'locked';
   settleEdits();
   if (pr.target.line != null) writeLineText(p, pr.target.line, 'en', pr.text);
   else {

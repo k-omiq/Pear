@@ -2094,7 +2094,7 @@ function fitRest(b, pending) {
 // names, its space, its lines, what was detected on it, and which boxes it
 // holds in which order.
 const pageRest = (p) =>
-  JSON.stringify([p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.note ?? '', p.lines ?? null, p.detect ?? null, p.boxes.map((b) => b.id)]);
+  JSON.stringify([p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.note ?? '', p.proposals?.length ? p.proposals : null, p.lines ?? null, p.detect ?? null, p.boxes.map((b) => b.id)]);
 
 function noteBox(b, p, lines) {
   const pending = b.auto?.status === 'pending';
@@ -2425,7 +2425,7 @@ const docText = () =>
     JSON.stringify([
       app.chapterMode,
       { ...app.typesetting, version: 0 },
-      app.pages.map((p) => [p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.note ?? '', p.lines ?? null, p.detect ?? null, p.boxes]),
+      app.pages.map((p) => [p.id, p.file ?? null, p.cleanedFile ?? null, p.w, p.h, !!p.needsRespace, p.note ?? '', p.proposals?.length ? p.proposals : null, p.lines ?? null, p.detect ?? null, p.boxes]),
     ]),
   );
 
@@ -5039,12 +5039,16 @@ export function trialSolve(b, p, text, measure) {
   // A JSON copy: boxes are plain data, and $state.snapshot is not a copy in
   // every compile mode.
   const before = JSON.parse(JSON.stringify(b));
+  // The solve notes the size it reached as the selected box's (`seeSize`);
+  // a trial size must not later read as the user's own size edit.
+  const mark = { ...sizeMark };
   try {
     if (resolveBox(b, p, text) == null) return null;
     return measure(b);
   } finally {
     for (const k of Object.keys(b)) if (!Object.hasOwn(before, k)) delete b[k];
     Object.assign(b, before);
+    sizeMark = mark;
   }
 }
 

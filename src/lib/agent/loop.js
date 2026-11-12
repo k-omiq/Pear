@@ -20,6 +20,9 @@ export const LIMITS = {
   // Pictures sent back in one prompt. Past this, a `view` answers with its
   // numbers only and says why.
   images: 40,
+  // Base64 bytes of pictures in one prompt. Every picture is sent again each
+  // turn, and the API takes at most 32 MB a request.
+  imageBytes: 16 * 1024 * 1024,
   maxTokens: 16000,
 };
 
@@ -52,13 +55,20 @@ export function withCacheMark(messages) {
 
 // A tool's answer as a tool_result's content: its JSON as text, and each
 // picture `view` made as an image block, while the prompt still has room.
-export function toToolContent(r, imagesLeft = Infinity) {
+export function toToolContent(r, imagesLeft = Infinity, bytesLeft = Infinity) {
   if (!r?.ok) {
-    return { content: [{ type: 'text', text: JSON.stringify({ error: r?.error ?? 'failed', ...(r?.hint ? { hint: r.hint } : null) }) }], images: 0, isError: true };
+    return { content: [{ type: 'text', text: JSON.stringify({ error: r?.error ?? 'failed', ...(r?.hint ? { hint: r.hint } : null) }) }], images: 0, bytes: 0, isError: true };
   }
   const { images, ...rest } = r.result ?? {};
   const pics = Array.isArray(images) ? images : [];
-  const sent = pics.slice(0, Math.max(0, imagesLeft));
+  const sent = [];
+  let bytes = 0;
+  for (const i of pics) {
+    const n = String(i.png ?? i.data ?? '').length;
+    if (sent.length >= imagesLeft || bytes + n > bytesLeft) break;
+    sent.push(i);
+    bytes += n;
+  }
   const meta = pics.length ? { ...rest, images: pics.map(({ png, data, ...m }) => m) } : rest;
   if (sent.length < pics.length) {
     meta.imagesDropped = `${pics.length - sent.length} picture(s) not sent: this request reached its picture limit. Judge by the numbers, or finish and tell the user.`;
@@ -69,6 +79,7 @@ export function toToolContent(r, imagesLeft = Infinity) {
       ...sent.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mime ?? 'image/png', data: i.png ?? i.data } })),
     ],
     images: sent.length,
+    bytes,
     isError: false,
   };
 }
@@ -123,6 +134,7 @@ export async function agentLoop({ client, model, system, tools, messages, runToo
   const usage = emptyUsage();
   let calls = 0;
   let images = 0;
+  let bytes = 0;
   let turns = 0;
   const done = (stop) => ({ stop, usage, turns, toolCalls: calls, images });
 
@@ -139,11 +151,15 @@ export async function agentLoop({ client, model, system, tools, messages, runToo
       msg = await stream.finalMessage();
     } catch (err) {
       if (aborted(err, signal)) return done('stopped');
+      // What earlier turns cost was billed all the same.
+      if (err && typeof err === 'object') err.usage = usage;
       throw err;
     }
     addUsage(usage, msg.usage);
     onEvent({ type: 'usage', usage: { ...usage } });
-    messages.push({ role: 'assistant', content: msg.content });
+    // An empty answer is not kept: only the last message of a chat may be
+    // empty, and the next prompt would follow it.
+    if (msg.content?.length) messages.push({ role: 'assistant', content: msg.content });
     onEvent({ type: 'message', message: msg });
 
     // A server-side pause: send the chat back as it is and the model goes on.
@@ -171,8 +187,9 @@ export async function agentLoop({ client, model, system, tools, messages, runToo
         onEvent({ type: 'tool', id: block.id, name: block.name, input: block.input });
         r = await runTool(block.name, block.input ?? {});
       }
-      const out = toToolContent(r, lim.images - images);
+      const out = toToolContent(r, lim.images - images, lim.imageBytes - bytes);
       images += out.images;
+      bytes += out.bytes;
       onEvent({ type: 'toolDone', id: block.id, name: block.name, ok: !!r?.ok, result: r });
       results.push({ type: 'tool_result', tool_use_id: block.id, content: out.content, ...(out.isError ? { is_error: true } : null) });
     }

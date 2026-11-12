@@ -6,6 +6,10 @@
   // the run can still be reverted, so the user can look first and decide
   // after; the close button puts it away until the next run.
   import { aiRun, stopRun, revertRun, checkPin } from '../agent/run.svelte.js';
+  import { panel, stopPrompt } from '../agent/panel.svelte.js';
+
+  // The panel's run stops its prompt too; the door's run, the door's agent.
+  const stop = () => (aiRun.door === 'panel' && panel.running ? stopPrompt() : stopRun());
   import { app } from '../store.svelte.js';
 
   let dismissed = $state(false);
@@ -34,7 +38,7 @@
       <span class="ai-label">{aiRun.active ? (aiRun.quiet ? 'AI is thinking' : 'AI is editing') : aiRun.stopped ? 'AI run stopped' : 'AI run done'}</span>
       <span class="pill-count">{what}</span>
       {#if aiRun.active}
-        <button onclick={stopRun} title="End the run now. What it did stays.">Stop</button>
+        <button onclick={stop} title="End the run now. What it did stays.">Stop</button>
       {/if}
       {#if aiRun.canRevert}
         <button onclick={revertRun} title="Put every page the run touched back as it was. Undo on a page brings the run's work back.">Revert run</button>

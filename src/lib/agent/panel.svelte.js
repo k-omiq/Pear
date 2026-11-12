@@ -7,7 +7,7 @@
 // One chat per open chapter: another chapter starts a new chat.
 import { app } from '../store.svelte.js';
 import { listTools, callTool } from './registry.js';
-import { callContext, beginPromptRun, endRun, stopRun } from './run.svelte.js';
+import { callContext, beginPromptRun, endPromptRun, stopPromptRun } from './run.svelte.js';
 import { PANEL_INSTRUCTIONS } from './instructions.js';
 import { agentLoop, toApiTools, systemBlocks, dropOldImages, pushUserText, emptyUsage, addUsage } from './loop.js';
 import { aiKey, refreshKey, keyError } from './key.svelte.js';
@@ -216,6 +216,8 @@ export async function sendPrompt(text) {
     else if (out.stop === 'refusal') panel.error = 'Claude declined this request.';
     return true;
   } catch (err) {
+    const u = err?.usage;
+    if (u) addUsage(panel.usage, { input_tokens: u.input, output_tokens: u.output, cache_read_input_tokens: u.cacheRead, cache_creation_input_tokens: u.cacheWrite });
     panel.error = keyError(err);
     reply.text = reply.text.trim();
     return false;
@@ -223,7 +225,7 @@ export async function sendPrompt(text) {
     controller = null;
     panel.running = false;
     panel.using = null;
-    endRun();
+    endPromptRun();
   }
 }
 
@@ -231,5 +233,5 @@ export async function sendPrompt(text) {
 // did stays; Revert run on the bar takes it back.
 export function stopPrompt() {
   controller?.abort();
-  stopRun();
+  stopPromptRun();
 }
