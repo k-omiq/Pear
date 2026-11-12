@@ -18,3 +18,4 @@ import './chapters.js';
 import './job.js';
 import './copy-look.js';
 import './alternatives.js';
+import './letters.js';

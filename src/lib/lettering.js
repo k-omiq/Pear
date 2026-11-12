@@ -58,8 +58,8 @@ export const ART_SIZED_ROLES = [...SFX_ROLES, 'blocky', 'title'];
 export const FREEDOMS = ['strict', 'balanced', 'free'];
 export const FREEDOM_TEXT = {
   strict: 'Only the fonts and looks set here. Turns text with the art and fits it, nothing else. Asks before anything new.',
-  balanced: 'The fonts set here, plus the craft: SFX coloured and turned to match the art, white text in dark balloons, stacked screams, and a font of its own choosing for a kind of text left open (saved here, so it stays).',
-  free: 'All of balanced, and also other fonts for one-off moments, warps, text on paths, gradients and textures, and dramatic lines broken into word boxes.',
+  balanced: 'The fonts set here, plus the craft: SFX coloured and turned to match the art, white text in dark balloons, stacked screams, shaky text and single SFX letters moved where the original has them, and a font of its own choosing for a kind of text left open (saved here, so it stays).',
+  free: 'All of balanced, and also other fonts for one-off moments, warps, special effects (cracks, lightning, splash), text on paths, gradients and textures, and dramatic lines broken into word boxes.',
 };
 
 const MAX_NOTES = 4000;

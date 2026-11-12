@@ -14,7 +14,9 @@ import { withPagePixels } from '../render.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
 import { applyCase, breaksFor, casedRuns } from '../../measure.js';
-import { normalizeAuto, normalizeStrokeEffect } from '../../data.js';
+import { normalizeAuto, normalizeStrokeEffect, WARP_MIN_GRID, WARP_MAX_GRID } from '../../data.js';
+import { identityMesh } from '../../warp.js';
+import { compileLetters, compileMesh, LETTER_CAPS, MESH_CAP } from './letters.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
 import { fitPolygon, intervalsAt } from '../../outline-geom.js';
@@ -67,7 +69,7 @@ const DO_NAMED = ['preset:', 'sfx_kind:', 'warp:'];
 export const WARP_DEFAULT_AMOUNT = 50;
 const WARP_AMOUNT = /^[+-]?\d+(\.\d+)?$/;
 const DO_LATER = { match_angle: 'do "match_original" turns a box to the original\'s slant (and sizes, places and colours it).' };
-const SET_KEYS = ['text', 'style', 'sizing', 'geometry', 'breaks', 'tags', 'speaker', 'locks', 'outline', 'note'];
+const SET_KEYS = ['text', 'style', 'sizing', 'geometry', 'breaks', 'tags', 'speaker', 'locks', 'outline', 'note', 'letters', 'mesh'];
 const SIZE_RANGE = [4, 300];
 const GEOM_KEYS = ['x', 'y', 'w', 'h', 'rotation'];
 // A preset is a look, not a placement (Inspector.svelte `PRESET_SKIP`).
@@ -86,6 +88,8 @@ const DESCRIPTION = [
   'breaks ["line one", "line two", ...] the box\'s lines exactly, in order (no added hyphens), held until null clears them; needs outline fit (do "typeset"),',
   'tags (the line\'s tags, replaced whole; the box takes the tags\' style), speaker (the id of the character who says the line, from lettering get or guide, or null; the box takes their font),',
   'locks { size, width, height, pos, breaks } booleans, outline [[x, y], ...] a drawn bubble outline (3+ points, unapproved, the text typeset again inside it), note (a note on the outline for the user).',
+  `letters [{ key or n, dx, dy, rot, s } or { key or n, reset: true }] (SFX boxes only: single letters moved by hand, as the SFX gizmo does; read them with the letters tool first; dx, dy in ems of that letter (|v| <= ${LETTER_CAPS.move}), rot degrees (|v| <= ${LETTER_CAPS.rot}), s a scale ${LETTER_CAPS.sMin}..${LETTER_CAPS.sMax}, each the letter's whole hand edit (relative "+0.2" adds to what it has); at most half of a box's letters carry one (two on a short SFX); not with set.text or an sfx do in the same op, nor after one on the same box earlier in the call),`,
+  `mesh { grid: [cols, rows], corners: [[x, y] x4 top-left, top-right, bottom-right, bottom-left], move: [{ col, row, dx, dy }] } or { off: true } (the box's mesh warp set point by point, box-local page px with [0, 0] the box's top-left at rest: corners set a perspective or lean, move nudges grid points after; corners at most ${MESH_CAP * 100}% of the box's shorter side from the box's own corners, a move at most that far, no cell folded; moves start from the box's own mesh when the grid matches, else flat, so a warp preset then a few moves is the way to tune a preset; not with geometry w or h or a warp do in the same op, nor after one on the same box earlier in the call).`,
   'do: "typeset" (outline fit: style.margin 0.5 em unless set, balloon fit on, Auto height on (a box at a Fixed size is never laid out by the solver), then laid out again in its outline: an oval block, no hyphens, centred on the ink),',
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "free" (balloon fit off and the outline dropped: text drawn on the art, an SFX or sign the finder wrapped in an outline, laid out from itself where it stands), "refit_outline" (find the bubble under the box again),',
@@ -149,6 +153,8 @@ const input = {
               },
               outline: { type: 'array', minItems: 3, items: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number' } } },
               note: { type: 'string' },
+              letters: { type: 'array', items: { type: 'object' } },
+              mesh: { type: 'object' },
             },
           },
           do: { type: 'string' },
@@ -339,6 +345,17 @@ function compile(op, i) {
       if (typeof s.note !== 'string') fail(i, 'set.note', 'expected a string');
       set.note = s.note.slice(0, 500);
     }
+    if ('letters' in s) {
+      if ('text' in s) fail(i, 'set.letters', 'new words are new letters', 'set the text in one edit call, then read letters and move them in the next.');
+      const d = typeof op.do === 'string' ? op.do.trim() : '';
+      if (d === 'sfx_pick' || d === 'clear_sfx' || d.startsWith('sfx_kind:')) fail(i, 'set.letters', `"${d}" lays the letters out again`, 'switch the sound type in one edit call, then move letters in the next.');
+      set.letters = compileLetters(s.letters, matches, (path, msg, hint) => fail(i, path, msg, hint));
+    }
+    if ('mesh' in s) {
+      if (set.geometry && ('w' in set.geometry || 'h' in set.geometry)) fail(i, 'set.mesh', 'the mesh is in the box\'s own px', 'size the box in one edit call, then set the mesh in a later call.');
+      if (typeof op.do === 'string' && op.do.trim().startsWith('warp:')) fail(i, 'set.mesh', 'a warp do replaces the mesh', 'use one: a preset (do "warp:<kind>") or set.mesh.');
+      set.mesh = compileMesh(s.mesh, matches, (path, msg, hint) => fail(i, path, msg, hint), { identityMesh, MIN: WARP_MIN_GRID, MAX: WARP_MAX_GRID });
+    }
     out.set = set;
   }
 
@@ -362,9 +379,39 @@ function compile(op, i) {
   return out;
 }
 
+// Every op is checked against the boxes as the call found them, so letter
+// moves and a mesh may not build on what an earlier op of the same call
+// changes under them: the next call reads them fresh.
+const SFX_DO = ['sfx_kind', 'sfx_pick', 'clear_sfx', 'delete'];
+function sameCallCheck(compiled) {
+  const letters = new Map(); // box id -> what an earlier op did that changes its letters
+  const mesh = new Map(); // box id -> what an earlier op did that changes its mesh
+  compiled.forEach((c, i) => {
+    const ids = c.matches.map((m) => m.box.id);
+    if (c.set?.letters) {
+      const hit = ids.find((id) => letters.has(id));
+      if (hit) fail(i, 'set.letters', `an earlier op of this call ${letters.get(hit)} box ${hit}`, 'give all of a box\'s letter moves in one op, after any new words or sound type, in a later edit call.');
+    }
+    if (c.set?.mesh) {
+      const hit = ids.find((id) => mesh.has(id));
+      if (hit) fail(i, 'set.mesh', `an earlier op of this call ${mesh.get(hit)} box ${hit}`, 'give the box\'s mesh in one op, after any resize or warp preset, in a later edit call.');
+    }
+    const why = (what) => (m, id) => m.has(id) || m.set(id, what);
+    const d = c.do?.kind;
+    for (const id of ids) {
+      if (c.set?.text != null) why('gave new words to')(letters, id);
+      else if (c.set?.letters) why('moved letters of')(letters, id);
+      else if (SFX_DO.includes(d)) why(`did "${d}" to`)(letters, id);
+      if (c.set?.geometry && ('w' in c.set.geometry || 'h' in c.set.geometry)) why('resized')(mesh, id);
+      else if (c.set?.mesh) why('set the mesh of')(mesh, id);
+      else if (d === 'warp' || d === 'delete') why(`did "${d}" to`)(mesh, id);
+    }
+  });
+}
+
 // The parts of `set` that `editBoxes` records: text, style, geometry, tags.
 function writeSet(set, matches) {
-  const hasBoxPart = set.text != null || set.style || set.geometry || set.tags || 'speaker' in set || set.sizing || 'breaks' in set;
+  const hasBoxPart = set.text != null || set.style || set.geometry || set.tags || 'speaker' in set || set.sizing || 'breaks' in set || set.letters || set.mesh;
   if (!hasBoxPart) return [];
   // A box that draws its line's words takes new words on its line, so the
   // queue and every box of that line keep the same words (the text tool's way).
@@ -452,6 +499,17 @@ function writeSet(set, matches) {
             b.auto.locks.breaks = true;
           }
         }
+      }
+      // Letter edits and the mesh were checked against the box as the call
+      // found it (compile): written whole, so a relative value lands once.
+      if (set.letters?.has(b.id) && b.style.sfx) {
+        const g = set.letters.get(b.id);
+        if (Object.keys(g).length) b.style.sfx.glyphs = g;
+        else delete b.style.sfx.glyphs;
+      }
+      if (set.mesh?.has(b.id)) {
+        const w = set.mesh.get(b.id);
+        b.style.warp = w.on ? { ...w, pts: w.pts.map((pt) => [...pt]) } : { ...b.style.warp, on: false, pts: [] };
       }
       // Last: a height set above turned the box Fixed (`resizeBox`), and the
       // lock on it is what holds that height now.
@@ -916,6 +974,7 @@ defineTool({
       throw new ToolError('in the AI panel, words change through the text tool, as proposals the user accepts', 'Call text with ops [{ id, text, reason }]; keep the rest of this edit as it is, without set.text.');
     }
     const compiled = ops.map(compile);
+    sameCallCheck(compiled);
     if (dryRun) return { dryRun: true, ops: compiled.map((c) => ({ matched: c.matches.length, ids: c.matches.slice(0, 50).map((m) => m.box.id) })) };
     // The originals "match_original" lays boxes over are read off the page
     // images first, where the boxes stand now; then everything is written in
