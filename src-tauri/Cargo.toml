@@ -114,12 +114,17 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
+# The in-app AI panel's key (src/ai_api.rs): the OS keychain, so the key never
+# sits in a file or in the webview. Each OS turns on its own store below; with
+# none, keyring falls back to a mock store, which is why the features matter.
+keyring = "3.6"
 
 # Execution providers are per-OS `ort` features: each one selects a different
 # prebuilt onnxruntime, and a provider the target cannot have (CoreML off a
 # Mac) makes ort-sys fail to find binaries. See src/detect/accel.rs for the
 # order they are tried in.
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6", features = ["apple-native"] }
 ort = { version = "2.0.0-rc.10", features = ["coreml"] }
 # The colour picker's eyedropper (src/screen_color.rs): AppKit's NSColorSampler,
 # because WKWebView has no EyeDropper. Both crates are already in the tree via tao.
@@ -133,4 +138,10 @@ block2 = "0.6"
 # installed, DirectML for every other GPU. The provider DLLs it ships are
 # staged by build.rs and bundled by tauri.windows.conf.json.
 [target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6", features = ["windows-native"] }
 ort = { version = "2.0.0-rc.10", features = ["cuda", "directml"] }
+
+# The kernel keyring: no D-Bus or system library to link, but it lasts until
+# logout, so the panel says the key is kept for this session (src/ai_api.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", features = ["linux-native"] }

@@ -1,5 +1,7 @@
 // The AI door: a local MCP server, off until Settings turns it on.
 mod agent_mcp;
+// The in-app AI panel: the Claude API key and the streaming proxy.
+mod ai_api;
 mod app_icon;
 // `pub` because the `.sut` parser and its scorer are reachable from the crate's
 // tests as well as from the `brush_import` command below.
@@ -83,9 +85,15 @@ pub fn run() {
       agent_mcp::agent_window_ready,
       agent_mcp::agent_window_close,
       agent_mcp::agent_windows_close,
+      ai_api::ai_key_status,
+      ai_api::ai_key_set,
+      ai_api::ai_key_clear,
+      ai_api::ai_request,
+      ai_api::ai_abort,
       app_icon::set_theme_icon
     ])
     .manage(agent_mcp::AgentDoor::default())
+    .manage(ai_api::AiApi::default())
     // A window gone frees the chapters it held (agent_mcp.rs).
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::Destroyed = event {
