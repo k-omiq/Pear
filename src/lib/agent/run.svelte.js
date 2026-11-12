@@ -27,6 +27,7 @@ import { inRun } from '../editor/history.svelte.js';
 import { guideBound, snapshotGuide, restoreGuide } from '../guide.svelte.js';
 import { snapshotTags, emptyTagChanges, keepTagChanges, tagChangesKept, restoreTagChanges } from '../tags.svelte.js';
 import { ToolError } from './registry.js';
+import { dropRunProposals } from '../proposals.svelte.js';
 
 export const QUIET_MS = 20000;
 export const IDLE_MS = 5 * 60 * 1000;
@@ -241,6 +242,10 @@ export function callContext(door) {
         sync();
       }
     },
+    // The run a write joins, by id: what a proposal records (TXT-4).
+    runId() {
+      return runForWrite(door, since).id;
+    },
     // A long tool (detection, the chapter placer) asks between its steps.
     stillPinned() {
       if (since !== epoch || stoppedUntilQuiet) return false;
@@ -279,6 +284,7 @@ export function revertRun() {
     if ('detect' in after) p.detect = after.detect ? structuredClone(after.detect) : null;
     n++;
   }
+  dropRunProposals(run.id);
   if (Object.keys(run.guideBefore).length) restoreGuide({ ...snapshotGuide(), ...run.guideBefore });
   restoreTagChanges(run.tagsBefore);
   if (n) markUnsaved();

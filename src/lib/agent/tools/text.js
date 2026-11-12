@@ -11,6 +11,7 @@ import { parsePages } from '../select.js';
 import { untrusted } from '../fence.js';
 import { app, lineByN, lineText, boxText, editBoxes, setBoxText, writeLineText, isTranslateMode, boxLocked } from '../../store.svelte.js';
 import { lineTags } from '../../tags.svelte.js';
+import { propose } from '../../proposals.svelte.js';
 import { readsLine, lineLocked, matchesOf, handToSolver, heldBreaks, breaksDropped, reportOf } from './edit.js';
 
 const MAX_LINES = 300;
@@ -71,7 +72,7 @@ function compile(op, i) {
     return op[k];
   };
   if ('id' in op) {
-    for (const k of Object.keys(op)) if (!['id', 'text'].includes(k)) throw new ToolError(`${at}: unknown key "${k}" beside id`, 'A box op is { id, text }.');
+    for (const k of Object.keys(op)) if (!['id', 'text', 'reason'].includes(k)) throw new ToolError(`${at}: unknown key "${k}" beside id`, 'A box op is { id, text }.');
     const text = words('text');
     if (text === undefined) throw new ToolError(`${at}.text is required with id`);
     const i2 = app.pages.findIndex((p) => p.boxes?.some((b) => b.id === op.id));
@@ -83,11 +84,11 @@ function compile(op, i) {
     if (boxLocked(b)) throw new ToolError(`${at}: box ${b.id} is locked`, 'the user locked it to hold it as it is; ask them before changing its words');
     if (readsLine(b, p)) {
       if (lineLocked(p, b.lineN)) throw new ToolError(`${at}: line ${b.lineN} is shown by a locked box`, 'the user locked it to hold it as it is; ask them before changing its words');
-      return { p, page: i2 + 1, n: b.lineN, field: 'en', v: text, via: b.id };
+      return { p, page: i2 + 1, n: b.lineN, field: 'en', v: text, via: b.id, why: reasonOf(op) };
     }
-    return { p, page: i2 + 1, box: b, v: text };
+    return { p, page: i2 + 1, box: b, v: text, why: reasonOf(op) };
   }
-  for (const k of Object.keys(op)) if (!['page', 'line', 'en', 'jp'].includes(k)) throw new ToolError(`${at}: unknown key "${k}"`, 'A line op is { page, line, en?, jp? }; a box op { id, text }.');
+  for (const k of Object.keys(op)) if (!['page', 'line', 'en', 'jp', 'reason'].includes(k)) throw new ToolError(`${at}: unknown key "${k}"`, 'A line op is { page, line, en?, jp? }; a box op { id, text }.');
   const count = app.pages.length;
   if (!Number.isInteger(op.page) || op.page < 1 || op.page > count) throw new ToolError(`${at}.page must be a page 1-${count}`);
   const p = app.pages[op.page - 1];
@@ -100,8 +101,32 @@ function compile(op, i) {
   if (en === undefined && jp === undefined) throw new ToolError(`${at} changes nothing`, 'give en (the English) or jp (the source), or both.');
   return [
     ...(jp !== undefined ? [{ p, page: op.page, n: op.line, field: 'jp', v: jp }] : []),
-    ...(en !== undefined ? [{ p, page: op.page, n: op.line, field: 'en', v: en }] : []),
+    ...(en !== undefined ? [{ p, page: op.page, n: op.line, field: 'en', v: en, why: reasonOf(op) }] : []),
   ];
+}
+
+const reasonOf = (op) => (typeof op.reason === 'string' ? op.reason.slice(0, 300) : '');
+
+// In the AI panel the English is never written over: each change is kept as
+// a proposal the user takes or drops (TXT-4). The source (jp) is an OCR fix
+// and is written as before.
+function proposeAll(flat, ctx) {
+  const run = ctx.runId();
+  return flat
+    .filter((w) => w.field !== 'jp')
+    .map((w) => {
+      const target = w.box ? { box: w.box.id } : { line: w.n };
+      const before = wordsOf(w);
+      const pr = propose(w.p, target, w.v, { run, reason: w.why });
+      return {
+        page: w.page,
+        ...(w.box ? { id: w.box.id } : { line: w.n, ...(w.via ? { via: w.via } : null) }),
+        before: untrusted(before),
+        proposed: untrusted(w.v),
+        outcome: pr ? 'proposed' : 'nothing needed',
+        ...(pr ? { proposal: pr.id, pageId: w.p.id } : null),
+      };
+    });
 }
 
 const wordsOf = (w) => (w.box ? boxText(w.box, w.p) : w.field === 'jp' ? (lineByN(w.p, w.n).jp ?? '') : lineText(lineByN(w.p, w.n)));
@@ -111,6 +136,7 @@ defineTool({
   description:
     'Change the words. ops: [{ page, line, en?, jp? }] - a line\'s English (en: what every box showing that line draws, and what the queue shows) or its source (jp: to fix an OCR misread) - or [{ id, text }] - one box\'s words (a box that draws its line\'s words changes them on its line). ' +
     `Up to ${MAX_OPS} ops, all checked before anything is written. Works in translate mode too. Each box showing a changed line is laid out again for its new words; each page changed is one undo step for the user. ` +
+    'In the AI panel, English and box words are not written: each change becomes a proposal the user sees with Use and Reject (outcome "proposed"); give reason (shown to the user) on each op. ' +
     'Returns per op the words before and after (fenced), the boxes laid out again, and their checks and fit (compact: true keeps only what needs work, as edit does). Lines set by hand (edit set.breaks) for the old words are let go: breaksDropped names those boxes. Keep the meaning; follow the series guide\'s glossary; and tell the user every change you made, before and after.',
   input: {
     type: 'object',
@@ -131,6 +157,7 @@ defineTool({
             jp: { type: 'string' },
             id: { type: 'string' },
             text: { type: 'string' },
+            reason: { type: 'string', description: 'why, in a few words; shown to the user with a proposal' },
           },
         },
       },
@@ -142,7 +169,14 @@ defineTool({
     if (!Array.isArray(ops) || !ops.length) throw new ToolError('ops must be a non-empty list', 'Use ops: [{ page: 2, line: 3, en: "Hello." }].');
     if (ops.length > MAX_OPS) throw new ToolError(`at most ${MAX_OPS} ops in one call`);
     if (!app.pages.length) throw new ToolError('no chapter is open');
-    const writes = ops.map((op, i) => compile(op, i));
+    let writes = ops.map((op, i) => compile(op, i));
+    let proposed = null;
+    if (ctx?.door === 'panel') {
+      proposed = proposeAll(writes.flat(), ctx);
+      writes = writes.map((list) => [list].flat().filter((w) => w.field === 'jp')).filter((l) => l.length);
+      const said = { proposed, note: 'Each proposal shows to the user as a card with Use and Reject; the words stay as they are until they choose. Say in your reply what you proposed and why.' };
+      if (!writes.length) return said;
+    }
     const flat = writes.flat();
     const pages = [...new Set(flat.map((w) => w.p))];
     const held = heldBreaks(pages);
@@ -182,6 +216,7 @@ defineTool({
         return { changes: list, ...(checks?.length ? { checks } : null), ...rest };
       }),
       ...breaksDropped(pages, held),
+      ...(proposed ? { proposed } : null),
     };
   },
 });

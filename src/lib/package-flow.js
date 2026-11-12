@@ -50,8 +50,19 @@ function downloadBytes(bytes, name) {
 // so the other machine opens it the same way instead of falling back to
 // plain. A copy: the record read from disk is left as it was.
 export function recordForExport(record) {
-  if (!record || record.typesetting != null) return record;
-  return { ...record, typesetting: legacyTypesetting() };
+  if (!record) return record;
+  // AI proposals (TXT-4) are this machine's pending suggestions, never part
+  // of what is handed on.
+  const pages = record.pages?.some((pg) => pg && 'proposals' in pg)
+    ? record.pages.map((pg) => {
+        if (!pg || !('proposals' in pg)) return pg;
+        const { proposals, ...rest } = pg;
+        return rest;
+      })
+    : record.pages;
+  const out = pages === record.pages ? record : { ...record, pages };
+  if (out.typesetting != null) return out;
+  return { ...out, typesetting: legacyTypesetting() };
 }
 
 // The families a chapter names that go into its package with no font file,

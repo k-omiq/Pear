@@ -2611,6 +2611,9 @@ async function writeOpenChapter(seq, requestedRef, requestedTurn) {
     // Written only when there is one (TXT-7), so a chapter nobody wrote a
     // note in is saved exactly as before.
     ...(pg.note ? { note: pg.note } : null),
+    // Written only when there are any (TXT-4), so a chapter with none is
+    // saved exactly as before.
+    ...(pg.proposals?.length ? { proposals: $state.snapshot(pg.proposals) } : null),
     // $state.snapshot is a deep clone: the nested style objects inside boxes
     // and the detect geometry come out as plain data, never proxies.
     lines: $state.snapshot(pg.lines),
