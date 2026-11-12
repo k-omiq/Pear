@@ -43,7 +43,8 @@ describe('the AI tab in Settings', () => {
       `http://127.0.0.1:${DEFAULT_PORT}/mcp`,
     );
     expect(view.getByLabelText('Safe Claude Code start').textContent).toBe('claude --tools ""');
-    expect(view.getByText('Needs the desktop app')).toBeTruthy();
+    // Once for the panel's key, once for the door.
+    expect(view.getAllByText('Needs the desktop app')).toHaveLength(2);
   });
 
   it('Copy puts the line on the clipboard', async () => {

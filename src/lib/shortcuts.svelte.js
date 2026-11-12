@@ -354,6 +354,7 @@ const DEFS = [
   { id: 'panel.options', label: 'Show or hide box options', group: 'Panels', combo: null, keywords: 'inspector window', ...T },
   { id: 'panel.queue', label: 'Show or hide text queue', group: 'Panels', combo: null, keywords: 'lines window', ...T },
   { id: 'panel.sfx', label: 'Show or hide SFX window', group: 'Panels', combo: null, keywords: 'sound effect', ...T },
+  { id: 'panel.ai', label: 'Show or hide AI panel', group: 'Panels', combo: null, keywords: 'claude chat agent assistant', ...T },
   { id: 'inspector.tabNext', label: 'Next options tab', group: 'Panels', combo: 'Mod+]', keywords: 'inspector', ...T },
   { id: 'inspector.tabPrev', label: 'Previous options tab', group: 'Panels', combo: 'Mod+[', keywords: 'inspector', ...T },
   { id: 'inspector.tabText', label: 'Text tab', group: 'Panels', combo: 'Mod+Alt+1', keywords: 'inspector options', ...T },
