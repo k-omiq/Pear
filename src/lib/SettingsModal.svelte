@@ -296,8 +296,7 @@
     }
   }
   async function onClearKey() {
-    await clearKey();
-    toast('Key removed');
+    if (await clearKey()) toast('Key removed');
   }
 
   // The MCP door (agent/door.svelte.js): off by default, 127.0.0.1 only, and
