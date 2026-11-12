@@ -188,7 +188,7 @@
     align-self: flex-end;
     max-width: 88%;
     padding: 7px 10px;
-    border-radius: 7px;
+    border-radius: var(--radius);
     background: var(--panel2);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
