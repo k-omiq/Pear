@@ -147,7 +147,8 @@ const PATH_MAX_ANCHORS = 64;
 // Circle angles wrap rather than clamp, so have no min/max. The path's anchors
 // and the mask's shapes are plain enough to write by hand; the warp mesh, the
 // ink strokes and the SFX restoration snapshot belong to the editors that
-// create them (a warp comes from edit's "warp:<kind>" action instead).
+// create them (a warp comes from edit's "warp:<kind>" action or set.mesh, SFX
+// letters from set.letters).
 export const STYLE_SCHEMA = {
   font: string('font family'),
   // Not clamped by normalizeStyle; the range is what a box can sensibly be
@@ -322,7 +323,7 @@ export const STYLE_SCHEMA = {
     on: boolean('enable mesh'),
     cols: integer('mesh columns', WARP_MIN_GRID, WARP_MAX_GRID),
     rows: integer('mesh rows', WARP_MIN_GRID, WARP_MAX_GRID),
-    pts: readOnly('set through transform/liquify tools'),
+    pts: readOnly('set through edit set.mesh (corners, point moves) or do "warp:<kind>"'),
   }),
   circle: object('circular text', {
     on: boolean('enable circle'),
@@ -360,7 +361,7 @@ export const STYLE_SCHEMA = {
       b: point('end [x,y] em'),
       bend: number('bend, + bows left of a->b', -2, 2),
     }, ['a', 'b']), { maxItems: SFX_MAX_GROUPS }),
-    glyphs: readOnly('set through the SFX gizmo'),
+    glyphs: readOnly('set through edit set.letters (the letters tool reads them)'),
     caption: object('small translation beside the SFX', {
       text: string('caption text; empty=none'),
       side: choice('side of the SFX', SFX_CAPTION_SIDES),
