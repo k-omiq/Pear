@@ -115,8 +115,13 @@ describe('the gate', () => {
   });
 
   it('a plain box is the bytes it was: nothing is laid on it, so the job is its glyph job', () => {
+    // A box job says a curve is one line (box wire v22) and the engine shapes
+    // its letters as that line; the glyph wire has no place for that, so a
+    // painter without boxes shapes each letter alone. The curve is held to
+    // the glyph job with that one flag left out.
+    const perLetter = { ...whole, paintBox: (ctx, spec) => whole.paintBox(ctx, { ...spec, job: { ...spec.job, line: undefined } }) };
     for (const over of [{}, { strokes: [{ color: '#e11d48', width: 4, opacity: 1 }] }, { curve: 30 }]) {
-      const a = texture(boxOf(over));
+      const a = texture(boxOf(over), over.curve ? perLetter : whole);
       const b = texture(boxOf(over), canvasPasses);
       expect(against(a.img, b.img)).toMatchObject({ worst: 0 });
       expect([a.ox, a.oy, a.cw, a.ch]).toEqual([b.ox, b.oy, b.cw, b.ch]);

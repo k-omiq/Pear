@@ -14,6 +14,7 @@ import {
   meshMap,
   affineWarpPoint,
   unwarpPoint,
+  unwarpWith,
 } from './warp.js';
 import { normalizeStyle, normalizeWarp, defaultStyle } from './data.js';
 
@@ -276,6 +277,123 @@ describe('unwarpPoint', () => {
     expect(y).toBeCloseTo(100, 4);
   });
 
+  it('undoes a four-handle perspective in closed form, and nothing past its vanishing line', () => {
+    // Top wide, foot narrow: the sides meet at (50, 125), and the vanishing
+    // line is y = 125.
+    const narrow = [[0, 0], [100, 0], [40, 100], [60, 100]];
+    for (const [x, y] of [[50, 50], [45, 99], [10, 5], [50, 124]]) {
+      const [ux, uy] = unwarpPoint(narrow, 1, 1, W, H, x, y);
+      const [bx, by] = warpPoint(narrow, 1, 1, W, H, ux, uy);
+      expect(bx).toBeCloseTo(x, 9);
+      expect(by).toBeCloseTo(y, 9);
+    }
+    expect(unwarpPoint(narrow, 1, 1, W, H, 50, 200)).toBe(null);
+    expect(unwarpPoint(narrow, 1, 1, W, H, 0, 130)).toBe(null);
+  });
+
+  it('drops a point the mesh does not reach: never the closest point it found', () => {
+    // A grid flattened onto one line: nothing off the line is reached.
+    const flat = identityMesh(2, 2, W, H).map(([x]) => [x, 50]);
+    expect(unwarpPoint(flat, 2, 2, W, H, 50, 10)).toBe(null);
+  });
+
+  it('finds every point a folded mesh reaches, on the sheet the hint is on', () => {
+    // The middle dot dragged far right and down: the right half folds back
+    // over itself. From the nearest seed, Newton stops in the crease for some
+    // of these points; each is still reached, from the fold's other side.
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    const bounds = [-10, -10, 110, 110];
+    let lost = 0;
+    for (let y = 0; y <= 100; y += 4) {
+      for (let x = 0; x <= 100; x += 4) {
+        const [qx, qy] = m.at(x, y);
+        // A stroke's previous point, a px back along the row.
+        const back = unwarpWith(m, W, H, qx, qy, { bounds, hint: [x - 1, y] });
+        if (!back) {
+          lost++;
+          continue;
+        }
+        const [bx, by] = m.at(back[0], back[1]);
+        expect(Math.hypot(bx - qx, by - qy)).toBeLessThanOrEqual(1e-3);
+        // Where it was: right in the crease another point within a couple
+        // of px goes to the same place, never one on a far sheet.
+        expect(Math.hypot(back[0] - x, back[1] - y)).toBeLessThanOrEqual(3);
+        // With no hint, still inside the bounds.
+        const any = unwarpWith(m, W, H, qx, qy, { bounds });
+        expect(any[0] >= -10 && any[0] <= 110 && any[1] >= -10 && any[1] <= 110).toBe(true);
+      }
+    }
+    expect(lost).toBe(0);
+    // The point Newton stalled on from its nearest seed.
+    const [qx, qy] = m.at(62, 7);
+    expect(unwarpPoint(fold, 2, 2, W, H, qx, qy)).not.toBe(null);
+  });
+
+  it('with no hint, neighbouring targets in the fold\'s overlap land on one sheet', () => {
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    const bounds = [-10, -10, 110, 110];
+    let pairs = 0;
+    let apart = 0;
+    for (let y = 0; y <= 110; y += 1.5) {
+      for (let x = 0; x <= 120; x += 1.5) {
+        const a = unwarpWith(m, W, H, x, y, { bounds });
+        const b = unwarpWith(m, W, H, x + 1, y, { bounds });
+        if (!a || !b) continue;
+        pairs++;
+        if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 10) apart++;
+      }
+    }
+    expect(pairs).toBeGreaterThan(5000);
+    // The sheet turned as the box's middle is wins, then the answer nearest
+    // the target: a pair lands apart only where one of its sheets ends
+    // between the two (26 here; the first seed to converge gave 70).
+    expect(apart).toBeLessThanOrEqual(30);
+    // In the overlap, inside both sheets: page (104, 75) is reached from
+    // about (47, 58), turned as the box's middle is, and about (79, 68),
+    // turned over. The start and its neighbour both take the first.
+    const [s0, s1] = [unwarpWith(m, W, H, 104, 75, { bounds }), unwarpWith(m, W, H, 105, 75, { bounds })];
+    expect(Math.hypot(s0[0] - 47.2, s0[1] - 57.9)).toBeLessThan(0.1);
+    expect(Math.hypot(s0[0] - s1[0], s0[1] - s1[1])).toBeLessThan(3);
+    expect(unwarpWith(m, W, H, 104, 75, { bounds, hint: [79, 67] })[0]).toBeCloseTo(79, 0);
+  });
+
+  it('a point on the edge of the bounds is inside them', () => {
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    const bounds = [-10, -10, 110, 110];
+    // Every point of the left and the top edge: the mesh there is the box's
+    // own, so each comes back as itself, give or take Newton's tolerance.
+    for (let k = -10; k <= 110; k += 5) {
+      for (const [x, y] of [[-10, k], [k, -10]]) {
+        const [qx, qy] = m.at(x, y);
+        const back = unwarpWith(m, W, H, qx, qy, { bounds, hint: [x + 0.5, y + 0.5] });
+        expect(back, `${x},${y}`).not.toBe(null);
+        expect(Math.hypot(back[0] - x, back[1] - y)).toBeLessThan(1e-2);
+      }
+    }
+  });
+
+  it('answers nothing outside the bounds, and skips the search for a target out of the seeds\' reach', () => {
+    const fold = identityMesh(2, 2, W, H).map(([x, y], i) => (i === 4 ? [x + 60, y + 18] : [x, y]));
+    const m = meshMap(fold, 2, 2, W, H);
+    let calls = 0;
+    const counted = { ...m, at: (x, y) => (calls++, m.at(x, y)) };
+    const bounds = [-10, -10, 110, 110];
+    expect(unwarpWith(counted, W, H, 50, 400, { bounds })).toBe(null);
+    // The seeds once (13 x 13), then nothing per point.
+    const first = calls;
+    expect(first).toBe(169);
+    for (let i = 0; i < 100; i++) expect(unwarpWith(counted, W, H, i, 400, { bounds })).toBe(null);
+    expect(calls).toBe(first);
+    // A perspective's closed form keeps to the bounds too.
+    const narrow = [[0, 0], [100, 0], [40, 100], [60, 100]];
+    const pm = meshMap(narrow, 1, 1, W, H);
+    expect(unwarpWith(pm, W, H, 50, 124, { bounds })).toBe(null);
+    expect(unwarpWith(pm, W, H, 50, 124)).not.toBe(null);
+  });
+
   it('undoes a one-cell parallelogram (the affine map)', () => {
     const shear = [[0, 0], [100, 0], [30, 100], [130, 100]];
     roundTrip(shear, 1, 1, W, H, [[65, 50], [0, 0], [200, -40]]);
@@ -297,6 +415,31 @@ describe('unwarpPoint', () => {
       [-3.5980572718631834, 46.339620960076054], [83.92241915422886, 45.726948669201484], [178.24912775712698, 44.234256178707206],
     ];
     roundTrip(pts, 2, 2, w, h, [[20, 10], [85, 20], [160, 40], [-300, -300], [470, 340]]);
+  });
+
+  // Whether a mesh may fold decides whether the sheet tests are paid for.
+  it('tells a mesh that may fold from one that cannot', () => {
+    const id = identityMesh(2, 2, 100, 100);
+    const fold = [[0, 0], [50, 0], [100, 0], [0, 50], [110, 68], [100, 50], [0, 100], [50, 100], [100, 100]];
+    const bulge = id.map(([x, y]) => (x === 50 || y === 50 ? [x + (x - 50) * 0.2, y + (y - 50) * 0.2] : [x, y]));
+    const wave = identityMesh(4, 2, 100, 100).map(([x, y], i) => [x, y + (i % 5 === 1 ? 12 : i % 5 === 3 ? -12 : 0)]);
+    expect(meshMap(fold, 2, 2, 100, 100).folds()).toBe(true);
+    expect(meshMap(bulge, 2, 2, 100, 100).folds()).toBe(false);
+    expect(meshMap(wave, 4, 2, 100, 100).folds()).toBe(false);
+  });
+
+  // A fold on a fine mesh can sit between any fixed grid of samples; the
+  // point grid itself tells.
+  it('finds the fold of one node moved on a fine mesh, and no fold on smooth ones', () => {
+    for (const n of [16, 24, 32]) {
+      const cell = 100 / n;
+      const pts = identityMesh(n, n, 100, 100).map(([x, y], i) => (i === (n / 2) * (n + 1) + n / 2 ? [x + 1.5 * cell, y + 0.45 * cell] : [x, y]));
+      expect(meshMap(pts, n, n, 100, 100).folds()).toBe(true);
+    }
+    const persp = [[0, 0], [50, 5], [100, 10], [-3, 50], [52, 50], [108, 50], [-5, 100], [55, 95], [115, 90]];
+    const wave8 = identityMesh(8, 8, 100, 100).map(([x, y]) => [x, y + 6 * Math.sin((x / 100) * 4 * Math.PI)]);
+    expect(meshMap(persp, 2, 2, 100, 100).folds()).toBe(false);
+    expect(meshMap(wave8, 8, 8, 100, 100).folds()).toBe(false);
   });
 });
 

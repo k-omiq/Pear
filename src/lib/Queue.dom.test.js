@@ -14,7 +14,9 @@ beforeEach(() => {
   loadProjectPages([{
     id: 1, w: 800, h: 1200, boxes: [],
     lines: [
-      { n: 1, en: 'alpha' }, { n: -1, en: 'free' }, { n: 2, en: 'beta' },
+      // The free row has a box drawn, so the pane shows its label (T1) where
+      // a free row without one shows the draw button.
+      { n: 1, en: 'alpha' }, { n: -1, en: 'free', rect: [0, 0, 40, 40] }, { n: 2, en: 'beta' },
       { n: 3, en: 'gamma' }, { n: 4, en: 'delta' },
     ],
   }]);
@@ -50,7 +52,7 @@ it('moves a row with Alt+arrows and keeps focus and the textarea on the same con
   expect(view.getByPlaceholderText('English…')).toBe(textarea);
   expect(textarea.value).toBe('beta');
   expect(document.activeElement).toBe(badge);
-  expect([...view.container.querySelectorAll('.qrow .badge')].map((b) => b.textContent)).toEqual(['1', 'T', '2', '3', '4']);
+  expect([...view.container.querySelectorAll('.qrow .badge')].map((b) => b.textContent)).toEqual(['1', 'T1', '2', '3', '4']);
   altKey(badge, 'ArrowDown');
   expect(page().activeLineN).toBe(4);
   // At the end of the order, a further press changes nothing.

@@ -3,9 +3,11 @@
     app,
     byId,
     boxText,
+    boxRuns,
+    setRangeFace,
+    setBoxRuns,
     deleteBox,
     beginEdit,
-    cloneStyle,
     page,
     previewBoxFont,
     endFontPreview,
@@ -22,6 +24,7 @@
     outlineState,
     toast,
     resizeBox,
+    fitWarpToBox,
     setBoxSizing,
     boxLocked,
     setBoxLocked,
@@ -89,14 +92,17 @@
   } from './data.js';
   import FxMenu from './FxMenu.svelte';
   import ValueSlider from './ValueSlider.svelte';
+  import { SPECIAL_SIZE_MIN, SPECIAL_SIZE_MAX, SPECIAL_GLOW_MAX, specialCuts, outlineKinds } from './special.js';
   import AngleDial from './AngleDial.svelte';
   import { editLive, holdEditLive } from './edit-live.svelte.js';
-  import { setFxDefault, clearFxDefault } from './prefs.svelte.js';
+  import { setFxDefault, clearFxDefault, isComics } from './prefs.svelte.js';
   import { layoutShape } from './balloon.js';
-  import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES } from './text-paint.js';
+  import { patternTileCanvas, shadowAngle, shadowDistance, shadowOffset, usesBackdrop, FILL_SPECIAL_MODES, boxEffects } from './text-paint.js';
   import { insertPathAnchor } from './measure.js';
   import { wavePath } from './bezier-path.js';
-  import { maskTool, setMaskTool } from './mask-tool.svelte.js';
+  import { drawKindFor, setDrawTool, clearDrawTool, drawSettings } from './box-draw-tool.svelte.js';
+  import { bubbleLink, BUBBLE_INSET_MAX, MASK_BRUSH_MIN, MASK_BRUSH_MAX } from './box-mask.js';
+  import { setMaskOn, setMaskFollow, clearMaskShapes, clipToBubble, slideBubbleInset, setFadeOn, setFadeFollow, clearFadeShapes } from './box-mask-actions.js';
   import { regridWarp } from './warp-gizmo.js';
   import { liquifyTool, setLiquifyMode, LIQUIFY_RADIUS_MIN, LIQUIFY_RADIUS_MAX } from './liquify-tool.svelte.js';
   import { LIQUIFY_MODES } from './liquify.js';
@@ -122,11 +128,14 @@
     setInspectorTab,
     effectsSubTab,
     setEffectsSubTab,
+    setEffectsGroup,
+    effectsGroupOf,
+    effectsTabsIn,
+    EFFECTS_GROUPS,
   } from './inspector-tabs.svelte.js';
-  import { presets, savePreset, removePreset } from './presets.svelte.js';
+  import { presets, savePreset, removePreset, presetLook } from './presets.svelte.js';
   import {
     tabIcons,
-    effectsSubTabIcons,
     iconRotate,
     iconNoFill,
   } from './tab-icons.js';
@@ -136,10 +145,15 @@
     resyncField,
     undoField,
     redoField,
+    fieldFaces,
+    recordFieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
-  import { onDestroy } from 'svelte';
+  import { copyRuns, fieldSpans, rangeFace, faceAt, runsKey } from './runs.js';
+  import { curvedStyle } from './contain.js';
+  import { onDestroy, tick, untrack } from 'svelte';
+  import { typingSel, setTypingSel, clearTypingSel, selectedRange, faceAsk, takeFaceAsk, askPending, keepsEdit, endEditIfAway } from './typing-selection.svelte.js';
 
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
   // A locked box shows its settings and takes no change to them.
@@ -178,39 +192,73 @@
     document.getElementById(`insp-tab-${next}`)?.focus();
   }
 
-  // SFX is not here: it has its own window (SfxWindow.svelte).
-  const EFFECTS_TABS = [
-    ['stroke', 'Stroke'],
-    ['shadow', 'Shadow'],
-    ['glow', 'Glow'],
-    ['bevel', 'Bevel & Emboss'],
-    ['warp', 'Warp'],
-    // Not the same thing as the one above it, and the two labels are the only
-    // place that says so to the user: `warp` bends the BASELINE (arc, circle,
-    // bezier path), `transform` deforms the whole finished box through a mesh.
-    ['transform', 'Transform'],
-    // The same mesh as `transform`, pushed with a round tool instead of dragged
-    // by its handles - which is why it works on type and ink alike.
-    ['liquify', 'Liquify'],
-    ['blur', 'Blur'],
-    ['edges', 'Edges'],
-    ['mask', 'Mask'],
-  ];
+  // The Effects tab is a group segment over the group's own sub-tabs, both
+  // in words (inspector-tabs.svelte.js has the list). SFX is not here: it has
+  // its own window (SfxWindow.svelte).
   const effectsTab = $derived(effectsSubTab.id);
+  const effectsGroup = $derived(effectsGroupOf(effectsSubTab.id));
+  const groupTabs = $derived(effectsTabsIn(effectsGroup));
 
-  function onSubTabKey(e, id) {
-    const i = EFFECTS_TABS.findIndex(([t]) => t === id);
+  // The same keys as the main tabs, in each row: the group row walks the
+  // groups, the sub-tab row walks the group it shows.
+  function rowKey(e, ids, id, pick, prefix) {
+    const i = ids.indexOf(id);
     let n = null;
-    if (e.key === 'ArrowLeft') n = (i + EFFECTS_TABS.length - 1) % EFFECTS_TABS.length;
-    else if (e.key === 'ArrowRight') n = (i + 1) % EFFECTS_TABS.length;
+    if (e.key === 'ArrowLeft') n = (i + ids.length - 1) % ids.length;
+    else if (e.key === 'ArrowRight') n = (i + 1) % ids.length;
     else if (e.key === 'Home') n = 0;
-    else if (e.key === 'End') n = EFFECTS_TABS.length - 1;
+    else if (e.key === 'End') n = ids.length - 1;
     if (n == null) return;
     e.preventDefault();
     e.stopPropagation();
-    const next = EFFECTS_TABS[n][0];
-    setEffectsSubTab(next);
-    document.getElementById(`insp-subtab-${next}`)?.focus();
+    pick(ids[n]);
+    document.getElementById(`${prefix}${ids[n]}`)?.focus();
+  }
+  const onGroupKey = (e, id) => rowKey(e, EFFECTS_GROUPS.map((g) => g.id), id, setEffectsGroup, 'insp-fxgroup-');
+  const onSubTabKey = (e, id) => rowKey(e, groupTabs.map((t) => t.id), id, setEffectsSubTab, 'insp-subtab-');
+
+  // The Mask panel's tools, and the one line that says what the armed one
+  // does. Rectangles are stored as four-point polygons.
+  const MASK_KINDS = [
+    ['brush', 'Brush'],
+    ['rect', 'Rectangle'],
+    ['ellipse', 'Ellipse'],
+    ['poly', 'Polygon'],
+    ['move', 'Move'],
+  ];
+  // The paint's tools: the shapes, then the eraser, a brush that takes paint
+  // away. The marks are the box's, so they are drawn on it and move with it.
+  const PAINT_KINDS = [
+    ['brush', 'Brush'],
+    ['rect', 'Rectangle'],
+    ['ellipse', 'Ellipse'],
+    ['poly', 'Polygon'],
+    ['erase', 'Eraser'],
+    ['move', 'Move'],
+  ];
+  const PAINT_HINT = {
+    brush: 'Drag over the letters to paint.',
+    rect: 'Drag over the letters to fill a rectangle.',
+    ellipse: 'Drag over the letters to fill an ellipse.',
+    poly: 'Click the corners. Double-click to fill it, Esc to drop it.',
+    erase: 'Drag over the paint to take it away.',
+    move: 'Drag a mark to move it, or empty space to move all. Delete removes the picked mark.',
+  };
+  const MASK_HINT = {
+    brush: 'Drag on the page to paint a shape.',
+    rect: 'Drag on the page to draw a rectangle.',
+    ellipse: 'Drag on the page to draw an ellipse.',
+    poly: 'Click the corners. Double-click to close, Esc to drop it.',
+    move: 'Drag a shape to move it, or empty space to move all. Delete removes the picked shape.',
+  };
+
+  // A new seed for a seeded effect, never the one it has: a press that
+  // changed nothing would look like a broken button.
+  function newSeed(obj, max) {
+    let seed = obj.seed;
+    while (seed === obj.seed) seed = Math.floor(Math.random() * (max + 1));
+    obj.seed = seed;
+    touch();
   }
 
   function clamp(v, a, b) {
@@ -396,8 +444,11 @@
   // The text alone, then `touch`, whose `boxEdited` fits the box for it. With
   // `setBoxText`'s own fit as well, every keystroke here solved the box twice,
   // the second time to the answer the first had just written.
-  function setText(v) {
-    setBoxText(box, v, page(), { fit: false });
+  // `runs`, for a step of the field's own undo: the faces that step had.
+  // `span`, the range an edit replaced when it is known, so the faces move
+  // with this edit and not with a guess at it.
+  function setText(v, runs, span) {
+    setBoxText(box, v, page(), { fit: false, runs, span });
     touch();
   }
 
@@ -412,12 +463,143 @@
     const v = box ? boxText(box) : '';
     if (id === fieldOwner && v === fieldUndo.stack[fieldUndo.i]) return;
     fieldOwner = id;
-    resyncField(fieldUndo, v);
+    resyncField(fieldUndo, v, box ? copyRuns(boxRuns(box)) : null);
   });
 
+  // The field, its selection and input type as each edit begins: what that
+  // edit replaced is read from them (`fieldSpans`) once it has landed.
+  const textSpans = fieldSpans();
+
+  // ----- B, I and the family: of the selected words, or of the box -----
+  // One set of controls, with the keys' rule (editor-actions.js): on the words
+  // selected in the box or in the field above when there are some; at a bare
+  // caret in the box typed into, on the letters typed next; else on the whole
+  // box. Curved text is laid out in one face, so there it is always the box.
+  //
+  // The scope is the one selection the keys read too (`typingSel`), so a
+  // button and its key always act on the same letters. A selection made in
+  // the field above lasts while the focus is in the field or moves into these
+  // controls; it goes when the field reports a bare caret, when the focus goes
+  // anywhere else, when the words change, and when another box is picked.
+  function noteTextSel(e) {
+    const el = e.currentTarget;
+    if (!box || el.value !== (boxText(box) ?? '')) return;
+    setTypingSel(box.id, el.value, el.selectionStart, el.selectionEnd);
+  }
+  function fieldSelGoes() {
+    if (box && typingSel.boxId === box.id && app.editingId !== box.id) clearTypingSel();
+  }
+  function endTextSel(e) {
+    if (!keepsEdit(e?.relatedTarget)) fieldSelGoes();
+  }
+  const faceScope = $derived.by(() => {
+    if (!box || curvedStyle(box.style)) return { kind: 'box' };
+    const text = boxText(box) ?? '';
+    const r = selectedRange(box.id, text);
+    if (r && r[0] < r[1]) return { kind: 'words', text, a: r[0], f: r[1] };
+    if (r && app.editingId === box.id) return { kind: 'caret', text, at: r[0] };
+    return { kind: 'box' };
+  });
+  // The words changed under a selection made in the field, or another box was
+  // picked: that selection is gone, and does not come back with an undo.
+  $effect(() => {
+    const id = box?.id ?? null;
+    const text = box ? (boxText(box) ?? '') : null;
+    const sel = typingSel.boxId;
+    const selText = typingSel.text;
+    untrack(() => {
+      if (sel == null || app.editingId === sel) return;
+      if (sel !== id || selText !== text) clearTypingSel();
+    });
+  });
+  // What the scope is set in: bold and italic true, false or 'mixed'; the
+  // family a name, null for the box's, or 'mixed'. At a caret, what was asked
+  // for there (`pending`) over the face of the letter before it.
+  const faceNow = $derived.by(() => {
+    const sc = faceScope;
+    if (!box || sc.kind === 'box') return { bold: !!box?.style?.bold, italic: !!box?.style?.italic, font: null };
+    if (sc.kind === 'words') return rangeFace(boxRuns(box), sc.text, sc.a, sc.f, box.style);
+    const pend = typingSel.pending?.boxId === box.id && typingSel.pending.at === sc.at ? typingSel.pending.patch : {};
+    const f = faceAt(boxRuns(box), sc.at > 0 ? sc.at - 1 : sc.at, box.style);
+    return { bold: pend.bold ?? f.bold, italic: pend.italic ?? f.italic, font: 'font' in pend ? pend.font : (f.font ?? null) };
+  });
+  const scopeRuns = $derived.by(() => {
+    const runs = box ? boxRuns(box) : null;
+    if (!runs?.length || faceScope.kind === 'caret' || curvedStyle(box.style)) return false;
+    return faceScope.kind === 'box' || runs.some((r) => r.end > faceScope.a && r.start < faceScope.f);
+  });
+  let facePicker = $state();
+  const faceKey = (id) => formatCombo(comboFor(id));
+  const keyNote = (id) => (faceKey(id) ? ` (${faceKey(id)})` : '');
+  const SCOPE_LABEL = { words: 'Selected words', caret: 'Next letters', box: 'Whole box' };
+  function faceToggle(key) {
+    const sc = faceScope;
+    if (sc.kind === 'words') return void setRangeFace(box, sc.a, sc.f, { toggle: key });
+    if (sc.kind === 'caret') return void askPending(box.id, sc.text, sc.at, { [key]: faceNow[key] !== true });
+    box.style[key] = !box.style[key];
+    touch();
+  }
+  function facePick(name) {
+    const sc = faceScope;
+    const font = name === box.style.font ? null : name;
+    if (sc.kind === 'words') return void setRangeFace(box, sc.a, sc.f, { font });
+    if (sc.kind === 'caret') return void askPending(box.id, sc.text, sc.at, { font });
+    if (name) pickFont(name);
+  }
+  function faceClear() {
+    const sc = faceScope;
+    if (sc.kind === 'words') setRangeFace(box, sc.a, sc.f, { clear: true });
+    else if (sc.kind === 'box') setRangeFace(box, 0, (boxText(box) ?? '').length, { clear: true });
+  }
+  // A press on these controls leaves the focus where it is - in the box being
+  // typed into, or the field - so the words stay selected; a control that
+  // takes the focus (the family list, a Tab) keeps the edit
+  // (`data-keeps-edit`) until the focus goes anywhere else.
+  function holdFocus(e) {
+    if (!e.target.closest?.('input, textarea')) e.preventDefault();
+  }
+  function leaveFaceControls() {
+    setTimeout(() => {
+      endEditIfAway();
+      const at = document.activeElement;
+      if (!keepsEdit(at) && at?.id !== 'insp-text') fieldSelGoes();
+    });
+  }
+  // "Typeface…": the family list, for the range it was asked for. The ask is
+  // taken once (`takeFaceAsk`), by this Inspector whether it was drawn already
+  // or is drawn because the command showed its panel.
+  $effect(() => {
+    faceAsk.turn;
+    if (!faceAsk.open || !box) return;
+    untrack(() => {
+      const text = boxText(box) ?? '';
+      const r = takeFaceAsk(box.id, text);
+      if (!r) return;
+      // The words it was asked for are the scope, whether or not the edit
+      // they were selected in is still going.
+      if (typingSel.boxId !== box.id || typingSel.text !== text || typingSel.a !== r.a || typingSel.f !== r.f) setTypingSel(box.id, text, r.a, r.f);
+      setInspectorTab('text');
+      tick().then(() => facePicker?.openList());
+    });
+  });
+
+  // A face set on the words while this field holds them is a command, not a
+  // keystroke: recorded here as a step of the same words with the new faces,
+  // so the field's Cmd+Z takes it back before any typing.
+  $effect(() => {
+    const key = box ? runsKey(boxRuns(box)) : '';
+    const v = box ? boxText(box) : '';
+    untrack(() => {
+      if (!box || fieldOwner !== box.id || v !== fieldUndo.stack[fieldUndo.i] || key === runsKey(fieldFaces(fieldUndo))) return;
+      recordFieldFaces(fieldUndo, copyRuns(boxRuns(box)));
+    });
+  });
+
+  // Recorded after the write, so the step holds the faces the write left.
   function onTextInput(e) {
-    recordFieldEdit(fieldUndo, e.target.value, { atomic: isAtomicInput(e.inputType) });
-    setText(e.target.value);
+    const v = e.target.value;
+    setText(v, undefined, textSpans.span(v, boxText(box)) ?? undefined);
+    recordFieldEdit(fieldUndo, e.target.value, { atomic: isAtomicInput(e.inputType), faces: copyRuns(boxRuns(box)) });
   }
 
   function onTextKey(e) {
@@ -427,12 +609,18 @@
     const next = e.shiftKey ? redoField(fieldUndo) : undoField(fieldUndo);
     if (next == null) return;
     const el = e.currentTarget;
+    // Only the faces changed (a command on the selected words): they go back
+    // where the command wrote them, and the selection stays.
+    if (next === el.value) {
+      setBoxRuns(box, fieldFaces(fieldUndo), page());
+      return;
+    }
     const caret = caretAfter(el.value, next);
 
     el.value = next;
     el.setSelectionRange(caret, caret);
 
-    setText(next);
+    setText(next, fieldFaces(fieldUndo));
   }
 
   // Validate CSS hex color strings.
@@ -543,6 +731,18 @@
   // The engine paints whole boxes: Fill Opacity, and a shadow's Spread,
   // Contour, Noise and knockout (the browser engine paints none of them).
   const rustBoxes = $derived(engineSwitch.painting && glyphPainter().box === true);
+  // Whether the painter moves letters on its own (`wobbleInJob`).
+  const wobblePaints = $derived(engineSwitch.painting && glyphPainter().wobble === true);
+  const specialPaints = $derived(engineSwitch.painting && glyphPainter().special === true);
+  // The rows of Surface ▸ Special, in the order they are listed. Known
+  // limit: the pattern is redrawn when the text or the box size changes;
+  // Seed re-rolls it.
+  const SPECIAL_ROWS = [
+    { kind: 'crack', label: 'Crack', title: 'Jagged cracks through the letters. High amounts break pieces out', amount: 'How many cracks and how long. Past 60 % pieces fall out' },
+    { kind: 'lightning', label: 'Lightning', title: 'Jagged bolts with forks painted on the fill, a bright core in a glow', amount: 'How many bolts and forks' },
+    { kind: 'splash', label: 'Splash', title: 'Paint splats and droplets on the fill, in a colour of their own', amount: 'How many splats, droplets and streaks' },
+    { kind: 'scratches', label: 'Scratches', title: 'Many thin scratches across the letters', amount: 'How many scratches' },
+  ];
   // The ink note: a box whose brush ink the engine's box job cannot take yet
   // (`inkJobGap`) is painted by the canvas, with none of its layer effects,
   // Fill Opacity, blend mode, Channels or Blend If. The controls stay (the
@@ -985,16 +1185,12 @@
   $effect(() => {
     if (naming && presetNameEl) presetNameEl.focus();
   });
-  // A preset is a look, not a placement: the same three keys paste-style leaves
-  // alone stay alone here too, or picking a preset silently un-rotates and
-  // un-mirrors a box that was placed by hand.
-  const PRESET_SKIP = ['rotation', 'flipH', 'flipV'];
+  // What of the preset reaches the box: `presetLook` says why some keys stay.
   function applyPreset(id) {
     presetId = id;
     const p = presets.list.find((x) => x.id === id);
     if (!p) return;
-    const next = cloneStyle(p.style);
-    for (const k of PRESET_SKIP) delete next[k];
+    const next = presetLook(p);
     Object.assign(box.style, next);
     touch();
     // A picked tile from another chapter is written into this one.
@@ -1826,19 +2022,32 @@
       <div class="insp-pane" role="tabpanel" id="insp-pane-text" aria-labelledby="insp-tab-text">
         <div class="grp">
           <label class="lbl" for="insp-text">Content {isFreeBox(box) ? '· free' : `· line ${box.lineN}`}</label>
-          <textarea id="insp-text" value={boxText(box)} oninput={onTextInput} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
+          <textarea id="insp-text" value={boxText(box)} onbeforeinput={textSpans.before} oncompositionstart={textSpans.start} oncompositionend={textSpans.end} oninput={onTextInput} onselect={noteTextSel} onkeyup={noteTextSel} onmouseup={noteTextSel} onblur={endTextSel} onkeydown={onTextKey} ondblclick={() => beginEdit(box.id)}></textarea>
         </div>
-        <div class="grp">
-          <label class="lbl" for="insp-font">Font</label>
-          <!-- Moving through the list shows each family on the box; nothing is
-               an edit until a click or Enter (FontPicker.svelte). -->
-          <FontPicker
-            id="insp-font"
-            value={app.fontPreview?.boxId === box.id ? app.fontPreview.was : s.font}
-            label="Font"
-            onpreview={(name) => (name ? previewBoxFont(box, name) : endFontPreview())}
-            onpick={pickFont}
-          />
+        <!-- The family, B, I and Clear: of the selected words or of the box
+             (`faceScope`), the one row its label speaks for. Moving through
+             the list shows each family on the box when it is the box's;
+             nothing is an edit until a click or Enter (FontPicker.svelte). -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="grp" data-keeps-edit onmousedown={holdFocus} onfocusout={leaveFaceControls}>
+          <label class="lbl" for="insp-font">Font <span class="scope">{SCOPE_LABEL[faceScope.kind]}</span></label>
+          <div class="font-row">
+            <FontPicker
+              bind:this={facePicker}
+              id="insp-font"
+              keepsEdit
+              value={faceScope.kind === 'box' ? (app.fontPreview?.boxId === box.id ? app.fontPreview.was : s.font) : faceNow.font === 'mixed' ? null : (faceNow.font ?? s.font)}
+              unset={faceScope.kind !== 'box' && faceNow.font === 'mixed' ? 'Mixed' : null}
+              label={faceScope.kind === 'box' ? 'Font' : `Font of the ${SCOPE_LABEL[faceScope.kind].toLowerCase()}`}
+              onpreview={faceScope.kind === 'box' ? (name) => (name ? previewBoxFont(box, name) : endFontPreview()) : undefined}
+              onpick={facePick}
+            />
+            <div class="seg face-seg">
+              <button type="button" class:on={faceNow.bold === true} class:mixed={faceNow.bold === 'mixed'} aria-pressed={faceNow.bold === 'mixed' ? 'mixed' : faceNow.bold} title="Bold{keyNote('text.bold')}{faceNow.bold === 'mixed' ? ', mixed' : ''}" onclick={() => faceToggle('bold')}><b>B</b></button>
+              <button type="button" class:on={faceNow.italic === true} class:mixed={faceNow.italic === 'mixed'} aria-pressed={faceNow.italic === 'mixed' ? 'mixed' : faceNow.italic} title="Italic{keyNote('text.italic')}{faceNow.italic === 'mixed' ? ', mixed' : ''}" onclick={() => faceToggle('italic')}><i>I</i></button>
+            </div>
+            <button type="button" class="rbtn" disabled={!scopeRuns} title="Clear typeface: the {faceScope.kind === 'box' ? 'whole box' : 'selected words'} back to the box's face{keyNote('text.clearFace')}" onclick={faceClear}>Clear</button>
+          </div>
         </div>
         <!-- Size and the weight it is set in, side by side: they are one
              decision about the face, and they were three rows apart. -->
@@ -1854,10 +2063,10 @@
             {#if sizing === 'fit'}<span class="size-now">Fits at {Math.round(s.size * 10) / 10} px</span>{/if}
           </div>
           <div class="field">
+            <!-- The whole box's, whatever is selected: no scope here. -->
             <span class="lbl">Style</span>
-            <div class="seg">
-              <button type="button" class:on={s.bold} aria-pressed={s.bold} title="Bold" onclick={() => { s.bold = !s.bold; touch(); }}><b>B</b></button>
-              <button type="button" class:on={s.italic} aria-pressed={s.italic} title="Italic" onclick={() => { s.italic = !s.italic; touch(); }}><i>I</i></button>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="seg" onmousedown={holdFocus}>
               <button type="button" class:on={s.uppercase} aria-pressed={s.uppercase} title="Uppercase" onclick={() => { s.uppercase = !s.uppercase; touch(); }}>TT</button>
               {#if engineSwitch.painting}
                 <button type="button" class="more" class:on={styleMore} class:set={styleTuned(s)} aria-expanded={styleMore} aria-controls="insp-style-more" title={styleTuned(s) ? 'Bold weight and italic angle (set)' : 'Bold weight and italic angle'} onclick={() => (styleMore = !styleMore)}>⋯</button>
@@ -2180,25 +2389,47 @@
     {#if tab === 'effects'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-effects" aria-labelledby="insp-tab-effects">
         {@render inkGapNote()}
-        <div class="sub-tabs" role="tablist" aria-label="Effects options">
-          {#each EFFECTS_TABS as [id, label] (id)}
+        <div class="fx-groups" role="tablist" aria-label="Effects groups">
+          {#each EFFECTS_GROUPS as g (g.id)}
             <button
               type="button"
               role="tab"
-              id="insp-subtab-{id}"
-              class="sub-tab"
-              class:on={effectsTab === id}
-              aria-selected={effectsTab === id}
-              aria-label={label}
-              tabindex={effectsTab === id ? 0 : -1}
-              title={label}
-              onclick={() => setEffectsSubTab(id)}
-              onkeydown={(e) => onSubTabKey(e, id)}
-            >
-              {@html effectsSubTabIcons[id]}
-            </button>
+              id="insp-fxgroup-{g.id}"
+              class="fx-group"
+              class:on={effectsGroup === g.id}
+              aria-selected={effectsGroup === g.id}
+              tabindex={effectsGroup === g.id ? 0 : -1}
+              onclick={() => setEffectsGroup(g.id)}
+              onkeydown={(e) => onGroupKey(e, g.id)}
+            >{g.label}</button>
           {/each}
         </div>
+        <div class="sub-tabs" role="tablist" aria-label="Effects options">
+          {#each groupTabs as t (t.id)}
+            <button
+              type="button"
+              role="tab"
+              id="insp-subtab-{t.id}"
+              class="sub-tab"
+              class:on={effectsTab === t.id}
+              aria-selected={effectsTab === t.id}
+              tabindex={effectsTab === t.id ? 0 : -1}
+              onclick={() => setEffectsSubTab(t.id)}
+              onkeydown={(e) => onSubTabKey(e, t.id)}
+            >{t.label}</button>
+          {/each}
+        </div>
+        <!-- One note per group for what only the Rust engine paints, rather
+             than one under every effect that needs it. -->
+        {#if !rustBoxes && effectsGroup === 'styles'}
+          <p class="nofill-note">Glow, Satin, Bevel, inner shadows, most shadow settings and strokes that are not plain outlines need the Rust text engine (Settings).</p>
+        {/if}
+        {#if !wobblePaints && effectsGroup === 'shape'}
+          <p class="nofill-note">Wobble needs the Rust text engine (Settings).</p>
+        {/if}
+        {#if !specialPaints && effectsGroup === 'surface'}
+          <p class="nofill-note">Special effects need the Rust text engine (Settings).</p>
+        {/if}
 
         {#if effectsTab === 'stroke'}
           <!-- The strokes: one list, the first on top. Plain ones at the head
@@ -2214,9 +2445,6 @@
                 {@render strokeItem(k, i)}
               {/each}
             </div>
-            {#if !rustBoxes && s.strokeEffects.length > outlineRun(s).n}
-              <p class="nofill-note">Strokes that are not plain outlines (Outside, a colour, Normal, each wider than the one above) need the Rust text engine (Settings).</p>
-            {/if}
             {@render addBtn('Add stroke', addStrokeEffect, roomFor(s.strokeEffects))}
           </div>
         {/if}
@@ -2233,9 +2461,6 @@
                 {@render shadowItem(s.shadows, i, false)}
               {/each}
             </div>
-            {#if s.shadows.length && !rustBoxes}
-              <p class="nofill-note">Spread, Noise, Contour and Knock out need the Rust text engine (Settings).</p>
-            {/if}
             {@render addBtn('Add shadow', addShadow, roomFor(s.shadows))}
           </div>
           <!-- Inner shadows: thrown from outside the letters into them. -->
@@ -2249,17 +2474,11 @@
                 {@render shadowItem(s.innerShadows, i, true)}
               {/each}
             </div>
-            {#if s.innerShadows.length && !rustBoxes}
-              <p class="nofill-note">Inner shadows need the Rust text engine (Settings).</p>
-            {/if}
             {@render addBtn('Add inner shadow', addInnerShadow, roomFor(s.innerShadows))}
           </div>
         {/if}
 
         {#if effectsTab === 'glow'}
-          {#if !rustBoxes}
-            <p class="nofill-note">Glows and Satin need the Rust text engine (Settings).</p>
-          {/if}
           {@render glowControls(s.outerGlow, 'Outer glow', false)}
           <div class="insp-rule"></div>
           {@render glowControls(s.innerGlow, 'Inner glow', true)}
@@ -2268,9 +2487,6 @@
         {/if}
 
         {#if effectsTab === 'bevel'}
-          {#if !rustBoxes}
-            <p class="nofill-note">Bevel & Emboss needs the Rust text engine (Settings).</p>
-          {/if}
           {@render bevelControls(s.bevel)}
         {/if}
 
@@ -2387,7 +2603,12 @@
               role="switch"
               aria-checked={s.warp.on}
               aria-label="Transform"
-              onclick={() => { s.warp.on = !s.warp.on; touch(); }}
+              onclick={() => {
+                s.warp.on = !s.warp.on;
+                // A mesh laid out while it was off fits the box again.
+                if (s.warp.on) fitWarpToBox(box);
+                touch();
+              }}
             ><span class="knob"></span></button>
             <span class="lbl2">Transform</span>
           </div>
@@ -2529,6 +2750,42 @@
           </div>
         {/if}
 
+        {#if effectsTab === 'wobble'}
+          <!-- Each letter moved up or down and turned by numbers of its own.
+               Only the Rust engine paints it, so under the browser engine
+               the controls are dimmed and the group's note says why. The
+               switch can still turn a wobble off, so a box set under the
+               Rust engine is not stuck with one. -->
+          {@const wb = s.wobble}
+          {@const off = !wb.on || !wobblePaints}
+          <div class="switch-row" title="Each letter sits a little high or low and can tilt, like a shaky hand">
+            <button
+              type="button"
+              class="switch"
+              class:on={wb.on}
+              role="switch"
+              aria-checked={wb.on}
+              aria-label="Wobble"
+              disabled={!wobblePaints && !wb.on}
+              onclick={() => { wb.on = !wb.on; touch(); }}
+            ><span class="knob"></span></button>
+            <span class="lbl2">Wobble</span>
+          </div>
+          <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+            {@render sliderRow('Amount', 'How far a letter sits high or low, percent of the font size', wb.amount, (v) => setVal(wb, 'amount', v), { max: 40, unit: '%', aria: 'Wobble amount', disabled: off })}
+            {@render sliderRow('Tilt', 'How far a letter can turn either way, degrees', wb.tilt, (v) => setVal(wb, 'tilt', v), { max: 20, unit: '°', aria: 'Wobble tilt', disabled: off })}
+            <div class="prow" title="Which letters go which way. The same seed gives the same wobble">
+              <span class="pl">Seed</span>
+              <div class="pc seed-pc">
+                <input type="number" min="0" max="999" step="1" value={wb.seed} disabled={off} aria-label="Wobble seed" onchange={(e) => commitNum(wb, 'seed', e, 0, 999, true)} />
+                <button type="button" class="dice" disabled={off} aria-label="New wobble seed" title="A new seed: the letters go other ways" onclick={() => newSeed(wb, 999)}>
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.5" y="3.5" width="13" height="13" rx="2.5" /><circle cx="7.2" cy="7.2" r="1" fill="currentColor" stroke="none" /><circle cx="12.8" cy="12.8" r="1" fill="currentColor" stroke="none" /><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none" /></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        {/if}
+
         {#if effectsTab === 'blur'}
           <div class="grp">
             <span class="lbl">Blur</span>
@@ -2575,6 +2832,115 @@
           </div>
         {/if}
 
+        {#if effectsTab === 'special'}
+          <!-- Crack, Lightning, Splash and Scratches (special.js): each a
+               seeded pattern laid over the whole box, a row with a switch
+               that opens its settings, and any of them together. Only the
+               Rust engine paints them; the switches can still turn one off. -->
+          <!-- A style restored from before them has none: no rows. -->
+          {@const sp = s.special}
+          {#each sp ? SPECIAL_ROWS : [] as row (row.kind)}
+            {@const fx = sp[row.kind]}
+            {@const off = !fx.on || !specialPaints}
+            <div class="switch-row" title={row.title}>
+              <button
+                type="button"
+                class="switch"
+                class:on={fx.on}
+                role="switch"
+                aria-checked={fx.on}
+                aria-label={row.label}
+                disabled={!specialPaints && !fx.on}
+                onclick={() => { fx.on = !fx.on; touch(); }}
+              ><span class="knob"></span></button>
+              <span class="lbl2">{row.label}</span>
+            </div>
+            {#if fx.on}
+              <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+                {@render sliderRow('Amount', row.amount, fx.amount, (v) => setVal(fx, 'amount', v), { max: 100, unit: '%', aria: `${row.label} amount`, disabled: off })}
+                {#if 'size' in fx}
+                  {@render sliderRow('Size', 'How big the pattern is, percent of the font size', fx.size, (v) => setVal(fx, 'size', v), { min: SPECIAL_SIZE_MIN, max: SPECIAL_SIZE_MAX, soft: 200, unit: '%', aria: `${row.label} size`, disabled: off })}
+                {/if}
+                {#if row.kind === 'scratches'}
+                  <div class="prow" title="The way the pattern runs: 0 is along the line">
+                    <span class="pl">Angle</span>
+                    <div class="pc"><AngleDial angle={fx.angle} label="{row.label} angle" disabled={off} oninput={(v) => setVal(fx, 'angle', v.angle)} /></div>
+                  </div>
+                {/if}
+                {#if row.kind === 'crack'}
+                  <p class="nofill-note">Drag the red point on the box to move the focus.</p>
+                  {@render sliderRow('Focus X', 'Where the cracks gather, across the letters', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Crack focus x', disabled: off })}
+                  {@render sliderRow('Focus Y', 'Where the cracks gather, down the letters', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Crack focus y', disabled: off })}
+                  {@render sliderRow('Spread', 'How far the cracks spread from the focus: 100 % covers every letter', fx.spread, (v) => setVal(fx, 'spread', v), { max: 100, unit: '%', aria: 'Crack spread', disabled: off })}
+                  {@render sliderRow('Break off', 'Pieces between the cracks break loose and move, densest cracks first. Paint only: the layout never sees them', fx.breakOff, (v) => setVal(fx, 'breakOff', v), { max: 100, unit: '%', aria: 'Crack break off', disabled: off })}
+                  {#if fx.breakOff > 0}
+                    {@render segRow('Motion', 'How the broken pieces move', [['apart', 'Apart', 'Out from the focus, turning, near the letters'], ['fall', 'Fall', 'Down below where they were, turning as they drop']], fx.motion === 'apart' ? 'apart' : 'fall', (v) => setVal(fx, 'motion', v), 'Crack motion')}
+                  {/if}
+                {/if}
+                {#if row.kind === 'lightning'}
+                  <div class="prow">
+                    <span class="pl">Core</span>
+                    <div class="pc">{@render colorField(fx, 'core', 'Lightning core colour')}</div>
+                  </div>
+                  <div class="prow">
+                    <span class="pl">Glow</span>
+                    <div class="pc">{@render colorField(fx, 'glow', 'Lightning glow colour')}</div>
+                  </div>
+                  {@render sliderRow('Glow size', 'How far the glow spreads round each bolt', fx.glowSize, (v) => setVal(fx, 'glowSize', v), { max: SPECIAL_GLOW_MAX, unit: '%', aria: 'Lightning glow size', disabled: off })}
+                  {@render segRow('Bolts', 'Where the bolts run', [['across', 'Across', 'Across the box, from side to side'], ['point', 'From a point', 'From the blue point on the box, the way its arm points']], fx.aim === 'point' ? 'point' : 'across', (v) => setVal(fx, 'aim', v), 'Lightning bolts')}
+                  {#if fx.aim === 'point'}
+                    <p class="nofill-note">Drag the blue point on the box to move the start, and its arm to aim.</p>
+                    {@render sliderRow('Start X', 'Where the bolts start, across the box', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Lightning start x', disabled: off })}
+                    {@render sliderRow('Start Y', 'Where the bolts start, down the box', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Lightning start y', disabled: off })}
+                    <div class="prow" title="The way the bolts go: 0 is along the line, 90 is up">
+                      <span class="pl">Direction</span>
+                      <div class="pc"><AngleDial angle={fx.angle} label="Lightning direction" disabled={off} oninput={(v) => setVal(fx, 'angle', v.angle)} /></div>
+                    </div>
+                  {/if}
+                {/if}
+                {#if row.kind === 'splash'}
+                  <p class="nofill-note">Drag the yellow point on the box to set where the paint lands.</p>
+                  {@render sliderRow('Land X', 'Where the paint lands, across the box', fx.x, (v) => setVal(fx, 'x', v), { max: 100, unit: '%', aria: 'Splash x', disabled: off })}
+                  {@render sliderRow('Land Y', 'Where the paint lands, down the box', fx.y, (v) => setVal(fx, 'y', v), { max: 100, unit: '%', aria: 'Splash y', disabled: off })}
+                  {@render sliderRow('Spread', 'How far the splats spread from where the paint lands: 100 % covers the box', fx.spread, (v) => setVal(fx, 'spread', v), { max: 100, unit: '%', aria: 'Splash spread', disabled: off })}
+                {/if}
+                {#if 'color' in fx}
+                  <div class="prow">
+                    <span class="pl">Colour</span>
+                    <div class="pc">{@render colorField(fx, 'color', `${row.label} colour`)}</div>
+                  </div>
+                {/if}
+                <div class="prow" title="The same seed gives the same pattern wherever the box goes">
+                  <span class="pl">Seed</span>
+                  <div class="pc seed-pc">
+                    <input type="number" min="0" max="999" step="1" value={fx.seed} disabled={off} aria-label="{row.label} seed" onchange={(e) => commitNum(fx, 'seed', e, 0, 999, true)} />
+                    <button type="button" class="dice" disabled={off} aria-label="New {row.label.toLowerCase()} seed" title="A new seed: another pattern" onclick={() => newSeed(fx, 999)}>
+                      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.5" y="3.5" width="13" height="13" rx="2.5" /><circle cx="7.2" cy="7.2" r="1" fill="currentColor" stroke="none" /><circle cx="12.8" cy="12.8" r="1" fill="currentColor" stroke="none" /><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none" /></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            {/if}
+          {/each}
+          <!-- What the outlines do at the cuts: with a crack or scratches on
+               and any outline, the text's own (a glyph band) or a box
+               stroke (special.js `outlineKinds`). With one of them, one row,
+               which sets both keys, so an outline added later does the same.
+               With both, a row each, named. -->
+          {#if sp && specialCuts(s)}
+            {@const ok = outlineKinds(s, outlineRun(s).bands.length > 0, boxEffects(s).some((fx) => fx.kind === 'stroke'))}
+            {@const cutChoices = [['fills-cuts', 'Fills cuts', 'The outline goes round each cut: a thin crack reads as a line in its colour'], ['cut-through', 'Cut through', 'The outline is cut like the letters: the page shows through']]}
+            {#if ok.both}
+              {@render segRow('Plain outline', 'What the plain strokes at the head of the Stroke list (Outside, one colour, Normal) do where Crack or Scratches cut', cutChoices, ok.band, (v) => { sp.bandOutline = v; touch(); }, 'Special plain outline')}
+              {@render segRow('Other strokes', 'What the other strokes in the Stroke list do where Crack or Scratches cut', cutChoices, ok.stroke, (v) => { sp.outline = v; touch(); }, 'Special other strokes')}
+            {:else if ok.any}
+              {@render segRow('Outline', 'What the outline does where Crack or Scratches cut', cutChoices, ok.current, (v) => { sp.outline = v; sp.bandOutline = v; touch(); }, 'Special outline')}
+            {:else}
+              <p class="nofill-note">Outline: add an outline (Stroke tab) to choose whether it fills the cuts.</p>
+            {/if}
+          {/if}
+        {/if}
+
         {#if effectsTab === 'edges'}
           <div class="switch-row">
             <button type="button" class="switch" class:on={s.roughen.on} role="switch" aria-checked={s.roughen.on} aria-label="Roughen edges" onclick={() => { s.roughen.on = !s.roughen.on; touch(); }}><span class="knob"></span></button>
@@ -2606,79 +2972,239 @@
         {/if}
 
         {#if effectsTab === 'mask'}
+          {@const maskKind = drawKindFor('mask')}
+          {@const mk = box.mask}
+          {@const maskOn = !!mk?.on}
+          {@const link = bubbleLink(box)}
           <div class="switch-row">
             <button
               type="button"
               class="switch"
-              class:on={s.clip.on}
+              class:on={maskOn}
               role="switch"
-              aria-checked={s.clip.on}
+              aria-checked={maskOn}
               aria-label="Mask"
               onclick={() => {
-                s.clip.on = !s.clip.on;
-                if (!s.clip.on && maskTool.id !== null) setMaskTool(maskTool.id);
-                touch();
+                setMaskOn(box, page(), !maskOn);
+                if (!box.mask?.on && maskKind) clearDrawTool();
               }}
             ><span class="knob"></span></button>
             <span class="lbl2">Mask</span>
           </div>
-          <div class="insp-sub-body" class:disabled={!s.clip.on} style="padding:0;border:none;gap:11px">
-            <div class="seg">
+          <div class="insp-sub-body" class:disabled={!maskOn} style="padding:0;border:none;gap:11px">
+            <div class="switch-row" title="Off: the shapes stay put on the page. On: they move, turn and scale with the box">
               <button
                 type="button"
-                class:on={s.clip.mode === 'exclude'}
-                aria-pressed={s.clip.mode === 'exclude'}
-                title="Shapes hide the text under them"
-                onclick={() => { s.clip.mode = 'exclude'; touch(); }}
-              >Exclude</button>
-              <button
-                type="button"
-                class:on={s.clip.mode === 'include'}
-                aria-pressed={s.clip.mode === 'include'}
-                title="Only text under the shapes stays visible"
-                onclick={() => { s.clip.mode = 'include'; touch(); }}
-              >Include</button>
+                class="switch"
+                class:on={mk?.follow === true}
+                role="switch"
+                aria-checked={mk?.follow === true}
+                aria-label="Mask moves with box"
+                disabled={!maskOn}
+                onclick={() => setMaskFollow(box, page(), mk?.follow !== true)}
+              ><span class="knob"></span></button>
+              <span class="lbl2">Moves with box</span>
             </div>
-            <div class="seg">
+            <!-- What the next shape does. Each shape keeps its own. -->
+            <div class="seg" role="group" aria-label="Next shape">
               <button
                 type="button"
-                class:on={maskTool.id === 'brush'}
-                aria-pressed={maskTool.id === 'brush'}
-                onclick={() => { if (!s.clip.on) return; setMaskTool('brush'); }}
-              >Brush</button>
+                class:on={drawSettings.mask.op === 'hide'}
+                aria-pressed={drawSettings.mask.op === 'hide'}
+                disabled={!maskOn}
+                title="The next shape hides the text under it"
+                onclick={() => (drawSettings.mask.op = 'hide')}
+              >Hide</button>
               <button
                 type="button"
-                class:on={maskTool.id === 'poly'}
-                aria-pressed={maskTool.id === 'poly'}
-                onclick={() => { if (!s.clip.on) return; setMaskTool('poly'); }}
-              >Polygon</button>
-              <button
-                type="button"
-                class:on={maskTool.id === 'ellipse'}
-                aria-pressed={maskTool.id === 'ellipse'}
-                onclick={() => { if (!s.clip.on) return; setMaskTool('ellipse'); }}
-              >Ellipse</button>
+                class:on={drawSettings.mask.op === 'keep'}
+                aria-pressed={drawSettings.mask.op === 'keep'}
+                disabled={!maskOn}
+                title="The next shape keeps the text under it, and the text outside every keep shape is hidden"
+                onclick={() => (drawSettings.mask.op = 'keep')}
+              >Keep</button>
             </div>
-            <div class="grp">
-              <span class="lbl">Brush size</span>
-              <div class="slider-row">
-                <input type="range" min="2" max="200" step="1" value={s.clip.brushSize} disabled={!s.clip.on} aria-label="Brush size" oninput={(e) => setNum(s.clip, 'brushSize', e.target.value, 2, 200, true)} />
-                <input class="num-s" type="number" min="2" max="200" step="1" value={s.clip.brushSize} disabled={!s.clip.on} title="Brush size, page px" aria-label="Brush size, page px" onchange={(e) => commitNum(s.clip, 'brushSize', e, 2, 200, true)} />
+            <div class="seg" role="group" aria-label="Mask tool">
+              {#each MASK_KINDS as [k, label] (k)}
+                <button
+                  type="button"
+                  class:on={maskKind === k}
+                  aria-pressed={maskKind === k}
+                  disabled={!maskOn}
+                  onclick={() => setDrawTool('mask', k)}
+                >{label}</button>
+              {/each}
+            </div>
+            {@render sliderRow('Brush size', 'Brush size, page px', drawSettings.mask.size, (v) => (drawSettings.mask.size = v), { min: MASK_BRUSH_MIN, max: MASK_BRUSH_MAX, unit: 'px', aria: 'Brush size', disabled: !maskOn })}
+            {#if isComics()}
+              <div class="mask-row">
+                <button
+                  type="button"
+                  class="rbtn"
+                  class:on={!!link}
+                  aria-pressed={!!link}
+                  title={link ? 'Stop clipping the text to its bubble' : 'Keep the text inside its bubble outline, and follow the outline when it changes'}
+                  onclick={() => clipToBubble()}
+                >Clip to bubble</button>
               </div>
-            </div>
-            <div class="insp-none">Draw on the box: brush drags, polygon clicks corner points (double-click closes, Esc cancels), ellipse drags a bounds box. Shapes hide or keep the text per the mode.</div>
+              {#if link}
+                {@render sliderRow('Inset', 'How far inside the bubble outline the clip runs, page px', link.inset, (v) => slideBubbleInset(box, page(), v), { min: 0, max: BUBBLE_INSET_MAX, unit: 'px', aria: 'Bubble inset' })}
+              {/if}
+            {/if}
+            <div class="insp-none">{MASK_HINT[maskKind] ?? 'Pick a tool, then draw anywhere on the page.'}</div>
             <div class="mask-row">
-              <span class="mask-count">{s.clip.shapes.length} shape(s)</span>
+              <span class="mask-count">{mk?.shapes.length ?? 0} {mk?.shapes.length === 1 ? 'shape' : 'shapes'}</span>
               <button
                 type="button"
                 class="rbtn"
-                disabled={!s.clip.shapes.length}
+                disabled={!mk?.shapes.length}
+                onclick={() => clearMaskShapes(box, page())}
+              >Clear shapes</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if effectsTab === 'fade'}
+          <!-- Regional opacity: shapes on the page where the text loses some
+               of its opacity, shadows and glows with it. Only the Rust
+               engine paints a fade, so under the browser engine the controls
+               are dimmed and the hint says why; the switch can still turn a
+               fade off. -->
+          {@const fadeKind = drawKindFor('fade')}
+          {@const fd = box.fade}
+          {@const fadeOn = !!fd?.on}
+          {@const off = !fadeOn || !rustBoxes}
+          <div class="switch-row" title="Make parts of the text see-through">
+            <button
+              type="button"
+              class="switch"
+              class:on={fadeOn}
+              role="switch"
+              aria-checked={fadeOn}
+              aria-label="Fade"
+              disabled={!rustBoxes && !fadeOn}
+              onclick={() => {
+                setFadeOn(box, page(), !fadeOn);
+                if (!box.fade?.on && fadeKind) clearDrawTool();
+              }}
+            ><span class="knob"></span></button>
+            <span class="lbl2">Fade</span>
+          </div>
+          <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+            <div class="switch-row" title="Off: the shapes stay put on the page. On: they move, turn and scale with the box">
+              <button
+                type="button"
+                class="switch"
+                class:on={fd?.follow === true}
+                role="switch"
+                aria-checked={fd?.follow === true}
+                aria-label="Fade moves with box"
+                disabled={off}
+                onclick={() => setFadeFollow(box, page(), fd?.follow !== true)}
+              ><span class="knob"></span></button>
+              <span class="lbl2">Moves with box</span>
+            </div>
+            <div class="seg" role="group" aria-label="Fade tool">
+              {#each MASK_KINDS as [k, label] (k)}
+                <button
+                  type="button"
+                  class:on={fadeKind === k}
+                  aria-pressed={fadeKind === k}
+                  disabled={off}
+                  onclick={() => setDrawTool('fade', k)}
+                >{label}</button>
+              {/each}
+            </div>
+            {@render sliderRow('Brush size', 'Brush size, page px', drawSettings.fade.size, (v) => (drawSettings.fade.size = v), { min: MASK_BRUSH_MIN, max: MASK_BRUSH_MAX, unit: 'px', aria: 'Fade brush size', disabled: off })}
+            {@render sliderRow('Strength', 'How much of its opacity the text loses under the next shape', drawSettings.fade.strength, (v) => (drawSettings.fade.strength = v), { min: 1, max: 100, unit: '%', aria: 'Fade strength', disabled: off })}
+            {@render sliderRow('Soft edge', 'How soft the edge of the next shape is, percent of its size', drawSettings.fade.soft, (v) => (drawSettings.fade.soft = v), { min: 0, max: 100, unit: '%', aria: 'Fade soft edge', disabled: off })}
+            <div class="insp-none">{rustBoxes ? (MASK_HINT[fadeKind] ?? 'Pick a tool, then draw anywhere on the page.') : 'Only the Rust engine paints a fade.'}</div>
+            <div class="mask-row">
+              <span class="mask-count">{fd?.shapes.length ?? 0} {fd?.shapes.length === 1 ? 'shape' : 'shapes'}</span>
+              <button
+                type="button"
+                class="rbtn"
+                disabled={!fd?.shapes.length}
+                onclick={() => clearFadeShapes(box, page())}
+              >Clear shapes</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if effectsTab === 'colour'}
+          <!-- Paint over the letters: marks of colour on the letters' fill,
+               drawn on the box and moving with it. Only the Rust engine
+               paints them, so under the browser engine the controls are
+               dimmed and the hint says why; the switch can still turn the
+               paint off. -->
+          {@const paintKind = drawKindFor('paint')}
+          {@const pt = s.paint}
+          {@const paintOn = !!pt?.on}
+          {@const off = !paintOn || !rustBoxes}
+          <div class="switch-row" title="Paint colour over the letters">
+            <button
+              type="button"
+              class="switch"
+              class:on={paintOn}
+              role="switch"
+              aria-checked={paintOn}
+              aria-label="Colour"
+              disabled={!rustBoxes && !paintOn}
+              onclick={() => {
+                s.paint = { marks: [], ...(s.paint ?? {}), on: !paintOn };
+                touch();
+                if (!s.paint.on && paintKind) clearDrawTool();
+              }}
+            ><span class="knob"></span></button>
+            <span class="lbl2">Colour</span>
+          </div>
+          <div class="insp-sub-body" class:disabled={off} style="padding:0;border:none;gap:11px">
+            <div class="seg" role="group" aria-label="Paint tool">
+              {#each PAINT_KINDS as [k, label] (k)}
+                <button
+                  type="button"
+                  class:on={paintKind === k}
+                  aria-pressed={paintKind === k}
+                  disabled={off}
+                  onclick={() => setDrawTool('paint', k)}
+                >{label}</button>
+              {/each}
+            </div>
+            <div class="grp">
+              <span class="lbl">Colour</span>
+              <div class="color-field">
+                <ColorPicker value={drawSettings.paint.color} label="Paint colour" size={24} unclipped onchange={(hex) => (drawSettings.paint.color = hex)} />
+                <input
+                  type="text"
+                  class="hex"
+                  value={drawSettings.paint.color}
+                  aria-label="Paint colour hex"
+                  disabled={off}
+                  oninput={hexInput}
+                  onchange={(e) => {
+                    const raw = String(e.target.value ?? '').trim();
+                    const ok = /^#?[0-9a-f]{6}$/i.test(raw);
+                    if (ok) drawSettings.paint.color = (raw.startsWith('#') ? raw : '#' + raw).toLowerCase();
+                    hexFlag(e.target, !ok);
+                  }}
+                />
+              </div>
+            </div>
+            {@render sliderRow('Brush size', 'Brush size, page px', drawSettings.paint.size, (v) => (drawSettings.paint.size = v), { min: MASK_BRUSH_MIN, max: MASK_BRUSH_MAX, unit: 'px', aria: 'Paint brush size', disabled: off })}
+            {@render sliderRow('Opacity', 'How strong the colour of the next mark is', drawSettings.paint.opacity, (v) => (drawSettings.paint.opacity = v), { min: 1, max: 100, unit: '%', aria: 'Paint opacity', disabled: off })}
+            {@render sliderRow('Soft edge', 'How soft the edge of the next mark is, percent of its size', drawSettings.paint.soft, (v) => (drawSettings.paint.soft = v), { min: 0, max: 100, unit: '%', aria: 'Paint soft edge', disabled: off })}
+            <div class="insp-none">{rustBoxes ? (PAINT_HINT[paintKind] ?? 'Pick a tool, then draw over the letters.') : 'Only the Rust engine paints colour over the letters.'}</div>
+            <div class="mask-row">
+              <span class="mask-count">{pt?.marks.length ?? 0} {pt?.marks.length === 1 ? 'mark' : 'marks'}</span>
+              <button
+                type="button"
+                class="rbtn"
+                disabled={!pt?.marks.length}
                 onclick={() => {
-                  if (!s.clip.shapes.length) return;
-                  s.clip.shapes = [];
+                  s.paint = { ...s.paint, marks: [] };
                   touch();
                 }}
-              >Clear shapes</button>
+              >Clear paint</button>
             </div>
           </div>
         {/if}
@@ -2816,6 +3342,8 @@
              the orphan threshold - are defaults, set once in Settings ›
              Typesetting, and overridable per box from the Bulk style panel.
              None of them said anything about the box you had selected. -->
+        <!-- Bubble outlines are a comic tool: general use has none. -->
+        {#if isComics()}
         <div class="insp-rule"></div>
         {@render secHead('Typeset')}
         <div class="grp">
@@ -2836,6 +3364,7 @@
             <button type="button" class="rbtn" title="Approve every outline on this page that nobody approved yet" onclick={() => approvePageOutlines()}>Approve page</button>
           </div>
         </div>
+        {/if}
       </div>
     {/if}
 
@@ -3132,6 +3661,37 @@
     min-width: 0;
   }
 
+  /* The family and Clear, on one row. */
+  .font-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .face-seg {
+    flex: 0 0 auto;
+  }
+  .face-seg button {
+    width: 28px;
+  }
+  .font-row > :first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  /* What B, I and the family act on: the selected words, or the box. */
+  .lbl .scope {
+    color: var(--t2);
+    font-weight: 400;
+  }
+  /* "Font · Selected words", as "Content · Free" reads above it. */
+  .lbl .scope::before {
+    content: '· ';
+  }
+  /* Some of the words have it and some do not: half the "on" fill. */
+  .seg button.mixed {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    color: var(--text);
+  }
+
   /* The fold for bold weight and italic angle: narrow, after the toggles. */
   .seg .more {
     flex: 0 0 26px;
@@ -3376,38 +3936,102 @@
     border-color: var(--warn);
   }
 
-  .sub-tabs {
+  /* The Effects tab's two rows: the group, then the group's own sub-tabs,
+     both in words. Four groups of four or fewer, so every word fits at the
+     panel's width. What is picked is a soft fill and nothing else: the same
+     weight and size as the rest, so the row does not jump when it changes. */
+  .fx-groups {
     display: grid;
-    /* Nine tabs in one row: at the panel's default width each is about 30px,
-       and the glyph is 15px. Six per row left a row of three. */
-    grid-template-columns: repeat(9, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    border: 1px solid var(--line2);
+    border-radius: 7px;
+    overflow: hidden;
+  }
+  .fx-group {
+    height: 28px;
+    padding: 0 4px;
+    border: none;
+    background: transparent;
+    color: var(--t2);
+    font-family: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fx-group:not(:last-child) {
+    border-right: 1px solid var(--line);
+  }
+  .fx-group:hover {
+    color: var(--text);
+  }
+  .fx-group.on {
+    color: var(--text);
+    background: var(--accent-soft);
+  }
+  .fx-group:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .seed-pc {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .dice {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t2);
+    cursor: pointer;
+  }
+  .dice svg {
+    width: 15px;
+    height: 15px;
+  }
+  .dice:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--accent-soft);
+  }
+  .dice:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .sub-tabs {
+    display: flex;
+    flex-wrap: wrap;
     gap: 3px;
   }
   .sub-tab {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    flex: 1 1 0;
     height: 24px;
-    padding: 0 2px;
+    padding: 0 6px;
     border: 1px solid transparent;
     border-radius: 5px;
     background: transparent;
     color: var(--t2);
+    font-family: inherit;
+    font-size: 11.5px;
     cursor: pointer;
     min-width: 0;
-  }
-  .sub-tab :global(svg) {
-    width: 15px;
-    height: 15px;
+    white-space: nowrap;
   }
   .sub-tab:hover {
     color: var(--text);
     background: var(--surface);
   }
   .sub-tab.on {
-    color: var(--accent-fg);
-    background: var(--accent);
-    border-color: var(--accent);
+    color: var(--text);
+    background: var(--accent-soft);
   }
   .sub-tab:focus-visible {
     outline: 2px solid var(--accent);
@@ -3422,5 +4046,9 @@
   .mask-count {
     font-size: 11.5px;
     color: var(--t3);
+  }
+  /* Clip to bubble while the link stands: a soft fill, no weight change. */
+  .mask-row .rbtn.on {
+    background: var(--accent-soft);
   }
 </style>

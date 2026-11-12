@@ -1,4 +1,5 @@
 import { createBrowserGlyphPainter } from './browser-painter.js';
+import { specialActive } from '../special.js';
 
 // Engines are plain objects, and every method is synchronous:
 //   id: string
@@ -10,7 +11,9 @@ import { createBrowserGlyphPainter } from './browser-painter.js';
 //     Optional: without it, use the live browser DOM or the greedy breaker.
 //   loading(): boolean, fallback measurements must not be kept while true
 //   onFontsChange(cb): called when usable faces change; may return an unsubscribe
-//   faceReady(face): boolean, may start loading the face
+//   faceReady(face, { matched }?): boolean, may start loading the face;
+//     `matched` (the store fitting a box) refuses a face the browser found
+//     nothing for
 // A face is { key, name, bold, italic, size, css }. The key stays the CSS font
 // shorthand so swapping the implementation does not change the memo's identity.
 // Ink left/right are the engine's bounding-box distances from the anchor;
@@ -72,6 +75,21 @@ export function forgetPainterTips() {
 // becomes unconditional.
 export function engineDraws() {
   return engine != null && painter.engine === engine;
+}
+
+// Whether a style's wobble is painted: switched on, moving something, and
+// drawn by a painter that moves the letters in the job (the Rust one). A
+// wobble of no amount and no tilt is none, so the job is one without it and
+// Crisp stays on. Under the browser engine nothing moves, so nothing grows.
+export function wobbleDrawn(style) {
+  const w = style?.wobble;
+  return w?.on === true && (w.amount > 0 || w.tilt > 0) && engineDraws() && painter.wobble === true;
+}
+
+// Whether a style's special effects (special.js) are painted: one is on with
+// an amount, and the painter makes them from their numbers (the Rust one).
+export function specialDrawn(style) {
+  return specialActive(style) && engineDraws() && painter.special === true;
 }
 
 // ONE EXPORT, ONE ENGINE. Which engine measures and which painter draws can

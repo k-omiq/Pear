@@ -184,9 +184,31 @@ impl Engine {
     /// alphabetic baseline. Returns `(advance, x_min, y_min, x_max, y_max)`
     /// in pixels with y up, or no box when nothing has ink.
     fn run_extents(&mut self, face: Face, text: &str) -> Result<(f64, Option<Extent>), Error> {
-        self.measure_line(face, text, ShapeMode::MEASURE)?;
-        let mut origin = 0.0f64;
         let mut ext: Option<Extent> = None;
+        let advance = self.glyph_extents(face, text, ShapeMode::MEASURE, |_, _, cur| {
+            let Some(cur) = cur else { return };
+            ext = Some(match ext {
+                None => cur,
+                Some(e) => (e.0.min(cur.0), e.1.min(cur.1), e.2.max(cur.2), e.3.max(cur.3)),
+            });
+        })?;
+        Ok((advance, ext))
+    }
+
+    /// Each glyph of the line as `measure_line` shapes it in `mode`, handed
+    /// to `each` in order: its cluster, its pen (pixels from the line's
+    /// start, its own x offset left out, as `mt_line_carets` reads it) and
+    /// its outline box placed there, y up, or none for a glyph with no ink.
+    /// Returns the line's advance.
+    fn glyph_extents(
+        &mut self,
+        face: Face,
+        text: &str,
+        mode: ShapeMode,
+        mut each: impl FnMut(u32, f64, Option<Extent>),
+    ) -> Result<f64, Error> {
+        self.measure_line(face, text, mode)?;
+        let mut origin = 0.0f64;
         for part in &self.parts {
             let entry = self.font(part.font)?;
             let scale = face.size / f64::from(entry.info.units_per_em);
@@ -204,33 +226,91 @@ impl Engine {
             };
             let mut pen = 0i64;
             for (n, g) in self.line[part.glyphs.clone()].iter().enumerate() {
-                if let Some(b) = entry.glyph_bounds(g.id, part.synth.oblique) {
+                // `shift` is zero for a single part without the WebKit bold
+                // rule, and adding 0.0 changes no bit of the result.
+                let shift = origin + n as f64 * extra;
+                let cur = entry.glyph_bounds(g.id, part.synth.oblique).map(|b| {
                     let ox = (pen + i64::from(g.x_offset)) as f64;
                     let oy = f64::from(g.y_offset);
-                    // `shift` is zero for a single part without the WebKit
-                    // bold rule, and adding 0.0 changes no bit of the result.
-                    let shift = origin + n as f64 * extra;
-                    let cur = (
+                    (
                         shift + (ox + f64::from(b.x_min)) * scale - grow,
                         (oy + f64::from(b.y_min)) * scale - grow,
                         shift + (ox + f64::from(b.x_max)) * scale + grow + extra,
                         (oy + f64::from(b.y_max)) * scale + grow,
-                    );
-                    ext = Some(match ext {
-                        None => cur,
-                        Some(e) => (
-                            e.0.min(cur.0),
-                            e.1.min(cur.1),
-                            e.2.max(cur.2),
-                            e.3.max(cur.3),
-                        ),
-                    });
-                }
+                    )
+                });
+                each(g.cluster, shift + pen as f64 * scale, cur);
                 pen += i64::from(g.x_advance);
             }
             origin += pen as f64 * scale + part.glyphs.len() as f64 * extra;
         }
-        Ok((self.line_advance(face.size)?, ext))
+        self.line_advance(face.size)
+    }
+
+    /// The ink of each cluster of a line shaped whole, as a curved line's
+    /// letters are painted (`paint::shape_line_runs`): per cluster, in order,
+    /// its UTF-16 offset in the line and its glyphs' ink centred on the room
+    /// the line gives it (from its pen to the next cluster's, kerning
+    /// included), with the `middle` baseline at the anchor, as
+    /// [`Engine::glyph_ink`] measures a glyph shaped alone. So a kerned
+    /// letter's ink sits where the painter draws it, and a contextual form
+    /// is measured as the glyph the line chose. `no_ligatures` is the line's
+    /// letter spacing being set, as for the painter.
+    ///
+    /// Empty when the clusters do not run forwards (right-to-left text): the
+    /// caller then measures a cluster at a time, as the painter then paints.
+    pub fn cluster_inks(&mut self, face: Face, text: &str, no_ligatures: bool) -> Result<Vec<(u32, Ink)>, Error> {
+        let mode = ShapeMode {
+            no_ligatures,
+            ..ShapeMode::MEASURE
+        };
+        // Per cluster: its offset, its first glyph's pen, its ink.
+        let mut found: Vec<(u32, f64, Option<Extent>)> = Vec::new();
+        let mut backwards = false;
+        let advance = self.glyph_extents(face, text, mode, |cluster, pen, cur| {
+            match found.last_mut() {
+                Some(last) if last.0 == cluster => {
+                    if let Some(c) = cur {
+                        last.2 = Some(match last.2 {
+                            None => c,
+                            Some(e) => (e.0.min(c.0), e.1.min(c.1), e.2.max(c.2), e.3.max(c.3)),
+                        });
+                    }
+                }
+                last => {
+                    backwards |= last.is_some_and(|l| cluster < l.0);
+                    found.push((cluster, pen, cur));
+                }
+            }
+        })?;
+        if backwards {
+            return Ok(Vec::new());
+        }
+        let mid = self.middle_shift(face)?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(found.len()).map_err(|_| Error::BadSpec)?;
+        for (i, &(cluster, pen, ext)) in found.iter().enumerate() {
+            let width = found.get(i + 1).map_or(advance, |n| n.1) - pen;
+            let half = width / 2.0;
+            out.push((
+                cluster,
+                match ext {
+                    None => Ink {
+                        width,
+                        ..Ink::default()
+                    },
+                    Some((x0, y0, x1, y1)) => Ink {
+                        width,
+                        left: half - (x0 - pen),
+                        right: (x1 - pen) - half,
+                        ascent: y1 - mid,
+                        descent: mid - y0,
+                        has_ink: true,
+                    },
+                },
+            ));
+        }
+        Ok(out)
     }
 
     /// Ink extents of a line drawn left-aligned on the alphabetic baseline.

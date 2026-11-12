@@ -4,7 +4,15 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
+// The engine's readiness and the chapter read, as the test says.
+const engine = vi.hoisted(() => ({ ready: false, reads: 0 }));
+vi.mock('../sidecar.js', async (original) => ({
+  ...(await original()),
+  sidecarReady: () => engine.ready,
+  detectAllPages: () => { engine.reads++; },
+}));
 import TranslatePane from './TranslatePane.svelte';
+import { setPref } from '../prefs.svelte.js';
 import BubbleNumbers from './BubbleNumbers.svelte';
 import { app, loadProjectPages, page } from '../store.svelte.js';
 
@@ -75,4 +83,34 @@ it('puts the badge on the left edge for a left-to-right series', async () => {
   const view = render(BubbleNumbers, { pg: page() });
   await tick();
   expect(view.container.querySelector('.badge').getAttribute('transform')).toMatch(/^translate\(600 100\)/);
+});
+
+it('under general use offers no Detect, says no engine is missing, and reads nothing on its own', async () => {
+  engine.ready = true;
+  engine.reads = 0;
+  setPref('usage', 'general');
+  try {
+    loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [] }]);
+    app.loaded = true;
+    app.chapterRef = { projectId: 'p', chapterId: 'old-translate' };
+    const view = render(TranslatePane);
+    await tick();
+    expect(view.getByText('Add text in the list below.')).toBeTruthy();
+    expect(view.queryByRole('button', { name: 'Detect this page' })).toBe(null);
+    expect(view.queryByText('Detection is not ready')).toBe(null);
+    expect(engine.reads).toBe(0);
+    cleanup();
+    // Comics use with the engine up reads a chapter nobody has read.
+    setPref('usage', 'comics');
+    app.chapterRef = { projectId: 'p', chapterId: 'fresh' };
+    const comics = render(TranslatePane);
+    await tick();
+    expect(comics.getByRole('button', { name: 'Detect this page' })).toBeTruthy();
+    expect(engine.reads).toBe(1);
+  } finally {
+    setPref('usage', 'comics');
+    engine.ready = false;
+    app.chapterRef = null;
+    app.loaded = false;
+  }
 });

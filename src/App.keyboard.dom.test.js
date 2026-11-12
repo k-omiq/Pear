@@ -33,6 +33,8 @@ import { app, loadProjectPages, page } from './lib/store.svelte.js';
 import { inspectorTab, setInspectorTab } from './lib/inspector-tabs.svelte.js';
 import { defaultStyle, normalizeStyle } from './lib/data.js';
 import { resetRoute, setLeaveEditorHook, goEditor } from './lib/route.svelte.js';
+import { setPref } from './lib/prefs.svelte.js';
+import { onboarding, offerOnboarding } from './lib/onboarding/onboarding.svelte.js';
 async function settle() { for (let i = 0; i < 15; i++) { await Promise.resolve(); await tick(); } }
 
 // ===========================================================================
@@ -61,10 +63,14 @@ const arrow = (el, key = 'ArrowRight') => {
 };
 
 beforeEach(() => {
+  // An install that is already set up: on a fresh one the first-run setup
+  // opens over the editor and, rightly, takes the keyboard.
+  setPref('onboarded', true);
   resetRoute(); setLeaveEditorHook(null); app.chapterRef = null; calls.opens = [];
   setInspectorTab('text');
 });
 afterEach(async () => {
+  onboarding.open = false;
   await cleanup(); resetRoute(); app.chapterRef = null; app.selectedId = null; loadProjectPages([]);
   document.body.innerHTML = '';
 });
@@ -120,6 +126,42 @@ it('the Inspector tab strip takes its arrows without moving the selected box', a
 });
 
 // ===========================================================================
+// The first-run setup over the editor
+// ===========================================================================
+// Run again from Settings, the setup covers a mounted editor. While it is up
+// the editor's keys stand down, and Escape always reaches the setup, even
+// with a box left in edit under it and focus outside the screen.
+
+it('the editor\'s keys stand down while the setup is up', async () => {
+  const b = await openEditor();
+  offerOnboarding({ force: true }); await settle();
+  expect(document.querySelector('.onboarding-screen')).not.toBe(null);
+  const ev = arrow(document.body);
+  expect(ev.defaultPrevented).toBe(false);
+  expect(b.x).toBe(100);
+  const size = b.style.size;
+  const big = new KeyboardEvent('keydown', { code: 'Period', key: '>', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+  document.body.dispatchEvent(big);
+  expect(big.defaultPrevented).toBe(false);
+  expect(b.style.size).toBe(size);
+  onboarding.open = false; await settle();
+  arrow(document.body);
+  expect(b.x).toBe(101);
+});
+
+it('Escape closes the setup even while a box is being edited', async () => {
+  await openEditor();
+  offerOnboarding({ force: true }); await settle();
+  app.editingId = 'b';
+  document.body.focus();
+  document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await settle();
+  expect(onboarding.open).toBe(false);
+  expect(document.querySelector('.onboarding-screen')).toBe(null);
+  app.editingId = null;
+});
+
+// ===========================================================================
 // Bigger / smaller text
 // ===========================================================================
 const sizeKey = (code) => {
@@ -166,4 +208,26 @@ it('the Inspector size field steps with its buttons and arrows', async () => {
   field.dispatchEvent(new Event('change', { bubbles: true })); await settle();
   expect(b.style.size).toBe(200);
   expect(field.value).toBe('200');
+});
+
+// ===========================================================================
+// A page pick and Escape
+// ===========================================================================
+// An armed pick (a line's box being drawn, a pattern being taken) ends on
+// Escape wherever the caret is: the typing test further down the ladder would
+// otherwise hand the key to the field and leave the page waiting for a drag.
+
+it('Escape in a text field ends an armed page pick', async () => {
+  await openEditor();
+  const { pageRectPick } = await import('./lib/page-rect-pick.svelte.js');
+  const onCancel = vi.fn();
+  pageRectPick.start({ hint: 'Drag', onCancel });
+  const field = document.createElement('textarea');
+  document.body.appendChild(field);
+  field.focus();
+  arrow(field, 'Escape');
+  expect(onCancel).toHaveBeenCalledWith('escape');
+  expect(pageRectPick.active).toBe(false);
+  // With no pick waiting, Escape in the field is the field's again.
+  expect(arrow(field, 'Escape').defaultPrevented).toBe(false);
 });

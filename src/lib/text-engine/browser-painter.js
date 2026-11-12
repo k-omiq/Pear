@@ -55,6 +55,30 @@ function paint(ctx, job) {
   cnv.height = 0;
 }
 
+// Each line's stretches with the x each starts at, worked out once for every
+// pass that draws them: measured with the context's letter spacing as it
+// draws them, so a stretch starts where the one before it ended, and the line
+// is placed by its whole width as `textAlign` would place it in one call.
+function cutLines(ctx, job) {
+  const out = job.runs.map((run) => {
+    if (!run.spans?.length) return null;
+    const pieces = run.spans.map((sp) => {
+      ctx.font = job.faces[sp.face].key;
+      const text = run.text.slice(sp.start, sp.end);
+      return { text, font: ctx.font, w: ctx.measureText(text).width };
+    });
+    const width = pieces.reduce((sum, p) => sum + p.w, 0);
+    let x = job.align === 'center' ? run.x - width / 2 : job.align === 'right' || job.align === 'end' ? run.x - width : run.x;
+    for (const p of pieces) {
+      p.x = x;
+      x += p.w;
+    }
+    return pieces;
+  });
+  ctx.font = job.face.key;
+  return out;
+}
+
 function draw(ctx, job) {
   ctx.font = job.face.key;
   // Alphabetic, at the offset `baselineInLine` measured, rather than 'top' at
@@ -130,8 +154,25 @@ function draw(ctx, job) {
   } else {
     if ('letterSpacing' in ctx) ctx.letterSpacing = `${job.letterSpacing}px`;
     ctx.textAlign = job.align;
+    const cut = job.faces?.length ? cutLines(ctx, job) : null;
+    // A line set in several faces is drawn a stretch at a time, each in its
+    // face from the left of where the whole line goes: the canvas measured
+    // every stretch alone, as the layout did (the browser engine's
+    // `advanceRuns`), so nothing kerns across a change of face and the line is
+    // as wide as it was measured. Any other line is the one call it was.
+    const drawRun = (run, i, fn) => {
+      const pieces = cut?.[i];
+      if (!pieces) return fn(run.text, run.x, run.y);
+      ctx.save();
+      ctx.textAlign = 'left';
+      for (const p of pieces) {
+        ctx.font = p.font;
+        fn(p.text, p.x, run.y);
+      }
+      ctx.restore();
+    };
     const drawAll = (fn) => {
-      job.runs.forEach((run) => fn(run.text, run.x, run.y));
+      job.runs.forEach((run, i) => drawRun(run, i, fn));
     };
     // Gradient scope 'line' restarts the gradient on every wrapped line, so the
     // fill style is chosen per line rather than once for the block.
@@ -141,9 +182,9 @@ function draw(ctx, job) {
       stroke: () => drawAll((ln, x, y) => ctx.strokeText(ln, x, y)),
       fill: () => {
         if (!flat && !perLine) setFill(ctx, job.fill);
-        job.runs.forEach((run) => {
+        job.runs.forEach((run, i) => {
           if (perLine) setFill(ctx, run.fill);
-          ctx.fillText(run.text, run.x, run.y);
+          drawRun(run, i, (t, x, y) => ctx.fillText(t, x, y));
         });
       },
     });

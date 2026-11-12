@@ -5,7 +5,7 @@
 
 use mt_text::paint::{
     decode, paint_job, Affine, Align, Band, BoldDraw, Effects, Fill, Job, Mesh, Pt, Raster,
-    Request, Rgba, Roughen, Run, Stop, Tile, MAGIC, MAX_MESH_SIDE, MAX_SIDE, WIRE_VERSION,
+    Request, Rgba, Roughen, Run, Stop, Tile, Wobble, MAGIC, MAX_MESH_SIDE, MAX_SIDE, WIRE_VERSION,
 };
 use mt_text::{bold_outset, BoldAdvance, Engine, Error, Face, FontId, Synth, WEBKIT_BOLD_ADVANCE};
 
@@ -62,6 +62,7 @@ fn request(job: Job, face: Face) -> Request {
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
         ink: None,
+        faces: Default::default(),
     }
 }
 
@@ -1747,7 +1748,75 @@ fn a_runs_scale_and_skew_are_read_and_their_range_is_checked() {
     let mut old = good.clone();
     old[4] = 9;
     assert_eq!(decode(&old).err(), Some(Error::BadSpec));
-    assert_eq!(WIRE_VERSION, 11);
+    assert_eq!(WIRE_VERSION, 18);
+}
+
+/// `wire` with Wobble on (flag 64, v12): its amount, tilt and seed go after
+/// the slant. Byte 88 is the flags, byte 140 is where the slant ends.
+fn wire_with_wobble(amount: f64, tilt: f64, seed: u32) -> Vec<u8> {
+    let mut b = wire(1, "abc");
+    assert_eq!(u32::from_le_bytes(b[88..92].try_into().unwrap()), 0);
+    b[88..92].copy_from_slice(&64u32.to_le_bytes());
+    let mut at = 140;
+    for bytes in [&amount.to_le_bytes()[..], &tilt.to_le_bytes()[..], &seed.to_le_bytes()[..]] {
+        b.splice(at..at, bytes.iter().copied());
+        at += bytes.len();
+    }
+    b
+}
+
+/// `wire_with_wobble`'s one run laid `ghosts + letters` times, the first
+/// `ghosts` of them afterimages.
+fn wire_with_runs(ghosts: usize, letters: usize) -> Vec<u8> {
+    let b = wire_with_wobble(0.25, 4.0, 9);
+    let first = [100f64.to_le_bytes(), 40f64.to_le_bytes()].concat();
+    let start = b.windows(16).position(|w| w == first).unwrap();
+    // The run, up to the tile record (20 bytes) after it.
+    let record = b[start..b.len() - 20].to_vec();
+    let mut out = b[..start - 4].to_vec();
+    out.extend_from_slice(&((ghosts + letters) as u32).to_le_bytes());
+    for i in 0..ghosts + letters {
+        let mut r = record.clone();
+        // The run's flags follow its eight numbers.
+        r[64..68].copy_from_slice(&u32::from(i < ghosts).to_le_bytes());
+        out.extend_from_slice(&r);
+    }
+    out.extend_from_slice(&b[b.len() - 20..]);
+    out
+}
+
+#[test]
+fn a_wobble_counts_the_trail_copies_behind_each_letter_and_moving_nothing_is_none() {
+    let copies = |g, l| decode(&wire_with_runs(g, l)).unwrap().job.effects.wobble.unwrap().copies;
+    assert_eq!(copies(0, 1), 0);
+    assert_eq!(copies(4, 2), 2);
+    assert_eq!(copies(3, 3), 1);
+    // Copies that do not divide among the letters: none of them wobbles.
+    assert_eq!(copies(3, 2), 0);
+    // Afterimages alone on the wire (the app never writes them): none.
+    assert_eq!(copies(3, 0), 0);
+    // On with nothing to move: no wobble, so the job is one without.
+    assert_eq!(decode(&wire_with_wobble(0.0, 0.0, 5)).unwrap().job.effects.wobble, None);
+    assert!(decode(&wire_with_wobble(0.0, 1.0, 5)).unwrap().job.effects.wobble.is_some());
+}
+
+#[test]
+fn a_wobble_comes_off_the_wire_as_itself_and_out_of_range_is_refused() {
+    assert_eq!(decode(&wire(1, "abc")).unwrap().job.effects.wobble, None);
+    let r = decode(&wire_with_wobble(0.375, 12.5, 4_000_000_000)).unwrap();
+    assert_eq!(
+        r.job.effects.wobble,
+        Some(Wobble::new(0.375, 12.5, 4_000_000_000))
+    );
+    // The rest of the job is read where it always was.
+    assert_eq!(r.job.runs[0].text, "abc");
+    for (amount, tilt) in [(-0.1, 0.0), (1.5, 0.0), (0.1, -1.0), (0.1, 91.0), (f64::NAN, 0.0)] {
+        assert_eq!(
+            decode(&wire_with_wobble(amount, tilt, 1)).err(),
+            Some(Error::BadSpec),
+            "{amount} {tilt}"
+        );
+    }
 }
 
 #[test]
@@ -2672,4 +2741,34 @@ fn crisp_puts_the_baseline_and_cap_height_on_whole_page_pixels() {
     let top = (0..79).find(|&y| alpha(&moved, y) > 0).unwrap();
     assert_eq!(alpha(&moved, top), 255, "the top row is solid");
     assert_eq!((79 - top) % 2, 0);
+}
+
+/// Wobble (`Effects::wobble`) moves each letter on its own, so Crisp, which
+/// fits a whole line to the page's pixel rows, stands down for it; and with
+/// a wobble of nothing the letters are where they were.
+#[test]
+fn crisp_stands_down_for_a_wobble() {
+    let mut e = Engine::new();
+    let font = load(&mut e, "DejaVuSans.ttf");
+    let paint_with = |e: &mut Engine, crisp: bool, wobble: Option<Wobble>| {
+        let mut j = job(vec![run("HH", 4.0, 40.37)]);
+        j.effects.crisp = crisp.then_some(Pt::new(0.0, 0.0));
+        j.effects.wobble = wobble;
+        let mut r = request(j, Face::new(font, 31.0));
+        r.transform = Affine([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
+        paint(e, &r)
+    };
+    let w = Wobble::new(0.1, 5.0, 3);
+    let wobbled = paint_with(&mut e, false, Some(w));
+    assert_eq!(paint_with(&mut e, true, Some(w)).data, wobbled.data);
+    assert_ne!(paint_with(&mut e, false, None).data, wobbled.data);
+    let still = Wobble {
+        amount: 0.0,
+        tilt: 0.0,
+        ..w
+    };
+    assert_eq!(
+        paint_with(&mut e, false, Some(still)).data,
+        paint_with(&mut e, false, None).data
+    );
 }

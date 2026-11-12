@@ -40,16 +40,25 @@ import {
   lineByN,
   snugSelectedBox,
   snugPageBoxes,
+  boxText,
+  boxRuns,
+  setRangeFace,
+  setLineRangeFace,
+  faceRefusal,
 } from './store.svelte.js';
+import { typingSel, selectedRange, askPending, askFacePick, lineSel } from './typing-selection.svelte.js';
+import { faceAt } from './runs.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
-import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut } from './shortcuts.svelte.js';
-import { prefs } from './prefs.svelte.js';
+import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut, actionOff } from './shortcuts.svelte.js';
+import { sfxToolOn, isComics } from './prefs.svelte.js';
+import { clipToBubble, toggleFade } from './box-mask-actions.js';
 import { jobs } from './jobs.svelte.js';
 import { startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
 import { drawRead } from './draw-read.svelte.js';
 import { openSettings } from './settings-tabs.svelte.js';
 import { panels, setHidden, showPanel } from './editor/panels.svelte.js';
-import { showActiveRow } from './Queue.svelte';
+import { setInspectorTab } from './inspector-tabs.svelte.js';
+import { showActiveRow, drawLineBox, deleteLineWithUndo } from './Queue.svelte';
 import { exportImages } from './exporter.js';
 import { goProject, goLibrary } from './route.svelte.js';
 
@@ -59,9 +68,11 @@ const boxSelected = () => typeset() && app.selectedId != null && !!byId(app.sele
 const tagged = () => boxSelected() && !!boxTagName();
 const fitted = () => boxSelected() && !!byId(app.selectedId)?.fit;
 // Both detect scopes ask the engine for work, so both need it up and idle.
-// Translate chapters detect too.
-const canDetect = () => app.loaded && sidecarReady() && !app.detecting;
+// Translate chapters detect too. General use has no detection at all.
+const canDetect = () => isComics() && app.loaded && sidecarReady() && !app.detecting;
 const paged = () => typeset() && !isLongstrip() && app.pages.length > 1;
+// A translate chapter's typing pane with a line in it to act on.
+const activeLine = () => app.loaded && isTranslateChapter() && page().activeLineN != null && !!lineByN(page(), page().activeLineN);
 // The series sections of Settings are there only while a chapter is open.
 const inChapter = () => !!app.chapterRef;
 
@@ -75,6 +86,54 @@ function editStyle(mutate) {
 const flip = (key) => () => editStyle((s) => { s[key] = !s[key]; });
 const set = (key, v) => () => editStyle((s) => { s[key] = v; });
 const effect = (key) => () => editStyle((s) => { if (s[key]) s[key].on = !s[key].on; else return false; });
+// The words a face command acts on (typing-selection.svelte.js): the range
+// selected in the box typed into, or in the Inspector's field for the
+// selected box; a bare caret only while the box itself is typed into.
+function faceTarget() {
+  if (!typeset()) return null;
+  const id = app.editingId ?? app.selectedId;
+  const b = id != null ? byId(id) : null;
+  const text = b ? (boxText(b) ?? '') : '';
+  const r = b ? selectedRange(b.id, text) : null;
+  return r ? { b, text, r, caret: r[0] === r[1], typing: app.editingId === b.id } : null;
+}
+// Words selected in a queue line's English field (typed into now): the line's.
+function lineTarget() {
+  if (!typeset() || lineSel.n == null || lineSel.a === lineSel.f || lineSel.pageId !== page()?.id) return null;
+  const ln = lineByN(page(), lineSel.n);
+  return ln && (ln.en ?? '') === lineSel.text ? { n: lineSel.n, a: lineSel.a, f: lineSel.f } : null;
+}
+const faceRange = () => {
+  const t = faceTarget();
+  return t && !t.caret ? t : null;
+};
+// Bold or Italic: on the selected words; at a bare caret, for the letters
+// typed next (`askPending`: the face asked for there, else the one the
+// letter before has); with nothing typed into, the whole box, as before. A
+// key pressed in a text field with nothing selected there (the queue's, the
+// Inspector's size) is not about the whole box, and falls through - except
+// the Inspector's Text field, which holds the box's words: a caret there is
+// the whole box, as the Inspector's own B and I say beside it.
+const inField = (e) => !!e?.target?.closest?.('input, textarea, [contenteditable="true"]') && e.target.id !== 'insp-text';
+// A locked box, or curved text (laid out in one face), takes no face on part
+// of its words: said once, nothing written.
+const refused = (t) => !!faceRefusal(t.b, page(), { toast: true });
+const faceToggle = (key) => (e) => {
+  const L = lineTarget();
+  if (L) return void setLineRangeFace(page(), L.n, L.a, L.f, { toggle: key });
+  const t = faceTarget();
+  if (t && (!t.caret || t.typing) && refused(t)) return;
+  if (t && !t.caret) return void setRangeFace(t.b, t.r[0], t.r[1], { toggle: key });
+  if (t?.typing) {
+    const at = t.r[0];
+    const pend = typingSel.pending;
+    const asked = pend?.boxId === t.b.id && pend.at === at && key in pend.patch ? pend.patch[key] : null;
+    const now = asked ?? faceAt(boxRuns(t.b), at > 0 ? at - 1 : at, t.b.style)[key];
+    return void askPending(t.b.id, t.text, at, { [key]: !now });
+  }
+  if (!boxSelected() || inField(e)) return false;
+  return flip(key)();
+};
 const wrap180 = (v) => ((((v + 180) % 360) + 360) % 360) - 180;
 const rotate = (d) => () => editStyle((s) => { s.rotation = wrap180(Math.round((s.rotation ?? 0) + d)); });
 
@@ -105,8 +164,29 @@ const retryable = () => jobs.items.findLast((j) => !j.running && j.failed.length
 const SETTINGS_SERIES = new Set(['series', 'styles', 'guide']);
 
 const RUNS = {
-  'text.bold': { when: boxSelected, run: flip('bold') },
-  'text.italic': { when: boxSelected, run: flip('italic') },
+  'text.bold': { when: () => boxSelected() || !!faceTarget() || !!lineTarget(), run: faceToggle('bold') },
+  'text.italic': { when: () => boxSelected() || !!faceTarget() || !!lineTarget(), run: faceToggle('italic') },
+  // The family list is the Inspector's, on its Text tab: its panel is shown,
+  // which draws the Inspector if it was hidden, and the Inspector takes the ask.
+  'text.typeface': {
+    when: () => !!faceRange(),
+    run: () => {
+      const t = faceRange();
+      if (refused(t)) return;
+      askFacePick(t.b.id, t.text, t.r[0], t.r[1]);
+      setInspectorTab('text');
+      showPanel('options');
+    },
+  },
+  'text.clearFace': {
+    when: () => !!faceRange() || !!lineTarget(),
+    run: () => {
+      const L = lineTarget();
+      if (L) return void setLineRangeFace(page(), L.n, L.a, L.f, { clear: true });
+      const t = faceRange();
+      setRangeFace(t.b, t.r[0], t.r[1], { clear: true });
+    },
+  },
   'text.uppercase': { when: boxSelected, run: flip('uppercase') },
   'text.alignLeft': { when: boxSelected, run: set('align', 'left') },
   'text.alignCenter': { when: boxSelected, run: set('align', 'center') },
@@ -126,12 +206,16 @@ const RUNS = {
   'fx.warp': { when: boxSelected, run: effect('warp') },
   'fx.motionBlur': { when: boxSelected, run: effect('motionBlur') },
   'fx.roughen': { when: boxSelected, run: effect('roughen') },
+  'fx.wobble': { when: boxSelected, run: effect('wobble') },
+  'fx.fade': { when: boxSelected, run: () => toggleFade(app.selectedId) },
   'box.snugWidth': { when: boxSelected, run: () => snugSelectedBox() },
   'page.snugWidths': { when: () => typeset() && page()?.boxes?.length > 0, run: () => snugPageBoxes() },
   'box.showInQueue': { when: () => boxSelected() && byId(app.selectedId)?.lineN != null, run: showInQueue },
   'bulk.open': { when: () => typeset() && !app.bulk.active, run: () => openBulk() },
 
   'bubble.centre': { when: fitted, run: () => centreTextInOutline(app.selectedId) },
+  // Comics only: free text has no bubble to keep to.
+  'mask.clipToBubble': { when: () => boxSelected() && isComics(), run: () => clipToBubble() },
   'bubble.outlineToBox': { when: boxSelected, run: () => outlineToBox(app.selectedId) },
   'bubble.approvePage': { when: typeset, run: () => approvePageOutlines() },
 
@@ -144,7 +228,7 @@ const RUNS = {
   'view.raw': { when: typeset, run: toggleRaw },
   'panel.options': { when: typeset, run: () => togglePanel('options') },
   'panel.queue': { when: typeset, run: () => togglePanel('queue') },
-  'panel.sfx': { when: () => typeset() && prefs.sfxTool, run: () => togglePanel('sfx') },
+  'panel.sfx': { when: () => typeset() && sfxToolOn(), run: () => togglePanel('sfx') },
   'panel.ai': { when: typeset, run: () => togglePanel('ai') },
 
   'detect.page': { when: canDetect, run: () => detectCurrentPage() },
@@ -154,6 +238,10 @@ const RUNS = {
   'ocr.draw': { when: () => true, run: () => { drawRead.open = true; } },
 
   'translate.cleaned': { when: () => isTranslateChapter() && app.translateTypeset, run: () => { app.viewCleaned = !app.viewCleaned; } },
+  // The typing pane's active line. Delete's keys are the row's own (Queue.svelte);
+  // this is the action they name, for whatever runs it by id.
+  'line.delete': { when: activeLine, run: () => deleteLineWithUndo(page().activeLineN) },
+  'line.drawBox': { when: activeLine, run: () => drawLineBox(page().activeLineN) },
 
   'chapter.export': { when: () => typeset() && !app.exporting, run: () => { app.exportOpen = true; } },
   'chapter.saveJson': { when: () => app.loaded && !app.exporting, run: () => { exportImages('JSON', 'all'); } },
@@ -173,8 +261,11 @@ const RUNS = {
 };
 
 // The handlers for `RUNS`, for App.svelte to register while the editor runs.
+// Each refuses an action the usage does not have (`actionOff`) as well as one
+// whose own condition fails, so no path to a handler - a key, the palette, a
+// menu - can run a comic tool under general use.
 export function editorActionHandlers() {
-  return Object.fromEntries(Object.entries(RUNS).map(([id, a]) => [id, () => (a.when() ? a.run() : false)]));
+  return Object.fromEntries(Object.entries(RUNS).map(([id, a]) => [id, (e) => (!actionOff(id) && a.when() ? a.run(e) : false)]));
 }
 
 // What each component-owned action needs before it can do anything. Their
@@ -182,10 +273,11 @@ export function editorActionHandlers() {
 // offering what would be refused.
 const BOX_PREFIXES = ['box.', 'style.'];
 function shortcutWhen(id) {
+  // A tool switched off, or one the usage does not have, first: it is not
+  // offered whatever its own condition says.
+  if (actionOff(id)) return false;
   const r = RUNS[id];
   if (r) return r.when();
-  if (id === 'tool.brush' && !prefs.brushTool) return false;
-  if (id === 'tool.sfx' && !prefs.sfxTool) return false;
   if (id === 'box.paste') return typeset() && hasCopiedBox();
   if (id === 'fonts.open') return !isTranslateMode();
   if (BOX_PREFIXES.some((p) => id.startsWith(p))) return boxSelected();

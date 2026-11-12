@@ -28,6 +28,7 @@ const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, posi
 import { parsePresets } from './presets.svelte.js';
 import { normalizeTranslations } from './importer.js';
 import { migrateEntry, migrateDoc } from './editor/history-file.svelte.js';
+import { normalizeSpecial } from './special.js';
 import { app, loadProjectPages, pageById, byId } from './store.svelte.js';
 import { sanitizeGuide, emptyGuide } from './guide.svelte.js';
 import { initHistory, loadStack, undo, redo, resetHistory } from './editor/history.svelte.js';
@@ -344,9 +345,33 @@ describe('a style written before strokes and shadows were lists', () => {
     expect(s.motionBlur).toEqual({ on: true, x: 2, y: 0, amount: 16 });
   });
 
-  it('migrates legacy clip with on: true up to the new schema with defaults and empty shapes', () => {
-    const s = normalizeStyle({ clip: { on: true } });
-    expect(s.clip).toEqual({ on: true, mode: 'exclude', brushSize: 20, shapes: [] });
+  // The mask moved out of the style onto the box, pinned to the page
+  // (box-mask.js): a style read alone keeps none, and a chapter load carries
+  // a saved one to the box, through the box as it was saved.
+  it('reads a style mask as none, and a chapter load carries it to the box in page px', () => {
+    expect('clip' in normalizeStyle({ clip: { on: true } })).toBe(false);
+    loadProjectPages([
+      {
+        id: 21,
+        w: 800,
+        h: 600,
+        lines: [],
+        boxes: [
+          { id: 'm1', lineN: null, text: 'A', x: 100, y: 50, w: 200, h: 100, style: { clip: { on: true, mode: 'include', brushSize: 9, shapes: [{ kind: 'poly', pts: [[0, 0], [10, 0], [0, 10]] }] } } },
+          { id: 'm2', lineN: null, text: 'B', x: 0, y: 0, w: 40, h: 40, style: { clip: { on: true } } },
+          { id: 'm3', lineN: null, text: 'C', x: 0, y: 0, w: 40, h: 40, style: {} },
+          { id: 'm4', lineN: null, text: 'D', x: 0, y: 0, w: 40, h: 40, style: { clip: { on: true, mode: 'include', shapes: [{ kind: 'poly', pts: [[0, 0], [1, 0], [0, 1]] }] } }, mask: { on: false, shapes: [] } },
+        ],
+      },
+    ]);
+    const p = pageById(21);
+    expect(p.boxes[0].mask).toEqual({ on: true, shapes: [{ kind: 'poly', op: 'keep', pts: [[100, 50], [110, 50], [100, 60]] }] });
+    expect('clip' in p.boxes[0].style).toBe(false);
+    expect(p.boxes[1].mask).toEqual({ on: true, shapes: [] });
+    // A box with no mask has no key, so its document reads as it always did.
+    expect('mask' in p.boxes[2]).toBe(false);
+    // A box saved with its own mask keeps it, whatever its style says.
+    expect(p.boxes[3].mask).toEqual({ on: false, shapes: [] });
   });
 
   it('is idempotent, so a migrated style survives every later save', () => {
@@ -693,6 +718,28 @@ describe('an undo history written before the style schema moved', () => {
     expect(e.after.strokeEffects).toEqual([outside('#ff0044', 5)]);
   });
 
+  // A delete recorded before the mask left the style: the box comes back
+  // with its mask on the page, carried through the box as it was recorded.
+  it('carries a delete entry\'s style mask to the page', () => {
+    const style = normalizeStyle({});
+    const old = { ...style, clip: { on: true, mode: 'exclude', brushSize: 9, shapes: [{ kind: 'poly', pts: [[0, 0], [10, 0], [0, 10]] }] } };
+    const e = migrateEntry({ t: 'delete', index: 0, box: { id: 'b1', x: 100, y: 50, w: 50, h: 20, text: 'A', style: old } });
+    expect('clip' in e.box.style).toBe(false);
+    expect(e.box.mask).toEqual({ on: true, shapes: [{ kind: 'poly', op: 'hide', pts: [[100, 50], [110, 50], [100, 60]] }] });
+    // A box with a mask of its own keeps it, and a current box is the same object.
+    const own = { id: 'b2', x: 0, y: 0, w: 5, h: 5, text: 'B', style, mask: { on: false, shapes: [] } };
+    expect(migrateEntry({ t: 'delete', index: 0, box: own }).box).toBe(own);
+  });
+
+  // A place entry recorded before Wobble, paint and the special effects came
+  // back without them, and Surface > Special read `special` of undefined.
+  it.each(['special', 'paint', 'wobble'])('fills in a place entry\'s style without %s', (key) => {
+    const style = normalizeStyle({});
+    delete style[key];
+    const e = migrateEntry({ t: 'place', index: 0, box: { id: 'b1', x: 0, y: 0, w: 50, h: 20, text: 'A', style } });
+    expect(e.box.style[key]).toEqual(normalizeStyle({})[key]);
+  });
+
   it('migrates each item of a bulk entry, and leaves an absent lastStyle pair absent', () => {
     const e = migrateEntry(parsed().pages['2'].undo[0]);
     expect(e.items[0].before.strokeEffects).toEqual([outside('#00ff88', 2)]);
@@ -1015,7 +1062,7 @@ describe('a prefs blob from before shortcuts could be rebound', () => {
     expect(old.prefs.defaultBalloon).toBe(false);
     expect(old.prefs.textEngine).toBe('rust');
     old.setPref('defaultBalloon', true);
-    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(3);
+    expect(JSON.parse(old.map.get('mt.prefs')).defaultsRev).toBe(4);
     const since = await withStorage(old.map.get('mt.prefs'));
     expect(since.prefs.defaultBalloon).toBe(true);
     expect(since.prefs.textEngine).toBe('rust');
@@ -1191,7 +1238,7 @@ describe('a chapter laid out under the old chapter switch', () => {
     // A style of this build: since review F2 a style with no Layer Styles
     // fields is one from before them, and goes through normalizeStyle, so the
     // identity checks below need those fields to mean "left as recorded".
-    const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {} };
+    const layerStyles = { innerShadows: [], strokeEffects: [], blendMode: 'normal', bevel: {}, blending: {}, wobble: {}, paint: {}, special: normalizeSpecial(undefined) };
     const smart = { shape: 'auto', hyphenate: true, balloon: true, shadows: [], gradient: {}, pattern: { fade: {} }, ...layerStyles };
     const entries = [
       { t: 'style', before: { ...smart, color: '#000' }, after: { ...smart, color: '#f00' } },
@@ -1330,7 +1377,7 @@ describe('a project saved before the warp mesh existed', () => {
 // last box's own geometry: strokes drawn in one box must not appear in the next
 // box the letterer places.
 describe('a newborn box and the previous box\'s geometry', () => {
-  it('starts with no ink, path, mask shapes or warp of its own', async () => {
+  it('starts with no ink, path or warp of its own, and no mask in its style', async () => {
     const { applyBoxDefaults } = await import('./data.js');
     const prev = normalizeStyle({
       ink: { on: true, strokes: [{ pts: [[1, 2, 0.5], [3, 4, 0.5]] }] },
@@ -1341,7 +1388,8 @@ describe('a newborn box and the previous box\'s geometry', () => {
     expect(s.ink).toEqual({ on: false, strokes: [] });
     expect(s.path).toEqual({ on: false, pts: [] });
     expect(s.warp).toEqual({ on: false, cols: 3, rows: 3, pts: [] });
-    expect(s.clip.shapes).toEqual([]);
+    // The mask is the box's, not the style's: there is none to carry.
+    expect('clip' in s).toBe(false);
   });
 });
 

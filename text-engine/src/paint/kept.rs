@@ -146,6 +146,7 @@ struct Store {
     bytes: usize,
     clock: u64,
     ceiling: usize,
+    hits: u64,
 }
 
 thread_local! {
@@ -155,6 +156,7 @@ thread_local! {
         bytes: 0,
         clock: 0,
         ceiling: KEPT_BYTES,
+        hits: 0,
     });
 }
 
@@ -165,8 +167,18 @@ pub fn get<T: 'static>(key: Key) -> Option<Rc<T>> {
         s.clock += 1;
         let e = s.map.get_mut(&key)?;
         e.used = s.clock;
-        Rc::clone(&e.piece).downcast::<T>().ok()
+        let hit = Rc::clone(&e.piece).downcast::<T>().ok();
+        s.hits += u64::from(hit.is_some());
+        hit
     })
+}
+
+/// How many times [`get`] has handed a piece back. For the tests: a piece
+/// stored as one type and asked for as another is never found, and
+/// [`bytes`] alone does not show it (the miss stores it again, as big).
+#[doc(hidden)]
+pub fn hits() -> u64 {
+    STORE.with(|s| s.borrow().hits)
 }
 
 /// Keeps `piece`, which holds `bytes` bytes, under `key`, in place of any
@@ -229,6 +241,11 @@ pub fn clear() {
         s.seen = HashSet::new();
         s.bytes = 0;
     });
+}
+
+/// The most the store holds.
+pub fn ceiling() -> usize {
+    STORE.with(|s| s.borrow().ceiling)
 }
 
 /// The bytes the store holds now.

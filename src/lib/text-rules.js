@@ -33,10 +33,46 @@ export function ruleBreaks(text, rules) {
 // `text` with every rule applied.
 export function applyTextRules(text, rules) {
   let t = String(text ?? '');
-  if (!t || !rules) return t;
-  if (rules.dashes === 'ascii') t = t.replace(DASHES, '-');
-  if (rules.dashes === 'em') t = t.replace(DOUBLE_HYPHEN, EM).replace(SPACED_HYPHEN, `$1${EM}`);
-  if (rules.ellipsis === 'dots') t = t.replace(SPACED_DOTS, '...').replace(ELLIPSIS_CHAR, (c) => (c === '‥' ? '..' : '...'));
-  if (rules.ellipsis === 'char') t = t.replace(SPACED_DOTS, '…').replace(THREE_DOTS, '…');
+  for (const e of textRuleEdits(t, rules)) t = t.slice(0, e.span[0]) + e.put + t.slice(e.span[1]);
   return t;
+}
+
+// The same rules as the edits they make, one per match, in the order to make
+// them: `[{ span: [a, b], put }]`, each `span` a range of the text as the
+// edits before it left it. So a caller that keeps something beside the text
+// by offset - the faces of its words (runs.js) - can carry it through each
+// change exactly, rather than through one guess at the whole difference,
+// which loses everything between the first change and the last.
+//
+// Each rule is the pattern it always was, run over the text as the rules
+// before it left it; its matches are made from the last to the first, so the
+// offsets of the ones still to make hold. A spaced hyphen keeps the letter in
+// front of it: only the spaces and the hyphen are replaced.
+export function textRuleEdits(text, rules) {
+  let t = String(text ?? '');
+  const out = [];
+  if (!t || !rules) return out;
+  const step = (re, put) => {
+    const found = [];
+    for (const m of t.matchAll(re)) found.push(put(m));
+    for (const e of found.reverse()) {
+      t = t.slice(0, e.span[0]) + e.put + t.slice(e.span[1]);
+      out.push(e);
+    }
+  };
+  const whole = (to) => (m) => ({ span: [m.index, m.index + m[0].length], put: typeof to === 'function' ? to(m[0]) : to });
+  if (rules.dashes === 'ascii') step(DASHES, whole('-'));
+  if (rules.dashes === 'em') {
+    step(DOUBLE_HYPHEN, whole(EM));
+    step(SPACED_HYPHEN, (m) => ({ span: [m.index + m[1].length, m.index + m[0].length], put: EM }));
+  }
+  if (rules.ellipsis === 'dots') {
+    step(SPACED_DOTS, whole('...'));
+    step(ELLIPSIS_CHAR, whole((c) => (c === '‥' ? '..' : '...')));
+  }
+  if (rules.ellipsis === 'char') {
+    step(SPACED_DOTS, whole('…'));
+    step(THREE_DOTS, whole('…'));
+  }
+  return out;
 }

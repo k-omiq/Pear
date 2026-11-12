@@ -30,7 +30,7 @@
 // The one exception is a key heard in one place only - the typing pane's
 // Enter, Tab and Escape (`ctx` below): there the key has one meaning, so it
 // rebinds like any other.
-import { prefs, setPref } from './prefs.svelte.js';
+import { prefs, setPref, isComics, sfxToolOn } from './prefs.svelte.js';
 
 // ---------- platform ----------
 function detectMac() {
@@ -273,6 +273,10 @@ export function formatCombo(combo) {
 //               same place can clash; a key with no ctx clashes with all.
 //   inField     the pane takes the key before the field types it, so it may
 //               not be a bare letter.
+//   yields      a key heard everywhere that gives way where it is named
+//               ('row'): that component hears the press first and takes it,
+//               so its own key of the same combo is no clash. Delete is the
+//               box's on the page and the line's on a focused row.
 const T = { whenTyping: true };
 const DEFS = [
   // Tools. The digits count down the tool rail in the order it draws them.
@@ -291,15 +295,17 @@ const DEFS = [
   { id: 'box.copy', label: 'Copy box', group: 'Edit', combo: 'Mod+c' },
   { id: 'box.paste', label: 'Paste box', group: 'Edit', combo: 'Mod+v' },
   { id: 'box.duplicate', label: 'Duplicate box', group: 'Edit', combo: 'Mod+d', keywords: 'clone copy', ...T },
-  { id: 'box.delete', label: 'Delete box', group: 'Edit', combo: 'Delete', keywords: 'remove' },
-  { id: 'box.deleteAlt', label: 'Delete box', group: 'Edit', combo: 'Backspace', altOf: 'box.delete' },
+  { id: 'box.delete', label: 'Delete box', group: 'Edit', combo: 'Delete', keywords: 'remove', yields: 'row' },
+  { id: 'box.deleteAlt', label: 'Delete box', group: 'Edit', combo: 'Backspace', altOf: 'box.delete', yields: 'row' },
 
   // Text: the selected box's type. Bigger and smaller are Photoshop's keys;
   // in Fit to box they step the most the fit may grow to.
   { id: 'box.sizeUp', label: 'Bigger text', group: 'Text', combo: 'Mod+Shift+.', keywords: 'size font larger increase', ...T },
   { id: 'box.sizeDown', label: 'Smaller text', group: 'Text', combo: 'Mod+Shift+,', keywords: 'size font reduce decrease', ...T },
-  { id: 'text.bold', label: 'Bold', group: 'Text', combo: null, keywords: 'weight', ...T },
-  { id: 'text.italic', label: 'Italic', group: 'Text', combo: null, keywords: 'slant oblique', ...T },
+  { id: 'text.bold', label: 'Bold', group: 'Text', combo: 'Mod+b', keywords: 'weight selected words', ...T },
+  { id: 'text.italic', label: 'Italic', group: 'Text', combo: 'Mod+i', keywords: 'slant oblique selected words', ...T },
+  { id: 'text.typeface', label: 'Typeface…', group: 'Text', combo: null, keywords: 'font family selected words', ...T },
+  { id: 'text.clearFace', label: 'Clear typeface', group: 'Text', combo: null, keywords: 'regular plain reset font selected words', ...T },
   { id: 'text.uppercase', label: 'All caps', group: 'Text', combo: null, keywords: 'uppercase capitals', ...T },
   { id: 'text.alignLeft', label: 'Align left', group: 'Text', combo: null, keywords: 'justify', ...T },
   { id: 'text.alignCenter', label: 'Align centre', group: 'Text', combo: null, keywords: 'justify center middle', ...T },
@@ -324,6 +330,8 @@ const DEFS = [
   { id: 'fx.warp', label: 'Warp on or off', group: 'Box', combo: null, keywords: 'effect bend arc', ...T },
   { id: 'fx.motionBlur', label: 'Motion blur on or off', group: 'Box', combo: null, keywords: 'effect speed', ...T },
   { id: 'fx.roughen', label: 'Rough edges on or off', group: 'Box', combo: null, keywords: 'effect roughen grit', ...T },
+  { id: 'fx.wobble', label: 'Wobble', group: 'Box', combo: null, keywords: 'shake shaky bounce jitter letters', ...T },
+  { id: 'fx.fade', label: 'Fade on or off', group: 'Box', combo: null, keywords: 'opacity transparent regional', ...T },
   { id: 'box.snugWidth', label: 'Shrink box to text', group: 'Box', combo: 'Mod+Alt+w', keywords: 'narrow tighten width fit hug empty space', ...T },
   { id: 'page.snugWidths', label: 'Shrink all boxes on page to text', group: 'Box', combo: 'Mod+Alt+Shift+w', keywords: 'narrow tighten width fit hug empty space every', ...T },
   { id: 'box.showInQueue', label: 'Show in text queue', group: 'Box', combo: null, keywords: 'line find', ...T },
@@ -334,6 +342,7 @@ const DEFS = [
   { id: 'box.fitBalloon', label: 'Fit to bubble on or off', group: 'Bubble', combo: 'Mod+Shift+f', keywords: 'balloon auto', ...T },
   { id: 'box.retypeset', label: 'Redetect bubble and refit', group: 'Bubble', combo: 'Mod+Alt+f', keywords: 'balloon outline find again typeset', ...T },
   { id: 'bubble.centre', label: 'Centre in bubble', group: 'Bubble', combo: null, keywords: 'center middle outline move', ...T },
+  { id: 'mask.clipToBubble', label: 'Clip to bubble', group: 'Bubble', combo: null, keywords: 'mask keep inside outline cut', ...T },
   { id: 'bubble.outlineToBox', label: 'Use box as outline', group: 'Bubble', combo: null, keywords: 'outline rectangle free text', ...T },
   { id: 'box.approveOutline', label: 'Approve outline', group: 'Bubble', combo: 'Mod+Alt+a', keywords: 'ok check', ...T },
   { id: 'bubble.approvePage', label: 'Approve all outlines on page', group: 'Bubble', combo: null, keywords: 'ok check every', ...T },
@@ -386,6 +395,11 @@ const DEFS = [
   { id: 'translate.edit', label: 'Type in the line', group: 'Translate', combo: 'Enter', ctx: 'row' },
   { id: 'translate.pageNext', label: 'Next page', group: 'Translate', combo: 'ArrowRight', ctx: 'row' },
   { id: 'translate.pagePrev', label: 'Previous page', group: 'Translate', combo: 'ArrowLeft', ctx: 'row' },
+  // A row of the typing pane with focus on the row itself, never in a field:
+  // in a field these keys edit the text.
+  { id: 'line.delete', label: 'Delete line', group: 'Translate', combo: 'Delete', ctx: 'row', keywords: 'remove row' },
+  { id: 'line.deleteAlt', label: 'Delete line', group: 'Translate', combo: 'Backspace', ctx: 'row', altOf: 'line.delete' },
+  { id: 'line.drawBox', label: 'Draw line’s box on page', group: 'Translate', combo: null, keywords: 'place mark rectangle redraw', ...T },
   ...Array.from({ length: 9 }, (_, i) => ({
     id: `translate.tag${i + 1}`,
     label: `Tag ${i + 1} on or off`,
@@ -437,10 +451,25 @@ export function defaultCombo(id) {
   return BY_ID.get(id)?.combo ?? null;
 }
 
-// A tool switched off in Settings has no key and no row.
-const toolOff = (id) =>
-  (id === 'tool.brush' && !prefs.brushTool) || ((id === 'tool.sfx' || id === 'panel.sfx') && !prefs.sfxTool);
-const activeShortcuts = () => SHORTCUTS.filter((s) => !toolOff(s.id));
+// The comic tools general use does not have (plan 2.1): detection and OCR,
+// the bubble outlines and their fit, the check list, and the Settings tabs
+// that only serve them. Hidden, not dimmed: for that person the tool set does
+// not exist, rather than being unable to act right now. The text list stays
+// (plan 2.1), so its placing keys stay with it.
+const COMICS_ONLY = new Set([
+  'box.fitBalloon', 'box.retypeset', 'bubble.centre', 'bubble.outlineToBox', 'box.approveOutline', 'bubble.approvePage',
+  'mask.clipToBubble',
+  'view.regions', 'review.next',
+  'detect.page', 'detect.chapter', 'jobs.retry', 'ocr.draw',
+  'settings.detection', 'settings.guide',
+]);
+// A tool switched off in Settings, or one the usage does not have, has no key
+// and no row, and its key does nothing.
+export const actionOff = (id) =>
+  (id === 'tool.brush' && !prefs.brushTool) ||
+  ((id === 'tool.sfx' || id === 'panel.sfx') && !sfxToolOn()) ||
+  (!isComics() && COMICS_ONLY.has(id));
+const activeShortcuts = () => SHORTCUTS.filter((s) => !actionOff(s.id));
 
 // The groups, in registry order, for the settings screen. A second key
 // (`altOf`) is not a row of its own: it rides on its action's row, in `alts`.
@@ -487,7 +516,7 @@ export const keyLabel = (id) => formatCombo(comboFor(id));
 // cannot bind a key to nothing.
 // An empty string is a key the user took away: the action has none.
 export function comboFor(id) {
-  if (toolOff(id)) return null;
+  if (actionOff(id)) return null;
   const over = prefs.shortcuts?.[id];
   if (over === '') return null;
   if (typeof over === 'string') {
@@ -501,7 +530,9 @@ export const isCustomCombo = (id) => comboFor(id) !== defaultCombo(id);
 
 // Two keys clash only when both can be heard at once: either is heard
 // everywhere, or both in the same place (see `ctx` above).
-const sharePlace = (a, b) => !a?.ctx || !b?.ctx || a.ctx === b.ctx;
+// A key heard everywhere that yields to a place (`yields`) is not heard there.
+const yieldsTo = (a, b) => !a?.ctx && !!b?.ctx && a?.yields === b.ctx;
+const sharePlace = (a, b) => (!a?.ctx || !b?.ctx || a.ctx === b.ctx) && !yieldsTo(a, b) && !yieldsTo(b, a);
 
 // The shortcut a combo is already taken by, ignoring one id (the one being
 // rebound, whose place decides what it can clash with). Null when it is free.
@@ -685,7 +716,7 @@ export function dispatchShortcut(e, { typing = false } = {}) {
 // box's right-click menu do, so a menu item and its key can never disagree.
 // The handler gets no event. False when there is no handler or it declined.
 export function runShortcut(id) {
-  if (toolOff(id)) return false;
+  if (actionOff(id)) return false;
   const fn = handlers.get(id);
   if (!fn) return false;
   return fn(null) !== false;

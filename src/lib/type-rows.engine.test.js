@@ -302,6 +302,47 @@ describe('in pixels: a glyph`s ink starts at the caret before it plus its own le
     wide.forEach((r, i) => expect(r.stop - tight[i].stop).toBeCloseTo(7 * i, 9));
   });
 
+  it('a wobble moves letters up and down only: the carets are the same, and each ink still starts at its caret', () => {
+    const wobble = { on: true, amount: 25, tilt: 0, seed: 7 };
+    const plain = typeModel(boxOf('WAVE ON'), 'WAVE ON');
+    expect(typeModel(boxOf('WAVE ON', { wobble }), 'WAVE ON')).toEqual(plain);
+    // The ink is painted moved: the picture is not the plain one.
+    const moved = painted(boxOf('WAVE', { wobble }));
+    const still = painted(boxOf('WAVE'));
+    expect(Array.from(moved.data).some((v, i) => v !== still.data[i]) || moved.h !== still.h).toBe(true);
+    // Each prefix paints its letters where the whole line does, so each
+    // letter's ink is found at the caret before it, as without a wobble.
+    const rows = expectInkAtCarets('WAVE', { wobble });
+    expectInkAtCarets('WAVE').forEach((r, i) => expect(rows[i].stop).toBeCloseTo(r.stop, 9));
+  });
+
+  it('a tilted wobble keeps the carets, and typing a letter leaves the ink before it still', () => {
+    const wobble = { on: true, amount: 12, tilt: 15, seed: 7 };
+    const text = 'WAVE ON';
+    expect(typeModel(boxOf(text, { wobble }), text)).toEqual(typeModel(boxOf(text), text));
+    const box = boxOf(text, { wobble });
+    const s = box.style;
+    const face = faceFor(s, s.size);
+    const full = typeModel(box, text);
+    // A turn about the letter's middle carries its left edge at most this far.
+    const turn = 0.5 * s.size * Math.sin((15 * Math.PI) / 180);
+    let checked = 0;
+    for (const [a, b] of clustersOf(box, text)) {
+      if (a === 0) continue;
+      const ink = rust.lineInk(face, text.slice(a, b));
+      if (!(ink.right + ink.left > 0)) continue;
+      const before = painted(boxOf(text.slice(0, a), { wobble }));
+      const withIt = painted(boxOf(text.slice(0, b), { wobble }));
+      const seen = firstUnlikeColumn(before, withIt);
+      // Everything left of the new letter's own reach is the picture it was.
+      const earliest = Math.floor((caretAt(full.rows, a).x - ink.left - turn) * SS) - 1;
+      expect(seen, `'${text.slice(a, b)}' at ${a}`).not.toBeNull();
+      expect(seen, `'${text.slice(a, b)}' at ${a}`).toBeGreaterThanOrEqual(earliest);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(3);
+  });
+
   it('letter spacing breaks the ligature, and each letter has its own stop on its own ink', () => {
     const rows = expectInkAtCarets('afib', { font: 'DejaVu Sans', letterSpacing: 5 });
     expect(rows.map((r) => r.glyph)).toEqual(['a', 'f', 'i', 'b']);

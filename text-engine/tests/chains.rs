@@ -371,6 +371,7 @@ fn painter_validates_chains_before_every_no_paint_return_and_recovers() {
             transform,
             tiles: vec![],
             ink: None,
+            faces: Default::default(),
             job: Job {
                 curved: false,
                 align: Align::Left,

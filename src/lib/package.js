@@ -21,6 +21,7 @@
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { sanitizeTagEntry } from './tags.svelte.js';
 import { patternSrcsUsed } from './data.js';
+import { runFamilies, runsField } from './runs.js';
 
 export const PACKAGE_FORMAT = 'manga-typesetter/chapter';
 export const PACKAGE_VERSION = 1;
@@ -52,7 +53,7 @@ const familySegment = (name) => String(name).replace(/[\\/]+/g, '_').trim() || '
 // input:
 //   record        the chapter.json record (pages with file/cleaned/w/h/lines/detect/boxes)
 //   translations  string, the derived text JSON (optional)
-//   project       { name, layout, ocrLanguage }
+//   project       { name, layout, ocrLanguage, exportScale }
 //   raws          Map<fileName, Uint8Array>   every page.file must be present
 //   cleaned       Map<fileName, Uint8Array>   every page.cleaned must be present
 //   patterns      Map<fileName, Uint8Array>   picked pattern tiles; only the ones
@@ -125,6 +126,9 @@ export function buildChapterPackage({
       name: project.name ?? '',
       layout: project.layout ?? 'pages',
       ocrLanguage: project.ocrLanguage ?? 'ja',
+      // The series' export Size, so a series made from the package exports
+      // as the one it came from (store.svelte.js `normalizeExportScale`).
+      exportScale: project.exportScale === 2 ? 2 : 1,
     },
     chapter: {
       number: record.number ?? 0,
@@ -247,13 +251,20 @@ export function packagePagesForImport(pkg) {
   }));
 }
 
-// The family names a chapter's typesetting depends on: every box's font and
-// the font default of every tag in use. Names only; the caller decides which
-// are user fonts with bytes to ship.
+// The family names a chapter's typesetting depends on: every box's font, the
+// family of every run of words set in another typeface (a box's own runs and
+// a translated line's), and the font default of every tag in use. Names only;
+// the caller decides which are user fonts with bytes to ship.
 export function fontFamiliesUsed(pages = [], tagEntries = []) {
   const out = new Set();
   for (const p of pages) {
-    for (const b of p?.boxes ?? []) if (b?.style?.font) out.add(b.style.font);
+    // Runs count only beside the text they were saved for, as a load reads
+    // them (runsField): a stale run names a family nothing is set in.
+    for (const b of p?.boxes ?? []) {
+      if (b?.style?.font) out.add(b.style.font);
+      for (const f of runFamilies(runsField(b?.runs, b?.text, b?.runsCheck)?.runs)) out.add(f);
+    }
+    for (const l of p?.lines ?? []) for (const f of runFamilies(runsField(l?.runs, l?.en, l?.runsCheck)?.runs)) out.add(f);
   }
   for (const t of tagEntries) if (t?.style?.font) out.add(t.style.font);
   return [...out];

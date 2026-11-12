@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { fixtureFont } from '../test/rust-engine.js';
 import { fakeIndexedDB } from '../test/fake-indexeddb.js';
+import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
 
 // ===========================================================================
 // What a chapter package says about fonts, on the way out and on the way in
@@ -284,4 +285,20 @@ describe('with no built-in fonts (cut-over)', () => {
       expect(saved.staying).toEqual(mode === 'engine on' ? [{ name: 'Bangers', why: 'missing' }] : []);
     });
   }
+});
+
+describe('the import says what Size the series it came from exports at', () => {
+  const sized = (exportScale) => buildChapterPackage({ ...chapterIn(), project: { ...chapterIn().project, exportScale } });
+
+  it('2x for a 2x series, and Original for one that never chose or an older package', async () => {
+    expect((await inspectPackage(asFile(sized(2)), 'p1')).summary.exportScale).toBe(2);
+    expect((await inspectPackage(asFile(sized(1)), 'p1')).summary.exportScale).toBe(1);
+    // A package from before Size: the builder always writes one, so it is
+    // taken out of the manifest by hand.
+    const old = unzipSync(sized(2));
+    const manifest = JSON.parse(strFromU8(old['manifest.json']));
+    delete manifest.project.exportScale;
+    old['manifest.json'] = strToU8(JSON.stringify(manifest));
+    expect((await inspectPackage(asFile(zipSync(old)), 'p1')).summary.exportScale).toBe(1);
+  });
 });

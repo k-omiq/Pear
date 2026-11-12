@@ -170,7 +170,7 @@ impl Surface {
 }
 
 /// `v / 255`, rounded, for `v` up to `255 * 255`.
-fn div255(v: u32) -> u32 {
+pub(crate) fn div255(v: u32) -> u32 {
     (v + 127) / 255
 }
 
@@ -744,37 +744,6 @@ pub(crate) fn over_moved_in(
             let keep = 1.0 - s[3] / 255.0;
             for c in 0..4 {
                 d[c] = to_u8(s[c] + f32::from(d[c]) * keep);
-            }
-        }
-    }
-}
-
-/// Scales every pixel of `s` by the alpha of `mask` (straight RGBA8 covering
-/// `bx`), or by what is left of it when `keep_outside`. Where the mask does
-/// not reach it is clear: nothing kept, or everything.
-pub(crate) fn mask(s: &mut Surface, mask: &[u8], bx: IBox, keep_outside: bool) {
-    let (w, h) = (s.width, s.height);
-    for y in 0..h {
-        let row = &mut s.data[y * w * 4..(y + 1) * w * 4];
-        let inside = (y as i32) >= bx.y0 && (y as i32) < bx.y1;
-        for (x, p) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            if p[3] == 0 {
-                continue;
-            }
-            let m = if inside && (x as i32) >= bx.x0 && (x as i32) < bx.x1 {
-                let i = ((y as i32 - bx.y0) as usize * bx.width() + (x as i32 - bx.x0) as usize)
-                    * 4
-                    + 3;
-                u32::from(mask.get(i).copied().unwrap_or(0))
-            } else {
-                0
-            };
-            let k = if keep_outside { 255 - m } else { m };
-            if k == 255 {
-                continue;
-            }
-            for c in p.iter_mut() {
-                *c = div255(u32::from(*c) * k) as u8;
             }
         }
     }

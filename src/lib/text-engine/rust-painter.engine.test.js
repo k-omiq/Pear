@@ -3,7 +3,7 @@ import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
 import { fileURLToPath } from 'node:url';
 import { rustEngine, FIXTURE_FACES } from '../../test/rust-engine.js';
 import { createRustGlyphPainter } from './rust-painter.js';
-import { paintJob } from '../../../text-engine/js/paint.mjs';
+import { paintJob, MAX_BLUR } from '../../../text-engine/js/paint.mjs';
 import { createBrowserGlyphPainter } from './browser-painter.js';
 
 // The painter makes its canvases, and text-paint.js its pattern tiles,
@@ -275,6 +275,23 @@ describe('the Rust engine behind the glyph-painter seam', () => {
       { kind: 'innerGlow', color: '#ffffbe', opacity: 0.75, blend: 'screen', technique: 'precise', size: 3, choke: 0, range: 0.5, noise: 0, source: 'center' },
     ]);
     expect([inner.x0, inner.y0, inner.x1, inner.y1]).toEqual([plain.x0, plain.y0, plain.x1, plain.y1]);
+  });
+
+  it('paints a mark whose soft edge is past what the engine reads, at the most it reads', () => {
+    const painter = createRustGlyphPainter(rust);
+    const box = (soft) => {
+      const canvas = createCanvas(400, 200);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      const marks = [{ kind: 'poly', pts: [[-50, -50], [250, -50], [250, 150], [-50, 150]], color: '#ff0000', opacity: 1, soft, erase: false }];
+      painter.paintBox(ctx, { job: job(), rect: { x: 0, y: 0, w: 200, h: 100 }, shadows: [], blur: 0, taps: [], clip: null, effects: [{ kind: 'paint', x: 0, y: 0, marks }] });
+      return canvas.getContext('2d').getImageData(0, 0, 400, 200).data;
+    };
+    // The writer sends MAX_BLUR for anything more, so the box is painted,
+    // not refused, and as it is at MAX_BLUR.
+    const past = box(1e9);
+    expect(past.some((v, i) => i % 4 === 3 && v > 0)).toBe(true);
+    expect(Buffer.from(past).equals(Buffer.from(box(MAX_BLUR)))).toBe(true);
   });
 
   it('paints the Photoshop strokes, a gradient overlay, a pattern overlay and a gradient glow', () => {

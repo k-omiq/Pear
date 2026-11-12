@@ -127,25 +127,18 @@ afterEach(async () => {
 });
 
 describe('borrowed fonts follow the box’s painted runs', () => {
-  it('finds curve borrowing hidden by shaping a composed character in the primary face', async () => {
-    await on({ hold: true });
+  it('paints a curve\'s composed pair as the line does, so it borrows nothing', async () => {
+    await on();
     const text = '=\u0338';
     const b = box('MyBangers', { text, style: { curve: 30 } });
     const p = doc([b])[0];
     expect(lettersOf(b.style, text)).toEqual({ borrowed: [], none: [], pending: [], unread: [] });
-    // Bangers composes the pair to its own ≠, but paints the curve's mark
-    // independently; that missing glyph must initiate coverage discovery.
-    let done = false;
-    const settling = fontsSettling([p]).then(() => { done = true; });
-    expect(boxLetters(b, p).pending).toContain(cp('\u0338'));
-    await new Promise((r) => setTimeout(r, 0));
-    expect(done).toBe(false);
-    for (let i = 0; i < 4 && !done; i++) {
-      invoke.release();
-      await new Promise((r) => setTimeout(r, 0));
-    }
-    await settling;
-    expect(boxLetters(b, p)).toEqual({ borrowed: [{ family: 'DejaVu Sans', letters: [cp('\u0338')] }], none: [], pending: [], unread: [] });
+    // Bangers composes the pair to its own ≠. A curve is the line cut into
+    // its clusters (curve shaping, plan 5.2), so the pair is one run and is
+    // painted composed: the mark is never asked of a fallback font.
+    expect(boxLetters(b, p)).toEqual({ borrowed: [], none: [], pending: [], unread: [] });
+    await fontsSettling([p]);
+    expect(boxLetters(b, p)).toEqual({ borrowed: [], none: [], pending: [], unread: [] });
   });
 
   it.each([

@@ -15,9 +15,12 @@
     rememberStyle,
     settleEdits,
     setBoxText,
+    setBoxRuns,
+    boxRuns,
     refitBox,
     autoFitBoxTo,
     fitGeom,
+    followGeom,
     moveGeom,
     moveBoxTo,
     focusPage,
@@ -32,6 +35,8 @@
     fontPreviewing,
   } from './store.svelte.js';
   import { openBoxMenu } from './editor/BoxMenu.svelte';
+  import { openFaceMenu } from './editor/FaceMenu.svelte';
+  import { typingSel, setTypingSel, clearTypingSel, onEditAway, endEditIfAway, keepsEdit } from './typing-selection.svelte.js';
   import { stripDragYBounds } from './editor/strip.js';
 
   import { untrack, flushSync } from 'svelte';
@@ -44,11 +49,14 @@
     resyncField,
     undoField,
     redoField,
+    fieldFaces,
+    recordFieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
+  import { copyRuns, editedSpan, runsKey, shiftRuns, patchRuns } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
-  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
+  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, lineFaces, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
     strokeBands,
     rgba,
@@ -57,7 +65,6 @@
     patternTileCanvas,
     motionBlurPreviewTaps,
     drawClipShapes,
-    clipActive,
     inkActive,
     drawInk,
     ensureNoisePhase,
@@ -71,10 +78,11 @@
     patternFillStyle,
   } from './text-paint.js';
   import { pageArtSrc, artImage, artReady } from './page-art.svelte.js';
-  import { warpActive, meshMap, unwarpPoint } from './warp.js';
+  import { warpActive, meshMap, unwarpPoint, unwarpWith } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
   import { meshWarper } from './warp-paint.js';
-  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull } from './contain.js';
+  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull, lettersInkRect } from './contain.js';
+  import { HANDLE_KINDS, ARM_LENGTH, handleFrame, handlePoint, dragHandle, dragArm, armEnd } from './special.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
   import { isMacKeyboard } from './shortcuts.svelte.js';
@@ -82,14 +90,17 @@
   import { patternTiles } from './pattern-tiles.svelte.js';
   import { displayScale } from './editor/display-scale.svelte.js';
   import { watchNear } from './editor/near-view.js';
-  import { maskTool } from './mask-tool.svelte.js';
+  import { drawTool, drawSettings, clearDrawTool, DRAW_TARGETS } from './box-draw-tool.svelte.js';
+  import { maskActive, frameKey, maskInBoxFrame, maskOnPage, translateMask, pinnedToPage, modelShapesOnPage, modelShapesFromPage, MASK_SHAPES_MAX } from './box-mask.js';
+  import { fadeActive } from './box-fade.js';
+  import { paintKey, marksFromPage, marksOnPage, moveMarks, paintRoomFor } from './box-paint.js';
   import { inspectorTab, effectsSubTab } from './inspector-tabs.svelte.js';
   import WarpGizmo from './editor/WarpGizmo.svelte';
   import SfxGizmo from './SfxGizmo.svelte';
   import { sfxLive } from './sfx-live.svelte.js';
   import { crispFor } from './text-edges.svelte.js';
   import { editLive } from './edit-live.svelte.js';
-  import { prefs } from './prefs.svelte.js';
+  import { sfxToolOn } from './prefs.svelte.js';
   import LockChip from './LockChip.svelte';
   import { brushArmed } from './brush-tool.svelte.js';
   import { inkTipIds, settleTips } from './brush-tips.js';
@@ -142,7 +153,9 @@
     // is not reactive: this is what says they changed.
     app.fontsVersion;
     try {
-      return typeModel(box, composeText ?? text);
+      // A composition is laid out with the faces the words around it keep
+      // (`liveRuns`).
+      return typeModel(box, composeText ?? text, liveRuns);
     } catch {
       return null;
     }
@@ -305,6 +318,8 @@
   const bulkTarget = $derived(isBulkTarget(box.id));
   const s = $derived(box.style);
   const text = $derived(boxText(box, pg));
+  // The faces of those words (runs.js), from where `boxText` read them.
+  const runs = $derived(boxRuns(box, pg));
 
   const line = $derived(box.lineN != null ? lineByN(pg, box.lineN) : null);
   const jp = $derived(line?.jp ?? '');
@@ -364,8 +379,10 @@
   const MASK_EXPAND = 300;
 
   // The mask as a CSS mask-image, drawn by the same painter the exporter
-  // composites with (drawClipShapes). Exclude paints the world white and
-  // erases the shapes; include paints only the shapes.
+  // composites with (drawClipShapes), in the box's own frame, which is the
+  // frame CSS masks the element in: the keep shapes (the world, with none),
+  // less the hide shapes. The shapes are pinned to the page, so a move of the
+  // box builds it again.
   //
   // A blob URL, not a data URL, and that is the point of the shape below: a
   // data URL cannot be revoked, so every rebuild left its decoded bitmap in
@@ -376,6 +393,13 @@
   // does happen the old URL is revoked the moment the new one lands, which is
   // what lets the renderer give the old bitmap back.
   const MASK_STEP = 32;
+  // The mask's shapes in the box's own frame (`maskInBoxFrame`), and whether
+  // it does anything: what the picture's key, this image and the overlay read.
+  const maskOn = $derived(maskActive(box));
+  const maskFrame = $derived(maskOn ? maskInBoxFrame(box) : []);
+  // Whether the fade does anything (box-fade.js): pinned to the page like
+  // the mask, so it is in the picture's key beside it.
+  const fadeOn = $derived(fadeActive(box));
   let maskUrl = $state('');
   let maskW = $state(0); // page px the mask image spans, MASK_EXPAND included
   let maskH = $state(0);
@@ -396,18 +420,23 @@
     // on screen unmasked - excluded text shown - until it lands; standing, it
     // is there on the edit's first frame. What stands is a blob URL: the
     // encoded PNG of a flat mask, which nothing decodes until CSS applies it.
-    if (!clipActive(s.clip)) {
+    if (!maskOn) {
       maskKey = '';
       maskSeq++;
       setMask('', 0, 0);
       return;
     }
+    // While a pictured box is dragged nothing applies this image, and its
+    // key changes every frame (the mask stays on the page): it is built
+    // again once, when the box is let go.
+    if (placeHeld && pictured) return;
     const qz = Math.min(1, Math.max(0.125, Math.round(z * 8) / 8));
     const w = Math.ceil((box.w + MASK_EXPAND * 2) / MASK_STEP) * MASK_STEP;
     const h = Math.ceil((box.h + MASK_EXPAND * 2) / MASK_STEP) * MASK_STEP;
-    const key = JSON.stringify([s.clip.shapes, s.clip.mode, qz, w, h]);
+    const key = `${frameKey(box, box.mask)}|${qz}|${w}|${h}`;
     if (key === maskKey) return;
     maskKey = key;
+    const shapes = maskFrame;
     const cnv = document.createElement('canvas');
     cnv.width = Math.max(2, Math.round(w * qz));
     cnv.height = Math.max(2, Math.round(h * qz));
@@ -415,14 +444,13 @@
     if (!ctx) return;
     ctx.scale(cnv.width / w, cnv.height / h);
     ctx.translate(MASK_EXPAND, MASK_EXPAND);
-    if (s.clip.mode === 'include') {
-      drawClipShapes(ctx, s.clip.shapes);
-    } else {
+    if (shapes.some((sh) => sh.op === 'keep')) drawClipShapes(ctx, shapes, 'keep');
+    else {
       ctx.fillStyle = '#fff';
       ctx.fillRect(-MASK_EXPAND, -MASK_EXPAND, w, h);
-      ctx.globalCompositeOperation = 'destination-out';
-      drawClipShapes(ctx, s.clip.shapes);
     }
+    ctx.globalCompositeOperation = 'destination-out';
+    drawClipShapes(ctx, shapes, 'hide');
     const seq = ++maskSeq;
     if (typeof cnv.toBlob === 'function') {
       // Async, so the standing mask holds the frame until the new one is
@@ -447,7 +475,7 @@
     };
   });
   const maskCss = $derived.by(() => {
-    if (!clipActive(s.clip) || !maskUrl) return '';
+    if (!maskOn || !maskUrl) return '';
     const sz = `${maskW * z}px ${maskH * z}px`;
     const pos = `${-MASK_EXPAND * z}px ${-MASK_EXPAND * z}px`;
     return (
@@ -657,8 +685,8 @@
   //
   // This is the substitution the PSD export already makes for a box Photoshop
   // cannot re-render, and it costs the same things: no caret and no selection.
-  // See `onDblClick` below. The mask tools still work: `maskShapePoint` carries
-  // the pointer back through the mesh.
+  // See `onDblClick` below. The mask tools still work: their shapes are page
+  // px, cut from the picture after the mesh.
   //
   // With the Rust engine drawing, this is how EVERY box at rest is shown
   // (`engineShown`): the same canvas, the same effect, the same release. Two
@@ -733,7 +761,15 @@
   let placeHeld = $state(null);
   const pageGradKey = $derived(placeHeld ? placeHeld.grad : pageGradLive);
   const patternTileKey = $derived(placeHeld ? placeHeld.tiles : patternTileLive);
-  const engineKey = $derived(
+  // Everything of the picture's key but the mask and the fade, and the key
+  // itself. A box with a mask or a fade on is painted again as it moves,
+  // since they stay on the page while the letters slide under them: their
+  // shapes in the box's own frame are in the picture.
+  // Nothing else of it changes with a move, so the engine reads the picture
+  // before them back (its premask piece) and only lays them again. The key
+  // holds each one's revision and what its frame depends on (`frameKey`),
+  // never the shapes themselves: a key is built on every move frame.
+  const engineRest = $derived(
     engineWanted
       ? pictureOn
         ? pictureKey({
@@ -749,6 +785,9 @@
             scale: pictureRes,
             fonts: app.fontsVersion,
             tiles: patternTileKey,
+            // The faces of the words, which the picture is painted in, moved
+            // over what an IME has in hand (`liveRuns`).
+            runs: liveRuns,
             light: lightKey,
             // Crisp letter edges, which the painter reads from the setting.
             edges: crispFor(s) ? 'crisp' : '',
@@ -758,6 +797,11 @@
         : PICTURE_OFF
       : '',
   );
+  const engineKey = $derived(
+    engineRest && engineRest !== PICTURE_OFF && (maskOn || fadeOn)
+      ? `${engineRest}${maskOn ? `|M${frameKey(box, box.mask)}` : ''}${fadeOn ? `|F${frameKey(box, box.fade)}` : ''}`
+      : engineRest,
+  );
   // The key of the picture the box is to be, whichever paint makes it: the
   // engine's, or the old one a warped box has with the switch off (and, with
   // it on, while it is being typed into).
@@ -765,8 +809,10 @@
     engineWanted
       ? engineKey
       : warped
-        ? JSON.stringify({ ...s, ink: 0 }) +
-          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}`
+        ? JSON.stringify({ ...s, ink: 0, paint: paintKey(s.paint) }) +
+          `|${inkKey}|${text}|${box.w}|${box.h}|${z}|${app.fontsVersion}|${lightKey}` +
+          // The faces of the words, which the warped picture is painted in.
+          (runs?.length ? `|R${runsKey(runs)}` : '')
         : '',
   );
   const warpKey = $derived(failed ? '' : wantedKey);
@@ -809,7 +855,34 @@
   }
   // An IME's text is not the box's until the composition ends, so the box
   // is painted with it standing in for its own.
-  const paintedBox = () => (editing && composeText != null ? { ...box, text: composeText } : box);
+  //
+  // A box with a mask or a fade is painted where it stood when the rest of
+  // its key last changed (`grainHold`), its mask and fade carried to stay
+  // where they are on the page relative to it. The letters are the same wherever the box stands, and
+  // what is anchored to the page (the grain of a noise or a glow) stays put
+  // under a move as it does for a box with no mask, whose picture a move
+  // never repaints: so a move changes only how far the mask has moved, and
+  // the engine's premask piece and its raster of the mask are read back. The file is always painted where the box is.
+  // The faces go with it, moved over the composed letters (`liveRuns`).
+  let grainHold = null;
+  // A move drag in hand (`startMove`): its frames alone may read the kept
+  // mask between pixels (`liveMove`, wire v24). Every other paint is exact,
+  // and the drag let go paints once more without it.
+  let moveLive = $state(false);
+  const paintedBox = () => {
+    let b = editing && composeText != null ? { ...box, text: composeText, runs: liveRuns } : box;
+    // Shapes that move with the box need no hold (`pinnedToPage`).
+    if ((!maskOn && !fadeOn) || !pinnedToPage(box)) return b;
+    if (grainHold?.key !== engineRest) grainHold = { key: engineRest, x: box.x, y: box.y };
+    const dx = grainHold.x - box.x;
+    const dy = grainHold.y - box.y;
+    if (!dx && !dy) return b;
+    // The shapes stay as they are (a bubble link's outline is the fit's,
+    // which does not move here) and the move goes apart: the engine reads
+    // the raster it keeps of them at the move (`pinShiftOf`), and a move
+    // frame never walks the shapes.
+    return { ...b, x: grainHold.x, y: grainHold.y, pinMove: [dx, dy], ...(moveLive ? { liveMove: true } : {}) };
+  };
   // `key` is the picture key this paint is for: the effect's paints have one,
   // and only those may go to the paint worker (`paintFull`). `worker` false
   // paints here whatever the box is: the fallback for a paint the worker did
@@ -1046,6 +1119,7 @@
     resizing;
     sfxDragging;
     keying;
+    moveLive;
     if (!el) {
       // Warp switched off, or the box is going away: hand the pixels back and
       // forget what was drawn, so switching it on again paints the new canvas.
@@ -1196,7 +1270,7 @@
       !!pageFrameEl &&
       sfxCurve &&
       !!layout &&
-      prefs.sfxTool &&
+      sfxToolOn() &&
       !warpGizmoOn &&
       !boxLocked(box),
   );
@@ -1251,7 +1325,9 @@
       effectsSubTab.id === 'warp' &&
       !boxLocked(box),
   );
-  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn && !pathGizmoOn && !locked);
+  // The special effects' points stand them down too (`specialHandles`): a
+  // lightning starts on the left edge by default, on the W handle.
+  const handlesOn = $derived(selected && !editing && !bulkOn && !warpGizmoOn && !pathGizmoOn && !specialPointsOn && !locked);
   // The end of the handle gesture in flight (`startTransform`), or null.
   let transformEnd = null;
   $effect(() => {
@@ -1492,6 +1568,15 @@
   // An IME's text is not the box's until the composition ends, but it is on
   // the curve while it is being composed: the editable holds it by then.
   let composeText = $state(null);
+  // What the composition began on: the text, and the raw range the IME was
+  // given (`onCompositionStart`).
+  let composeFrom = null;
+  // The faces of the words while an IME composes: the box's own runs moved
+  // over the composed letters as the edit at its end will move them (the
+  // range it was given, `editedSpan`; a guess from the text when that does not
+  // explain it), so the rest of the box keeps its faces and its line breaks.
+  // The box's runs at any other time.
+  const liveRuns = $derived(composeText == null ? runs : (shiftRuns(runs, composeFrom?.v ?? text, composeText, composeFrom ? (editedSpan(composeFrom.v, composeText, composeFrom.a, composeFrom.b) ?? undefined) : undefined) ?? null));
   const layout = $derived.by(() => {
     if ((editing && !curveEdit) || !curved) return null;
     const t = applyCase(editing ? (composeText ?? text) : text, s);
@@ -1517,10 +1602,17 @@
     // The lines an outline fit chose, while they are this text's, face's and
     // size's (`brokenLines`); otherwise line breaking from the box's
     // dimensions and balloon fit.
-    const cased = applyCase(text, s);
+    const opts = breaksWords(box) ? { breakWords: true } : undefined;
+    if (!runs) {
+      const cased = applyCase(text, s);
+      return brokenLines(cased, s, s.size, keptBreaks(box)) ?? layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), opts);
+    }
+    // Words in several faces: broken by the faces' widths (`casedRuns`), and
+    // drawn in them (`lineCuts` below, and the picture's job).
+    const c = casedRuns(text, runs, s);
     return (
-      brokenLines(cased, s, s.size, keptBreaks(box)) ??
-      layoutLines(cased, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), breaksWords(box) ? { breakWords: true } : undefined)
+      brokenLines(c.text, s, s.size, keptBreaks(box), c.runs) ??
+      layoutLines(c.text, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size), { ...opts, runs: c.runs })
     );
   });
 
@@ -1537,6 +1629,12 @@
     return lineIndents(shaped, s, s.size, contentWidth(box.w, s), balloonWidthsFor(box, s, s.size));
   });
   const indentCss = (i) => (indents ? `padding-${s.align}:${indents[i] * z}px;` : '');
+  // Each line's stretches in their faces (`lineFaces`), for a layout with runs:
+  // the line drawn as one span per stretch, each with its weight and slant, so
+  // the browser draws what it measured - each stretch alone. Null for every
+  // line of a box without runs, which is drawn as the one string it was.
+  const faceCss = (st) => `${st.font !== s.font ? `font-family:${fontCssFor(st.font)};` : ''}font-weight:${st.bold ? 700 : 400};font-style:${st.italic ? 'italic' : 'normal'};`;
+  const lineCuts = $derived(shaped?.runs ? shaped.map((_, i) => lineFaces(shaped, i, s)?.map((p) => ({ ...p, css: faceCss(p.style) })) ?? null) : null);
 
   // How far the centred block moves so its INK, not its line boxes, is centred
   // in the box - the exporter's `inkShiftY`. Measured at the page size and
@@ -1593,7 +1691,7 @@
     // font picker has the keys, and placing the block again costs a frame.
     if (!hitsOn || !shaped || fontPreviewing(box.id)) return null;
     app.fontsVersion;
-    const r = blockReach(placeBlock(boxCandidate(box, text)));
+    const r = blockReach(placeBlock(boxCandidate(box, text, runs)));
     if (!r || !(r.x1 > r.x0) || (r.x0 >= 0 && r.y0 >= 0 && r.x1 <= box.w && r.y1 <= box.h)) return null;
     return r;
   });
@@ -1753,6 +1851,7 @@
         ? clamp(oy + (ev.clientY - sy) / zz, stripBounds.min, stripBounds.max)
         : clamp(oy + (ev.clientY - sy) / zz, -box.h + 20, dims.h - 20);
       moveBoxTo(box, x, y, pg);
+      if ((maskOn || fadeOn) && pinnedToPage(box)) moveLive = true;
       markUnsaved();
     };
 
@@ -1762,8 +1861,17 @@
       ac.abort();
       underHeld = null;
       placeHeld = null;
+      // The last frame may have read the mask between pixels: one paint at
+      // rest, exact, where the box was let go.
+      if (moveLive) {
+        warpDrawn = '';
+        moveLive = false;
+      }
 
       if (box.x !== before.x || box.y !== before.y) {
+        // The mask stays on the page, so a move changes what a keep shape
+        // lets the check count.
+        if (maskOn) reviewBox(box, pg);
         record({ t: 'move', pageId, boxId: box.id, before, after: moveGeom(box) });
       }
     };
@@ -1798,6 +1906,8 @@
     // The rectangle and the size, and the solver's record: a width drag locks the
     // width and re-sets the text in it, and the undo has to take both back.
     const o = fitGeom(box);
+    // A mask or fade that moves with the box, which a scale scales.
+    const followStart = dir === 'rot' ? null : followGeom(box);
     const isRot = dir === 'rot';
     const hasInk = !!(box.style?.ink?.on && box.style?.ink?.strokes?.length);
     const inkBefore = hasInk ? cloneStyle(box.style).ink : null;
@@ -1922,7 +2032,7 @@
       const styleAfter = cloneStyle(box.style);
       if (JSON.stringify(styleAfter) !== JSON.stringify(styleStart)) {
         markUnsaved();
-        record({ t: 'style', pageId, boxId: box.id, before: styleStart, after: styleAfter, geomBefore: o, geomAfter: fitGeom(box) });
+        record({ t: 'style', pageId, boxId: box.id, before: styleStart, after: styleAfter, geomBefore: { ...o, ...followStart }, geomAfter: { ...fitGeom(box), ...followGeom(box) } });
         return;
       }
       const before = { ...o };
@@ -2091,20 +2201,65 @@
     commitPath(styleBefore);
   }
 
-  // ---- mask drawing ----
+  // ---- mask and fade drawing ----
   //
-  // The armed tool comes from the Inspector (mask-tool.svelte.js). While one
-  // is armed and this box is selected, a transparent overlay takes the
-  // pointer and turns gestures into mask shapes, committed one per gesture
-  // with one undo record each, like the path gizmo's drags.
-  // A warped box takes them too: a mask shape is stated in box-local px and is
-  // applied to the texture BEFORE the mesh carries it, so the pointer is taken
-  // back through the mesh on the way in (`maskShapePoint`) and the outlines
-  // forward through it on the way out (`maskOutline`).
-  const maskArmed = $derived(selected && !editing && !bulkOn && s.clip?.on && maskTool.id);
+  // The armed tool comes from the Inspector (box-draw-tool.svelte.js). While
+  // one is armed for this box's mask or its fade and the box is selected, a
+  // transparent layer over the whole page takes the pointer and turns gestures into
+  // shapes, committed one per gesture with one undo record each. The shapes
+  // are page px (`box.mask`, box-mask.js): pinned to the page, never to the
+  // box, so the pointer is taken to the page and nothing else, and a shape
+  // may be drawn anywhere on it.
+  // The paint's marks (`style.paint`, box-paint.js) are drawn with the same
+  // gestures on the same layer, in page px, and stored in the box's texture
+  // (its own frame before a warp mesh): carried onto the page to be shown
+  // and picked (`marksOnPage`), and a gesture's new or moved mark carried
+  // back when it commits, the rest left as stored.
+  const drawTarget = $derived(DRAW_TARGETS.includes(drawTool.target) ? drawTool.target : null);
+  // Whose shapes the page layer shows: the armed tool's, or with none armed
+  // the mask's, which a selected box with a mask on always outlines.
+  const shownTarget = $derived(drawTarget ?? 'mask');
+  const drawKind = $derived(drawTarget ? drawTool.kind : null);
+  // Kept as the mask's names: the liquify ring and the key handler read them.
+  const maskKind = $derived(drawKind);
+  const modelOf = (t) => (t === 'paint' ? box.style.paint : box[t]);
+  const drawModel = $derived(drawTarget ? modelOf(drawTarget) : null);
+  const drawShown = $derived(selected && !editing && !bulkOn && !!modelOf(shownTarget)?.on);
+  // The shown target's shapes in page px, one for each stored shape and in
+  // its order.
+  const shownList = $derived.by(() => {
+    // A mask or fade that moves with the box is shown in page px too.
+    if (shownTarget !== 'paint') return modelShapesOnPage(box, box[shownTarget]);
+    const marks = box.style.paint?.marks;
+    return drawShown && marks ? marksOnPage(box, marks) : marks;
+  });
+  // The stored list itself, what a pick is made in: the paint's page list is
+  // made again whenever the box moves, its marks are not.
+  const shownStored = () => (shownTarget === 'paint' ? box.style.paint?.marks : box[shownTarget]?.shapes);
+  const maskArmed = $derived(drawShown && !!drawModel?.on && !!drawKind);
 
-  // The gesture in progress: a shape being drawn, not yet in the style.
-  const maskDraft = $state({ shape: null, poly: null });
+  // The gesture in progress: a shape being drawn, not yet in the box; the
+  // polygon's corners so far; the shape the Move tool has picked (its index)
+  // and how far a Move drag has carried it, or every shape when `idx` is null;
+  // and where the pointer is, for the brush's ring.
+  // `pickedIn` is the shape list the pick was made in: a pick is an index,
+  // so once the list is another (an undo, a redo, an edit from elsewhere)
+  // the index may name another shape, and the pick is dropped.
+  const maskDraft = $state({ shape: null, poly: null, picked: null, pickedIn: null, moving: null, at: null });
+  $effect(() => {
+    const list = shownStored();
+    untrack(() => {
+      if (maskDraft.picked !== null && list !== maskDraft.pickedIn) maskDraft.picked = null;
+    });
+  });
+
+  // The tool is the selection's: it goes when this box stops being selected
+  // (another box picked, the page left, the box deleted), so it is never left
+  // armed on a box nobody chose to draw on.
+  $effect(() => {
+    if (!selected) return;
+    return () => untrack(clearDrawTool);
+  });
 
   // A pointer event in box-local page px: page coords from the page frame,
   // then inverse-rotated around the box centre - the SCREEN frame, where the
@@ -2114,86 +2269,166 @@
     return screenPoint(ev.clientX, ev.clientY, pageFrameEl.getBoundingClientRect(), app.zoom, box);
   }
 
-  // The same point in the frame the mask shapes, the warp mesh and the path
-  // are stored in: unflipped, because all three are applied before the flip
-  // (`wrapMirror`), so what they move lands - once mirrored with the box -
-  // under the pointer that moved it.
+  // The same point in the frame the warp mesh and the path are stored in:
+  // unflipped, because both are applied before the flip (`wrapMirror`), so
+  // what they move lands - once mirrored with the box - under the pointer
+  // that moved it.
   function maskLocal(ev) {
     return flipPoint(maskPoint(ev), box);
   }
 
-  // The mesh the mask is carried through on screen, or null for a box that is
-  // not warped. The shapes are cut from the texture before the mesh moves it,
-  // so a pointer on the deformed picture is taken back through the mesh to
-  // the texture point under it (`maskShapePoint`), and a stored shape is drawn
-  // forward through it (`maskOutline`) to sit on the cut it makes.
-  const maskMesh = $derived(warped ? meshMap(s.warp.pts, s.warp.cols, s.warp.rows, box.w, box.h) : null);
-
-  function maskShapePoint(ev) {
-    const p = maskLocal(ev);
-    return maskMesh ? unwarpPoint(s.warp.pts, s.warp.cols, s.warp.rows, box.w, box.h, p[0], p[1]) : p;
+  // A pointer event in page px, the frame the mask's shapes are stored in.
+  function pagePoint(ev) {
+    const r = pageFrameEl.getBoundingClientRect();
+    return [(ev.clientX - r.left) / app.zoom, (ev.clientY - r.top) / app.zoom];
   }
 
-  // Stored points as an SVG points list at the zoom. Through a mesh, a
-  // straight edge in the texture is a curve on screen, so each edge is cut
-  // into steps of a few page px before it is carried.
-  function maskOutline(pts, closed = false) {
-    let out = pts;
-    if (maskMesh) {
-      out = [];
-      const n = closed ? pts.length : pts.length - 1;
-      for (let i = 0; i < n; i++) {
-        const [ax, ay] = pts[i];
-        const [bx, by] = pts[(i + 1) % pts.length];
-        const k = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 4));
-        for (let t = 0; t < k; t++) out.push(maskMesh.at(ax + ((bx - ax) * t) / k, ay + ((by - ay) * t) / k));
-      }
-      if (!closed && pts.length) out.push(maskMesh.at(...pts[pts.length - 1]));
-    }
-    return out.map(([px, py]) => `${px * z},${py * z}`).join(' ');
-  }
+  // Stored page points as an SVG points list at the zoom.
+  const outline = (pts) => pts.map(([px, py]) => `${px * z},${py * z}`).join(' ');
 
-  // An ellipse as the polygon `maskOutline` can carry through a mesh.
-  function ellipsePts(sh) {
-    const n = 48;
-    return Array.from({ length: n }, (_, i) => {
-      const a = (i / n) * Math.PI * 2;
-      return [sh.cx + sh.rx * Math.cos(a), sh.cy + sh.ry * Math.sin(a)];
-    });
-  }
+  // A model as plain data, for the undo record.
+  const plainOf = (m) => (m ? $state.snapshot(m) : null);
 
-  // A shape changes the verdict as well as the picture: an include mask cuts
-  // the ink the check counts (contain.js), and the fit effect does not read the
-  // mask, so the flag is brought up to date here.
-  function commitMaskShape(shape) {
-    const styleBefore = cloneStyle(box.style);
-    s.clip.shapes = [...s.clip.shapes, shape];
+  // A shape changes the verdict as well as the picture: a keep shape cuts the
+  // ink the check counts (contain.js), and the fit effect does not read the
+  // mask, so the flag is brought up to date here. Every gesture ends here - a
+  // new shape, a move, a removal - as one record.
+  function commitMaskShapes(next) {
+    const target = drawTarget ?? 'mask';
+    const before = plainOf(box[target]);
+    box[target] = { ...(box[target] ?? { on: true }), shapes: modelShapesFromPage(box, box[target], next) };
     markUnsaved();
-    reviewBox(box, pg);
-    record({ t: 'style', pageId: pg.id, boxId: box.id, before: styleBefore, after: cloneStyle(box.style) });
+    // The fade changes no verdict.
+    if (target === 'mask') reviewBox(box, pg);
+    record({ t: target, pageId: pg.id, boxId: box.id, before, after: plainOf(box[target]) });
+  }
+  // A new shape takes what the panel set for the next one: the mask's op,
+  // or the fade's strength and soft edge.
+  // The paint's: its colour, opacity and soft edge, and the eraser's flag.
+  const nextShapeSet = () =>
+    shownTarget === 'paint'
+      ? { color: drawSettings.paint.color, opacity: drawSettings.paint.opacity, soft: drawSettings.paint.soft, ...(drawKind === 'erase' ? { erase: true } : {}) }
+      : shownTarget === 'fade'
+        ? { strength: drawSettings.fade.strength, soft: drawSettings.fade.soft }
+        : { op: drawSettings.mask.op };
+  // The paint's marks as `marks` (the paint's frame), recorded as a style
+  // edit: the paint is the style's.
+  function commitPaint(marks) {
+    const before = cloneStyle(box.style);
+    box.style.paint = { ...(box.style.paint ?? { on: true }), marks };
+    markUnsaved();
+    record({ t: 'style', pageId: pg.id, boxId: box.id, before, after: cloneStyle(box.style) });
+  }
+  function commitMaskShape(shape) {
+    const shapes = shownList;
+    const set = nextShapeSet();
+    if (shownTarget === 'paint') {
+      // An eraser counts against a ceiling of its own, so a full box can
+      // still have paint taken off it.
+      const full = paintRoomFor(box.style.paint, set.erase);
+      if (full) return toast(full);
+      return commitPaint([...shownStored(), ...marksFromPage(box, [{ ...shape, ...set }])]);
+    }
+    if (shapes.length >= MASK_SHAPES_MAX) {
+      toast(`A ${shownTarget} holds ${MASK_SHAPES_MAX} shapes at most`);
+      return;
+    }
+    commitMaskShapes([...shapes, { ...shape, ...set }]);
+  }
+
+  // A shape carried by (dx, dy) page px. A bubble link follows its outline,
+  // not the pointer.
+  function movedShape(sh, dx, dy) {
+    if (sh.kind === 'bubble') return sh;
+    return translateMask({ shapes: [sh] }, dx, dy).shapes[0];
+  }
+
+  // The four corners of the rectangle two points span, as the polygon the
+  // engine already cuts: a rectangle needs nothing new from it.
+  function rectPts(a, b) {
+    return [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]];
+  }
+
+  // The shapes as they are drawn on the page, one for each stored shape and in
+  // its order: a bubble link as its inset outline (null with no outline).
+  const pageShapes = $derived.by(() => {
+    if (shownTarget === 'paint') return shownList ?? [];
+    if (!box[shownTarget]) return [];
+    return (shownList ?? []).map((sh) => (sh.kind === 'bubble' ? (maskOnPage({ ...box, mask: { shapes: [sh] } })[0] ?? null) : sh));
+  });
+
+  // The topmost shape under a page point, or null. Searched from the last
+  // drawn, the one drawn over the rest.
+  function maskShapeAt(p) {
+    const [x, y] = p;
+    for (let i = pageShapes.length - 1; i >= 0; i--) {
+      const sh = pageShapes[i];
+      if (!sh) continue;
+      if (sh.kind === 'ellipse') {
+        if (sh.rx > 0 && sh.ry > 0 && ((x - sh.cx) / sh.rx) ** 2 + ((y - sh.cy) / sh.ry) ** 2 <= 1) return i;
+      } else if (sh.kind === 'poly') {
+        let inside = false;
+        for (let j = 0, k = sh.pts.length - 1; j < sh.pts.length; k = j++) {
+          const [xj, yj] = sh.pts[j];
+          const [xk, yk] = sh.pts[k];
+          if (yj > y !== yk > y && x < ((xk - xj) * (y - yj)) / (yk - yj) + xj) inside = !inside;
+        }
+        if (inside) return i;
+      } else if (sh.pts?.length) {
+        // A brush stroke is hit within half its width of its line, plus a
+        // little, so a thin stroke can still be caught.
+        const reach = sh.size / 2 + 3;
+        for (let j = 0; j < sh.pts.length; j++) {
+          const [ax, ay] = sh.pts[j];
+          const [bx, by] = sh.pts[Math.min(j + 1, sh.pts.length - 1)];
+          const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+          const t = len2 ? Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / len2)) : 0;
+          if (Math.hypot(x - (ax + t * (bx - ax)), y - (ay + t * (by - ay))) <= reach) return i;
+        }
+      }
+    }
+    return null;
   }
 
   function onMaskPointerDown(e) {
     if (e.button !== 0 || !maskArmed || !pageFrameEl) return;
     e.preventDefault();
     e.stopPropagation();
-    const p = maskShapePoint(e);
-    // The polygon is click-built rather than dragged; the other two are drags.
-    if (maskTool.id === 'poly') {
+    const p = pagePoint(e);
+    const kind = maskKind;
+    // The polygon is click-built rather than dragged; the rest are drags.
+    if (kind === 'poly') {
       maskDraft.poly = [...(maskDraft.poly ?? []), p];
       return;
     }
     e.currentTarget.setPointerCapture?.(e.pointerId);
     const pid = e.pointerId;
     const start = p;
-    if (maskTool.id === 'brush') maskDraft.shape = { kind: 'stroke', size: s.clip.brushSize, pts: [p] };
+    if (kind === 'move') {
+      // A press on a shape picks it and drags it alone; a press on empty
+      // space drags them all. The shapes stay where they are in the box
+      // until the pointer comes up, so a drag is one record and no repaint
+      // per move: the overlay shows them carried meanwhile.
+      maskDraft.picked = maskShapeAt(p);
+      maskDraft.pickedIn = shownStored();
+      maskDraft.moving = { idx: maskDraft.picked, dx: 0, dy: 0 };
+    } else if (kind === 'brush' || kind === 'erase') maskDraft.shape = { kind: 'stroke', size: drawSettings[shownTarget].size, pts: [p] };
+    else if (kind === 'rect') maskDraft.shape = { kind: 'poly', pts: rectPts(p, p) };
     else maskDraft.shape = { kind: 'ellipse', cx: p[0], cy: p[1], rx: 0, ry: 0 };
     const move = (ev) => {
-      if (ev.pointerId !== pid || !maskDraft.shape) return;
-      const q = maskShapePoint(ev);
-      if (maskDraft.shape.kind === 'stroke') {
+      if (ev.pointerId !== pid) return;
+      const q = pagePoint(ev);
+      if (maskDraft.moving) {
+        maskDraft.moving.dx = q[0] - start[0];
+        maskDraft.moving.dy = q[1] - start[1];
+        return;
+      }
+      if (!maskDraft.shape) return;
+      if (kind === 'brush' || kind === 'erase') {
         const last = maskDraft.shape.pts[maskDraft.shape.pts.length - 1];
         if (Math.hypot(q[0] - last[0], q[1] - last[1]) > 1.5) maskDraft.shape.pts.push(q);
+      } else if (kind === 'rect') {
+        maskDraft.shape.pts = rectPts(start, q);
       } else {
         maskDraft.shape.cx = (start[0] + q[0]) / 2;
         maskDraft.shape.cy = (start[1] + q[1]) / 2;
@@ -2206,18 +2441,106 @@
       if (ev.pointerId !== pid) return;
       live.delete(ac);
       ac.abort();
+      const mv = maskDraft.moving;
+      maskDraft.moving = null;
+      if (mv) {
+        // A press that did not travel moved nothing, and records nothing.
+        if (ev.type === 'pointercancel' || Math.hypot(mv.dx, mv.dy) < 0.5) return;
+        if (shownTarget === 'paint') commitPaint(moveMarks(box, shownStored(), mv.idx, mv.dx, mv.dy));
+        else commitMaskShapes(shownList.map((sh, i) => (mv.idx === null || mv.idx === i ? movedShape(sh, mv.dx, mv.dy) : sh)));
+        // The moved shape is still the one picked, in the list just made.
+        maskDraft.pickedIn = shownStored();
+        return;
+      }
       const sh = maskDraft.shape;
       maskDraft.shape = null;
       if (!sh) return;
-      // An ellipse too small to see was a slip, not a shape.
+      // A shape too small to see was a slip, not a shape.
       if (sh.kind === 'ellipse' && (sh.rx < 1 || sh.ry < 1)) return;
-      commitMaskShape(sh);
+      if (kind === 'rect' && (Math.abs(sh.pts[2][0] - sh.pts[0][0]) < 1 || Math.abs(sh.pts[2][1] - sh.pts[0][1]) < 1)) return;
+      commitMaskShape($state.snapshot(sh));
     };
     live.add(ac);
     document.addEventListener('pointermove', move, { signal: ac.signal });
     document.addEventListener('pointerup', end, { signal: ac.signal });
     document.addEventListener('pointercancel', end, { signal: ac.signal });
   }
+
+  // Where the pointer is over the capture surface, page px, for the ring.
+  function onMaskPointerMove(e) {
+    if (maskArmed) maskDraft.at = pagePoint(e);
+  }
+  function onMaskPointerLeave() {
+    maskDraft.at = null;
+  }
+  const maskRing = $derived(
+    maskArmed && (maskKind === 'brush' || maskKind === 'erase') && maskDraft.at
+      ? { x: maskDraft.at[0], y: maskDraft.at[1], d: drawSettings[shownTarget].size * z }
+      : null,
+  );
+
+  function onMaskDblClick(e) {
+    if (maskKind !== 'poly' || !maskDraft.poly) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pts = maskDraft.poly;
+    maskDraft.poly = null;
+    if (pts.length >= 3) commitMaskShape({ kind: 'poly', pts });
+  }
+  // A new tool starts with nothing in hand.
+  $effect(() => {
+    void maskKind;
+    untrack(() => {
+      maskDraft.poly = null;
+      maskDraft.picked = null;
+    });
+  });
+  $effect(() => {
+    if (!maskArmed) {
+      maskDraft.poly = null;
+      maskDraft.shape = null;
+      maskDraft.picked = null;
+      maskDraft.moving = null;
+      maskDraft.at = null;
+      return;
+    }
+    // Escape drops a polygon half built, and with none puts the tool down.
+    // Delete and Backspace remove the shape the Move tool picked. Both are
+    // taken in the capture phase and stopped there, because the window's own
+    // handler reads Escape as "deselect" and Delete as "delete the box".
+    // A key pressed in a field is the field's, and one pressed in an open
+    // popover or menu (a colour picker) is the popover's, which closes on it.
+    const onKey = (e) => {
+      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="listbox"]')) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (maskDraft.poly) maskDraft.poly = null;
+        else clearDrawTool();
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && maskKind === 'move' && maskDraft.picked !== null && shownStored() === maskDraft.pickedIn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const i = maskDraft.picked;
+        maskDraft.picked = null;
+        const shapes = shownList;
+        if (i >= shapes.length) return;
+        if (shownTarget === 'paint') commitPaint(shownStored().filter((_, j) => j !== i));
+        else commitMaskShapes(shapes.filter((_, j) => j !== i));
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  // Everything the page layer outlines: the shapes as drawn (a Move drag
+  // carrying them meanwhile), plus the draft.
+  const maskShapesShown = $derived.by(() => {
+    if (!drawShown) return null;
+    const mv = maskDraft.moving;
+    const out = pageShapes.map((sh, i) => (sh && mv && (mv.idx === null || mv.idx === i) && shownList[i].kind !== 'bubble' ? movedShape(sh, mv.dx, mv.dy) : sh));
+    if (maskDraft.shape) out.push({ ...maskDraft.shape, ...nextShapeSet() });
+    return out;
+  });
 
   // ---- liquify ----
   //
@@ -2332,44 +2655,103 @@
     liquifyAt = null;
   });
 
-  // Double-click closes the polygon; Escape drops it.
-  function onMaskDblClick(e) {
-    if (maskTool.id !== 'poly' || !maskDraft.poly) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const pts = maskDraft.poly;
-    maskDraft.poly = null;
-    if (pts.length >= 3) commitMaskShape({ kind: 'poly', pts });
-  }
-  $effect(() => {
-    if (!maskArmed) {
-      maskDraft.poly = null;
-      maskDraft.shape = null;
-      return;
-    }
-    const onKey = (e) => {
-      if (e.key === 'Escape' && maskDraft.poly) {
-        e.preventDefault();
-        maskDraft.poly = null;
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
-
-  // Everything the mask overlay draws: committed shapes plus the draft.
-  const maskShapesShown = $derived.by(() => {
-    if (!(selected && !editing && !bulkOn && s.clip?.on)) return null;
-    const out = [...s.clip.shapes];
-    if (maskDraft.shape) out.push(maskDraft.shape);
-    return out;
-  });
-
+  // Double-click closes the polygon.
   // Right-click on a path anchor removes it.
   function onAnchorContextMenu(e, i) {
     e.preventDefault();
     e.stopPropagation();
     removeAnchor(i);
+  }
+
+  // ---- the special effects' handles (special.js) ----
+  // While Effects ▸ Special is open, a point on the selected box for each
+  // effect that has one and is on: Crack's focus, Lightning's start with an
+  // arm the way it goes, Splash's landing. A drag writes the effect's
+  // numbers, as its sliders do, in one undo step.
+  const specialHandlesOn = $derived(
+    selected &&
+      !editing &&
+      !bulkOn &&
+      !brushArmed() &&
+      inspectorTab.id === 'effects' &&
+      effectsSubTab.id === 'special' &&
+      !boxLocked(box),
+  );
+  //
+  // The effects are laid in the box's texture, before its warp mesh, which
+  // then bends them with the letters. So a point is stated before the mesh
+  // (`p`) and shown where the mesh carries it (`at`), and a pointer is taken
+  // back through the mesh (`unwarpWith`) before it is written. A point the
+  // mesh does not carry anywhere (past a perspective's horizon) has no handle.
+  const specialMesh = $derived(warped ? meshMap(s.warp.pts, s.warp.cols, s.warp.rows, box.w, box.h) : null);
+  const meshed = (p) => {
+    if (!specialMesh) return p;
+    const q = specialMesh.at(p.x, p.y);
+    return q && Number.isFinite(q[0]) && Number.isFinite(q[1]) ? { x: q[0], y: q[1] } : null;
+  };
+  const specialHandles = $derived.by(() => {
+    if (!specialHandlesOn || !s.special) return [];
+    const out = [];
+    let ink;
+    for (const kind of HANDLE_KINDS) {
+      const fx = s.special[kind];
+      if (!fx?.on) continue;
+      if (kind === 'crack') ink ??= lettersInkRect(boxCandidate(box, text, runs));
+      const frame = handleFrame(kind, box, ink);
+      const p = handlePoint(fx, frame);
+      const at = meshed(p);
+      if (!at) continue;
+      const arm = kind === 'lightning' ? meshed(armEnd(fx, p, ARM_LENGTH / z)) : null;
+      out.push({ kind, frame, p, at, arm });
+    }
+    return out;
+  });
+  const specialPointsOn = $derived(specialHandles.length > 0);
+  const HANDLE_TITLES = {
+    crack: 'Crack focus: drag to set where the cracks gather',
+    lightning: 'Lightning start: drag to set where the bolts begin',
+    splash: 'Splash: drag to set where the paint lands',
+  };
+
+  // Drags a handle (`part` 'point') or the lightning's arm end ('arm').
+  function startSpecialDrag(e, kind, part) {
+    if (e.button !== 0 || !pageFrameEl) return;
+    const h = specialHandles.find((x) => x.kind === kind);
+    if (!h) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    focusPage(pg);
+    settleEdits();
+    const pid = e.pointerId;
+    const styleBefore = cloneStyle(box.style);
+    const pageId = pg.id;
+    const frame = h.frame;
+    const move = (ev) => {
+      if (ev.pointerId !== pid) return;
+      const fx = s.special?.[kind];
+      if (!fx) return;
+      const from = handlePoint(fx, frame);
+      const q = unwarpWith(specialMesh, box.w, box.h, ...maskLocal(ev), { hint: [from.x, from.y] });
+      if (!q) return;
+      const [x, y] = q;
+      if (part === 'arm') dragArm(fx, from, { x, y });
+      else dragHandle(kind, fx, { x, y }, frame);
+      markUnsaved();
+    };
+    const ac = new AbortController();
+    const end = (ev) => {
+      if (ev.pointerId !== pid) return;
+      live.delete(ac);
+      ac.abort();
+      const after = cloneStyle(box.style);
+      if (JSON.stringify(after.special) === JSON.stringify(styleBefore.special)) return;
+      record({ t: 'style', pageId, boxId: box.id, before: styleBefore, after });
+    };
+    live.add(ac);
+    document.addEventListener('pointermove', move, { signal: ac.signal });
+    document.addEventListener('pointerup', end, { signal: ac.signal });
+    document.addEventListener('pointercancel', end, { signal: ac.signal });
   }
 
   // The gizmo's polyline, in zoomed box-local px.
@@ -2405,6 +2787,34 @@
   // offsets (anchor, focus), which is what the caret on the curve is drawn from.
   let editEl = null;
   let edSel = $state(null);
+  // The selection, for the face commands (typing-selection.svelte.js), for as
+  // long as the box is typed into.
+  $effect(() => {
+    if (!editing || !edSel) return;
+    setTypingSel(box.id, text, edSel.a, edSel.f);
+  });
+  // The focus on a control that sets the faces keeps the edit
+  // (`onEditBlur`); once it lands anywhere else - a press, a Tab, the control
+  // closing with nowhere to give it back - the edit ends as a blur ends it.
+  $effect(() => {
+    if (!editing) return;
+    const id = box.id;
+    const off = onEditAway(() => {
+      if (app.editingId !== id || !editEl) return;
+      if (pictureEdit) clearComposition();
+      composeText = null;
+      endEdit(editEl.textContent);
+    });
+    const check = () => setTimeout(endEditIfAway);
+    document.addEventListener('focusin', check, true);
+    document.addEventListener('pointerdown', check, true);
+    return () => {
+      off();
+      document.removeEventListener('focusin', check, true);
+      document.removeEventListener('pointerdown', check, true);
+      if (typingSel.boxId === id) clearTypingSel();
+    };
+  });
 
   // Whether this edit has been a picture at any time: what the editable's
   // teardown has to put back then, and with the switch off never true.
@@ -2470,6 +2880,9 @@
       text;
       effSize;
       effLs;
+      // The faces the lines are drawn in, set by a command with the words as
+      // they were: drawn again, the selection kept.
+      lineCuts;
       // WITH THE ENGINE DRAWING, the effect that keeps the editable's own
       // caret under the drawn one (`alignNative`). It is made HERE, as this
       // effect's child, for two reasons. It then runs after this one has
@@ -2514,7 +2927,7 @@
       untrack(() => {
         if (first) {
           first = false;
-          resyncField(fieldUndo, text);
+          resyncField(fieldUndo, text, copyRuns(boxRuns(box)));
           node.focus();
           drawEdit(node, null);
         } else {
@@ -2530,7 +2943,7 @@
 
   // Draws the lines, restoring both raw selection endpoints, or selects all.
   function drawEdit(node, caret, anchor = caret) {
-    drawEditLines(node, text, editSegs, hangWidth, indents && { side: s.align, px: indents.map((v) => v * z) });
+    drawEditLines(node, text, editSegs, hangWidth, indents && { side: s.align, px: indents.map((v) => v * z) }, editSegs ? lineCuts : null);
     const sel = window.getSelection();
     if (caret == null) {
       const r = document.createRange();
@@ -2568,25 +2981,43 @@
     return a == null || b == null ? null : [Math.min(a, b), Math.max(a, b)];
   }
 
-  // setBoxText routes text to line for free-typed boxes.
-  function commitEdit(v, caret, inputType) {
+  // setBoxText routes text to line for free-typed boxes. `at` is the range
+  // the edit replaced, when it is known, so the faces move with this edit.
+  function commitEdit(v, caret, inputType, at) {
     if (v === text) return;
     keyed();
     caretNext = caret;
-    setBoxText(box, v);
-    recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(inputType) });
+    const runs = pendingRuns(v, at);
+    setBoxText(box, v, page(), runs ? { runs } : { span: at });
+    recordFieldEdit(fieldUndo, v, { atomic: isAtomicInput(inputType), faces: copyRuns(boxRuns(box)) });
     markUnsaved();
   }
 
   function applyEdit(node, span, inputType, data) {
     if (typeFlat && !composing) span = editStops(node.textContent, span);
     const r = rawEdit(node.textContent, span, inputType, data);
-    if (r) commitEdit(r.v, r.caret, inputType);
+    if (r) commitEdit(r.v, r.caret, inputType, r.span);
+  }
+
+  // A face asked for at the caret (`typingSel.pending`, Bold or Italic with
+  // nothing selected) put on the letters typed there now: the runs the edit
+  // leaves, or null for an edit it does not touch. The letters typed after
+  // them take their face from the letter before, as any typed letter does.
+  function pendingRuns(v, at) {
+    const pend = typingSel.pending;
+    if (!pend || pend.boxId !== box.id || pend.text !== text || !at || at[0] !== pend.at || at[1] !== pend.at || v.length <= text.length) return null;
+    const face = { bold: !!s.bold, italic: !!s.italic };
+    const moved = shiftRuns(boxRuns(box), text, v, at);
+    return patchRuns(moved, v, pend.at, pend.at + v.length - text.length, pend.patch, face) ?? [];
   }
 
   function onEditBeforeInput(e) {
     const t = e.inputType;
     if (e.isComposing || t.includes('Composition')) return;
+    // The browser's own Bold and Italic (Cmd+B in an editable) would write
+    // markup into the words: the faces are the editor's commands' to set
+    // (`text.bold`), which the key reaches through the shortcut registry.
+    if (t.startsWith('format')) return e.preventDefault();
     // On a picture, while a composition is open the text is the IME's and the
     // browser's (`composing`: an input can arrive in the middle of one without
     // saying so). Nothing is cut from the picture's rows then, and the box's
@@ -2625,11 +3056,17 @@
 
   // Whatever the browser did change - a composition, an input it would not let
   // be cancelled - is read back as raw text, and the lines drawn again.
-  function readBack(node) {
+  //
+  // `from`, for the end of a composition: the text and the raw range the IME
+  // was given when it began, so what it replaced is known (`editedSpan`) and
+  // the faces of the words (runs.js) move with it; without it, or when it does
+  // not explain the change, the range is guessed from the text alone.
+  function readBack(node, from = null) {
     if (!node.isConnected) return;
     const caret = caretNow(node);
     const v = node.textContent;
-    if (v !== text) commitEdit(v, caret ?? v.length, 'insertText');
+    const span = from && from.v === text ? editedSpan(from.v, v, from.a, from.b) : null;
+    if (v !== text) commitEdit(v, caret ?? v.length, 'insertText', span ?? undefined);
     else drawEdit(node, caret ?? v.length);
   }
   function onEditInput(e) {
@@ -2639,11 +3076,15 @@
       composeText = e.currentTarget.textContent;
     }
   }
-  function onCompositionStart() {
+  function onCompositionStart(e) {
     clearTimeout(compositionTimer);
     compositionTimer = null;
     compositionVersion++;
     composing = true;
+    // On a picture the selection is the picture's own (`edSel`); in the DOM
+    // lines it is the browser's.
+    const at = typing && edSel ? [Math.min(edSel.a, edSel.f), Math.max(edSel.a, edSel.f)] : e?.currentTarget ? editSpan(e.currentTarget) : null;
+    composeFrom = at ? { v: text, a: at[0], b: at[1] } : null;
     // A drag/menu that began before composition cannot go on changing its
     // selection, even if the picture falls back to DOM text in the meantime.
     if (pictureEdit) {
@@ -2666,7 +3107,9 @@
       if (pictured) compositionTimer = null;
       composeText = null;
       if (composeAt) composeAt = null;
-      readBack(node);
+      const from = composeFrom;
+      composeFrom = null;
+      readBack(node, from);
     };
     if (pictured) {
       clearTimeout(compositionTimer);
@@ -2674,7 +3117,24 @@
     } else setTimeout(finish);
   }
 
+  // The right button on the editable itself (the lines in the DOM, with the
+  // engine not drawing): on selected words of flat text, the menu of their
+  // faces; anywhere else the system's, with Paste.
+  function onEditContextMenu(e) {
+    if (curved || composing || !edSel || edSel.a === edSel.f) return;
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) return;
+    const inside = [...sel.getRangeAt(0).getClientRects()].some((r) => e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+    if (!inside) return;
+    e.preventDefault();
+    openFaceMenu(e.clientX, e.clientY);
+  }
+
   function onEditBlur(e) {
+    // To a control that sets the words' faces (the faces menu, the
+    // Inspector's B, I and family): the edit, and its selection, go on until
+    // the focus is elsewhere (`onEditAway`).
+    if (keepsEdit(e.relatedTarget)) return;
     if (pictureEdit) clearComposition();
     composeText = null;
     endEdit(e.currentTarget.textContent);
@@ -2706,14 +3166,35 @@
   }
 
   // One step of the field's own undo; the caret goes where the text changed.
+  // A step that changed only the faces (a command on selected words) puts
+  // them back where the command wrote them, and the selection stays.
   function stepField(node, redo) {
+    const was = node.textContent;
     const next = redo ? redoField(fieldUndo) : undoField(fieldUndo);
     if (next == null) return;
     keyed();
-    caretNext = caretAfter(node.textContent, next);
-    setBoxText(box, next);
+    if (next === was) {
+      setBoxRuns(box, fieldFaces(fieldUndo), page());
+      return;
+    }
+    caretNext = caretAfter(was, next);
+    setBoxText(box, next, page(), { runs: fieldFaces(fieldUndo) });
     markUnsaved();
   }
+
+  // A face set on the words while they are typed into is a command, not a
+  // keystroke, and writes nothing to the field's own undo: it is recorded
+  // here as a step of the same words with the new faces, so Cmd+Z takes the
+  // face back before any typing.
+  $effect(() => {
+    if (!editing) return;
+    const key = runsKey(boxRuns(box));
+    const t = text;
+    untrack(() => {
+      if (t !== fieldUndo.stack[fieldUndo.i] || key === runsKey(fieldFaces(fieldUndo))) return;
+      recordFieldFaces(fieldUndo, copyRuns(boxRuns(box)));
+    });
+  });
 
   // ----- typing on the curve -----
   // The editable nobody sees wraps the raw text at the box's width, so where
@@ -3061,6 +3542,16 @@
     const held = editEl.textContent;
     const lo = edSel ? Math.min(edSel.a, edSel.f) : 0;
     const hi = edSel ? Math.max(edSel.a, edSel.f) : 0;
+    // On selected words of flat text: the menu of their faces. Anywhere else
+    // the system's, with Paste.
+    if (typeFlat && lo < hi) {
+      const o = offsetAt(typed.rows, ...maskLocal(e)).o;
+      if (o >= lo && o <= hi) {
+        e.preventDefault();
+        openFaceMenu(e.clientX, e.clientY);
+        return;
+      }
+    }
     if (typeCurve) {
       const p = typeCurvePoint(e);
       const o = curveRaw(caretNearest(typeGlyphs, ...p));
@@ -3413,14 +3904,18 @@
   {:else if layout}
       <!-- Curved text is placed glyph by glyph, so each layer of the stack is a
            full set of glyph spans; they are all absolutely positioned already, so
-           no layer has to hold the others up. -->
+           no layer has to hold the others up. A line the engine shaped whole
+           (`g.whole`, measure.js `lineClusters`) centres each cluster on the
+           room the line gives it, kerning included: its span is that wide
+           and starts the letter at its left, so the browser's letter, shaped
+           alone, stands at the line's pen and not half a kern off. -->
       <div class="arcstack" style={filterCss}>
         {#each layers as ly, li (li)}
           <div class="arc" style={ly.arc}>
             {#each layout as g, i (i)}
               <span
                 class="arc-ch"
-                style="{textStyle}{ly.bg
+                style="{textStyle}{g.whole && Number.isFinite(g.w) ? `width:${g.w}px;text-align:left;` : ''}{ly.bg
                   ? `${ly.bg}background-size:${ly.tile ? `${ly.tile}px ${ly.tile}px` : `${box.w * z}px ${box.h * z}px`};background-position:${-((box.w * z) / 2 + g.x - g.w / 2)}px ${-((box.h * z) / 2 + g.y - effSize / 2)}px;`
                   : ''}transform:translate(calc(-50% + {g.x}px), calc(-50% + {g.y}px)) rotate({g.rot}rad){g.sx != null ? ` scale(${g.sx}, ${g.sy ?? 1}) skewX(${g.skew ?? 0}rad)` : ''}"
               >{g.ch}</span>
@@ -3507,12 +4002,13 @@
         ondragstart={(e) => e.preventDefault()}
         onblur={onEditBlur}
         onkeydown={onEditKey}
+        oncontextmenu={onEditContextMenu}
       ></div>
     {:else if !pictured && !layout}
       <div class="txt shaped stack" style="{textStyle}{stackTransform}{filterCss}">
         {#each layers as ly, li (li)}
           <div class="tlayer" class:base={li === 0} style={ly.css}>
-            {#each shaped as ln, i (i)}<div class="tline" style="{ly.line}{indentCss(i)}">{ln === '' ? '\u200b' : ln}</div>{/each}
+            {#each shaped as ln, i (i)}<div class="tline" style="{ly.line}{indentCss(i)}">{#if lineCuts?.[i]}{#each lineCuts[i] as p, j (j)}<span style={p.css}>{ln.slice(p.start, p.end)}</span>{/each}{:else}{ln === '' ? '\u200b' : ln}{/if}</div>{/each}
           </div>
         {/each}
       </div>
@@ -3575,48 +4071,20 @@
     </svg>
   {/if}
 
-  {#if maskShapesShown}
-    <!-- The mask overlay: committed shapes (and the drag in progress) drawn
-         as outlines so the user can see what they have painted, plus - while
-         a tool is armed - a full-coverage capture surface that turns the
-         pointer into shapes. Outside the clip wrapper on purpose: the
-         outlines must stay visible where the mask has hidden the letters. -->
-    <!-- Mirrored with the box, as the mask it outlines is. -->
-    <svg
-      class="mask-gizmo"
-      class:excl={s.clip.mode === 'exclude'}
-      width={box.w * z}
-      height={box.h * z}
-      style={overlayMirror}
-      aria-hidden="true"
-    >
-      {#if maskArmed}
-        <rect
-          class="capture"
-          x={-MASK_EXPAND * z}
-          y={-MASK_EXPAND * z}
-          width={(box.w + MASK_EXPAND * 2) * z}
-          height={(box.h + MASK_EXPAND * 2) * z}
-          onpointerdown={onMaskPointerDown}
-          ondblclick={onMaskDblClick}
-        />
-      {/if}
-      {#each maskShapesShown as sh, i (i)}
-        {#if sh.kind === 'ellipse' && !maskMesh}
-          <ellipse cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
-        {:else if sh.kind === 'ellipse' || sh.kind === 'poly'}
-          <polygon points={maskOutline(sh.kind === 'ellipse' ? ellipsePts(sh) : sh.pts, true)} />
-        {:else}
-          <polyline class="stroke" points={maskOutline(sh.pts)} style="stroke-width:{sh.size * z}px" />
+  {#if specialHandles.length}
+    <!-- The special effects' handles (special.js): a point each, and the
+         lightning's arm. Stated in the box's own unflipped frame and carried
+         by its warp mesh and its flip, as the picture is. -->
+    <svg class="special-gizmo" width={box.w * z} height={box.h * z} style={overlayMirror} aria-hidden="true">
+      {#each specialHandles as h (h.kind)}
+        {#if h.arm}
+          <line class="sarm" x1={h.at.x * z} y1={h.at.y * z} x2={h.arm.x * z} y2={h.arm.y * z} />
+          <circle class="send" cx={h.arm.x * z} cy={h.arm.y * z} r="4" />
+          <circle class="hit arm" data-kind={h.kind} cx={h.arm.x * z} cy={h.arm.y * z} r="9" onpointerdown={(e) => startSpecialDrag(e, h.kind, 'arm')}><title>Lightning direction: drag to aim the bolts</title></circle>
         {/if}
+        <circle class="spt {h.kind}" cx={h.at.x * z} cy={h.at.y * z} r="6" />
+        <circle class="hit point" data-kind={h.kind} cx={h.at.x * z} cy={h.at.y * z} r="11" onpointerdown={(e) => startSpecialDrag(e, h.kind, 'point')}><title>{HANDLE_TITLES[h.kind]}</title></circle>
       {/each}
-      {#if maskDraft.poly}
-        <polyline class="draft" points={maskOutline(maskDraft.poly)} />
-        {#each maskDraft.poly as p, i (i)}
-          {@const [px, py] = maskMesh ? maskMesh.at(p[0], p[1]) : p}
-          <circle class="vert" cx={px * z} cy={py * z} r="3.5" />
-        {/each}
-      {/if}
     </svg>
   {/if}
 
@@ -3683,6 +4151,55 @@
     {/if}
   {/if}
 </div>
+
+{#if maskShapesShown}
+  <!-- The mask's page layer: a sibling of the box, over the whole page, since
+       the shapes are pinned to the page and may lie anywhere on it. It
+       outlines every shape (and the drag in progress) so the user can see what
+       they have painted where the mask has hidden the letters, and - while a
+       tool is armed - takes the pointer over the whole page. -->
+  <div class="draw-page" class:armed={maskArmed} class:fade={shownTarget === 'fade'} class:paint={shownTarget === 'paint'} aria-hidden="true">
+    <svg class="mask-gizmo" width="100%" height="100%">
+      {#if maskArmed}
+        <rect
+          class="capture"
+          class:move={maskKind === 'move'}
+          x="0"
+          y="0"
+          width="100%"
+          height="100%"
+          onpointerdown={onMaskPointerDown}
+          onpointermove={onMaskPointerMove}
+          onpointerenter={onMaskPointerMove}
+          onpointerleave={onMaskPointerLeave}
+          ondblclick={onMaskDblClick}
+        />
+      {/if}
+      {#each maskShapesShown as sh, i (i)}
+        {#if sh}
+          {@const picked = maskKind === 'move' && maskDraft.picked === i}
+          {#if sh.kind === 'ellipse'}
+            <ellipse class:picked class:hide={sh.op === 'hide' || sh.erase} cx={sh.cx * z} cy={sh.cy * z} rx={sh.rx * z} ry={sh.ry * z} />
+          {:else if sh.kind === 'poly'}
+            <polygon class:picked class:hide={sh.op === 'hide' || sh.erase} points={outline(sh.pts)} />
+          {:else}
+            <polyline class="stroke" class:picked class:hide={sh.op === 'hide' || sh.erase} points={outline(sh.pts)} style="stroke-width:{sh.size * z}px" />
+          {/if}
+        {/if}
+      {/each}
+      {#if maskDraft.poly}
+        <polyline class="draft" points={outline(maskDraft.poly)} />
+        {#each maskDraft.poly as p, i (i)}
+          <circle class="vert" cx={p[0] * z} cy={p[1] * z} r="3.5" />
+        {/each}
+      {/if}
+    </svg>
+    {#if maskRing}
+      <!-- The brush's own circle, its width at the zoom, as liquify's. -->
+      <div class="liq-ring" style="left:{maskRing.x * z}px;top:{maskRing.y * z}px;width:{maskRing.d}px;height:{maskRing.d}px"></div>
+    {/if}
+  </div>
+{/if}
 
 <style>
   /* The layer stack. Every layer holds the same lines and lays out identically;
@@ -3755,18 +4272,36 @@
   .path-gizmo .pa { fill: #e33; stroke: #fff; stroke-width: 1.5; }
   .path-gizmo .pa.active { stroke: #00d5e0; stroke-width: 2.5; }
   .path-gizmo .ph { fill: #fff; stroke: #663399; stroke-width: 1.5; }
-  /* The mask overlay. Shape outlines are hints, not paint: red for exclusion
-     (this ink goes away), teal for inclusion (this ink stays). The capture
-     rect is the drawing surface while a tool is armed; it reaches past the
-     box exactly as far as the mask image does. */
+  /* The mask overlay. Shape outlines are hints, not paint, drawn in the page
+     tint that does not invert, because they sit over paper in every theme.
+     An exclude shape is filled darker than an include one: darker is the ink
+     that goes away. The capture rect is the drawing surface while a tool is
+     armed; it reaches past the box exactly as far as the mask image does. */
+  /* Over every box on the page, so a shape can be drawn over any of them. */
+  .draw-page { position: absolute; inset: 0; pointer-events: none; z-index: 40; }
+  /* The special effects' handles: only the marks take the pointer. */
+  .special-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 6; }
+  .special-gizmo .spt { stroke: #fff; stroke-width: 2; fill: #e33; }
+  .special-gizmo .spt.lightning { fill: #1e90ff; }
+  .special-gizmo .spt.splash { fill: #e6a100; }
+  .special-gizmo .sarm { stroke: #1e90ff; stroke-width: 2; }
+  .special-gizmo .send { fill: #fff; stroke: #1e90ff; stroke-width: 2; }
+  .special-gizmo .hit { fill: transparent; pointer-events: all; cursor: grab; }
+  .special-gizmo .hit:active { cursor: grabbing; }
   .mask-gizmo { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-  .mask-gizmo .capture { fill: transparent; pointer-events: all; cursor: crosshair; }
-  .mask-gizmo ellipse, .mask-gizmo polygon { fill: rgba(0, 180, 190, 0.14); stroke: #00b4be; stroke-width: 1; }
-  .mask-gizmo .stroke { fill: none; stroke: rgba(0, 180, 190, 0.3); stroke-linecap: round; stroke-linejoin: round; }
-  .mask-gizmo.excl ellipse, .mask-gizmo.excl polygon { fill: rgba(230, 60, 60, 0.14); stroke: #e33; }
-  .mask-gizmo.excl .stroke { stroke: rgba(230, 60, 60, 0.3); }
-  .mask-gizmo .draft { fill: none; stroke: #f90; stroke-width: 1.5; stroke-dasharray: 4 3; }
-  .mask-gizmo .vert { fill: #f90; stroke: #fff; stroke-width: 1; }
+  .mask-gizmo .capture { fill: transparent; pointer-events: all; cursor: crosshair; touch-action: none; }
+  .mask-gizmo .capture.move { cursor: move; }
+  .mask-gizmo ellipse, .mask-gizmo polygon { fill: color-mix(in srgb, var(--tintline) 8%, transparent); stroke: var(--tintline); stroke-width: 1; }
+  .mask-gizmo .stroke { fill: none; stroke: color-mix(in srgb, var(--tintline) 14%, transparent); stroke-linecap: round; stroke-linejoin: round; }
+  .mask-gizmo ellipse.hide, .mask-gizmo polygon.hide { fill: color-mix(in srgb, var(--tintline) 22%, transparent); }
+  .mask-gizmo .stroke.hide { stroke: color-mix(in srgb, var(--tintline) 30%, transparent); }
+  .mask-gizmo .picked { stroke-width: 2.5; stroke-dasharray: 5 3; }
+  .mask-gizmo .stroke.picked { stroke: var(--tint); stroke-dasharray: none; }
+  /* A fade's shapes take opacity, not the letters: dashed, never filled as
+     a hide. */
+  .draw-page.fade .mask-gizmo ellipse, .draw-page.fade .mask-gizmo polygon { stroke-dasharray: 3 3; }
+  .mask-gizmo .draft { fill: none; stroke: var(--tintline); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  .mask-gizmo .vert { fill: var(--tintline); stroke: var(--paper); stroke-width: 1; }
   /* The liquify tool's capture surface. `touch-action: none` so a pen or a
      finger drags instead of scrolling the page out from under the tool. */
   .liq-capture {

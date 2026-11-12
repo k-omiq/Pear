@@ -10,10 +10,16 @@
   // active line's bubble is the one lit. A click on a bubble makes its line the
   // active one and puts the caret in its English field.
   //
+  // A line marks the box drawn for it (`line.rect`) when it has one, and its
+  // detected block otherwise, so a line added by hand is on the page once it
+  // is drawn, and a redrawn block replaces the detector's. Free lines are
+  // called T1, T2... as their rows are (`lineLabels`).
+  //
   // Page pixels, like RegionsLayer: the svg's viewBox is the page, the badges
   // are scaled back to screen pixels so they read the same at any zoom.
-  import { app, page, gotoPage, activateLine, isTranslated, readingDirection } from '../store.svelte.js';
+  import { app, page, gotoPage, activateLine, isTranslated, readingDirection, lineRect } from '../store.svelte.js';
   import { focusActiveField } from '../Queue.svelte';
+  import { lineLabels } from '../reading-order.js';
 
   let { pg } = $props();
 
@@ -22,18 +28,24 @@
   // on has the active line.
   const here = $derived(page() === pg);
   const rtl = $derived(readingDirection() === 'rtl');
-  const lineOf = $derived(new Map((pg.lines ?? []).map((l) => [l.n, l])));
-  const marks = $derived(
-    (pg.detect?.boxes ?? [])
-      .filter((d) => Array.isArray(d.box) && d.box.length === 4 && lineOf.has(d.n))
-      .map((d) => {
-        const x = Math.min(d.box[0], d.box[2]);
-        const y = Math.min(d.box[1], d.box[3]);
-        const w = Math.abs(d.box[2] - d.box[0]);
-        const h = Math.abs(d.box[3] - d.box[1]);
-        return { n: d.n, x, y, w, h, done: isTranslated(lineOf.get(d.n)) };
-      }),
-  );
+  const marks = $derived.by(() => {
+    const blocks = new Map();
+    // The first usable block per line: a malformed one ahead of it must not
+    // hide it.
+    for (const d of pg.detect?.boxes ?? []) {
+      const r = lineRect(d?.box);
+      if (r && !blocks.has(d.n)) blocks.set(d.n, r);
+    }
+    const labels = lineLabels(pg.lines);
+    const out = [];
+    for (const l of pg.lines ?? []) {
+      const r = lineRect(l.rect) ?? blocks.get(l.n);
+      if (!r) continue;
+      const label = labels.get(l.n);
+      out.push({ n: l.n, label, wide: label.length > 2, x: r[0], y: r[1], w: r[2] - r[0], h: r[3] - r[1], done: isTranslated(l) });
+    }
+    return out;
+  });
 
   // A press that turns into a pan is not a click on the bubble under it.
   let down = null;
@@ -59,8 +71,12 @@
     <g class="mark" class:active class:done={m.done} onpointerdown={onDown} onclick={(e) => onClick(e, m.n)}>
       <rect class="area" x={m.x} y={m.y} width={m.w} height={m.h} rx={6 * px} />
       <g class="badge" transform="translate({rtl ? m.x + m.w : m.x} {m.y}) scale({px})">
-        <circle r="11" />
-        <text text-anchor="middle" dy="4">{m.n}</text>
+        {#if m.wide}
+          <rect class="pill" x={-(m.label.length * 3.6 + 6)} y="-11" width={m.label.length * 7.2 + 12} height="22" rx="11" />
+        {:else}
+          <circle r="11" />
+        {/if}
+        <text text-anchor="middle" dy="4">{m.label}</text>
       </g>
     </g>
   {/each}
@@ -99,7 +115,8 @@
     stroke-opacity: 0.7;
     fill: rgba(34, 33, 30, 0.05);
   }
-  .badge circle {
+  .badge circle,
+  .badge .pill {
     fill: var(--bn-paper);
     stroke: var(--bn-ink);
     stroke-width: 1.5;
@@ -110,7 +127,8 @@
     font: 700 11.5px/1 system-ui, -apple-system, 'Segoe UI', sans-serif;
     font-variant-numeric: tabular-nums;
   }
-  .done .badge circle {
+  .done .badge circle,
+  .done .badge .pill {
     fill: var(--bn-ink);
   }
   .done .badge text {
@@ -123,7 +141,8 @@
     stroke-dasharray: none;
     fill: rgba(212, 87, 42, 0.08);
   }
-  .active .badge circle {
+  .active .badge circle,
+  .active .badge .pill {
     fill: var(--bn-live);
     stroke: var(--bn-live);
   }

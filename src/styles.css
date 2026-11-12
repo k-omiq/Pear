@@ -26,6 +26,10 @@
   --edge:0 1px 1px rgba(42,38,32,.05), 0 5px 14px rgba(42,38,32,.07);
   --edge-soft:0 1px 2px rgba(42,38,32,.05);
   --scrim:rgba(42,38,32,.28);
+  /* Discord's own colours, for the invite card and nowhere else: the one hue
+     the chrome allows (DESIGN.md). Brand colours, so every theme carries the
+     same values. */
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   /* Mirrored by RAIL_W in src/lib/editor/RailTools.svelte - see the note there. */
   --rail-w:44px;
   /* The height of the top-left pill band: `.pill-row` at top:12px, 32px tall,
@@ -61,6 +65,7 @@
   --edge:0 0 0 1px rgba(255,255,255,.05), 0 6px 20px rgba(0,0,0,.42);
   --edge-soft:0 0 0 1px rgba(255,255,255,.05);
   --scrim:rgba(0,0,0,.6);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   /* Geometry, so identical to light: see the note above. */
   --chrome-top:52px;
   /* Geometry, so identical to light: see the note above. */
@@ -85,6 +90,7 @@
   --edge:0 1px 1px rgba(84,40,54,.05), 0 5px 14px rgba(84,40,54,.08);
   --edge-soft:0 1px 2px rgba(84,40,54,.06);
   --scrim:rgba(84,40,54,.28);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:light;
 }
 /* Jade: dark, green-black field, a pale jade accent. */
@@ -100,6 +106,7 @@
   --edge:0 0 0 1px rgba(214,245,230,.05), 0 6px 20px rgba(0,0,0,.45);
   --edge-soft:0 0 0 1px rgba(214,245,230,.05);
   --scrim:rgba(0,0,0,.6);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:dark;
 }
 /* Ocean: navy surfaces, a clear sea-blue accent. */
@@ -115,6 +122,7 @@
   --edge:0 0 0 1px rgba(222,239,255,.07), 0 6px 20px rgba(4,15,28,.25);
   --edge-soft:0 0 0 1px rgba(222,239,255,.07);
   --scrim:rgba(4,15,28,.55);
+  --discord-blurple:#5865f2; --discord-hover:#4752c4; --discord-soft:rgba(88,101,242,.13); --discord-white:#fff;
   color-scheme:dark;
 }
 
@@ -849,6 +857,9 @@ input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; he
 .seg button:not(:last-child){ border-right:1px solid var(--line); }
 .seg button:hover{ color:var(--text); }
 .seg button.on{ background:var(--accent); color:var(--accent-fg); }
+/* The export dialog's Size: a size that cannot be written is dimmed, never
+   hidden (DESIGN.md). Scoped: other segmented rows keep their own look. */
+.seg.exp-size button:disabled{ opacity:.5; cursor:default; }
 .seg button svg{ width:15px; height:15px; }
 /* The Inspector's three sizing modes: words, sharing the row evenly. */
 .seg.sizing button{ flex:1 1 0; min-width:0; padding:0 4px; font-size:11.5px; overflow:hidden; text-overflow:ellipsis; }
@@ -929,6 +940,14 @@ input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; he
   box-shadow:var(--edge);
 }
 .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+/* A toast with an action takes the pointer while it shows, for its button. */
+.toast.show.has-action{ pointer-events:auto; display:flex; align-items:center; gap:12px; padding-right:8px; }
+.toast-act{
+  border:1px solid currentColor; background:transparent; color:inherit; border-radius:6px;
+  padding:3px 9px; font:inherit; font-weight:600; cursor:pointer;
+}
+.toast-act:hover{ background:var(--accent-fg); color:var(--accent); }
+.toast-act:focus-visible{ outline:2px solid var(--accent-fg); outline-offset:2px; }
 .toast-errors{
   position:fixed; bottom:38px; right:16px; z-index:301; display:flex; flex-direction:column; gap:6px;
   max-width:min(420px, calc(100vw - 32px));
@@ -1364,6 +1383,7 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
   background:var(--surface); border:1px solid var(--line2); border-radius:9px; color:var(--text);
 }
 .exp-card:hover{ border-color:var(--accent); background:var(--accent-soft); }
+.exp-card:disabled{ opacity:.5; cursor:default; border-color:var(--line2); background:var(--surface); }
 .exp-card svg{ width:26px; height:26px; color:var(--accent); margin-bottom:2px; }
 .exp-card .t{ font-size:13px; font-weight:600; }
 .exp-card .d{ font-size:11px; color:var(--t2); }
@@ -1402,24 +1422,21 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
   background:var(--accent); color:var(--accent-fg);
   font-size:12.5px; font-weight:600; letter-spacing:.02em; cursor:pointer;
 }
-.name-input{
-  width:212px; height:40px; padding:0 12px; border:1px solid var(--line2); border-radius:8px;
-  background:var(--surface); color:var(--text); font-size:12.5px;
-}
-.name-input:focus{ outline:none; border-color:var(--accent); }
-/* The layout picker in the create-a-project row: the same 212px column every
-   other control in `.home-actions` is, so the three of them read as one form
-   rather than a segmented control that wandered in. */
-.seg.new-layout{ width:212px; border-radius:8px; }
-.seg.new-layout button{ height:36px; font-size:11.5px; }
-.seg.new-language{ width:272px; border-radius:8px; }
-.seg.new-language button{ height:36px; padding:0 9px; font-size:11.5px; }
 
 .home-actions{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:96px 0 72px; }
 /* New project, opened in place of the two buttons: one 272px column, so the
    name, the two choices and the buttons line up as one form. */
 .new-project{ display:flex; flex-direction:column; gap:10px; width:272px; }
-.new-project .name-input,.new-project .seg{ width:100%; }
+/* ProjectFields' rows, stacked here: the label over its control, every
+   control the column's full width. */
+.new-project .field > span{ font-size:11.5px; color:var(--t2); }
+.new-project .field input{
+  height:40px; padding:0 12px; border:1px solid var(--line2); border-radius:8px;
+  background:var(--surface); color:var(--text); font-size:12.5px;
+}
+.new-project .field input:focus{ outline:none; border-color:var(--accent); }
+.new-project .seg{ width:100%; border-radius:8px; }
+.new-project .seg button{ height:36px; padding:0 9px; font-size:11.5px; }
 .new-project-foot{ display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
 .new-project-foot .soft-btn{ height:30px; }
 .section-label{ margin:0 0 18px; font-size:10.5px; font-weight:400; letter-spacing:.22em; color:var(--t3); }
@@ -2057,6 +2074,22 @@ svg.rough-def{ position:absolute; width:0; height:0; pointer-events:none; }
 .tpane .qrow.sfx.done .badge{ background:var(--text); color:var(--panel); }
 .tpane .qrow.active .badge{ background:#d4572a; color:#fff; box-shadow:none; }
 .tpane .qrow .preview{ font-size:13px; line-height:1.4; }
+/* A label past two characters (T10, 120) grows the badge into a pill. */
+.tpane .qrow .badge.wide{ width:auto; min-width:24px; padding:0 6px; border-radius:12px; }
+/* A line added by hand with no box on the page yet: the badge asks for one. */
+.tpane .qrow .badge-draw{
+  border:0; padding:0; font:inherit; cursor:pointer; color:var(--t2);
+  background:transparent; box-shadow:none;
+}
+.tpane .qrow .badge-draw:hover{ background:var(--panel2); color:var(--text); }
+.tpane .qrow.active .badge-draw{ background:transparent; color:var(--text); box-shadow:none; }
+.tpane .qrow .badge-draw:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+/* The row "…" menu: there on hover, on focus and while open, never in the way
+   of reading the rows otherwise. It keeps its room while hidden, so a row
+   never shifts as the pointer crosses it. */
+.tpane .qrow-more{ flex:none; align-self:flex-start; opacity:0; transition:opacity .12s; }
+.tpane .qrow:hover .qrow-more, .tpane .qrow:focus-within .qrow-more, .tpane .qrow-more:has(.open){ opacity:1; }
+@media (prefers-reduced-motion: reduce){ .tpane .qrow-more{ transition:none; } }
 .tpane .qrow:not(.done) .preview:empty::before{ content:'Not translated yet'; color:var(--t3); font-style:italic; }
 .tpane .qrow .qjp{ font-size:11.5px; line-height:1.45; }
 .tpane .qrow.editing .qcol{ gap:7px; }

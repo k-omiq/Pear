@@ -14,6 +14,7 @@ import {
   fontRequestFor, textLayerFor, buildPagePsd, pagePsdDocument, writePagePsd, reconstructForeign, fontMissingMark, BORROWED_MARK, RASTER_MARK,
 } from './psd.js';
 import { fakeIndexedDB } from '../test/fake-indexeddb.js';
+import { textCheck } from './runs.js';
 
 // ===========================================================================
 // The PSD writer with the Rust engine drawing
@@ -347,5 +348,119 @@ describe('what a PSD waits for', () => {
     expect(fontsSettling([bare])).toBe(null);
     await buildPagePsd(bare);
     expect(asked.ready).toBe(1);
+  });
+});
+
+describe('a box with words in another face (C5)', () => {
+  const READ = { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true };
+  // A box whose words carry runs, with the check that keeps them on load.
+  const faced = (font, text, runs, extra = {}, over = {}) => box(font, extra, { text, runs, runsCheck: textCheck(text), w: 300, ...over });
+  const sum = (layer) => layer.text.styleRuns.reduce((n, r) => n + r.length, 0);
+
+  it('is a live layer, each stretch in the face the engine drew it in', async () => {
+    await on();
+    const p = await open([faced('Sys Two', 'BIG BOOM', [{ start: 0, end: 3, bold: true, italic: false }])]);
+    const layer = textLayerFor(p, p.boxes[0], null);
+    expect(layer.name).toBe('BIG BOOM');
+    expect(layer.text.text).toBe('BIG BOOM');
+    // Sys Two's bold is a real face (Bangers' file), so nothing is synthesised.
+    expect(layer.text.styleRuns).toEqual([
+      { length: 3, style: { font: { name: 'Bangers-Regular' }, fauxBold: false, fauxItalic: false } },
+      { length: 5, style: { font: { name: 'ComicNeue-Regular' }, fauxBold: false, fauxItalic: false } },
+    ]);
+    expect(sum(layer)).toBe(layer.text.text.length);
+    // Through a real file.
+    const psd = readPsd(writePagePsd(pagePsdDocument({ w: 800, h: 1200, textLayers: [layer], project: {} })), READ);
+    const read = psd.children.find((c) => c.name === 'Text').children[0];
+    expect(read.text.styleRuns.map((r) => [r.length, r.style.font?.name, !!r.style.fauxBold])).toEqual([[3, 'Bangers-Regular', false], [5, 'ComicNeue-Regular', false]]);
+  });
+
+  it('a family with no real bold says the bold is synthesised, as the pixels show it', async () => {
+    await addFontFile(fontFile('MyBangers.ttf', bangers));
+    await on();
+    const p = await open([faced('MyBangers', 'POW POW', [{ start: 4, end: 7, bold: true, italic: false }])]);
+    const layer = textLayerFor(p, p.boxes[0], null);
+    expect(layer.text.styleRuns).toEqual([
+      { length: 4, style: { font: { name: 'Bangers-Regular' }, fauxBold: false, fauxItalic: false } },
+      { length: 3, style: { font: { name: 'Bangers-Regular' }, fauxBold: true, fauxItalic: false } },
+    ]);
+  });
+
+  it('words in another family name that family’s face, across the lines the app broke', async () => {
+    await addFontFile(fontFile('MyBangers.ttf', bangers));
+    await on();
+    const text = 'THE QUICK BROWN FOX JUMPS';
+    const runs = [{ start: 4, end: 15, bold: false, italic: true, font: 'DejaVu Sans' }];
+    const p = await open([faced('MyBangers', text, runs, {}, { w: 150 })]);
+    const layer = textLayerFor(p, p.boxes[0], null);
+    expect(layer.text.text).toBe(placeBlock(boxCandidate(p.boxes[0], text, runs)).lines.join('\n'));
+    expect(layer.text.text).toContain('\n');
+    expect(sum(layer)).toBe(layer.text.text.length);
+    const names = layer.text.styleRuns.map((r) => r.style.font.name);
+    expect(names).toContain('DejaVuSans-Oblique');
+    expect(names).toContain('Bangers-Regular');
+    // The italic is DejaVu's own oblique file: nothing slanted.
+    expect(layer.text.styleRuns.every((r) => r.style.fauxItalic === false)).toBe(true);
+    expect(layer.name.endsWith(BORROWED_MARK)).toBe(false);
+  });
+
+  // A raster-only box still draws each run in its face when its words lie
+  // straight (here roughened), so a missing family of its words is marked; a
+  // curve draws every letter in the box's face, so there it is not.
+  it('a family of its words that is not here is marked, and the importer takes every mark off', async () => {
+    await on();
+    const runs = [{ start: 4, end: 7, font: 'No Such Font' }];
+    const rendered = { imageData: { width: 4, height: 4, data: new Uint8ClampedArray(64) }, left: 100, top: 500, right: 250, bottom: 620 };
+    const p = await open([faced('DejaVu Sans', 'HEY YOU', runs, { roughen: { on: true, amount: 2, detail: 0.05, seed: 1 } }), faced('DejaVu Sans', 'HEY YOU', runs, { curve: 30 }, { id: 'curved' })]);
+    const layer = textLayerFor(p, p.boxes[0], rendered);
+    expect(layer.text).toBeUndefined();
+    expect(layer.name).toBe(`HEY YOU${fontMissingMark('No Such Font')}${RASTER_MARK}`);
+    expect(textLayerFor(p, p.boxes[1], rendered).name).toBe(`HEY YOU${RASTER_MARK}`);
+    const back = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [{ ...layer, imageData: undefined }] }] });
+    expect(back.boxes.map((x) => x.text)).toEqual(['HEY YOU']);
+  });
+
+  it('with the engine not drawing, the box ships as its pixels', async () => {
+    await on();
+    const p = await open([faced('Sys Two', 'BIG BOOM', [{ start: 0, end: 3, bold: true, italic: false }])]);
+    await useTextEngine('browser');
+    expect(engineDraws()).toBe(false);
+    const rendered = { imageData: { width: 4, height: 4, data: new Uint8ClampedArray(64) }, left: 100, top: 500, right: 250, bottom: 620 };
+    const layer = textLayerFor(p, p.boxes[0], rendered);
+    expect(layer.text).toBeUndefined();
+    expect(layer.name.endsWith(RASTER_MARK)).toBe(true);
+  });
+});
+
+// A foreign PSD (no embedded project) whose type layer is set in several fonts
+// names a font per run and none for the layer: the face is read from the
+// first run, as the layer's would be.
+describe('a foreign type layer in several fonts', () => {
+  it('takes bold and italic from its first run\'s face', async () => {
+    const layer = {
+      name: 'HEY YOU',
+      left: 100,
+      top: 100,
+      right: 300,
+      bottom: 160,
+      text: {
+        text: 'HEY YOU',
+        style: { fontSize: 24 },
+        styleRuns: [
+          { length: 4, style: { font: { name: 'SomeFace-BoldItalic' }, fontSize: 24 } },
+          { length: 3, style: { font: { name: 'Other-Regular' }, fontSize: 24 } },
+        ],
+      },
+    };
+    const back = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [layer] }] });
+    expect(back.boxes[0].style).toMatchObject({ size: 24, bold: true, italic: true });
+    // Only the font is read from the first run: a size or a colour the runs
+    // do not share keeps the default.
+    const mixed = structuredClone(layer);
+    mixed.text.style = {};
+    mixed.text.styleRuns[0].style.fontSize = 40;
+    mixed.text.styleRuns[0].style.fillColor = { r: 255, g: 0, b: 0 };
+    const back2 = await reconstructForeign({ width: 800, height: 1200, children: [{ name: 'Text', children: [mixed] }] });
+    expect(back2.boxes[0].style).toMatchObject({ size: 26, color: '#000000', bold: true, italic: true });
   });
 });

@@ -9,6 +9,7 @@ import {
   PACKAGE_FORMAT,
   PACKAGE_VERSION,
 } from './package.js';
+import { textCheck } from './runs.js';
 import { normalizeStrokeEffect } from './data.js';
 
 const bytes = (...n) => new Uint8Array(n);
@@ -88,7 +89,8 @@ describe('buildChapterPackage', () => {
     const manifest = JSON.parse(strFromU8(entries['manifest.json']));
     expect(manifest.format).toBe(PACKAGE_FORMAT);
     expect(manifest.version).toBe(PACKAGE_VERSION);
-    expect(manifest.project).toEqual({ name: 'My Series', layout: 'longstrip', ocrLanguage: 'ko' });
+    // A series that never chose a Size exports at Original.
+    expect(manifest.project).toEqual({ name: 'My Series', layout: 'longstrip', ocrLanguage: 'ko', exportScale: 1 });
     expect(manifest.chapter).toEqual({ number: 7, title: 'Seven', mode: 'typeset', pageCount: 2 });
     expect(manifest.fonts).toEqual([
       {
@@ -134,6 +136,9 @@ describe('readChapterPackage', () => {
     expect(pkg.translations).toBe('{"pages":[]}');
     expect(pkg.manifest.project.layout).toBe('longstrip');
     expect(pkg.manifest.project.ocrLanguage).toBe('ko');
+    expect(pkg.manifest.project.exportScale).toBe(1);
+    const sharp = { ...sampleInput(), project: { ...sampleInput().project, exportScale: 2 } };
+    expect(readChapterPackage(buildChapterPackage(sharp)).manifest.project.exportScale).toBe(2);
     expect([...pkg.raws.get('p1.png')]).toEqual([1, 2, 3]);
     expect([...pkg.raws.get('p2.png')]).toEqual([4, 5]);
     expect([...pkg.cleaned.get('p1-clean.png')]).toEqual([9, 9, 9, 9]);
@@ -227,6 +232,18 @@ describe('packagePagesForImport', () => {
     expect(pages[0].note).toBe('');
   });
 
+  it('carries the faces of words in a box and in a translated line, with their checks (C5)', () => {
+    const input = sampleInput();
+    const pg = input.record.pages[0];
+    pg.lines[0] = { ...pg.lines[0], en: 'big b', runs: [{ start: 0, end: 3, bold: true, italic: false, font: 'Anime Ace' }], runsCheck: 'c1' };
+    pg.boxes.push({ id: 'b2', lineN: null, text: 'oh no', runs: [{ start: 3, end: 5, bold: false, italic: true }], runsCheck: 'c2', x: 0, y: 0, w: 50, h: 20, style: { font: 'Wild Words', size: 20 } });
+    const pages = packagePagesForImport(readChapterPackage(buildChapterPackage(input)));
+    expect(pages[0].lines[0].runs).toEqual(pg.lines[0].runs);
+    expect(pages[0].lines[0].runsCheck).toBe('c1');
+    expect(pages[0].boxes[1].runs).toEqual(pg.boxes[1].runs);
+    expect(pages[0].boxes[1].runsCheck).toBe('c2');
+  });
+
   it('carries the page note (TXT-7)', () => {
     const input = sampleInput();
     input.record.pages[0].note = 'Flashback';
@@ -242,6 +259,27 @@ describe('fontFamiliesUsed', () => {
     ];
     const tags = [{ name: 'sfx', style: { font: 'C' } }, { name: 'x', style: {} }];
     expect(fontFamiliesUsed(pages, tags)).toEqual(['A', 'B', 'C']);
+  });
+
+  // As saved: runs beside the check of the text they index (runs.js).
+  it('collects the typeface of words set in another family, in a box or in its line', () => {
+    const pages = [
+      {
+        lines: [{ n: 1, en: 'hi', runs: [{ start: 0, end: 2, bold: true, font: 'D' }], runsCheck: textCheck('hi') }],
+        boxes: [{ style: { font: 'A' }, text: 'ok', runs: [{ start: 0, end: 1, font: 'E' }, { start: 1, end: 2, bold: true }], runsCheck: textCheck('ok') }],
+      },
+    ];
+    expect(fontFamiliesUsed(pages, [])).toEqual(['A', 'E', 'D']);
+  });
+
+  it('leaves out the families of runs a load would drop: no check, or a check of other words', () => {
+    const pages = [
+      {
+        lines: [{ n: 1, en: 'hi', runs: [{ start: 0, end: 2, font: 'Stale' }], runsCheck: textCheck('hello') }],
+        boxes: [{ style: { font: 'A' }, text: 'ok', runs: [{ start: 0, end: 1, font: 'Unchecked' }] }],
+      },
+    ];
+    expect(fontFamiliesUsed(pages, [])).toEqual(['A']);
   });
 });
 

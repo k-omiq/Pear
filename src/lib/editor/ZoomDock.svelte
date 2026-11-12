@@ -1,11 +1,14 @@
 <script>
   // Zoom dock and undo/redo buttons.
-  import { app, page, zoomIn, zoomOut, zoomReset, isTranslateMode } from '../store.svelte.js';
-  import { history, undo, redo } from './history.svelte.js';
+  import { app, page, zoomIn, zoomOut, zoomReset } from '../store.svelte.js';
+  import { stepHere, stepAllowed } from './history.svelte.js';
   import { keyLabel } from '../shortcuts.svelte.js';
 
-  // Translate mode hides typeset undo/redo.
-  const translate = $derived(isTranslateMode());
+  // Undo and redo through the same gate as their keys (`stepHere`): in a
+  // translate chapter they act on the lines, and are dimmed while the step on
+  // top is a box edit the hidden canvas would not show.
+  const canUndo = $derived(stepAllowed('undo'));
+  const canRedo = $derived(stepAllowed('redo'));
 
   // Canvas computeFit handler.
   let { onFit } = $props();
@@ -31,14 +34,12 @@
   <button onclick={zoomOut} aria-label="Zoom out">−</button>
   <button class="zval" onclick={zoomReset} data-tip={zoomTip}>{zoomPct}%</button>
   <button onclick={zoomIn} aria-label="Zoom in">+</button>
-  {#if !translate}
-    <span class="sep"></span>
+  <span class="sep"></span>
 
-    <button onclick={undo} disabled={!history.canUndo} aria-label="Undo" data-tip={keyLabel('edit.undo') ? `Undo (${keyLabel('edit.undo')})` : 'Undo'}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>
-    </button>
-    <button onclick={redo} disabled={!history.canRedo} aria-label="Redo" data-tip={keyLabel('edit.redo') ? `Redo (${keyLabel('edit.redo')})` : 'Redo'}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>
-    </button>
-  {/if}
+  <button onclick={() => stepHere('undo')} disabled={!canUndo} aria-label="Undo" data-tip={keyLabel('edit.undo') ? `Undo (${keyLabel('edit.undo')})` : 'Undo'}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>
+  </button>
+  <button onclick={() => stepHere('redo')} disabled={!canRedo} aria-label="Redo" data-tip={keyLabel('edit.redo') ? `Redo (${keyLabel('edit.redo')})` : 'Redo'}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>
+  </button>
 </div>

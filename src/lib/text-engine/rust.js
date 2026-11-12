@@ -13,7 +13,7 @@
 // solved against a font nobody sees.
 import { createEngine, SYNTH_BOLD, SYNTH_OBLIQUE, CHAIN_SHIFT, RULES } from '../../../text-engine/js/engine.mjs';
 import { addInstance, instancesSupported } from '../../../text-engine/js/instance.mjs';
-import { lineFonts, lineFontsSupported } from '../../../text-engine/js/line-fonts.mjs';
+import { lineFonts, lineFontsSupported, advanceSpans, advanceSpansSupported } from '../../../text-engine/js/line-fonts.mjs';
 import { FACE_SLOTS } from '../data.js';
 import { fontBytesHash } from './font-identity.js';
 
@@ -296,6 +296,18 @@ export async function createRustTextEngine(source, options = {}) {
     advance(face, text) {
       return low.advance(resolve(face), text);
     },
+    /**
+     * The advance of `text` set in several faces, one per span (`[{ start,
+     * end }]`, UTF-16, covering it end to end): one engine call, which cuts
+     * at the spans and at every fallback change inside them, as the painter
+     * will. A wasm too old to have it gets the same sum, a piece at a time.
+     */
+    advanceRuns(faces, text, spans) {
+      if (advanceSpansSupported(low)) return advanceSpans(low, faces.map(resolve), text, spans);
+      let w = 0;
+      spans.forEach((s, i) => (w += low.advance(resolve(faces[i]), text.slice(s.start, s.end))));
+      return w;
+    },
     fontBox(face) {
       return low.fontBox(resolve(face));
     },
@@ -329,6 +341,14 @@ export async function createRustTextEngine(source, options = {}) {
      */
     lineCarets: low.hasLineCarets
       ? (face, text, letterSpacing = 0) => low.lineCarets(resolve(face), text, Number(letterSpacing) || 0)
+      : undefined,
+    /**
+     * Each cluster's ink in a line shaped whole, as a curved line is
+     * painted (text-engine/js/engine.mjs `lineInks`). Absent on a wasm built
+     * before the export existed: a caller asks first.
+     */
+    lineInks: low.hasLineInks
+      ? (face, text, letterSpacing = 0) => low.lineInks(resolve(face), text, Number(letterSpacing) || 0)
       : undefined,
     /**
      * SFX lettering (sfx.js): `sfxPlace(face, text, params)` lays the text's

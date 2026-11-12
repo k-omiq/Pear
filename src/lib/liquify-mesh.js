@@ -16,7 +16,7 @@
 import { liquifyField } from './liquify.js';
 import { WARP_MAX_GRID, WARP_MIN_GRID } from './data.js';
 import { gizmoPts, regridWarp } from './warp-gizmo.js';
-import { cloneStyle, markUnsaved, reviewBox, pageById } from './store.svelte.js';
+import { cloneStyle, markUnsaved, reviewBox, pageById, fitWarpToBox } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
 
 // The mesh spacing the tool wants, as a fraction of its radius. Cells about
@@ -85,12 +85,17 @@ export function liquifyMesh(pts, opts) {
 // Escape, a cancelled pointer and an unmount mid-drag all go through commit or
 // cancel, and only the first of them does anything.
 export function liquifyMeshGesture(box, pageId, tool) {
+  // The stored mesh carried to the box as it is now, as the gizmo does
+  // (`beginWarpDrag`): a correction, not part of the gesture.
+  fitWarpToBox(box);
   const before = cloneStyle(box.style);
   const w = box.style.warp;
   const grid = liquifyGrid(box.w, box.h, tool.radius, w);
   const next = regridWarp(w, grid.cols, grid.rows, box.w, box.h);
   next.on = true;
   next.pts = gizmoPts(next, box.w, box.h);
+  next.w = box.w;
+  next.h = box.h;
   box.style.warp = next;
   let settled = false;
   let changed = false;

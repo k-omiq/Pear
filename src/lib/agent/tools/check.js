@@ -2,7 +2,7 @@ import { defineTool } from '../registry.js';
 import { selectBoxes } from '../select.js';
 import { countedChecks } from '../counted-checks.js';
 import { untrusted } from '../fence.js';
-import { app, lineByN, boxText, pageCheckItems, reviewOf, withStyleOrder, detectedEntryFor, boxLocked, CHECK_REASONS } from '../../store.svelte.js';
+import { app, lineByN, boxText, boxRuns, pageCheckItems, reviewOf, withStyleOrder, detectedEntryFor, boxLocked, CHECK_REASONS } from '../../store.svelte.js';
 import { fitReport, fitIssues, fitQuality } from '../../fit-report.js';
 import { lineTags, findTag, withKinds, tagsOfKinds } from '../../tags.svelte.js';
 import { letteringIssues, emphasisIssue } from '../lettering-checks.js';
@@ -48,7 +48,7 @@ export function checksFor(matches) {
     // an outline: what the reader sees, so it speaks for the box's overflow
     // too (an overflow past the box's own rectangle, inside its outline, is
     // no fault, and one past the outline is "outside").
-    const reports = new Map(page.boxes.map((b) => [b.id, fitReport(b, boxText(b, page))]));
+    const reports = new Map(page.boxes.map((b) => [b.id, fitReport(b, boxText(b, page), undefined, boxRuns(b, page))]));
     for (const item of pageCheckItems(page, pageIndex ?? app.pages.indexOf(page))) {
       const list = issues.get(item.boxId);
       if (!list) continue; // Unplaced lines have no matching box.
@@ -217,7 +217,7 @@ export function sizesOf(b, page) {
 export function fitsOf(matches) {
   const out = [];
   for (const { page, box: b } of matches) {
-    const rep = fitReport(b, boxText(b, page));
+    const rep = fitReport(b, boxText(b, page), undefined, boxRuns(b, page));
     if (!rep) continue;
     out.push({
       id: b.id,

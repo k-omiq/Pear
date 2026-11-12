@@ -21,6 +21,8 @@
 //! order and the compositing it follows, MIT licence (see `THIRD_PARTY.md`).
 
 use super::super::blur::{to_u8, Surface};
+use super::super::boxjob::{fade_map, ClipShape, Fade, FadePart, Map as Coverage};
+use super::super::raster::Exact;
 use super::super::geom::{Affine, IBox, Pt};
 use super::super::job::{Fill, Rgba, Tile};
 use super::super::shade::Shader;
@@ -220,6 +222,36 @@ pub enum Effect {
     Satin(Satin),
     Stroke(Stroke),
     Bevel(Bevel),
+    Paint(Marks),
+}
+
+/// One mark of paint over the letters (box wire v21): colour laid on the
+/// letters' fill where its shape lies, or paint taken away there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintMark {
+    pub shape: ClipShape,
+    /// Straight; its alpha is not read.
+    pub color: Rgba,
+    /// 0 to 1.
+    pub opacity: f64,
+    /// The edge's softness: a gaussian's sigma, job units. Zero is a hard
+    /// edge.
+    pub soft: f64,
+    /// Takes the paint under it away instead of laying colour.
+    pub erase: bool,
+}
+
+/// Paint over the letters (box wire v21): marks drawn on the box, in the
+/// order they were drawn, rastered into one layer of colour and laid on the
+/// fill after the overlays, inside the letters only. The strokes' inside
+/// parts, the inner shadows and glows lie over it; outlines, shadows and
+/// outer glows keep their own colours. The marks move with the box, unlike
+/// the mask and the fade, which are pinned to the page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Marks {
+    /// The box's corner in job space: the marks are stated from it.
+    pub origin: Pt,
+    pub marks: Vec<PaintMark>,
 }
 
 impl Effect {
@@ -237,6 +269,15 @@ impl Effect {
             Effect::Satin(s) => s.opacity,
             Effect::Stroke(s) => s.opacity * f64::from(u8::from(s.size > 0.0)),
             Effect::Bevel(b) => b.highlight.opacity.max(b.shadow.opacity),
+            // Only a mark that lays colour shows: an eraser over nothing
+            // takes nothing away.
+            Effect::Paint(m) => {
+                if m.marks.iter().any(|k| !k.erase && k.opacity > 0.0) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
         }
     }
 
@@ -996,6 +1037,16 @@ fn stroke_share(share: &mut [f32], cover: &mut [f32], r: &Reach2<'_>) {
     }
 }
 
+/// Crack's and Scratches' cuts, for a box whose own strokes are on
+/// (`job::Cuts`): the letters as if uncut, in the frame of the cut letters
+/// the interior is laid from, and the cuts alone. The strokes outline the
+/// letters whole and are cut through after, as a glyph band is, so a crack
+/// looks the same whatever stroke the box has.
+pub(crate) struct StrokeCuts<'a> {
+    pub whole: &'a Raster,
+    pub alone: &'a Raster,
+}
+
 /// The outside parts of the strokes, to slide under the letters: for each
 /// stroke (first listed first) the share of each pixel it takes, over a
 /// region whose corner is device `dev`.
@@ -1259,7 +1310,7 @@ fn stroke_band(
         let dout = if out_w <= 0.0 {
             None
         } else {
-            Some(outside_dist(shape, out_w, &mut chamfer, &mut exact, keys)?)
+            Some(outside_dist(shape, out_w, &mut chamfer, &mut exact, keys, false)?)
         };
         for (i, r) in rest.iter_mut().enumerate() {
             let a = shape.v[i];
@@ -1295,14 +1346,22 @@ fn outside_dist<'a>(
     chamfer: &'a mut Option<Buffer<f32>>,
     exact: &'a mut Option<Buffer<f32>>,
     keys: &Keys,
+    whole: bool,
 ) -> Result<&'a [f32], Error> {
     let near = out_w < map::STROKE_CHAMFER_MAX;
     let slot = if near { chamfer } else { exact };
     if slot.is_none() {
+        // The letters whole (`StrokeCuts`) are a shape of their own.
+        let tag = match (near, whole) {
+            (true, false) => "chamfer out",
+            (true, true) => "chamfer out, whole",
+            (false, false) => "exact out",
+            (false, true) => "exact out, whole",
+        };
         *slot = Some(if near {
-            kept_values(keys.of_shape("chamfer out"), || map::chamfer_outside(shape))?
+            kept_values(keys.of_shape(tag), || map::chamfer_outside(shape))?
         } else {
-            kept_values(keys.of_shape("exact out"), || map::dist_outside(shape))?
+            kept_values(keys.of_shape(tag), || map::dist_outside(shape))?
         });
     }
     Ok(slot.as_ref().map_or(&[][..], |d| d.as_slice()))
@@ -1468,7 +1527,7 @@ pub(crate) fn interior(
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
-    interior_kept(r, effects, fill_opacity, group, scale, carried, place, None)
+    interior_kept(r, effects, fill_opacity, group, scale, carried, place, None, None)
 }
 
 /// [`interior`], with what it works out kept for the next paint
@@ -1485,6 +1544,7 @@ pub(crate) fn interior_kept(
     carried: impl Fn(f64, f64) -> (f64, f64),
     place: &Place<'_>,
     source: Option<Key>,
+    cuts: Option<&StrokeCuts<'_>>,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
     let pad = interior_pad(effects, scale);
     let keys = Keys::new(source, effects, pad, place);
@@ -1502,6 +1562,7 @@ pub(crate) fn interior_kept(
         place,
         pad,
         &keys,
+        cuts,
     )?;
     if let Some(key) = whole {
         if let Some((piece, bytes)) = KeptInterior::of(&out) {
@@ -1577,9 +1638,144 @@ impl Keys {
     }
 }
 
+/// A paint mark's bytes hashed on: a brush mark holds hundreds of points,
+/// so their numbers, not their text.
+fn mark_hash(h: Hasher, k: &PaintMark) -> Hasher {
+    let h = h
+        .u64(u64::from(u32::from_le_bytes(k.color.0)))
+        .f64(k.opacity)
+        .u64(u64::from(k.erase));
+    shape_hash(h, k)
+}
+
+/// What a mark's coverage is made from: its shape and its softness. Its
+/// colour, opacity and whether it erases are laid on the coverage after
+/// (`paint_layer`), so a slider of those reads the coverage back.
+fn shape_hash(h: Hasher, k: &PaintMark) -> Hasher {
+    let h = h.f64(k.soft);
+    match &k.shape {
+        ClipShape::Ellipse { centre, rx, ry } => h.u64(1).f64(centre.x).f64(centre.y).f64(*rx).f64(*ry),
+        ClipShape::Polygon(pts) => pts
+            .iter()
+            .fold(h.u64(2).u64(pts.len() as u64), |h, p| h.f64(p.x).f64(p.y)),
+        ClipShape::Stroke { size, pts } => pts
+            .iter()
+            .fold(h.u64(3).f64(*size).u64(pts.len() as u64), |h, p| h.f64(p.x).f64(p.y)),
+    }
+}
+
 /// The key of one effect's settings.
 pub(crate) fn effect_key(e: &Effect) -> Option<Key> {
-    Hasher::new("effect").debug(e).finish()
+    match e {
+        // A brush mark holds hundreds of points: their bytes, not their
+        // text.
+        Effect::Paint(m) => {
+            let h = Hasher::new("paint marks").f64(m.origin.x).f64(m.origin.y);
+            m.marks.iter().fold(h, mark_hash).finish()
+        }
+        _ => Hasher::new("effect").debug(e).finish(),
+    }
+}
+
+/// The paint's marks rastered into one layer over the interior's frame
+/// (`w` by `h` device pixels, its corner at device `dev`), premultiplied,
+/// each mark laid over the ones before it or, an eraser, taking them away.
+///
+/// Each mark's coverage is the fade's map of it alone (`fade_map`, at full
+/// strength): a hard mark rastered as it is, a soft one rastered and blurred
+/// on a piece of its own box grown by the blur's reach, at a fraction of the
+/// frame's resolution once the blur is wide enough to take out what the
+/// smaller raster loses, and read back over the frame. Its grid is anchored
+/// to the box's corner, so the room round the letters does not move it.
+/// With `key` (there when the interior is kept) each mark's coverage is kept, so
+/// a repaint, or one more mark, rasters only what changed. `None` when
+/// nothing is left.
+fn paint_layer(
+    pm: &Marks,
+    w: usize,
+    h: usize,
+    dev: (i32, i32),
+    place: &Place<'_>,
+    scale: f64,
+    key: Option<Key>,
+) -> Result<Option<Surface>, Error> {
+    let area = IBox {
+        x0: 0,
+        y0: 0,
+        x1: w as i32,
+        y1: h as i32,
+    };
+    let transform =
+        Affine::translate(-f64::from(dev.0), -f64::from(dev.1)).after(&place.transform);
+    let [_, _, _, _, tx, ty] = place.transform.0;
+    let grain = (dev.0 - tx.round() as i32, dev.1 - ty.round() as i32);
+    let mut out: Option<Surface> = None;
+    for mark in &pm.marks {
+        if !(mark.opacity > 0.0) || (mark.erase && out.is_none()) {
+            continue;
+        }
+        let mark_key = key.and_then(|k| {
+            shape_hash(Hasher::new("paint mark").key(k), mark)
+                .f64(pm.origin.x)
+                .f64(pm.origin.y)
+                .debug(&transform)
+                .i32(grain.0)
+                .i32(grain.1)
+                .u64(w as u64)
+                .u64(h as u64)
+                .f64(scale)
+                .finish()
+        });
+        let cov = match mark_key.and_then(kept::get::<std::rc::Rc<Option<Coverage>>>) {
+            Some(hit) => std::rc::Rc::clone(&*hit),
+            None => {
+                let one = Fade {
+                    origin: pm.origin,
+                    shapes: vec![FadePart {
+                        strength: 1.0,
+                        soft: mark.soft,
+                        shape: mark.shape.clone(),
+                    }],
+                };
+                let cov = std::rc::Rc::new(fade_map(&one, &transform, scale, grain, area, &Exact)?);
+                if let Some(k) = mark_key {
+                    let bytes = cov.as_ref().as_ref().map_or(0, |m| m.bx.width() * m.bx.height());
+                    kept::put(k, std::rc::Rc::clone(&cov), bytes);
+                }
+                cov
+            }
+        };
+        let Some(cov) = cov.as_ref() else {
+            continue;
+        };
+        let o = match out.as_mut() {
+            Some(o) => o,
+            None => out.insert(Surface::new(w, h)?),
+        };
+        let k = (mark.opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        let [cr, cg, cb, _] = mark.color.0;
+        let bx = cov.bx.intersect(&area);
+        for fy in bx.y0..bx.y1 {
+            for fx in bx.x0..bx.x1 {
+                let a = (cov.at(fx, fy) * k + 127) / 255;
+                if a == 0 {
+                    continue;
+                }
+                let q = &mut o.data[(fy as usize * w + fx as usize) * 4..][..4];
+                if mark.erase {
+                    for ch in q.iter_mut() {
+                        *ch = ((u32::from(*ch) * (255 - a) + 127) / 255) as u8;
+                    }
+                } else {
+                    for (ch, s) in q.iter_mut().zip([cr, cg, cb, 255]) {
+                        *ch = ((u32::from(s) * a + u32::from(*ch) * (255 - a) + 127) / 255) as u8;
+                    }
+                }
+            }
+        }
+        budget::check()?;
+    }
+    Ok(out.filter(|o| o.data.chunks_exact(4).any(|p| p[3] != 0)))
 }
 
 /// A map as it is kept: its size and its values.
@@ -1867,6 +2063,7 @@ fn interior_at(
     place: &Place<'_>,
     pad: usize,
     keys: &Keys,
+    cuts: Option<&StrokeCuts<'_>>,
 ) -> Result<(Raster, Option<Outside>, Option<Bevels>), Error> {
     let (rw, rh) = (r.width as usize, r.height as usize);
     let (w, h) = (rw + 2 * pad, rh + 2 * pad);
@@ -1938,6 +2135,27 @@ fn interior_at(
         .collect();
     let inside_parts = strokes.iter().any(|(_, s)| s.widths().0 > 0.0);
     let burst_strokes = strokes.iter().any(|(_, s)| is_burst(&s.paint));
+    // With cuts, the shape the strokes read: the letters whole, in this
+    // frame (`StrokeCuts`).
+    let cuts = cuts.filter(|c| {
+        !strokes.is_empty()
+            && (c.whole.x, c.whole.y, c.whole.width, c.whole.height)
+                == (r.x, r.y, r.width, r.height)
+    });
+    let whole = match cuts {
+        Some(c) => {
+            let mut m = Map::filled(w, h, 0.0)?;
+            for y in 0..rh {
+                for x in 0..rw {
+                    let a = c.whole.data[(y * rw + x) * 4 + 3];
+                    m.v[(y + pad) * w + x + pad] = f32::from(a) / 255.0;
+                }
+            }
+            Some(m)
+        }
+        None => None,
+    };
+    let stroke_shape = whole.as_ref().unwrap_or(&shape);
     let burst_overlay =
         shown().any(|(_, e)| matches!(e, Effect::GradientOverlay(o) if is_burst(&o.paint)));
     // The depth in from the letters' edge, worked out once: a Shape Burst
@@ -1955,9 +2173,18 @@ fn interior_at(
         Some(d) if burst_overlay => Some(depth_share(d)?),
         _ => None,
     };
-    // The strokes' inside parts read the depth in.
+    // The strokes' inside parts read the depth in, of the letters whole
+    // when they are cut through after.
+    let whole_din = match &whole {
+        Some(m) if inside_parts || burst_strokes => Some(kept_values(
+            keys.of_shape("depth in, whole"),
+            || map::chamfer_inside(m),
+        )?),
+        _ => None,
+    };
     let din = din.as_ref().map(|d| d.as_slice());
-    let deepest = din.map_or(0.0, |d| d.iter().copied().fold(0.0f32, f32::max));
+    let stroke_din = whole_din.as_ref().map(|d| d.as_slice()).or(din);
+    let deepest = stroke_din.map_or(0.0, |d| d.iter().copied().fold(0.0f32, f32::max));
     // A Shape Burst stroke runs from its outer edge (0) to its inner one
     // (1): `inner` is its depth in from the letters' edge to that one.
     let burst_in = |st: &Stroke| {
@@ -1967,11 +2194,13 @@ fn interior_at(
     };
     // What is laid on the fill, in the order it is laid: the Pattern
     // Overlays (0), the Gradient Overlays (1), the Colour Overlays (2), the
-    // Satins (3), the Inner Glows (4), the group's fade (5), the Inner
-    // Shadows (6) and the strokes' inside parts, the bottom one first (7).
+    // paint over the letters (8, wire v21, numbered last so the others keep
+    // their numbers), the Satins (3), the Inner Glows (4), the group's fade
+    // (5), the Inner Shadows (6) and the strokes' inside parts, the bottom
+    // one first (7).
     const FADE: usize = usize::MAX;
     let mut order: Vec<(u8, usize)> = Vec::new();
-    for phase in 0..8u8 {
+    for phase in [0u8, 1, 2, 8, 3, 4, 5, 6, 7] {
         if phase == 5 {
             // Grouped: Fill Opacity fades the fill and what is on it so far.
             if group {
@@ -1985,6 +2214,7 @@ fn interior_at(
                 (0, Effect::PatternOverlay(_))
                     | (1, Effect::GradientOverlay(_))
                     | (2, Effect::ColorOverlay(_))
+                    | (8, Effect::Paint(_))
                     | (3, Effect::Satin(_))
                     | (4, Effect::InnerGlow(_))
                     | (6, Effect::InnerShadow(_))
@@ -2003,7 +2233,7 @@ fn interior_at(
         if phase > 1 {
             overlay_depth = None;
         }
-        if phase > 2 {
+        if (3..8).contains(&phase) {
             full = None;
         }
         if j < start {
@@ -2041,6 +2271,40 @@ fn interior_at(
                     0,
                     place.grain,
                 )?;
+            }
+            (Some(Effect::Paint(pm)), Some(full)) => {
+                // Each mark's coverage is keyed on its own shape (`shape_hash`)
+                // and the frame it is rastered in, and nothing of the letters
+                // or the page: a colour or an opacity changed, the letters
+                // retyped or the box moved by whole pixels reads every
+                // coverage back.
+                let key = keys.shape.and(Hasher::new("paint").finish());
+                if let Some(layer) = paint_layer(pm, w, h, dev, place, scale, key)? {
+                    lay_with(
+                        &mut lay,
+                        full,
+                        (0, 0),
+                        dev,
+                        &|_, _, i| {
+                            let p = &layer.data[i * 4..i * 4 + 4];
+                            if p[3] == 0 {
+                                return [0.0; 4];
+                            }
+                            let a = f32::from(p[3]);
+                            [
+                                f32::from(p[0]) / a,
+                                f32::from(p[1]) / a,
+                                f32::from(p[2]) / a,
+                                a / 255.0,
+                            ]
+                        },
+                        1.0,
+                        Blend::Normal,
+                        None,
+                        0,
+                        place.grain,
+                    )?;
+                }
             }
             (Some(Effect::Satin(st)), _) => {
                 let m = kept_map(keys.of_effect("satin", i), || {
@@ -2111,7 +2375,7 @@ fn interior_at(
             // A stroke's inside part, over the letters.
             (Some(Effect::Stroke(st)), _) => {
                 let in_w = (st.widths().0 * scale) as f32;
-                if let (Some(din), true) = (din.filter(|_| inside_parts), in_w > 0.0) {
+                if let (Some(din), true) = (stroke_din.filter(|_| inside_parts), in_w > 0.0) {
                     let depth = if is_burst(&st.paint) {
                         let (out, total) = burst_in(st);
                         Some(budget::exact(
@@ -2208,6 +2472,20 @@ fn interior_at(
     // The letters' alpha as laid, which only an outside stroke reads.
     let outside_strokes = strokes.iter().any(|(_, s)| s.widths().1 > 0.0);
     let mut alpha = budget::filled(if outside_strokes { n } else { 0 }, 0f32)?;
+    // The letters whole as laid, for strokes cut through after.
+    if let (Some(m), true) = (&whole, outside_strokes) {
+        for (al, &cover) in alpha.iter_mut().zip(&m.v) {
+            if cover <= map::INSIDE_EPS {
+                continue;
+            }
+            let a = if cover == 1.0 {
+                k as f32
+            } else {
+                (k as f32 * cover).round().clamp(0.0, 255.0)
+            };
+            *al = a / 255.0;
+        }
+    }
     for (i, (d, p)) in data
         .as_chunks_mut::<4>().0.iter_mut()
         .zip(lay.data.as_chunks::<4>().0.iter())
@@ -2233,7 +2511,7 @@ fn interior_at(
             }
         }
         d[3] = a;
-        if let Some(al) = alpha.get_mut(i) {
+        if let (Some(al), None) = (alpha.get_mut(i), &whole) {
             *al = f32::from(a) / 255.0;
         }
     }
@@ -2253,12 +2531,12 @@ fn interior_at(
             if out_w <= 0.0 {
                 continue;
             }
-            let d = outside_dist(&shape, out_w, &mut chamfer, &mut exact, keys)?;
+            let d = outside_dist(stroke_shape, out_w, &mut chamfer, &mut exact, keys, whole.is_some())?;
             let mut share = budget::filled(n, 0.0f32)?;
             let dissolve = (st.blend == Blend::Dissolve).then_some((st.seed, hashed, w));
             let reach = Reach2 {
                 d,
-                shape: &shape.v,
+                shape: &stroke_shape.v,
                 alpha: &alpha,
                 out_w,
                 opacity: st.opacity as f32,
@@ -2277,6 +2555,31 @@ fn interior_at(
                 None
             };
             items.push((*k, share, depth));
+        }
+    }
+    // Cut through: each stroke's share less what the cuts take, as a glyph
+    // band is erased.
+    if let Some(c) = cuts {
+        let a = c.alone;
+        for y in 0..h {
+            let ay = dev.1 + y as i32 - a.y;
+            if ay < 0 || ay >= a.height as i32 {
+                continue;
+            }
+            for x in 0..w {
+                let ax = dev.0 + x as i32 - a.x;
+                if ax < 0 || ax >= a.width as i32 {
+                    continue;
+                }
+                let cut = a.data[(ay as usize * a.width as usize + ax as usize) * 4 + 3];
+                if cut == 0 {
+                    continue;
+                }
+                let keep = 1.0 - f32::from(cut) / 255.0;
+                for (_, share, _) in &mut items {
+                    share[y * w + x] *= keep;
+                }
+            }
         }
     }
     let outside = (!items.is_empty()).then_some(Outside {
@@ -3132,6 +3435,7 @@ mod tests {
                 &place(),
                 pad,
                 &Keys::none(),
+                None,
             ),
         }
         .unwrap();

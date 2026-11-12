@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeStyle, defaultPathPts } from './data.js';
-import { motionBlurTaps, motionBlurPreviewTaps, motionBlurExtent, clipActive } from './text-paint.js';
+import { motionBlurTaps, motionBlurPreviewTaps, motionBlurExtent } from './text-paint.js';
 import { pathLayout, circleLayout, insertPathAnchor, removePathAnchor } from './measure.js';
 
 describe('normalizeStyle effects schema', () => {
-  it('supplies defaults for motionBlur, path, clip and circle on empty input', () => {
+  it('supplies defaults for motionBlur, path and circle on empty input, and no mask', () => {
     const s = normalizeStyle({});
     expect(s.motionBlur).toEqual({ on: false, x: 2, y: 0, amount: 16 });
     expect(s.path).toEqual({ on: false, pts: [] });
-    expect(s.clip).toEqual({ on: false, mode: 'exclude', brushSize: 20, shapes: [] });
+    // The mask is the box's, pinned to the page (box-mask.js), not a style's.
+    expect('clip' in s).toBe(false);
     expect(s.circle).toEqual({ on: false, angle: 0, inside: false, r: 0 });
   });
 
@@ -46,49 +47,8 @@ describe('normalizeStyle effects schema', () => {
     ]);
   });
 
-  it('normalizes clip properties: mode, brushSize and shapes', () => {
-    expect(normalizeStyle({ clip: { on: 1 } }).clip.on).toBe(true);
-    expect(normalizeStyle({ clip: { on: 'yes' } }).clip.on).toBe(true);
-    expect(normalizeStyle({ clip: { on: 0 } }).clip.on).toBe(false);
-    expect(normalizeStyle({ clip: { on: false } }).clip.on).toBe(false);
-    expect(normalizeStyle({ clip: null }).clip.on).toBe(false);
-
-    // mode normalization
-    expect(normalizeStyle({ clip: { mode: 'include' } }).clip.mode).toBe('include');
-    expect(normalizeStyle({ clip: { mode: 'exclude' } }).clip.mode).toBe('exclude');
-    expect(normalizeStyle({ clip: { mode: 'junk' } }).clip.mode).toBe('exclude');
-    expect(normalizeStyle({ clip: {} }).clip.mode).toBe('exclude');
-
-    // brushSize clamps
-    expect(normalizeStyle({ clip: { brushSize: 500 } }).clip.brushSize).toBe(200);
-    expect(normalizeStyle({ clip: { brushSize: 1 } }).clip.brushSize).toBe(2);
-    expect(normalizeStyle({ clip: { brushSize: 50 } }).clip.brushSize).toBe(50);
-    expect(normalizeStyle({ clip: { brushSize: 'bad' } }).clip.brushSize).toBe(20);
-
-    // shapes validation
-    const s = normalizeStyle({
-      clip: {
-        shapes: [
-          { kind: 'ellipse', cx: 10, cy: 20, rx: 30, ry: 40 },
-          { kind: 'ellipse', cx: 10, cy: 20, rx: 0, ry: 40 }, // rx 0 -> dropped
-          { kind: 'ellipse', cx: NaN, cy: 20, rx: 30, ry: 40 }, // non-finite -> dropped
-          { kind: 'poly', pts: [[0, 0], [10, 0], [10, 10]] }, // 3 pts -> kept
-          { kind: 'poly', pts: [[0, 0], [10, 0]] }, // 2 pts -> dropped
-          { kind: 'poly', pts: [[0, 0], [NaN, 0], [10, 10]] }, // only 2 finite pairs -> dropped
-          { kind: 'stroke', size: 10, pts: [[0, 0]] }, // 1 pt, size 10 -> kept
-          { kind: 'stroke', size: 300, pts: [[0, 0], [1, 1]] }, // size 300 -> capped at 200
-          { kind: 'stroke', size: 0, pts: [[0, 0]] }, // size 0 -> dropped
-          { kind: 'stroke', size: 10, pts: [] }, // 0 pts -> dropped
-          { kind: 'invalid' }, // unknown kind -> dropped
-        ],
-      },
-    });
-    expect(s.clip.shapes).toEqual([
-      { kind: 'ellipse', cx: 10, cy: 20, rx: 30, ry: 40 },
-      { kind: 'poly', pts: [[0, 0], [10, 0], [10, 10]] },
-      { kind: 'stroke', size: 10, pts: [[0, 0]] },
-      { kind: 'stroke', size: 200, pts: [[0, 0], [1, 1]] },
-    ]);
+  it('drops an old style mask: a chapter load carries it to the box (box-mask.js)', () => {
+    expect('clip' in normalizeStyle({ clip: { on: true, mode: 'include', shapes: [{ kind: 'ellipse', cx: 1, cy: 1, rx: 2, ry: 2 }] } })).toBe(false);
   });
 
   it('normalizes circle angle into [0, 360)', () => {
@@ -228,17 +188,6 @@ describe('motionBlurExtent', () => {
 
     // x=3, y=4, amount=8 -> hypot=5, ceil(3.2307692308 * 5 * 8) + 1 = ceil(129.2307...) + 1 = 130 + 1 = 131
     expect(motionBlurExtent({ on: true, x: 3, y: 4, amount: 8 })).toBe(131);
-  });
-});
-
-describe('clipActive', () => {
-  it('returns true only when clip.on and clip.shapes.length > 0', () => {
-    expect(clipActive({ on: true, shapes: [{ kind: 'ellipse', cx: 10, cy: 10, rx: 5, ry: 5 }] })).toBe(true);
-    expect(clipActive({ on: true, shapes: [] })).toBe(false);
-    expect(clipActive({ on: false, shapes: [{ kind: 'ellipse', cx: 10, cy: 10, rx: 5, ry: 5 }] })).toBe(false);
-    expect(clipActive({ on: false, shapes: [] })).toBe(false);
-    expect(clipActive(null)).toBe(false);
-    expect(clipActive(undefined)).toBe(false);
   });
 });
 

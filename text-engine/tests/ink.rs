@@ -428,6 +428,10 @@ fn wire(font: u32, text: &str, flags: u32) -> (Vec<u8>, usize, usize) {
     f(&mut b, 0.0);
     u(&mut b, 0);
     u(&mut b, 0);
+    u(&mut b, 0); // no fade (v20)
+    f(&mut b, 0.0); // not moved (v23)
+    f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     u(&mut b, 0);
     f(&mut b, 1.0);
     u(&mut b, 0);
@@ -443,6 +447,7 @@ fn wire(font: u32, text: &str, flags: u32) -> (Vec<u8>, usize, usize) {
     let stroke_at = b.len();
     stroke_bytes(&mut b, flags, &LINE);
     u(&mut b, 0); // no page
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font, text);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -475,6 +480,7 @@ fn a_box_job_reads_its_ink() {
     none.truncate(ink_at);
     u(&mut none, 0);
     u(&mut none, 0);
+    u(&mut none, 0); // not one line (v22)
     let job = job_bytes(0, "HI");
     u(&mut none, job.len() as u32);
     none.extend_from_slice(&job);
@@ -626,6 +632,7 @@ fn inked(font: FontId, text: &str) -> BoxRequest {
                 ..Stroke::default()
             }],
         )),
+        faces: Default::default(),
     };
     BoxRequest::new(200, 160, request)
 }

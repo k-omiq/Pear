@@ -135,6 +135,8 @@ const {
   scanLibrary,
   createProject,
   setProjectOcrLanguage,
+  setEmptyProjectLayout,
+  setProjectExportScale,
   deleteProject,
   deleteChapter,
   projectById,
@@ -3569,6 +3571,43 @@ describe('the OCR language belongs to one project', () => {
     expect(projectById(p.id).ocrLanguage).toBe('ko');
   });
 
+  it('lets a project made with no layout asked take one from its first document, once', async () => {
+    const p = await createProject('Guessed', { layout: 'pages', layoutGuessed: true });
+    expect(projectJson(p.slug).layoutGuessed).toBe(true);
+    expect(await setEmptyProjectLayout(p.id, 'longstrip')).toBe(true);
+    expect(p.layout).toBe('longstrip');
+    expect(projectJson(p.slug).layout).toBe('longstrip');
+    // The marker goes with the write: the layout is now a choice.
+    expect(p.layoutGuessed).toBe(false);
+    expect('layoutGuessed' in projectJson(p.slug)).toBe(false);
+    expect(await setEmptyProjectLayout(p.id, 'pages')).toBe(false);
+    expect(projectJson(p.slug).layout).toBe('longstrip');
+    await scanLibrary();
+    expect(projectById(p.id).layoutGuessed).toBe(false);
+  });
+
+  it('never touches a layout someone chose, even after a switch to general use', async () => {
+    // Made under comics, Longstrip picked by hand: no marker.
+    const p = await createProject('Chosen', { layout: 'longstrip' });
+    expect('layoutGuessed' in projectJson(p.slug)).toBe(false);
+    expect(await setEmptyProjectLayout(p.id, 'pages')).toBe(false);
+    expect(p.layout).toBe('longstrip');
+    expect(projectJson(p.slug).layout).toBe('longstrip');
+  });
+
+  it('refuses once the project holds a chapter, in memory or only on disk', async () => {
+    const p = await createProject('Busy', { layout: 'pages', layoutGuessed: true });
+    // Another window added a chapter this window has not scanned yet.
+    fsx._tree.dirs.add(`${p.dir}/001`);
+    fsx._tree.files.set(`${p.dir}/001/chapter.json`, CHAPTER('c-other', 1, []));
+    expect(p.chapters).toHaveLength(0);
+    expect(await setEmptyProjectLayout(p.id, 'longstrip')).toBe(false);
+    expect(projectJson(p.slug).layout).toBe('pages');
+    await createChapter({ projectId: p.id, number: 2, title: '', files: [fakeFile('a.png', 1)] });
+    await expect(setEmptyProjectLayout(p.id, 'longstrip')).rejects.toThrow(/keeps its layout/);
+    expect(projectJson(p.slug).layout).toBe('pages');
+  });
+
   it('survives a whole project.json rewrite when a chapter is added', async () => {
     const p = await createProject('Chinese Strip', { layout: 'longstrip', ocrLanguage: 'zh' });
     await createChapter({
@@ -3602,6 +3641,53 @@ describe('the OCR language belongs to one project', () => {
     expect(app.projectOcrLanguage).toBe('ja');
     closeChapter();
     expect(app.projectOcrLanguage).toBe('ja');
+  });
+});
+
+// The export dialog's Size is the series' (project.json), not the app's.
+describe('a series keeps its export size', () => {
+  const projectJson = (slug) => JSON.parse(fsx._tree.files.get(`/lib/${slug}/project.json`));
+  const sized = (id, name, exportScale) => JSON.stringify({ ...JSON.parse(PROJECT(id, name)), exportScale });
+  it('is Original unless the series says 2x, and anything else reads as Original', async () => {
+    seedProject('no-size', PROJECT('p-no-size', 'No size'));
+    seedProject('odd-size', sized('p-odd-size', 'Odd size', 3));
+    seedProject('sharp', sized('p-sharp', 'Sharp', 2));
+    await scanLibrary();
+    expect(projectById('p-no-size').exportScale).toBe(1);
+    expect(projectById('p-odd-size').exportScale).toBe(1);
+    expect(projectById('p-sharp').exportScale).toBe(2);
+  });
+
+  it('is written to project.json, survives a rescan and a chapter write, and goes back', async () => {
+    const p = await createProject('Sharp Pages');
+    await setProjectExportScale(p.id, 2);
+    expect(p.exportScale).toBe(2);
+    expect(projectJson(p.slug).exportScale).toBe(2);
+    await createChapter({ projectId: p.id, number: 1, title: '', files: [fakeFile('a.png', 1)] });
+    expect(projectJson(p.slug).exportScale).toBe(2);
+    await scanLibrary();
+    expect(projectById(p.id).exportScale).toBe(2);
+    await setProjectExportScale(p.id, 1);
+    expect(projectJson(p.slug).exportScale).toBe(1);
+    await scanLibrary();
+    expect(projectById(p.id).exportScale).toBe(1);
+  });
+
+  it('is set when a series is made with it, as one made from a package is', async () => {
+    const p = await createProject('From A Package', { exportScale: 2 });
+    expect(p.exportScale).toBe(2);
+    expect(projectJson(p.slug).exportScale).toBe(2);
+    const q = await createProject('Odd', { exportScale: 3 });
+    expect(projectJson(q.slug).exportScale).toBe(1);
+  });
+
+  it('belongs to its own series only', async () => {
+    const a = await createProject('Series A');
+    const b = await createProject('Series B');
+    await setProjectExportScale(a.id, 2);
+    await scanLibrary();
+    expect(projectById(a.id).exportScale).toBe(2);
+    expect(projectById(b.id).exportScale).toBe(1);
   });
 });
 
@@ -3774,7 +3860,7 @@ describe('chapter packages', () => {
   });
 
   it('readChapterPackageSources returns the record and every named file byte-for-byte', async () => {
-    const p = await createProject('Series', { layout: 'longstrip', ocrLanguage: 'zh' });
+    const p = await createProject('Series', { layout: 'longstrip', ocrLanguage: 'zh', exportScale: 2 });
     const c = await createChapterFromPages({
       projectId: p.id,
       number: 1,
@@ -3798,7 +3884,7 @@ describe('chapter packages', () => {
     expect(src.record.title).toBe('One');
     expect(src.record.pages).toHaveLength(2);
     expect(src.record.pages[0].boxes[0].id).toBe('b1');
-    expect(src.project).toEqual({ name: 'Series', layout: 'longstrip', ocrLanguage: 'zh' });
+    expect(src.project).toEqual({ name: 'Series', layout: 'longstrip', ocrLanguage: 'zh', exportScale: 2 });
     expect(src.raws.get('a.png')).toEqual(new Uint8Array([1, 2]));
     expect(src.raws.get('b.png')).toEqual(new Uint8Array([4, 5, 6]));
     expect(src.cleaned.get('a-c.png')).toEqual(new Uint8Array([3]));
