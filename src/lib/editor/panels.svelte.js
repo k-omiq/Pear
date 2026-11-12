@@ -11,7 +11,7 @@
 // document.
 import { PREF_SAVE_MS } from '../store.svelte.js';
 
-export const PANEL_IDS = ['options', 'sfx', 'queue'];
+export const PANEL_IDS = ['options', 'sfx', 'queue', 'ai'];
 
 export const MIN_W = 220;
 export const MIN_H = 160;
@@ -46,6 +46,9 @@ export function defaultGeometry(vw) {
     // The SFX window opens beside the options panel, to its left, and starts
     // hidden: the SFX tool on the strip brings it, and drawing a sound opens it.
     sfx: { x: Math.max(GAP, x - DEF_W - GAP), y: CHROME_BAND, w: DEF_W, h: DEF_SFX_H, hidden: true, z: 3 },
+    // The AI panel (Door B) opens where the SFX window does, and starts
+    // hidden: its tab on the tool strip or its action brings it.
+    ai: { x: Math.max(GAP, x - DEF_W - GAP), y: CHROME_BAND, w: DEF_W + 40, h: DEF_SFX_H, hidden: true, z: 4 },
   };
 }
 

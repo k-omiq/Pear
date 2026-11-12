@@ -20,6 +20,7 @@
   import FloatingPanel from './FloatingPanel.svelte';
   import Inspector from '../Inspector.svelte';
   import SfxWindow from '../SfxWindow.svelte';
+  import AiPanel from './AiPanel.svelte';
   import { prefs } from '../prefs.svelte.js';
   import Queue from '../Queue.svelte';
   import BulkStylePanel from '../BulkStylePanel.svelte';
@@ -209,6 +210,9 @@
         <SfxWindow {onSettings} />
       </FloatingPanel>
     {/if}
+    <FloatingPanel id="ai" title="AI" rightInset={canvasRight}>
+      <AiPanel />
+    </FloatingPanel>
   {/if}
   {#if split}
     <TranslatePane bind:width={paneWidth} />

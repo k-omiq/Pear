@@ -5,7 +5,7 @@
   import { checkSidecar, modelsCacheInfo, clearModelsCache } from './sidecar.js';
   import ThemePicker from './ThemePicker.svelte';
   import { library, setRoot, scanLibrary, withinHome, projectById, setProjectOcrLanguage } from './library.svelte.js';
-  import { settingsView, shownSettingsTab } from './settings-tabs.svelte.js';
+  import { settingsView, shownSettingsTab, closeSettings } from './settings-tabs.svelte.js';
   import SeriesGuide from './SeriesGuide.svelte';
   import LetteringSetup from './LetteringSetup.svelte';
   import TextStyles from './TextStyles.svelte';
@@ -18,6 +18,8 @@
   import ShortcutSettings from './ShortcutSettings.svelte';
   import { door, setDoorOn, setDoorPort, rotateToken, DEFAULT_PORT } from './agent/door.svelte.js';
   import { connectLines, doorUrl } from './agent/connect.js';
+  import { aiKey, refreshKey, saveKey, clearKey, testKey } from './agent/key.svelte.js';
+  import { showPanel } from './editor/panels.svelte.js';
   import { getVersion } from '@tauri-apps/api/app';
   import { checkForUpdate } from './updater.js';
   import UpdateDialog from './home/UpdateDialog.svelte';
@@ -279,6 +281,25 @@
   }
 
   // ---------- AI ----------
+  // The in-app panel's key (agent/key.svelte.js): handed to Rust once, kept
+  // in the OS keychain, never read back here.
+  let keyDraft = $state('');
+  $effect(() => {
+    if (tab === 'ai' && aiKey.set == null) refreshKey();
+  });
+  async function onSaveKey() {
+    if (!keyDraft.trim()) return;
+    if (await saveKey(keyDraft)) {
+      keyDraft = '';
+      toast(aiKey.store === 'session' ? 'Key kept for this session only' : 'Key saved in the keychain');
+      testKey();
+    }
+  }
+  async function onClearKey() {
+    await clearKey();
+    toast('Key removed');
+  }
+
   // The MCP door (agent/door.svelte.js): off by default, 127.0.0.1 only, and
   // every request needs the token. The token shows only inside the lines to
   // paste - it is the user's own, for their own clients.
@@ -824,6 +845,57 @@
 
       {#if tab === 'ai'}
         <section class="settings-section">
+          <h3 class="settings-title">AI panel</h3>
+          <p class="set-intro">Chat with Claude beside the page, on your own Claude API key. Page pictures and text go to Anthropic, and each request costs a little on your account.</p>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Claude API key</span>
+              <span class="set-status">
+                <span class="dot {aiKey.set ? (aiKey.test && aiKey.test !== 'ok' ? 'err' : 'ok') : 'off'}" aria-hidden="true"></span>
+                {#if !isTauri()}Needs the desktop app
+                {:else if aiKey.set == null}Checking…
+                {:else if !aiKey.set}No key
+                {:else if aiKey.store === 'session'}Set, for this session only
+                {:else}Saved in the keychain{/if}
+              </span>
+            </div>
+            <div class="set-key-row">
+              <input
+                class="set-key"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder={aiKey.set ? 'Paste a new key to replace it' : 'sk-ant-…'}
+                aria-label="Claude API key"
+                bind:value={keyDraft}
+                onkeydown={(e) => e.key === 'Enter' && onSaveKey()}
+                disabled={!isTauri() || aiKey.busy}
+              />
+              <button class="btn tiny" onclick={onSaveKey} disabled={!keyDraft.trim() || aiKey.busy}>Save</button>
+              {#if aiKey.set}
+                <button class="btn tiny" onclick={testKey} disabled={aiKey.busy}>Test</button>
+                <button class="btn tiny" onclick={onClearKey} disabled={aiKey.busy}>Remove</button>
+              {/if}
+            </div>
+            {#if aiKey.error}<p class="set-desc set-error">{aiKey.error}</p>{/if}
+            {#if aiKey.test === 'ok'}<p class="set-desc">The key works.</p>
+            {:else if aiKey.test}<p class="set-desc set-error">{aiKey.test}</p>{/if}
+            <p class="set-desc">Make a key in the Claude Console (console.anthropic.com), under API keys. It stays in this computer's keychain; the app never shows it again.</p>
+          </div>
+          {#if aiKey.set}
+            <div class="set-item">
+              <div class="set-line">
+                <span class="set-label">Open the AI panel</span>
+                <div class="set-ctl">
+                  <button class="btn tiny" onclick={() => { showPanel('ai'); closeSettings(); }} disabled={!app.loaded}>Open</button>
+                </div>
+              </div>
+              <p class="set-desc">It also has a tab on the tool strip, and an action you can give a key in Shortcuts.</p>
+            </div>
+          {/if}
+        </section>
+
+        <section class="settings-section">
           <h3 class="settings-title">Access</h3>
           <div class="set-item">
             <div class="set-line">
@@ -1110,6 +1182,27 @@
     color: var(--warn);
   }
 
+  .set-key-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .set-key {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 0 9px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line2);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+  }
+  .set-key:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
   /* AI agents. The lines are what the user pastes, token and all, so they wrap
      rather than scroll: the whole line is always in sight, and the column never
      grows sideways. */

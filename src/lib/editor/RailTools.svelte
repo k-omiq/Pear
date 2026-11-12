@@ -25,6 +25,9 @@
   import { sfxAvailable } from '../sfx.js';
   import { engineSwitch } from '../engine-switch.svelte.js';
   import { panels, showPanel } from './panels.svelte.js';
+  import { aiKey, refreshKey } from '../agent/key.svelte.js';
+  // Whether a key is set decides the AI tab; asked once.
+  if (aiKey.set == null) refreshKey();
 
   // A translate chapter has no reference sidebar - the canvas is already showing
   // the raw - so the rail keeps only the hand, and the caret that would offer to
@@ -133,6 +136,9 @@
       // The SFX window has no tab: the SFX tool above is its way back.
       // A translate chapter's queue is the typing pane, which never docks.
       !isTranslateChapter() && panels.queue.hidden && { id: 'queue', title: 'Text queue' },
+      // The AI panel's tab shows once a key is set; before that the panel is
+      // an action away (palette, shortcut) and Settings says how to start.
+      !translate && panels.ai.hidden && aiKey.set && { id: 'ai', title: 'AI panel' },
     ].filter(Boolean),
   );
   // The SFX tool and its window are one button: picking the tool brings the
@@ -261,7 +267,11 @@
              everything you can see, and it is what grows in. -->
         <button class="panel-stub" onclick={() => showPanel(d.id)} aria-label={'Show ' + d.title} data-tip={'Show ' + d.title}>
           <span class="stub-ink">
-            {#if d.id === 'queue'}
+            {#if d.id === 'ai'}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+                <path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" /><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" />
+              </svg>
+            {:else if d.id === 'queue'}
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
                 <path d="M8 6h12" /><path d="M8 12h12" /><path d="M8 18h12" />
                 <circle cx="4" cy="6" r="1.3" /><circle cx="4" cy="12" r="1.3" /><circle cx="4" cy="18" r="1.3" />

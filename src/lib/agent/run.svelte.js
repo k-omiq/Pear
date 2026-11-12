@@ -119,6 +119,21 @@ export function noteCall() {
   sync();
 }
 
+// The in-app panel's run (Door B) is one prompt: a new prompt ends whatever
+// run went before - its Revert lasts until the new one first writes - and a
+// Stop the user gave an earlier prompt does not hold this one back. The new
+// run itself begins at its first write, as a door's does.
+export function beginPromptRun() {
+  clearTimeout(quietT);
+  clearTimeout(idleT);
+  quietT = null;
+  idleT = null;
+  quiet = false;
+  stoppedUntilQuiet = false;
+  if (current?.active) endRun();
+  sync();
+}
+
 export function stopRun() {
   if (!current?.active) return false;
   epoch++;

@@ -145,6 +145,7 @@ const RUNS = {
   'panel.options': { when: typeset, run: () => togglePanel('options') },
   'panel.queue': { when: typeset, run: () => togglePanel('queue') },
   'panel.sfx': { when: () => typeset() && prefs.sfxTool, run: () => togglePanel('sfx') },
+  'panel.ai': { when: typeset, run: () => togglePanel('ai') },
 
   'detect.page': { when: canDetect, run: () => detectCurrentPage() },
   'detect.chapter': { when: canDetect, run: () => detectAllPages() },

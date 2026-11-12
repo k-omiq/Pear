@@ -186,7 +186,7 @@ describe('the live state', () => {
   });
 
   it('has an id list the UI can iterate', () => {
-    expect(PANEL_IDS).toEqual(['options', 'sfx', 'queue']);
+    expect(PANEL_IDS).toEqual(['options', 'sfx', 'queue', 'ai']);
   });
 
   it('opens the SFX window hidden, and a layout saved before it existed gets it', () => {

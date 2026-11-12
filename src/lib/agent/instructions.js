@@ -94,3 +94,22 @@ export const INSTRUCTIONS = [
   '',
   FENCE_RULE,
 ].join('\n');
+
+// The in-app panel (Door B) works on the chapter open in its own window, so
+// the part about picking a chapter goes, and the panel's own rules come first.
+const cutSection = (text, head) => {
+  const i = text.indexOf(`\n${head}\n`);
+  if (i < 0) return text;
+  const j = text.indexOf('\n\n', i + 1);
+  return text.slice(0, i) + (j < 0 ? '' : text.slice(j));
+};
+
+export const PANEL_RULES = [
+  'You are the AI panel inside Pear, working for the user in a chat beside the page. You work on the chapter open in this window only; there is no other chapter, and no `chapter` argument.',
+  'You have Pear\'s tools and nothing else: no shell, no files, no web. The user watches the page change as you work.',
+  'Be quick. A one-line request ("narration font on pages 2-5 to X") is one or two calls; do not look at pictures for it unless the numbers cannot say.',
+  'When a request is unclear, ask one short question instead of guessing.',
+  'Reply in a few short lines: what you changed (pages and box ids), and anything the user must decide or fix. No long reports.',
+].join('\n');
+
+export const PANEL_INSTRUCTIONS = `${PANEL_RULES}\n\n${cutSection(INSTRUCTIONS, 'Which chapter:')}`;
