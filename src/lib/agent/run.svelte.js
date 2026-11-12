@@ -72,7 +72,7 @@ function sync() {
   aiRun.pages = current?.kept.size ?? 0;
   aiRun.stopped = stoppedUntilQuiet;
   aiRun.quiet = quiet;
-  aiRun.canRevert = !!current && current.seq === chapterOpenSeq() && (current.kept.size > 0 || seriesChanged(current));
+  aiRun.canRevert = !!current && current.seq === chapterOpenSeq() && (current.kept.size > 0 || seriesChanged(current) || current.proposed);
 }
 
 const seriesChanged = (run) => Object.keys(run.guideBefore).length > 0 || tagChangesKept(run.tagsBefore);
@@ -125,13 +125,24 @@ export function noteCall() {
 // Stop the user gave an earlier prompt does not hold this one back. The new
 // run itself begins at its first write, as a door's does.
 export function beginPromptRun() {
-  clearTimeout(quietT);
-  clearTimeout(idleT);
-  quietT = null;
-  idleT = null;
-  quiet = false;
-  stoppedUntilQuiet = false;
-  if (current?.active) endRun();
+  if (current?.active && current.door === 'panel') endRun();
+  sync();
+}
+
+// The panel's prompt is over: its run ends. A run the MCP door has going is
+// the door's to end.
+export function endPromptRun() {
+  if (current?.active && current.door === 'panel') endRun();
+  sync();
+}
+
+// The panel's Stop. Whether or not its run has written yet, a call already
+// under way (a slow place or detect) writes nothing after this. Unlike the
+// door's Stop it does not hold the next prompt back: the next prompt is the
+// user's own.
+export function stopPromptRun() {
+  epoch++;
+  if (current?.active && current.door === 'panel') endRun();
   sync();
 }
 
@@ -153,9 +164,14 @@ function pinned(run) {
 
 // The chapter changed under the run: it ends, and what it did can no longer
 // be reverted from here. Called by the AI bar whenever the open chapter moves.
+let seenSeq = null;
 export function checkPin() {
-  if (current && current.seq !== chapterOpenSeq()) {
-    epoch++;
+  const seq = chapterOpenSeq();
+  // Another chapter: a call still running from before writes nothing, run
+  // or no run yet (a first place or detect that has not written).
+  if (seenSeq != null && seq !== seenSeq) epoch++;
+  seenSeq = seq;
+  if (current && current.seq !== seq) {
     endRun();
   }
   sync();
@@ -165,19 +181,24 @@ const STOPPED = 'the user stopped this AI run. Do not continue; tell the user wh
 
 // Whether a call may change anything: not after a Stop, a Revert or a chapter
 // change that came since it began, and not while the user's Stop stands.
-function guard(since) {
+function guard(since, door) {
   if (since !== epoch) throw new ToolError('the user stopped or reverted the AI run, or the chapter changed, while this call ran. Nothing more was changed.');
-  if (stoppedUntilQuiet) throw new ToolError(STOPPED);
+  // The door's Stop holds the door's agent; the panel answers its own Stop.
+  if (stoppedUntilQuiet && door !== 'panel') throw new ToolError(STOPPED);
 }
 
 // The run a write joins: the one going on, or a new one.
 function runForWrite(door, since) {
-  guard(since);
+  guard(since, door);
   if (!app.chapterRef || !app.pages.length) throw new ToolError('no chapter is open in the app');
   if (current?.active && !pinned(current)) {
     endRun();
     throw new ToolError('the chapter changed in the app, so the run ended. Ask the user before going on.');
   }
+  // The two doors keep runs of their own: a write from the other one ends
+  // the run going on and starts its own, so one Revert never takes back what
+  // the other agent did.
+  if (current?.active && current.door !== door) endRun();
   return current?.active ? current : begin(door);
 }
 
@@ -203,7 +224,7 @@ export function callContext(door) {
   return {
     door,
     // For a write that is not chapter data (Settings): the same refusals.
-    guard: () => guard(since),
+    guard: () => guard(since, door),
     write(pages, fn) {
       const run = runForWrite(door, since);
       for (const p of pages ?? []) {
@@ -244,11 +265,14 @@ export function callContext(door) {
     },
     // The run a write joins, by id: what a proposal records (TXT-4).
     runId() {
-      return runForWrite(door, since).id;
+      const run = runForWrite(door, since);
+      run.proposed = true;
+      sync();
+      return run.id;
     },
     // A long tool (detection, the chapter placer) asks between its steps.
     stillPinned() {
-      if (since !== epoch || stoppedUntilQuiet) return false;
+      if (since !== epoch || (stoppedUntilQuiet && door !== 'panel')) return false;
       return !current?.active || pinned(current);
     },
   };
@@ -304,5 +328,6 @@ export function __resetRun() {
   current = null;
   stoppedUntilQuiet = false;
   epoch = 0;
+  seenSeq = null;
   sync();
 }

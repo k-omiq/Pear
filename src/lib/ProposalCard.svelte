@@ -4,7 +4,7 @@
   // as a card in the AI panel's reply. When the words changed since it was
   // made, it says so and shows both, so it is never taken silently.
   import { pageById } from './store.svelte.js';
-  import { acceptProposal, rejectProposal, targetText } from './proposals.svelte.js';
+  import { acceptProposal, rejectProposal, targetText, isStale } from './proposals.svelte.js';
 
   // `id` names the proposal on page `pageId`. `was` is what the chat
   // remembers (the words before, page and line), for a card whose proposal
@@ -16,11 +16,13 @@
   const pg = $derived(pageById(pageId));
   const pr = $derived(pg?.proposals?.find((x) => x.id === id) ?? null);
   const now = $derived(pr && pg ? targetText(pg, pr.target) : null);
-  const stale = $derived(!!pr && now != null && now !== pr.base);
+  const stale = $derived(!!pr && !!pg && now != null && isStale(pg, pr));
+  let refused = $state('');
 
   function use() {
     const r = acceptProposal(pageId, id, { force: stale });
     if (r === 'used') done = 'used';
+    refused = r === 'locked' ? 'The box is locked. Unlock it to use this.' : '';
   }
   function reject() {
     if (rejectProposal(pageId, id)) done = 'rejected';
@@ -35,8 +37,9 @@
     {#if !compact}<div class="prop-was">{pr.base}</div>{/if}
     <div class="prop-text">{pr.text}</div>
     {#if stale}
-      <div class="prop-stale">The words changed since: {now}</div>
+      <div class="prop-stale">{now !== pr.base ? `The words changed since: ${now}` : 'The source words of this line changed since.'}</div>
     {/if}
+    {#if refused}<div class="prop-stale">{refused}</div>{/if}
     <div class="prop-btns">
       <button class="btn btn-accent prop-btn" onclick={use}>{stale ? 'Use anyway' : 'Use'}</button>
       <button class="btn prop-btn" onclick={reject}>Reject</button>

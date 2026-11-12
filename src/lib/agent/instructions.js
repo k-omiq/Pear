@@ -118,4 +118,11 @@ export const PANEL_RULES = [
   'Reply in a few short lines: what you changed (pages and box ids), and anything the user must decide or fix. No long reports.',
 ].join('\n');
 
-export const PANEL_INSTRUCTIONS = `${PANEL_RULES}\n\n${cutSection(INSTRUCTIONS, 'Which chapter:')}`;
+// What only the MCP door has: the `job` tool for a long call, and the cost
+// rules for helper agents.
+const DOOR_ONLY_LINES = [
+  /A call that runs long answers \{ running: true, job \}[^.]*\.[^.]*\. ?/,
+  /\n- One agent letters a whole chapter\.[^\n]*/,
+  / \(measured: one agent alone[^)]*\)/,
+];
+export const PANEL_INSTRUCTIONS = `${PANEL_RULES}\n\n${DOOR_ONLY_LINES.reduce((t, re) => t.replace(re, ''), cutSection(INSTRUCTIONS, 'Which chapter:'))}`;

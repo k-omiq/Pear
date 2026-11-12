@@ -172,3 +172,40 @@ describe('pictures', () => {
     expect(msgs).toHaveLength(3);
   });
 });
+
+describe('review fixes', () => {
+  it('an empty answer is not kept, so the next prompt stays valid', async () => {
+    const client = fakeClient([{ content: [], stop_reason: 'end_turn', usage: {} }]);
+    const messages = [{ role: 'user', content: [{ type: 'text', text: 'x' }] }];
+    await agentLoop({ client, model: 'm', system: [], tools: [], messages, runTool: async () => ({ ok: true, result: {} }) });
+    expect(messages).toHaveLength(1);
+  });
+
+  it('holds pictures to a byte budget per prompt', () => {
+    const big = { ok: true, result: { images: [{ png: 'A'.repeat(10) }, { png: 'B'.repeat(10) }] } };
+    const out = toToolContent(big, Infinity, 15);
+    expect(out.images).toBe(1);
+    expect(out.bytes).toBe(10);
+    expect(JSON.parse(out.content[0].text).imagesDropped).toBeTruthy();
+  });
+
+  it('an API error carries what the earlier turns cost', async () => {
+    let i = 0;
+    const client = {
+      messages: {
+        stream() {
+          const n = i++;
+          return {
+            on() {},
+            finalMessage: async () => {
+              if (n) throw Object.assign(new Error('overloaded'), { status: 529 });
+              return turn([toolUse('t1', 'context')], 'tool_use', { input_tokens: 7, output_tokens: 3 });
+            },
+          };
+        },
+      },
+    };
+    const err = await agentLoop({ client, model: 'm', system: [], tools: [], messages: [{ role: 'user', content: 'x' }], runTool: async () => ({ ok: true, result: {} }) }).catch((e) => e);
+    expect(err.usage).toMatchObject({ input: 7, output: 3 });
+  });
+});

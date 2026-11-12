@@ -113,3 +113,37 @@ describe('the text tool in the AI panel', () => {
     expect(page().proposals.map((p) => p.text)).toEqual(['B']);
   });
 });
+
+describe('review fixes', () => {
+  it('a line number now holding other source words is stale', () => {
+    const a = propose(page(), { line: 2 }, 'Going home.');
+    lineByN(page(), 2).jp = 'other words';
+    expect(isStale(page(), a)).toBe(true);
+    expect(acceptProposal(1, a.id)).toBe('stale');
+  });
+
+  it('Use on a locked box changes nothing and keeps the proposal', () => {
+    const a = propose(page(), { line: 1 }, 'Going where?');
+    page().boxes[0].locked = true;
+    expect(acceptProposal(1, a.id)).toBe('locked');
+    expect(en(1)).toBe('Where are you going?');
+    expect(page().proposals).toHaveLength(1);
+  });
+
+  it('a prompt that only proposed can be reverted', async () => {
+    const { aiRun } = await import('./agent/run.svelte.js');
+    await callTool('text', { ops: [{ page: 1, line: 1, en: 'Going where?' }] }, callContext('panel'));
+    const { endPromptRun } = await import('./agent/run.svelte.js');
+    endPromptRun();
+    expect(aiRun.canRevert).toBe(true);
+    revertRun();
+    expect(page().proposals).toEqual([]);
+  });
+
+  it('the panel Stop refuses a write that began before it, run or no run', async () => {
+    const { stopPromptRun } = await import('./agent/run.svelte.js');
+    const ctx = callContext('panel');
+    stopPromptRun();
+    expect(() => ctx.write([page()], () => {})).toThrow(/stopped/);
+  });
+});
