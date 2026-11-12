@@ -5026,6 +5026,28 @@ function resolveBox(b, p, text, stay = !!b.auto.stamp, holdSize = false) {
   return ['x', 'y', 'w', 'h', 'size'].some((k) => before[k] !== (k === 'size' ? b.style.size : b[k]));
 }
 
+// What the solver makes of other words in a box, with nothing changed
+// (TXT-5): an outline-fit box is laid out with `text` as an edit would lay it
+// out, `measure(b)` reads it, and the box is put back exactly as it was. All
+// in one synchronous step, so nothing draws in between and no history is
+// written. A box the solver does not own is measured as it stands. Null when
+// there is nothing to measure against (a locked box, no metrics, a face still
+// loading).
+export function trialSolve(b, p, text, measure) {
+  if (!b?.style || boxLocked(b)) return null;
+  if (!b.auto?.on) return measure(b);
+  // A JSON copy: boxes are plain data, and $state.snapshot is not a copy in
+  // every compile mode.
+  const before = JSON.parse(JSON.stringify(b));
+  try {
+    if (resolveBox(b, p, text) == null) return null;
+    return measure(b);
+  } finally {
+    for (const k of Object.keys(b)) if (!Object.hasOwn(before, k)) delete b[k];
+    Object.assign(b, before);
+  }
+}
+
 // Whether the face a style names is loaded, so a measurement of it is a
 // measurement of what will be drawn (DET-4). One the page has asked for and
 // not got yet measures as the fallback family, and a size solved against that

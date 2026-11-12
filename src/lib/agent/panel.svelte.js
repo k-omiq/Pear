@@ -26,7 +26,7 @@ export const MODELS = {
 const DOOR_ONLY = new Set(['chapters', 'open_chapter', 'close_chapter', 'job']);
 
 // Words that mean the job is more than a quick edit: Balanced, not Fast.
-const BIG = /\b(typeset|letter|place|check|look|review|proof|fix|sfx|sound|match|whole|chapter|all pages|every|why|how)\b/i;
+const BIG = /\b(typeset|letter|place|check|look|review|proof|proofread|spell|grammar|shorten|reword|fix|sfx|sound|match|whole|chapter|all pages|every|why|how)\b/i;
 
 // The model for a prompt when the user has not pinned one. Best only when
 // pinned: it is the slowest and dearest.
@@ -204,7 +204,7 @@ export async function sendPrompt(text) {
             t.ok = e.ok;
             t.error = e.ok ? null : (e.result?.error ?? 'failed');
           }
-          if (e.ok && e.name === 'text') for (const c of cardsOf(e.result?.result)) reply.cards.push(c);
+          if (e.ok && (e.name === 'text' || e.name === 'alternatives')) for (const c of cardsOf(e.result?.result)) reply.cards.push(c);
         }
       },
     });

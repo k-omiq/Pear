@@ -92,6 +92,12 @@ export const INSTRUCTIONS = [
   '- "No errors" is not done. After the chapter passes, do more passes: check pages "all", take quality.weakest, view those boxes beside a strong one, and make the weak ones as good (better lines with set.breaks, a better outline, a size nearer their kind). Stop when a pass no longer raises the mean.',
   '- geometry w and h hold the box\'s width and height; style.size and sizing.ref are the size aimed for, not a lock. Use locks only when the user asks for something to stay.',
   '',
+  'Proofreading. When the user asks you to proofread or check the words, and as the last look at each page you letter:',
+  '- Read the lines (`lines`), about 30 at a time, and check: spelling and grammar; punctuation as the series guide sets it (its dashes and ellipsis rules); the glossary\'s names and terms; a line that reads in another voice than its speaker\'s.',
+  '- On the page itself check two more: original letters the cleaner left (`check` lists them as uncleaned: tell the user, never letter over them) and text too close in tone to what is under it (`check` contrast).',
+  '- Fix words with `text`, one op per line, each with a reason in a few words. A line too long for its balloon: `alternatives` with a few shorter wordings, which measures them. In the AI panel every word change is a proposal the user takes or drops, never a silent change.',
+  '- Do not rewrite for taste: keep the translator\'s meaning and voice. List what you left for the user to decide.',
+  '',
   FENCE_RULE,
 ].join('\n');
 
