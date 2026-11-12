@@ -8,6 +8,7 @@
   import { aiKey, refreshKey } from '../agent/key.svelte.js';
   import { openSettings } from '../settings-tabs.svelte.js';
   import { isTauri } from '../importer.js';
+  import ProposalCard from '../ProposalCard.svelte';
   import { app } from '../store.svelte.js';
 
   let draft = $state('');
@@ -98,6 +99,9 @@
               </details>
             {/if}
             {#if m.text}<div class="aip-text">{m.text}</div>{/if}
+            {#each m.cards ?? [] as c (c.id)}
+              <ProposalCard pageId={c.pageId} id={c.id} was={c.was} />
+            {/each}
             {#if m.stopped}<div class="aip-meta">Stopped.</div>{/if}
             {#if panel.running && i === panel.chat.length - 1 && !m.text}
               <div class="aip-meta">{MODELS[panel.using]?.label ?? ''} is working…</div>

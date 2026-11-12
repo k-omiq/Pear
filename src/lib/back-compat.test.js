@@ -609,6 +609,28 @@ describe('a whole chapter.json from the last release', () => {
     expect(pageById(7).note).toBe('');
   });
 
+  it('gives a page saved before AI proposals none, and keeps only valid ones', () => {
+    expect(pageById(1).proposals).toEqual([]);
+    loadProjectPages([
+      {
+        id: 10,
+        w: 0,
+        h: 0,
+        proposals: [
+          { id: 'pr1', target: { line: 1 }, text: 'Hi.', base: 'Hello.', by: 'ai', reason: 'shorter', run: 'r1' },
+          { id: 'pr2', target: { line: 'x' }, text: 'a', base: 'b' },
+          { target: { box: 'b3' }, text: 7, base: 'b' },
+          'junk',
+        ],
+        lines: [{ n: 1, jp: '', en: 'Hello.' }],
+        boxes: [],
+      },
+      { id: 11, w: 0, h: 0, proposals: 'nope', lines: [], boxes: [] },
+    ]);
+    expect(pageById(10).proposals).toEqual([{ id: 'pr1', target: { line: 1 }, text: 'Hi.', base: 'Hello.', by: 'ai', reason: 'shorter', run: 'r1' }]);
+    expect(pageById(11).proposals).toEqual([]);
+  });
+
   it('gives a line saved before speakers no speaker, and drops one of the wrong type', () => {
     const [l1, l2] = pageById(1).lines;
     expect('speaker' in l1).toBe(false);

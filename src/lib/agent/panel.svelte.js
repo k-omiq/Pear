@@ -126,6 +126,18 @@ async function getClient() {
   return client;
 }
 
+// The proposals a `text` call made, as the chat's Use / Reject cards (TXT-8).
+const plain = (v) => (v && typeof v === 'object' ? (v.untrusted ?? '') : String(v ?? ''));
+export function cardsOf(result) {
+  return (result?.proposed ?? [])
+    .filter((r) => r.proposal && r.pageId != null)
+    .map((r) => ({
+      pageId: r.pageId,
+      id: r.proposal,
+      was: { text: plain(r.proposed), before: plain(r.before), where: `page ${r.page}, ${r.id ? `box ${r.id}` : `line ${r.line}`}` },
+    }));
+}
+
 const joinText = (a, b) => (a && b ? `${a.trimEnd()}\n\n${b.trimStart()}` : a || b);
 
 // A short line for a tool call in the log.
@@ -151,7 +163,7 @@ export async function sendPrompt(text) {
   panel.running = true;
   panel.using = which;
   panel.chat.push({ role: 'user', text: words });
-  panel.chat.push({ role: 'assistant', text: '', tools: [], model: which });
+  panel.chat.push({ role: 'assistant', text: '', tools: [], cards: [], model: which });
   const reply = panel.chat[panel.chat.length - 1];
 
   // Pictures from earlier prompts leave the chat; this prompt's stay.
@@ -192,6 +204,7 @@ export async function sendPrompt(text) {
             t.ok = e.ok;
             t.error = e.ok ? null : (e.result?.error ?? 'failed');
           }
+          if (e.ok && e.name === 'text') for (const c of cardsOf(e.result?.result)) reply.cards.push(c);
         }
       },
     });

@@ -891,6 +891,11 @@ defineTool({
     if (!Array.isArray(ops) || !ops.length) throw new ToolError('ops must be a non-empty list', 'Use ops: [{ where: { selection: true }, set: { style: { size: "+2" } } }].');
     if (ops.length > MAX_OPS) throw new ToolError(`at most ${MAX_OPS} ops in one call`, 'Split the work, or use wider selectors.');
     if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes to edit');
+    // The AI panel never writes words over the user's (TXT-4): the text tool
+    // turns them into proposals the user takes or drops.
+    if (ctx?.door === 'panel' && ops.some((op) => op?.set && typeof op.set === 'object' && 'text' in op.set)) {
+      throw new ToolError('in the AI panel, words change through the text tool, as proposals the user accepts', 'Call text with ops [{ id, text, reason }]; keep the rest of this edit as it is, without set.text.');
+    }
     const compiled = ops.map(compile);
     if (dryRun) return { dryRun: true, ops: compiled.map((c) => ({ matched: c.matches.length, ids: c.matches.slice(0, 50).map((m) => m.box.id) })) };
     // The originals "match_original" lays boxes over are read off the page

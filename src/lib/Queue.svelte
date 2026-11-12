@@ -15,6 +15,8 @@
 </script>
 
 <script>
+  import ProposalCard from './ProposalCard.svelte';
+  import { proposalsFor } from './proposals.svelte.js';
   import {
     app,
     page,
@@ -882,6 +884,10 @@
         {#if !translate}<span class="dot {placed ? 'placed' : 'unplaced'}" title={placed ? 'Placed' : 'Unplaced'}></span>{/if}
       {/if}
     </div>
+    <!-- AI wording for this line, waiting for the user (TXT-4). -->
+    {#each proposalsFor(p, { line: line.n }) as pr (pr.id)}
+      <ProposalCard pageId={p.id} id={pr.id} compact />
+    {/each}
   {/each}
 
 

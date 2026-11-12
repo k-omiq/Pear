@@ -1,4 +1,5 @@
 // ===== Central reactive store (Svelte 5 runes) =====
+import { sanitizeProposals } from './proposal-data.js';
 import { untrack } from 'svelte';
 import { applyLineOrder } from './reading-order.js';
 import {
@@ -303,6 +304,9 @@ export function loadProjectPages(rawPages, { plain = false } = {}) {
       // anything the next pass should know. Absent is no note.
       note: typeof p.note === 'string' ? p.note : '',
       lines: (p.lines ?? []).map(sanitizeLine),
+      // AI wording waiting for the user (TXT-4, proposals.svelte.js). Absent
+      // is none.
+      proposals: sanitizeProposals(p.proposals),
       // Both halves defaulted, not just `panels`. `detect` arrives from a file
       // this build did not write - a hand edit, a foreign tool, a half-written
       // record - and one that carries `panels` but no `boxes` used to throw
