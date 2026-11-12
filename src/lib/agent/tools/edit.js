@@ -13,7 +13,7 @@ import { selectBoxes } from '../select.js';
 import { withPagePixels } from '../render.js';
 import { validateStylePatch, styleSchemaText } from '../style-schema.js';
 import { applyStylePatch, resolveRelative } from '../../style-patch.js';
-import { applyCase, breaksFor } from '../../measure.js';
+import { applyCase, breaksFor, casedRuns } from '../../measure.js';
 import { normalizeAuto, normalizeStrokeEffect } from '../../data.js';
 import { OUTLINE_FIT } from '../../outline-fit.js';
 import { splitOutline } from '../../bubble-outline.js';
@@ -43,6 +43,7 @@ import {
   markUnsaved,
   lineByN,
   boxText,
+  boxRuns,
   isTranslateMode,
   withStyleOrder,
   setLineSpeaker,
@@ -50,15 +51,17 @@ import {
   refSizeOf,
 } from '../../store.svelte.js';
 import { setLineTags, normalizeTagName, styleForLine } from '../../tags.svelte.js';
-import { applyTextRules } from '../../text-rules.js';
+import { textRuleEdits } from '../../text-rules.js';
 import { letteringSetUp } from '../../lettering.js';
 import { guide, guideBound, termById } from '../../guide.svelte.js';
 import { presets } from '../../presets.svelte.js';
 import { sfxAvailable, sfxKinds, sfxPick, applySfxKind, clearSfx } from '../../sfx.js';
 import { WARP_PRESETS, WARP_PRESET_NOTES, warpPresetPts } from '../../warp-presets.js';
 import { originalOf, matchFor } from './footprint.js';
+import { bubbleLink } from '../../box-mask.js';
+import { clipToBubble } from '../../box-mask-actions.js';
 
-const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original', 'sfx_pick'];
+const DO_PLAIN = ['typeset', 'auto', 'refit', 'fit_balloon', 'free', 'apply_guide', 'delete', 'duplicate', 'clear_sfx', 'approve_outline', 'refit_outline', 'split_outline', 'outline_to_box', 'match_original', 'sfx_pick', 'clip_to_bubble'];
 const DO_NAMED = ['preset:', 'sfx_kind:', 'warp:'];
 // "warp:<kind>" alone bends by this much (percent of the kind's strongest).
 export const WARP_DEFAULT_AMOUNT = 50;
@@ -87,6 +90,7 @@ const DESCRIPTION = [
   '"auto" (every lock off, kept lines dropped, laid out again by the solver), "refit" (typeset again in the outline it has, keeping locks),',
   '"fit_balloon" (turn the balloon fit on, measuring it when there is none), "free" (balloon fit off and the outline dropped: text drawn on the art, an SFX or sign the finder wrapped in an outline, laid out from itself where it stands), "refit_outline" (find the bubble under the box again),',
   '"split_outline" (an outline that holds two joined bubbles, cut at the neck: the box keeps the piece with its text; then typeset again),',
+  '"clip_to_bubble" (comics only: the box\'s mask keeps its letters inside its bubble outline, a link that follows the outline when it is refit, finding the outline first when there is none; noBalloon names boxes with none),',
   '"outline_to_box" (an outline of the box\'s rectangle, grown to hold its text at the size it aims for with outline fit\'s air, or exactly the box when its width or height is held: geometry in the same op sets it first; shrunk in the result names a box that still fits only smaller), "approve_outline" (approve as AI; never an open outline), "apply_guide" (the tags\' styles and the guide\'s text rules),',
   '"match_original" (an SFX, title or sign drawn over the original it replaces, found where the cleaner removed it: balloon fit off, no outline, margin 0, centred on the original, turned to its slant, sized to run its length and held there, in exactly its colours: its fill (its shade as a gradient), its outline at its width, or no outline when it had none, on colour and black-and-white pages alike; noOriginal in the result names boxes with no cleaned original, laid on their detected line instead),',
   '"sfx_kind:<id or name>" (SFX lettering, Rust engine only: the box laid out letter by letter as that sound type; a type is a layout only, the box keeps its font, fill and outlines; sfx_kinds lists them; seed and caption stay; paths, letter hand edits, the power/rough/momentum dials and every other style.sfx field go back to the type\'s), "sfx_pick" (the type the app ranks best for the box\'s text, with the dials it asks for), "clear_sfx" (SFX off, the box put back as it was before: look, size and the arc, ring or path it switched off);',
@@ -440,7 +444,9 @@ function writeSet(set, matches) {
         } else {
           if (b.style.margin == null) b.style.margin = OUTLINE_FIT.margin;
           const st = b.style;
-          const brk = breaksFor(applyCase(boxText(b, p), st), st, st.size, set.breaks.map((t) => applyCase(t, st)));
+          // Keyed with the faces of the words (runs.js), as the box lays them out.
+          const cased = casedRuns(boxText(b, p), boxRuns(b, p), st);
+          const brk = breaksFor(cased.text, st, st.size, set.breaks.map((t) => applyCase(t, st)), cased.runs);
           if (brk) {
             b.auto.breaks = brk;
             b.auto.locks.breaks = true;
@@ -483,7 +489,7 @@ function writeNote(note, matches) {
   return ids;
 }
 
-const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text]);
+const fingerprint = (b) => JSON.stringify([b.x, b.y, b.w, b.h, b.style, b.fit, b.outline, b.auto, b.text, b.mask ?? null, b.fade ?? null]);
 
 // A box laid out by outline fit (a margin set) is the solver's: Auto height on
 // and fit to box off. A series can have boxes born Fixed (Settings'
@@ -570,6 +576,7 @@ function writeDo(d, matches) {
     return { changed: ids, created, deleted, noOriginal };
   }
   if (['preset', 'sfx_kind', 'sfx_pick', 'clear_sfx', 'apply_guide', 'warp'].includes(d.kind)) {
+    const facesLost = new Set();
     const out = editBoxes(
       matches.map((m) => ({ page: m.page, box: m.box })),
       (b, p) => {
@@ -606,21 +613,28 @@ function writeDo(d, matches) {
             b.style.warp = { ...b.style.warp, on: false, pts: [] };
           } else {
             const { cols, rows, pts } = warpPresetPts(d.preset, d.amount, b.w, b.h);
-            b.style.warp = { on: true, cols, rows, pts };
+            b.style.warp = { on: true, cols, rows, pts, w: b.w, h: b.h };
           }
         } else {
           const ln = b.lineN != null ? lineByN(p, b.lineN) : null;
           if (ln) b.style = cloneStyle(styleForLine(withStyleOrder(ln), cloneStyle(b.style)));
-          const text = boxText(b, p);
-          const ruled = applyTextRules(text, guide.rules);
-          if (ruled !== text) setBoxText(b, ruled, p, { fit: false });
+          // Each change of the rules as its own exact edit, so the faces of
+          // the words between two changes (runs.js) stay where they are. Only
+          // a change over letters in more than one face can keep just one of
+          // them, and the caller is told.
+          for (const e of textRuleEdits(boxText(b, p), guide.rules)) {
+            const [a, z] = e.span;
+            if (boxRuns(b, p)?.some((r) => r.start < z && r.end > a && !(r.start <= a && r.end >= z))) facesLost.add(b.id);
+            const t = boxText(b, p);
+            setBoxText(b, t.slice(0, a) + e.put + t.slice(z), p, { fit: false, span: e.span });
+          }
         }
         solverOwns(b);
       },
       // The AI lays the box out as a placement does (`autoFitBox`).
       { solve: true },
     );
-    return { changed: out.map((t) => t.box.id), created, deleted };
+    return { changed: out.map((t) => t.box.id), created, deleted, facesLost: [...facesLost] };
   }
   for (const { page: p, box: b } of matches) {
     const id = b.id;
@@ -661,6 +675,10 @@ function writeDo(d, matches) {
     else if (d.kind === 'fit_balloon') {
       if (b.style.balloon === false) toggleBalloonFit(id, p);
       else if (!b.fit && !refitBalloon(id, p)) noBalloon.push(id);
+    }
+    else if (d.kind === 'clip_to_bubble') {
+      // Set, never toggled: a box that has the link keeps it.
+      if (!bubbleLink(b) && !clipToBubble(id, p)) noBalloon.push(id);
     }
     if (fingerprint(b) !== before) changed.push(id);
   }
@@ -778,6 +796,7 @@ function runOp(c) {
     if (r.unsplit?.length) out.notSplit = { ids: r.unsplit, why: 'no neck found in the outline; draw the outline (set.outline) instead' };
     if (r.noOriginal?.length) out.noOriginal = { ids: r.noOriginal, why: 'no original found where the cleaner worked (no cleaned image, or nothing cleaned there): laid on the detected line instead, at its size; turn and colour it by eye (view source "raw")' };
     if (r.shrunk?.length) out.shrunk = { boxes: r.shrunk, why: 'the outline was made for the size each box aims for (ref), and its text still fits only smaller (size): allow it (sizing.min), give the box more room (geometry, then outline_to_box again), or a shorter line' };
+    if (r.facesLost?.length) out.facesLost = { ids: r.facesLost, why: 'a text rule replaced letters set in more than one face (bold, italic or another typeface on part of them); the new letters are in the box face: check those boxes\' faces (box shows them, face sets them)' };
     if (r.noBalloon?.length) out.noBalloon = { ids: r.noBalloon, why: 'no balloon found under the box (the box now lays out in a rectangle if it had an outline); draw the outline (set.outline) instead' };
     if (c.do.kind === 'approve_outline') {
       const open = c.matches.filter((m) => !m.box.fit).length;
@@ -807,7 +826,7 @@ function runOp(c) {
 
 // The lines a box draws now, as every renderer breaks them.
 export function shownLines(b, p) {
-  const place = placeBlock(boxCandidate(b, boxText(b, p)), { cache: false });
+  const place = placeBlock(boxCandidate(b, boxText(b, p), boxRuns(b, p)), { cache: false });
   return place && !place.isCurve ? [...place.lines] : [];
 }
 const lineKey = (t) => String(t).trim().replace(/-$/, '').toLowerCase();

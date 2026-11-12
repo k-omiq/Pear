@@ -1,4 +1,16 @@
 <script module>
+  import {
+    page as pageNow,
+    activateLine as activate,
+    setLineRect,
+    deleteLine,
+    lineLabel,
+    toast as say,
+    settleEdits as settleNow,
+  } from './store.svelte.js';
+  import { stepHere, peekStack } from './editor/history.svelte.js';
+  import { pageRectPick, PICK_MIN } from './page-rect-pick.svelte.js';
+
   // "Show in queue" (the box menu): scroll to the active row even when it has
   // not changed - the user may have scrolled the list away from it since.
   const asked = $state({ turn: 0 });
@@ -11,6 +23,75 @@
   export function focusActiveField(field = 'en') {
     focusAsked.field = field;
     focusAsked.turn++;
+  }
+
+  // Draw line `n`'s box on the page: the next drag over the page is the line's
+  // box (`setLineRect`, one undo step), and either way the caret goes back to
+  // the line's English, where the translator was. The line is held by object,
+  // not number, so a renumber while the drag waits still lands on it. Here, in
+  // the module, because the row menu, the badge icon and the registry action
+  // (editor-actions.js) all start it.
+  export function drawLineBox(n) {
+    const p = pageNow();
+    const line = p.lines.find((l) => l.n === n);
+    if (!line) return false;
+    // Only onto the page the drag was for, while it is still the one shown: a
+    // pick outlived by a page turn or a closed chapter must not move the queue
+    // of whatever page is up now.
+    const back = () => {
+      if (pageNow() !== p || !p.lines.includes(line)) return;
+      if (p.activeLineN !== line.n) activate(line.n);
+      focusActiveField('en');
+    };
+    pageRectPick.start({
+      hint: 'Drag a box for this line · Esc cancels',
+      onDone: (rect, pg) => {
+        // The pick's own 8 px floor is on the drag as made; the part left on the
+        // page can be smaller, so the floor is checked again on what is kept.
+        const kept = pg === p ? ontoPage(rect, p) : null;
+        if (pg !== p) say('Drag on the page the line is on');
+        else if (kept[2] - kept[0] < PICK_MIN || kept[3] - kept[1] < PICK_MIN) say('Drag a larger box for the line');
+        else if (p.lines.includes(line)) setLineRect(p, line.n, kept);
+        back();
+      },
+      onCancel: (why) => {
+        // Ended by something else - another pick, a page turn, the chapter
+        // closing, the mode switching: the caret stays where that left it.
+        if (why !== 'escape' && why !== 'small') return;
+        if (why === 'small') say('Drag a larger box for the line');
+        back();
+      },
+    });
+    return true;
+  }
+
+  // A drag that ran off the paper marks only the part of it on the page.
+  const ontoPage = (r, p) => {
+    if (!(p.w > 0 && p.h > 0)) return r;
+    const cx = (v) => Math.min(p.w, Math.max(0, v));
+    const cy = (v) => Math.min(p.h, Math.max(0, v));
+    return [cx(r[0]), cy(r[1]), cx(r[2]), cy(r[3])];
+  };
+
+  // Delete line `n` (`deleteLine`) and say so, with the way back on the toast.
+  // The toast's Undo takes back this delete and nothing else: once anything
+  // has been recorded over it - typing still in its settle window included,
+  // which is why it is settled before the stack is read - the press says so
+  // rather than undo that. And through the same gate as the keys.
+  export function deleteLineWithUndo(n) {
+    const p = pageNow();
+    const label = lineLabel(p, n);
+    if (!deleteLine(n, p)) return false;
+    const mine = peekStack().undo.at(-1);
+    say(`Deleted line ${label}`, 'info', {
+      label: 'Undo',
+      run: () => {
+        settleNow();
+        if (peekStack().undo.at(-1) === mine) stepHere('undo');
+        else say('Undo the newer edits first');
+      },
+    });
+    return true;
   }
 </script>
 
@@ -40,7 +121,10 @@
     placeableDetectedLines,
     placeDetectedOnPage,
     placeDetectedInChapter,
+    setLineRuns,
     cancelChapterPlace,
+    lineRect,
+    lineRectOf,
   } from './store.svelte.js';
   import { untrack, flushSync } from 'svelte';
   import {
@@ -61,12 +145,18 @@
     recordFieldEdit,
     undoField,
     redoField,
+    fieldFaces,
+    recordFieldFaces,
     caretAfter,
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
+  import { copyRuns, fieldSpans, runsKey } from './runs.js';
+  import { setLineSel, clearLineSel } from './typing-selection.svelte.js';
   import { modKey } from './format.js';
   import { comboFor, defaultCombo, formatCombo, isMacKeyboard, pressed } from './shortcuts.svelte.js';
   import ReviewList from './ReviewList.svelte';
+  import RowMenu from './home/RowMenu.svelte';
+  import { lineLabels } from './reading-order.js';
   import FontNotice from './FontNotice.svelte';
   import EngineNotice from './EngineNotice.svelte';
   import TagDefaultsForm from './TagDefaultsForm.svelte';
@@ -81,6 +171,19 @@
   // How many bubbles on THIS page still want a box. Drives the top button's
   // label and its disabled state.
   const pagePlaceable = $derived(placeableDetectedLines(p).length);
+  // What each row is called (`lineLabels`): T1, T2... for free lines, in the
+  // pane and on the page alike.
+  const labels = $derived(lineLabels(p.lines));
+  // The row "…" menu of the typing pane.
+  const rowItems = (line) => [
+    { id: 'draw', label: lineRectOf(p, line.n) ? 'Redraw box on page' : 'Draw box on page' },
+    { separator: true },
+    { id: 'delete', label: 'Delete line', danger: true },
+  ];
+  function onRowPick(line, id) {
+    if (id === 'draw') drawLineBox(line.n);
+    else if (id === 'delete') deleteLineWithUndo(line.n);
+  }
   // The series' characters, for the speaker picker (TXT-6).
   const characters = $derived(glossaryCharacters(guide.glossary));
   // The page note (TXT-7): shown while the page has one, or once asked for.
@@ -128,7 +231,18 @@
   }
 
   function rowKey(e, line, editing) {
-    if (!e.target.closest('textarea, input, select') && paneKey(e, line, 'row')) return;
+    // Delete is the row's own, and only the row's: a press on a button inside
+    // it, or in any field, is never a delete of the whole line.
+    if (pane && e.target === e.currentTarget && (pressed(e, 'line.delete') || pressed(e, 'line.deleteAlt'))) {
+      e.preventDefault();
+      e.stopPropagation();
+      deleteLineWithUndo(line.n);
+      // The row that takes its place keeps the keyboard.
+      queueMicrotask(() => listEl?.querySelector('.qrow.active')?.focus({ preventScroll: true }));
+      return;
+    }
+    // The row's own buttons that open something keep Enter and the arrows.
+    if (!e.target.closest('textarea, input, select, .qrow-more, .badge-draw') && paneKey(e, line, 'row')) return;
     if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !isFreeLine(line) && !e.target.closest('textarea, input')) {
       // Taken here, so the window's handler does not nudge the box as well.
       e.preventDefault();
@@ -157,7 +271,7 @@
     if (e.button !== 0 || isFreeLine(line) || imported.length < 2) return;
     // The source text is for selecting and copying (a drag over it selects);
     // the rest of the row is the handle.
-    if (e.target.closest('textarea, input, select, [contenteditable], .qmenu, .qtagform, .qjp, .qalt-text')) return;
+    if (e.target.closest('textarea, input, select, [contenteditable], .qmenu, .qtagform, .qjp, .qalt-text, .qrow-more, .badge-draw')) return;
     const y0 = e.clientY;
     const scroller = listEl.closest('.fpanel-body, .tpane-body');
     let y = y0;
@@ -213,7 +327,27 @@
     const v = activeLine?.en ?? '';
     if (key === fieldOwner && v === fieldUndo.stack[fieldUndo.i]) return;
     fieldOwner = key;
-    resyncField(fieldUndo, v);
+    resyncField(fieldUndo, v, copyRuns(activeLine?.runs));
+  });
+
+  // Words selected in the English field: the face commands' target in a
+  // typeset chapter (editor-actions.js), the line's words.
+  function noteLineSel(e, line) {
+    const el = e.currentTarget;
+    if (el.value !== (line.en ?? '')) return;
+    setLineSel(p.id, line.n, el.value, el.selectionStart, el.selectionEnd);
+  }
+  // A face set on the words while the field holds them is a step of its own,
+  // the same words with the new faces, so the field's Cmd+Z takes it back
+  // before any typing.
+  $effect(() => {
+    const activeLine = p.lines.find((l) => l.n === p.activeLineN);
+    const key = runsKey(activeLine?.runs);
+    const v = activeLine?.en ?? '';
+    untrack(() => {
+      if (!activeLine || fieldOwner !== activeLine || v !== fieldUndo.stack[fieldUndo.i] || key === runsKey(fieldFaces(fieldUndo))) return;
+      recordFieldFaces(fieldUndo, copyRuns(activeLine.runs));
+    });
   });
 
   $effect(() => {
@@ -227,11 +361,21 @@
 
   // Both fields write through the store for the toolbar's burst undo; each
   // field's own Cmd+Z stack covers its keystrokes. Only English fits boxes.
+  // The English field, its selection and input type as each edit begins:
+  // what that edit replaced is read from them (`fieldSpans`) once it has
+  // landed, so the faces of the words (runs.js) move with the edit.
+  const enSpans = fieldSpans();
+
   function onTextareaInput(e, line, field = 'en') {
     const v = e.currentTarget.value;
     if (field === 'jp') setLineSource(p, line.n, v);
-    else setLineText(p, line.n, v);
-    recordFieldEdit(field === 'jp' ? sourceUndo : fieldUndo, v, { atomic: isAtomicInput(e.inputType) });
+    else {
+      const span = enSpans.span(v, line.en ?? '');
+      setLineText(p, line.n, v, span ? { span } : undefined);
+    }
+    // The faces the write left beside the English (runs.js), for a step back.
+    const faces = field === 'jp' ? null : copyRuns(line.runs);
+    recordFieldEdit(field === 'jp' ? sourceUndo : fieldUndo, v, { atomic: isAtomicInput(e.inputType), faces });
   }
 
   function onTextareaKey(e, line, field = 'en') {
@@ -242,11 +386,19 @@
     const next = e.shiftKey ? redoField(u) : undoField(u);
     if (next == null) return;
     const el = e.currentTarget;
+    // Only the faces changed (Bold on the selected words): they go back as a
+    // face command would set them, refused for a line a locked box shows, and
+    // the selection stays.
+    if (field !== 'jp' && next === el.value) {
+      // Refused: the field's history stays where the line is.
+      if (setLineRuns(p, line.n, fieldFaces(u)) === null) void (e.shiftKey ? undoField(u) : redoField(u));
+      return;
+    }
     const caret = caretAfter(el.value, next);
     el.value = next;
     el.setSelectionRange(caret, caret);
     if (field === 'jp') setLineSource(p, line.n, next);
-    else setLineText(p, line.n, next);
+    else setLineText(p, line.n, next, { runs: fieldFaces(u) });
   }
 
   // Translate mode disables canvas box placement and status indicators.
@@ -280,6 +432,13 @@
       e.stopPropagation();
       return true;
     };
+    // A box being drawn for a line (started from the field, by its key) ends
+    // on Escape wherever the caret is; the field's own Escape waits for it.
+    if (e.key === 'Escape' && pageRectPick.active) {
+      take();
+      pageRectPick.cancel();
+      return true;
+    }
     if (where === 'row') {
       if (pressed(e, 'translate.lineDown') || pressed(e, 'translate.lineUp')) {
         take();
@@ -678,8 +837,11 @@
     {@const editing = line.n === p.activeLineN}
 
     {@const free = isFreeLine(line)}
-    {@const badge = free ? 'T' : line.n}
+    {@const badge = pane ? labels.get(line.n) : free ? 'T' : line.n}
     {@const badgeTitle = free ? 'Typed on the page - not from the translation' : `Line ${line.n}`}
+    <!-- A line added by hand has nowhere on the page until a box is drawn
+         for it, so its badge slot asks for one. -->
+    {@const unmarked = pane && free && !lineRect(line.rect)}
 
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_static_element_interactions -->
     <div
@@ -710,7 +872,11 @@
         {@const hits = glossaryHits(line.jp, lineText(line), guide.glossary)}
         {@const meaning = tagged.includes('sfx') ? sfxHint(line) : ''}
 
-        <button class="badge" class:free title="Select this line's box" onclick={() => activateLine(line.n)}>{badge}</button>
+        {#if unmarked}
+          <button class="badge badge-draw" title="Draw this line's box on the page" aria-label="Draw this line's box on the page" onclick={() => drawLineBox(line.n)}>{@render dashedSquare()}</button>
+        {:else}
+          <button class="badge" class:free class:wide={String(badge).length > 2} title="Select this line's box" onclick={() => activateLine(line.n)}>{badge}</button>
+        {/if}
         <span class="qcol">
           <span class="qtags">
             {#if pane}
@@ -864,13 +1030,25 @@
             placeholder="English…"
             aria-label="English for line {badge}"
             value={line.en ?? ''}
+            onbeforeinput={enSpans.before}
+            oncompositionstart={enSpans.start}
+            oncompositionend={enSpans.end}
             oninput={(e) => onTextareaInput(e, line)}
             onkeydown={(e) => onTextareaKey(e, line)}
+            onselect={(e) => noteLineSel(e, line)}
+            onkeyup={(e) => noteLineSel(e, line)}
+            onmouseup={(e) => noteLineSel(e, line)}
+            onblur={clearLineSel}
           ></textarea>
         </span>
         {#if !translate}<span class="dot {placed ? 'placed' : 'unplaced'}" title={placed ? 'Placed' : 'Unplaced'}></span>{/if}
+        {#if pane}{@render more(line)}{/if}
       {:else}
-        <span class="badge" class:free title={badgeTitle}>{badge}</span>
+        {#if unmarked}
+          <button class="badge badge-draw" title="Draw this line's box on the page" aria-label="Draw this line's box on the page" onclick={(e) => { e.stopPropagation(); drawLineBox(line.n); }}>{@render dashedSquare()}</button>
+        {:else}
+          <span class="badge" class:free class:wide={String(badge).length > 2} title={badgeTitle}>{badge}</span>
+        {/if}
         <span class="qcol">
           {#if tagged.length}
             <span class="qtypes">
@@ -882,6 +1060,7 @@
           {#if tagged.includes('sfx') && sfxHint(line)}<span class="qsfx">≈ {sfxHint(line)}</span>{/if}
         </span>
         {#if !translate}<span class="dot {placed ? 'placed' : 'unplaced'}" title={placed ? 'Placed' : 'Unplaced'}></span>{/if}
+        {#if pane}{@render more(line)}{/if}
       {/if}
     </div>
     <!-- AI wording for this line, waiting for the user (TXT-4). -->
@@ -889,6 +1068,18 @@
       <ProposalCard pageId={p.id} id={pr.id} compact />
     {/each}
   {/each}
+
+  {#snippet dashedSquare()}
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.4 2" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" /></svg>
+  {/snippet}
+  {#snippet more(line)}
+    <!-- The row's "…" menu: shown on hover, focus or while open (DESIGN.md).
+         Its clicks stay its own, so opening it never opens the row. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <span class="qrow-more" onclick={(e) => e.stopPropagation()}>
+      <RowMenu compact label="Line {labels.get(line.n)} actions" items={rowItems(line)} onpick={(id) => onRowPick(line, id)} />
+    </span>
+  {/snippet}
 
 
   {#if !translate}
@@ -900,7 +1091,7 @@
     </div>
   {:else}
     <div class="qadd">
-      <button class="qadd-btn" disabled={!app.pages.length} onclick={addQueueLine}>
+      <button class="qadd-btn" disabled={!app.pages.length} onclick={() => addQueueLine()}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" /></svg>
         Add line
       </button>

@@ -55,3 +55,48 @@ export function lineFonts(engine, face, text) {
     if (outPtr) ex.mt_free(outPtr, cap * 4)
   }
 }
+
+/** Whether this build of the engine can measure a line in several faces. */
+export function advanceSpansSupported(engine) {
+  return typeof engine.exports.mt_advance_spans === 'function'
+}
+
+/**
+ * The advance of `text` set as one line in several faces: each span shaped
+ * alone in its face (and cut again where its face's fallback changes), the
+ * pieces summed. It lives here because its export sits beside mt_line_fonts
+ * and passes the text the same way.
+ *
+ * @param {Array<{ font: number, flags: number, size: number }>} faces one engine face per span, all one size
+ * @param {Array<{ start: number, end: number }>} spans UTF-16 offsets, in order, covering `text` end to end
+ */
+export function advanceSpans(engine, faces, text, spans) {
+  const ex = engine.exports
+  if (typeof ex.mt_advance_spans !== 'function') throw new Error('mt-text: this build of the engine cannot measure a line in several faces')
+  if (faces.length !== spans.length) throw new Error('mt-text: advanceSpans: one face per span')
+  const utf8 = encoder.encode(text)
+  const words = spans.length * FIELDS
+  const textPtr = utf8.length ? ex.mt_alloc(utf8.length) : 0
+  const spanPtr = words ? ex.mt_alloc(words * 4) : 0
+  try {
+    if ((utf8.length && textPtr === 0) || (words && spanPtr === 0)) throw new Error('mt-text: out of memory')
+    new Uint8Array(ex.memory.buffer).set(utf8, textPtr)
+    if (words) {
+      const view = new DataView(ex.memory.buffer, spanPtr, words * 4)
+      spans.forEach((s, i) => {
+        const at = i * FIELDS * 4
+        view.setUint32(at, faces[i].font, true)
+        view.setUint32(at + 4, faces[i].flags, true)
+        view.setUint32(at + 8, s.start, true)
+        view.setUint32(at + 12, s.end, true)
+      })
+    }
+    const size = faces.length ? faces[0].size : 0
+    const w = ex.mt_advance_spans(size, textPtr, utf8.length, spanPtr, spans.length)
+    if (w !== w) throw new Error('mt-text: advanceSpans failed (unknown font or chain, or spans that do not cover the text)')
+    return w
+  } finally {
+    if (textPtr) ex.mt_free(textPtr, utf8.length)
+    if (spanPtr) ex.mt_free(spanPtr, words * 4)
+  }
+}

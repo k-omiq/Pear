@@ -40,7 +40,9 @@ const KINDS = {
     valign: 'top',
   }),
   pattern: box('pattern', { pattern: { on: true, kind: 'dots', fg: '#000000', bg: '#ffffff', scale: 1 } }),
-  masked: box('masked', { clip: { on: true, mode: 'include', brushSize: 20, shapes: [{ kind: 'ellipse', cx: 120, cy: 45, rx: 80, ry: 30 }] } }),
+  // The mask is the box's own, pinned to the page: (120, 45) in the box is
+  // page (220, 245).
+  masked: { ...box('masked'), mask: { on: true, shapes: [{ kind: 'ellipse', op: 'keep', cx: 220, cy: 245, rx: 80, ry: 30 }] } },
   arc: box('arc', { curve: 40 }),
   circle: box('circle', { circle: { on: true, angle: 0, inside: false, r: 0 } }),
   path: box('path', { path: { on: true, pts: [{ x: 10, y: 60, ix: -30, iy: 0, ox: 30, oy: -20 }, { x: 230, y: 40, ix: -30, iy: 20, ox: 30, oy: 0 }] } }),

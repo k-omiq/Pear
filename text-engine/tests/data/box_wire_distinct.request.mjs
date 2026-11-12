@@ -59,12 +59,16 @@ export const request = {
   transform: [1.25, 0.5, -0.25, 1.5, 11, 13],
   job: {
     curved: true,
+    // One line's clusters (box wire v22).
+    line: true,
     align: 'center',
     letterSpacing: 1.75,
     silhouette: null,
     noFill: false,
     bands: [{ color: '#112233', opacity: 0.6875, line: 3.5 }],
     fill: { kind: 'solid', color: '#778899' },
+    // Wobble (glyph wire v12).
+    wobble: { amount: 0.1875, tilt: 7.5, seed: 4242 },
     runs: [
       { text: 'AB', x: 14.5, y: 21.5, rot: 0.375, sx: 1.125, sy: 0.875, skew: 0.0625, drip: 0.5, pen: 1.25, ghost: true, fill: { kind: 'solid', color: '#334455' } },
       { text: 'C', x: 33.5, y: 41.25, rot: -0.1875, sx: 0.9375, sy: 1.0625, skew: -0.03125, drip: 0.25, pen: 1.5 },
@@ -87,15 +91,26 @@ export const request = {
     { dx: -2.5, dy: 3.5, w: 0.625 },
   ],
   clip: {
-    mode: 'exclude',
     x: 13.5,
     y: 17.25,
     shapes: [
-      { kind: 'ellipse', cx: 21.5, cy: 22.5, rx: 5.5, ry: 6.5 },
-      { kind: 'poly', pts: [[1.5, 2.5], [30.5, 3.5], [4.5, 29.5]] },
-      { kind: 'stroke', size: 3.5, pts: [[7.5, 8.5], [9.5, 12.5]] },
+      { kind: 'ellipse', op: 'keep', cx: 21.5, cy: 22.5, rx: 5.5, ry: 6.5 },
+      { kind: 'poly', op: 'hide', pts: [[1.5, 2.5], [30.5, 3.5], [4.5, 29.5]] },
+      { kind: 'stroke', op: 'hide', size: 3.5, pts: [[7.5, 8.5], [9.5, 12.5]] },
     ],
   },
+  fade: {
+    x: 11.5,
+    y: 19.25,
+    shapes: [
+      { kind: 'ellipse', strength: 0.4375, soft: 2.75, cx: 23.5, cy: 24.5, rx: 7.5, ry: 8.5 },
+      { kind: 'stroke', strength: 0.8125, soft: 0, size: 4.5, pts: [[5.5, 6.5], [15.5, 16.5]] },
+    ],
+  },
+  // How far a held box's mask and fade have moved (v23).
+  pinShift: [3.25, -1.75],
+  // A frame of a live move (v24).
+  pinLive: true,
   blend: 'color-burn',
   fillOpacity: 0.6875,
   blendInterior: true,
@@ -132,6 +147,17 @@ export const request = {
       gloss: { preset: 'ring-double', aa: true },
       contour: { preset: 'cone-inverted', aa: true, range: 0.5625 },
       texture: { depth: 3.5, invert: true, fill: { kind: 'solid', color: '#13579b' } },
+    },
+    // v21: paint over the letters, one mark of each kind.
+    {
+      kind: 'paint',
+      x: 6.25,
+      y: -8.75,
+      marks: [
+        { kind: 'stroke', color: '#a1b2c3', opacity: 0.15625, soft: 2.75, size: 4.25, pts: [[1.5, 2.5], [3.5, 4.75]] },
+        { kind: 'poly', color: '#c3d4e5', opacity: 0.96875, soft: 0, erase: true, pts: [[10.5, 11.5], [12.5, 11.75], [13.25, 14.5]] },
+        { kind: 'ellipse', color: '#e5f6a7', opacity: 0.40625, soft: 0.625, cx: 21.5, cy: 22.25, rx: 5.75, ry: 3.125 },
+      ],
     },
   ],
 }

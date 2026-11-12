@@ -37,6 +37,7 @@ mod scene;
 mod screen;
 mod shade;
 mod shape;
+pub mod special;
 mod stroke;
 mod sweep;
 mod warp;
@@ -51,14 +52,16 @@ pub mod compare;
 
 pub use boxjob::{
     decode_box, decode_box_kept, paint_box, paint_box_copy_by_copy, paint_box_kept,
-    paint_box_with, BoxRequest, Clip, ClipMode, ClipShape, Shadow, Tap, BOX_MAGIC,
+    paint_box_with, BoxKeys, BoxRequest, Clip, ClipMode, ClipPart, ClipShape, Fade, FadePart,
+    Shadow, Tap,
+    BOX_MAGIC,
     BOX_WIRE_VERSION, MAX_PAGE,
 };
 use geom::positive;
 pub use geom::{Affine, IBox, Polys, Pt};
 pub use job::{
-    decode, decode_swatch, Align, Band, Effects, Fill, Job, Negative, Request, Rgba, Run, Stop,
-    Tile, MAGIC, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
+    decode, decode_swatch, Align, Band, Cuts, Effects, Fill, Job, Negative, Request, Rgba, Run, RunFaces,
+    Wobble, Stop, Tile, MAGIC, MAX_RUN_FACES, MAX_WOBBLE_AMOUNT, MAX_WOBBLE_TILT, MAX_WEIGHT, MITER_LIMIT, WIRE_VERSION,
 };
 pub(crate) use outline::glyph_polys;
 pub use outline::FLATTEN_TOLERANCE;
@@ -67,12 +70,15 @@ pub use raster::{Coverage, Exact, Part, PlainScratch, Rasterizer, STRIP_ROWS};
 pub use roughen::Roughen;
 pub use scene::Scene;
 pub use screen::{swatch as pattern_swatch, Screen, KIND_NAMES};
-pub use shape::{align_offset, curved_origin, shape_run, Placed, ShapedRun};
+pub use shape::{align_offset, curved_origin, shape_line_runs, shape_run, shape_spans, Placed, ShapedRun};
+pub use special::{Aim, BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 pub use stroke::{Join, Side};
 use warp::Cut;
 pub use warp::{Mesh, MAX_MESH_SIDE};
 
 use compose::{compose, Layer};
+use kept::Hasher;
+use std::rc::Rc;
 use shade::Shader;
 
 use crate::engine::{BoldAdvance, Engine, Face, WEBKIT_BOLD_ADVANCE};
@@ -283,6 +289,96 @@ pub(crate) struct Zones {
     pub x: Option<f64>,
 }
 
+/// What [`Glyphs::add_run`] wobbles a run's letters by: the job's wobble,
+/// the run's text, and `base`, the number of letters in the job's text
+/// before the run's first (`letters_in`).
+pub(crate) struct Wobbling<'a> {
+    pub wobble: Wobble,
+    pub text: &'a str,
+    pub base: usize,
+}
+
+/// Whether a character is a letter that wobbles: not a space and not a
+/// hyphen. A line broken somewhere else adds or drops only those, so leaving
+/// them out of the count keeps every letter's numbers when a box is resized.
+fn wobbles(c: char) -> bool {
+    !(c.is_whitespace() || matches!(c, '-' | '\u{00ad}' | '\u{2010}' | '\u{2011}'))
+}
+
+/// How many letters that wobble `text` holds.
+pub(crate) fn letters_in(text: &str) -> usize {
+    text.chars().filter(|&c| wobbles(c)).count()
+}
+
+/// A letter's place in a run's text, by characters: for the cluster at
+/// UTF-16 offset `at`, the number of letters before it, or `None` when the
+/// cluster's first character is a space or a hyphen. Characters, not
+/// glyphs, are counted, so a ligature (`fi`) a break splits into two glyphs
+/// gives each letter the number it had joined, and a right-to-left run,
+/// whose glyphs come last letter first, numbers its letters in the order
+/// they are written. A ligature takes its first letter's number.
+fn letter_at(text: &str, at: u32) -> Option<usize> {
+    let mut u = 0u32;
+    let mut n = 0usize;
+    for c in text.chars() {
+        if u == at {
+            return wobbles(c).then_some(n);
+        }
+        if u > at {
+            break;
+        }
+        if wobbles(c) {
+            n += 1;
+        }
+        u += c.len_utf16() as u32;
+    }
+    None
+}
+
+/// For each of `runs`, the number of the job's letters before its first, the
+/// count a wobble keys a letter by (`Wobbling`), or `None` for a run that
+/// does not wobble. An SFX trail's afterimages (`Run::ghost`) are not
+/// letters of the text: the trail lays `copies` of them behind each letter,
+/// in the letters' order, so each block of `copies` is one letter's and
+/// takes its numbers. No afterimage wobbles when `copies` is zero.
+pub(crate) fn wobble_bases(
+    runs: &[Run],
+    copies: u32,
+) -> Result<Vec<Option<usize>>, Error> {
+    let copies = copies as usize;
+    let (mut letters, mut ghosts, mut ghost_letters, mut ghost_base) = (0, 0, 0, 0);
+    budget::collect(runs.iter().map(|run| {
+        Ok(if !run.ghost {
+            let base = letters;
+            letters += letters_in(&run.text);
+            Some(base)
+        } else if copies == 0 {
+            None
+        } else {
+            if ghosts % copies == 0 {
+                ghost_base = ghost_letters;
+                ghost_letters += letters_in(&run.text);
+            }
+            ghosts += 1;
+            Some(ghost_base)
+        })
+    }))
+}
+
+/// The drip of a glyph whose ink is `polys`: its lower half pulled down by
+/// `pull` job units, from the middle of its height to its foot. `None` for
+/// no pull or no height.
+fn drip_of(polys: &Polys, pull: f64) -> Option<warp::Drip> {
+    match polys.bounds() {
+        Some((_, top, _, bottom)) if positive(pull) && bottom > top => Some(warp::Drip {
+            mid: (top + bottom) / 2.0,
+            bottom,
+            pull,
+        }),
+        _ => None,
+    }
+}
+
 /// The outlines of a job's glyphs, and the shapes made from them.
 #[derive(Default)]
 pub(crate) struct Glyphs {
@@ -295,7 +391,9 @@ impl Glyphs {
     /// pulls the lower half of every glyph of the run down by that many job
     /// units: from the middle of the glyph's own height, as it stands in job
     /// space, to its foot. Zero for none. `pen` is the run's (`Run::pen`).
-    /// `embolden` and `slant` are the job's ([`job::Effects`]).
+    /// `embolden` and `slant` are the job's ([`job::Effects`]). `wobbling`
+    /// moves each letter up or down and turns it about its middle
+    /// ([`job::Wobble`]); `None` places every glyph as the shaper did.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_run(
         &mut self,
@@ -308,8 +406,36 @@ impl Glyphs {
         embolden: f64,
         slant: f64,
         tol: f64,
+        wobbling: Option<Wobbling<'_>>,
     ) -> Result<(), Error> {
+        // The glyphs of one cluster (a letter and its marks, or a ligature)
+        // turn together about one middle, the cluster's base glyph's: its
+        // first item in `self.items` and its turn, settled when the next
+        // cluster starts (`turn_cluster`).
+        let mut cluster = None;
+        let mut moved = (0.0, 0.0);
+        let mut first = self.items.len();
+        let mut turn = 0.0;
         for g in &run.glyphs {
+            if let Some(w) = wobbling.as_ref() {
+                if cluster != Some(g.cluster) {
+                    self.turn_cluster(first, turn, drip);
+                    cluster = Some(g.cluster);
+                    first = self.items.len();
+                    moved = match letter_at(w.text, g.cluster) {
+                        Some(n) => {
+                            let (k, n) = (&w.wobble, w.base + n);
+                            (
+                                k.amount * g.size * crate::seeded::noise(k.seed, 0, n, 0),
+                                k.tilt.to_radians() * crate::seeded::noise(k.seed, 0, n, 1),
+                            )
+                        }
+                        None => (0.0, 0.0),
+                    };
+                    turn = moved.1;
+                }
+            }
+            let dy = moved.0;
             let entry = engine.font(g.font)?;
             let per_unit = g.size / f64::from(entry.info.units_per_em);
             let skew = slant
@@ -319,7 +445,7 @@ impl Glyphs {
                     0.0
                 };
             let mut polys = Polys::default();
-            let place = frame.after(&Affine::translate(g.x, g.y));
+            let place = frame.after(&Affine::translate(g.x, g.y + dy));
             outline::glyph_polys(entry, g.glyph, &place, per_unit, skew, tol, &mut polys);
             budget::check()?;
             if polys.is_empty() {
@@ -338,14 +464,9 @@ impl Glyphs {
             };
             let bold = face_bold + bold_outset(g.size) * embolden;
             budget::check()?;
-            let drip = match polys.bounds() {
-                Some((_, top, _, bottom)) if positive(drip) && bottom > top => Some(warp::Drip {
-                    mid: (top + bottom) / 2.0,
-                    bottom,
-                    pull: drip,
-                }),
-                _ => None,
-            };
+            // A glyph still to be turned has its drip measured once it has
+            // turned (`turn_cluster`).
+            let drip = if turn == 0.0 { drip_of(&polys, drip) } else { None };
             budget::push(
                 &mut self.items,
                 GlyphPolys {
@@ -357,7 +478,42 @@ impl Glyphs {
                 },
             )?;
         }
+        self.turn_cluster(first, turn, drip);
         Ok(())
+    }
+
+    /// Turns the glyphs of one wobbled cluster, `self.items[first..]`, by
+    /// `turn` radians about the middle of its base glyph's ink: the biggest
+    /// of them, as a letter is bigger than its marks. One middle for the
+    /// whole cluster keeps an accent on its letter. The outlines are turned
+    /// after they are flattened: a turn moves no point off its curve. Then
+    /// measures each glyph's `drip` as it now stands.
+    fn turn_cluster(&mut self, first: usize, turn: f64, drip: f64) {
+        if turn == 0.0 || first >= self.items.len() {
+            return;
+        }
+        let area = |b: (f64, f64, f64, f64)| (b.2 - b.0) * (b.3 - b.1);
+        let Some((l, t, r, b)) = self.items[first..]
+            .iter()
+            .filter_map(|g| g.polys.bounds())
+            .fold(None, |best: Option<(f64, f64, f64, f64)>, b| match best {
+                Some(a) if area(a) >= area(b) => Some(a),
+                _ => Some(b),
+            })
+        else {
+            return;
+        };
+        let (sin, cos) = turn.sin_cos();
+        let (cx, cy) = ((l + r) / 2.0, (t + b) / 2.0);
+        let m = Affine::translate(cx, cy)
+            .after(&Affine::rotate(cos, sin))
+            .after(&Affine::translate(-cx, -cy));
+        for g in self.items[first..].iter_mut() {
+            for p in g.polys.pts.iter_mut() {
+                *p = m.apply(*p);
+            }
+            g.drip = drip_of(&g.polys, drip);
+        }
     }
 
     /// Crisp: moves the glyphs `range` of one straight line, whose
@@ -442,6 +598,30 @@ impl Glyphs {
 
     pub(crate) fn len(&self) -> usize {
         self.items.len()
+    }
+
+    /// The box of the outlines of the glyphs `range`, job space, as they
+    /// stand before any bend.
+    fn bounds_of(&self, range: core::ops::Range<usize>) -> Option<(f64, f64, f64, f64)> {
+        self.items[range]
+            .iter()
+            .filter_map(|g| g.polys.bounds())
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+    }
+
+    /// `polys` (job space) as one more glyph, joined to the letters: the
+    /// bands go round it and the fill fills it. No bold, no drip, a pen of 1.
+    fn add_shape(&mut self, polys: &Polys) -> Result<(), Error> {
+        budget::push(
+            &mut self.items,
+            GlyphPolys {
+                polys: polys.map(&Affine::IDENTITY),
+                bold: 0.0,
+                smear: None,
+                drip: None,
+                pen: 1.0,
+            },
+        )
     }
 
     /// One glyph's contours moved to `side`: by the bold pen and `extra`
@@ -556,6 +736,36 @@ struct Planned<'a> {
     alpha: f32,
     /// The layer takes away what is under it (`Layer::erase`).
     erase: bool,
+    /// Its coverage already worked out (`band_fills`): laid as it is, and
+    /// `parts` are not read.
+    dense: Option<Dense>,
+}
+
+/// A coverage already worked out, one byte a pixel over its box.
+struct Dense {
+    bx: IBox,
+    a: budget::Buffer<u8>,
+}
+
+impl raster::Coverage for Dense {
+    fn render(
+        &mut self,
+        y0: i32,
+        y1: i32,
+        out: &mut [f32],
+        stride: usize,
+        spans: &mut [(u32, u32)],
+    ) -> Result<(), Error> {
+        let w = self.bx.width();
+        for (r, y) in (y0..y1).enumerate() {
+            let row = &self.a[(y - self.bx.y0) as usize * w..][..w];
+            for (o, &a) in out[r * stride..r * stride + w].iter_mut().zip(row) {
+                *o = f32::from(a) / 255.0;
+            }
+            spans[r] = (0, w as u32);
+        }
+        Ok(())
+    }
 }
 
 fn plan<'a>(parts: budget::Buffer<Part>, shader: Shader<'a>, alpha: f64) -> Option<Planned<'a>> {
@@ -577,6 +787,7 @@ fn plan<'a>(parts: budget::Buffer<Part>, shader: Shader<'a>, alpha: f64) -> Opti
         shader,
         alpha: alpha.min(1.0) as f32,
         erase: false,
+        dense: None,
     })
 }
 
@@ -596,7 +807,12 @@ fn finish(
     for p in planned {
         let bx = p.bx.intersect(&surface);
         if !bx.is_empty() {
-            let cov = rasterizer.prepare(&p.parts, bx)?;
+            // A coverage worked out already is laid over its own box (the
+            // composite cuts it to the surface).
+            let (bx, cov) = match p.dense {
+                Some(d) => (d.bx, Box::new(d) as Box<dyn raster::Coverage>),
+                None => (bx, rasterizer.prepare(&p.parts, bx)?),
+            };
             budget::push(
                 &mut layers,
                 Layer {
@@ -822,9 +1038,14 @@ fn paint_letters(
     } = request;
     let face: Face = *face;
     let bold_draw = bold_draw.unwrap_or(BoldDraw::for_rule(engine.rules.bold_advance));
-    // Validate both handles even when the job has no runs or draws nothing.
+    // Validate both handles even when the job has no runs or draws nothing,
+    // and those of every face its lines are set in.
     engine.font(face.font)?;
     engine.check_chain(face.chain)?;
+    for f in &request.faces.faces {
+        engine.font(f.font)?;
+        engine.check_chain(f.chain)?;
+    }
     if !transform.is_finite() || transform.invert().is_none() || !positive(face.size) {
         return Ok(None);
     }
@@ -858,11 +1079,13 @@ fn paint_letters(
     }
     // Crisp only where a job y is a device y (no turn, no vertical mirror)
     // and nothing moves the outlines after they are fitted: a curved run's
-    // letters are turned one by one, and a mesh or a roughening bends them.
+    // letters are turned one by one, a mesh or a roughening bends them, and
+    // a wobble moves and turns each letter on its own.
     let crisp = job.effects.crisp.filter(|_| {
         !job.curved
         && job.mesh.is_none()
         && job.roughen.is_none()
+        && job.effects.wobble.is_none()
         && transform.0[1] == 0.0
         && transform.0[2] == 0.0
         && transform.0[3] > 0.0
@@ -870,10 +1093,40 @@ fn paint_letters(
     // Every run's glyphs, and for each run the frame its fill is stated in.
     let mut glyphs = Glyphs::default();
     let mut runs = budget::Buffer::new();
+    // The letters' ink in job space before they are fitted to the device
+    // grid (Crisp): what a crack's broken pieces are chosen over, the same
+    // at every scale.
+    let mut unfitted: Option<(f64, f64, f64, f64)> = None;
+    let shaping = job.effects.special.is_some_and(|s| s.shapes_letters());
     budget::reserve(&mut runs, job.runs.len())?;
-    for run in &job.runs {
+    // Where each run's letters start in the count a wobble keys them by.
+    let bases = match job.effects.wobble {
+        Some(w) => wobble_bases(&job.runs, w.copies)?,
+        None => Vec::new(),
+    };
+    // A curved line's runs, shaped as the line (`Effects::line`); `None`
+    // shapes each run on its own. An afterimage is an SFX letter's, never a
+    // line's. A curved job never carries faces (the decoder refuses one), so
+    // the line is always in the job's face.
+    let mut line = None;
+    if job.curved && job.effects.line && !job.runs.iter().any(|r| r.ghost) {
+        let texts = job.runs.iter().map(|r| r.text.as_str());
+        line = shape::shape_line_runs(engine, face, texts, job.letter_spacing != 0.0)?
+            .map(IntoIterator::into_iter);
+    }
+    for (i, run) in job.runs.iter().enumerate() {
         let spacing = if job.curved { 0.0 } else { job.letter_spacing };
-        let shaped = shape_run(engine, face, &run.text, spacing)?;
+        // A line set in several faces is shaped by its stretches, each in
+        // its face: what the layout measured it by. From here on its glyphs
+        // are glyphs like any other - each names its own font and synthetic
+        // style, as a letter borrowed from a fallback font always has - so
+        // the bands, the fill, a wobble, a mesh and a mask need nothing of
+        // their own for it.
+        let shaped = match (line.as_mut().and_then(Iterator::next), request.faces.of(i)) {
+            (Some(shaped), _) => shaped,
+            (None, Some(spans)) => shape_spans(engine, &spans, &run.text, spacing)?,
+            (None, None) => shape_run(engine, face, &run.text, spacing)?,
+        };
         let frame = if job.curved {
             // translate(x, y); rotate(rot); the glyph centred on the origin.
             let (sin, cos) = run.rot.sin_cos();
@@ -914,7 +1167,19 @@ fn paint_letters(
             job.effects.embolden,
             job.effects.slant,
             tol,
+            job.effects.wobble.and_then(|wobble| {
+                Some(Wobbling {
+                    wobble,
+                    text: &run.text,
+                    base: (*bases.get(i)?)?,
+                })
+            }),
         )?;
+        if shaping && !run.ghost {
+            if let Some(b) = glyphs.bounds_of(from..glyphs.len()) {
+                unfitted = Some(unfitted.map_or(b, |a| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))));
+            }
+        }
         if let Some(grid) = crisp {
             let entry = engine.font(face.font)?;
             let per_unit = face.size / f64::from(entry.info.units_per_em);
@@ -931,6 +1196,31 @@ fn paint_letters(
     if all.is_empty() {
         return Ok(None);
     }
+    // The special effects that shape the letters (wire v14), drawn over the
+    // letters' ink as one, so a pattern runs across the whole word. The
+    // shapes added go with the last letter, whose fill fills them; what is
+    // cut is cut from everything, last.
+    let special = match job.effects.special.filter(Special::shapes_letters) {
+        Some(sp) => {
+            // The lines are laid over the ink as Crisp fits it.
+            let ink = (0..job.runs.len())
+                .filter(|&i| !job.runs[i].ghost)
+                .filter_map(|i| glyphs.bounds_of(runs[i].0.clone()))
+                .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
+            match ink {
+                Some(ink) => Some(special::letter_shapes(&sp, face.size, ink, unfitted.unwrap_or(ink))?),
+                None => None,
+            }
+        }
+        None => None,
+    };
+    if let Some(sh) = &special {
+        let last = job.runs.len().checked_sub(1).filter(|&i| !job.runs[i].ghost);
+        if let (Some(i), false) = (last, sh.adds.is_empty()) {
+            glyphs.add_shape(&sh.adds)?;
+            runs[i].0.end = glyphs.len();
+        }
+    }
     // And its roughening, which is stated in the box before the mesh bends it.
     let rough = match &job.roughen {
         Some(r) => r.map()?,
@@ -941,7 +1231,6 @@ fn paint_letters(
         mesh,
     };
 
-    let fx = &job.effects;
     let layers = Layers {
         job,
         glyphs: &glyphs,
@@ -957,10 +1246,39 @@ fn paint_letters(
     let letters: budget::Buffer<usize> = (0..job.runs.len())
         .filter(|&i| !job.runs[i].ghost)
         .collect();
+    let shapes = special.as_deref();
+    let planned = plan_letters(&layers, &ghosts, &letters, shapes, rasterizer)?;
+    match shapes.filter(|sh| !sh.pieces.is_empty()) {
+        Some(sh) => break_off(planned, &layers, sh, rasterizer),
+        None => finish_planned(planned, within(&job.effects), rasterizer),
+    }
+}
 
-    let mut planned: budget::Buffer<Planned<'_>> = budget::Buffer::new();
+/// Every layer of the letters as `l` places them: the afterimages' fills,
+/// the letters (or their silhouette), a no-fill's cut and the special
+/// effects' cuts (`shapes`), as `Effects::cuts` asks; with `Cuts::Alone`
+/// the cuts alone, opaque.
+fn plan_letters<'a>(
+    l: &Layers<'a>,
+    ghosts: &[usize],
+    letters: &[usize],
+    shapes: Option<&special::Shapes>,
+    rasterizer: &dyn Rasterizer,
+) -> Result<budget::Buffer<Planned<'a>>, Error> {
+    let job = l.job;
+    let fx = &job.effects;
+    // The cuts alone: a box's own strokes cut by them as a glyph band is
+    // (`Cuts::Alone`).
+    if let Cuts::Alone = fx.cuts {
+        let mut planned = budget::Buffer::new();
+        if let Some(p) = shapes.map(|sh| poly_plan(&sh.cuts, l.bends, l.transform, l.tiles, l.tol)).transpose()?.flatten() {
+            budget::push(&mut planned, p)?;
+        }
+        return Ok(planned);
+    }
+    let mut planned: budget::Buffer<Planned<'a>> = budget::Buffer::new();
     // Afterimages under everything, their fills alone.
-    layers.fills(&mut planned, &ghosts)?;
+    l.fills(&mut planned, &ghosts)?;
     if let Some(color) = job.silhouette {
         // The letters and their widest band as one solid shape: grown by
         // half that band's pen (and a negative's grow, and the silhouette's
@@ -975,17 +1293,17 @@ fn paint_letters(
         if !job.no_fill || positive(pen) {
             let reach = Reach {
                 pen,
-                weight: if job.no_fill { 0.0 } else { weight },
+                weight: if job.no_fill { 0.0 } else { l.weight },
             };
-            let sel = layers.glyphs_of(&letters);
-            layers.solid(&mut planned, sel, reach, false, fx.join, color, 1.0)?;
+            let sel = l.glyphs_of(&letters);
+            l.solid(&mut planned, sel, reach, false, fx.join, color, 1.0)?;
         }
     } else if fx.each {
-        for &r in &letters {
-            layers.letters(&mut planned, &[r])?;
+        for &r in letters {
+            l.letters(&mut planned, &[r])?;
         }
     } else {
-        layers.letters(&mut planned, &letters)?;
+        l.letters(&mut planned, &letters)?;
     }
 
     // No fill: the glyphs, as heavy as they would have been filled, are taken
@@ -995,22 +1313,673 @@ fn paint_letters(
     // so it adds nothing to the surface; with nothing under it, it is not made.
     if job.no_fill && !planned.is_empty() {
         const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
-        let sel = layers.glyphs_of(&letters);
-        let parts = glyphs.parts(
+        let sel = l.glyphs_of(&letters);
+        let parts = l.glyphs.parts(
             sel,
-            Reach::flat(weight),
+            Reach::flat(l.weight),
             false,
             Join::Round,
-            bends,
-            transform,
-            tol,
+            l.bends,
+            l.transform,
+            l.tol,
         )?;
-        let shader = Shader::new(&OPAQUE, transform, tiles);
+        let shader = Shader::new(&OPAQUE, l.transform, l.tiles);
         if let Some(mut p) = shader.and_then(|s| plan(parts, s, 1.0)) {
             p.erase = true;
             budget::push(&mut planned, p)?;
         }
     }
+    // A special effect's cuts, out of everything: bent with the letters, so
+    // a crack stays on the letter it crosses under a mesh.
+    if fx.cuts == Cuts::Made && !planned.is_empty() {
+        if let Some(mut p) = shapes.map(|sh| poly_plan(&sh.cuts, l.bends, l.transform, l.tiles, l.tol)).transpose()?.flatten() {
+            // The glyph bands laid again in the cuts, when they fill them
+            // (`Special::fill_bands`), worked out before the cut is spent.
+            let fills = match fx.special.filter(|s| s.fill_bands) {
+                Some(_) => band_fills(l, letters, &p, rasterizer)?,
+                None => budget::Buffer::new(),
+            };
+            p.erase = true;
+            budget::push(&mut planned, p)?;
+            for f in fills {
+                budget::push(&mut planned, f)?;
+            }
+        }
+    }
+    Ok(planned)
+}
+
+/// The glyph bands filling a special effect's cuts (`Special::fill_bands`):
+/// each band, outermost first, laid again inside the cuts (`cut`, as
+/// planned), no further than its half line from a cut's edge and no further
+/// than it reaches round the letters, so a crack narrower than the outline
+/// reads as a line in its colour and a wide cut is outlined, as a box
+/// stroke outlines the cut letters (`fills-cuts`). Inside the cuts only, so
+/// they are laid after the cut, over nothing of the letters.
+///
+/// The distance to a cut's edge is measured on its coverage, so cuts that
+/// overlap are one shape (a branch's start inside its arm draws no line);
+/// a pixel half covered or less is on the edge.
+fn band_fills<'a>(
+    l: &Layers<'a>,
+    letters: &[usize],
+    cut: &Planned<'a>,
+    rasterizer: &dyn Rasterizer,
+) -> Result<budget::Buffer<Planned<'a>>, Error> {
+    let fx = &l.job.effects;
+    let mut out = budget::Buffer::new();
+    // Each band as it is laid, outermost first: its colour, its opacity,
+    // how far it reaches round the glyphs (job space) and how far in from a
+    // cut's edge it fills (half its line). A silhouette (a shadow's shape)
+    // is one band, its own colour as far as it reaches, filled as far in as
+    // its widest band.
+    let mut bands: budget::Buffer<(Rgba, f64, f64, f64)> = budget::Buffer::new();
+    match l.job.silhouette {
+        Some(color) => {
+            let band = l.job.bands.first().map_or(0.0, |b| (b.line / 2.0).max(0.0));
+            let pen = band + fx.negative.map_or(0.0, |n| n.grow) + fx.grow;
+            if positive(band) {
+                budget::push(&mut bands, (color, 1.0, pen, band))?;
+            }
+        }
+        None => {
+            for b in l.job.bands.iter().filter(|b| positive(b.line) && positive(b.opacity)) {
+                let reach = b.line / 2.0;
+                budget::push(&mut bands, (b.color, b.opacity, fx.negative.map_or(reach, |n| n.grow + reach), reach))?;
+            }
+        }
+    }
+    let Some(widest) = bands.iter().map(|b| b.2).reduce(f64::max) else {
+        return Ok(out);
+    };
+    // Device pixels a job length is, near enough under a mesh.
+    let scale = l.transform.det().abs().sqrt();
+    let parts_of = |pen: f64| {
+        l.glyphs.parts(l.glyphs_of(letters), Reach { pen, weight: 0.0 }, false, fx.join, l.bends, l.transform, l.tol)
+    };
+    // Where any band reaches, a little wider, so the distance to a cut's
+    // edge is read past where it is used.
+    let room = (widest * scale).ceil() as i32 + 2;
+    let Some(reach_bx) = parts_of(widest)?.iter().filter_map(Part::pixel_box).reduce(|a, b| a.union(&b)) else {
+        return Ok(out);
+    };
+    let grown = IBox { x0: reach_bx.x0 - room, y0: reach_bx.y0 - room, x1: reach_bx.x1 + room, y1: reach_bx.y1 + room };
+    let bx = cut.bx.intersect(&grown);
+    if bx.is_empty() {
+        return Ok(out);
+    }
+    let (w, h) = (bx.width(), bx.height());
+    let c = alpha_bytes(&cut.parts, bx, rasterizer)?;
+    if c.iter().all(|&a| a == 0) {
+        return Ok(out);
+    }
+    // The squared distance from each pixel to the nearest one outside the
+    // cuts.
+    let outside: budget::Buffer<bool> = c.iter().map(|&a| a < 128).collect();
+    let d2 = fx::distance::squared(&outside, w, h)?;
+    for (color, opacity, pen, reach) in bands {
+        let r = reach * scale;
+        let d = alpha_bytes(&parts_of(pen)?, bx, rasterizer)?;
+        let mut a = budget::filled(w * h, 0u8)?;
+        let mut any = false;
+        for i in 0..w * h {
+            if c[i] == 0 || d[i] == 0 {
+                continue;
+            }
+            // From the pixel to the cut's edge, which lies half a pixel in
+            // from the nearest pixel outside; a pixel on the edge is near.
+            let edge = if outside[i] { 0.0 } else { f64::from(d2[i]).sqrt() - 0.5 };
+            let near = (r + 0.5 - edge).clamp(0.0, 1.0);
+            let v = f64::from(c[i]) * near * f64::from(d[i]) / 255.0;
+            if v > 0.0 {
+                a[i] = blur::to_u8(v as f32);
+                any |= a[i] > 0;
+            }
+        }
+        budget::check()?;
+        if !any {
+            continue;
+        }
+        // Cut to what it covers, so it makes the paint no bigger.
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for (i, &v) in a.iter().enumerate() {
+            if v > 0 {
+                let (x, y) = (i % w, i / w);
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            }
+        }
+        let tight = IBox { x0: bx.x0 + x0 as i32, y0: bx.y0 + y0 as i32, x1: bx.x0 + x1 as i32, y1: bx.y0 + y1 as i32 };
+        let tw = x1 - x0;
+        let mut cut_a = budget::filled(tw * (y1 - y0), 0u8)?;
+        for y in y0..y1 {
+            cut_a[(y - y0) * tw..(y - y0 + 1) * tw].copy_from_slice(&a[y * w + x0..y * w + x1]);
+        }
+        let (bx, a) = (tight, cut_a);
+        let Some(shader) = Shader::new(&Fill::Solid(color), l.transform, l.tiles) else {
+            continue;
+        };
+        if shader.solid().is_some_and(|c| c[3] <= 0.0) {
+            continue;
+        }
+        budget::push(
+            &mut out,
+            Planned {
+                parts: budget::Buffer::new(),
+                bx,
+                shader,
+                alpha: opacity.min(1.0) as f32,
+                erase: false,
+                dense: Some(Dense { bx, a }),
+            },
+        )?;
+    }
+    Ok(out)
+}
+
+/// The letters with a crack's pieces broken off (`special::Piece`).
+///
+/// `planned` (the letters where they stand, every layer this pass lays) is
+/// rastered once: that picture, less every piece's outline (a clean hole),
+/// is what stays. Each piece that is not gone is the same picture read
+/// under the piece's rigid move (fill, bands, afterimages and cuts all
+/// moved alike, as one picture), kept inside its outline rastered where it
+/// lies (less the pieces laid before it), so its broken edge is as sharp as
+/// the letters'. A piece moved by whole pixels is the picture's bytes; a
+/// turned one is read between pixels. The letters are planned and rastered
+/// once a pass, however many pieces there are, and the holes and the
+/// pieces' outlines once a paint (`broken`), however many passes read them.
+///
+/// A box's own strokes read the letters whole with the holes among the cuts
+/// (`Cuts`), so they are cut through at the holes too.
+fn break_off<'a>(
+    planned: budget::Buffer<Planned<'a>>,
+    l: &Layers<'a>,
+    shapes: &special::Shapes,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
+    let fx = &l.job.effects;
+    let clip = within(fx);
+    let Some(body) = finish_planned(planned, clip, rasterizer)? else {
+        // Nothing to carry: with the cuts alone, the holes are cuts still.
+        let (geom, shift) = broken(l, shapes, rasterizer)?;
+        return match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip, shift))) {
+            (Cuts::Alone, Some(h)) => h.opaque().map(Some),
+            _ => Ok(None),
+        };
+    };
+    let (geom, shift) = broken(l, shapes, rasterizer)?;
+    let have = IBox {
+        x0: body.x,
+        y0: body.y,
+        x1: body.x + body.width as i32,
+        y1: body.y + body.height as i32,
+    };
+    // Each piece, read from the letters as they stand, no further than
+    // where they land.
+    let mut laid = budget::Buffer::new();
+    for piece in geom.pieces.iter().flatten() {
+        let Some(cover) = piece.cover.within(clip, shift) else {
+            continue;
+        };
+        let back = piece.back_at(shift);
+        let Some(ahead) = back.invert() else {
+            continue;
+        };
+        let bx = cover.bx.intersect(&carried(have, &ahead));
+        if bx.is_empty() {
+            continue;
+        }
+        let data = read_moved(&body, AlphaIn { bx, ..cover }, &back)?;
+        budget::push(
+            &mut laid,
+            Raster {
+                x: bx.x0,
+                y: bx.y0,
+                width: bx.width() as u32,
+                height: bx.height() as u32,
+                data,
+            },
+        )?;
+        budget::check()?;
+    }
+    // The holes: taken out of the letters; with the cuts alone, laid among
+    // the cuts, less what each piece covers where it lies (a box stroke
+    // goes round a piece there, over a hole too); with the letters uncut,
+    // nothing.
+    let mut out = body;
+    match (fx.cuts, geom.holes.as_ref().and_then(|h| h.within(clip, shift))) {
+        (Cuts::Made, Some(h)) => erase_by(&mut out, h),
+        (Cuts::Alone, Some(h)) => {
+            out = over(out, &h.opaque()?)?;
+            for c in geom.pieces.iter().flatten().filter_map(|p| p.cover.within(clip, shift)) {
+                erase_by(&mut out, c);
+            }
+        }
+        _ => {}
+    }
+    // The pieces over it, in one raster as big as all of them.
+    let mut u = IBox {
+        x0: out.x,
+        y0: out.y,
+        x1: out.x + out.width as i32,
+        y1: out.y + out.height as i32,
+    };
+    for r in laid.iter() {
+        u = u.union(&IBox { x0: r.x, y0: r.y, x1: r.x + r.width as i32, y1: r.y + r.height as i32 });
+    }
+    let (width, height) = (u.width(), u.height());
+    if width > MAX_SIDE as usize || height > MAX_SIDE as usize || width * height > MAX_PIXELS {
+        return Err(Error::BadSpec);
+    }
+    if (u.x0, u.y0, width, height) != (out.x, out.y, out.width as usize, out.height as usize) {
+        let mut data = budget::filled(width * height * 4, 0u8)?.into_vec();
+        let ob = IBox { x0: out.x, y0: out.y, x1: out.x + out.width as i32, y1: out.y + out.height as i32 };
+        let row = ob.width() * 4;
+        for y in 0..ob.height() {
+            let at = ((ob.y0 - u.y0) as usize + y) * width * 4 + (ob.x0 - u.x0) as usize * 4;
+            data[at..at + row].copy_from_slice(&out.data[y * row..(y + 1) * row]);
+        }
+        out = Raster { x: u.x0, y: u.y0, width: width as u32, height: height as u32, data };
+    }
+    for r in laid.iter() {
+        let sb = IBox { x0: r.x, y0: r.y, x1: r.x + r.width as i32, y1: r.y + r.height as i32 };
+        lay_over(&mut out.data, u, &r.data, sb);
+    }
+    Ok(Some(out))
+}
+
+/// The box of device pixels `bx` can reach carried by `m`, a pixel wider
+/// each way for the reading between pixels.
+fn carried(bx: IBox, m: &Affine) -> IBox {
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (x, y) in [(bx.x0, bx.y0), (bx.x1, bx.y0), (bx.x0, bx.y1), (bx.x1, bx.y1)] {
+        let p = m.apply(Pt::new(f64::from(x), f64::from(y)));
+        (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
+    }
+    let at = |v: f64| v.clamp(-1e9, 1e9) as i32;
+    IBox {
+        x0: at(x0.floor()) - 1,
+        y0: at(y0.floor()) - 1,
+        x1: at(x1.ceil()) + 1,
+        y1: at(y1.ceil()) + 1,
+    }
+}
+
+/// Coverage over a box of device pixels, one byte a pixel.
+struct Alpha {
+    bx: IBox,
+    a: budget::Buffer<u8>,
+}
+
+/// A view of an [`Alpha`] moved by whole pixels (`shift`) and cut to a box
+/// (`bx`, where it lies moved).
+#[derive(Clone, Copy)]
+struct AlphaIn<'a> {
+    bx: IBox,
+    of: &'a Alpha,
+    shift: (i32, i32),
+}
+
+impl Alpha {
+    fn at(&self, x: i32, y: i32) -> u8 {
+        self.a[((y - self.bx.y0) as usize) * self.bx.width() + (x - self.bx.x0) as usize]
+    }
+
+    /// It moved by `shift` whole pixels, the part inside `clip` (all of it
+    /// with none).
+    fn within(&self, clip: Option<IBox>, shift: (i32, i32)) -> Option<AlphaIn<'_>> {
+        let (dx, dy) = shift;
+        let moved = IBox { x0: self.bx.x0 + dx, y0: self.bx.y0 + dy, x1: self.bx.x1 + dx, y1: self.bx.y1 + dy };
+        let bx = clip.map_or(moved, |c| moved.intersect(&c));
+        (!bx.is_empty()).then_some(AlphaIn { bx, of: self, shift })
+    }
+}
+
+impl AlphaIn<'_> {
+    /// The coverage at device pixel `(x, y)`, inside `bx`.
+    fn at(&self, x: i32, y: i32) -> u8 {
+        self.of.at(x - self.shift.0, y - self.shift.1)
+    }
+
+    /// As an opaque black raster, as a cut alone is laid.
+    fn opaque(&self) -> Result<Raster, Error> {
+        let (w, h) = (self.bx.width(), self.bx.height());
+        let mut data = budget::filled(w * h * 4, 0u8)?;
+        for y in 0..h {
+            for x in 0..w {
+                data[(y * w + x) * 4 + 3] = self.at(self.bx.x0 + x as i32, self.bx.y0 + y as i32);
+            }
+        }
+        Ok(Raster {
+            x: self.bx.x0,
+            y: self.bx.y0,
+            width: w as u32,
+            height: h as u32,
+            data: data.into_vec(),
+        })
+    }
+}
+
+/// A piece where it lies: its outline's coverage there (less the pieces
+/// laid before it), and the map from a device pixel there back to where it
+/// was.
+struct PieceAt {
+    cover: Alpha,
+    back: Affine,
+}
+
+impl PieceAt {
+    /// `back` with the paint moved by `shift` whole device pixels.
+    fn back_at(&self, (dx, dy): (i32, i32)) -> Affine {
+        if (dx, dy) == (0, 0) {
+            return self.back;
+        }
+        let (dx, dy) = (f64::from(dx), f64::from(dy));
+        Affine::translate(dx, dy).after(&self.back).after(&Affine::translate(-dx, -dy))
+    }
+}
+
+/// What every pass of a paint reads of a crack's pieces: the holes they
+/// leave (`None` with none) and each piece where it lies (`None` for one
+/// that is gone or covers nothing).
+struct Broken {
+    holes: Option<Alpha>,
+    pieces: budget::Buffer<Option<PieceAt>>,
+    /// The whole device pixels of the frame's move it was rastered at.
+    at: (i32, i32),
+}
+
+impl Broken {
+    fn bytes(&self) -> usize {
+        self.holes.as_ref().map_or(0, |h| h.a.len()) + self.pieces.iter().flatten().map(|p| p.cover.a.len() + 48).sum::<usize>()
+    }
+}
+
+/// The holes and the pieces' outlines of `shapes` as `l` places them,
+/// rastered once a paint: kept under the shapes' own key and the frame less
+/// its whole device pixels of move, so each pass of the box reads them
+/// back, a shadow's at its offset too; with the shift from where they were
+/// rastered to where this frame wants them. Roughened letters are kept
+/// (the roughening is in job space, before the frame); letters a mesh
+/// bends are not.
+fn broken(l: &Layers<'_>, shapes: &special::Shapes, rasterizer: &dyn Rasterizer) -> Result<(Rc<Broken>, (i32, i32)), Error> {
+    let [a, b, c, d, e, f] = l.transform.0;
+    let whole = |v: f64| v.floor().clamp(-1e9, 1e9) as i32;
+    let at = (whole(e), whole(f));
+    let key = shapes.key.filter(|_| l.bends.mesh.is_none()).and_then(|k| {
+        let surface = l.job.effects.surface.map(|s| (s.x0 - at.0, s.y0 - at.1, s.x1 - at.0, s.y1 - at.1));
+        Hasher::new("broken")
+            .key(k)
+            .debug(&[a, b, c, d, e - f64::from(at.0), f - f64::from(at.1)])
+            .f64(l.tol)
+            .debug(&surface)
+            .debug(&l.job.roughen)
+            .finish()
+    });
+    if let Some(hit) = key.and_then(kept::get::<Rc<Broken>>) {
+        let shift = (at.0 - hit.at.0, at.1 - hit.at.1);
+        return Ok((Rc::clone(&*hit), shift));
+    }
+    let outlines = |pieces: &mut dyn Iterator<Item = &special::Piece>| {
+        let mut p = Polys::default();
+        for piece in pieces {
+            piece.outline.iter().for_each(|&v| p.push(v));
+            p.close();
+        }
+        p
+    };
+    // No further than the surface: a piece's outline follows the crack's
+    // arms, which reach far past the letters, and what lands past the
+    // surface is never seen (its padding holds the farthest a piece goes).
+    let surface = l.job.effects.surface;
+    let alpha = |polys: &Polys, t: &Affine, within: Option<IBox>| -> Result<Option<Alpha>, Error> {
+        let Some(p) = poly_plan(polys, l.bends, t, l.tiles, l.tol)? else {
+            return Ok(None);
+        };
+        let bx = surface.map_or(p.bx, |s| p.bx.intersect(&s));
+        let bx = within.map_or(bx, |w| bx.intersect(&w));
+        if bx.is_empty() {
+            return Ok(None);
+        }
+        let a = alpha_bytes(&p.parts, bx, rasterizer)?;
+        Ok(Some(Alpha { bx, a }))
+    };
+    let holes = alpha(&outlines(&mut shapes.pieces.iter()), l.transform, None)?;
+    let to_job = l.transform.invert();
+    let bound = |o: &[Pt]| {
+        o.iter().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, v| {
+            (b.0.min(v.x), b.1.min(v.y), b.2.max(v.x), b.3.max(v.y))
+        })
+    };
+    let mut pieces = budget::Buffer::new();
+    for (i, piece) in shapes.pieces.iter().enumerate() {
+        let at = match (piece.moved, to_job) {
+            (Some(m), Some(to_job)) => {
+                let moved = l.transform.after(&m);
+                match (moved.after(&to_job).invert(), alpha(&outlines(&mut core::iter::once(piece)), &moved, None)?) {
+                    (Some(back), Some(mut cover)) => {
+                        // Less the pieces before it that overlap it (the
+                        // same move takes both).
+                        let b = bound(&piece.outline);
+                        let mut earlier = shapes.pieces[..i].iter().filter(|e| {
+                            let c = bound(&e.outline);
+                            c.0 <= b.2 && c.2 >= b.0 && c.1 <= b.3 && c.3 >= b.1
+                        });
+                        // Rastered over this piece's box alone.
+                        if let Some(e) = alpha(&outlines(&mut earlier), &moved, Some(cover.bx))? {
+                            let both = cover.bx.intersect(&e.bx);
+                            for y in both.y0..both.y1 {
+                                for x in both.x0..both.x1 {
+                                    let k = e.at(x, y);
+                                    if k > 0 {
+                                        let i = ((y - cover.bx.y0) as usize) * cover.bx.width() + (x - cover.bx.x0) as usize;
+                                        cover.a[i] = blur::div255(u32::from(cover.a[i]) * u32::from(255 - k)) as u8;
+                                    }
+                                }
+                            }
+                        }
+                        Some(PieceAt { cover, back })
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        budget::push(&mut pieces, at)?;
+        budget::check()?;
+    }
+    let out = Rc::new(Broken { holes, pieces, at });
+    if let Some(k) = key {
+        kept::put(k, Rc::clone(&out), out.bytes());
+    }
+    Ok((out, (0, 0)))
+}
+
+/// `parts` filled by the non-zero rule over `bx`, one byte of coverage a
+/// pixel, row by row: what one opaque white layer's alpha would be.
+pub(crate) fn alpha_bytes(parts: &[Part], bx: IBox, rasterizer: &dyn Rasterizer) -> Result<budget::Buffer<u8>, Error> {
+    use raster::{strip_of, STRIP_ROWS};
+    let w = bx.width();
+    let mut data = budget::filled(w.checked_mul(bx.height()).ok_or(Error::BadSpec)?, 0u8)?;
+    let mut coverage = rasterizer.prepare(parts, bx)?;
+    let stride = w + 2;
+    let strip = STRIP_ROWS as usize;
+    let mut cov = budget::filled(stride * strip, 0.0f32)?;
+    let mut spans = budget::filled(strip, (0u32, 0u32))?;
+    let mut y = bx.y0;
+    while y < bx.y1 {
+        let y_end = ((strip_of(y) + 1) * STRIP_ROWS).min(bx.y1);
+        let rows = (y_end - y) as usize;
+        cov[..stride * rows].fill(0.0);
+        coverage.render(y, y_end, &mut cov[..stride * rows], stride, &mut spans)?;
+        for (r, &(a, b)) in spans[..rows].iter().enumerate() {
+            let (a, b) = (a as usize, (b as usize).min(w));
+            if a >= b {
+                continue;
+            }
+            let row = &mut data[((y - bx.y0) as usize + r) * w..][..w];
+            for (o, &c) in row[a..b].iter_mut().zip(&cov[r * stride + a..r * stride + b]) {
+                // As the composite stores one opaque white layer's alpha.
+                if c > 0.0 {
+                    *o = blur::to_u8(if c < 1.0 { c } else { 1.0 } * 255.0);
+                }
+            }
+        }
+        y = y_end;
+    }
+    Ok(data)
+}
+
+/// `r` less `cut`'s coverage, where they meet.
+fn erase_by(r: &mut Raster, cut: AlphaIn<'_>) {
+    let rw = r.width as i32;
+    let bx = cut.bx.intersect(&IBox { x0: r.x, y0: r.y, x1: r.x + rw, y1: r.y + r.height as i32 });
+    for y in bx.y0..bx.y1 {
+        for x in bx.x0..bx.x1 {
+            let a = u32::from(cut.at(x, y));
+            if a == 0 {
+                continue;
+            }
+            let at = (((y - r.y) * rw + x - r.x) * 4) as usize;
+            for c in &mut r.data[at..at + 4] {
+                *c = blur::div255(u32::from(*c) * (255 - a)) as u8;
+            }
+        }
+    }
+}
+
+/// The pixels of `cover`'s box read from `src` where `back` (device to
+/// device) takes each pixel's centre, kept to `cover`. A move by whole
+/// pixels reads `src`'s bytes as they are; otherwise each is read between
+/// the four pixels round it.
+fn read_moved(src: &Raster, cover: AlphaIn<'_>, back: &Affine) -> Result<Vec<u8>, Error> {
+    let bx = cover.bx;
+    let (w, h) = (bx.width(), bx.height());
+    let mut data = budget::filled(w * h * 4, 0u8)?.into_vec();
+    let [a, b, c, d, e, f] = back.0;
+    let (sw, sh) = (src.width as i32, src.height as i32);
+    let at = |x: i32, y: i32| -> [u32; 4] {
+        if x < 0 || y < 0 || x >= sw || y >= sh {
+            return [0; 4];
+        }
+        let i = ((y * sw + x) * 4) as usize;
+        [0, 1, 2, 3].map(|k| u32::from(src.data[i + k]))
+    };
+    let whole = |v: f64| (v - v.round()).abs() < 1e-9;
+    let shift = (a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 && whole(e) && whole(f))
+        .then(|| (e.round() as i32, f.round() as i32));
+    for y in 0..h {
+        let py = bx.y0 + y as i32;
+        for x in 0..w {
+            let px = bx.x0 + x as i32;
+            let k = cover.at(px, py);
+            if k == 0 {
+                continue;
+            }
+            let v = match shift {
+                Some((dx, dy)) => at(px + dx - src.x, py + dy - src.y),
+                None => {
+                    // The source point, in `src`'s pixels, less half a pixel
+                    // to the centres.
+                    let (cx, cy) = (f64::from(px) + 0.5, f64::from(py) + 0.5);
+                    let sx = a * cx + c * cy + e - 0.5 - f64::from(src.x);
+                    let sy = b * cx + d * cy + f - 0.5 - f64::from(src.y);
+                    let (x0, y0) = (sx.floor(), sy.floor());
+                    let fx = ((sx - x0) * 256.0).round() as u32;
+                    let fy = ((sy - y0) * 256.0).round() as u32;
+                    let (x0, y0) = (x0 as i32, y0 as i32);
+                    let (p, q, r, s) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+                    [0, 1, 2, 3].map(|i| {
+                        let top = p[i] * (256 - fx) + q[i] * fx;
+                        let bottom = r[i] * (256 - fx) + s[i] * fx;
+                        ((top * (256 - fy) + bottom * fy + 32768) >> 16).min(255)
+                    })
+                }
+            };
+            let o = (y * w + x) * 4;
+            let k = u32::from(k);
+            for i in 0..4 {
+                data[o + i] = if k == 255 { v[i] as u8 } else { ((v[i] * k + 127) / 255) as u8 };
+            }
+        }
+    }
+    Ok(data)
+}
+
+/// `top` laid over `under` (both premultiplied), in one raster as big as
+/// both.
+fn over(under: Raster, top: &Raster) -> Result<Raster, Error> {
+    let bx = |r: &Raster| IBox {
+        x0: r.x,
+        y0: r.y,
+        x1: r.x + r.width as i32,
+        y1: r.y + r.height as i32,
+    };
+    let (a, b) = (bx(&under), bx(top));
+    let u = a.union(&b);
+    if u == a {
+        let mut under = under;
+        lay_over(&mut under.data, a, &top.data, b);
+        return Ok(under);
+    }
+    let (width, height) = (u.width(), u.height());
+    if width > MAX_SIDE as usize || height > MAX_SIDE as usize || width * height > MAX_PIXELS {
+        return Err(Error::BadSpec);
+    }
+    let mut data = budget::filled(width * height * 4, 0u8)?.into_vec();
+    for y in 0..under.height as usize {
+        let from = y * under.width as usize * 4;
+        let to = ((y + (a.y0 - u.y0) as usize) * width + (a.x0 - u.x0) as usize) * 4;
+        data[to..to + under.width as usize * 4].copy_from_slice(&under.data[from..from + under.width as usize * 4]);
+    }
+    lay_over(&mut data, u, &top.data, b);
+    Ok(Raster {
+        x: u.x0,
+        y: u.y0,
+        width: width as u32,
+        height: height as u32,
+        data,
+    })
+}
+
+/// Source-over of premultiplied `src` (over `sb`) into `dst` (over `db`,
+/// which holds `sb`).
+fn lay_over(dst: &mut [u8], db: IBox, src: &[u8], sb: IBox) {
+    let dw = db.width();
+    let sw = sb.width();
+    for y in 0..sb.height() {
+        for x in 0..sw {
+            let s = &src[(y * sw + x) * 4..][..4];
+            let sa = u32::from(s[3]);
+            if sa == 0 {
+                continue;
+            }
+            let (dx, dy) = ((sb.x0 - db.x0) as usize + x, (sb.y0 - db.y0) as usize + y);
+            let d = &mut dst[(dy * dw + dx) * 4..][..4];
+            for c in 0..4 {
+                d[c] = (u32::from(s[c]) + (u32::from(d[c]) * (255 - sa) + 127) / 255).min(255) as u8;
+            }
+        }
+    }
+}
+
+/// Where a pass's raster may reach: the cuts alone, no further than the
+/// surface (`Cuts::Alone`); any other, all it paints.
+fn within(fx: &Effects) -> Option<IBox> {
+    match fx.cuts {
+        Cuts::Alone => fx.surface,
+        _ => None,
+    }
+}
+
+/// The planned layers laid in one raster as big as what they paint (their
+/// erasers reach no further), within `clip` when there is one. `None` with
+/// nothing painted.
+fn finish_planned(
+    planned: budget::Buffer<Planned<'_>>,
+    clip: Option<IBox>,
+    rasterizer: &dyn Rasterizer,
+) -> Result<Option<Raster>, Error> {
     budget::check()?;
     let Some(surface) = planned
         .iter()
@@ -1020,6 +1989,10 @@ fn paint_letters(
     else {
         return Ok(None);
     };
+    let surface = clip.map_or(surface, |c| surface.intersect(&c));
+    if surface.is_empty() {
+        return Ok(None);
+    }
     let (width, height) = (surface.width(), surface.height());
     if width > MAX_SIDE as usize || height > MAX_SIDE as usize || width * height > MAX_PIXELS {
         return Err(Error::BadSpec);
@@ -1032,6 +2005,32 @@ fn paint_letters(
         height: height as u32,
         data,
     }))
+}
+
+/// `polys` (job space) as one opaque layer in device space, bent with the
+/// letters, so a crack stays on the letter it crosses under a mesh. `None`
+/// with nothing in it.
+fn poly_plan<'a>(
+    polys: &Polys,
+    bends: Bends<'_>,
+    transform: &'a Affine,
+    tiles: &'a [Tile],
+    tol: f64,
+) -> Result<Option<Planned<'a>>, Error> {
+    const OPAQUE: Fill = Fill::Solid(Rgba([0, 0, 0, 255]));
+    if polys.is_empty() {
+        return Ok(None);
+    }
+    let cut = match (bends.is_empty(), polys.bounds()) {
+        (false, Some(b)) => match bends.cut(b, tol) {
+            Some(c) => warp::bend(polys, |p| bends.at(p), c, tol)?.map(transform),
+            None => polys.map(transform),
+        },
+        _ => polys.map(transform),
+    };
+    let mut parts = budget::Buffer::new();
+    budget::push(&mut parts, Part::plain(cut))?;
+    Ok(Shader::new(&OPAQUE, transform, tiles).and_then(|s| plan(parts, s, 1.0)))
 }
 
 #[cfg(test)]
@@ -1065,7 +2064,8 @@ mod hardening_tests {
                     1.0,
                     0.0,
                     0.0,
-                    FLATTEN_TOLERANCE
+                    FLATTEN_TOLERANCE,
+                    None
                 ),
                 Err(Error::BadSpec)
             );
@@ -1127,6 +2127,7 @@ mod hardening_tests {
             shader: Shader::new(&fill, &Affine::IDENTITY, &[]).unwrap(),
             alpha: 1.,
             erase: false,
+            dense: None,
         };
         let planned = [p].into_iter().collect();
         let _scope = budget::Scope::new();
@@ -1162,6 +2163,7 @@ mod hardening_tests {
             transform: Affine::IDENTITY,
             tiles: vec![],
             ink: None,
+            faces: Default::default(),
             job: job::Job {
                 curved: false,
                 align: job::Align::Left,
@@ -1284,5 +2286,264 @@ mod bends_tests {
                 assert_eq!(new, old, "rough {r}, mesh {ms}, drip {with_drip}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod wobble_tests {
+    use super::*;
+    use crate::FontId;
+
+    fn font(file: &str) -> (Engine, FontId) {
+        let path = format!("{}/../src/test/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+        let mut engine = Engine::new();
+        let font = engine
+            .add_font_bytes(std::fs::read(path).unwrap(), 0)
+            .unwrap();
+        (engine, font)
+    }
+
+    const WOBBLE: Wobble = Wobble {
+        amount: 0.2,
+        tilt: 15.0,
+        seed: 7,
+        copies: 0,
+    };
+
+    /// One glyph as a wobble left it: the letter number its cluster starts
+    /// at in the job's text (`None` for a space or a hyphen), how far its
+    /// ink moved (its bounds' four edges less the unwobbled glyph's), and
+    /// its points before and after.
+    struct Moved {
+        letter: Option<usize>,
+        by: [f64; 4],
+        plain: Vec<Pt>,
+        wobbled: Vec<Pt>,
+    }
+
+    /// The glyphs of `lines`, laid as the runs of one job in `file`, each
+    /// line counting on from the letters of the lines before it as
+    /// `paint_letters` counts them. A move is the same wherever the line
+    /// puts the glyph.
+    fn moves_in(file: &str, lines: &[&str]) -> Vec<Moved> {
+        let (mut engine, font) = font(file);
+        let face = Face::new(font, 40.0);
+        let mut out = Vec::new();
+        let mut base = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let run = shape_run(&mut engine, face, line, 0.0).unwrap();
+            let at = Affine::translate(3.0 * i as f64, 60.0 * i as f64);
+            let tol = FLATTEN_TOLERANCE;
+            let (mut plain, mut wobbled) = (Glyphs::default(), Glyphs::default());
+            plain
+                .add_run(&engine, &run, &at, BoldDraw::Outset, 0.0, 1.0, 0.0, 0.0, tol, None)
+                .unwrap();
+            let w = Some(Wobbling {
+                wobble: WOBBLE,
+                text: line,
+                base,
+            });
+            wobbled
+                .add_run(&engine, &run, &at, BoldDraw::Outset, 0.0, 1.0, 0.0, 0.0, tol, w)
+                .unwrap();
+            // A space has no ink and is no item.
+            let starts = |g: &&Placed| {
+                let mut u = 0;
+                let c = line.chars().find(|c| {
+                    let here = u == g.cluster;
+                    u += c.len_utf16() as u32;
+                    here
+                });
+                !c.unwrap().is_whitespace()
+            };
+            let inked: Vec<&Placed> = run.glyphs.iter().filter(starts).collect();
+            assert_eq!(plain.items.len(), inked.len());
+            for ((g, p), w) in inked.iter().zip(plain.items.iter()).zip(wobbled.items.iter()) {
+                let (a, b) = (p.polys.bounds().unwrap(), w.polys.bounds().unwrap());
+                out.push(Moved {
+                    letter: letter_at(line, g.cluster).map(|n| base + n),
+                    by: [b.0 - a.0, b.1 - a.1, b.2 - a.2, b.3 - a.3],
+                    plain: p.polys.pts.to_vec(),
+                    wobbled: w.polys.pts.to_vec(),
+                });
+            }
+            base += letters_in(line);
+        }
+        out
+    }
+
+    fn moves(lines: &[&str]) -> Vec<[f64; 4]> {
+        moves_in("Bangers-Regular.ttf", lines).iter().map(|m| m.by).collect()
+    }
+
+    fn same(a: &[[f64; 4]], b: &[[f64; 4]]) {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            for k in 0..4 {
+                assert!((x[k] - y[k]).abs() < 1e-6, "letter {i}: {x:?} against {y:?}");
+            }
+        }
+    }
+
+    /// The move of each letter, by its number, from the first glyph of its
+    /// cluster.
+    fn by_letter(m: &[Moved]) -> std::collections::BTreeMap<usize, [f64; 4]> {
+        let mut out = std::collections::BTreeMap::new();
+        for g in m {
+            if let Some(n) = g.letter {
+                out.entry(n).or_insert(g.by);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_rewrap_gives_every_letter_the_move_it_had() {
+        let one = moves(&["WOBBLE THESE LETTERS ABOUT"]);
+        // Every letter moves, and not all by the same.
+        assert!(one.iter().all(|m| m.iter().any(|v| v.abs() > 1e-3)));
+        assert!(one.windows(2).any(|w| (w[0][1] - w[1][1]).abs() > 0.5));
+        same(&one, &moves(&["WOBBLE THESE", "LETTERS ABOUT"]));
+        same(&one, &moves(&["WOBBLE", "THESE LETTERS", "ABOUT"]));
+        // A word hyphenated across two lines: the hyphen is no letter and
+        // does not move, and the letters after it keep their numbers.
+        let mut cut = moves(&["WOBBLE THESE LET-", "TERS ABOUT"]);
+        let hyphen = cut.remove(14);
+        assert_eq!(hyphen, [0.0; 4]);
+        same(&one, &cut);
+    }
+
+    #[test]
+    fn a_ligature_a_hyphen_splits_keeps_every_letter_its_move() {
+        let file = "DejaVuSans.ttf";
+        let whole = moves_in(file, &["office hours"]);
+        // The font joins letters here (fewer glyphs than letters, the space
+        // aside), so the count is of letters, not of glyphs.
+        assert!(whole.len() < "officehours".len(), "no ligature to test");
+        let cut = moves_in(file, &["of-", "fice hours"]);
+        let (a, b) = (by_letter(&whole), by_letter(&cut));
+        // Every letter after the joined ones (c onward, letter 4) moves the
+        // same in both layouts. Before it the glyphs differ (a ligature
+        // against single letters), so their bounds move differently.
+        let mut shared = 0;
+        for (n, m) in b.range(4..) {
+            if let Some(w) = a.get(n) {
+                same(&[*w], &[*m]);
+                shared += 1;
+            }
+        }
+        // c, e and the five of "hours" at least.
+        assert!(shared >= 7, "{shared}");
+        assert_eq!(a.keys().last(), b.keys().last());
+    }
+
+    #[test]
+    fn a_right_to_left_run_numbers_its_letters_in_the_order_they_are_written() {
+        let file = "DejaVuSans.ttf";
+        let word = "\u{5e9}\u{5dc}\u{5d5}\u{5dd}";
+        let run = moves_in(file, &[word]);
+        assert_eq!(run.len(), 4);
+        // The shaper gives the last letter first.
+        assert_eq!(run[0].letter, Some(3));
+        for (n, c) in word.chars().enumerate() {
+            let alone = moves_in(file, &["", &"x".repeat(n), &c.to_string()]);
+            let mine = run.iter().find(|m| m.letter == Some(n)).unwrap();
+            same(&[alone.last().unwrap().by], &[mine.by]);
+        }
+    }
+
+    #[test]
+    fn a_mark_turns_with_its_letter_about_the_letter_s_middle() {
+        // q has no accented form, so the accent stays a glyph of its own in
+        // the letter's cluster.
+        let got = moves_in("DejaVuSans.ttf", &["q\u{301}"]);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].letter, Some(0));
+        assert_eq!(got[1].letter, Some(0));
+        let dy = WOBBLE.amount * 40.0 * crate::seeded::noise(7, 0, 0, 0);
+        let turn = WOBBLE.tilt.to_radians() * crate::seeded::noise(7, 0, 0, 1);
+        assert!(turn.abs() > 1e-3);
+        // The base is the bigger ink; its middle, moved by dy, is the one
+        // middle both glyphs turn about.
+        let bounds = |p: &[Pt]| {
+            let mut b = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for q in p {
+                b = (b.0.min(q.x), b.1.min(q.y), b.2.max(q.x), b.3.max(q.y));
+            }
+            b
+        };
+        let (l, t, r, b) = bounds(&got[0].plain);
+        let (cx, cy) = ((l + r) / 2.0, (t + b) / 2.0 + dy);
+        let (sin, cos) = turn.sin_cos();
+        for g in &got {
+            for (p, w) in g.plain.iter().zip(&g.wobbled) {
+                let (x, y) = (p.x - cx, p.y + dy - cy);
+                let want = (cx + x * cos - y * sin, cy + x * sin + y * cos);
+                assert!((w.x - want.0).abs() < 1e-6 && (w.y - want.1).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn typing_at_the_end_leaves_the_letters_before_it_still() {
+        let short = moves(&["WOBBLE THES"]);
+        let long = moves(&["WOBBLE THESE LETTERS"]);
+        same(&short, &long[..short.len()]);
+    }
+
+    #[test]
+    fn a_letter_moves_no_further_than_the_amount_and_the_tilt_allow() {
+        // Up or down by at most a fifth of 40, plus what a 15 degree turn
+        // about its middle adds to a letter at most 40 high.
+        let reach = 0.2 * 40.0 + 20.0 * 15f64.to_radians().sin() + 1e-6;
+        for m in moves(&["WOBBLE THESE LETTERS ABOUT"]) {
+            assert!(m.iter().all(|v| v.abs() <= reach), "{m:?}");
+        }
+    }
+
+    fn run(text: &str, ghost: bool) -> Run {
+        Run {
+            text: text.into(),
+            x: 0.0,
+            y: 0.0,
+            rot: 0.0,
+            sx: 1.0,
+            sy: 1.0,
+            skew: 0.0,
+            drip: 0.0,
+            fill: None,
+            pen: 1.0,
+            ghost,
+        }
+    }
+
+    #[test]
+    fn an_arc_counts_its_letters_one_run_each_and_skips_its_spaces() {
+        let runs: Vec<Run> = ["W", "O", " ", "B", "-", "Y"].iter().map(|t| run(t, false)).collect();
+        assert_eq!(
+            wobble_bases(&runs, 0).unwrap(),
+            [Some(0), Some(1), Some(2), Some(2), Some(3), Some(3)]
+        );
+        // The same letters on one line are numbered the same.
+        let line = "WO B-Y";
+        let at = |n: u32| letter_at(line, n);
+        assert_eq!([at(0), at(1), at(3), at(5)], [Some(0), Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn a_trail_s_copies_take_their_letter_s_numbers() {
+        // Two copies behind each letter, laid first, in the letters' order.
+        let mut runs: Vec<Run> = ["B", "B", "O", "O", "O", "O", "M", "M"]
+            .iter()
+            .map(|t| run(t, true))
+            .collect();
+        runs.extend(["B", "O", "O", "M"].iter().map(|t| run(t, false)));
+        let want = [0, 0, 1, 1, 2, 2, 3, 3, 0, 1, 2, 3].map(Some);
+        assert_eq!(wobble_bases(&runs, 2).unwrap(), want);
+        // The copies alone, as a box paints its afterimages apart, keep
+        // their numbers.
+        assert_eq!(wobble_bases(&runs[..8], 2).unwrap(), want[..8]);
+        // With no count of copies, no copy wobbles.
+        assert_eq!(wobble_bases(&runs[..2], 0).unwrap(), [None, None]);
     }
 }

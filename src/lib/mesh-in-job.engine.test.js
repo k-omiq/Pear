@@ -8,6 +8,7 @@ import { createBrowserGlyphPainter } from './text-engine/browser-painter.js';
 import { setTypesetEnabled, typesetEnabled, clearLayoutMemo } from './measure.js';
 import { defaultStyle, normalizeStyle } from './data.js';
 import { identityMesh } from './warp.js';
+import { maskFromClip } from './box-mask.js';
 
 // ===========================================================================
 // The mesh in the glyph job, against the real engine
@@ -50,7 +51,13 @@ afterAll(() => {
 const W = 300;
 const H = 90;
 const style = (over = {}) => normalizeStyle({ ...defaultStyle(), font: 'Comic Neue', size: 30, strokes: [], ...over });
-const boxOf = (over = {}, text = 'THE MESH IS\nIN THE JOB', geom = {}) => ({ id: 'b', lineN: null, text, x: 100, y: 100, w: W, h: H, ...geom, style: style(over) });
+// A mask is given the old way (`clip`, box-local) and carried to the page as
+// a chapter load carries it: the box's own (`box.mask`).
+const boxOf = (over = {}, text = 'THE MESH IS\nIN THE JOB', geom = {}) => {
+  const b = { id: 'b', lineN: null, text, x: 100, y: 100, w: W, h: H, ...geom, style: style(over) };
+  const mask = maskFromClip({ ...b, style: { ...b.style, clip: over.clip } });
+  return mask ? { ...b, mask } : b;
+};
 const pageOf = (box) => ({ id: 1, w: 1600, h: 2300, lines: [], boxes: [box] });
 const bytes = (c) => c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
 const unlike = (a, b) => {
@@ -168,7 +175,7 @@ describe('a box whose painter bends the mesh', () => {
     expect(Math.abs(f.ch - tex.ch)).toBeLessThanOrEqual(1 / 2);
   });
 
-  it('is bent in the job with its visibility mask, where the painter paints the whole box: the mask bends with the letters', () => {
+  it('is bent in the job with its mask, which is cut from the bent picture and not bent with it', () => {
     const box = boxOf({ warp: bumpy(), clip: CLIP });
     const p = pageOf(box);
     expect(glyphPainter().box).toBe(true);
@@ -189,10 +196,16 @@ describe('a box whose painter bends the mesh', () => {
     expect(masked).toBeLessThan(count(renderBoxTexture(open, pageOf(open), null, 2).canvas));
   });
 
-  // A painter that hands back glyphs for the canvas to mask (`box` unset)
-  // keeps a masked box on the texture warp, as an engine that paints no ink
-  // keeps an inked one.
-  for (const [name, over, painter] of [['brush ink and an engine that paints none', { ink: INK }, (w) => ({ ...w, ink: false })], ['a visibility mask and a painter that does not paint whole boxes', { clip: CLIP }, (w) => ({ ...w, box: false, paintBox: undefined })]]) {
+  // An engine that paints no ink keeps an inked box on the texture warp. A
+  // mask no longer does: it is pinned to the page and cut after the bend,
+  // whichever painter bends (`maskAfterWarp`).
+  it('is bent in the job with a mask, whatever the painter cuts it with', () => {
+    const whole = glyphPainter();
+    setGlyphPainter({ ...whole, box: false, paintBox: undefined });
+    onTestFinished(() => setGlyphPainter(whole));
+    expect(meshInJob(boxOf({ warp: bumpy(), clip: CLIP }))).toBe(true);
+  });
+  for (const [name, over, painter] of [['brush ink and an engine that paints none', { ink: INK }, (w) => ({ ...w, ink: false })]]) {
     it(`is not bent in the job when the box has ${name}: the texture warp takes it whole`, () => {
       const whole = glyphPainter();
       setGlyphPainter(painter(whole));

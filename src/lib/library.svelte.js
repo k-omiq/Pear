@@ -12,6 +12,7 @@
 import { fsx } from './fsx.js';
 import { takeSnapshot, requireSnapshot, listSnapshots, isSnapshotName } from './snapshots.js';
 import { uniqueSlug, chapterSlug } from './paths.js';
+import { putText, saveRuns } from './runs.js';
 import {
   app,
   chapterProgress,
@@ -35,6 +36,7 @@ import {
   normalizeChapterMode,
   normalizeLayout,
   normalizeOcrLanguage,
+  normalizeExportScale,
   toast,
   toastError,
   cancelChapterPlace,
@@ -65,6 +67,7 @@ import { forgetPagePixels } from './page-pixels.js';
 import { forgetArt } from './page-art.svelte.js';
 import { forgetBackdrops } from './backdrop.js';
 import { bindPatternTiles, forgetPickedTiles, PATTERNS_DIR } from './pattern-tiles.svelte.js';
+import { pageRectPick } from './page-rect-pick.svelte.js';
 
 const ROOT_KEY = 'mt.libraryRoot';
 const SCHEMA = 1;
@@ -111,8 +114,12 @@ export const library = $state({
   error: '',
 });
 
+// The side-by-side test build (scripts/install-sxs.sh) names its own folder, so a
+// fresh copy of it never opens the real library.
+const ROOT_NAME = import.meta.env?.VITE_MT_LIBRARY_DIR || 'MangaTypesetter';
+
 export async function defaultRoot() {
-  return fsx.join(await fsx.homeDir(), 'Documents', 'MangaTypesetter');
+  return fsx.join(await fsx.homeDir(), 'Documents', ROOT_NAME);
 }
 
 export async function initRoot() {
@@ -383,6 +390,12 @@ function projectFieldsOf(raw) {
     layout: normalizeLayout(raw.layout),
     // Old Korean builds stored this globally; otherwise absent is Japanese.
     ocrLanguage: normalizeOcrLanguage(raw.ocrLanguage ?? legacyProjectLanguage()),
+    // Set only on a project made where no layout was asked (general use):
+    // its layout is a default, not a choice, so its first document's images
+    // may still set it (`setEmptyProjectLayout`). Absent on every other
+    // project, which no guess ever touches.
+    layoutGuessed: raw.layoutGuessed === true,
+    exportScale: normalizeExportScale(raw.exportScale),
     ...projectTags(raw),
     guide: sanitizeGuide(raw.guide),
   };
@@ -667,7 +680,9 @@ async function freeDir(parent, name, taken) {
 // image with no margins, and re-reading them as separate pages - or the reverse -
 // describes art that does not exist. Anything unrecognised, including the
 // `undefined` every existing caller passes, is 'pages'.
-export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja' } = {}) {
+// `layoutGuessed`: the caller asked no layout, so `layout` is only a default
+// (see projectFieldsOf).
+export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja', layoutGuessed = false, exportScale = 1 } = {}) {
   const taken = new Set(library.projects.map((p) => p.slug));
   const { slug, dir } = await freeDir(library.root, name, taken);
   await fsx.mkdir(dir);
@@ -681,7 +696,9 @@ export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja'
     coverChapterId: null,
     coverPageId: null,
     layout: normalizedLayout,
+    ...(layoutGuessed ? { layoutGuessed: true } : null),
     ocrLanguage: normalizeOcrLanguage(ocrLanguage),
+    exportScale: normalizeExportScale(exportScale),
     // Born empty and written so: a project with no registry of its own is what
     // `projectTags` reads as pre-registry and hands the legacy global list.
     tags: [],
@@ -689,7 +706,7 @@ export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja'
     guide: sanitizeGuide(null),
   };
   await writeJson(await fsx.join(dir, 'project.json'), record);
-  const project = { ...record, slug, dir, chapters: [], unreadable: false };
+  const project = { ...record, layoutGuessed: !!layoutGuessed, slug, dir, chapters: [], unreadable: false };
   library.projects = [project, ...library.projects];
   return project;
 }
@@ -788,6 +805,8 @@ async function writeProjectRecordNow(p, patch) {
       if (disk) fields = merge3(base, mine, disk);
     }
     const record = { schema: SCHEMA, id: p.id, ...fields, updatedAt: updatedAt ?? now() };
+    // Written only while set, so no other project's record gains the key.
+    if (!record.layoutGuessed) delete record.layoutGuessed;
     // The key order every record has been written in.
     const ordered = Object.fromEntries(RECORD_ORDER.filter((k) => k in record).map((k) => [k, record[k]]));
     await writeJson(path, ordered);
@@ -798,7 +817,7 @@ async function writeProjectRecordNow(p, patch) {
   });
 }
 
-const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'tags', 'tagSizes', 'guide'];
+const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide'];
 
 // The record as this window would write it from its catalogue entry.
 const recordFields = (p) => ({
@@ -807,7 +826,9 @@ const recordFields = (p) => ({
   coverChapterId: p.coverChapterId ?? null,
   coverPageId: p.coverPageId ?? null,
   layout: normalizeLayout(p.layout),
+  layoutGuessed: p.layoutGuessed === true,
   ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
+  exportScale: normalizeExportScale(p.exportScale),
   ...seriesFields(p),
 });
 
@@ -820,7 +841,7 @@ const recordBase = new WeakMap();
 function adoptRecord(p, fields, mine) {
   const sameAs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   let series = false;
-  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'ocrLanguage', 'tags', 'tagSizes', 'guide']) {
+  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide']) {
     if (!(k in fields) || sameAs(fields[k], mine[k])) continue;
     p[k] = fields[k];
     if (k === 'tags' || k === 'tagSizes' || k === 'guide') series = true;
@@ -871,6 +892,61 @@ export async function setProjectOcrLanguage(projectId, language) {
   recordWrite = run.catch(() => {});
   await run;
   if (app.chapterRef?.projectId === projectId) app.projectOcrLanguage = next;
+  return next;
+}
+
+// A project's layout is fixed once it holds a chapter: every chapter in it
+// was cut and placed for that layout. A project made where no layout was
+// asked (general use, `layoutGuessed`) has only a default, so its first
+// document's images set it (NewChapterDialog), once: the write clears the
+// marker. A project someone chose a layout for is never touched, and neither
+// is one that holds a chapter. Returns whether the layout was set.
+export async function setEmptyProjectLayout(projectId, layout) {
+  const p = projectById(projectId);
+  if (!p || p.unreadable) throw new Error('No such readable project');
+  if (!p.layoutGuessed) return false;
+  if (p.chapters.length) throw new Error('A project with chapters keeps its layout');
+  const next = normalizeLayout(layout);
+  let set = false;
+  const run = recordWrite.then(async () => {
+    // Again in this turn of the queue, from disk: another window may have
+    // added a chapter, or chosen the layout, since the checks above.
+    if (!p.layoutGuessed || (await holdsChapter(p.dir))) return;
+    const record = await writeProjectRecord(p, { layout: next, layoutGuessed: false });
+    p.layout = next;
+    p.layoutGuessed = false;
+    p.updatedAt = record.updatedAt;
+    set = true;
+  });
+  // The chain goes on past a failure; the caller is the one told of it.
+  recordWrite = run.catch(() => {});
+  await run;
+  return set;
+}
+
+// Whether a project folder holds a chapter on disk: the same test the scan
+// makes (a folder with a chapter.json), cheap on the empty project it is for.
+async function holdsChapter(dir) {
+  for (const e of await fsx.readDir(dir)) {
+    if (e.isDirectory && (await fsx.exists(await fsx.join(dir, e.name, 'chapter.json')))) return true;
+  }
+  return false;
+}
+
+// Queued behind the other record writes as the language is
+// (`setProjectOcrLanguage`): a tag or guide write racing this one would put
+// the old size back on disk.
+export async function setProjectExportScale(projectId, scale) {
+  const p = projectById(projectId);
+  if (!p || p.unreadable) throw new Error('No such readable project');
+  const next = normalizeExportScale(scale);
+  const run = recordWrite.then(async () => {
+    const record = await writeProjectRecord(p, { exportScale: next });
+    p.exportScale = next;
+    p.updatedAt = record.updatedAt;
+  });
+  recordWrite = run.catch(() => {});
+  await run;
   return next;
 }
 
@@ -1563,6 +1639,7 @@ export async function readChapterPackageSources(projectId, chapterId) {
       name: p?.name ?? '',
       layout: normalizeLayout(p?.layout),
       ocrLanguage: normalizeOcrLanguage(p?.ocrLanguage),
+      exportScale: normalizeExportScale(p?.exportScale),
     },
     raws,
     cleaned,
@@ -2039,7 +2116,11 @@ export const applyTranslations = guarded(async function applyTranslations(
       const en = lineText(incoming.get(l.n));
       if (lineText(l).trim() || !en.trim()) return l;
       filled++;
-      return { ...l, en };
+      // Through the one writer of an English (runs.js). Imported words carry
+      // no faces, and none left beside the blank they replace is theirs.
+      const out = { ...l };
+      putText(out, 'en', en, { runs: null });
+      return out;
     });
     for (const l of parsed[i].lines) if (!existing.has(l.n)) lines.push(l);
     return { ...pg, lines };
@@ -2616,9 +2697,11 @@ async function writeOpenChapter(seq, requestedRef, requestedTurn) {
     ...(pg.proposals?.length ? { proposals: $state.snapshot(pg.proposals) } : null),
     // $state.snapshot is a deep clone: the nested style objects inside boxes
     // and the detect geometry come out as plain data, never proxies.
-    lines: $state.snapshot(pg.lines),
+    // The faces beside the words (runs.js) normalised on the way out, as
+    // they are on the way in.
+    lines: saveRuns($state.snapshot(pg.lines), 'en'),
     detect: $state.snapshot(pg.detect),
-    boxes: $state.snapshot(pg.boxes),
+    boxes: saveRuns($state.snapshot(pg.boxes), 'text'),
   }));
   // Serialised here, in the same synchronous breath as `record.pages` and from
   // the same document, so the two files can never describe different moments.
@@ -2787,6 +2870,8 @@ export function closeChapter() {
   openSeq++;
   // And async chapter work with it, before the images below are released.
   cancelChapterPlace();
+  // A box still waiting to be dragged on a page that is about to go.
+  pageRectPick.cancel('closed');
   // The check list is derived from the pages, so this has to run before they go:
   // it is what the project screen shows beside this chapter until the chapter is
   // next opened or edited.

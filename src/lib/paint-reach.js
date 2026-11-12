@@ -6,8 +6,39 @@
 // must not pay for one.
 
 import { inkActive, inkBounds, strokeReach, shadowExtent, shadowSpread, reachShadows, motionBlurTaps } from './text-paint.js';
+import { wobbleDrawn } from './text-engine/index.js';
 
 const NONE = Object.freeze({ l: 0, t: 0, r: 0, b: 0 });
+
+// How far a wobble can carry a letter's ink from where it was laid, page px
+// per axis (`Wobble` in the engine): up or down by `amount` percent of the
+// size, and a turn about the letter's middle of up to `tilt` degrees, which
+// moves no edge of a letter at most an em wide and high further than half
+// the size times the turn's sine. Zero for a wobble that is not painted
+// (`wobbleDrawn`), so a box under the browser engine does not grow for
+// nothing.
+export function wobbleReach(style) {
+  if (!wobbleDrawn(style)) return { x: 0, y: 0 };
+  const w = style.wobble;
+  const size = Math.max(0, Number(style.size) || 0);
+  const tilt = Math.min(90, Math.max(0, Number(w.tilt) || 0));
+  const turn = 0.5 * size * Math.sin((tilt * Math.PI) / 180);
+  return { x: turn, y: turn + (size * Math.max(0, Number(w.amount) || 0)) / 100 };
+}
+
+// How far a wobble carries the letters of a placed block (`placeBlock`), x
+// and y: what the box's ink rectangle (contain.js) and the export footprint
+// (exporter.js) both grow by. On a curve each letter is turned and scaled by
+// its own frame, so the move can point any way and is as long as the larger
+// scale of any letter's frame makes it.
+export function placedWobbleReach(style, place) {
+  const wr = wobbleReach(style);
+  if (!place?.isCurve || (!wr.x && !wr.y)) return wr;
+  let scale = 1;
+  for (const g of place.layout ?? []) scale = Math.max(scale, Math.abs(g.sx ?? 1), Math.abs(g.sy ?? 1));
+  const m = Math.max(wr.x, wr.y) * scale;
+  return { x: m, y: m };
+}
 
 // The hand-drawn ink's reach past each edge, with the finish wrapped around it
 // (the box's outline bands and the shadows thrown from them - `drawInk`). The
@@ -74,8 +105,11 @@ export function styleReach(style, w, h) {
       y1 = Math.max(y1, k.maxY);
     }
   }
+  // The wobbled letters reach past the box (the ink does not wobble), and
+  // the strokes are laid round them where they went.
   const so = strokeReach(style);
-  const sil = { x0: x0 - so, y0: y0 - so, x1: x1 + so, y1: y1 + so };
+  const wr = wobbleReach(style);
+  const sil = { x0: x0 - so - wr.x, y0: y0 - so - wr.y, x1: x1 + so + wr.x, y1: y1 + so + wr.y };
   const u = { ...sil };
   for (const sh of reachShadows(style)) {
     if (!(Number(sh?.opacity ?? 1) > 0)) continue;

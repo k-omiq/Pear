@@ -76,6 +76,7 @@ fn request(job: Job, font: FontId) -> Request {
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
         ink: None,
+        faces: Default::default(),
     }
 }
 
@@ -249,6 +250,9 @@ fn boxed(font: FontId, shadows: Vec<Shadow>) -> BoxRequest {
         blur: 0.0,
         taps: Vec::new(),
         clip: None,
+        fade: None,
+        pin_shift: mt_text::paint::Pt::new(0.0, 0.0),
+        pin_live: false,
         blend: Blend::Normal,
         fill_opacity: 1.0,
         blending: Default::default(),

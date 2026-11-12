@@ -23,7 +23,11 @@ import { solverOwns, reportOf } from './edit.js';
 // (how it is laid out, not how it looks).
 // Photoshop Layer Styles: a hollow look is only its effects.
 const LAYER_KEYS = ['strokeEffects', 'outerGlow', 'innerGlow', 'innerShadows', 'colorOverlays', 'gradientOverlays', 'patternOverlay', 'satin', 'bevel', 'blendMode', 'fillOpacity', 'blending'];
-export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin',
+// A wobble is part of how letters look; one left off is sent short, as a
+// layer style is.
+const SHORT_OFF = [...LAYER_KEYS, 'wobble'];
+// The special effects go with a look, their seeds with them.
+export const LOOK_KEYS = ['font', 'bold', 'italic', 'boldWeight', 'italicAngle', 'color', 'noFill', 'shadows', 'gradient', 'uppercase', 'lineHeight', 'letterSpacing', 'strokeOrder', 'strokeJoin', 'wobble', 'special',
   ...LAYER_KEYS];
 
 const STYLE_DEFAULTS = defaultStyle();
@@ -67,7 +71,7 @@ export function looksOf(pages) {
       if (k === 'gradient' && !v?.on) continue;
       // A layer style left at its default is still part of the look (the
       // target's own is switched off), sent short: a plain off.
-      if (LAYER_KEYS.includes(k) && v && !Array.isArray(v) && typeof v === 'object' && v.on === false && JSON.stringify(v) === JSON.stringify(STYLE_DEFAULTS[k])) {
+      if (SHORT_OFF.includes(k) && v && !Array.isArray(v) && typeof v === 'object' && v.on === false && JSON.stringify(v) === JSON.stringify(STYLE_DEFAULTS[k])) {
         style[k] = { on: false };
         continue;
       }

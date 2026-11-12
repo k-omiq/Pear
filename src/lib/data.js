@@ -3,6 +3,8 @@
 
 import { FLIP_MODES, BLEND_MODES, aaLevel, normalizeTexture } from './brush.js';
 import { wavePath } from './bezier-path.js';
+import { normalizePaint } from './box-paint.js';
+import { defaultSpecial, normalizeSpecial } from './special.js';
 
 // Default page dimensions until a real image sets them from its natural size.
 export const PAGE_W = 850;
@@ -238,15 +240,16 @@ export function setBoxDefaults(next) {
 export function applyBoxDefaults(style) {
   if (!style || typeof style !== 'object') return style;
   Object.assign(style, boxDefaults);
-  // A newborn box never inherits the previous box's bezier path, mask shapes
-  // or warp mesh: all three are that box's own geometry, and carried onto a box
+  // A newborn box never inherits the previous box's bezier path or warp
+  // mesh: both are that box's own geometry, and carried onto a box
   // of another size they curve, hide or deform text they were never drawn for.
   // A DUPLICATE keeps them - duplicateBox copies the style whole and does not
   // come through here - which is the same line the comment above draws.
   style.path = { on: false, pts: [] };
-  style.clip = { on: false, mode: 'exclude', brushSize: style.clip?.brushSize ?? 20, shapes: [] };
   style.warp = { on: false, cols: WARP_MESH_DEFAULT, rows: WARP_MESH_DEFAULT, pts: [] };
   style.ink = { on: false, strokes: [] };
+  // Paint is drawn on one box's letters, like the ink.
+  style.paint = { on: false, marks: [] };
   // The SFX recipe is the same kind of thing: moves tuned against one box's
   // text and font. A newborn box is plain text until the user asks for one.
   style.sfx = sfxDefault();
@@ -455,7 +458,6 @@ export function defaultStyle() {
     //   { kind: 'stroke',  size, pts: [[x, y], ...] }  (a brush drag)
     // With no shapes the mask does nothing, whichever mode is set - so a box
     // that only flipped the switch looks exactly like the switch is off.
-    clip: { on: false, mode: 'exclude', brushSize: 20, shapes: [] },
     // Hand-drawn brush strokes inside the box, in the same box-local page px
     // the mask shapes use. Each stroke is self-describing - every field that
     // decides how it renders is on the stroke, not on the tool - so a stroke
@@ -509,6 +511,17 @@ export function defaultStyle() {
     // over the crumple, page px, drawn only by a painter that roughens the
     // outlines (the Rust engine's): moved pixels tear on their own.
     roughen: { on: false, amount: 4, detail: 0.05, seed: 7, grit: 0 },
+    // Wobble: each letter sits a little high or low and can tilt, by numbers
+    // of its own from `seed`. `amount` is a percent of the font size and
+    // `tilt` degrees, so neither needs a page rescale. Painted by the Rust
+    // engine only. Not the SFX `shake` above, which lays copies.
+    wobble: { on: false, amount: 8, tilt: 0, seed: 7 },
+    // Paint over the letters (box-paint.js): marks of colour in the box's own
+    // frame, moving with it. Painted by the Rust engine only.
+    paint: { on: false, marks: [] },
+    // Special effects (special.js): crack, lightning, splash, scratches, each
+    // a seeded pattern over the whole box. Painted by the Rust engine only.
+    special: defaultSpecial(),
     // warp: per-character circular arc, -100..100 (negative = frown, positive = smile)
     curve: 0,
     // ---- typesetting (see typeset.js) ----
@@ -1736,7 +1749,16 @@ export function normalizeWarp(src) {
       pts.push([x, y]);
     }
   }
-  return { on: src?.on === true, cols, rows, pts: pts.length === want ? pts : [] };
+  const out = { on: src?.on === true, cols, rows, pts: pts.length === want ? pts : [] };
+  // The box size the points were made for (`warpForSize`, warp.js), kept only
+  // beside points and only as a real size; a file without it reads as before.
+  const sw = +src?.w;
+  const sh = +src?.h;
+  if (out.pts.length && sw > 0 && sh > 0 && Number.isFinite(sw) && Number.isFinite(sh)) {
+    out.w = sw;
+    out.h = sh;
+  }
+  return out;
 }
 
 // Every procedural pattern, in the engine's own order (`PATTERN_NAMES` in
@@ -2194,30 +2216,6 @@ export function normalizeStyle(s) {
   // 0 is auto, and anything unreadable becomes auto rather than a wild ring.
   circ.r = Math.min(4000, Math.max(0, num(circ.r, 0)));
 
-  // The mask, shape by shape. A shape that is not one of the three kinds, or
-  // whose numbers are not finite, is dropped rather than repaired - a mask
-  // with no valid shapes is simply inactive, which every renderer handles.
-  const pair = (q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]);
-  const cl = {
-    on: !!src.clip?.on,
-    mode: src.clip?.mode === 'include' ? 'include' : 'exclude',
-    brushSize: Math.min(200, Math.max(2, num(src.clip?.brushSize, d.clip.brushSize))),
-    shapes: [],
-  };
-  for (const sh of Array.isArray(src.clip?.shapes) ? src.clip.shapes : []) {
-    if (sh?.kind === 'ellipse') {
-      const e = { kind: 'ellipse', cx: num(sh.cx, NaN), cy: num(sh.cy, NaN), rx: num(sh.rx, 0), ry: num(sh.ry, 0) };
-      if (Number.isFinite(e.cx) && Number.isFinite(e.cy) && e.rx > 0 && e.ry > 0) cl.shapes.push(e);
-    } else if (sh?.kind === 'poly') {
-      const pts = (Array.isArray(sh.pts) ? sh.pts : []).filter(pair).map((q) => [+q[0], +q[1]]);
-      if (pts.length >= 3) cl.shapes.push({ kind: 'poly', pts });
-    } else if (sh?.kind === 'stroke') {
-      const pts = (Array.isArray(sh.pts) ? sh.pts : []).filter(pair).map((q) => [+q[0], +q[1]]);
-      const size = num(sh.size, 0);
-      if (pts.length >= 1 && size > 0) cl.shapes.push({ kind: 'stroke', size: Math.min(200, size), pts });
-    }
-  }
-
   const ink = { on: !!src.ink?.on, strokes: [] };
   for (const k of Array.isArray(src.ink?.strokes) ? src.ink.strokes : []) {
     const norm = normalizeInkStroke(k);
@@ -2242,7 +2240,6 @@ export function normalizeStyle(s) {
     blending: normalizeBlending(src.blending),
     motionBlur: mb,
     path: pth,
-    clip: cl,
     ink,
     warp: normalizeWarp(src.warp),
     circle: circ,
@@ -2262,9 +2259,21 @@ export function normalizeStyle(s) {
     bevel: normalizeBevel(src.bevel),
     strokeEffects,
     roughen: { ...d.roughen, ...(src.roughen || {}) },
+    wobble: {
+      on: src.wobble?.on === true,
+      amount: Math.min(40, Math.max(0, num(src.wobble?.amount, d.wobble.amount))),
+      tilt: Math.min(20, Math.max(0, num(src.wobble?.tilt, d.wobble.tilt))),
+      seed: Math.min(999, Math.max(0, Math.round(num(src.wobble?.seed, d.wobble.seed)))),
+    },
+    paint: normalizePaint(src.paint),
+    special: normalizeSpecial(src.special),
   };
   if (fo < 1) out.opacity = Math.min(1, Math.max(0, num(out.opacity, 1) * fo));
   foldPatternFill(out);
+  // The mask is the box's, pinned to the page (`box.mask`, box-mask.js): an
+  // old style's `clip` is carried there when its chapter loads, and is no
+  // part of a look.
+  delete out.clip;
   // A move-based SFX wrote the box's gaps over with its preset's: they go
   // back, and what it switched off stays in `before` for Remove SFX.
   const oldBefore = isOldSfx(src.sfx) && src.sfx.on === true ? src.sfx.before : null;

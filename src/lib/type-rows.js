@@ -20,7 +20,7 @@
 // Positions are box-local page px, before the box's flip and its turn: the
 // frame the picture itself is painted in.
 import { placeBlock, boxCandidate } from './contain.js';
-import { faceFor } from './measure.js';
+import { faceFor, lineFaces } from './measure.js';
 import { editLines } from './edit-lines.js';
 import { textEngine } from './text-engine/index.js';
 import { buildRows, caseMap, caretStops, stopRows } from './flat-caret.js';
@@ -63,6 +63,29 @@ export function linePens(engine, face, line, letterSpacing) {
 }
 
 /**
+ * The pens of a line set in several faces (`lineFaces`' stretches): each
+ * stretch's own pens, from its face's shaping of it alone, set after the
+ * stretches before it. The painter shapes the line the same way - cut at
+ * every stretch, nothing kerned across a cut (`paint::shape_spans`) - so a
+ * caret stands where the letters are painted.
+ */
+export function piecePens(engine, pieces, line, letterSpacing, size) {
+  const at = [];
+  const x = [];
+  let pen = 0;
+  for (const p of pieces) {
+    if (p.end <= p.start) continue;
+    const c = linePens(engine, faceFor(p.style, size), line.slice(p.start, p.end), letterSpacing);
+    for (let i = 0; i < c.at.length; i++) {
+      at.push(p.start + c.at[i]);
+      x.push(pen + c.x[i]);
+    }
+    pen += c.end;
+  }
+  return { at, x, end: pen };
+}
+
+/**
  * What typing into `box` as a picture needs, for the text `text` (the box's
  * own, or what an IME has in hand):
  *
@@ -80,11 +103,15 @@ export function linePens(engine, face, line, letterSpacing) {
  * engine does (a size that is no number, or one its pens overflow at); the
  * caller takes that as null.
  */
-export function typeModel(box, text) {
+//
+// `runs`, the faces of `text` (runs.js), break the lines as the box breaks
+// them, and a line in several faces has its carets from its stretches
+// (`piecePens`), as the painter draws it.
+export function typeModel(box, text, runs = null) {
   const engine = textEngine();
   if (typeof engine?.lineCarets !== 'function') return null;
   const raw = String(text ?? '');
-  const place = placeBlock(boxCandidate(box, raw));
+  const place = placeBlock(boxCandidate(box, raw, runs));
   if (!place) return null;
   const s = place.s;
   const cased = place.text;
@@ -98,7 +125,8 @@ export function typeModel(box, text) {
   const face = faceFor(s, s.size);
   const spacing = Number(s.letterSpacing) || 0;
   const geom = place.lines.map((line, i) => {
-    const pens = line === '' ? { at: [], x: [], end: 0 } : linePens(engine, face, line, spacing);
+    const pieces = line === '' ? null : lineFaces(place.lines, i, s);
+    const pens = line === '' ? { at: [], x: [], end: 0 } : pieces ? piecePens(engine, pieces, line, spacing, s.size) : linePens(engine, face, line, spacing);
     const x0 = place.lineX[i] + alignOffset(s.align, pens.end);
     return {
       top: place.blockY + i * place.lineH,

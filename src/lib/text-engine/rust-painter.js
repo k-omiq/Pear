@@ -90,6 +90,9 @@ export function createRustGlyphPainter(rust, options = {}) {
       font: face.font,
       size: face.size,
       synth: face.flags,
+      // The faces a line set in several is painted in, resolved as the box's
+      // own is: the engine that measured the lines draws them.
+      ...(job.faces?.length ? { faces: job.faces.map((f) => rust.handle(f)) } : null),
       boldDraw: options.boldDraw ?? 'rule',
       weight: options.weight ?? 0,
       transform,
@@ -183,6 +186,8 @@ export function createRustGlyphPainter(rust, options = {}) {
       blur: spec.blur,
       taps: spec.taps,
       clip: spec.clip,
+      fade: spec.fade ?? null,
+      pinShift: spec.pinShift ?? null,
       blend: spec.blend,
       fillOpacity: spec.fillOpacity,
       blendInterior: spec.blendInterior === true,
@@ -316,7 +321,9 @@ export function createRustGlyphPainter(rust, options = {}) {
   // `engine` says whose ink this painter paints (`engineDraws`, index.js).
   // `mesh` says a job's mesh is bent by this painter, in the outlines
   // (`meshInJob`, exporter.js): the canvas painter has no such thing.
-  // `roughen` says the same of a job's roughening (`roughenInJob`).
+  // `roughen` says the same of a job's roughening (`roughenInJob`), and
+  // `wobble` of a job's wobble (`wobbleInJob`), and `special` of a job's
+  // special effects (`specialDrawn`).
   // `box` says this painter paints a whole box in one job (`boxInJob`), which
   // it does when the wasm it was handed has that call.
   // `screen` says a pattern is painted per pixel from its kind and controls
@@ -335,7 +342,7 @@ export function createRustGlyphPainter(rust, options = {}) {
   // `worker` is the engine's paint worker (paint-mirror.js) or null; `capture`
   // and `finishCaptured` are how a box job goes to it and comes back.
   return {
-    id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, box, screen, ink, forgetTips,
+    id: 'rust', paint, paintBox: box ? paintBox : undefined, maxSide: MAX_RASTER_SIDE, engine: rust, mesh: true, roughen: true, wobble: true, special: true, box, screen, ink, forgetTips,
     worker: box ? (rust.paintMirror ?? null) : null,
     capture: capturePaints,
     finishCaptured,

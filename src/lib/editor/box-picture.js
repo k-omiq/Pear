@@ -27,6 +27,8 @@ import { boxInJob, renderBoxTexture, warpTexture } from '../exporter.js';
 import { glyphPainter } from '../text-engine/index.js';
 import { paintWorkerAllowed } from '../text-engine/paint-mirror.js';
 import { inkActive, pageGradients, usesBackdrop } from '../text-paint.js';
+import { paintKey } from '../box-paint.js';
+import { runsKey } from '../runs.js';
 
 // The most pixels one box's canvas holds: 8 megapixels, 32 MB of RGBA.
 //
@@ -553,7 +555,9 @@ export const PICTURE_OFF = 'e|off';
  *        into and how far each is set in, which is where a balloon fit, the
  *        typesetting mode and a late font show up; the scale; the font
  *        version.
- *   out: where the box is. A move repaints nothing.
+ *   out: where the box is. A move repaints nothing. (A box with a mask on
+ *        is repainted as it moves: TextBox's key adds the mask in the box's
+ *        frame, since the mask stays on the page.)
  *
  * Except for a box that blends with the page (`usesBackdrop`): its picture
  * is of the page under it too, so `under` names that page art and where the
@@ -566,8 +570,10 @@ export const PICTURE_OFF = 'e|off';
  * The ink block is not stringified here - it is the heaviest part of a style
  * and the caller already has a key for it (`inkKey` in TextBox.svelte).
  */
-export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '', edges = '' }) {
-  const drawn = { ...style, ink: 0, rotation: 0, opacity: 1, flipH: false, flipV: false };
+export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, fonts, tiles = '', light = '', under = '', page = '', edges = '', runs = null }) {
+  // The paint's marks by their revision (`paintKey`): a brush's points are
+  // never turned to text here.
+  const drawn = { ...style, ink: 0, paint: paintKey(style.paint), rotation: 0, opacity: 1, flipH: false, flipV: false };
   return (
     `e|${JSON.stringify(drawn)}|${inkKey}|${text}|${w}|${h}|` +
     `${lines ? lines.join('\n') : ''}|${indents ? indents.join(',') : ''}|${scale}|${fonts}` +
@@ -580,6 +586,9 @@ export function pictureKey({ style, inkKey, text, w, h, lines, indents, scale, f
     // stands on it, turned and mirrored (`pageGradientKey`).
     (page ? `|P${page}` : '') +
     // Crisp letter edges (text-edges.svelte.js).
-    (edges ? `|E${edges}` : '')
+    (edges ? `|E${edges}` : '') +
+    // The faces of the words (runs.js): a word made bold is a new picture.
+    // None is no part at all, so a box without runs has the key it had.
+    (runs?.length ? `|R${runsKey(runs)}` : '')
   );
 }

@@ -126,13 +126,12 @@ describe('an effect gradient of Gradient Type Noise', () => {
     const solid = encodeBox({ ...job, width: 4, height: 4, effects: fx(g) }).slice();
     const noisy = encodeBox({ ...job, width: 4, height: 4, effects: fx({ ...g, type: 'noise', noise: { ...g.noise, seed: 42, model: 'lab', transparency: true } }) }).slice();
     expect(dv(solid).getUint32(4, true)).toBe(BOX_WIRE_VERSION);
-    expect(BOX_WIRE_VERSION).toBe(18);
     // The noise record: seed, roughness, model, six limits, flags.
     expect(noisy.length - solid.length).toBe(4 + 8 + 4 + 6 * 8 + 4);
     // The gradient record starts after the box header (the grain's corner
     // in it since v15, the page since v16), the blending options
     // and the effect's kind, opacity and blend: its style is Shape Burst.
-    const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4;
+    const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 4; // the fade's u32 (v20) after the mask's, the pin shift (v23), then the live flag (v24)
     expect(dv(solid).getUint32(head + 4 + 8 + 4 + 4, true)).toBe(5);
     // v14: the two midpoint counts, Dither, the Method and Smoothness come
     // between the stops and the type.
@@ -178,7 +177,7 @@ describe('a glow\'s Jitter', () => {
     const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
     const glow = { kind: 'outerGlow', color: '#ffffbe', opacity: 0.75, blend: 'screen', technique: 'softer', size: 5, spread: 0, range: 0.5, noise: 0, jitter: 0.6 };
     const b = dv(encodeBox({ ...job, width: 4, height: 4, effects: [glow] }).slice());
-    const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4;
+    const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 4; // the fade's u32 (v20) after the mask's, the pin shift (v23), then the live flag (v24)
     expect(b.getUint32(head, true)).toBe(1);
     // Past the colour, opacity, mode, technique, four numbers, seed, contour
     // and the gradient flag (0: its colour).
@@ -220,7 +219,7 @@ describe('a satin', () => {
     const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
     const fx = { kind: 'satin', color: '#ff0000', opacity: 0.5, blend: 'multiply', angle: 19, distance: 11, size: 14, contour: { preset: 'gaussian', aa: true }, invert: true };
     const b = dv(encodeBox({ ...job, width: 4, height: 4, effects: [fx] }).slice());
-    const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4;
+    const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 4; // the fade's u32 (v20) after the mask's, the pin shift (v23), then the live flag (v24)
     expect(b.getUint32(head, true)).toBe(8);
     expect([0, 1, 2, 3].map((k) => b.getUint8(head + 4 + k))).toEqual([255, 0, 0, 255]);
     expect(b.getFloat64(head + 8, true)).toBe(0.5);
@@ -236,7 +235,7 @@ describe('a satin', () => {
 describe('a bevel', () => {
   const dv = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
   const job = { job: { bands: [], runs: [], fill: { kind: 'solid', color: '#000000' } }, font: 0, size: 10 };
-  const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4;
+  const head = 4 * 4 + 2 * 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 4; // the fade's u32 (v20) after the mask's, the pin shift (v23), then the live flag (v24)
   const encoded = (fx) => dv(encodeBox({ ...job, width: 4, height: 4, effects: [fx] }).slice());
 
   // Wire v8: kind 9, then style, technique, depth, size, soften, angle,

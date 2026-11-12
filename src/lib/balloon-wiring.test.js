@@ -102,6 +102,7 @@ const top = (fit) => shapeBounds(fit).y;
 const bottom = (fit) => shapeBounds(fit).y + shapeBounds(fit).h;
 const { defaultStyle, normalizeStyle, normalizeFit } = await import('./data.js');
 const { serializePage } = await import('./psd.js');
+const { browserFaceReady } = await import('./text-engine/browser.js');
 const hist = await import('./editor/history.svelte.js');
 
 // ---------------------------------------------------------------------------
@@ -2277,6 +2278,48 @@ describe('placement chooses the size (FIT-1)', () => {
       expect(geomOf(b)).toEqual(before);
     });
 
+    // A chapter opened before its font is in: the browser's load matches
+    // nothing. The face is drawn with the stand-in meanwhile, but no box is
+    // sized for it - the box waits - and when the font is added the box is
+    // solved for it, as if it had been there all along. While the added
+    // font is loading the face is not ready either.
+    it('waits through a load that matched nothing, and is solved when the font is added later', async () => {
+      ready = true;
+      const want = placeAt(32);
+      const solved = { ...geomOf(want), auto: { ...want.auto } };
+      ready = false;
+      const heard = {};
+      let loads = 0;
+      vi.stubGlobal('document', {
+        fonts: {
+          check: () => ready,
+          load: () => (loads++, Promise.resolve([])),
+          addEventListener: (ev, cb) => (heard[ev] = cb),
+        },
+      });
+      const b = placeAt(32);
+      expect(b.auto.status).toBe('pending');
+      const face = { key: "400 32px 'Comic Neue', cursive" };
+      // The load ends, having matched nothing.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(browserFaceReady(face)).toBe(true);
+      expect(browserFaceReady(face, { matched: true })).toBe(false);
+      noteFontsChanged();
+      expect(b.auto.status).toBe('pending');
+      const asked = loads;
+      // A font is added and is loading: the set changes, and the face is
+      // asked for again, and is not ready while it loads.
+      heard.loadingdone?.();
+      expect(browserFaceReady(face)).toBe(false);
+      expect(loads).toBe(asked + 1);
+      // It is in.
+      ready = true;
+      expect(noteFontsChanged()).toBeGreaterThan(0);
+      expect(b.auto).toEqual(solved.auto);
+      expect(geomOf(b)).toEqual({ x: solved.x, y: solved.y, w: solved.w, h: solved.h, size: solved.size });
+    });
+
     it('never re-solves a box that has a status', () => {
       ready = true;
       const b = placeAt(32);
@@ -2315,13 +2358,15 @@ describe('placement chooses the size (FIT-1)', () => {
     });
 
     it('is never solved once it carries hand-drawn ink or a mask', () => {
-      for (const over of [
-        { ink: { on: true, strokes: [{ pts: [[10, 10, 1], [50, 10, 1]], size: 6, color: '#000000' }] } },
-        { clip: { on: true, mode: 'exclude', shapes: [{ kind: 'ellipse', cx: 20, cy: 20, rx: 5, ry: 5 }] } },
+      // The mask is the box's, pinned to the page: put on the box, not its style.
+      for (const [over, mask] of [
+        [{ ink: { on: true, strokes: [{ pts: [[10, 10, 1], [50, 10, 1]], size: 6, color: '#000000' }] } }, null],
+        [{}, { on: true, shapes: [{ kind: 'ellipse', op: 'hide', cx: 20, cy: 20, rx: 5, ry: 5 }] }],
       ]) {
         ready = false;
         const b = placeAt(32);
         Object.assign(b.style, normalizeStyle({ ...b.style, ...over }));
+        if (mask) b.mask = mask;
         const before = geomOf(b);
         ready = true;
         noteFontsChanged();

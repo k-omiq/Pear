@@ -130,6 +130,7 @@ fn letters(font: FontId, mesh: Option<Mesh>, roughen: Option<Roughen>, curved: b
             transform: Affine([1.5, 0.0, 0.0, 1.5, 3.25, 1.5]),
             tiles: Vec::new(),
             ink: None,
+            faces: Default::default(),
         },
     )
 }
@@ -248,6 +249,7 @@ fn inked(
             transform,
             tiles: Vec::new(),
             ink: Some(ink),
+            faces: Default::default(),
         },
     )
 }

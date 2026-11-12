@@ -361,7 +361,7 @@ describe('edit: warp presets', () => {
     expect(r.ok, JSON.stringify(r)).toBe(true);
     expect(r.result.ops[0]).toMatchObject({ matched: 1, changed: ['a'] });
     const want = warpPresetPts('arc', WARP_DEFAULT_AMOUNT, 160, 60);
-    expect(copy(a().style.warp)).toEqual({ on: true, cols: want.cols, rows: want.rows, pts: want.pts });
+    expect(copy(a().style.warp)).toEqual({ on: true, cols: want.cols, rows: want.rows, pts: want.pts, w: 160, h: 60 });
     expect(peekStack().undo).toHaveLength(1);
     undo();
     expect(copy(a().style.warp)).toEqual(start);

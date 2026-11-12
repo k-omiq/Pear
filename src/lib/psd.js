@@ -10,7 +10,7 @@
 // Tauri webview / vite browser), so no explicit initializeCanvas call is needed.
 import { writePsd, readPsd } from 'ag-psd';
 import { markDeepKnockout, readDeepKnockout } from './psd-knockout.js';
-import { app, PAGE_W, PAGE_H, isLongstrip } from './store.svelte.js';
+import { app, PAGE_W, PAGE_H, isLongstrip, rescalePageGeometry } from './store.svelte.js';
 import { isTauri, pickFilesTauri } from './importer.js';
 import { renderBoxLayer, pageSpace, settleNoise, enginesSettled, enginesHeld, measureStrip, chapterNow, chapterHeld } from './exporter.js';
 import { stripOffsets, maxPageWidth, boxPaintedStripSpan } from './editor/strip.js';
@@ -18,18 +18,22 @@ import { settleBoxTips } from './brush-tips.js';
 import { settlePickedTiles } from './pattern-tiles.svelte.js';
 import { fontCssFor, fontNameFor, reviewOf, fontsSettling, fontMissing } from './store.svelte.js';
 import { resolveFace, postScriptNameFor } from './fonts.js';
-import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor } from './measure.js';
+import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor, lineFaces } from './measure.js';
 import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
-import { boxCandidate, placeBlock } from './contain.js';
+import { boxCandidate, placeBlock, curvedStyle } from './contain.js';
+import { runFamilies, normalizeRuns, textCheck, runsField, faceOf } from './runs.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch, outlineRun, outlineBands, strokesFromBands } from './data.js';
 import { CONTOUR_PRESET_POINTS, psdContourPoints } from './contour-presets.js';
-import { strokeBands, clipActive, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
+import { strokeBands, inkActive, resolveShadow, globalLight, boxEffects } from './text-paint.js';
+import { maskActive } from './box-mask.js';
+import { fadeActive } from './box-fade.js';
 import { warpActive } from './warp.js';
 import { bakeRamp } from './gradient-ramp.js';
 import { withPageImages } from './page-images.js';
 import { snapshotExportPages } from './export-pages.svelte.js';
+import { specialActive } from './special.js';
 
 // Bumped when the embedded schema changes in a non-back-compatible way. Import
 // refuses newer majors it can't understand and falls back to layer mapping.
@@ -55,8 +59,11 @@ function loadImage(src) {
 
 // Decode any image source (object URL / data URL) to raw RGBA ImageData at its
 // natural size, unless (w,h) force a target size. Raw pixels - no lossy
-// re-encode - are what we hand to ag-psd.
-async function imageDataFromSrc(src, w, h) {
+// re-encode - are what we hand to ag-psd. `smooth` asks for the canvas's
+// high-quality resize: an enlarged document's art (Size 2x), resized once and
+// not otherwise touched. Left off, the resize is the canvas default it always
+// was.
+async function imageDataFromSrc(src, w, h, smooth = false) {
   const img = await loadImage(src);
   const cw = w || img.naturalWidth || img.width;
   const ch = h || img.naturalHeight || img.height;
@@ -64,6 +71,7 @@ async function imageDataFromSrc(src, w, h) {
   cnv.width = cw;
   cnv.height = ch;
   const ctx = cnv.getContext('2d');
+  if (smooth) ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, cw, ch);
   const data = ctx.getImageData(0, 0, cw, ch);
   // The pixels are read: the page-size canvas and the decoded picture go
@@ -327,6 +335,13 @@ function extractProject(xmp) {
 // Exported for psd.test.js, which is the only place the free-line and tag
 // fields below can be pinned from node: everything downstream of here wants a
 // canvas.
+// `{ runs, runsCheck }` for runs indexing `text`, as a page is saved; nothing
+// when there are none.
+function savedRuns(runs, text) {
+  const out = typeof text === 'string' ? normalizeRuns(runs, text) : null;
+  return out ? { runs: out, runsCheck: textCheck(text) } : null;
+}
+
 export function serializePage(p) {
   return {
     id: p.id,
@@ -352,6 +367,9 @@ export function serializePage(p) {
       jp: l.jp ?? '',
       en: l.en ?? '',
       ...(Array.isArray(l.tags) ? { tags: l.tags.slice() } : null),
+      // The faces of words in the translation (runs.js), with the check of the
+      // text they index, as chapter.json saves them; only on a line with runs.
+      ...savedRuns(l.runs, l.en),
     })),
     boxes: (p.boxes ?? []).map((b) => ({
       lineN: b.lineN,
@@ -382,6 +400,8 @@ export function serializePage(p) {
       auto: normalizeAuto(b.auto),
       // The user's lock, only on a locked box.
       ...(b.locked === true ? { locked: true } : null),
+      // The faces of the box's own words, as for a line's.
+      ...savedRuns(b.runs, b.text),
     })),
     detect: p.detect
       ? {
@@ -412,6 +432,25 @@ function boxTextFor(p, box) {
   const ln = (p.lines ?? []).find((l) => l.n === box.lineN);
   if (!ln) return '';
   return ln.en ?? ln.natural ?? ln.stylised ?? ln.text ?? '';
+}
+
+// The faces of a box's words (runs.js), read from the page as `boxTextFor`
+// reads the words: the box's own for a box with its own words, the line's for
+// one that shows its line's translation.
+function boxRunsFor(p, box) {
+  const runs = box.text != null ? box.runs : (p.lines ?? []).find((l) => l.n === box.lineN && l.en != null)?.runs;
+  return runs?.length ? runs : null;
+}
+
+// Whether a box's words are set in a face other than its own anywhere. Such a
+// box's type layer states a face per stretch (`faceRuns`), or the box ships as
+// pixels when that cannot be stated exactly.
+function setInFaces(p, box) {
+  const s = box.style;
+  return !!boxRunsFor(p, box)?.some((r) => {
+    const f = faceOf(r, s);
+    return f.bold !== !!s?.bold || f.italic !== !!s?.italic || (!!f.font && f.font !== s?.font);
+  });
 }
 
 // A CSS family list like "'Bangers', cursive" → a plausible PostScript name.
@@ -574,6 +613,8 @@ function effectsNeedPixels(s) {
   return boxEffects(s).some(
     (fx) =>
       fx.kind === 'patternOverlay' ||
+      // Paint over the letters is no layer style Photoshop has.
+      fx.kind === 'paint' ||
       (fx.kind === 'stroke' && fx.paint?.kind === 'pattern') ||
       (fx.kind === 'bevel' && (fx.texture || (fx.contour && !linearContour(fx.contour)))),
   );
@@ -787,10 +828,11 @@ export function lettersOnlyStyle(s) {
 //   roughen  - a seeded pixel-displacement filter (roughen() in exporter.js)
 //              with nothing in Photoshop's type engine that produces it at
 //              all; there is no warp/style value that could stand in for it.
-//   clip     - the visibility mask hides part of the box's ink. A re-render
-//              has no mask, so Photoshop shows the letters the user erased.
-//              Only counted when the mask actually has shapes - `clipActive`
-//              is the one statement of that, shared with both renderers.
+//   mask     - the box's mask hides part of its ink. A re-render has no
+//              mask, so Photoshop shows the letters the user erased. It is
+//              the box's (`box.mask`), not the style's, so the caller asks
+//              `maskActive` beside this, the one statement shared with both
+//              renderers.
 //   blur     - a gaussian over the finished composite (fill + strokes +
 //              shadows together). Photoshop's type effects blur each effect on
 //              its own track; there is no whole-layer blur to ask for.
@@ -834,7 +876,11 @@ export function isRasterOnly(style) {
     warpActive(s) ||
     // ink
     s.roughen?.on ||
-    clipActive(s.clip) ||
+    // A wobble moves and turns each letter on its own: no type layer says that.
+    s.wobble?.on ||
+    // A special effect (special.js) is a seeded pattern of cuts, ink and
+    // paint the engine makes: no type layer holds one.
+    specialActive(s) ||
     // Hand-drawn strokes are not something Photoshop's type engine can
     // re-render, so a box carrying them ships as pixels or loses them.
     inkActive(s.ink) ||
@@ -885,7 +931,9 @@ export const REVIEW_MARK = ' [needs review]';
 // the network for such a box and says nothing, as it always has.
 const FONT_MISSING_OPEN = ' [font missing: ';
 export const fontMissingMark = (name) => `${FONT_MISSING_OPEN}${String(name).replace(/[\[\]]/g, '')}]`;
-const FONT_MISSING_TAIL = / \[font missing: [^\]]*\]$/;
+// One mark per missing family: the box's, then those of words in another
+// typeface.
+const FONT_MISSING_TAIL = /( \[font missing: [^\]]*\])+$/;
 
 // Written onto the name of a type layer some of whose letters are not drawn in
 // the font the box is set in: the face lacks them (kana in a Latin lettering
@@ -925,6 +973,55 @@ function borrowedRuns(s, content) {
   }));
 }
 
+// The stretches of a type layer's text in a box set in several faces (runs.js),
+// as ag-psd `styleRuns`: each stretch names the font the Rust engine drew it in
+// and whether the engine emboldened or slanted that font, so Photoshop sets a
+// bold word in the bold face it was drawn in and a word in another family in
+// that family. Letters another family lent (`borrowedRuns`) are named the same
+// way, piece by piece. `place` is the block the layer's text was made of: its
+// lines carry their faces (`lineFaces`), and the layer's text is those lines
+// joined by hard returns, which stay in the run before them.
+//
+// Null when the stretches cannot be stated exactly, and the box then ships as
+// pixels: the browser engine is drawing (it cannot say which font drew a
+// letter, nor what it synthesised), there is no measurer to break the lines
+// with, or the engine does not hold a face's family.
+function faceRuns(s, place) {
+  if (!engineDraws() || !place?.lines?.runs) return null;
+  const engine = textEngine();
+  const lines = place.lines;
+  const out = [];
+  let lent = false;
+  const put = (length, style) => {
+    if (length <= 0) return;
+    const last = out[out.length - 1];
+    if (last && last.key === style.key) last.length += length;
+    else out.push({ length, key: style.key, style: style.style });
+  };
+  for (let k = 0; k < lines.length; k++) {
+    const str = String(lines[k]);
+    const pieces = lineFaces(lines, k, s) ?? [{ start: 0, end: str.length, style: s }];
+    for (const piece of pieces) {
+      const runs = drawnRuns(engine, faceFor(piece.style, s.size), str.slice(piece.start, piece.end), { source: true });
+      if (!runs) return null;
+      for (const r of runs) {
+        lent ||= !r.own;
+        const name = r.postScriptName || engineFallbackName(engine, r);
+        put(r.end - r.start, { key: `${name}|${r.fauxBold ? 1 : 0}${r.fauxItalic ? 1 : 0}`, style: { font: { name }, fauxBold: r.fauxBold, fauxItalic: r.fauxItalic } });
+      }
+    }
+    // The hard return between two lines is nobody's glyph: it stays in the
+    // stretch before it, so the runs cover the text with no stretch of its own.
+    if (k < lines.length - 1) {
+      if (out.length) out[out.length - 1].length += 1;
+      else return null;
+    }
+  }
+  if (!out.length) return null;
+  // `lent`: whether another family lent letters, which the layer's name says.
+  return { runs: out.map(({ length, style }) => ({ length, style })), lent };
+}
+
 // Build one layer for a box. The common case is a live, editable Photoshop
 // type layer backed by the box's exact pixels (`rendered`, from
 // renderBoxLayer) as its cached rasterization, so it displays pixel-identical
@@ -952,7 +1049,12 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const raw = boxTextFor(p, box);
   // The review flag, then - with the Rust engine drawing - that the box's font
   // is not on this machine and what it shows is the stand-in.
-  const flag = (reviewOf(box, p) ? REVIEW_MARK : '') + (engineDraws() && fontMissing(s.font) ? fontMissingMark(s.font) : '');
+  // A family some of its words are set in (runs.js) that is not here is said
+  // the same way: those words show the stand-in too. Not on a curve, which
+  // draws every letter in the box's face, so no run's family is shown there.
+  const runFams = curvedStyle(s) ? [] : runFamilies(boxRunsFor(p, box));
+  const missing = engineDraws() ? [s.font, ...runFams].filter((f, i, all) => f && all.indexOf(f) === i && fontMissing(f)) : [];
+  const flag = (reviewOf(box, p) ? REVIEW_MARK : '') + missing.map(fontMissingMark).join('');
   // A turned box's effect gradients, placed against the page bounds; one
   // whose scale Photoshop cannot hold ships the box's pixels.
   const frames = needsGradientFrames(s) ? (rendered?.frames ?? boxGradientFrames(box)) : null;
@@ -966,7 +1068,16 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const onPage = own ? new Map(placedGradients(s, true).map(({ g }) => [g, turnedGradientPlacement(g, 0, own)])) : null;
   const turnPixels = (!!placed && [...placed.values()].some((q) => !q.fits)) || (!!onPage && [...onPage.values()].some((q) => !q.fits));
 
-  if (isRasterOnly(s) || turnPixels) {
+  // A box in several faces is a type layer only when every stretch of it can
+  // say the font it was drawn in (`faceRuns`); otherwise it is the pixels.
+  // A fade is regional opacity, which a type layer cannot hold: raster.
+  const pixels = isRasterOnly(s) || maskActive(box) || fadeActive(box) || turnPixels;
+  const runs = boxRunsFor(p, box);
+  const inFaces = !pixels && setInFaces(p, box);
+  const placedFaces = inFaces && canMeasure() ? placeBlock(boxCandidate(box, raw, runs)) : null;
+  const faced = inFaces ? faceRuns(s, placedFaces) : null;
+
+  if (pixels || (inFaces && !faced)) {
     // If the box paints no pixels (e.g. empty or whitespace-only text),
     // renderBoxLayer returns null. A layer with no imageData and no text object
     // causes ag-psd to crash during channel serialization. Safest guard:
@@ -1034,7 +1145,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
   // to), so all of them agree by construction. It needs a canvas to measure
   // with; without one (the node test environment) the paragraph goes in
   // unbroken, as it always did.
-  const place = canMeasure() ? placeBlock(boxCandidate(box, raw)) : null;
+  const place = placedFaces ?? (canMeasure() ? placeBlock(boxCandidate(box, raw, runs)) : null);
   const content = place ? place.lines.join('\n') : applyCase(raw, s);
   const rot = ((s.rotation || 0) * Math.PI) / 180;
   const cos = Math.cos(rot);
@@ -1099,7 +1210,9 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const fontSize = s.size;
   const tracking = s.size > 0 ? Math.round(((s.letterSpacing || 0) / s.size) * 1000) : 0;
   const face = fontRequestFor(s);
-  const borrowed = borrowedRuns(s, content);
+  // A box in several faces states every stretch's font, the borrowed letters'
+  // among them; a box in one face states only the letters another family lent.
+  const borrowed = faced?.runs ?? borrowedRuns(s, content);
 
   // Photoshop type layers require real layer effects for stroke and drop shadow.
   // Photoshop always re-renders a live type layer from its internal engine data
@@ -1403,7 +1516,7 @@ export function textLayerFor(p, box, rendered, doc = null) {
   const hasEffects = Object.keys(effects).length > 0;
 
   return {
-    name: `${name}${flag}${borrowed ? BORROWED_MARK : ''}`,
+    name: `${name}${flag}${(faced ? faced.lent : borrowed) ? BORROWED_MARK : ''}`,
     ...bounds,
     imageData: rendered ? rendered.imageData : undefined,
     opacity: s.opacity ?? 1,
@@ -1637,7 +1750,12 @@ export function writePagePsd(doc) {
 // reaches over the seam. Its pages are measured first, as the strip export
 // measures them, and the fonts waited for are those of every page whose boxes
 // the file paints.
-export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
+//
+// `scale` is the export's Size (`exportImages`): at 2 the document is twice
+// the page each way, every raster layer is the box's picture at the pixels it
+// is painted at (`renderBoxLayer`), the art is enlarged once, and each type
+// layer is the same layer stated in the larger document (`scaleTypeLayer`).
+export async function buildPagePsd(p, { chapter = chapterNow(), column, scale = 1 } = {}) {
   chapterHeld(chapter);
   // A batch supplies its original copy, including strip neighbours. A direct
   // single-page build takes its own copy before measurement/font/image awaits.
@@ -1677,7 +1795,7 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   const scratch = document.createElement('canvas');
   let textLayers;
   try {
-    textLayers = (await pageTextLayers(p, entries, W, H, scratch, tips)).map((e) => e.layer);
+    textLayers = (await pageTextLayers(p, entries, W, H, scratch, tips, scale)).map((e) => e.layer);
   } finally {
     // A page-size canvas, given back before the base layers are decoded.
     scratch.width = 0;
@@ -1707,9 +1825,11 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   // pagePsdDocument), so pushing Cleaned first put the untouched art back on
   // top of the cleaned plate and hid the cleaning.
   const baseLayers = [];
+  const DW = Math.round(W * scale);
+  const DH = Math.round(H * scale);
   if (p.raw) {
     try {
-      const data = await imageDataFromSrc(p.raw, W, H);
+      const data = await imageDataFromSrc(p.raw, DW, DH, scale !== 1);
       baseLayers.push({ name: 'Raw', left: 0, top: 0, right: data.width, bottom: data.height, imageData: data });
     } catch {
       /* skip */
@@ -1717,7 +1837,7 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   }
   if (p.cleaned) {
     try {
-      const data = await imageDataFromSrc(p.cleaned, W, H);
+      const data = await imageDataFromSrc(p.cleaned, DW, DH, scale !== 1);
       baseLayers.push({ name: 'Cleaned', left: 0, top: 0, right: data.width, bottom: data.height, imageData: data });
     } catch {
       /* skip */
@@ -1729,13 +1849,18 @@ export async function buildPagePsd(p, { chapter = chapterNow(), column } = {}) {
   // art's size above, and `serializePage` would state the defaults for it -
   // a 123x234 file saying its page is 850x1200, which the import believes and
   // the next measure of the art rescales every box out of.
-  const project = { key: PROJECT_KEY, schema: SCHEMA, page: { ...serializePage(p), w: W, h: H } };
+  //
+  // An enlarged document (Size 2x) says so (`docScale`): its page is still
+  // stated at the page's own size, and its art is the enlarged art, so an
+  // import has to know the two apart (`psdPageScale`). Absent is 1, and a
+  // file at the page's own size is written exactly as it was.
+  const project = { key: PROJECT_KEY, schema: SCHEMA, page: { ...serializePage(p), w: W, h: H }, ...(scale !== 1 ? { docScale: scale } : null) };
 
   enginesHeld(held);
   // And of the one chapter (`chapterNow`, exporter.js): a chapter closed
   // while this was built took its pictures, and its neighbours, with it.
   chapterHeld(chapter);
-  return writePagePsd(pagePsdDocument({ w: W, h: H, textLayers, baseLayers, project }));
+  return writePagePsd(pagePsdDocument({ w: DW, h: DH, textLayers, baseLayers, project }));
 }
 
 // The pages a strip page's lettering is laid out among: the open chapter's,
@@ -1800,28 +1925,93 @@ function pageLayerBoxes(p, column) {
 // own box, and for a neighbour's its own page, sized as the strip export
 // sizes it (`pageSpace`): one size, handed to both the pixels and the live
 // layer, so the two agree.
-async function pageTextLayers(p, entries, W, H, scratch, tips) {
+//
+// At `scale` (Size 2x) the rasters are drawn into the larger document, so
+// their bounds, and the frames read off them, are its pixels; the type layer
+// is written in page px as always and then stated in the document's
+// (`scaleTypeLayer`).
+async function pageTextLayers(p, entries, W, H, scratch, tips, scale = 1) {
   const out = [];
   for (const e of entries) {
     const moved = e.owner !== p;
     const sheet = moved ? await pageSpace(e.owner) : { w: W, h: H };
-    const rendered = renderBoxLayer(e.box, W, H, scratch, e.owner, 1, tips, e.dx, e.dy, sheet);
+    const rendered = renderBoxLayer(e.box, W, H, scratch, e.owner, scale, tips, e.dx, e.dy, sheet);
     if (e.owner !== p && !rendered) continue;
     // A turned box with an effect gradient: its letters alone, for the
     // frames the gradient is placed by (`gradientFrames`).
     if (rendered && needsGradientFrames(e.box.style)) {
-      const letters = renderBoxLayer({ ...e.box, style: lettersOnlyStyle(e.box.style) }, W, H, scratch, e.owner, 1, tips, e.dx, e.dy);
-      const centre = [e.box.x + e.box.w / 2 + (e.dx || 0), e.box.y + e.box.h / 2 + (e.dy || 0)];
+      const letters = renderBoxLayer({ ...e.box, style: lettersOnlyStyle(e.box.style) }, W, H, scratch, e.owner, scale, tips, e.dx, e.dy);
+      const centre = [(e.box.x + e.box.w / 2 + (e.dx || 0)) * scale, (e.box.y + e.box.h / 2 + (e.dy || 0)) * scale];
       const frames = letters ? gradientFrames(letters, centre, Number(e.box.style.rotation) || 0) : null;
-      if (frames) rendered.frames = frames;
+      // Read off the document's pixels and stated in page px, the unit a
+      // stroke gradient's `grow` (`placedGradients`) and everything else
+      // `textLayerFor` places by is in.
+      const page = (v) => v.map((n) => n / scale);
+      if (frames) rendered.frames = scale === 1 ? frames : { page: page(frames.page), local: page(frames.local), centre: page(frames.centre) };
     }
-    const layer = textLayerFor(e.owner, e.box, rendered, moved ? { dx: e.dx, dy: e.dy, W, H, w: sheet.w, h: sheet.h } : null);
+    let layer = textLayerFor(e.owner, e.box, rendered, moved ? { dx: e.dx, dy: e.dy, W, H, w: sheet.w, h: sheet.h } : null);
     if (!layer) continue;
     if (layer.text && moved) {
       const t = layer.text.transform;
       layer.text.transform = [t[0], t[1], t[2], t[3], t[4] + e.dx, t[5] + e.dy];
     }
+    if (scale !== 1) layer = scaleTypeLayer(layer, scale, !rendered);
     out.push({ ...e, rendered, layer });
+  }
+  return out;
+}
+
+// The effect fields Photoshop states in pixels of the document: a stroke's,
+// glow's, shadow's and satin's Size, a shadow's and satin's Distance, a
+// bevel's Size and Soften. Choke is written in the same `Pixels` wrapper but
+// holds a percent (`textLayerFor`), and gradient offsets and scales are
+// percents of the layer, so none of those move.
+const FX_PIXEL_FIELDS = ['size', 'distance', 'soften'];
+
+/**
+ * A layer from `textLayerFor`, written in page px, stated in a document `k`
+ * times the page each way (Size 2x): the type layer's place and frame, its
+ * point size, leading and indents, and every effect length move by `k`, so
+ * Photoshop's own re-render lands on the pixels laid under it. Tracking is in
+ * thousandths of an em and stays. The bounds are the raster's, already in the
+ * document's pixels, unless `bounds` says they are the box's own rect (a box
+ * with no raster). Returns a new layer; the image data is shared.
+ */
+export function scaleTypeLayer(layer, k, bounds = false) {
+  const out = { ...layer };
+  if (bounds) for (const key of ['left', 'top', 'right', 'bottom']) out[key] = Math.round(layer[key] * k);
+  if (layer.effects) {
+    const fx = (e) => {
+      const next = { ...e };
+      for (const f of FX_PIXEL_FIELDS) if (e?.[f]?.units === 'Pixels') next[f] = { ...e[f], value: e[f].value * k };
+      return next;
+    };
+    out.effects = Object.fromEntries(Object.entries(layer.effects).map(([key, v]) => [key, Array.isArray(v) ? v.map(fx) : fx(v)]));
+  }
+  const t = layer.text;
+  if (t) {
+    const sized = (st) => {
+      const next = { ...st };
+      if (typeof st.fontSize === 'number') next.fontSize = st.fontSize * k;
+      if (typeof st.leading === 'number') next.leading = st.leading * k;
+      return next;
+    };
+    out.text = {
+      ...t,
+      transform: [t.transform[0], t.transform[1], t.transform[2], t.transform[3], t.transform[4] * k, t.transform[5] * k],
+      boxBounds: t.boxBounds.map((v) => v * k),
+      style: sized(t.style),
+      ...(t.styleRuns ? { styleRuns: t.styleRuns.map((r) => ({ ...r, style: sized(r.style) })) } : null),
+      ...(t.paragraphStyleRuns
+        ? {
+            paragraphStyleRuns: t.paragraphStyleRuns.map((r) => {
+              const st = { ...r.style };
+              for (const f of ['startIndent', 'endIndent']) if (typeof st[f] === 'number') st[f] *= k;
+              return { ...r, style: st };
+            }),
+          }
+        : null),
+    };
   }
   return out;
 }
@@ -1850,7 +2040,9 @@ async function layerToUrl(layer) {
 
 // Rebuild a full page object from the embedded project JSON (lossless path).
 // Object URLs for raw/cleaned are regenerated from the PSD base rasters.
-async function reconstructFromProject(project, psd) {
+// Exported for psd.test.js: a page with neither raster touches no layer, so
+// what it makes of the JSON is reachable from node.
+export async function reconstructFromProject(project, psd) {
   const sp = project.page;
   const page = {
     id: sp.id,
@@ -1858,8 +2050,11 @@ async function reconstructFromProject(project, psd) {
     cleaned: null,
     w: sp.w,
     h: sp.h,
-    lines: (sp.lines ?? []).map((l) => ({ ...l })),
-    boxes: (sp.boxes ?? []).map((b) => ({ ...b, style: { ...b.style } })),
+    // Runs only where their check is the text's (`runsField`), kept as a
+    // chapter saves them: the page goes on to become a chapter on disk
+    // (`chapterPagesFromPsdFiles`), which reads them back by that check.
+    lines: (sp.lines ?? []).map(({ runs, runsCheck, ...l }) => ({ ...l, ...savedRuns(runsField(runs, l.en, runsCheck)?.runs, l.en) })),
+    boxes: (sp.boxes ?? []).map(({ runs, runsCheck, ...b }) => ({ ...b, style: { ...b.style }, ...savedRuns(runsField(runs, b.text, runsCheck)?.runs, b.text) })),
     detect: sp.detect
       ? { panels: (sp.detect.panels ?? []).slice(), boxes: (sp.detect.boxes ?? []).map((d) => ({ ...d })) }
       : null,
@@ -2321,7 +2516,12 @@ export async function reconstructForeign(psd) {
         // them back unbolded. The face named in the layer is the other half of
         // the answer, and between them they cover a foreign PSD too: some
         // authoring tools set the flags, all of them name the face.
-        const psName = String(st.font?.name || '');
+        // A layer in several fonts names a font per run and none for the
+        // whole (ag-psd keeps in `style` only what every run shares): the
+        // first run's font is read then. Only the font: a size or a colour
+        // that differs between runs keeps the default it always had, since
+        // the first run's (an emphasised word, say) is no truer of the rest.
+        const psName = String(st.font?.name || n.text.styleRuns?.[0]?.style?.font?.name || '');
         const faceSuffix = psName.includes('-') ? psName.slice(psName.lastIndexOf('-') + 1) : '';
         boxes.push({
           lineN: null,
@@ -2400,6 +2600,28 @@ export function parsePagePsd(bytes, readOptions = {}) {
 
 const psdBytes = (url) => fetch(url).then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b));
 
+/**
+ * How much larger a Pear PSD's document is than the page its project states,
+ * `{ sx, sy }`: 1 and 1 for a file at the page's own size. Read from
+ * `docScale` where the export wrote it (Size 2x), else from the document's
+ * size against the page's, so a file of another size that does not say why
+ * is caught too. Its art is the document's: enlarged art, never the original.
+ */
+export function psdPageScale(project, psd) {
+  const page = project?.page;
+  const k = Number(project?.docScale);
+  if (k > 0 && k !== 1) return { sx: k, sy: k };
+  const sx = page?.w > 0 && psd?.width > 0 ? psd.width / page.w : 1;
+  const sy = page?.h > 0 && psd?.height > 0 ? psd.height / page.h : 1;
+  return { sx: Math.abs(sx - 1) < 1e-9 ? 1 : sx, sy: Math.abs(sy - 1) < 1e-9 ? 1 : sy };
+}
+
+// Why a Pear PSD would come in as something other than its own page.
+const enlargedPsd = (project) =>
+  Number(project?.docScale) > 1
+    ? `exported at ${project.docScale}x: its pages and its art are enlarged`
+    : 'its document is not the size of its page, and its art is resized';
+
 function psdPageName(index, suffix) {
   return `page-${String(index + 1).padStart(3, '0')}${suffix}.png`;
 }
@@ -2457,16 +2679,36 @@ export function numberBoxIds(pages) {
   return pages;
 }
 
-export async function chapterPagesFromPsdFiles(files) {
+//
+// A Pear PSD whose document is not its page's size (Size 2x, `psdPageScale`)
+// holds enlarged art, not the art the page was made from. It is refused, and
+// named in `problems`, unless the caller has asked the user and passes
+// `enlarged: true`; then it comes in at the document's size - the boxes
+// scaled with it now, so no later measure of the art moves them - and is
+// counted in `enlarged`. There is no path that brings such a file back into
+// an existing chapter: PSD import makes new chapters only (see above).
+export async function chapterPagesFromPsdFiles(files, { enlarged: allowEnlarged = false } = {}) {
   const list = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   const pages = [];
   const problems = [];
   let lossless = 0;
+  let enlarged = 0;
   for (const file of list) {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const { project, psd } = parsePagePsd(bytes);
+      const k = project ? psdPageScale(project, psd) : { sx: 1, sy: 1 };
+      const resized = k.sx !== 1 || k.sy !== 1;
+      if (resized && !allowEnlarged) {
+        problems.push(`${file.name} - ${enlargedPsd(project)}`);
+        continue;
+      }
       const page = project ? await reconstructFromProject(project, psd) : await reconstructForeign(psd);
+      if (resized) {
+        page.w = psd.width;
+        page.h = psd.height;
+        rescalePageGeometry(page, k.sx, k.sy);
+      }
       const built = await toChapterPage(page, pages.length);
       if (!built) {
         problems.push(`${file.name} - no page image in it`);
@@ -2474,6 +2716,7 @@ export async function chapterPagesFromPsdFiles(files) {
       }
       pages.push(built);
       if (project) lossless++;
+      if (resized) enlarged++;
     } catch (e) {
       problems.push(`${file.name} - ${e?.message || e}`);
     }
@@ -2482,6 +2725,7 @@ export async function chapterPagesFromPsdFiles(files) {
   return {
     pages,
     lossless,
+    enlarged,
     foreign: pages.length - lossless,
     cleanedOnly: pages.filter((pg) => pg.cleanedOnly).length,
     problems,
@@ -2666,7 +2910,7 @@ export async function psdSelfTest(p) {
         textGroup.children.every((l, i) => {
           const { box, owner } = layerBoxes[i] ?? {};
           if (!l.text || !box) return true; // raster-only layers carry no text
-          const want = placeBlock(boxCandidate(box, boxTextFor(owner, box))).lines;
+          const want = placeBlock(boxCandidate(box, boxTextFor(owner, box), boxRunsFor(owner, box))).lines;
           return l.text.text === want.join('\n');
         });
       if (!report.checks.shapedBreaksInText) report.ok = false;

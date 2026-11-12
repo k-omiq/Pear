@@ -544,7 +544,13 @@ const WIDTH_BAND = 48;
 // that can no longer win, and `byCount` ends there. `only` asks for that one
 // count alone (see `balanceCandidates`); a paragraph that has no breaking at it
 // answers with whatever it falls back to, and the caller checks the count.
-function breakParagraph(para, widthSpec, measureFn, o, every, only) {
+//
+// A measure that also measures by offset (`measureFn.span(start, end, hyphen)`,
+// offsets into the whole text - measure.js's for a text set in several faces)
+// is asked by offset, `base` being where the paragraph starts in that text,
+// and every breaking it publishes says where its lines are (`spans`).
+function breakParagraph(para, widthSpec, measureFn, o, every, only, base = 0) {
+  const byOffset = typeof measureFn?.span === 'function';
   const words = [];
   const re = /\S+/g;
   let m;
@@ -554,6 +560,7 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
   // line costs, so a block's merit goes on counting its lines.
   if (n === 0) {
     const blank = { lines: [''], merit: o.lineCost, cost: o.lineCost, overflowLines: [], greedy: false, orphansRelaxed: false };
+    if (byOffset) blank.spans = [[base, base]];
     return { best: blank, byCount: [blank] };
   }
 
@@ -580,7 +587,7 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
     const key = (start * stride + end) * 2 + (hyphen ? 1 : 0);
     let v = spans.get(key);
     if (v === undefined) {
-      v = measure(para.slice(start, end) + (hyphen ? '-' : ''));
+      v = byOffset ? measureFn.span(base + start, base + end, hyphen) : measure(para.slice(start, end) + (hyphen ? '-' : ''));
       spans.set(key, v);
     }
     return v;
@@ -1169,7 +1176,7 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
     cand.cuts.forEach(([a, b], k) => {
       if (width(a, b) > w[k] + FIT_EPS) overflowLines.push(k);
     });
-    return {
+    const out = {
       lines: cand.cuts.map(([a, b]) => lineText(a, b)),
       merit: cand.merit,
       cost: cand.cost,
@@ -1177,6 +1184,8 @@ function breakParagraph(para, widthSpec, measureFn, o, every, only) {
       greedy: greedyPath,
       orphansRelaxed,
     };
+    if (byOffset) out.spans = cand.cuts.map(([a, b]) => [base + pos[a].start, base + pos[b].end]);
+    return out;
   };
 
   // What a block costs when a silhouette was asked for: its cost against the
@@ -1354,7 +1363,7 @@ function paragraphsOf(text) {
 // same on every row, and a lone paragraph's rows are its own, so both are the
 // paragraphs alone, as they always were.
 function onTheirRows(paras, width, o, solve) {
-  const out = paras.map((para) => solve(para, width));
+  const out = paras.map((para, k) => solve(para, width, k));
   const span = spanOf(paras, width);
   if (!span) return out;
   const tried = new Map();
@@ -1365,7 +1374,7 @@ function onTheirRows(paras, width, o, solve) {
       const key = `${k} ${before} ${after}`;
       let got = tried.get(key);
       if (!got) {
-        got = solve(paras[k], slice(width, before, after, o));
+        got = solve(paras[k], slice(width, before, after, o), k);
         tried.set(key, got);
       }
       if (got.lines.length !== out[k].lines.length) moved = true;
@@ -1416,6 +1425,7 @@ function joinParagraphs(parts) {
   const out = { lines: [], merit: 0, cost: 0, overflowLines: [], greedy: false, orphansRelaxed: false };
   for (const p of parts) {
     for (const k of p.overflowLines) out.overflowLines.push(out.lines.length + k);
+    if (p.spans) (out.spans ??= []).push(...p.spans);
     out.lines.push(...p.lines);
     out.merit += p.merit;
     out.cost += p.cost;
@@ -1462,9 +1472,10 @@ export function balanceScored(text, width, measureFn, opts = {}) {
   const o = { ...TYPESET_DEFAULTS, ...opts };
   const paras = paragraphsOf(text);
   if (o.stopAbove != null && paras.filter((para) => para.trim() !== '').length !== 1) o.stopAbove = null;
+  const bases = paraBases(paras, measureFn);
   let tall = false;
-  const solve = (para, w) => {
-    const r = breakParagraph(para, w, measureFn, o, false);
+  const solve = (para, w, k) => {
+    const r = breakParagraph(para, w, measureFn, o, false, undefined, bases?.[k] ?? 0);
     if (r === TOO_TALL) {
       tall = true;
       return EMPTY_BLOCK;
@@ -1500,9 +1511,10 @@ const EMPTY_BLOCK = Object.freeze({ lines: [], merit: 0, cost: 0, overflowLines:
 export function balanceCandidates(text, width, measureFn, opts = {}) {
   const o = { ...TYPESET_DEFAULTS, ...opts };
   const paras = paragraphsOf(text);
+  const bases = paraBases(paras, measureFn);
   let runs = new Map([[0, { cost: 0, parts: [] }]]);
-  for (const para of paras) {
-    const { byCount } = breakParagraph(para, width, measureFn, o, true);
+  for (let k = 0; k < paras.length; k++) {
+    const { byCount } = breakParagraph(paras[k], width, measureFn, o, true, undefined, bases?.[k] ?? 0);
     const next = new Map();
     for (const [L0, run] of runs) {
       for (const cand of byCount) {
@@ -1523,7 +1535,7 @@ export function balanceCandidates(text, width, measureFn, opts = {}) {
       if (k < span.first || k > span.last) return part;
       const { before, after } = around(parts, span, k);
       const L = part.lines.length;
-      const best = breakParagraph(paras[k], slice(width, before, after, o), measureFn, o, true, L).best;
+      const best = breakParagraph(paras[k], slice(width, before, after, o), measureFn, o, true, L, bases?.[k] ?? 0).best;
       return best.lines.length === L ? best : null;
     });
     if (!got.includes(null)) onRows.push(joinParagraphs(got));
@@ -1531,9 +1543,26 @@ export function balanceCandidates(text, width, measureFn, opts = {}) {
   return onRows.length ? onRows : alone.map(joinParagraphs);
 }
 
-// The lines alone, which is all the renderer has ever needed.
+// The lines alone, which is all the renderer has ever needed - and, from a
+// measure by offset, where they are (`lines.spans`).
 export function balanceLines(text, width, measureFn, opts = {}) {
-  return balanceScored(text, width, measureFn, opts)?.lines ?? null;
+  const r = balanceScored(text, width, measureFn, opts);
+  if (!r) return null;
+  if (r.spans) r.lines.spans = r.spans;
+  return r.lines;
+}
+
+// Where each paragraph starts in the text, for a measure that measures by
+// offset; null for one that does not, which has no use for it.
+function paraBases(paras, measureFn) {
+  if (typeof measureFn?.span !== 'function') return null;
+  const out = new Array(paras.length);
+  let at = 0;
+  for (let k = 0; k < paras.length; k++) {
+    out[k] = at;
+    at += paras[k].length + 1;
+  }
+  return out;
 }
 
 // ===== auto-height =====

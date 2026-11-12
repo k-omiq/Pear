@@ -7,9 +7,10 @@
 //! [`decode`] reads the wire form `text-engine/js/paint.mjs` writes: one
 //! little-endian buffer per job.
 
-use super::geom::{Affine, Pt};
+use super::geom::{Affine, IBox, Pt};
 use super::roughen::Roughen;
 use super::shade::Premul;
+use super::special::{Aim, BreakOff, Crack, Lightning, Motion, Scratches, Special, Splash, MAX_SPECIAL_SIZE};
 use super::stroke::Join;
 use super::warp::{Mesh, MAX_MESH_SIDE};
 use super::BoldDraw;
@@ -161,7 +162,89 @@ pub struct Effects {
     /// in from the picture's corner puts the page's pixel rows on odd device
     /// rows at a scale of two. `None` paints exactly.
     pub crisp: Option<Pt>,
+    /// Wobble: each letter moved up or down and turned about its middle by
+    /// numbers of its own (`Wobble`). `None` leaves every letter where the
+    /// shaper put it.
+    pub wobble: Option<Wobble>,
+    /// Curved text only: the runs are the clusters of one line, in order,
+    /// and are shaped as that line (`shape_line_runs`), so a curve keeps the
+    /// line's kerning, ligatures and contextual alternates. A box's job sets
+    /// it (box wire v22); a job on the glyph wire has no place for it and
+    /// shapes each run on its own, as an SFX letter is.
+    pub line: bool,
+    /// Special effects (wire v15): crack and scratches cut shapes over the
+    /// whole box, splash and lightning are the box job's paint on the fill
+    /// (`special.rs`). `None` paints the letters as they are.
+    pub special: Option<Special>,
+    /// What of Crack's and Scratches' cuts this paint lays (not on the
+    /// wire): the box's own strokes ask for the letters whole and for the
+    /// cuts alone, so a stroke outlines the letters and is then cut through
+    /// as a glyph band is.
+    pub cuts: Cuts,
+    /// The device pixels this paint is seen through (not on the wire): the
+    /// box's surface, its corner at device `(0, 0)`. A crack's cuts alone
+    /// and its pieces are rastered no further, so a crack far bigger than
+    /// the letters makes no raster past it. `None`: as far as they reach.
+    pub surface: Option<IBox>,
 }
+
+/// [`Effects::cuts`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cuts {
+    /// The letters with the cuts taken out of everything: every job.
+    #[default]
+    Made,
+    /// The letters as if nothing cut them.
+    Skipped,
+    /// The cuts alone, opaque, and nothing of the letters, rastered no
+    /// further than the surface (`Effects::surface`): a cut only takes
+    /// away, so what lies past it is never read.
+    Alone,
+}
+
+/// Letters that jump about: each letter is moved up or down by up to
+/// `amount` of its size and turned either way by up to `tilt` degrees,
+/// about its own middle. Never moved along the line, so a caret between two
+/// letters stays where the shaper put it.
+///
+/// Which numbers a letter gets is keyed by the seed and the letter's place
+/// among the job's letters, counted across its runs and skipping spaces and
+/// hyphens (`Glyphs::add_run`): a line broken somewhere else moves only
+/// spaces and hyphens, so no letter is given new numbers when its box is
+/// resized, and typing at the end leaves the letters before it still.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wobble {
+    pub amount: f64,
+    pub tilt: f64,
+    pub seed: u32,
+    /// How many afterimages of each letter an SFX trail lays (`Run::ghost`):
+    /// not on the wire, but read from the run list when it is decoded, so
+    /// the box job's own pass of the afterimages alone (the trail laid under
+    /// the letters) still knows whose copy each one is and wobbles it as its
+    /// letter. The app's writer lays the same number behind every letter
+    /// that is a run, in the letters' order, copies that draw nothing for a
+    /// letter that cannot trail. Zero when the runs do not divide that way,
+    /// and for a job on the wire of afterimages alone, which the app never
+    /// writes: then no afterimage wobbles.
+    pub copies: u32,
+}
+
+impl Wobble {
+    /// A wobble of `amount` and `tilt` keyed by `seed`, with no afterimages.
+    pub fn new(amount: f64, tilt: f64, seed: u32) -> Self {
+        Self {
+            amount,
+            tilt,
+            seed,
+            copies: 0,
+        }
+    }
+}
+
+/// Most wobble accepted: a letter moved its whole size, or turned a right
+/// angle. Guards, not design limits (the panel stops at 0.4 and 20).
+pub const MAX_WOBBLE_AMOUNT: f64 = 1.0;
+pub const MAX_WOBBLE_TILT: f64 = 90.0;
 
 impl Default for Effects {
     fn default() -> Self {
@@ -173,9 +256,17 @@ impl Default for Effects {
             embolden: 0.0,
             slant: 0.0,
             crisp: None,
+            wobble: None,
+            line: false,
+            special: None,
+            cuts: Cuts::Made,
+            surface: None,
         }
     }
 }
+
+/// Largest coordinate or side a special effect's box may state, job units.
+pub const MAX_SPECIAL_SPAN: f64 = 1_048_576.0;
 
 /// Most extra weight accepted, in synthesised bolds.
 pub const MAX_EMBOLDEN: f64 = 8.0;
@@ -282,12 +373,41 @@ pub struct Request {
     /// The box's brush ink, painted with the letters in every pass of the
     /// box job (`super::ink`). Only a box job carries it.
     pub ink: Option<super::ink::Ink>,
+    /// The faces of a text set in several (v13): empty for a job in one face,
+    /// which is every job without the block.
+    pub faces: RunFaces,
 }
+
+/// A straight job's lines set in more faces than `face` (v13): the faces, at
+/// the request's size, and for each run the stretches of its text each is
+/// set in. A run with no stretches is set in `face`, as before. Each line is
+/// shaped through [`crate::engine::Engine::measure_spans`], the measure the
+/// layout broke it by, so a bold word paints exactly as wide as it measured.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunFaces {
+    pub faces: Vec<Face>,
+    /// One list per run (or none at all): `(index into faces, UTF-16 range
+    /// of the run's text)`, in order and end to end.
+    pub spans: Vec<Vec<(u32, core::ops::Range<u32>)>>,
+}
+
+impl RunFaces {
+    /// The stretches of run `i` with their faces, or `None` when the run is
+    /// set in the job's face alone.
+    pub fn of(&self, i: usize) -> Option<Vec<(Face, core::ops::Range<u32>)>> {
+        let list = self.spans.get(i).filter(|l| !l.is_empty())?;
+        Some(list.iter().map(|(k, r)| (self.faces[*k as usize], r.clone())).collect())
+    }
+}
+
+/// Most faces one job's lines can be set in: four faces of one family, and
+/// room for fallback-built faces of more families later.
+pub const MAX_RUN_FACES: usize = 16;
 
 /// First four bytes of the wire form: "MTPJ".
 pub const MAGIC: u32 = 0x4a50_544d;
 /// Bumped when the wire form changes; `paint.mjs` writes the same number.
-pub const WIRE_VERSION: u32 = 11;
+pub const WIRE_VERSION: u32 = 18;
 
 /// Largest extra weight accepted, in device pixels. A guard, not a design
 /// limit: the weight that was measured against the browsers is under one.
@@ -481,6 +601,124 @@ impl<'a> Reader<'a> {
         }))
     }
 
+    // The v13 block of a job set in several faces (see `decode`). Whether a
+    // stretch list covers its run's text is the shaper's to check
+    // (`Engine::measure_spans`), which refuses one that does not.
+    // The special effects (wire v15). Every number is checked here, so a
+    // generator never meets one it cannot use.
+    fn special(&mut self) -> Result<Special, Error> {
+        let mut rect = [0.0; 4];
+        for v in &mut rect {
+            *v = self.f64()?;
+        }
+        if !rect.iter().all(|v| v.is_finite() && v.abs() <= MAX_SPECIAL_SPAN) || !(rect[2] > 0.0 && rect[3] > 0.0) {
+            return Err(Error::BadSpec);
+        }
+        let kinds = self.u32()?;
+        // 16 (v16): the crack's pieces break off; only with a crack. 32 (v17): a
+        // box's strokes are cut through; only with a crack or scratches. 64
+        // (v18): the glyph bands fill the cuts; only with a crack or
+        // scratches. 128 (v18): the lightning is aimed; only with a
+        // lightning. 256 (v18): the splash is placed; only with a splash.
+        if kinds & 15 == 0
+            || kinds > 511
+            || (kinds & 16 != 0 && kinds & 1 == 0)
+            || (kinds & 96 != 0 && kinds & 9 == 0)
+            || (kinds & 128 != 0 && kinds & 2 == 0)
+            || (kinds & 256 != 0 && kinds & 4 == 0)
+        {
+            return Err(Error::BadSpec);
+        }
+        let share = |v: f64, lo: f64, hi: f64| if (lo..=hi).contains(&v) { Ok(v) } else { Err(Error::BadSpec) };
+        let turn = |v: f64| if v.is_finite() && v.abs() <= 64.0 { Ok(v) } else { Err(Error::BadSpec) };
+        let mut sp = Special {
+            rect,
+            crack: None,
+            break_off: None,
+            lightning: None,
+            splash: None,
+            scratches: None,
+            cut_strokes: kinds & 32 != 0,
+            fill_bands: kinds & 64 != 0,
+        };
+        if kinds & 1 != 0 {
+            let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
+            let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
+            let spread = share(self.f64()?, 0.0, 1.0)?;
+            sp.crack = Some(Crack { amount, size, at, spread, seed: self.u32()? });
+            if kinds & 16 != 0 {
+                let share = self.f64()?;
+                if !(share > 0.0 && share <= 1.0) {
+                    return Err(Error::BadSpec);
+                }
+                let motion = match self.u32()? {
+                    0 => Motion::Apart,
+                    1 => Motion::Fall,
+                    _ => return Err(Error::BadSpec),
+                };
+                sp.break_off = Some(BreakOff { share, motion });
+            }
+        }
+        if kinds & 2 != 0 {
+            let amount = share(self.f64()?, 0.0, 1.0)?;
+            let (core, glow) = (self.rgba()?, self.rgba()?);
+            let glow_size = share(self.f64()?, 0.0, 3.0)?;
+            let seed = self.u32()?;
+            let aim = if kinds & 128 != 0 {
+                let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
+                Some(Aim { at, angle: turn(self.f64()?)? })
+            } else {
+                None
+            };
+            sp.lightning = Some(Lightning { amount, core, glow, glow_size, seed, aim });
+        }
+        if kinds & 4 != 0 {
+            let (amount, size) = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.01, MAX_SPECIAL_SIZE)?);
+            let color = self.rgba()?;
+            let seed = self.u32()?;
+            let (at, spread) = if kinds & 256 != 0 {
+                let at = (share(self.f64()?, 0.0, 1.0)?, share(self.f64()?, 0.0, 1.0)?);
+                (at, share(self.f64()?, 0.0, 1.0)?)
+            } else {
+                ((0.5, 0.5), 1.0)
+            };
+            sp.splash = Some(Splash { amount, size, color, seed, at, spread });
+        }
+        if kinds & 8 != 0 {
+            let (amount, angle) = (share(self.f64()?, 0.0, 1.0)?, turn(self.f64()?)?);
+            sp.scratches = Some(Scratches { amount, angle, seed: self.u32()? });
+        }
+        Ok(sp)
+    }
+
+    fn run_faces(&mut self, runs: usize, size: f64) -> Result<RunFaces, Error> {
+        let n = self.count(12)?;
+        if n == 0 || n > MAX_RUN_FACES {
+            return Err(Error::BadSpec);
+        }
+        let faces = super::budget::collect((0..n).map(|_| {
+            Ok(Face {
+                font: self.u32()?,
+                synth: Synth::from_bits(self.u32()?),
+                chain: self.u32()?,
+                size,
+            })
+        }))?;
+        if self.u32()? as usize != runs {
+            return Err(Error::BadSpec);
+        }
+        let spans = super::budget::collect((0..runs).map(|_| {
+            super::budget::collect((0..self.count(12)?).map(|_| {
+                let (k, a, b) = (self.u32()?, self.u32()?, self.u32()?);
+                if k as usize >= n || b < a {
+                    return Err(Error::BadSpec);
+                }
+                Ok((k, a..b))
+            }))
+        }))?;
+        Ok(RunFaces { faces, spans })
+    }
+
     fn tiles(&mut self) -> Result<Vec<Tile>, Error> {
         super::budget::collect((0..self.count(8)?).map(|_| {
             let (width, height) = (self.u32()?, self.u32()?);
@@ -504,12 +742,16 @@ impl<'a> Reader<'a> {
 /// f64 x 6 transform (a, b, c, d, e, f)
 /// f64 weight (device pixels, 0 to 64)
 /// u32 flags (1 curved, 2 silhouette, 4 no fill, 8 letter by letter,
-///     16 negative, 32 crisp, v11), u32 align (0 left, 1 centre, 2 right)
+///     16 negative, 32 crisp v11, 64 wobble v12, 128 faces v13, 256 special
+///     v14), u32 align (0 left,
+///     1 centre, 2 right)
 /// f64 letter spacing
 /// rgba silhouette
 /// u32 join (0 round, 1 mitre), rgba negative colour, f64 negative grow
 /// f64 embolden (0 to 8 synthesised bolds), f64 slant (within 1.5)
 /// with flag 32 (v11): f64 x, y, a page pixel's corner in device pixels
+/// with flag 64 (v12): f64 amount (a share of the size, 0 to 1), f64 tilt
+///     (degrees, 0 to 90), u32 seed
 /// u32 band count, then per band: rgba colour, f64 opacity, f64 line
 /// fill (the job's)
 /// mesh
@@ -518,6 +760,28 @@ impl<'a> Reader<'a> {
 ///                              u32 run flags (1 afterimage), fill,
 ///                              u32 byte length, UTF-8 text
 /// u32 tile count, then per tile: u32 width, u32 height, RGBA8 pixels
+/// with flag 128 (v13), a straight job whose lines are set in several
+///     faces (and nothing at all otherwise, so a job in one face is the bytes
+///     it was): u32 face count (1 to 16), then per face: u32 font, u32 synth bits,
+///     u32 fallback chain, all at the job's size;
+///     u32 run count (the job's), then per run: u32 stretch count (0 for a
+///     run in the job's face), then per stretch: u32 face index, u32 first
+///     and one-past-last UTF-16 unit of the run's text
+/// with flag 256 (v14), after the faces: the special effects. f64 x, y, w, h
+///     (the box in job space), u32 kinds (1 crack, 2 lightning, 4 splash,
+///     8 scratches; 16 the crack's pieces break off, v16, only with 1;
+///     32 a box's own strokes are cut through at the cuts, v17, no
+///     payload, only with 1 or 8),
+///     then for each kind set, in that order:
+///     crack:     f64 amount (0 to 1), f64 size (a share of the size, 0.01
+///                to 4), f64 x, y (where it gathers, shares of the ink
+///                box), f64 spread (0 to 1), u32 seed (v15); with 16, f64
+///                break off (over 0, at most 1), u32 motion (0 apart,
+///                1 fall)
+///     lightning: f64 amount, rgba core, rgba glow, f64 glow size (0 to
+///                3), u32 seed (v15)
+///     splash:    f64 amount, f64 size, rgba colour, u32 seed (v15)
+///     scratches: f64 amount, f64 angle (radians), u32 seed
 ///
 /// fill: u32 kind, then
 ///   0 none
@@ -555,6 +819,13 @@ impl<'a> Reader<'a> {
 /// amount is within 4096 either way, its detail is 0 to 8 and its grit is 0
 /// to 4096.
 pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
+    decode_split(bytes).map(|(request, _)| request)
+}
+
+/// [`decode`], and where the special effects' record starts in `bytes`
+/// (their length with none): what is before it is all the letters' raster
+/// reads of the job but Crack's and Scratches' numbers.
+pub(crate) fn decode_split(bytes: &[u8]) -> Result<(Request, usize), Error> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != MAGIC || r.u32()? != WIRE_VERSION {
         return Err(Error::BadSpec);
@@ -611,6 +882,17 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
     } else {
         None
     };
+    let wobble = if flags & 64 != 0 {
+        let (amount, tilt, seed) = (r.f64()?, r.f64()?, r.u32()?);
+        if !(0.0..=MAX_WOBBLE_AMOUNT).contains(&amount) || !(0.0..=MAX_WOBBLE_TILT).contains(&tilt) {
+            return Err(Error::BadSpec);
+        }
+        // A wobble that moves nothing is no wobble, so Crisp stays on and the
+        // bytes are those of a box without one.
+        (amount > 0.0 || tilt > 0.0).then(|| Wobble::new(amount, tilt, seed))
+    } else {
+        None
+    };
     let bands = super::budget::collect((0..r.count(20)?).map(|_| {
         Ok(Band {
             color: r.rgba()?,
@@ -660,11 +942,35 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
             ghost: run_flags & 1 != 0,
         })
     }))?;
+    let wobble = wobble.map(|w| {
+        let ghosts = runs.iter().filter(|r| r.ghost).count();
+        let letters = runs.len() - ghosts;
+        let copies = if letters > 0 && ghosts % letters == 0 {
+            u32::try_from(ghosts / letters).unwrap_or(0)
+        } else {
+            0
+        };
+        Wobble { copies, ..w }
+    });
     let tiles = r.tiles()?;
+    let faces = if flags & 128 != 0 {
+        r.run_faces(runs.len(), size)?
+    } else {
+        RunFaces::default()
+    };
+    // A curve is one glyph a run, laid out in the box's face: no stretches.
+    if flags & 1 != 0 && flags & 128 != 0 {
+        return Err(Error::BadSpec);
+    }
+    let special_at = r.at;
+    let special = if flags & 256 != 0 { Some(r.special()?) } else { None };
+    if flags > 511 {
+        return Err(Error::BadSpec);
+    }
     if r.at != bytes.len() {
         return Err(Error::BadSpec);
     }
-    Ok(Request {
+    let request = Request {
         job: Job {
             curved: flags & 1 != 0,
             align,
@@ -683,6 +989,11 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
                 embolden,
                 slant,
                 crisp,
+                wobble,
+                line: false,
+                special,
+                cuts: Cuts::Made,
+                surface: None,
             },
             runs,
         },
@@ -697,7 +1008,9 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Error> {
         transform: Affine(m),
         tiles,
         ink: None,
-    })
+        faces,
+    };
+    Ok((request, special_at))
 }
 
 /// A swatch uses the same fill and tile records as a job, without a font

@@ -76,6 +76,19 @@ export function parsePresets(raw) {
 // Load persisted presets on module initialization.
 loadPresets();
 
+// What picking a preset lays on a box: its style less the keys that belong
+// to the box. A preset is a look, not a placement: the same three keys
+// paste-style leaves alone stay alone, or picking a preset silently
+// un-rotates and un-mirrors a box placed by hand. And paint marks were drawn
+// over one box's letters: a preset saved from a painted box does not stamp
+// them on another, and any preset leaves a painted box's marks as they are.
+const PRESET_SKIP = ['rotation', 'flipH', 'flipV', 'paint'];
+export function presetLook(p) {
+  const next = cloneStyle(p.style);
+  for (const k of PRESET_SKIP) delete next[k];
+  return next;
+}
+
 export function savePreset(name, style) {
   const cleanName = String(name ?? '').trim();
   // An empty or whitespace-only name cannot identify a preset in the UI.
@@ -155,11 +168,11 @@ export const hasCopiedStyle = () => clipboardStyle != null;
 // What a style PASTE declines to move: a box's transform belongs to where it
 // sits on the page, not to how its text looks, and pasting a look should not
 // tilt or mirror the target. Nor the box's own hand-placed geometry - its
-// brush strokes, mask shapes, bezier path and warp mesh, all in px from its own
+// brush strokes, bezier path and warp mesh, all in px from its own
 // corner, which on another box would be someone else's lettering drawn over it
 // and the target's own work thrown away (see `applyBoxDefaults`, which keeps a
 // new box from inheriting them for the same reason).
-const EXCLUDED_KEYS = ['rotation', 'flipH', 'flipV', 'ink', 'clip', 'path', 'warp'];
+const EXCLUDED_KEYS = ['rotation', 'flipH', 'flipV', 'ink', 'paint', 'path', 'warp'];
 // And what a paste leaves alone on a MANUAL box (`isAutoBox`): the switches that
 // made it manual. Pasted over, a box the user sized by hand or bent onto an arc
 // would turn auto and be re-sized by the paste's own fit. Onto an auto box they

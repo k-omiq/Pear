@@ -17,13 +17,17 @@
 // Then every piece is typeset in its bubble. One undo step per page.
 
 import { defineTool, ToolError } from '../registry.js';
-import { app, boxText, duplicateBox, editBoxes, setBoxText, resizeBox, dropBoxOutline, refitBalloon, commitOutlinePoints, isTranslateMode } from '../../store.svelte.js';
+import { sliceRuns } from '../../runs.js';
+import { app, boxText, boxRuns, duplicateBox, editBoxes, setBoxText, resizeBox, dropBoxOutline, refitBalloon, commitOutlinePoints, isTranslateMode } from '../../store.svelte.js';
 import { breaksFor } from '../../measure.js';
 import { splitOutline, farLobe } from '../../bubble-outline.js';
 import { fitPolygon, intervalsAt } from '../../outline-geom.js';
 import { matchesOf, checksOf, fitsFor, typesetMatches } from './edit.js';
 import { sizesOf } from './check.js';
 import { withPagePixels } from '../render.js';
+import { follows, withFollow, normalizeMask } from '../../box-mask.js';
+import { normalizeFade } from '../../box-fade.js';
+import { record } from '../../editor/history.svelte.js';
 
 export const MAX_PARTS = 4;
 
@@ -31,12 +35,20 @@ const inside = (pts, [x, y]) => intervalsAt(pts, y).some(([l, r]) => x >= l && x
 const dot = ([x, y], r = 2) => [x - r, y - r, x + r, y + r];
 
 // The parts as the text's own pieces (capitals and spacing as the text has
-// them), or null when they are not the text, every word once, in order.
+// them), each with where it sits in the text - `{ text, start, end }` - or
+// null when they are not the text, every word once, in order. Where, so each
+// piece takes the faces of its own letters (runs.js): the same words twice
+// over cannot say which of them a face was on.
 export function partsOf(text, parts) {
   const t = String(text ?? '');
   const b = breaksFor(t, null, 0, parts);
   if (!b) return null;
-  return b.at.map((from, i) => t.slice(from, b.at[i + 1] ?? t.length).trim());
+  return b.at.map((from, i) => {
+    const raw = t.slice(from, b.at[i + 1] ?? t.length);
+    const start = from + (raw.length - raw.trimStart().length);
+    const piece = raw.trim();
+    return { text: piece, start, end: start + piece.length };
+  });
 }
 
 // Reading order of two points on a manga page: the higher first when they sit
@@ -77,6 +89,7 @@ defineTool({
       throw new ToolError(`parts must be 2 to ${MAX_PARTS} non-empty strings`, 'e.g. ["Wait!", "Where are you going?"]');
     }
     const pieces = partsOf(boxText(b, p), parts);
+    const runs = boxRuns(b, p);
     if (!pieces) throw new ToolError(`the parts are not box ${id}'s text`, 'give every word of the text once, in order, cut into parts (capitals may differ); box shows the text.');
     const nums = (q) => Array.isArray(q) && q.length === 2 && q.every((v) => typeof v === 'number' && Number.isFinite(v));
     if (at != null && (!Array.isArray(at) || at.length !== pieces.length - 1 || !at.every(nums))) {
@@ -111,10 +124,39 @@ defineTool({
       if (ids.some((x) => !x)) return null;
       const boxes = ids.map((x) => p.boxes.find((bb) => bb.id === x));
       // The words first, so each outline below is laid out for its own part.
-      // Through editBoxes, which records them for the undo.
+      // Through editBoxes, which records them for the undo. Paint marks were
+      // laid over the whole text's letters in the box's frame: on a part they
+      // would sit over other words, so every part starts with none. Mask and
+      // fade shapes lie over the first part's bubble: the parts after it drop
+      // the drawn ones and keep a bubble link, which follows each part's own
+      // bubble. On the first part they stay where they are on the page, also
+      // when they move with the box: pinned for the layout below and moving
+      // with it again after (`unpinFirst`), one record each.
+      const first = boxes[0];
+      const followed = ['mask', 'fade'].filter((k) => follows(first[k])).map((k) => [k, JSON.parse(JSON.stringify(first[k]))]);
+      for (const [k] of followed) first[k] = withFollow(first, first[k], false);
+      const unpinFirst = () => {
+        for (const [k, before] of followed) {
+          const after = (k === 'mask' ? normalizeMask : normalizeFade)(withFollow(first, first[k], true));
+          first[k] = after;
+          record({ t: k, pageId: p.id, boxId: first.id, before, after: JSON.parse(JSON.stringify(after)) });
+        }
+      };
       editBoxes(
         boxes.map((box) => ({ page: p, box })),
-        (box) => setBoxText(box, pieces[boxes.indexOf(box)], p, { fit: false }),
+        (box) => {
+          if (box.style.paint?.marks?.length || box.style.paint?.on) box.style.paint = { on: false, marks: [] };
+          if (box !== boxes[0]) {
+            for (const k of ['mask', 'fade']) {
+              const o = box[k];
+              if (!o?.shapes?.length) continue;
+              const kept = o.shapes.filter((sh) => sh.kind === 'bubble');
+              if (kept.length !== o.shapes.length) box[k] = { ...o, shapes: kept, on: o.on && kept.length > 0 };
+            }
+          }
+          const piece = pieces[boxes.indexOf(box)];
+          setBoxText(box, piece.text, p, { fit: false, runs: sliceRuns(runs, piece.start, piece.end) });
+        },
         // The AI lays the box out as a placement does (`autoFitBox`).
         { solve: true },
       );
@@ -138,6 +180,7 @@ defineTool({
         how[order.indexOf(i)] = refitBalloon(box.id, p) ? 'found' : 'none';
       }
       typesetMatches(matchesOf(ids));
+      unpinFirst();
       return { ids, how };
     }));
     if (!out) throw new ToolError('the box could not be copied', 'is a chapter open in typeset mode?');

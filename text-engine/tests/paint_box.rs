@@ -6,14 +6,14 @@ use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::blending::{Blending, Range};
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
-    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
-    PaintOverlay, Position, Satin, Stroke, Technique,
+    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Marks, Overlay, Paint,
+    PaintMark, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 
 use mt_text::paint::{
-    decode_box, paint_box, paint_job, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape,
+    decode_box, decode_box_kept, paint_box, paint_box_kept, paint_job, Affine, Align, BoxKeys, BoxRequest, Clip, ClipMode, ClipPart, ClipShape, Fade, FadePart,
     Effects, Fill, Job, Mesh, Pt, Raster, Request, Rgba, Run, Shadow, Tap, BOX_MAGIC,
     BOX_WIRE_VERSION, MAGIC, WIRE_VERSION,
 };
@@ -67,6 +67,7 @@ fn request(font: FontId) -> Request {
         transform: Affine::IDENTITY,
         tiles: Vec::new(),
         ink: None,
+        faces: Default::default(),
     }
 }
 
@@ -80,6 +81,9 @@ fn plain(font: FontId) -> BoxRequest {
         blur: 0.0,
         taps: Vec::new(),
         clip: None,
+        fade: None,
+        pin_shift: mt_text::paint::Pt::new(0.0, 0.0),
+        pin_live: false,
         blend: Blend::Normal,
         fill_opacity: 1.0,
         blending: Default::default(),
@@ -402,11 +406,7 @@ fn taps_add_moved_copies() {
 }
 
 fn clip(mode: ClipMode, shapes: Vec<ClipShape>) -> Option<Clip> {
-    Some(Clip {
-        mode,
-        origin: Pt::new(0.0, 0.0),
-        shapes,
-    })
+    Some(Clip::all(mode, Pt::new(0.0, 0.0), shapes))
 }
 
 fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> ClipShape {
@@ -445,8 +445,30 @@ fn include_and_exclude_are_the_two_halves_of_the_picture() {
     assert_eq!(paint_box(&mut e, &mut b), Ok(None));
     b.clip = clip(ClipMode::Exclude, vec![rect(900.0, 900.0, 950.0, 950.0)]);
     assert_eq!(paint(&mut e, &mut b), whole);
+    // A mask with no keep shapes shows everything (v19).
     b.clip = clip(ClipMode::Include, Vec::new());
-    assert_eq!(paint_box(&mut e, &mut b), Ok(None));
+    assert_eq!(paint(&mut e, &mut b), whole);
+    // Keep and hide in one mask: inside the keep shapes, less the hide ones.
+    // The left half kept with its left quarter hidden is the second quarter.
+    let quarter = (f64::from(s.0) + mid) / 2.0;
+    b.clip = Some(Clip {
+        origin: Pt::new(0.0, 0.0),
+        shapes: vec![
+            ClipPart { mode: ClipMode::Include, shape: rect(0.0, 0.0, mid, 200.0) },
+            ClipPart { mode: ClipMode::Exclude, shape: rect(0.0, 0.0, quarter, 200.0) },
+        ],
+    });
+    let second = paint(&mut e, &mut b);
+    let i = inked(&second);
+    assert!(i.0 >= quarter.floor() as i32 && i.2 <= mid.ceil() as i32, "{i:?}");
+    for y in s.1..s.3 {
+        for x in s.0..s.2 {
+            let inside = f64::from(x) >= quarter.ceil() && f64::from(x) + 1.0 <= mid.floor();
+            if inside {
+                assert_eq!(px(&second, x, y), px(&whole, x, y), "{x},{y}");
+            }
+        }
+    }
 }
 
 /// A box that is one flat sheet of ink, to see a mask's own shape in.
@@ -550,18 +572,16 @@ fn a_mask_is_the_boxes_and_goes_where_the_box_goes() {
     let mut b = sheet(font);
     let shapes = vec![rect(10.0, 10.0, 50.0, 30.0)];
     // Stated from the box's corner.
-    b.clip = Some(Clip {
-        mode: ClipMode::Include,
-        origin: Pt::new(30.0, 40.0),
-        shapes: shapes.clone(),
-    });
+    b.clip = Some(Clip::all(ClipMode::Include, Pt::new(30.0, 40.0), shapes.clone()));
     assert_eq!(inked(&paint(&mut e, &mut b)), (40, 50, 80, 70));
     // Carried by the transform.
     b.request.transform = Affine::scale(2.0, 2.0);
     b.width = 400;
     b.height = 320;
     assert_eq!(inked(&paint(&mut e, &mut b)), (80, 100, 160, 140));
-    // And bent by the box's mesh: one that moves the box whole moves it.
+    // But not bent by the box's mesh (v19): the app pins the mask to the
+    // page and states it after the warp, so a mesh that moves the sheet
+    // leaves the mask where it is.
     b.request.transform = Affine::IDENTITY;
     let moved = |dx: f64, dy: f64| Mesh {
         cols: 1,
@@ -578,7 +598,7 @@ fn a_mask_is_the_boxes_and_goes_where_the_box_goes() {
         h: 160.0,
     };
     b.request.job.mesh = Some(moved(25.0, -15.0));
-    assert_eq!(inked(&paint(&mut e, &mut b)), (65, 35, 105, 55));
+    assert_eq!(inked(&paint(&mut e, &mut b)), (40, 50, 80, 70));
 }
 
 #[test]
@@ -770,25 +790,33 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     f(&mut b, 0.0);
     let weight_at = b.len();
     f(&mut b, 0.25);
+    // A mask (v19), each shape's kind then its op: 2, hide.
     let mode_at = b.len();
-    u(&mut b, 2);
+    u(&mut b, 1);
     f(&mut b, 10.0);
     f(&mut b, 20.0);
     u(&mut b, 3);
     u(&mut b, 1);
+    u(&mut b, 2);
     for v in [1.0, 2.0, 3.0, 4.0] {
         f(&mut b, v);
     }
+    u(&mut b, 2);
     u(&mut b, 2);
     u(&mut b, 3);
     for v in [0.0, 0.0, 9.0, 0.0, 0.0, 9.0] {
         f(&mut b, v);
     }
     u(&mut b, 3);
+    u(&mut b, 2);
     f(&mut b, 5.0);
     u(&mut b, 1);
     f(&mut b, 7.0);
     f(&mut b, 8.0);
+    u(&mut b, 0); // no fade (v20)
+    f(&mut b, 0.0); // not moved (v23)
+    f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     u(&mut b, 12); // the letters in Overlay
     f(&mut b, 0.5); // half their fill
     let blending_at = b.len();
@@ -915,6 +943,7 @@ fn wire(font: u32) -> (Vec<u8>, [usize; 11]) {
     let ink_at = b.len();
     u(&mut b, 0); // no ink (v12)
     u(&mut b, 0); // no page under them
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -994,10 +1023,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(
         r.clip,
-        Some(Clip {
-            mode: ClipMode::Exclude,
-            origin: Pt::new(10.0, 20.0),
-            shapes: vec![
+        Some(Clip::all(ClipMode::Exclude, Pt::new(10.0, 20.0), vec![
                 ClipShape::Ellipse {
                     centre: Pt::new(1.0, 2.0),
                     rx: 3.0,
@@ -1012,8 +1038,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
                     size: 5.0,
                     pts: vec![Pt::new(7.0, 8.0)]
                 },
-            ],
-        })
+            ]))
     );
     assert_eq!(
         r.effects,
@@ -1127,7 +1152,7 @@ fn the_wire_form_decodes_to_the_box_it_states() {
     );
     assert_eq!(r.request.face.font, 3);
     assert_eq!(r.request.job.runs[0].text, "HI");
-    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 18));
+    assert_eq!((BOX_MAGIC, BOX_WIRE_VERSION), (0x4250_544d, 24));
     assert_eq!(r.grain, (-3, 7));
 }
 
@@ -1186,8 +1211,8 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     exact[opacity_at + 60..opacity_at + 64].copy_from_slice(&5u32.to_le_bytes());
     let sh = decode_box(&exact).unwrap().shadows[0];
     assert!(sh.exact && sh.knockout);
-    // A mode, a magic, a version and a surface that are not ones.
-    assert_eq!(with_u(mode_at, 3), Some(Error::BadSpec));
+    // A mask, a magic, a version and a surface that are not ones.
+    assert_eq!(with_u(mode_at, 2), Some(Error::BadSpec));
     assert_eq!(with_u(0, MAGIC), Some(Error::BadSpec));
     assert_eq!(with_u(4, 1), Some(Error::BadSpec));
     assert_eq!(with_u(8, 0), Some(Error::BadSpec));
@@ -1198,8 +1223,10 @@ fn a_damaged_box_is_refused_not_guessed_at() {
     assert_eq!(with_u(28, 2), Some(Error::BadSpec));
     assert_eq!(with_u(blur_at + 8, 513), Some(Error::BadSpec));
     assert_eq!(with_u(mode_at + 20, 4097), Some(Error::BadSpec));
-    // A shape of no known kind.
+    // A shape of no known kind, and an op that is not keep or hide.
     assert_eq!(with_u(mode_at + 24, 9), Some(Error::BadSpec));
+    assert_eq!(with_u(mode_at + 28, 0), Some(Error::BadSpec));
+    assert_eq!(with_u(mode_at + 28, 3), Some(Error::BadSpec));
     // An effect of no known kind, a technique and a glow source that are
     // not ones, and a range past 1.
     assert_eq!(with_u(effects_at + 4, 5), Some(Error::BadSpec));
@@ -1358,7 +1385,12 @@ fn shadowed(font: u32, n: u32) -> Vec<u8> {
     f(&mut b, 0.0);
     u(&mut b, 0);
     u(&mut b, 0);
+    u(&mut b, 0); // no fade (v20)
+    f(&mut b, 0.0); // not moved (v23)
+    f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     no_blending(&mut b);
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -1405,24 +1437,31 @@ fn masked(font: u32, shapes: u32, points: u32) -> Vec<u8> {
     u(&mut b, 0);
     f(&mut b, 0.0);
     u(&mut b, 0);
-    u(&mut b, 2);
+    u(&mut b, 1);
     f(&mut b, 0.0);
     f(&mut b, 0.0);
     u(&mut b, shapes + 1);
     for i in 0..shapes {
         u(&mut b, 1);
+        u(&mut b, 2);
         for v in [-500.0 - f64::from(i % 50), -500.0, 1.0, 1.0] {
             f(&mut b, v);
         }
     }
     u(&mut b, 3);
+    u(&mut b, 2);
     f(&mut b, 1.0);
     u(&mut b, points);
     for i in 0..points {
         f(&mut b, -900.0 - f64::from(i % 7));
         f(&mut b, -900.0);
     }
+    u(&mut b, 0); // no fade (v20)
+    f(&mut b, 0.0); // not moved (v23)
+    f(&mut b, 0.0);
+    u(&mut b, 0); // not live (v24)
     no_blending(&mut b);
+    u(&mut b, 0); // not one line (v22)
     let job = job_bytes(font);
     u(&mut b, job.len() as u32);
     b.extend_from_slice(&job);
@@ -3295,4 +3334,463 @@ fn the_grain_stays_on_the_page_when_the_surface_takes_more_room() {
     b.grain = (0, 0);
     let moved = paint(&mut e, &mut b);
     assert!(same(&moved) > 500, "{}", same(&moved));
+}
+
+/// A box with a mask keeps its picture before the mask (`premask`), keyed on
+/// every byte but the mask's, and the mask's raster (its cover), keyed on
+/// the shapes but not how far they have moved: a held box's move (the pin
+/// shift, v23) reads both back, and at a whole pixel the paint it makes is
+/// the fresh paint of the mask stated that far on, byte for byte.
+#[test]
+fn a_moved_mask_reads_the_premask_back_and_paints_the_same() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    let (bytes, at) = wire(font);
+    let mode_at = at[3];
+    let (mut cold, keys) = decode_box_kept(&bytes).unwrap();
+    assert!(keys.premask.is_some() && keys.cover.is_some());
+    let first = paint_box_kept(&mut e, &mut cold, keys).unwrap();
+    let mut fresh_first = decode_box(&bytes).unwrap();
+    assert_eq!(first, paint_box(&mut e, &mut fresh_first).unwrap());
+    // The box held and the mask moved 7 px right against it: only the pin
+    // shift changes.
+    let shift_at = mode_at + mask_len(&bytes) + 4;
+    let mut moved = bytes.clone();
+    moved[shift_at..shift_at + 8].copy_from_slice(&7.0f64.to_le_bytes());
+    let (mut warm, moved_keys) = decode_box_kept(&moved).unwrap();
+    assert_eq!((moved_keys.premask, moved_keys.cover), (keys.premask, keys.cover));
+    let held = mt_text::paint::kept::bytes();
+    let hits = mt_text::paint::kept::hits();
+    let second = paint_box_kept(&mut e, &mut warm, moved_keys).unwrap();
+    // Read back, not painted and kept again: the premask and the cover.
+    assert_eq!(mt_text::paint::kept::bytes(), held);
+    assert!(mt_text::paint::kept::hits() >= hits + 2);
+    // The mask stated 7 px on, painted fresh.
+    let mut on = bytes.clone();
+    on[mode_at + 4..mode_at + 12].copy_from_slice(&17.0f64.to_le_bytes());
+    let mut fresh = decode_box(&on).unwrap();
+    assert_eq!(second, paint_box(&mut e, &mut fresh).unwrap());
+    // A box with no mask has no premask key.
+    let (_, plain) = decode_box_kept(&masked_off(&bytes, mode_at)).unwrap();
+    assert!(plain.premask.is_none() && plain.cover.is_none());
+}
+
+#[test]
+fn a_moved_fade_reads_the_premask_back_and_paints_the_same() {
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    let (bytes, at) = wire(font);
+    let mode_at = at[3];
+    // The mask taken out (its u32 0, then the fade's u32 0), and a fade put
+    // in: its corner and one rectangle at 60 % with a soft edge, `dx` along,
+    // moved `shift` against the box.
+    let off = masked_off(&bytes, mode_at);
+    let with = |dx: f64, shift: f64| {
+        let mut b = off[..mode_at + 4].to_vec();
+        u(&mut b, 1);
+        f(&mut b, 10.0);
+        f(&mut b, 20.0);
+        u(&mut b, 1);
+        u(&mut b, 2);
+        f(&mut b, 0.6);
+        f(&mut b, 2.0);
+        u(&mut b, 4);
+        for (x, y) in [(0.0, 0.0), (40.0, 0.0), (40.0, 60.0), (0.0, 60.0)] {
+            f(&mut b, x + dx);
+            f(&mut b, y);
+        }
+        f(&mut b, shift);
+        f(&mut b, 0.0);
+        b.extend_from_slice(&off[mode_at + 24..]);
+        b
+    };
+    let first_bytes = with(0.0, 0.0);
+    let (mut cold, keys) = decode_box_kept(&first_bytes).unwrap();
+    assert!(keys.premask.is_some());
+    let first = paint_box_kept(&mut e, &mut cold, keys).unwrap();
+    let mut fresh_first = decode_box(&first_bytes).unwrap();
+    assert_eq!(first, paint_box(&mut e, &mut fresh_first).unwrap());
+    // The box held and the fade moved 7 px right: only the shift changes.
+    let moved = with(0.0, 7.0);
+    let (mut warm, moved_keys) = decode_box_kept(&moved).unwrap();
+    assert_eq!((moved_keys.premask, moved_keys.cover), (keys.premask, keys.cover));
+    let held = mt_text::paint::kept::bytes();
+    let hits = mt_text::paint::kept::hits();
+    let second = paint_box_kept(&mut e, &mut warm, moved_keys).unwrap();
+    assert_eq!(mt_text::paint::kept::bytes(), held);
+    assert!(mt_text::paint::kept::hits() >= hits + 2);
+    let mut fresh = decode_box(&with(7.0, 0.0)).unwrap();
+    assert_eq!(second, paint_box(&mut e, &mut fresh).unwrap());
+    // A strength over 1 is refused.
+    let mut bad = with(0.0, 0.0);
+    bad[mode_at + 4 + 4 + 16 + 4 + 4..mode_at + 4 + 4 + 16 + 4 + 12].copy_from_slice(&1.5f64.to_le_bytes());
+    assert!(decode_box(&bad).is_err());
+    // With neither a mask nor a fade there is no premask key.
+    let (_, plain) = decode_box_kept(&off).unwrap();
+    assert!(plain.premask.is_none());
+}
+
+/// How many bytes `bytes`'s mask record takes: u32 1, two f64, u32 count,
+/// then per shape u32 kind, u32 op and its numbers.
+fn mask_len(bytes: &[u8]) -> usize {
+    let (r, _) = decode_box_kept(bytes).unwrap();
+    let clip = r.clip.unwrap();
+    let mut len = 4 + 16 + 4;
+    for p in &clip.shapes {
+        len += 8 + match &p.shape {
+            ClipShape::Ellipse { .. } => 32,
+            ClipShape::Polygon(pts) => 4 + 16 * pts.len(),
+            ClipShape::Stroke { pts, .. } => 8 + 4 + 16 * pts.len(),
+        };
+    }
+    len
+}
+
+/// `bytes` with its mask taken out: the mask's u32 0 in place of the mask.
+fn masked_off(bytes: &[u8], mode_at: usize) -> Vec<u8> {
+    let len = mask_len(bytes);
+    let mut out = bytes[..mode_at].to_vec();
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&bytes[mode_at + len..]);
+    out
+}
+
+/// Between whole pixels the kept mask is read by bilinear sampling, which
+/// differs from a raster of the mask stated that far on only along its
+/// antialiased edges. A hard edge's coverage is a ramp one pixel wide, and
+/// the mean of two neighbours misses the ramp moved half a pixel by up to a
+/// quarter of full (64 levels): the edge reads a little softer while the
+/// box is held. The paint at rest rasters the mask where it is
+/// (`a_rest_paint_after_any_move_is_the_cold_paint`).
+#[test]
+fn a_mask_moved_part_of_a_pixel_is_read_between_its_pixels() {
+    use mt_text::paint::kept::Hasher;
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    // "HI" at 60 with a hide ellipse across it and a hide stroke on a slant,
+    // and a soft fade at its foot: edges of every kind over the letters.
+    let at = |b: &mut BoxRequest, d: Pt| {
+        b.clip = Some(Clip::all(
+            ClipMode::Exclude,
+            Pt::new(d.x, d.y),
+            vec![
+                ClipShape::Ellipse { centre: Pt::new(62.3, 70.6), rx: 17.3, ry: 11.7 },
+                ClipShape::Stroke { size: 5.5, pts: vec![Pt::new(70.0, 60.0), Pt::new(105.0, 98.0)] },
+            ],
+        ));
+        b.fade = Some(Fade {
+            origin: Pt::new(d.x, d.y),
+            shapes: vec![FadePart {
+                strength: 0.7,
+                soft: 0.0,
+                shape: ClipShape::Polygon(vec![Pt::new(30.0, 88.0), Pt::new(120.0, 84.0), Pt::new(120.0, 120.0), Pt::new(30.0, 120.0)]),
+            }],
+        });
+    };
+    let keys = |b: &BoxRequest| BoxKeys {
+        job: Hasher::new("t job").debug(&b.request.job).finish().unwrap(),
+        premask: Hasher::new("t premask").u64(1).finish(),
+        cover: Hasher::new("t cover").debug(&b.clip).debug(&b.fade).finish(),
+    };
+    let mut held = plain(font);
+    at(&mut held, Pt::new(0.0, 0.0));
+    let k = keys(&held);
+    let still = paint_box_kept(&mut e, &mut held, k).unwrap().unwrap();
+    let mut worst_all = 0;
+    for (sx, sy) in [(0.5f64, 0.25f64), (3.25, -1.5), (-2.75, 0.5)] {
+        let mut moved = plain(font);
+        at(&mut moved, Pt::new(0.0, 0.0));
+        moved.pin_shift = Pt::new(sx, sy);
+        // A frame of a live move (v24): only it reads between pixels.
+        moved.pin_live = true;
+        let read = paint_box_kept(&mut e, &mut moved, k).unwrap().unwrap();
+        let mut on = plain(font);
+        at(&mut on, Pt::new(sx, sy));
+        let fresh = paint_box(&mut e, &mut on).unwrap().unwrap();
+        // It moved.
+        assert_ne!(read.data, still.data);
+        assert_eq!((read.x, read.y, read.width, read.height), (fresh.x, fresh.y, fresh.width, fresh.height));
+        let (mut worst, mut off) = (0u8, 0usize);
+        for (a, b) in read.data.iter().zip(&fresh.data) {
+            let d = a.abs_diff(*b);
+            worst = worst.max(d);
+            off += usize::from(d > 1);
+        }
+        // Measured: worst 53 to 57, on about 160 bytes of some 2700 inked.
+        let inked = fresh.data.chunks(4).filter(|p| p[3] > 0).count() * 4;
+        assert!(off * 8 < inked, "({sx}, {sy}): worst {worst}, {off} of {inked} bytes past one level");
+        worst_all = worst_all.max(worst);
+    }
+    assert!(worst_all <= 64, "{worst_all}");
+}
+
+/// Only a live move frame may be approximate (v24). After live frames have
+/// kept the mask at part-pixel offsets, a paint at rest (no live flag) at any
+/// move is the cold paint of the same request to the byte: at a part pixel
+/// it is a miss and the mask is rastered there; at a whole pixel the kept
+/// raster is read as it is. A turned box, whose every move is part-pixel in
+/// device space, and a move past the kept window, which rasters again at a
+/// part-pixel corner, are the same.
+#[test]
+fn a_rest_paint_after_any_move_is_the_cold_paint() {
+    use mt_text::paint::kept::Hasher;
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    mt_text::paint::kept::set_ceiling(mt_text::paint::kept::KEPT_BYTES);
+    // `softs`: the fade's softnesses, a shape each. Soft 6 at scale 2 is
+    // rastered on a grid of 6-pixel cells, so a move by a whole pixel that
+    // is not a whole cell must raster it again. Soft 2.2 and 3.1 at scale 2
+    // are cells of 2 and 3: the grid is their least common multiple, 6, so
+    // a move by 3 device pixels (1.5 page px), a whole cell of the larger,
+    // must raster again too.
+    let shaped = |turn: bool, softs: &[f64], scale: f64| {
+        let mut b = plain(font);
+        b.clip = Some(Clip::all(
+            ClipMode::Exclude,
+            Pt::new(0.0, 0.0),
+            vec![
+                ClipShape::Ellipse { centre: Pt::new(62.3, 70.6), rx: 17.3, ry: 11.7 },
+                ClipShape::Stroke { size: 5.5, pts: vec![Pt::new(70.0, 60.0), Pt::new(105.0, 98.0)] },
+            ],
+        ));
+        let polys = [
+            vec![Pt::new(30.0, 88.0), Pt::new(120.0, 84.0), Pt::new(120.0, 120.0), Pt::new(30.0, 120.0)],
+            vec![Pt::new(140.0, 20.0), Pt::new(190.0, 24.0), Pt::new(186.0, 70.0), Pt::new(138.0, 66.0)],
+        ];
+        b.fade = Some(Fade {
+            origin: Pt::new(0.0, 0.0),
+            shapes: softs
+                .iter()
+                .zip(polys)
+                .map(|(&soft, poly)| FadePart { strength: 0.7, soft, shape: ClipShape::Polygon(poly) })
+                .collect(),
+        });
+        if scale != 1.0 {
+            b.request.transform = Affine([scale, 0.0, 0.0, scale, 0.0, 0.0]);
+            b.width = (200.0 * scale) as u32;
+            b.height = (160.0 * scale) as u32;
+        }
+        if turn {
+            // 17 degrees about the box's middle, at scale 2.
+            let (c, s) = (17f64.to_radians().cos(), 17f64.to_radians().sin());
+            b.request.transform = Affine([2.0 * c, 2.0 * s, -2.0 * s, 2.0 * c, 120.0, 20.0]);
+            b.width = 420;
+            b.height = 420;
+        }
+        b
+    };
+    let cases: [(bool, &[f64], f64); 4] = [(false, &[1.5], 1.0), (true, &[1.5], 1.0), (false, &[6.0], 2.0), (false, &[2.2, 3.1], 2.0)];
+    for (turn, soft, scale) in cases {
+        let keys = |b: &BoxRequest| BoxKeys {
+            job: Hasher::new("t job").debug(&b.request.job).debug(&(turn, soft, scale.to_bits())).finish().unwrap(),
+            premask: Hasher::new("t premask").debug(&(turn, soft, scale.to_bits())).finish(),
+            cover: Hasher::new("t cover").debug(&b.clip).debug(&b.fade).debug(&(turn, soft, scale.to_bits())).finish(),
+        };
+        let k = keys(&shaped(turn, soft, scale));
+        mt_text::paint::kept::clear();
+        // Live frames first: the kept cover is now at a part-pixel offset.
+        for (sx, sy) in [(0.5, 0.25), (3.25, -1.5)] {
+            let mut live = shaped(turn, soft, scale);
+            live.pin_shift = Pt::new(sx, sy);
+            live.pin_live = true;
+            paint_box_kept(&mut e, &mut live, k).unwrap();
+        }
+        // Then the rest paint of each way a move ends: a drag let go, a
+        // nudge, a typed X and Y, a nudge from there and a move by a whole
+        // fade cell (6 device pixels at soft 6, scale 2), a move past the
+        // kept window; and from the nudge, 1.5 then 3 page px on.
+        for (sx, sy) in [(3.25, -1.5), (1.0, 0.0), (2.5, 0.0), (4.0, 0.0), (-2.75, 0.5), (7.0, 3.0), (8.0, 3.0), (11.0, 3.0), (900.5, -700.25), (0.0, 0.0)] {
+            let mut rest = shaped(turn, soft, scale);
+            rest.pin_shift = Pt::new(sx, sy);
+            let read = paint_box_kept(&mut e, &mut rest, k).unwrap();
+            let mut cold = shaped(turn, soft, scale);
+            cold.pin_shift = Pt::new(sx, sy);
+            let fresh = paint_box(&mut e, &mut cold).unwrap();
+            assert_eq!(read, fresh, "turn {turn}, soft {soft:?}, scale {scale}, ({sx}, {sy})");
+        }
+    }
+}
+
+/// A box of "HI" on the wire with special effects: a crack of `crack`, a
+/// lightning of `bolt` and a splash of `splash` (amounts), over the box.
+fn special_box(font: u32, crack: f64, bolt: f64, splash: f64) -> Vec<u8> {
+    special_box_kinds(font, crack, bolt, splash, 0)
+}
+
+/// [`special_box`] with `more` among the kinds (32: box strokes cut
+/// through at the cuts).
+fn special_box_kinds(font: u32, crack: f64, bolt: f64, splash: f64, more: u32) -> Vec<u8> {
+    let mut job = job_bytes(font);
+    let mut b = shadowed(font, 0);
+    b.truncate(b.len() - job.len() - 4);
+    // The job's flags: 256, the special effects, after the (no) tiles.
+    job[88..92].copy_from_slice(&256u32.to_le_bytes());
+    for v in [0.0, 0.0, 200.0, 160.0] {
+        f(&mut job, v);
+    }
+    u(&mut job, 1 | 2 | 4 | more);
+    for v in [crack, 1.0, 0.5, 0.5, 1.0] {
+        f(&mut job, v);
+    }
+    u(&mut job, 3);
+    f(&mut job, bolt);
+    job.extend_from_slice(&[255, 255, 255, 255]);
+    job.extend_from_slice(&[0, 0, 255, 255]);
+    f(&mut job, 1.0);
+    u(&mut job, 4);
+    f(&mut job, splash);
+    f(&mut job, 0.8);
+    job.extend_from_slice(&[0, 160, 0, 255]);
+    u(&mut job, 5);
+    u(&mut b, job.len() as u32);
+    b.extend_from_slice(&job);
+    b
+}
+
+/// Lightning and Splash are paint laid on the letters after, so a change of
+/// theirs keeps the letters' key and reads the letters back; a change of
+/// Crack, which cuts the letters, does not (commit 0417cac). Each paint is
+/// the fresh paint of its bytes.
+#[test]
+fn a_lightning_or_splash_change_keeps_the_letters_and_a_crack_change_does_not() {
+    use mt_text::paint::kept;
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    kept::set_ceiling(kept::KEPT_BYTES);
+    kept::clear();
+    let kept_paint = |e: &mut Engine, bytes: &[u8]| {
+        let (mut b, keys) = decode_box_kept(bytes).unwrap();
+        let hits = kept::hits();
+        let r = paint_box_kept(e, &mut b, keys).unwrap();
+        let fresh = paint_box(e, &mut decode_box(bytes).unwrap()).unwrap();
+        assert_eq!(r, fresh);
+        (keys.job, kept::hits() - hits)
+    };
+    let (first, _) = kept_paint(&mut e, &special_box(font, 0.5, 0.4, 0.3));
+    // The same bytes again: what a change that keeps the letters reads back.
+    let (_, again) = kept_paint(&mut e, &special_box(font, 0.5, 0.4, 0.3));
+    assert!(again > 0);
+    for (what, bytes) in [("lightning", special_box(font, 0.5, 0.7, 0.3)), ("splash", special_box(font, 0.5, 0.4, 0.6))] {
+        let (key, hits) = kept_paint(&mut e, &bytes);
+        assert_eq!(key, first, "{what}: the letters' key");
+        assert!(hits > 0, "{what}: the letters read back");
+    }
+    let (key, _) = kept_paint(&mut e, &special_box(font, 0.55, 0.4, 0.3));
+    assert_ne!(key, first, "a crack change cuts the letters otherwise");
+    // The box strokes cut through (kind 32) or outlining the cuts: a change
+    // of the choice is another key, and back is the first again.
+    let (through, _) = kept_paint(&mut e, &special_box_kinds(font, 0.5, 0.4, 0.3, 32));
+    assert_ne!(through, first, "cut through is another key");
+    let (back, _) = kept_paint(&mut e, &special_box(font, 0.5, 0.4, 0.3));
+    assert_eq!(back, first);
+}
+
+/// A paint mark's coverage is keyed on its shape and the frame it is
+/// rastered in, not on the page grain the letters' shape key holds: a box
+/// moved by whole pixels on the page (its grain) reads the mark's coverage
+/// back, and paints what a fresh paint there does (commit 0417cac).
+#[test]
+fn paint_marks_are_read_back_after_a_whole_pixel_move() {
+    use mt_text::paint::kept::{self, Hasher};
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    kept::set_ceiling(kept::KEPT_BYTES);
+    let boxed = |marks: bool, grain: (i32, i32)| {
+        let mut b = plain(font);
+        b.grain = grain;
+        if marks {
+            b.effects = vec![Effect::Paint(Marks {
+                origin: Pt::new(0.0, 0.0),
+                marks: vec![
+                    PaintMark { shape: ClipShape::Ellipse { centre: Pt::new(60.0, 70.0), rx: 20.0, ry: 16.0 }, color: BLUE, opacity: 1.0, soft: 4.0, erase: false },
+                    PaintMark { shape: ClipShape::Stroke { size: 6.0, pts: vec![Pt::new(80.0, 60.0), Pt::new(100.0, 96.0)] }, color: BLACK, opacity: 0.8, soft: 0.0, erase: false },
+                ],
+            })];
+        }
+        b
+    };
+    // What a move reads back of each: the marked box less the plain one is
+    // the marks' coverage.
+    let mut moved_hits = |marks: bool| {
+        kept::clear();
+        let keys = BoxKeys { job: Hasher::new("t job").u64(u64::from(marks)).finish().unwrap(), premask: None, cover: None };
+        paint_box_kept(&mut e, &mut boxed(marks, (0, 0)), keys).unwrap();
+        let hits = kept::hits();
+        let read = paint_box_kept(&mut e, &mut boxed(marks, (7, -3)), keys).unwrap();
+        assert_eq!(read, paint_box(&mut e, &mut boxed(marks, (7, -3))).unwrap(), "marks {marks}");
+        kept::hits() - hits
+    };
+    let (with, without) = (moved_hits(true), moved_hits(false));
+    assert!(with >= without + 2, "the two marks read back: {with} against {without}");
+}
+
+/// The kept cover is rastered over the surface and a fixed margin of 256 px
+/// each way (commit 6358e0b); a paint with nothing kept rasters it over the
+/// surface alone. Read at a rest move by whole pixels near the margin's
+/// edge, the cover over the wider window is, to the byte, the raster of the
+/// moved shapes over the surface: a keep and a hide shape reaching past the
+/// margin, a hard fade and a soft one (soft 6, cells of 3 px, so the moves
+/// are whole cells).
+#[test]
+fn the_kept_cover_over_its_margin_is_the_raster_over_the_surface() {
+    use mt_text::paint::kept::{self, Hasher};
+    let mut e = Engine::new();
+    let font = load(&mut e);
+    kept::set_ceiling(kept::KEPT_BYTES);
+    let shaped = |shift: Pt| {
+        let mut b = plain(font);
+        let mut clip = Clip::all(
+            ClipMode::Include,
+            Pt::new(0.0, 0.0),
+            vec![ClipShape::Polygon(vec![Pt::new(-300.0, -280.0), Pt::new(470.0, -300.0), Pt::new(480.0, 430.0), Pt::new(-310.0, 410.0)])],
+        );
+        clip.shapes.extend(
+            Clip::all(
+                ClipMode::Exclude,
+                Pt::new(0.0, 0.0),
+                vec![
+                    ClipShape::Ellipse { centre: Pt::new(-200.0, -150.0), rx: 60.0, ry: 40.0 },
+                    ClipShape::Stroke { size: 7.5, pts: vec![Pt::new(300.0, -100.0), Pt::new(80.0, 75.0), Pt::new(420.0, 300.0)] },
+                ],
+            )
+            .shapes,
+        );
+        b.clip = Some(clip);
+        b.fade = Some(Fade {
+            origin: Pt::new(0.0, 0.0),
+            shapes: vec![
+                FadePart { strength: 0.6, soft: 0.0, shape: ClipShape::Ellipse { centre: Pt::new(330.0, 60.0), rx: 50.0, ry: 30.0 } },
+                FadePart {
+                    strength: 0.8,
+                    soft: 6.0,
+                    shape: ClipShape::Polygon(vec![Pt::new(-200.0, 86.0), Pt::new(400.0, 92.0), Pt::new(400.0, 260.0), Pt::new(-200.0, 260.0)]),
+                },
+            ],
+        });
+        b.pin_shift = shift;
+        b
+    };
+    let k = BoxKeys {
+        job: Hasher::new("t job").u64(6358).finish().unwrap(),
+        premask: Hasher::new("t premask").u64(6358).finish(),
+        cover: Hasher::new("t cover").u64(6358).finish(),
+    };
+    kept::clear();
+    let still = paint_box_kept(&mut e, &mut shaped(Pt::new(0.0, 0.0)), k).unwrap();
+    assert_eq!(still, paint_box(&mut e, &mut shaped(Pt::new(0.0, 0.0))).unwrap());
+    let mut read = 0;
+    for (sx, sy) in [(255.0, 0.0), (-252.0, 120.0), (0.0, -255.0), (-99.0, 252.0)] {
+        let hits = kept::hits();
+        let kept_paint = paint_box_kept(&mut e, &mut shaped(Pt::new(sx, sy)), k).unwrap();
+        read += usize::from(kept::hits() >= hits + 2);
+        let fresh = paint_box(&mut e, &mut shaped(Pt::new(sx, sy))).unwrap();
+        assert!(fresh.is_some(), "({sx}, {sy}) paints something");
+        assert_eq!(kept_paint, fresh, "({sx}, {sy})");
+    }
+    // Every move stayed in the window: each read the cover kept at the
+    // first paint (and the premask), not a raster of its own.
+    assert_eq!(read, 4);
 }

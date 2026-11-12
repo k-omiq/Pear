@@ -76,15 +76,17 @@
 
 import {
   applyCase,
+  casedRuns,
   layoutLines,
   brokenLines,
   lineWidth,
+  lineWidthAt,
   balloonWidthsFor,
   lineIndents,
   blockYFor,
   baselineInLine,
   blockInk,
-  glyphInk,
+  placedInk,
   textInset,
   contentWidth,
   arcLayout,
@@ -98,9 +100,10 @@ import {
   motionBlurTaps,
   inkActive,
   inkBounds,
-  clipActive,
   clipShapesBounds,
 } from './text-paint.js';
+import { placedWobbleReach } from './paint-reach.js';
+import { maskActive, maskInBoxFrame } from './box-mask.js';
 import { warpActive, affineFromTriangle } from './warp.js';
 import { warpPlan } from './warp-paint.js';
 import { shapeBounds } from './balloon.js';
@@ -127,9 +130,11 @@ export const keptBreaks = (box) => (box?.style?.margin != null || box?.auto?.bre
 // wide for it widens the box or shrinks the type.
 export const breaksWords = (box) => box?.auto?.locks?.width === true;
 
-// A box as the functions below take it.
-export function boxCandidate(box, text) {
-  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, fit: box.fit ?? null, breaks: keptBreaks(box), breakWords: breaksWords(box) };
+// A box as the functions below take it. `runs` are the faces of `text`
+// (runs.js: `boxRuns` in the store reads them where `boxText` reads the
+// words), null for none.
+export function boxCandidate(box, text, runs = null) {
+  return { x: box.x, y: box.y, w: box.w, h: box.h, style: box.style, text, runs: runs?.length ? runs : null, fit: box.fit ?? null, mask: box.mask ?? null, breaks: keptBreaks(box), breakWords: breaksWords(box) };
 }
 
 // Glyph-by-glyph text - SFX lettering, the bezier path, the closed ring, the arc
@@ -153,12 +158,14 @@ export function curvedStyle(s) {
 //
 // The warp is a manual marker - as well as something the check counts - because
 // its geometry is the user's hand-placed mesh points in box-local px: grow the
-// box and the mesh no longer means what they drew. Hand-drawn ink and a mask's
-// shapes are the same kind of thing (OVF-7): box-local px measured from the
-// box's corner, which the ladder does not carry when it writes the box's new
-// rectangle. The text re-anchors inside the grown box; the strokes and the
-// mask stay pinned to its corner, so every growth step would slide the user's
-// lettering, or the cut-out, against the text it was drawn around. The ladder's
+// box and the mesh no longer means what they drew. Hand-drawn ink is the same
+// kind of thing (OVF-7): box-local px measured from the box's corner, which
+// the ladder does not carry when it writes the box's new rectangle. The text
+// re-anchors inside the grown box; the strokes stay pinned to its corner, so
+// every growth step would slide the user's lettering against the text it was
+// drawn around. A mask is pinned to the page instead, and the text cut around
+// it was placed against it by hand: the ladder moving the text would slide it
+// under the cut-out just the same. The ladder's
 // arithmetic is wrong for them as well: it grows a box by what its ANCHORED text
 // needs, and ink past the top or the left of a box moves with that corner
 // however far the box grows - so an inked box would grow to its limit for
@@ -182,7 +189,10 @@ function handPlaced(cand) {
   if (curvedStyle(s)) return REVIEW_REASONS.curve;
   if (warpActive(s, cand?.w, cand?.h)) return REVIEW_REASONS.warp;
   if (inkActive(s?.ink)) return REVIEW_REASONS.ink;
-  if (clipActive(s?.clip)) return REVIEW_REASONS.mask;
+  // Shapes drawn by hand make the box manual. A bubble link does not: it
+  // follows the outline the solver lays the box in, so Clip to bubble leaves
+  // an auto box auto.
+  if (maskActive(cand) && cand.mask.shapes.some((sh) => sh.kind !== 'bubble')) return REVIEW_REASONS.mask;
   return null;
 }
 
@@ -222,13 +232,20 @@ export function manualReason(cand) {
 export function placeBlock(cand, opts) {
   const s = cand.style;
   const size = s.size;
-  const text = applyCase(String(cand.text ?? ''), s);
+  let text = applyCase(String(cand.text ?? ''), s);
+  // A text in several faces is cased with its runs carried through the case
+  // change (`casedRuns`); one whose runs all say the box face is plain text.
+  // Curves are laid out in the box face: their glyph layouts take no runs yet.
+  let runs = null;
+  if (cand.runs) ({ text, runs } = casedRuns(String(cand.text ?? ''), cand.runs, s));
   const blank = text.trim() === '';
   // SFX first. An engine that would not lay the letters out (`sfxLayout` says
   // [] for it) leaves the box what the rest of its style makes it, rather than
   // a curve with no letters.
   const sfxGlyphs = !blank && sfxActive(s) ? sfxLayout(text, s, size) : null;
-  if (sfxGlyphs?.length) return { s, text, isCurve: true, layout: sfxGlyphs };
+  // `sfx` says the letters were placed one at a time by the SFX layout, not
+  // cut from one line: the painter shapes them so.
+  if (sfxGlyphs?.length) return { s, text, isCurve: true, layout: sfxGlyphs, sfx: true };
   const isPath = !blank && s.path?.on && (s.path.pts?.length ?? 0) >= 2;
   const isCircle = !blank && !isPath && s.circle?.on;
   if (isPath || isCircle || (!blank && s.curve && s.curve !== 0)) {
@@ -243,9 +260,10 @@ export function placeBlock(cand, opts) {
   // the field is one line height to every reader rather than 0 to one of them.
   const lineH = size * (s.lineHeight > 0 ? s.lineHeight : 1);
   const rows = balloonWidthsFor(cand, s, size);
+  const lopts = cand.breakWords ? { ...opts, breakWords: true } : opts;
   const lines =
-    brokenLines(text, s, size, cand.breaks) ??
-    layoutLines(text, s, size, contentWidth(cand.w, s), rows, cand.breakWords ? { ...opts, breakWords: true } : opts);
+    brokenLines(text, s, size, cand.breaks, runs) ??
+    layoutLines(text, s, size, contentWidth(cand.w, s), rows, runs ? { ...lopts, runs } : lopts);
   if (lines === null) return null;
   const { inks, shift } = blockInk(lines, s, size);
   const blockH = lines.length * lineH;
@@ -284,7 +302,7 @@ export function blockRect(place) {
   let x0 = Infinity;
   let x1 = -Infinity;
   place.lines.forEach((ln, i) => {
-    const w = lineWidth(ln, s, s.size);
+    const w = place.lines.spans ? lineWidthAt(place.lines, i, s, s.size) : lineWidth(ln, s, s.size);
     const x = s.align === 'center' ? place.lineX[i] - w / 2 : s.align === 'right' ? place.lineX[i] - w : place.lineX[i];
     x0 = Math.min(x0, x);
     x1 = Math.max(x1, x + w);
@@ -305,6 +323,24 @@ export function linesInkRect(place) {
     if (!k) continue;
     const base = place.blockY + i * place.lineH + place.baseY;
     r = unite(r, place.lineX[i] + k.left, base - k.ascent, place.lineX[i] + k.right, base + k.descent);
+  }
+  return r;
+}
+
+// The letters' own ink, box-local, as one rectangle ({ x0, y0, x1, y1 }), or
+// null with none: the glyphs alone, without the outlines, the ink or any
+// effect. What a crack's focus is stated in (special.js `handleFrame`), near
+// enough: the engine reads the painted glyphs' outlines.
+export function lettersInkRect(cand, place = placeBlock(cand)) {
+  if (!place) return null;
+  if (!place.isCurve) return linesInkRect(place);
+  const s = place.s;
+  let r = null;
+  for (const g of place.layout) {
+    const k = placedInk(g, s, s.size);
+    if (!k) continue;
+    const [x0, y0, x1, y1] = turnedInk(k, g.rot, cand.w / 2 + g.x, cand.h / 2 + g.y, g.sx, g.sy, g.skew);
+    r = unite(r, x0, y0, x1, y1);
   }
   return r;
 }
@@ -400,11 +436,13 @@ const unite = (r, x0, y0, x1, y1) =>
 export function boxInkRect(cand, place = placeBlock(cand)) {
   const s = place.s;
   let r = null;
+  // How far a wobble carries a letter, as the export makes room for it.
+  const { x: wx, y: wy } = placedWobbleReach(s, place);
   if (place.isCurve) {
     const cx = cand.w / 2;
     const cy = cand.h / 2;
     for (const g of place.layout) {
-      const k = glyphInk(g.ch, s, s.size);
+      const k = placedInk(g, s, s.size);
       if (!k) continue;
       // A drip pulls the placed letter's foot straight down the box (paint/mod.rs).
       const [x0, y0, x1, y1] = turnedInk(k, g.rot, cx + g.x, cy + g.y, g.sx, g.sy, g.skew);
@@ -413,6 +451,9 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
   } else {
     r = linesInkRect(place);
   }
+  // The letters' own rectangle grows by the wobble before the strokes are
+  // laid round them.
+  if (r && (wx > 0 || wy > 0)) r = grow(r, wx, wy);
   const ink = inkActive(s.ink) ? inkBounds(s.ink) : null;
   if (ink) r = unite(r, ink.minX, ink.minY, ink.maxX, ink.maxY);
   if (!r) return null;
@@ -441,12 +482,16 @@ export function boxInkRect(cand, place = placeBlock(cand)) {
     const d = (Math.abs(Number(s.roughen.amount) || 0) + Math.max(0, Number(s.roughen.grit) || 0)) / 2;
     u = grow(u, d, d);
   }
-  if (clipActive(s.clip) && s.clip.mode === 'include') {
-    const m = clipShapesBounds(s.clip.shapes);
+  if (warpActive(s, cand.w, cand.h)) u = warpedRect(u, s.warp, cand.w, cand.h);
+  // Keep shapes show nothing outside them. The mask is pinned to the page
+  // and cut after the warp, in the box's own frame (`maskInBoxFrame`), so it
+  // is read here, where the rectangle is in that frame.
+  const keep = maskInBoxFrame(cand).filter((sh) => sh.op === 'keep');
+  if (keep.length) {
+    const m = clipShapesBounds(keep);
     u = m && cut(u, m.minX, m.minY, m.maxX, m.maxY);
     if (!u) return null;
   }
-  if (warpActive(s, cand.w, cand.h)) u = warpedRect(u, s.warp, cand.w, cand.h);
   if (s.flipH) u = { ...u, x0: cand.w - u.x1, x1: cand.w - u.x0 };
   if (s.flipV) u = { ...u, y0: cand.h - u.y1, y1: cand.h - u.y0 };
   return { x: u.x0, y: u.y0, w: u.x1 - u.x0, h: u.y1 - u.y0 };
@@ -965,9 +1010,11 @@ function fitsAtAll(cand, size, limit, locked) {
 function hasWideWord(cand, place) {
   if (place.isCurve) return false;
   const room = contentWidth(cand.w, place.s) + GROW_EPS;
-  return place.lines.some((line) => {
+  return place.lines.some((line, i) => {
     const word = line.trim();
-    return word !== '' && !/\s/.test(word) && lineWidth(word, place.s, place.s.size) > room;
+    if (word === '' || /\s/.test(word)) return false;
+    // A line with offsets is the word itself, measured in its faces.
+    return (place.lines.spans ? lineWidthAt(place.lines, i, place.s, place.s.size) : lineWidth(word, place.s, place.s.size)) > room;
   });
 }
 

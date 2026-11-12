@@ -10,13 +10,23 @@
 // App.svelte, which has no handle on the panel and should not grow one. The
 // panel reads this state and writes it; the shortcuts write it; nothing else
 // needs to know the panel exists.
+import { drawTool, clearDrawTool, DRAW_PANELS } from './box-draw-tool.svelte.js';
+
 export const INSPECTOR_TABS = ['text', 'fill', 'effects', 'layout'];
+
+// A draw tool is its panel's: once another tab or sub-tab is in front, the
+// tool is put down (`DRAW_PANELS`). Every change of tab comes through here.
+function drawToolFollowsPanel() {
+  const panel = DRAW_PANELS[drawTool.target];
+  if (panel && !(inspectorTab.id === 'effects' && effectsSubTab.id === panel)) clearDrawTool();
+}
 
 export const inspectorTab = $state({ id: 'text' });
 
 export function setInspectorTab(id) {
   if (!INSPECTOR_TABS.includes(id)) return false;
   inspectorTab.id = id;
+  drawToolFollowsPanel();
   return true;
 }
 
@@ -27,6 +37,7 @@ export function cycleInspectorTab(step = 1) {
   const from = i === -1 ? 0 : i;
   const n = INSPECTOR_TABS.length;
   inspectorTab.id = INSPECTOR_TABS[(((from + step) % n) + n) % n];
+  drawToolFollowsPanel();
   return inspectorTab.id;
 }
 
@@ -40,12 +51,66 @@ export function cycleInspectorTab(step = 1) {
 // `liquify` sits beside `transform` because it edits the same mesh with a
 // round tool instead of handles.
 // SFX is not a sub-tab: it has its own window (SfxWindow.svelte).
-export const EFFECTS_SUBTABS = ['stroke', 'shadow', 'glow', 'bevel', 'warp', 'transform', 'liquify', 'blur', 'edges', 'mask'];
+//
+// The sub-tabs come in four groups, a segment above them, so the panel shows
+// four words and then at most four more instead of a row of mystery icons.
+// The group is never stored on its own: it is read off the sub-tab, so
+// anything that picks a sub-tab (the panel, a test, a shortcut) has picked
+// its group too.
+export const EFFECTS_GROUPS = [
+  { id: 'styles', label: 'Styles' },
+  { id: 'shape', label: 'Shape' },
+  { id: 'surface', label: 'Surface' },
+  { id: 'paint', label: 'Paint' },
+];
+
+export const EFFECTS_TABS = [
+  { id: 'stroke', label: 'Stroke', group: 'styles' },
+  { id: 'shadow', label: 'Shadow', group: 'styles' },
+  { id: 'glow', label: 'Glow', group: 'styles' },
+  { id: 'bevel', label: 'Bevel', group: 'styles' },
+  { id: 'warp', label: 'Warp', group: 'shape' },
+  { id: 'transform', label: 'Transform', group: 'shape' },
+  { id: 'liquify', label: 'Liquify', group: 'shape' },
+  // Wobble moves each letter on its own; the three above move the whole box.
+  { id: 'wobble', label: 'Wobble', group: 'shape' },
+  { id: 'edges', label: 'Edges', group: 'surface' },
+  { id: 'blur', label: 'Blur', group: 'surface' },
+  // Crack, Lightning, Splash and Scratches: seeded patterns over the box.
+  { id: 'special', label: 'Special', group: 'surface' },
+  { id: 'mask', label: 'Mask', group: 'paint' },
+  { id: 'fade', label: 'Fade', group: 'paint' },
+  { id: 'colour', label: 'Colour', group: 'paint' },
+];
+
+export const EFFECTS_SUBTABS = EFFECTS_TABS.map((t) => t.id);
 
 export const effectsSubTab = $state({ id: 'stroke' });
 
+// The sub-tab each group last showed, so going back to a group finds the
+// sub-tab that was in front there - kept for the session like the rest.
+const lastInGroup = {};
+
+export function effectsGroupOf(id) {
+  return EFFECTS_TABS.find((t) => t.id === id)?.group ?? null;
+}
+
+export function effectsTabsIn(group) {
+  return EFFECTS_TABS.filter((t) => t.group === group);
+}
+
 export function setEffectsSubTab(id) {
-  if (!EFFECTS_SUBTABS.includes(id)) return false;
+  const group = effectsGroupOf(id);
+  if (!group) return false;
   effectsSubTab.id = id;
+  lastInGroup[group] = id;
+  drawToolFollowsPanel();
   return true;
+}
+
+export function setEffectsGroup(group) {
+  const tabs = effectsTabsIn(group);
+  if (!tabs.length) return false;
+  const last = lastInGroup[group];
+  return setEffectsSubTab(tabs.some((t) => t.id === last) ? last : tabs[0].id);
 }

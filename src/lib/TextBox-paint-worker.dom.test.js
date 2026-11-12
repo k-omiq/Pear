@@ -28,6 +28,7 @@ vi.mock('./editor/box-picture.js', async (original) => {
       const req = {
         id: box.id,
         color: box.style.color,
+        box,
         promise,
         prepMs: 0,
         answer: (res = { raster: null, ms: 1 }) => {
@@ -191,5 +192,55 @@ describe('the full paint in the paint worker', () => {
     expect(open.most).toBe(2);
     for (const r of requests) expect(r.apply).toHaveBeenCalledTimes(1);
     expect(paintBoxPicture).not.toHaveBeenCalled();
+  });
+});
+
+describe('a masked box moved', () => {
+  // Only a live move frame may read the kept mask between pixels (wire v24,
+  // `liveMove`): the drag's frames say so, and the drag let go asks for one
+  // more paint that does not, so the picture at rest is exact.
+  const ev = (type, x, y) => new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+  it('sends its drag frames live and paints once more at rest when let go', async () => {
+    loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [{ ...boxOf('m'), mask: { on: true, shapes: [{ kind: 'ellipse', op: 'hide', cx: 220, cy: 245, rx: 80, ry: 30 }] } }] }]);
+    setZoom(1);
+    const pg = page();
+    const view = render(TextBox, { box: pg.boxes[0], pageFrameEl: document.createElement('div'), pg });
+    await settle();
+    requests.at(-1).answer();
+    await settle();
+    const root = view.container.querySelector('.tbox');
+    root.dispatchEvent(ev('pointerdown', 0, 0));
+    for (const [x, y] of [[3.5, 1.25], [10.5, 3.25]]) {
+      document.dispatchEvent(ev('pointermove', x, y));
+      await settle();
+      requests.at(-1).answer();
+      await settle();
+    }
+    const frames = requests.filter((r) => r.box.pinMove);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((r) => r.box.liveMove === true)).toBe(true);
+    const asked = requests.length;
+    document.dispatchEvent(ev('pointerup', 10.5, 3.25));
+    await settle();
+    expect(requests.length).toBe(asked + 1);
+    const rest = requests.at(-1).box;
+    expect(rest.pinMove).toEqual([-10.5, -3.25]);
+    expect(rest.liveMove).toBeUndefined();
+    expect(pg.boxes[0].x).toBe(110.5);
+  });
+
+  it('a move that is no drag (typed X, a nudge, an undo) is painted at rest', async () => {
+    loadProjectPages([{ id: 1, w: 1600, h: 2300, lines: [], boxes: [{ ...boxOf('m'), mask: { on: true, shapes: [{ kind: 'ellipse', op: 'hide', cx: 220, cy: 245, rx: 80, ry: 30 }] } }] }]);
+    setZoom(1);
+    const pg = page();
+    render(TextBox, { box: pg.boxes[0], pageFrameEl: document.createElement('div'), pg });
+    await settle();
+    requests.at(-1).answer();
+    await settle();
+    pg.boxes[0].x = 117.25;
+    await settle();
+    const rest = requests.at(-1).box;
+    expect(rest.pinMove).toEqual([-17.25, 0]);
+    expect(rest.liveMove).toBeUndefined();
   });
 });

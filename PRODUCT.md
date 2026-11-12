@@ -8,11 +8,11 @@ web
 
 ## Users
 
-Scanlators who letter English onto cleaned manga, manhua and manhwa raws. Mostly one person per series, working chapter by chapter, often for hours at a time on a desktop or laptop.
+Scanlators who letter English onto cleaned manga, manhua and manhwa raws. Mostly one person per series, working chapter by chapter, often for hours at a time on a desktop or laptop. People who only want to put styled text on images use it too ("general use"), and the comic tools are hidden for them.
 
 ## Product Purpose
 
-Pear (formerly Manga Typesetter) is a desktop app (Tauri webview; macOS first, Windows and Linux builds too) for typesetting comics: it detects and reads the source text, holds the translation, and lets the letterer place, fit and style English text in balloons, captions and SFX, then export the pages. Success is a chapter lettered to a human letterer's standard in less time.
+Pear (formerly Manga Typesetter) is a desktop app (Tauri webview; macOS first, Windows and Linux builds too) for typesetting comics: it detects and reads the source text, holds the translation, and lets the letterer place, fit and style English text in balloons, captions and SFX, then export the pages. Success is a chapter lettered to a human letterer's standard in less time. Pear changes text only; it does not edit, clean, or redraw the image, and no image-editing tools are planned.
 
 ## Positioning
 
@@ -44,7 +44,3 @@ Lettering-first rather than translation-first: balloon-aware fitting, per-series
 2. Say where a setting is kept, so nobody changes a series by accident.
 3. One control vocabulary across the app; a setting looks the same wherever it lives.
 4. Plain, short words in the interface.
-</content>
-</invoke>
-<invoke name="Bash">
-<parameter name="command">cat /Users/caved/.claude/plugins/cache/impeccable/impeccable/4.0.4/skills/impeccable/reference/craft-floor.md

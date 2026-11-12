@@ -224,7 +224,9 @@ describe('the registry itself', () => {
     expect(new Set(ids).size).toBe(ids.length);
     // Two keys may share a combo only when they are never heard in the same
     // place: the typing pane's Enter in a field and Enter on a row.
-    const share = (a, b) => !a.ctx || !b.ctx || a.ctx === b.ctx;
+    // A key heard everywhere that yields to a place is not heard there.
+    const yieldsTo = (a, b) => !a.ctx && !!b.ctx && a.yields === b.ctx;
+    const share = (a, b) => (!a.ctx || !b.ctx || a.ctx === b.ctx) && !yieldsTo(a, b) && !yieldsTo(b, a);
     const clashes = [];
     for (const [i, a] of SHORTCUTS.entries()) {
       for (const b of SHORTCUTS.slice(i + 1)) if (a.combo && a.combo === b.combo && share(a, b)) clashes.push(`${a.id} / ${b.id}`);
@@ -376,10 +378,10 @@ describe('overrides', () => {
     expect(lookupShortcut(press('KeyD', { mod: true }))).toBe(null);
     expect(setCombo('bubble.centre', 'Mod+d').ok).toBe(true);
     // Nothing to take away is not a write.
-    expect(clearCombo('text.bold')).toBe(false);
-    setCombo('text.bold', 'Mod+b');
-    expect(clearCombo('text.bold')).toBe(true);
-    expect(prefs.shortcuts['text.bold']).toBeUndefined();
+    expect(clearCombo('text.typeface')).toBe(false);
+    setCombo('text.typeface', 'Mod+Alt+y');
+    expect(clearCombo('text.typeface')).toBe(true);
+    expect(prefs.shortcuts['text.typeface']).toBeUndefined();
     resetCombo('box.duplicate');
     expect(conflictFor('Mod+d', 'box.duplicate')?.id).toBe('bubble.centre');
     resetAllCombos();

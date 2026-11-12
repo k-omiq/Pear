@@ -31,15 +31,15 @@ use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::blending::{Blending, Range};
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
-    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
-    PaintOverlay, Position, Satin, Stroke, Technique,
+    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Marks, Overlay, Paint,
+    PaintMark, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::kept::{self, Hasher, Key};
 use mt_text::paint::{
-    paint_box, paint_box_kept, Affine, Align, BoxRequest, Clip, ClipMode, ClipShape, Effects,
-    Fill, Job, Pt, Raster, Request, Rgba, Run, Shadow, Tap,
+    paint_box, paint_box_kept, Affine, BoxKeys, Align, Band, BoxRequest, Clip, ClipMode, ClipShape, Effects,
+    Aim, BreakOff, Crack, Fade, FadePart, Motion, Fill, Job, Lightning, Pt, Raster, Request, Rgba, Run, RunFaces, Scratches, Shadow, Special, Splash, Tap, Wobble,
 };
 use mt_text::{Engine, Face, FontId};
 
@@ -105,6 +105,7 @@ fn base(font: FontId) -> BoxRequest {
             transform: Affine::IDENTITY,
             tiles: Vec::new(),
             ink: None,
+            faces: Default::default(),
         },
     )
 }
@@ -287,15 +288,11 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
         (
             "clip_include_ellipse",
             Box::new(|b| {
-                b.clip = Some(Clip {
-                    mode: ClipMode::Include,
-                    origin: Pt::new(0.0, 0.0),
-                    shapes: vec![ClipShape::Ellipse {
+                b.clip = Some(Clip::all(ClipMode::Include, Pt::new(0.0, 0.0), vec![ClipShape::Ellipse {
                         centre: Pt::new(75.0, 78.0),
                         rx: 30.0,
                         ry: 18.0,
-                    }],
-                })
+                    }]))
             }),
         ),
         (
@@ -536,6 +533,298 @@ fn sheet() -> Vec<(&'static str, Mutate)> {
             ];
         }),
     ));
+    // Wobble (v12): each letter up or down and turned by numbers of its own.
+    // Every pass follows the moved letters, a stroke and a shadow included.
+    let wobble = Wobble::new(0.15, 12.0, 7);
+    rows.push((
+        "wobble",
+        Box::new(move |b| {
+            b.request.job.effects.wobble = Some(Wobble { tilt: 0.0, ..wobble })
+        }),
+    ));
+    rows.push((
+        "wobble_tilt_stroke_shadow",
+        Box::new(move |b| {
+            b.request.job.effects.wobble = Some(wobble);
+            b.shadows = vec![shadow(4.0, 5.0)];
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    // With the SFX shake, which is copies of the silhouette laid at an exact
+    // throw (`effectShadows`, text-paint.js): the copies are of the wobbled
+    // letters.
+    rows.push((
+        "wobble_with_sfx_shake",
+        Box::new(move |b| {
+            b.request.job.effects.wobble = Some(wobble);
+            b.shadows = [1.0, -1.0]
+                .iter()
+                .map(|s| Shadow {
+                    opacity: 0.45,
+                    exact: true,
+                    ..shadow(s * 2.4, 0.0)
+                })
+                .collect();
+        }),
+    ));
+    // A curve through the box job: "AVA" as three letters on a slight arc,
+    // shaped as one line (box wire v22, `Effects::line`) and each alone.
+    // The kerned pairs make the two different pictures.
+    let arc = |line: bool| -> Mutate {
+        Box::new(move |b| {
+            let job = &mut b.request.job;
+            job.curved = true;
+            job.effects.line = line;
+            job.runs = [("A", 50.0, 92.0, -0.12), ("V", 90.0, 88.0, 0.0), ("A", 130.0, 92.0, 0.12)]
+                .iter()
+                .map(|&(text, x, y, rot)| Run {
+                    text: text.to_owned(),
+                    x,
+                    y,
+                    rot,
+                    sx: 1.0,
+                    sy: 1.0,
+                    skew: 0.0,
+                    drip: 0.0,
+                    pen: 1.0,
+                    ghost: false,
+                    fill: None,
+                })
+                .collect();
+        })
+    };
+    rows.push(("curve_as_one_line", arc(true)));
+    rows.push(("curve_letter_by_letter", arc(false)));
+    // A line set in two faces (wire v13): the H in a synthesised bold, the I
+    // in the job's face, and the same with a stroke and a shadow, which see
+    // the letters of both faces as letters.
+    let two_faces = |b: &mut BoxRequest| {
+        let regular = b.request.face;
+        let bold = Face {
+            synth: mt_text::Synth::from_bits(1),
+            ..regular
+        };
+        b.request.faces = RunFaces {
+            faces: vec![regular, bold],
+            spans: vec![vec![(1, 0..1), (0, 1..2)]],
+        };
+    };
+    rows.push(("runs_two_faces", Box::new(two_faces)));
+    rows.push((
+        "runs_two_faces_stroke_shadow",
+        Box::new(move |b| {
+            two_faces(b);
+            b.shadows = vec![shadow(5.0, 6.0)];
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    // The special effects (glyph wire v15), each over the whole box: a
+    // crack past 60 % (pieces out) under a stroke and a shadow, a splash
+    // laid as paint on the fill under a stroke, scratches, and a lightning
+    // laid as paint.
+    fn special(b: &mut BoxRequest) -> &mut Special {
+        b.request.job.effects.special = Some(Special {
+            rect: [0.0, 0.0, 200.0, 160.0],
+            crack: None,
+            break_off: None,
+            lightning: None,
+            splash: None,
+            scratches: None,
+            cut_strokes: false,
+            fill_bands: false,
+        });
+        b.request.job.effects.special.as_mut().unwrap()
+    }
+    rows.push((
+        "special_crack_falls",
+        Box::new(move |b| {
+            special(b).crack = Some(Crack { amount: 0.9, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            b.shadows = vec![shadow(5.0, 6.0)];
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+        }),
+    ));
+    rows.push((
+        "special_splash_stroke",
+        Box::new(move |b| {
+            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, color: BLUE, seed: 5, at: (0.5, 0.5), spread: 1.0 });
+            b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+            b.lay_special_paint().unwrap();
+        }),
+    ));
+    rows.push((
+        "special_scratches",
+        Box::new(move |b| {
+            special(b).scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+        }),
+    ));
+    rows.push((
+        "special_lightning",
+        Box::new(move |b| {
+            special(b).lightning = Some(Lightning { amount: 0.6, core: Rgba([255, 255, 255, 255]), glow: BLUE, glow_size: 1.0, seed: 4, aim: None });
+            b.lay_special_paint().unwrap();
+        }),
+    ));
+    // Scratches cutting a box's own stroke through, and a crack (no pieces
+    // out) cutting a stroke centred on the outline, whose inside part reads
+    // the letters whole.
+    // Each with the box strokes cut through (`cut_strokes`) and outlining
+    // the cuts (the default).
+    for (name, through) in [("special_scratches_stroke_cut_through", true), ("special_scratches_stroke_fills_cuts", false)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+                sp.cut_strokes = through;
+                b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+            }),
+        ));
+    }
+    for (name, through) in [("special_crack_stroke_centre_cut_through", true), ("special_crack_stroke_centre_fills_cuts", false)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                sp.cut_strokes = through;
+                b.effects = vec![stroke(4.0, Position::Center, Paint::Color(BLACK))];
+            }),
+        ));
+    }
+    // A crack's pieces broken off, each motion, under a band stroke and a
+    // shadow; and falling under a box stroke.
+    for (name, motion) in [("special_break_apart", Motion::Apart), ("special_break_fall", Motion::Fall)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                sp.break_off = Some(BreakOff { share: 0.6, motion });
+                b.shadows = vec![shadow(5.0, 6.0)];
+                b.request.job.bands = vec![Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+            }),
+        ));
+    }
+    for (name, through) in [("special_break_fall_box_stroke_cut_through", true), ("special_break_fall_box_stroke_fills_cuts", false)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                sp.break_off = Some(BreakOff { share: 0.6, motion: Motion::Fall });
+                sp.cut_strokes = through;
+                b.effects = vec![stroke(3.0, Position::Outside, Paint::Color(BLACK))];
+            }),
+        ));
+    }
+    // Apart under a wide box stroke cut through: a piece that lands over a
+    // hole keeps its stroke there.
+    rows.push((
+        "special_break_apart_box_stroke_cut_through",
+        Box::new(move |b| {
+            let sp = special(b);
+            sp.crack = Some(Crack { amount: 0.8, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            sp.break_off = Some(BreakOff { share: 0.3, motion: Motion::Apart });
+            sp.cut_strokes = true;
+            b.effects = vec![stroke(12.0, Position::Outside, Paint::Color(BLUE))];
+        }),
+    ));
+    // A crack and scratches with Crisp on, off the grid (a fractional size
+    // and baseline): their lines are laid over the letters' ink as Crisp
+    // fits it.
+    fn crisp(b: &mut BoxRequest, font: FontId) {
+        b.request.job.effects.crisp = Some(Pt::new(0.0, 0.0));
+        b.request.face = Face::new(font, 61.7);
+        b.request.job.runs[0].y = 100.7;
+    }
+    rows.push((
+        "special_crack_crisp",
+        Box::new(move |b| {
+            special(b).crack = Some(Crack { amount: 0.5, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+            let font = b.request.face.font;
+            crisp(b, font);
+        }),
+    ));
+    rows.push((
+        "special_scratches_crisp",
+        Box::new(move |b| {
+            special(b).scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+            let font = b.request.face.font;
+            crisp(b, font);
+        }),
+    ));
+    // Fix round 1 (glyph wire v18): a crack and scratches with the glyph
+    // bands filling the cuts, two bands; a lightning aimed from a point; a
+    // splash pulled in to where it lands.
+    for (name, kind) in [("special_crack_bands_fill_cuts", 0), ("special_scratches_bands_fill_cuts", 1)] {
+        rows.push((
+            name,
+            Box::new(move |b| {
+                let sp = special(b);
+                if kind == 0 {
+                    sp.crack = Some(Crack { amount: 0.6, size: 1.0, at: (0.5, 0.5), spread: 1.0, seed: 3 });
+                } else {
+                    sp.scratches = Some(Scratches { amount: 0.7, angle: -0.3, seed: 9 });
+                }
+                sp.fill_bands = true;
+                b.request.job.bands = vec![Band { color: BLUE, opacity: 1.0, line: 12.0 }, Band { color: BLACK, opacity: 1.0, line: 6.0 }];
+            }),
+        ));
+    }
+    rows.push((
+        "special_lightning_aimed",
+        Box::new(move |b| {
+            special(b).lightning = Some(Lightning {
+                amount: 0.6,
+                core: Rgba([255, 255, 255, 255]),
+                glow: BLUE,
+                glow_size: 1.0,
+                seed: 4,
+                aim: Some(Aim { at: (0.1, 0.2), angle: 0.6 }),
+            });
+            b.lay_special_paint().unwrap();
+        }),
+    ));
+    rows.push((
+        "special_splash_placed",
+        Box::new(move |b| {
+            special(b).splash = Some(Splash { amount: 0.6, size: 0.8, color: BLUE, seed: 5, at: (0.2, 0.5), spread: 0.3 });
+            b.lay_special_paint().unwrap();
+        }),
+    ));
+    // A soft fade at scale 2, on its page-anchored grid of cells, and a
+    // soft paint mark over the letters.
+    rows.push((
+        "fade_soft_scale_two",
+        Box::new(|b| {
+            b.request.transform = Affine::scale(2.0, 2.0);
+            b.width = 400;
+            b.height = 320;
+            b.fade = Some(Fade {
+                origin: Pt::new(0.0, 0.0),
+                shapes: vec![FadePart {
+                    strength: 0.7,
+                    soft: 6.0,
+                    shape: ClipShape::Polygon(vec![Pt::new(30.0, 80.0), Pt::new(150.0, 76.0), Pt::new(150.0, 120.0), Pt::new(30.0, 120.0)]),
+                }],
+            });
+        }),
+    ));
+    rows.push((
+        "paint_mark_soft",
+        Box::new(|b| {
+            b.effects = vec![Effect::Paint(Marks {
+                origin: Pt::new(0.0, 0.0),
+                marks: vec![PaintMark {
+                    shape: ClipShape::Ellipse { centre: Pt::new(70.0, 70.0), rx: 30.0, ry: 22.0 },
+                    color: BLUE,
+                    opacity: 0.9,
+                    soft: 5.0,
+                    erase: false,
+                }],
+            })];
+        }),
+    ));
     rows
 }
 
@@ -652,6 +941,7 @@ fn job_key(b: &BoxRequest) -> Key {
         .debug(&(r.face.font, r.face.size.to_bits(), r.face.synth, r.face.chain))
         .debug(&r.bold_draw)
         .debug(&r.weight)
+        .debug(&r.faces)
         .u64(r.tiles.len() as u64);
     for t in &r.tiles {
         h = h.debug(&(t.width, t.height)).debug(&t.texels);
@@ -659,9 +949,27 @@ fn job_key(b: &BoxRequest) -> Key {
     h.finish().unwrap()
 }
 
+/// The premask key of a box with a mask, as `decode_box_kept` makes it from
+/// every byte but the mask's: here from the box's other fields as decoded.
+fn premask_key(b: &BoxRequest, job: Key) -> Option<Key> {
+    b.clip.as_ref()?;
+    Hasher::new("test premask")
+        .key(job)
+        .debug(&(b.width, b.height, b.grain, b.page))
+        .debug(&b.shadows)
+        .debug(&(b.blend, b.fill_opacity, b.blending))
+        .debug(&b.effects)
+        .debug(&b.backdrop)
+        .debug(&b.blur)
+        .debug(&b.taps)
+        .finish()
+}
+
 fn kept_paint(engine: &mut Engine, b: &mut BoxRequest) -> Option<Raster> {
-    let key = job_key(b);
-    paint_box_kept(engine, b, key).unwrap()
+    let job = job_key(b);
+    let premask = premask_key(b, job);
+    let cover = premask.and_then(|_| Hasher::new("test cover").debug(&b.clip).debug(&b.fade).finish());
+    paint_box_kept(engine, b, BoxKeys { job, premask, cover }).unwrap()
 }
 
 /// Every row of the sheet, painted with nothing kept.

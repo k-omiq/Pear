@@ -6,7 +6,9 @@ import {
   removePreset,
   copyStyle,
   pasteStyle,
+  presetLook,
 } from './presets.svelte.js';
+import { normalizePaint } from './box-paint.js';
 import { defaultStyle, normalizeWarp, normalizeStrokeEffect } from './data.js';
 
 // An Outside colour stroke, as a style holds its outline.
@@ -386,5 +388,32 @@ describe('style copy and paste', () => {
     expect(b2.style.color).toBe('#ff0000');
     expect(b2.style.size).toBe(32);
     expect(b2.style.strokeEffects).toEqual([outside('#00ff00', 4, 0.8)]);
+  });
+});
+
+// Picking a preset lays its look and leaves the box's own placement and its
+// paint marks (drawn over that box's letters) as they are.
+describe('a preset and paint marks', () => {
+  const MARKS = () => normalizePaint({ on: true, marks: [{ kind: 'stroke', size: 6, pts: [[10, 10], [60, 30]], color: '#ff0000' }] });
+  beforeEach(() => loadPresets({ getItem: () => null, setItem: () => {} }));
+
+  it('a preset saved from a painted box stamps no marks on another', () => {
+    const painted = { ...defaultStyle(), color: '#123456', paint: MARKS() };
+    const p = savePreset('Red', painted);
+    const look = presetLook(p);
+    expect(look.color).toBe('#123456');
+    expect(Object.hasOwn(look, 'paint')).toBe(false);
+    const other = { ...defaultStyle() };
+    Object.assign(other, look);
+    expect(other.paint).toEqual({ on: false, marks: [] });
+  });
+
+  it('any preset leaves a painted box its marks, and its turn and flips', () => {
+    const p = savePreset('Plain', { ...defaultStyle(), rotation: 30, flipH: true, color: '#abcdef' });
+    const box = { ...defaultStyle(), rotation: -10, paint: MARKS() };
+    Object.assign(box, presetLook(p));
+    expect(box.color).toBe('#abcdef');
+    expect(box.paint).toEqual(MARKS());
+    expect([box.rotation, box.flipH]).toEqual([-10, false]);
   });
 });

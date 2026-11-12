@@ -41,7 +41,7 @@ describe('the Bevel & Emboss sub-tab', () => {
     expect(EFFECTS_SUBTABS.indexOf('bevel')).toBe(EFFECTS_SUBTABS.indexOf('glow') + 1);
     const off = mounted().view;
     await tick();
-    expect(off.getByRole('tab', { name: 'Bevel & Emboss' }).getAttribute('aria-selected')).toBe('true');
+    expect(off.getByRole('tab', { name: 'Bevel' }).getAttribute('aria-selected')).toBe('true');
     expect(off.getByRole('switch', { name: 'Bevel & Emboss' }).getAttribute('aria-checked')).toBe('false');
     // Off, the effect is its switch alone; on, its settings show.
     expect(off.container.textContent).not.toContain('Structure');

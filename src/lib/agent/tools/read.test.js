@@ -237,6 +237,23 @@ describe('box', () => {
     expect(result.line).not.toHaveProperty('notes');
   });
 
+  it('says what is drawn on a box as counts, and nothing when none is', async () => {
+    expect(await read('box', { id: 'b2' })).not.toHaveProperty('drawn');
+    const b = app.pages[0].boxes[0];
+    b.mask = { on: true, shapes: [{ kind: 'bubble', op: 'keep', inset: 2 }, { kind: 'poly', op: 'hide', pts: [[0, 0], [9, 0], [0, 9]] }] };
+    b.fade = { on: false, shapes: [{ kind: 'ellipse', cx: 4, cy: 4, rx: 3, ry: 3, strength: 50, soft: 10 }] };
+    b.style.paint = { on: true, marks: [{ kind: 'stroke', size: 4, pts: [[1, 1], [5, 5]], color: '#000000', opacity: 100, soft: 0 }] };
+    const { drawn } = await read('box', { id: 'b1' });
+    expect(drawn).toEqual({ mask: { on: true, shapes: 1, bubbleLink: true }, fade: { on: false, shapes: 1 }, paint: { on: true, marks: 1 } });
+  });
+
+  it('says when a mask or a fade moves with the box', async () => {
+    const b = app.pages[0].boxes[0];
+    b.mask = { on: true, follow: true, shapes: [{ kind: 'poly', op: 'hide', pts: [[0, 0], [9, 0], [0, 9]] }] };
+    const { drawn } = await read('box', { id: 'b1' });
+    expect(drawn.mask).toEqual({ on: true, shapes: 1, follows: true });
+  });
+
   it.each([{}, { id: '' }, { id: 2 }, { id: 'b10' }])('returns a useful error for %j', async (args) => {
     expect(await callTool('box', args)).toMatchObject({ ok: false, error: expect.any(String), hint: expect.any(String) });
   });

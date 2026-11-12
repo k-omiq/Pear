@@ -91,4 +91,31 @@ describe('an entry from before Layer Styles', () => {
     const cur = { t: 'delete', pageId: 1, box: { id: 'a', style: normalizeStyle(defaultStyle()) } };
     expect(migrateEntry(cur)).toBe(cur);
   });
+
+  it('reaches the boxes a deleted line took with it', () => {
+    const old = { ...defaultStyle(), shadows: [{ x: 2, y: 2, blur: 4 }] };
+    for (const k of ['innerShadows', 'strokeEffects', 'blendMode', 'bevel', 'blending']) delete old[k];
+    const line = { n: 2, en: 'x' };
+    const out = migrateEntry({ t: 'lineDelete', pageId: 1, line, takenBoxes: [{ index: 0, box: { id: 'a', lineN: 2, style: old } }] });
+    expect(out.takenBoxes[0].index).toBe(0);
+    expect(out.takenBoxes[0].box.style.innerShadows).toEqual([]);
+    expect(out.takenBoxes[0].box.style.bevel).toBeTruthy();
+    const cur = { t: 'lineDelete', pageId: 1, line, takenBoxes: [{ index: 0, box: { id: 'a', lineN: 2, style: normalizeStyle(defaultStyle()) } }] };
+    expect(migrateEntry(cur)).toBe(cur);
+  });
+});
+
+describe('an entry with special effects of an older shape', () => {
+  it('reads them as this build does, so an undo never sends a lightning without a core', async () => {
+    const { specialJob } = await import('../special.js');
+    const style = normalizeStyle(defaultStyle());
+    // Before the core and glow, and before the crack's focus and spread.
+    style.special = { crack: { on: true, amount: 40, size: 100, seed: 1 }, lightning: { on: true, amount: 40, angle: 20, color: '#1e90ff', seed: 1 } };
+    const out = migrateEntry({ t: 'delete', pageId: 1, box: { id: 'a', style } });
+    const sp = out.box.style.special;
+    expect(sp.lightning).toMatchObject({ core: '#ffffff', glow: '#1e90ff' });
+    expect(sp.crack).toMatchObject({ x: 50, y: 50, spread: 100, breakOff: 0 });
+    const job = specialJob(out.box.style, { x: 0, y: 0, w: 10, h: 10 });
+    expect(job.lightning.core).toBe('#ffffff');
+  });
 });

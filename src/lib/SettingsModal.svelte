@@ -11,7 +11,9 @@
   import TextStyles from './TextStyles.svelte';
   import { resetPanels } from './editor/panels.svelte.js';
   import { processMemory, ROLE_LABELS } from './memory.js';
-  import { prefs, setPref, typesetDefaults } from './prefs.svelte.js';
+  import { prefs, setPref, typesetDefaults, isComics } from './prefs.svelte.js';
+  import { offerOnboarding } from './onboarding/onboarding.svelte.js';
+  import DiscordInvite from './onboarding/DiscordInvite.svelte';
   import { guide, setSeriesTypeset } from './guide.svelte.js';
   import { engineSwitch, engineHasNoFont } from './engine-switch.svelte.js';
   import ReaderChoice from './ReaderChoice.svelte';
@@ -63,10 +65,18 @@
   // there is one: everything in it is that project's, and with no chapter open
   // there is no single project for it to mean.
   const project = $derived(app.chapterRef ? (projectById(app.chapterRef.projectId) ?? null) : null);
-  const tabs = $derived(project ? [...APP_TABS, ...SERIES_TABS] : APP_TABS);
+  // General use has no detection and no series guide (plan 2.1), so those two
+  // tabs are not there; asked for, Settings opens on General instead.
+  const COMICS_TABS = ['detection', 'guide'];
+  const appTabs = $derived(isComics() ? APP_TABS : APP_TABS.filter((t) => !COMICS_TABS.includes(t.id)));
+  const seriesTabs = $derived(isComics() ? SERIES_TABS : SERIES_TABS.filter((t) => !COMICS_TABS.includes(t.id)));
+  const tabs = $derived(project ? [...appTabs, ...seriesTabs] : appTabs);
   // Which section is open lives in `settings-tabs.svelte.js`, so the command
   // palette and the panes that send the user here can choose it.
-  const tab = $derived(shownSettingsTab(!!project));
+  const tab = $derived.by(() => {
+    const id = shownSettingsTab(!!project);
+    return tabs.some((t) => t.id === id) ? id : 'general';
+  });
   const current = $derived(tabs.find((t) => t.id === tab) ?? APP_TABS[0]);
   const inSeries = $derived(SERIES_TABS.some((t) => t.id === tab));
 
@@ -338,6 +348,15 @@
     toast('New token made');
   }
 
+  // The setup is its own full-window screen and sits over this one, so
+  // Settings closes first and focus goes back to where it was before Settings
+  // opened; the setup returns it there when it closes.
+  async function onRunSetup() {
+    open = false;
+    await tick();
+    offerOnboarding({ force: true });
+  }
+
   // Reset floating panel layout.
   function onResetPanels() {
     if (!confirmResetPanels) {
@@ -399,7 +418,9 @@
     if (open) {
       confirmClear = false;
       confirmResetPanels = false;
-      checkSidecar();
+      // The engine's state is for the Detection tab; general use has none,
+      // and asking would start the engine.
+      if (isComics()) checkSidecar();
       loadCache();
     }
   });
@@ -488,6 +509,7 @@
         </div>
       </div>
     </div>
+    {#if isComics()}
     <div class="set-item">
       <div class="set-line">
         <span class="set-label">Fit text to balloon <span class="set-badge">Beta</span></span>
@@ -495,6 +517,7 @@
       </div>
       <p class="set-desc">Breaks lines to the balloon’s curve instead of the box’s straight sides.</p>
     </div>
+    {/if}
     <div class="set-item">
       <div class="set-line">
         <label class="set-label" for="ts-orphan">Shortest word left alone on a line</label>
@@ -552,7 +575,7 @@
     {/snippet}
 
     <div class="set-tabs" role="tablist" aria-orientation="vertical" aria-label="App settings, saved on this computer">
-      {#each APP_TABS as t (t.id)}{@render tabButton(t)}{/each}
+      {#each appTabs as t (t.id)}{@render tabButton(t)}{/each}
     </div>
 
     {#if project}
@@ -561,7 +584,7 @@
         <div class="set-group-note">Saved with the series</div>
       </div>
       <div class="set-tabs" role="tablist" aria-orientation="vertical" aria-labelledby="set-group-series">
-        {#each SERIES_TABS as t (t.id)}{@render tabButton(t)}{/each}
+        {#each seriesTabs as t (t.id)}{@render tabButton(t)}{/each}
       </div>
     {/if}
   </nav>
@@ -603,6 +626,30 @@
         </section>
 
         <section class="settings-section">
+          <h3 class="settings-title">Setup</h3>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Usage</span>
+              <div class="seg" role="group" aria-label="Usage">
+                {#each [['comics', 'Comics'], ['general', 'General use']] as [v, label] (v)}
+                  <button class:on={prefs.usage === v} aria-pressed={prefs.usage === v} onclick={() => setPref('usage', v)}>{label}</button>
+                {/each}
+              </div>
+            </div>
+            <p class="set-desc">Comics keeps the tools for detecting, translating and lettering comics. General use hides them.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Setup</span>
+              <div class="set-ctl">
+                <button class="btn tiny" onclick={onRunSetup}>Run setup again</button>
+              </div>
+            </div>
+            <p class="set-desc">Walk through the theme, usage and community steps again.</p>
+          </div>
+        </section>
+
+        <section class="settings-section">
           <h3 class="settings-title">Editor</h3>
           <div class="set-item">
             <div class="set-line">
@@ -618,6 +665,7 @@
             </div>
             <p class="set-desc">Unfinished, and hidden until you turn it on.</p>
           </div>
+          {#if isComics()}
           <div class="set-item">
             <div class="set-line">
               <span class="set-label">SFX tool <span class="set-badge">Beta</span></span>
@@ -625,6 +673,7 @@
             </div>
             <p class="set-desc">Draw sound effects on the page, and pick their type in Effects &gt; SFX.</p>
           </div>
+          {/if}
         </section>
 
         <section class="settings-section">
@@ -684,6 +733,24 @@
           </p>
           {@render tsRows(mineTs, setMine)}
         </section>
+
+        <!-- Comics only: general use has no translate chapters to start in. -->
+        {#if isComics()}
+          <section class="settings-section">
+            <h3 class="settings-title">New chapters</h3>
+            <div class="set-item">
+              <div class="set-line">
+                <span class="set-label">New chapters start as</span>
+                <div class="seg" role="group" aria-label="New chapters start as">
+                  {#each [['translate', 'Translate'], ['typeset', 'Typeset']] as [v, label] (v)}
+                    <button class:on={prefs.defaultChapterMode === v} aria-pressed={prefs.defaultChapterMode === v} onclick={() => setPref('defaultChapterMode', v)}>{label}</button>
+                  {/each}
+                </div>
+              </div>
+              <p class="set-desc">Translate opens the page beside a typing pane. Typeset goes straight to lettering.</p>
+            </div>
+          </section>
+        {/if}
 
         <!-- Who measures text. Here with the rest of typesetting and not in the
              Inspector: it is one setting for the whole machine, and no box has a
@@ -1075,6 +1142,8 @@
             </div>
           </section>
         {/if}
+
+        <DiscordInvite compact />
       {/if}
 
       {#if tab === 'series' && project}

@@ -1,3 +1,4 @@
+import { normalizeSpecial } from './special.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   app,
@@ -117,7 +118,24 @@ import { defaultStyle, normalizeStyle, normalizeAuto, normalizeBevel, GRADIENT_M
 const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, position: 'outside', color, opacity });
 import { setPref } from './prefs.svelte.js';
 import { bindTags, unbindTags, tags, lineTags, setLineTags } from './tags.svelte.js';
-import { initHistory, resetHistory, undo, redo } from './editor/history.svelte.js';
+import { initHistory, resetHistory, undo, redo, peekStack, queueStepNext, record, stepHere, stepAllowed, setOffscreenSink } from './editor/history.svelte.js';
+import { moveLine, isTranslateChapter } from './store.svelte.js';
+import {
+  deleteLine,
+  setLineRect,
+  lineRect,
+  lineRectOf,
+  lineLabel,
+  addBoxAt,
+  applyDetection,
+  rescalePageGeometry,
+  setLineText,
+  toast,
+  dismissToast,
+  detectedRectFor,
+} from './store.svelte.js';
+import { rescaleEntry, appendEntry, emptyDoc } from './editor/history-file.svelte.js';
+import { buildChapterPackage, readChapterPackage, packagePagesForImport } from './package.js';
 
 beforeEach(() => {
   tags.sizes = {};
@@ -144,6 +162,20 @@ const nextPageSeq = () => {
   loadProjectPages([{ ...pageWith([]), id: null }]);
   return app.pages[0].id + 1;
 };
+
+describe('a new box and the last-used style', () => {
+  it('inherits its look but never its special effects', () => {
+    const before = app.lastStyle;
+    try {
+      app.lastStyle = normalizeStyle({ ...defaultStyle(), color: '#123456', special: { crack: { on: true, amount: 60 } } });
+      const s = inheritedStyleFor({ n: 1, tags: [] });
+      expect(s.color).toBe('#123456');
+      expect(s.special).toEqual(normalizeSpecial(undefined));
+    } finally {
+      app.lastStyle = before;
+    }
+  });
+});
 
 describe('loadProjectPages box identity', () => {
   beforeEach(() => {
@@ -1218,7 +1250,6 @@ const BULK_VALUES = () => ({
   strokeEffects: [{ size: 4, position: 'outside', blend: 'normal', opacity: 1, fill: 'gradient', color: '#000000', gradient: { style: 'shapeburst', stops: [{ color: '#111111', pos: 0, opacity: 1 }, { color: '#eeeeee', pos: 1, opacity: 1 }] } }],
   blur: 7,
   motionBlur: { on: true, x: 3, y: -1, amount: 8 },
-  clip: { on: true, mode: 'include', brushSize: 30, shapes: [{ kind: 'ellipse', cx: 10, cy: 10, rx: 5, ry: 5 }] },
   circle: { on: true, angle: 90, inside: true },
   curve: 33,
   'roughen.on': true,
@@ -1226,6 +1257,8 @@ const BULK_VALUES = () => ({
   'roughen.detail': 0.11,
   'roughen.seed': 42,
   'roughen.grit': 1.5,
+  'wobble.on': true,
+  special: normalizeSpecial({ crack: { on: true, amount: 55, seed: 7 }, splash: { on: true, color: '#00ff00' } }),
   shape: 'off',
   minOrphan: 6,
   hyphenate: false,
@@ -1285,12 +1318,13 @@ describe('the bulk edit mask', () => {
   // fails this. Geometry cannot appear because x/y/w/h live on the box, not the
   // style - which is also why they stay the Inspector's.
   it('covers every leaf of the style, and nothing that is not one', () => {
-    // `gradient`, `pattern`, `strokes`, `shadows`, `motionBlur`, `clip` and
+    // `gradient`, `pattern`, `strokes`, `shadows`, `motionBlur` and
     // `circle` are leaves in their own right - a bulk edit moves a whole
     // gradient, smear or stroke list, never one field of one stroke. `path`,
     // `ink` and `warp` are box-local geometry - drawn against this box, by
     // hand, in this box's own px - so they stay the Inspector's along with
-    // x/y/w/h. `sfx` is the Rust engine's per-letter lettering and has no row
+    // x/y/w/h. So is `paint`: its marks sit in this box's own frame. `sfx` is
+    // the Rust engine's per-letter lettering and has no row
     // in the panel (its paths are drawn against one box's text), nor do its
     // effects (the rim order and corners, the shade, the negative, extrude,
     // shake and trail), which belong with it. `autoContrast`
@@ -1299,14 +1333,18 @@ describe('the bulk edit mask', () => {
     // group is still one row per field.
     const WHOLE = new Set(BULK_WHOLE_LEAVES);
     const NOT_BULK = new Set([
-      'path', 'ink', 'warp', 'sfx', 'autoContrast',
+      'path', 'ink', 'warp', 'paint', 'sfx', 'autoContrast',
       'strokeOrder', 'strokeJoin', 'strokeShade', 'negative', 'extrude', 'shake', 'trail',
     ]);
+    // A wobble moves by its switch alone: its numbers are tuned by eye on
+    // one box (plan 5.1).
+    const SWITCH_ONLY = new Set(['wobble.amount', 'wobble.tilt', 'wobble.seed']);
     const leaves = Object.entries(defaultStyle())
       .filter(([k]) => !NOT_BULK.has(k))
       .flatMap(([k, v]) =>
         v && typeof v === 'object' && !WHOLE.has(k) ? Object.keys(v).map((f) => `${k}.${f}`) : [k],
-      );
+      )
+      .filter((k) => !SWITCH_ONLY.has(k));
     expect([...BULK_PROPS].sort()).toEqual(leaves.sort());
     for (const geom of ['x', 'y', 'w', 'h', 'path', 'ink', 'warp']) {
       expect(BULK_PROPS).not.toContain(geom);
@@ -4767,5 +4805,516 @@ describe('canvas selection follows into the queue', () => {
     placeActiveAt(400, 400);
     expect(page().boxes).toHaveLength(3);
     expect(app.selectedId).toBeNull();
+  });
+});
+
+// Translate mode's own edits to its lines (plan section 3): delete, add, and
+// the box drawn for a line, each one undo step that puts back exactly what it
+// changed - and the free line with no box that typeset mode can now place.
+describe('lines added, deleted and drawn', () => {
+  const doc = () => [
+    {
+      id: 1,
+      w: 800,
+      h: 1200,
+      lines: [
+        { n: 1, type: 'dialogue', jp: 'あ', en: 'one' },
+        { n: -1, type: 'dialogue', jp: '', en: 'free', rect: [5, 6, 105, 76] },
+        { n: 2, type: 'dialogue', jp: 'い', en: 'two', tags: ['shout'] },
+        { n: 3, type: 'dialogue', jp: 'う', en: 'three' },
+      ],
+      boxes: [
+        { id: 'b2', lineN: 2, text: null, x: 10, y: 10, w: 100, h: 50 },
+        { id: 'b3', lineN: 3, text: null, x: 20, y: 300, w: 100, h: 50 },
+      ],
+      detect: {
+        panels: [],
+        boxes: [
+          { n: 1, box: [0, 0, 50, 50] },
+          { n: 2, box: [100, 100, 200, 200], vertical: true },
+          { n: 3, box: [300, 300, 400, 400] },
+        ],
+      },
+    },
+  ];
+  const state = (p = page()) => ({
+    lines: JSON.parse(JSON.stringify(p.lines)),
+    detect: JSON.parse(JSON.stringify(p.detect)),
+    boxes: p.boxes.map((b) => [b.id, b.lineN]),
+    active: p.activeLineN,
+  });
+
+  beforeEach(() => {
+    app.chapterRef = null;
+    app.chapterMode = 'translate';
+    app.translateTypeset = false;
+    loadProjectPages(doc());
+    page().activeLineN = 2;
+    initHistory();
+    resetHistory();
+  });
+  afterEach(() => {
+    settleEdits();
+    resetHistory();
+    app.chapterMode = 'typeset';
+  });
+
+  it('deletes a numbered line with its block and boxes, renumbers the rest, and undo and redo walk it exactly', () => {
+    const before = state();
+    expect(deleteLine(2)).toBe(true);
+    const after = state();
+    expect(after.lines.map((l) => [l.n, l.en])).toEqual([[1, 'one'], [-1, 'free'], [2, 'three']]);
+    expect(after.detect.boxes).toEqual([{ n: 1, box: [0, 0, 50, 50] }, { n: 2, box: [300, 300, 400, 400] }]);
+    expect(after.boxes).toEqual([['b3', 2]]);
+    // The row after the deleted one becomes the one being typed.
+    expect(after.active).toBe(2);
+    expect(peekStack().undo.at(-1).t).toBe('lineDelete');
+    expect(undo()).toBe(true);
+    expect(state()).toEqual(before);
+    expect(redo()).toBe(true);
+    expect(state()).toEqual(after);
+    expect(undo()).toBe(true);
+    expect(state()).toEqual(before);
+  });
+
+  it('keeps an older entry about a later line pointing at that line across the delete', () => {
+    setLineText(page(), 3, 'three!');
+    settleEdits();
+    deleteLine(1);
+    // Line 3 is line 2 now, and so is the entry about it.
+    expect(page().lines.find((l) => l.en === 'three!').n).toBe(2);
+    expect(peekStack().undo[0]).toMatchObject({ t: 'line', lineN: 2 });
+    undo();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2, 3]);
+    undo();
+    expect(lineByN(page(), 3).en).toBe('three');
+    expect(lineByN(page(), 1).en).toBe('one');
+  });
+
+  it('deletes the last line without renumbering, and a free line without touching the numbers', () => {
+    deleteLine(3);
+    expect(peekStack().undo.at(-1).numbers).toBeUndefined();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2]);
+    deleteLine(-1);
+    expect(page().lines.map((l) => l.n)).toEqual([1, 2]);
+    undo();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2]);
+    expect(lineByN(page(), -1).rect).toEqual([5, 6, 105, 76]);
+    undo();
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2, 3]);
+    expect(page().boxes.map((b) => b.id)).toEqual(['b2', 'b3']);
+  });
+
+  it('records an added line, and undo and redo take it out and put it back', () => {
+    const n = addQueueLine();
+    expect(n).toBe(-2);
+    expect(peekStack().undo.at(-1)).toMatchObject({ t: 'lineAdd', activeBefore: 2, activeAfter: -2 });
+    undo();
+    expect(page().lines.some((l) => l.n === -2)).toBe(false);
+    expect(page().activeLineN).toBe(2);
+    redo();
+    expect(lineByN(page(), -2)).toEqual({ n: -2, type: 'dialogue', jp: '', en: '' });
+    expect(page().activeLineN).toBe(-2);
+  });
+
+  it('draws a box for a line as one step, sorted into corners, on any line', () => {
+    const n = addQueueLine();
+    expect(setLineRect(page(), n, [300, 200, 100, 150])).toBe(true);
+    expect(lineByN(page(), n).rect).toEqual([100, 150, 300, 200]);
+    expect(lineRectOf(page(), n)).toEqual([100, 150, 300, 200]);
+    expect(setLineRect(page(), n, [1, 1, 1, 1])).toBe(false);
+    // A numbered line's drawn box wins over its detected block.
+    setLineRect(page(), 2, [10, 20, 30, 40]);
+    expect(detectedRectFor(page(), 2)).toEqual([10, 20, 30, 40]);
+    undo();
+    expect(lineByN(page(), 2).rect).toBeUndefined();
+    expect(detectedRectFor(page(), 2)).toEqual([100, 100, 200, 200]);
+    undo();
+    expect(lineByN(page(), n).rect).toBeUndefined();
+    redo();
+    expect(lineByN(page(), n).rect).toEqual([100, 150, 300, 200]);
+    redo();
+    expect(lineByN(page(), 2).rect).toEqual([10, 20, 30, 40]);
+  });
+
+  it('labels free lines T1, T2 in page order and numbered lines by number', () => {
+    addQueueLine();
+    expect([1, -1, 2, -2].map((n) => lineLabel(page(), n))).toEqual(['1', 'T1', '2', 'T2']);
+  });
+
+  it('keeps a free line’s drawn box through a re-detect, a rescale and a load', () => {
+    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: [{ n: 1, jp: 'あ', box: [0, 0, 10, 10] }] });
+    expect(lineByN(page(), -1).rect).toEqual([5, 6, 105, 76]);
+    rescalePageGeometry(page(), 2, 2);
+    expect(lineByN(page(), -1).rect).toEqual([10, 12, 210, 152]);
+    loadProjectPages(JSON.parse(JSON.stringify(app.pages)));
+    expect(lineByN(page(), -1).rect).toEqual([10, 12, 210, 152]);
+    // A rect nothing can draw is dropped on the way in.
+    loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [{ n: -1, en: '', rect: [0, 0, 'x', 4] }] }]);
+    expect('rect' in lineByN(page(), -1)).toBe(false);
+    expect(lineRect([0, 0, 0, 10])).toBe(null);
+  });
+
+  it('carries a drawn box through a chapter package', () => {
+    const record = { pages: [{ file: 'p1.png', w: 800, h: 1200, lines: JSON.parse(JSON.stringify(page().lines)), boxes: [], detect: null }] };
+    const pkg = readChapterPackage(buildChapterPackage({ record, raws: new Map([['p1.png', new Uint8Array([1, 2, 3])]]) }));
+    expect(packagePagesForImport(pkg)[0].lines.find((l) => l.n === -1).rect).toEqual([5, 6, 105, 76]);
+  });
+
+  it('scales a recorded drawn box with its page', () => {
+    expect(rescaleEntry({ t: 'lineRect', pageId: 1, lineN: -1, before: null, after: [1, 2, 3, 4] }, 2, 3)).toMatchObject({ after: [2, 6, 6, 12] });
+    const del = rescaleEntry(
+      { t: 'lineDelete', pageId: 1, line: { n: 2, rect: [1, 1, 2, 2] }, takenBoxes: [{ index: 0, box: { id: 'b', x: 1, y: 1, w: 2, h: 2, style: {} } }], takenDetect: [{ index: 0, d: { n: 2, box: [1, 1, 2, 2] } }] },
+      2,
+      2,
+    );
+    expect([del.line.rect, del.takenDetect[0].d.box, del.takenBoxes[0].box.x]).toEqual([[2, 2, 4, 4], [2, 2, 4, 4], 2]);
+  });
+
+  it('places a free line with no box in typeset mode: in its drawn box, or 200 x 70 at the click', () => {
+    app.chapterMode = 'typeset';
+    page().activeLineN = -1;
+    placeActiveAt(400, 400);
+    const drawn = page().boxes.find((b) => b.lineN === -1);
+    expect([drawn.x, drawn.y, drawn.w]).toEqual([5, 6, 100]);
+    expect(lineByN(page(), -1).placed).toBeUndefined();
+    undo();
+    // The line was there before the box, so the undo leaves it.
+    expect(page().boxes.some((b) => b.lineN === -1)).toBe(false);
+    expect(lineByN(page(), -1)).toBeTruthy();
+
+    const n = addQueueLine();
+    page().activeLineN = n;
+    placeActiveAt(400, 500);
+    const b = page().boxes.find((x) => x.lineN === n);
+    expect([b.x, b.y, b.w, b.h]).toEqual([300, 465, 200, 70]);
+  });
+
+  it('lets addBoxAt place a free line with no box', () => {
+    app.chapterMode = 'typeset';
+    const n = addQueueLine();
+    const b = addBoxAt(page(), { lineN: n, x: 400, y: 500 });
+    expect(typeof b).toBe('object');
+    expect([b.x, b.y, b.w, b.h]).toEqual([300, 465, 200, 70]);
+    expect(addBoxAt(page(), { lineN: n, x: 1, y: 1 })).toBe(`line ${n} already has a box`);
+    const r = addBoxAt(page(), { lineN: -1, x: 0, y: 0 });
+    expect([r.x, r.y, r.w, r.h]).toEqual([5, 6, 100, 70]);
+  });
+
+  it('says whether the next step is about the queue', () => {
+    expect(queueStepNext('undo')).toBe(false);
+    addQueueLine();
+    expect(queueStepNext('undo')).toBe(true);
+    record({ t: 'move', pageId: 1, boxId: 'b2', before: { x: 10, y: 10 }, after: { x: 11, y: 10 } });
+    expect(queueStepNext('undo')).toBe(false);
+    undo();
+    expect(queueStepNext('redo')).toBe(false);
+    expect(queueStepNext('undo')).toBe(true);
+  });
+
+  it('gives a toast one action, kept up longer, and clears it', () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn();
+      toast('Deleted line 4', 'info', { label: 'Undo', run });
+      expect(app.toast.action.label).toBe('Undo');
+      vi.advanceTimersByTime(2500);
+      expect(app.toast.msg).toBe('Deleted line 4');
+      vi.advanceTimersByTime(3000);
+      expect(app.toast.msg).toBe('');
+      toast('plain');
+      expect(app.toast.action).toBe(null);
+      dismissToast();
+      expect(app.toast.msg).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// The review's fixes to the above (2026-11-10): steps that refuse leave the page
+// as it was, the one translate gate, and the free-line rules in a translate
+// chapter.
+describe('lines added, deleted and drawn: the edges', () => {
+  const five = () => [
+    {
+      id: 1,
+      w: 800,
+      h: 1200,
+      boxes: [],
+      lines: [1, 2, 3, 4, 5].map((n) => ({ n, type: 'dialogue', jp: 'j' + n, en: 'e' + n })),
+      detect: { panels: [], boxes: [1, 2, 3, 4, 5].map((n) => ({ n, box: [0, n * 100, 50, n * 100 + 50] })) },
+    },
+    { id: 2, w: 800, h: 1200, boxes: [], lines: [1, 2, 3].map((n) => ({ n, type: 'dialogue', jp: 'k' + n, en: '' })) },
+  ];
+  const snap = () => JSON.stringify({ lines: page().lines, detect: page().detect, boxes: page().boxes.map((b) => b.id), active: page().activeLineN });
+
+  beforeEach(() => {
+    app.chapterRef = null;
+    app.chapterMode = 'translate';
+    app.translateTypeset = false;
+    loadProjectPages(five());
+    page().activeLineN = 1;
+    app.errors = [];
+    initHistory();
+    resetHistory();
+  });
+  afterEach(() => {
+    settleEdits();
+    resetHistory();
+    app.errors = [];
+    app.chapterMode = 'typeset';
+  });
+
+  const redetect = (count, jp = 'new') =>
+    applyDetection({ img_width: 800, img_height: 1200, panels: [], lines: Array.from({ length: count }, (_, i) => ({ n: i + 1, jp: jp + (i + 1), box: [0, i * 100, 50, i * 100 + 50] })) });
+
+  it('forgets a delete once a re-detect replaced the lines: undo and redo change nothing', () => {
+    deleteLine(2);
+    redetect(3);
+    const was = snap();
+    expect([stepHere('undo'), peekStack().undo.length]).toEqual([false, 0]);
+    expect(snap()).toBe(was);
+    deleteLine(2);
+    expect(undo()).toBe(true);
+    redetect(2, 'x');
+    expect([stepHere('redo'), peekStack().redo.length]).toEqual([false, 0]);
+  });
+
+  it('does not bring a deleted last line back beside the lines of a re-detect', () => {
+    deleteLine(5);
+    redetect(5);
+    const was = snap();
+    expect(stepHere('undo')).toBe(false);
+    expect(snap()).toBe(was);
+    expect(page().lines.map((l) => l.jp)).toEqual(['new1', 'new2', 'new3', 'new4', 'new5']);
+  });
+
+  it('does not put a stale line among new ones after a re-detect to the same count', () => {
+    deleteLine(2);
+    redetect(4);
+    expect(stepHere('undo')).toBe(false);
+    expect(page().lines.map((l) => l.jp)).toEqual(['new1', 'new2', 'new3', 'new4']);
+  });
+
+  it('forgets an older text edit too, so Mod+Z cannot write it onto the line that has its number now', () => {
+    setLineText(page(), 3, 'typed');
+    settleEdits();
+    redetect(5);
+    expect(stepHere('undo')).toBe(false);
+    expect(lineByN(page(), 3).en).toBe('');
+  });
+
+  it('forgets an added line\'s step both ways after a re-detect', () => {
+    addQueueLine();
+    redetect(5);
+    expect(peekStack().undo).toEqual([]);
+    addQueueLine();
+    expect(undo()).toBe(true);
+    redetect(5);
+    expect(peekStack().redo).toEqual([]);
+    expect(redo()).toBe(false);
+  });
+
+  it('keeps the box steps on the same stack, and drops a run group that holds a line step', () => {
+    app.chapterMode = 'typeset';
+    addBoxAt(page(), { text: 'free', x: 100, y: 100 });
+    settleEdits();
+    const id = page().boxes.at(-1).id;
+    record({ t: 'move', pageId: 1, boxId: id, before: { x: 1 }, after: { x: 2 } });
+    setLineText(page(), 1, 'typed');
+    settleEdits();
+    record({ t: 'group', pageId: 1, items: [{ t: 'line', pageId: 1, lineN: 2, before: 'e2', after: 'z' }, { t: 'move', pageId: 1, boxId: id, before: { x: 1 }, after: { x: 2 } }] });
+    const boxSteps = peekStack().undo.filter((e) => e.t !== 'line' && e.t !== 'group').length;
+    redetect(5);
+    expect(peekStack().undo.some((e) => e.t === 'line' || e.t === 'group')).toBe(false);
+    expect(peekStack().undo.filter((e) => e.t === 'move')).toHaveLength(1);
+    expect(peekStack().undo).toHaveLength(boxSteps);
+  });
+
+  it('marks a delete of the last line, and puts back a delete that kept a gap, both ways', () => {
+    deleteLine(5);
+    expect(peekStack().undo.at(-1)).toMatchObject({ last: true });
+    expect(undo()).toBe(true);
+    resetHistory();
+    // An orphan block (3, with no line) makes the renumber refuse: the line
+    // goes and leaves a gap, and the entry has no numbers and no mark.
+    loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [1, 2, 4, 5].map((n) => ({ n, type: 'dialogue', jp: 'j' + n, en: 'e' + n })), detect: { panels: [], boxes: [{ n: 3, box: [0, 0, 50, 50] }] } }]);
+    const was = snap();
+    deleteLine(2);
+    const e = peekStack().undo.at(-1);
+    expect([e.numbers, e.last, page().lines.map((l) => l.n)]).toEqual([undefined, undefined, [1, 4, 5]]);
+    expect(stepHere('undo')).toBe(true);
+    expect(snap()).toBe(was);
+    expect(stepHere('redo')).toBe(true);
+    expect(page().lines.map((l) => l.n)).toEqual([1, 4, 5]);
+    expect(app.errors).toEqual([]);
+    // The gap's number taken by something else since: refused, page unchanged.
+    page().lines.push({ n: 2, type: 'dialogue', jp: 'other', en: '' });
+    expect(undo()).toBe(false);
+    expect(page().lines.map((l) => l.n)).toEqual([1, 4, 5, 2]);
+  });
+
+  it('leaves no failing step when a re-detect lands while a box is being typed into', () => {
+    app.chapterMode = 'typeset';
+    page().boxes.push({ id: 'typing', lineN: 1, text: 'own', x: 10, y: 10, w: 200, h: 80, style: normalizeStyle(defaultStyle()) });
+    beginEdit('typing');
+    byId('typing').text = 'changed';
+    redetect(5);
+    expect(page().boxes.some((b) => b.id === 'typing')).toBe(false);
+    while (peekStack().undo.length) undo();
+    expect(app.errors).toEqual([]);
+  });
+
+  it('records a pending placeholder whose line has words before deleting it, so undo brings the words back', () => {
+    app.translateTypeset = true;
+    addBoxAt(page(), { text: 'typed words', x: 200, y: 200 });
+    const b = page().boxes.at(-1);
+    deleteBox(b.id);
+    expect(lineByN(page(), b.lineN)).toMatchObject({ en: 'typed words' });
+    expect(peekStack().undo.map((e) => e.t)).toEqual(['place', 'delete']);
+    expect(undo()).toBe(true);
+    expect(page().boxes.some((x) => x.id === b.id)).toBe(true);
+  });
+
+  it('still refuses, as a second guard, a deleted last line whose number came back with no re-detect', () => {
+    deleteLine(5);
+    // An import writes lines and records nothing, so nothing was dropped.
+    page().lines = [1, 2, 3].map((n) => ({ n, type: 'dialogue', jp: 'imp' + n, en: '' }));
+    const was = snap();
+    expect(undo()).toBe(false);
+    expect(snap()).toBe(was);
+    expect(app.errors.at(-1).msg).toMatch(/lines have changed since/);
+  });
+
+  it('undoes a delete and then a reorder made after it, back to the start', () => {
+    const was = snap();
+    deleteLine(2);
+    moveLine(1, 4);
+    expect(page().lines.map((l) => l.en)).toEqual(['e3', 'e4', 'e5', 'e1']);
+    undo();
+    undo();
+    expect(snap()).toBe(was);
+    redo();
+    redo();
+    expect(page().lines.map((l) => l.en)).toEqual(['e3', 'e4', 'e5', 'e1']);
+  });
+
+  it('moves the queue to the next row when the active free line between numbered rows goes', () => {
+    loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [{ n: 1, en: 'a' }, { n: -1, en: 'free' }, { n: 2, en: 'b' }] }]);
+    page().activeLineN = -1;
+    deleteLine(-1);
+    expect(peekStack().undo.at(-1)).toMatchObject({ activeBefore: -1, activeAfter: 2 });
+    expect(page().activeLineN).toBe(2);
+    undo();
+    expect(page().activeLineN).toBe(-1);
+    expect(page().lines.map((l) => l.n)).toEqual([1, -1, 2]);
+  });
+
+  it('files a delete on a page not shown with that page, renumbering its stored stack', () => {
+    const sent = [];
+    const release = setOffscreenSink((pageId, e) => (pageId !== page().id ? (sent.push(e), true) : false));
+    try {
+      expect(deleteLine(1, app.pages[1])).toBe(true);
+    } finally {
+      release();
+    }
+    expect(peekStack().undo).toEqual([]);
+    expect(sent[0]).toMatchObject({ t: 'lineDelete', pageId: 2 });
+    expect(app.pages[1].lines.map((l) => [l.n, l.jp])).toEqual([[1, 'k2'], [2, 'k3']]);
+    // The history file's half: an older entry about line 3 there is about line 2 now.
+    const doc = { version: 1, pages: { 2: { undo: [{ t: 'line', pageId: 2, lineN: 3, before: '', after: 'x' }], redo: [] } } };
+    const next = appendEntry(doc, 2, sent[0]);
+    expect(next.pages['2'].undo.map((e) => [e.t, e.lineN])).toEqual([['line', 2], ['lineDelete', undefined]]);
+    expect(appendEntry(emptyDoc(), 2, sent[0]).pages['2'].undo).toHaveLength(1);
+  });
+
+  it('gates undo and redo in translate mode on the entry on top, for the keys and the buttons', () => {
+    record({ t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } });
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([false, false]);
+    expect(app.toast.msg).toBe('Nothing to undo here: a translate chapter edits the queue, not the canvas');
+    expect(peekStack().undo).toHaveLength(1);
+    record({ t: 'group', pageId: 1, items: [{ t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } }] });
+    expect(stepHere('undo')).toBe(false);
+    resetHistory();
+    addQueueLine();
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([true, true]);
+    expect([stepAllowed('redo'), stepHere('redo')]).toEqual([true, true]);
+    // A box edit on the redo side is refused too.
+    app.chapterMode = 'typeset';
+    addBoxAt(page(), { text: 'hi', x: 100, y: 100 });
+    const id = page().boxes.at(-1).id;
+    record({ t: 'move', pageId: 1, boxId: id, before: { x: 1 }, after: { x: 2 } });
+    expect(undo()).toBe(true);
+    app.chapterMode = 'translate';
+    expect([stepAllowed('redo'), stepHere('redo')]).toEqual([false, false]);
+    // Typeset mode is not gated.
+    app.chapterMode = 'typeset';
+    expect(stepAllowed('redo')).toBe(true);
+  });
+
+  it('lets a run group of line steps through the gate, and refuses one with a box step in it', () => {
+    const lineItem = { t: 'line', pageId: 1, lineN: 1, before: 'e1', after: 'agent' };
+    page().lines[0].en = 'agent';
+    record({ t: 'group', pageId: 1, items: [lineItem] });
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([true, true]);
+    expect(lineByN(page(), 1).en).toBe('e1');
+    expect([stepAllowed('redo'), stepHere('redo')]).toEqual([true, true]);
+    expect(lineByN(page(), 1).en).toBe('agent');
+    record({ t: 'group', pageId: 1, items: [lineItem, { t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } }] });
+    expect([stepAllowed('undo'), stepHere('undo')]).toEqual([false, false]);
+  });
+
+  it('takes a blank free line with its box in a translate chapter, and a pending placeholder\'s line always', () => {
+    app.translateTypeset = true;
+    // A blank line, no drawn box: nothing to keep, so it goes with its box.
+    const n = addQueueLine();
+    placeActiveAt(300, 300);
+    settleEdits();
+    deleteBox(page().boxes.find((x) => x.lineN === n).id);
+    expect(lineByN(page(), n)).toBeUndefined();
+    // A click on the page left without typing: the placeholder was never
+    // recorded, so its line goes with it whatever it holds.
+    const before = page().lines.length;
+    addBoxAt(page(), { x: 200, y: 200 });
+    const ph = page().boxes.at(-1);
+    deleteBox(ph.id);
+    expect(page().lines.length).toBe(before);
+    expect(page().boxes.some((b) => b.id === ph.id)).toBe(false);
+  });
+
+  it('keeps a free line, text and drawn box, when its box is deleted in a translate chapter', () => {
+    app.translateTypeset = true;
+    const n = addQueueLine();
+    setLineText(page(), n, 'kept');
+    setLineRect(page(), n, [100, 100, 300, 170]);
+    placeDetectedOnPage();
+    const b = page().boxes.find((x) => x.lineN === n);
+    expect([b.x, b.y, b.w]).toEqual([100, 100, 200]);
+    deleteBox(b.id);
+    expect(lineByN(page(), n)).toMatchObject({ en: 'kept', rect: [100, 100, 300, 170] });
+    undo();
+    expect(page().boxes.some((x) => x.lineN === n)).toBe(true);
+    // In a typeset chapter the old rule stands: the box takes its line.
+    app.chapterMode = 'typeset';
+    expect(isTranslateChapter()).toBe(false);
+    deleteBox(page().boxes.find((x) => x.lineN === n).id);
+    expect(lineByN(page(), n)).toBeUndefined();
+  });
+
+  it('places a numbered line that has a drawn box inside that box', () => {
+    app.chapterMode = 'typeset';
+    setLineRect(page(), 3, [400, 600, 700, 800]);
+    page().activeLineN = 3;
+    placeActiveAt(10, 10);
+    const b = page().boxes.find((x) => x.lineN === 3);
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    expect(cx > 400 && cx < 700 && cy > 600 && cy < 800).toBe(true);
+  });
+
+  it('reads past a malformed block to a good one for the same line', () => {
+    page().detect.boxes.unshift({ n: 1, box: [0, 0, 'x', 1] });
+    expect(lineRectOf(page(), 1)).toEqual([0, 100, 50, 150]);
   });
 });

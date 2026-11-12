@@ -15,9 +15,12 @@ vi.mock('./auto-layout.js', async (original) => {
 import {
   app, loadProjectPages, page, byId, setRecorder, cloneStyle, fitGeom,
   resetBoxToTagStyle, saveBoxStyleAsTag, applyTagStyleToChapter,
-  autoFitBox, setMinFontSize,
+  autoFitBox, setMinFontSize, activateLine, placeActiveAt, openBulk, closeBulk, setBulkProp,
+  applyBulkToTag, inheritedStyleFor,
 } from './store.svelte.js';
 import { bindTags, unbindTags, findTag, TAG_STYLE_KEYS } from './tags.svelte.js';
+import { normalizePaint } from './box-paint.js';
+import { normalizeSpecial } from './special.js';
 import { defaultStyle, normalizeAuto } from './data.js';
 import { fitBox } from './contain.js';
 import { solveLayout } from './auto-layout.js';
@@ -190,5 +193,95 @@ describe('the primary tag minimum in both fit ladders', () => {
     expect(solveLayout).toHaveBeenCalled();
     expect(solveLayout.mock.lastCall[0].opts.minSize).toBe(floor);
     expect(b.style.size).toBeGreaterThanOrEqual(floor);
+  });
+});
+
+// Paint marks are drawn over one box's letters, in its frame: a tag style
+// never carries them to another box and never takes them off one.
+describe('paint marks stay on the box they were drawn on', () => {
+  const MARKS = () => normalizePaint({ on: true, marks: [{ kind: 'stroke', size: 6, pts: [[10, 10], [60, 30]], color: '#ff0000' }] });
+  const painted = () => {
+    const b = byId('b1');
+    b.style.paint = MARKS();
+    return b;
+  };
+
+  it('a tag style saved from a painted box holds no marks, nor one stored before', () => {
+    painted();
+    const entry = saveBoxStyleAsTag();
+    expect(TAG_STYLE_KEYS).not.toContain('paint');
+    expect(Object.hasOwn(entry.style, 'paint')).toBe(false);
+    bindTags({ list: [{ name: 'voice', style: { italic: true, paint: MARKS() } }] }, () => {});
+    expect(Object.hasOwn(findTag('voice').style, 'paint')).toBe(false);
+  });
+
+  it('a box born on a tagged line has none (bornBox)', () => {
+    painted();
+    saveBoxStyleAsTag();
+    app.lastStyle = defaultStyle();
+    // A line of the tag with no box yet.
+    page().lines.push({ n: 3, en: 'EEEE FFFF', tags: ['voice'] });
+    const before = page().boxes.length;
+    activateLine(3);
+    placeActiveAt(300, 300);
+    expect(page().boxes).toHaveLength(before + 1);
+    const born = page().boxes[page().boxes.length - 1];
+    expect(born.lineN).toBe(3);
+    expect(born.style.paint).toEqual({ on: false, marks: [] });
+  });
+
+  it('applying the tag to the chapter keeps each box\'s own marks (applyTagStyleToChapter)', () => {
+    const b = painted();
+    saveBoxStyleAsTag();
+    applyTagStyleToChapter('voice');
+    expect(b.style.paint).toEqual(MARKS());
+    expect(app.pages[1].boxes[0].style.paint).toEqual({ on: false, marks: [] });
+  });
+
+  it('a bulk edit over the tag keeps each box\'s own marks (applyBulkToTag)', () => {
+    const b = painted();
+    app.selectedId = 'b1';
+    openBulk();
+    try {
+      setBulkProp('color', true);
+      app.bulk.style.color = '#00ff00';
+      expect(applyBulkToTag('voice')).toBe(2);
+    } finally {
+      closeBulk();
+    }
+    expect(b.style.color).toBe('#00ff00');
+    expect(b.style.paint).toEqual(MARKS());
+    expect(app.pages[1].boxes[0].style.color).toBe('#00ff00');
+    expect(app.pages[1].boxes[0].style.paint).toEqual({ on: false, marks: [] });
+  });
+});
+
+// Special effects travel only by an explicit act: a tag style that has them
+// gives them to its line's new boxes, the last-used style never does.
+describe('special effects come from a tag style, not the last box', () => {
+  const CRACK = () => normalizeSpecial({ crack: { on: true, amount: 60, seed: 7 } });
+
+  it('a tag style that carries special gives it through inheritedStyleFor', () => {
+    bindTags({ list: [{ name: 'voice', style: { italic: true, special: CRACK() } }] }, () => {});
+    expect(findTag('voice').style.special).toEqual(CRACK());
+    const s = inheritedStyleFor({ n: 3, en: 'EEEE', tags: ['voice'] });
+    expect(s.italic).toBe(true);
+    expect(s.special).toEqual(CRACK());
+  });
+
+  it('a new box that only inherits the last-used style gets none', () => {
+    const before = app.lastStyle;
+    try {
+      app.lastStyle = { ...defaultStyle(), color: '#123456', special: CRACK() };
+      // The tag here sets no special: only the last-used style has one.
+      const s = inheritedStyleFor({ n: 3, en: 'EEEE', tags: ['accent'] });
+      expect(s.color).toBe('#abcdef');
+      expect(s.special).toEqual(normalizeSpecial(undefined));
+      const plain = inheritedStyleFor({ n: 4, en: 'FFFF', tags: [] });
+      expect(plain.color).toBe('#123456');
+      expect(plain.special).toEqual(normalizeSpecial(undefined));
+    } finally {
+      app.lastStyle = before;
+    }
   });
 });

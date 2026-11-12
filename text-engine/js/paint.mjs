@@ -34,7 +34,7 @@
 
 import { CHAIN_SHIFT, SYNTH_BOLD, SYNTH_OBLIQUE } from './engine.mjs'
 
-export const WIRE_VERSION = 11
+export const WIRE_VERSION = 18
 const MAGIC = 0x4a50544d // "MTPJ"
 
 const STATUS = {
@@ -93,6 +93,13 @@ export const BOLD_DRAW = { rule: 0, outset: 1, smear: 2 }
 
 /** The largest `request.weight` the engine accepts, in device pixels. */
 export const MAX_WEIGHT = 64
+
+/**
+ * The largest blur, soft edge or size the engine reads (boxjob.rs
+ * `MAX_BLUR`), in job units. A soft edge is sent clamped to it, so a large
+ * mark at its softest never makes the engine refuse the whole box.
+ */
+export const MAX_BLUR = 4096
 
 // One buffer for every job, grown when a job does not fit. A job past
 // `WIRE_KEEP` (a backdrop, a big picked tile) grows it to the job's size, and
@@ -349,7 +356,7 @@ function writeTiles(sent) {
 // The job's bytes, appended where the buffer stands.
 // `collector` is the tile table, given when the box's effects already sent
 // tiles into it.
-function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0, transform, tiles }, collector = tileCollector(tiles)) {
+function writeJob({ job, font, size, synth, chain, faces, boldDraw = 'rule', weight = 0, transform, tiles }, collector = tileCollector(tiles)) {
   const { sent, index: tileIndex } = collector
   const m = transform ?? [1, 0, 0, 1, 0, 0]
   u32(MAGIC)
@@ -371,14 +378,22 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
   // 32 (v11): Crisp, each straight line's baseline, x-height and cap height
   // moved onto whole page pixels (the engine skips it where a turn, a mesh
   // or a roughening would undo it).
+  // 64 (v12): Wobble, each letter moved up or down and turned by numbers of
+  // its own (`wobble`, below).
+  // 128 (v13): lines set in several faces (`runFaces`, at the job's end).
+  // 256 (v14): special effects (`special`, after the faces).
   const negative = job.negative ?? null
+  const wobble = job.wobble ?? null
   u32(
     (job.curved ? 1 : 0) |
       (job.silhouette ? 2 : 0) |
       (job.noFill ? 4 : 0) |
       (job.strokeOrder === 'each' ? 8 : 0) |
       (negative ? 16 : 0) |
-      (job.crisp ? 32 : 0),
+      (job.crisp ? 32 : 0) |
+      (wobble ? 64 : 0) |
+      (job.faces?.length ? 128 : 0) |
+      (job.special ? 256 : 0),
   )
   // An alignment the canvas does not know leaves its `textAlign` at "start".
   u32(ALIGN[job.align] ?? 0)
@@ -405,6 +420,16 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
     if (!(Number.isFinite(at.x) && Number.isFinite(at.y))) throw new Error('mt-text: crisp needs a finite grid corner')
     f64(at.x)
     f64(at.y)
+  }
+  // With Wobble: the furthest a letter moves up or down, as a share of the
+  // size (0 to 1), the furthest it turns, degrees (0 to 90), and the seed.
+  if (wobble) {
+    if (!(wobble.amount >= 0 && wobble.amount <= 1)) throw new Error(`mt-text: wobble amount is 0 to 1, not ${wobble.amount}`)
+    if (!(wobble.tilt >= 0 && wobble.tilt <= 90)) throw new Error(`mt-text: wobble tilt is 0 to 90, not ${wobble.tilt}`)
+    if (!(Number.isInteger(wobble.seed) && wobble.seed >= 0 && wobble.seed <= 0xffffffff)) throw new Error(`mt-text: wobble seed is a u32, not ${wobble.seed}`)
+    f64(wobble.amount)
+    f64(wobble.tilt)
+    u32(wobble.seed)
   }
   u32(job.bands.length)
   for (const band of job.bands) {
@@ -441,6 +466,133 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
     at += written
   }
   writeTiles(sent)
+  runFaces(job, faces)
+  special(job.special)
+}
+
+// (v14) The special effects (special.js in the app), after the faces and
+// (v15: the crack's focus and spread, the lightning's core, glow and glow
+// size, the splash's colour; v16: kind 16, a crack's pieces breaking off;
+// v17: kind 32, box strokes cut through; v18: kind 64, glyph bands fill
+// the cuts, 128, an aimed lightning, 256, a placed splash)
+// only for a job that has one, which says so with flag 256: the box in job
+// space, then each effect's numbers. The engine makes the shapes from them
+// (special.rs), so only these cross.
+const SPECIAL = ['crack', 'lightning', 'splash', 'scratches']
+function special(sp) {
+  if (!sp) return
+  const r = sp.rect
+  if (!(r && [r.x, r.y, r.w, r.h].every(Number.isFinite) && r.w > 0 && r.h > 0)) throw new Error('mt-text: special effects need the box (rect x, y, w, h)')
+  // 16 (v16): the crack's pieces break off, its share and motion after the
+  // crack's own numbers. A crack without it writes what v15 wrote.
+  const breaks = sp.crack?.breakOff ? 16 : 0
+  // 32 (v17): a box's own strokes are cut through at the cuts (special.js
+  // `outline`); no payload. Without it a box stroke outlines each cut.
+  const through = sp.cutStrokes ? 32 : 0
+  if (through && !sp.crack && !sp.scratches) throw new Error('mt-text: strokes cut through need a crack or scratches')
+  // 64 (v18): the glyph bands fill the cuts (special.js `bandOutline`); no
+  // payload. Without it a glyph band is cut through.
+  const bandFills = sp.fillBands ? 64 : 0
+  if (bandFills && !sp.crack && !sp.scratches) throw new Error('mt-text: bands filling the cuts need a crack or scratches')
+  // 128 (v18): the lightning is aimed, its start and heading after its own
+  // numbers. A lightning without it writes what v17 wrote.
+  const aimed = sp.lightning?.aim ? 128 : 0
+  // 256 (v18): the splash is placed, where it lands and its spread after
+  // its own numbers.
+  const placed = sp.splash?.at ? 256 : 0
+  const kinds = SPECIAL.reduce((bits, k, i) => (sp[k] ? bits | (1 << i) : bits), 0) | breaks | through | bandFills | aimed | placed
+  if (!(kinds & 15)) throw new Error('mt-text: a special block needs an effect')
+  f64(r.x)
+  f64(r.y)
+  f64(r.w)
+  f64(r.h)
+  u32(kinds)
+  const share = (v, name, lo = 0, hi = 1) => {
+    if (!(v >= lo && v <= hi)) throw new Error(`mt-text: special ${name} is ${lo} to ${hi}, not ${v}`)
+    f64(v)
+  }
+  const seed = (v) => {
+    if (!(Number.isInteger(v) && v >= 0 && v <= 0xffffffff)) throw new Error(`mt-text: special seed is a u32, not ${v}`)
+    u32(v)
+  }
+  const angle = (v) => {
+    if (!(Number.isFinite(v) && Math.abs(v) <= 64)) throw new Error(`mt-text: special angle is radians within 64, not ${v}`)
+    f64(v)
+  }
+  if (sp.crack) {
+    share(sp.crack.amount, 'crack amount')
+    share(sp.crack.size, 'crack size', 0.01, 4)
+    share(sp.crack.x, 'crack x')
+    share(sp.crack.y, 'crack y')
+    share(sp.crack.spread, 'crack spread')
+    seed(sp.crack.seed)
+    if (breaks) {
+      const b = sp.crack.breakOff
+      if (!(b.share > 0 && b.share <= 1)) throw new Error(`mt-text: a crack breaks off more than 0, at most 1, not ${b.share}`)
+      if (b.motion !== 0 && b.motion !== 1) throw new Error(`mt-text: a crack's pieces move apart (0) or fall (1), not ${b.motion}`)
+      f64(b.share)
+      u32(b.motion)
+    }
+  }
+  if (sp.lightning) {
+    share(sp.lightning.amount, 'lightning amount')
+    rgba(sp.lightning.core)
+    rgba(sp.lightning.glow)
+    share(sp.lightning.glowSize, 'lightning glow', 0, 3)
+    seed(sp.lightning.seed)
+    if (aimed) {
+      share(sp.lightning.aim.x, 'lightning x')
+      share(sp.lightning.aim.y, 'lightning y')
+      angle(sp.lightning.aim.angle)
+    }
+  }
+  if (sp.splash) {
+    share(sp.splash.amount, 'splash amount')
+    share(sp.splash.size, 'splash size', 0.01, 4)
+    rgba(sp.splash.color)
+    seed(sp.splash.seed)
+    if (placed) {
+      share(sp.splash.at.x, 'splash x')
+      share(sp.splash.at.y, 'splash y')
+      share(sp.splash.at.spread, 'splash spread')
+    }
+  }
+  if (sp.scratches) {
+    share(sp.scratches.amount, 'scratches amount')
+    angle(sp.scratches.angle)
+    seed(sp.scratches.seed)
+  }
+}
+
+// (v13) The faces of a straight job's lines set in several, at the very end
+// of the job and only for such a job, which says so with flag 128: a job in
+// one face is the bytes it was, and a field added to the glyph job later goes
+// under a flag of its own, after this block or not.
+// `job.faces` are the faces the lines' `spans` name by index, and `faces`
+// the engine faces the caller resolved them to (`{ font, flags }`, an engine
+// face's, chain and all), one each. A span is `{ face, start, end }`, UTF-16
+// units of its run's text.
+function runFaces(job, faces) {
+  if (!job.faces?.length) return
+  if (job.curved) throw new Error('mt-text: a curved job is laid out in one face')
+  if (!Array.isArray(faces) || faces.length !== job.faces.length) throw new Error('mt-text: a job set in several faces needs each face resolved (request.faces)')
+  u32(faces.length)
+  for (const f of faces) {
+    const flags = faceFlags(f.flags ?? f.synth)
+    u32(f.font)
+    u32(flags & ((1 << CHAIN_SHIFT) - 1))
+    u32(f.chain ?? flags >>> CHAIN_SHIFT)
+  }
+  u32(job.runs.length)
+  for (const run of job.runs) {
+    const spans = run.spans ?? []
+    u32(spans.length)
+    for (const sp of spans) {
+      u32(sp.face)
+      u32(sp.start)
+      u32(sp.end)
+    }
+  }
 }
 
 // Rule: every new flag bit, field, record kind or changed meaning bumps this,
@@ -450,13 +602,22 @@ function writeJob({ job, font, size, synth, chain, boldDraw = 'rule', weight = 0
 // v17 is a changed meaning with no new byte: the glyph job's mesh and
 // roughening now bend the box's brush ink too (a v16 wasm left it unbent).
 // v18: the glyph job inside it is v11 (job flag 32, Crisp).
-export const BOX_WIRE_VERSION = 18
+// v19: the mask states each shape's op (keep or hide), and is cut after the
+// box's warp, so the engine no longer bends it by the mesh.
+// v20: the fade, after the mask: shapes that take some of the opacity.
+// v21: paint over the letters, effect kind 10.
+// v22: the line flag before the glyph job: a curved job's runs are the
+// clusters of one line and are shaped as it (`job.line`).
+// v23: the pin shift after the fade: how far a held box's mask and fade
+// have moved against it.
+// v24: the live flag after the pin shift: a frame of a live move, which alone
+// may read the kept mask between pixels.
+export const BOX_WIRE_VERSION = 24
 /** Largest page side, and largest job-to-page matrix entry, a page record
  * may state (page px): the engine's `MAX_PAGE` (boxjob.rs), 2^20. Past it
  * no page is sent and the box paints as Align with Layer on. */
 export const MAX_PAGE = 1048576
 const BOX_MAGIC = 0x4250544d // "MTPB"
-const CLIP_MODE = { include: 1, exclude: 2 }
 // Advanced Blending's Channels, in the wire's bit order, and Blend If's
 // sliders in the wire's order (`decode_box`).
 const BLEND_CHANNELS = ['r', 'g', 'b']
@@ -553,7 +714,7 @@ function contourRecord(contour) {
   u32(id)
 }
 
-const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7, satin: 8, bevel: 9 }
+const EFFECT_KIND = { outerGlow: 1, innerGlow: 2, innerShadow: 3, colorOverlay: 4, stroke: 5, gradientOverlay: 6, patternOverlay: 7, satin: 8, bevel: 9, paint: 10 }
 // Bevel & Emboss's Style and Technique by the number the engine reads
 // (`BevelStyle::from_u32`, `BevelTechnique::from_u32` in fx/bevel.rs).
 export const BEVEL_STYLE_IDS = Object.freeze({ inner: 0, outer: 1, emboss: 2, pillow: 3, stroke: 4 })
@@ -695,6 +856,7 @@ function effectRecord(fx, tileIndex) {
   if (!kind) throw new Error(`mt-text: unknown effect ${JSON.stringify(fx.kind)}`)
   u32(kind)
   if (kind === 9) return bevelRecord(fx, tileIndex)
+  if (kind === 10) return paintMarks(fx)
   if (kind === 5) {
     const position = STROKE_POSITION[fx.position ?? 'outside']
     if (position === undefined) throw new Error(`mt-text: unknown stroke position ${JSON.stringify(fx.position)}`)
@@ -859,31 +1021,103 @@ function inkRecord(ink) {
   for (const [k, pts, ref] of strokes) inkStroke(k, pts, ref, keys.length)
 }
 
-// One mask shape, as `style.clip.shapes` holds it. A shape of a kind this
-// does not know, or with nothing to draw, is not written (`drawClipShapes`
-// draws nothing for it either).
+// A mask or fade shape's kind on the wire: 1 ellipse, 2 polygon, 3 stroke,
+// or 0 for one of a kind this does not know or with nothing to draw, which
+// is not written (`drawClipShapes` draws nothing for it either).
+function shapeKind(sh) {
+  if (sh?.kind === 'ellipse') return 1
+  if (!Array.isArray(sh?.pts) || !sh.pts.length) return 0
+  return sh.kind === 'poly' ? 2 : sh.kind === 'stroke' ? 3 : 0
+}
+
+// One mask shape in the box's own frame (`maskInBoxFrame`), and its op: keep
+// is 1, hide is 2.
+// The mask's or the fade's record: 0 for none, or 1, the box's corner and
+// the shapes, each written by `one` (false for one that draws nothing). A
+// held box sends the same shape list every frame of a move (`pinShift` is
+// what changes), so the record is kept with its list and copied, not
+// written again: a brush mask holds up to 400 strokes.
+const shapeRecords = new WeakMap()
+function shapesRecord(o, one) {
+  if (!o) return u32(0)
+  const list = Array.isArray(o.shapes) ? o.shapes : null
+  const hit = list && shapeRecords.get(list)
+  if (hit && hit.x === o.x && hit.y === o.y && hit.one === one) {
+    need(hit.bytes.length)
+    u8.set(hit.bytes, at)
+    at += hit.bytes.length
+    return
+  }
+  const from = at
+  u32(1)
+  f64(o.x)
+  f64(o.y)
+  // The count is written once the shapes are, less the ones not drawn.
+  const countAt = at
+  u32(0)
+  let n = 0
+  for (const sh of list ?? []) if (one(sh)) n++
+  view.setUint32(countAt, n, true)
+  if (list) shapeRecords.set(list, { x: o.x, y: o.y, one, bytes: u8.slice(from, at) })
+}
+
 function clipShape(sh) {
-  if (sh?.kind === 'ellipse') {
-    u32(1)
+  const kind = shapeKind(sh)
+  if (!kind) return false
+  u32(kind)
+  u32(sh.op === 'keep' ? 1 : 2)
+  shapeData(sh, kind)
+  return true
+}
+
+// One fade shape in the box's own frame (`fadeInBoxFrame`): its strength, 0
+// to 1, and its soft edge, a gaussian's sigma.
+function fadeShape(sh) {
+  const kind = shapeKind(sh)
+  if (!kind) return false
+  u32(kind)
+  f64(Math.min(1, Math.max(0, sh.strength || 0)))
+  f64(Math.min(MAX_BLUR, Math.max(0, sh.soft || 0)))
+  shapeData(sh, kind)
+  return true
+}
+
+// Paint over the letters (v21, effect kind 10): the box's corner in job space
+// and the marks in the box's own frame (`paintMarksForEngine`), in the order
+// drawn, each its kind, colour, opacity (0 to 1), soft edge (a gaussian's
+// sigma), whether it erases, and its shape's numbers.
+function paintMarks(fx) {
+  const marks = (fx.marks ?? []).filter((m) => shapeKind(m))
+  f64(fx.x ?? 0)
+  f64(fx.y ?? 0)
+  u32(marks.length)
+  for (const m of marks) {
+    const kind = shapeKind(m)
+    u32(kind)
+    rgba(m.color)
+    f64(Math.min(1, Math.max(0, m.opacity || 0)))
+    f64(Math.min(MAX_BLUR, Math.max(0, m.soft || 0)))
+    u32(m.erase ? 1 : 0)
+    shapeData(m, kind)
+  }
+}
+
+// A shape's numbers, by its kind.
+function shapeData(sh, kind) {
+  if (kind === 1) {
     f64(sh.cx)
     f64(sh.cy)
     f64(sh.rx)
     f64(sh.ry)
-    return true
+    return
   }
-  const pts = Array.isArray(sh?.pts) ? sh.pts : []
-  if (!pts.length || (sh.kind !== 'poly' && sh.kind !== 'stroke')) return false
-  if (sh.kind === 'poly') u32(2)
-  else {
-    u32(3)
-    f64(sh.size || 0)
-  }
+  const pts = sh.pts
+  if (kind === 3) f64(sh.size || 0)
   u32(pts.length)
   for (const q of pts) {
     f64(q[0])
     f64(q[1])
   }
-  return true
 }
 
 /**
@@ -917,9 +1151,16 @@ function clipShape(sh) {
  *   `opacity` paints the silhouette once.
  * @param {number} [request.blur] the whole-box blur, a gaussian's sigma
  * @param {{dx: number, dy: number, w: number}[]} [request.taps] `motionBlurTaps`
- * @param {{mode: 'include' | 'exclude', x: number, y: number, shapes: object[]} | null} [request.clip]
- *   the visibility mask: `style.clip.shapes`, which are box-local, and the
- *   box's corner in job space
+ * @param {{x: number, y: number, shapes: object[]} | null} [request.clip]
+ *   the mask (v19): `maskInBoxFrame(box)`, shapes in the box's own frame after
+ *   its warp, each with its `op` ('keep' or 'hide'), and the box's corner in
+ *   job space. The letters show inside the keep shapes (everywhere, with
+ *   none) less the hide shapes
+ * @param {{x: number, y: number, shapes: object[]} | null} [request.fade]
+ *   the fade (v20): `fadeInBoxFrame(box)`, each shape with its `strength` (0
+ *   to 1) and its `soft` edge (a gaussian's sigma, job units), from the box's
+ *   corner. Laid after the mask: the opacity left is one less the most any
+ *   shape takes
  * @param {string} [request.blend] the letters' blend mode (`style.blendMode`)
  * @param {number} [request.fillOpacity] Photoshop's Fill Opacity, 0 to 1; over a backdrop,
  *   in one of the special eight modes (Color Burn, Linear Burn, Color Dodge, Linear Dodge,
@@ -980,7 +1221,7 @@ function clipShape(sh) {
  * @returns {Uint8Array} a view of a buffer that the next call overwrites
  */
 export function encodeBox(request) {
-  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
+  const { width, height, grain = null, page = null, shadows = [], blur = 0, taps = [], clip = null, fade = null, pinShift = null, pinLive = false, blend = 'normal', fillOpacity = 1, blendInterior = false, transparencyShapes = true, channels = null, blendIf = null, effects = [], ink = null, backdrop = null } = request
   at = 0
   u32(BOX_MAGIC)
   u32(BOX_WIRE_VERSION)
@@ -1007,19 +1248,14 @@ export function encodeBox(request) {
     f64(t.dy)
     f64(t.w)
   }
-  const mode = clip ? CLIP_MODE[clip.mode] : 0
-  if (clip && !mode) throw new Error(`mt-text: unknown clip mode ${JSON.stringify(clip.mode)}`)
-  u32(mode || 0)
-  if (mode) {
-    f64(clip.x)
-    f64(clip.y)
-    // The count is written once the shapes are, less the ones not drawn.
-    const countAt = at
-    u32(0)
-    let n = 0
-    for (const sh of clip.shapes ?? []) if (clipShape(sh)) n++
-    view.setUint32(countAt, n, true)
-  }
+  shapesRecord(clip, clipShape)
+  // The fade (v20), after the mask and from the same corner.
+  shapesRecord(fade, fadeShape)
+  // v23: how far a held box's mask and fade have moved against it.
+  f64(Number.isFinite(pinShift?.[0]) ? pinShift[0] : 0)
+  f64(Number.isFinite(pinShift?.[1]) ? pinShift[1] : 0)
+  // v24: a frame of a live move (the editor's drag), never a rest paint.
+  u32(pinLive && pinShift ? 1 : 0)
   u32(blendId(blend))
   f64(fillOpacity)
   // The blending flags (v9): 1 Blend Interior Effects as Group, 2 (v13)
@@ -1050,6 +1286,9 @@ export function encodeBox(request) {
     u8.set(backdrop, at)
     at += backdrop.length
   } else u32(0)
+  // v22: whether the curved job's runs are one line's clusters. Only a box
+  // job can say so; the glyph wire has no place for it.
+  u32(request.job?.curved && request.job.line === true ? 1 : 0)
   const lenAt = at
   u32(0)
   writeJob(request, collector)
@@ -1184,10 +1423,14 @@ export function patternSwatch(engine, { width, height, fill: f, tiles }) {
   return { width: raster.width, height: raster.height, data: raster.data }
 }
 
-/** Whether this wasm paints box jobs of the version this loader writes. */
+/**
+ * Whether this wasm paints box jobs of the version this loader writes. A box
+ * job carries the glyph job, so the glyph wire version must match too.
+ */
 export function paintsBoxes(engine) {
   const ex = engine?.exports
   return typeof ex?.mt_paint_box === 'function' && ex.mt_paint_box_wire_version?.() === BOX_WIRE_VERSION
+    && ex.mt_paint_wire_version?.() === WIRE_VERSION
 }
 
 /**

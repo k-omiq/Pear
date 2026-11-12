@@ -10,6 +10,7 @@ const { initHistory, resetHistory, undo } = await import('../../editor/history.s
 const { callContext, __resetRun } = await import('../run.svelte.js');
 const { callTool } = await import('../registry.js');
 const { defaultStyle } = await import('../../data.js');
+const { normalizeSpecial } = await import('../../special.js');
 const { fitPolygon } = await import('../../outline-geom.js');
 const { checksOf } = await import('./edit.js');
 const { partsOf, readsFirst } = await import('./split.js');
@@ -119,6 +120,85 @@ describe('split', () => {
     expect(boxText(pageById(1).boxes[0], pageById(1))).toBe(TEXT);
   });
 
+  it('takes the paint marks off every part, in the same undo step', async () => {
+    load({ kind: 'poly', pts: joinedOutline() });
+    const marks = { on: true, marks: [{ kind: 'stroke', size: 6, pts: [[10, 10], [60, 30]], color: '#ff0000', opacity: 100, soft: 0 }] };
+    box('a').style.paint = structuredClone(marks);
+    const r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for me!'] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    for (const b of r.result.ids.map(box)) expect(b.style.paint).toEqual({ on: false, marks: [] });
+    undo();
+    expect(pageById(1).boxes).toHaveLength(1);
+    expect(box('a').style.paint).toEqual(marks);
+  });
+
+  it('keeps the mask and fade on the first part; the others keep only a bubble link', async () => {
+    load({ kind: 'poly', pts: joinedOutline() });
+    const mask = { on: true, shapes: [{ kind: 'bubble', op: 'keep', inset: 2 }, { kind: 'poly', op: 'hide', pts: [[10, 10], [60, 10], [10, 60]] }] };
+    const fade = { on: true, shapes: [{ kind: 'ellipse', cx: 40, cy: 40, rx: 20, ry: 20, strength: 70, soft: 30 }] };
+    box('a').mask = structuredClone(mask);
+    box('a').fade = structuredClone(fade);
+    const r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for me!'] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const [first, second] = r.result.ids.map(box);
+    expect(first.mask.shapes).toHaveLength(2);
+    expect(first.fade.shapes).toHaveLength(1);
+    expect(second.mask.shapes).toEqual([mask.shapes[0]]);
+    expect(second.mask.on).toBe(true);
+    expect(second.fade.shapes).toEqual([]);
+    expect(second.fade.on).toBe(false);
+    undo();
+    expect(pageById(1).boxes).toHaveLength(1);
+    expect(box('a').mask).toEqual(mask);
+  });
+
+  it('a first part whose mask and fade move with it keeps them on the page through the layout, and still moving with it', async () => {
+    load({ kind: 'poly', pts: joinedOutline() });
+    const a = box('a');
+    const local = [[10, 10], [60, 10], [10, 60]];
+    a.mask = { on: true, follow: true, shapes: [{ kind: 'poly', op: 'hide', pts: local }] };
+    a.fade = { on: true, follow: true, shapes: [{ kind: 'poly', pts: local, strength: 70, soft: 0 }] };
+    const page0 = local.map(([x, y]) => [a.x + x, a.y + y]);
+    const before = JSON.parse(JSON.stringify([a.mask, a.fade, a.x, a.y]));
+    const r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for me!'] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const first = box(r.result.ids[0]);
+    for (const k of ['mask', 'fade']) {
+      expect(first[k].follow).toBe(true);
+      first[k].shapes[0].pts.forEach(([x, y], i) => {
+        expect(first.x + x).toBeCloseTo(page0[i][0]);
+        expect(first.y + y).toBeCloseTo(page0[i][1]);
+      });
+    }
+    undo();
+    expect(JSON.parse(JSON.stringify([box('a').mask, box('a').fade, box('a').x, box('a').y]))).toEqual(before);
+  });
+
+  it('every part keeps the special effects; the paint marks, drawn mask and fade still go as above', async () => {
+    // A whole-box copy (duplicate, paste, a split part) carries style.special:
+    // it is the look of the box, laid over whatever text it holds. What was
+    // drawn over the first part's letters or bubble is not.
+    load({ kind: 'poly', pts: joinedOutline() });
+    const special = normalizeSpecial({ crack: { on: true, amount: 55, seed: 7 }, lightning: { on: true, amount: 30 } });
+    box('a').style.special = structuredClone(special);
+    box('a').style.paint = { on: true, marks: [{ kind: 'stroke', size: 6, pts: [[10, 10], [60, 30]], color: '#ff0000', opacity: 100, soft: 0 }] };
+    box('a').mask = { on: true, shapes: [{ kind: 'bubble', op: 'keep', inset: 2 }, { kind: 'poly', op: 'hide', pts: [[10, 10], [60, 10], [10, 60]] }] };
+    box('a').fade = { on: true, shapes: [{ kind: 'ellipse', cx: 40, cy: 40, rx: 20, ry: 20, strength: 70, soft: 30 }] };
+    const r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for me!'] });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const parts = r.result.ids.map(box);
+    expect(parts).toHaveLength(2);
+    for (const b of parts) {
+      expect(b.style.special).toEqual(special);
+      expect(b.style.paint).toEqual({ on: false, marks: [] });
+    }
+    // Not one object shared between the parts.
+    expect(parts[1].style.special).not.toBe(parts[0].style.special);
+    expect(parts[0].mask.shapes).toHaveLength(2);
+    expect(parts[1].mask.shapes.map((sh) => sh.kind)).toEqual(['bubble']);
+    expect(parts[1].fade).toMatchObject({ on: false, shapes: [] });
+  });
+
   it('refuses parts that are not the text, and a single bubble with nowhere to put the rest', async () => {
     load({ kind: 'ellipse', cx: 200, cy: 200, rx: 80, ry: 70 });
     let r = await call({ id: 'a', parts: ['Where are you going?', 'Wait for him!'] });
@@ -186,7 +266,10 @@ describe('two bubbles drawn overlapping', () => {
 
 describe('the pieces', () => {
   it('parts are the text\'s own words, capitals aside', () => {
-    expect(partsOf('Hey you. Come here!', ['HEY YOU.', 'come here!'])).toEqual(['Hey you.', 'Come here!']);
+    expect(partsOf('Hey you. Come here!', ['HEY YOU.', 'come here!'])).toEqual([
+      { text: 'Hey you.', start: 0, end: 8 },
+      { text: 'Come here!', start: 9, end: 19 },
+    ]);
     expect(partsOf('Hey you. Come here!', ['Hey you.', 'Go away!'])).toBeNull();
   });
 

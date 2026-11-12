@@ -16,15 +16,15 @@ use mt_text::paint::fx::blend::Blend;
 use mt_text::paint::fx::blending::Range;
 use mt_text::paint::fx::contour::{Curve, Lut, Table};
 use mt_text::paint::fx::effects::{
-    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Overlay, Paint,
-    Page, PaintOverlay, Position, Satin, Stroke, Technique,
+    Bevel, BevelStyle, BevelTechnique, BevelTexture, Effect, Glow, InnerShadow, Marks, Overlay,
+    Paint, PaintMark, Page, PaintOverlay, Position, Satin, Stroke, Technique,
 };
 use mt_text::paint::fx::gradient::{Gradient, Style};
 use mt_text::paint::fx::gradient_bake::Method;
 use mt_text::paint::fx::noise_gradient::{Model, Noise, Ramp};
 use mt_text::paint::{
-    decode_box, Affine, Align, Band, Clip, ClipMode, ClipShape, Fill, Pt, Rgba, Shadow, Tap,
-    BOX_WIRE_VERSION, MAX_PAGE,
+    decode_box, Affine, Align, Band, Clip, ClipMode, ClipPart, ClipShape, Fade, FadePart, Fill, Pt, Rgba, Shadow, Tap,
+    Wobble, BOX_WIRE_VERSION, MAX_PAGE,
 };
 
 const HEX: &str = include_str!("data/box_wire_distinct.hex");
@@ -115,7 +115,7 @@ fn preset(n: u32) -> Option<Lut> {
 #[test]
 fn every_field_of_the_box_comes_back_as_itself() {
     let r = decode_box(&bytes()).expect("the fixture decodes (a wire change needs a new one)");
-    assert_eq!(BOX_WIRE_VERSION, 18, "the fixture is of another wire version");
+    assert_eq!(BOX_WIRE_VERSION, 24, "the fixture is of another wire version");
     assert_eq!((r.width, r.height), (211, 137));
     assert_eq!(r.grain, (-1_234_567, 89_012));
     assert_eq!(
@@ -171,16 +171,49 @@ fn every_field_of_the_box_comes_back_as_itself() {
     );
     assert_eq!(
         r.clip,
+        // Each shape states its own op (v19): keep, then hide, then hide.
         Some(Clip {
-            mode: ClipMode::Exclude,
             origin: Pt::new(13.5, 17.25),
             shapes: vec![
-                ClipShape::Ellipse { centre: Pt::new(21.5, 22.5), rx: 5.5, ry: 6.5 },
-                ClipShape::Polygon(vec![Pt::new(1.5, 2.5), Pt::new(30.5, 3.5), Pt::new(4.5, 29.5)]),
-                ClipShape::Stroke { size: 3.5, pts: vec![Pt::new(7.5, 8.5), Pt::new(9.5, 12.5)] },
+                ClipPart {
+                    mode: ClipMode::Include,
+                    shape: ClipShape::Ellipse { centre: Pt::new(21.5, 22.5), rx: 5.5, ry: 6.5 },
+                },
+                ClipPart {
+                    mode: ClipMode::Exclude,
+                    shape: ClipShape::Polygon(vec![Pt::new(1.5, 2.5), Pt::new(30.5, 3.5), Pt::new(4.5, 29.5)]),
+                },
+                ClipPart {
+                    mode: ClipMode::Exclude,
+                    shape: ClipShape::Stroke { size: 3.5, pts: vec![Pt::new(7.5, 8.5), Pt::new(9.5, 12.5)] },
+                },
             ],
         })
     );
+    // The fade (v20): its corner, then each shape's strength, soft edge and
+    // numbers.
+    assert_eq!(
+        r.fade,
+        Some(Fade {
+            origin: Pt::new(11.5, 19.25),
+            shapes: vec![
+                FadePart {
+                    strength: 0.4375,
+                    soft: 2.75,
+                    shape: ClipShape::Ellipse { centre: Pt::new(23.5, 24.5), rx: 7.5, ry: 8.5 },
+                },
+                FadePart {
+                    strength: 0.8125,
+                    soft: 0.0,
+                    shape: ClipShape::Stroke { size: 4.5, pts: vec![Pt::new(5.5, 6.5), Pt::new(15.5, 16.5)] },
+                },
+            ],
+        })
+    );
+    // v23: how far they have moved against a held box.
+    assert_eq!(r.pin_shift, Pt::new(3.25, -1.75));
+    // v24: a frame of a live move.
+    assert!(r.pin_live);
     assert_eq!((r.blend, r.fill_opacity), (Blend::ColorBurn, 0.6875));
     assert!(r.blending.interior);
     // Transparency Shapes Layer off (v13): flag 2.
@@ -203,6 +236,16 @@ fn every_field_of_the_box_comes_back_as_itself() {
     assert!(!q.job.no_fill);
     assert_eq!(q.job.bands, vec![Band { color: rgb(0x112233), opacity: 0.6875, line: 3.5 }]);
     assert_eq!(q.job.fill, Some(Fill::Solid(rgb(0x778899))));
+    // One afterimage and one letter: one copy behind each letter.
+    assert_eq!(
+        q.job.effects.wobble,
+        Some(Wobble {
+            copies: 1,
+            ..Wobble::new(0.1875, 7.5, 4242)
+        })
+    );
+    // v22: the runs are one line's clusters.
+    assert!(q.job.effects.line);
     assert_eq!(q.job.runs.len(), 2);
     let (a, b) = (&q.job.runs[0], &q.job.runs[1]);
     assert_eq!((a.text.as_str(), a.x, a.y, a.rot), ("AB", 14.5, 21.5, 0.375));
@@ -316,6 +359,33 @@ fn every_field_of_every_effect_comes_back_as_itself() {
                 invert: true,
                 fill: Fill::Solid(rgb(0x13579b)),
             }),
+        }),
+        // v21: paint over the letters.
+        Effect::Paint(Marks {
+            origin: Pt::new(6.25, -8.75),
+            marks: vec![
+                PaintMark {
+                    shape: ClipShape::Stroke { size: 4.25, pts: vec![Pt::new(1.5, 2.5), Pt::new(3.5, 4.75)] },
+                    color: rgb(0xa1b2c3),
+                    opacity: 0.15625,
+                    soft: 2.75,
+                    erase: false,
+                },
+                PaintMark {
+                    shape: ClipShape::Polygon(vec![Pt::new(10.5, 11.5), Pt::new(12.5, 11.75), Pt::new(13.25, 14.5)]),
+                    color: rgb(0xc3d4e5),
+                    opacity: 0.96875,
+                    soft: 0.0,
+                    erase: true,
+                },
+                PaintMark {
+                    shape: ClipShape::Ellipse { centre: Pt::new(21.5, 22.25), rx: 5.75, ry: 3.125 },
+                    color: rgb(0xe5f6a7),
+                    opacity: 0.40625,
+                    soft: 0.625,
+                    erase: false,
+                },
+            ],
         }),
     ];
     assert_eq!(r.effects.len(), want.len());
