@@ -26,7 +26,7 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Webview};
 
 const API: &str = "https://api.anthropic.com";
 // What the panel calls: a message (streamed), a token count, and the model
@@ -46,7 +46,10 @@ pub struct AiApi {
   key: Mutex<Option<String>>,
   // True when the keychain refused and the key lives only in `key`.
   session_only: Mutex<bool>,
-  calls: Mutex<HashMap<u64, tauri::async_runtime::JoinHandle<()>>>,
+  // Keyed by window and that window's own request number: every window
+  // counts its requests from 1, so a number alone would let one window's
+  // Stop end another's request.
+  calls: Mutex<HashMap<(String, u64), tauri::async_runtime::JoinHandle<()>>>,
   client: OnceLock<reqwest::Client>,
 }
 
@@ -131,14 +134,19 @@ pub fn ai_key_set(app: AppHandle, api: State<'_, AiApi>, key: String) -> Result<
 }
 
 #[tauri::command]
-pub fn ai_key_clear(app: AppHandle, api: State<'_, AiApi>) -> Value {
+pub fn ai_key_clear(app: AppHandle, api: State<'_, AiApi>) -> Result<Value, String> {
   *api.key.lock().unwrap() = None;
   *api.session_only.lock().unwrap() = false;
   if let Ok(e) = entry(&app) {
-    // No entry is the state we want, so its error is not one.
-    let _ = e.delete_credential();
+    match e.delete_credential() {
+      // No entry is the state we want, so it is not an error.
+      Ok(()) | Err(keyring::Error::NoEntry) => {}
+      // Any other refusal (the user said no to the keychain) leaves the key
+      // there, and the user is told so rather than shown "removed".
+      Err(err) => return Err(format!("the keychain kept the key: {err}")),
+    }
   }
-  api.status(&app)
+  Ok(api.status(&app))
 }
 
 // The path the webview asked for, if it is one the panel may call: a path in
@@ -168,29 +176,40 @@ pub fn pass_headers(given: &[(String, String)]) -> Vec<(String, String)> {
 // taken, the cut tail waits in `carry` for the next chunk.
 pub fn take_text(carry: &mut Vec<u8>, bytes: &[u8]) -> Option<String> {
   carry.extend_from_slice(bytes);
-  let valid = match std::str::from_utf8(carry) {
-    Ok(s) => s.len(),
-    // A byte that can never decode is replaced, so one bad byte cannot hold
-    // the rest of the stream back.
-    Err(e) if e.error_len().is_some() => {
-      let s = String::from_utf8_lossy(carry).into_owned();
-      carry.clear();
-      return Some(s);
+  let mut out = String::new();
+  loop {
+    match std::str::from_utf8(carry) {
+      Ok(s) => {
+        out.push_str(s);
+        carry.clear();
+        break;
+      }
+      // A byte that can never decode is replaced, so one bad byte cannot hold
+      // the rest of the stream back; a letter cut at the end still waits.
+      Err(e) => {
+        let valid = e.valid_up_to();
+        out.push_str(std::str::from_utf8(&carry[..valid]).unwrap_or_default());
+        match e.error_len() {
+          Some(n) => {
+            out.push('\u{fffd}');
+            carry.drain(..valid + n);
+          }
+          None => {
+            carry.drain(..valid);
+            break;
+          }
+        }
+      }
     }
-    Err(e) => e.valid_up_to(),
-  };
-  if valid == 0 {
-    return None;
   }
-  let rest = carry.split_off(valid);
-  let text = String::from_utf8(std::mem::replace(carry, rest)).ok()?;
-  Some(text)
+  (!out.is_empty()).then_some(out)
 }
 
 #[tauri::command]
 pub fn ai_request(
   app: AppHandle,
   api: State<'_, AiApi>,
+  webview: Webview,
   id: u64,
   method: String,
   path: String,
@@ -209,6 +228,11 @@ pub fn ai_request(
   let headers = pass_headers(&headers);
 
   let handle = app.clone();
+  let slot = (webview.label().to_string(), id);
+  let done = slot.clone();
+  // Held while the task is spawned and filed: a task that ends at once waits
+  // here to take itself out, so it never leaves its entry behind.
+  let mut calls = api.calls.lock().unwrap();
   let task = tauri::async_runtime::spawn(async move {
     let mut req = client.request(method, format!("{API}{path}")).header("x-api-key", key);
     for (k, v) in &headers {
@@ -247,16 +271,21 @@ pub fn ai_request(
     if let Err(error) = sent {
       let _ = on_frame.send(Frame::Fail { error });
     }
-    handle.state::<AiApi>().calls.lock().unwrap().remove(&id);
+    handle.state::<AiApi>().calls.lock().unwrap().remove(&done);
   });
-  api.calls.lock().unwrap().insert(id, task);
+  // A request this window already had under this number (after a reload) is
+  // ended, not left to run on unreachable.
+  if let Some(old) = calls.insert(slot, task) {
+    old.abort();
+  }
   Ok(())
 }
 
-// Stop: the request is dropped where it is, mid-stream or not.
+// Stop: the request is dropped where it is, mid-stream or not. Only this
+// window's own request of that number.
 #[tauri::command]
-pub fn ai_abort(api: State<'_, AiApi>, id: u64) {
-  if let Some(task) = api.calls.lock().unwrap().remove(&id) {
+pub fn ai_abort(api: State<'_, AiApi>, webview: Webview, id: u64) {
+  if let Some(task) = api.calls.lock().unwrap().remove(&(webview.label().to_string(), id)) {
     task.abort();
   }
 }
@@ -304,6 +333,9 @@ mod tests {
     assert!(carry.is_empty());
     // A byte that can never decode does not hold the stream.
     assert_eq!(take_text(&mut carry, &[b'x', 0xff, b'y']).as_deref(), Some("x\u{fffd}y"));
+    // ...nor break a good letter cut at the end of the same chunk.
+    assert_eq!(take_text(&mut carry, &[0xff, 0xE3, 0x81]).as_deref(), Some("\u{fffd}"));
+    assert_eq!(take_text(&mut carry, &[0x82]).as_deref(), Some("\u{3042}"));
   }
 
   #[test]

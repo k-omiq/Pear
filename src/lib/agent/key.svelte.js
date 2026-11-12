@@ -33,6 +33,8 @@ export async function refreshKey() {
   try {
     take(await invoke('ai_key_status'));
   } catch (err) {
+    // Not stuck on "Checking…": no key we can use, and why.
+    aiKey.set = false;
     aiKey.error = String(err?.message ?? err);
   }
 }
@@ -57,8 +59,10 @@ export async function clearKey() {
   aiKey.error = null;
   try {
     take(await invoke('ai_key_clear'));
+    return true;
   } catch (err) {
     aiKey.error = String(err?.message ?? err);
+    return false;
   }
 }
 
