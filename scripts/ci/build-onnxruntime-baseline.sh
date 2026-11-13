@@ -76,7 +76,8 @@ for line in "args.push('-Donnxruntime_USE_AVX2=ON');" "compilerFlags.push('-marc
   grep -vF "$line" "$BUILD_TS" > "$BUILD_TS.new"
   mv "$BUILD_TS.new" "$BUILD_TS"
 done
-if grep -nE 'AVX2|x86-64-v' "$BUILD_TS"; then
+# MSVC's '/arch:AVX2' (the win32 case) stays: this lane builds Linux only.
+if grep -nE 'AVX2|x86-64-v' "$BUILD_TS" | grep -vF "'/arch:AVX2'"; then
   echo "$BUILD_TS still asks for AVX2 above" >&2
   exit 1
 fi
