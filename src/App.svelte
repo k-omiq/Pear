@@ -34,7 +34,7 @@
   import { brushTool, closeBrushManager } from './lib/brush-tool.svelte.js';
   import { pageRectPick } from './lib/page-rect-pick.svelte.js';
   import { initHistory, stepHere } from './lib/editor/history.svelte.js';
-  import { flushPanels, showPanel } from './lib/editor/panels.svelte.js';
+  import { flushPanels } from './lib/editor/panels.svelte.js';
   import { switchHistoryPage } from './lib/editor/history-file.svelte.js';
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
   import { isTauri } from './lib/importer.js';
@@ -391,17 +391,12 @@
   // (nothing selected, wrong chapter mode) and lets the key fall through to the
   // browser; anything else counts as handled and the default is prevented.
   const releaseShortcuts = registerShortcutHandlers({
-    // Modes. `setTool` refuses anything but the hand in a translate chapter, so
-    // there is nothing to guard here - but the press is still swallowed, because
+    // Modes. `setTool` refuses every tool but the hand in a translate chapter,
+    // so there is nothing to guard here - but the press is still swallowed, because
     // Cmd+1 falling through to the webview is not a better outcome than nothing.
     'tool.place': () => setTool('place'),
     'tool.text': () => setTool('text'),
     'tool.brush': () => setTool('brush'),
-    'tool.pan': () => setTool('pan'),
-    'tool.sfx': () => {
-      setTool('sfx');
-      if (app.tool === 'sfx') showPanel('sfx');
-    },
 
     'box.duplicate': () => {
       // Swallowed either way, so the browser's bookmark dialog never opens over

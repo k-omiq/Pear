@@ -11,8 +11,12 @@
 // panel reads this state and writes it; the shortcuts write it; nothing else
 // needs to know the panel exists.
 import { drawTool, clearDrawTool, DRAW_PANELS } from './box-draw-tool.svelte.js';
+import { sfxToolOn } from './prefs.svelte.js';
 
-export const INSPECTOR_TABS = ['text', 'fill', 'effects', 'layout'];
+// `sfx` is the box's sound effect (SfxPanel), a tab only while SFX is on in
+// Settings (`sfxToolOn`); `shownInspectorTabs` is the strip as drawn.
+export const INSPECTOR_TABS = ['text', 'fill', 'effects', 'layout', 'sfx'];
+export const shownInspectorTabs = () => INSPECTOR_TABS.filter((t) => t !== 'sfx' || sfxToolOn());
 
 // A draw tool is its panel's: once another tab or sub-tab is in front, the
 // tool is put down (`DRAW_PANELS`). Every change of tab comes through here.
@@ -24,7 +28,7 @@ function drawToolFollowsPanel() {
 export const inspectorTab = $state({ id: 'text' });
 
 export function setInspectorTab(id) {
-  if (!INSPECTOR_TABS.includes(id)) return false;
+  if (!shownInspectorTabs().includes(id)) return false;
   inspectorTab.id = id;
   drawToolFollowsPanel();
   return true;
@@ -33,10 +37,11 @@ export function setInspectorTab(id) {
 // +1 / -1, wrapping. Wrapping rather than stopping at the ends because four
 // tabs is a ring you flick through, not a list you scroll.
 export function cycleInspectorTab(step = 1) {
-  const i = INSPECTOR_TABS.indexOf(inspectorTab.id);
+  const tabs = shownInspectorTabs();
+  const i = tabs.indexOf(inspectorTab.id);
   const from = i === -1 ? 0 : i;
-  const n = INSPECTOR_TABS.length;
-  inspectorTab.id = INSPECTOR_TABS[(((from + step) % n) + n) % n];
+  const n = tabs.length;
+  inspectorTab.id = tabs[(((from + step) % n) + n) % n];
   drawToolFollowsPanel();
   return inspectorTab.id;
 }
@@ -50,7 +55,7 @@ export function cycleInspectorTab(step = 1) {
 // words: they must not be confused.
 // `liquify` sits beside `transform` because it edits the same mesh with a
 // round tool instead of handles.
-// SFX is not a sub-tab: it has its own window (SfxWindow.svelte).
+// SFX is not a sub-tab: it is a main tab of its own (`sfx` above).
 //
 // The sub-tabs come in four groups, a segment above them, so the panel shows
 // four words and then at most four more instead of a row of mystery icons.

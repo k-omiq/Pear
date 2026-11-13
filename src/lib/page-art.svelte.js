@@ -7,17 +7,19 @@
 //
 // The export draws `p.cleaned ?? p.raw` (`renderPageCanvas`); the editor shows
 // that too, except where a chapter's view says otherwise: a held raw peek
-// (`peekRaw`), and a translate chapter, which is read on its raw and shows the
-// cleaned page only when its typesetting tools are out and the pane's Cleaned
-// switch asks for it.
+// (`peekRaw`) or the peek view's Raw switch (`viewRaw`), and a translate
+// chapter, which is read on its raw and shows the cleaned page only when its
+// typesetting tools are out and the pane's Cleaned switch asks for it.
 
 /**
  * The page art shown for `pg` under the view `view` (the app state: its
- * `peekRaw`, `chapterMode`, `translateTypeset`, `viewCleaned`), or null.
+ * `peekRaw`, `viewRaw`, `chapterMode`, `translateTypeset`, `viewCleaned`), or null.
  */
 export function pageArtSrc(pg, view = {}) {
   if (!pg) return null;
-  if (view.peekRaw) return pg.raw ?? null;
+  // A page with no raw (a cleaned-only import) shows its cleaned page rather
+  // than nothing while the raw is asked for.
+  if (view.peekRaw || view.viewRaw) return pg.raw ?? pg.cleaned ?? null;
   if (view.chapterMode === 'translate') return view.translateTypeset && view.viewCleaned ? (pg.cleaned ?? pg.raw ?? null) : (pg.raw ?? null);
   return pg.cleaned ?? pg.raw ?? null;
 }

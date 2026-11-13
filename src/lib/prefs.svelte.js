@@ -14,7 +14,7 @@
 // which is what keeps that import-time apply safe: nothing here can run before
 // the module it is writing into has finished evaluating.
 import { setBoxDefaults, setLegacyTypeset, setFxDefaults, normalizeFxDefaults, fxStored } from './data.js';
-import { app, setTool, setBrushToolAllowed, setSfxToolAllowed, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
+import { app, setTool, setBrushToolAllowed, setHomeTool, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
 import { normalizeOcrModels } from './ocr-models.js';
 import { useTextEngine } from './engine-switch.svelte.js';
 import { setPaintWorkerAllowed } from './text-engine/paint-mirror.js';
@@ -57,9 +57,17 @@ const ENGINE_DEFAULT = import.meta.env?.VITE_MT_TEXT_ENGINE === 'browser' ? 'bro
 export const prefs = $state({
   // The brush drawing tool (work in progress). Off by default until ready.
   brushTool: false,
-  // The SFX tool on the rail and the SFX sub-tab of Effects (beta). On by
-  // default; turned off, both go, and boxes that have SFX keep it.
+  // The SFX tab of the Text box options (beta). On by default; turned off,
+  // the tab goes, and boxes that have SFX keep it. The key keeps its old
+  // name (it was the SFX tool's), so a stored choice still reads.
   sfxTool: true,
+  // The plain mouse wheel zooms at the pointer in a paged chapter. Off, it
+  // scrolls, and Ctrl/Cmd + wheel zooms (always, in either case).
+  wheelZoom: true,
+  // How the raw page is seen while typesetting: 'side', the reference column
+  // beside the page; 'peek', no column, and the page itself swaps to the raw
+  // from a button or a held key, the way a translate chapter does.
+  rawView: 'side',
   // Place and Text tools can start from defaults instead of the last box's style.
   inheritBoxStyle: true,
   // ---- typesetting defaults for NEW text boxes ----
@@ -169,19 +177,18 @@ export function isComics() { return prefs.usage !== 'general'; }
 // is always typeset there whatever the stored pref says.
 export function startMode() { return isComics() ? prefs.defaultChapterMode : 'typeset'; }
 
-// The SFX tool is a comic tool: general use treats it as off without
-// changing the stored switch, so switching back to comics brings it back.
+// SFX is a comic tool: general use treats it as off without changing the
+// stored switch, so switching back to comics brings it back.
 export function sfxToolOn() { return prefs.sfxTool && isComics(); }
 
 // What the usage changes outside this module, applied at load and on every
-// change of usage or of the SFX switch. Only what is shown and which tool is
+// change of usage. Only what is shown and which tool is
 // in hand: no chapter, box or setting is touched. General use starts on the
 // Text tool, since the Place tool places detected lines it does not have.
 // That switch is made only when the usage itself is new (`usageNew`), so a
 // general user who picks the Place tool keeps it when some other pref changes.
 function applyUsage(usageNew) {
-  setSfxToolAllowed(sfxToolOn());
-  if (app.tool === 'sfx' && !sfxToolOn()) setTool(isComics() ? 'place' : 'text');
+  setHomeTool(isComics() ? 'place' : 'text');
   if (usageNew && !isComics() && app.tool === 'place') setTool('text');
 }
 
@@ -192,10 +199,11 @@ const cleanNames = (v) =>
 
 // The box defaults, split by what a value of theirs may be. Named once so the
 // setter's validation and the loader's validation cannot drift apart.
-const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector', 'paintWorker', 'onboarded'];
+const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'wheelZoom', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector', 'paintWorker', 'onboarded'];
 const NUM_KEYS = { defaultMinOrphan: [1, 8], minFontSize: [4, 48] };
 const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'], textEdges: ['smooth', 'crisp'],
   usage: ['comics', 'general'],
+  rawView: ['side', 'peek'],
   defaultChapterMode: ['typeset', 'translate'],
   defaultOcrLanguage: ['ja', 'zh', 'ko'],
 };
@@ -245,6 +253,8 @@ function persist() {
         minFontSize: prefs.minFontSize,
         brushTool: prefs.brushTool,
         sfxTool: prefs.sfxTool,
+        wheelZoom: prefs.wheelZoom,
+        rawView: prefs.rawView,
         inheritBoxStyle: prefs.inheritBoxStyle,
         shortcuts: $state.snapshot(prefs.shortcuts),
         hiddenBuiltinFonts: $state.snapshot(prefs.hiddenBuiltinFonts),
@@ -298,16 +308,17 @@ export function setPref(key, value) {
   prefs[key] = value;
   // Applying is part of setting. Nothing else in the app watches `prefs`, so a
   // caller that only wrote the field would leave the engine on the old answer.
-  // Turning the brush tool off falls back to pan so brush mode disarms cleanly.
+  // Turning the brush tool off falls back to the start tool so brush mode
+  // disarms cleanly.
   if (key === 'brushTool') {
     setBrushToolAllowed(!!value);
     if (!value && app.tool === 'brush') {
-      setTool('pan');
+      setTool(isComics() ? 'place' : 'text');
     }
   }
-  // The same for the SFX tool and the usage (`applyUsage`): a drag with a
-  // tool that is gone must not still draw a sound.
-  if (key === 'sfxTool' || key === 'usage') applyUsage(key === 'usage');
+  if (key === 'usage') applyUsage(true);
+  // The raw is seen one way at a time: leaving the peek puts the page back.
+  if (key === 'rawView' && value !== 'peek') app.viewRaw = false;
   // Mirrored into the store the way the box defaults are mirrored into data.js.
   // No relayout: it bounds what the next fit may do, and moves nothing already
   // on the page.

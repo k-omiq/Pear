@@ -952,9 +952,7 @@ describe('the tool enum', () => {
 
   it('takes each tool the canvas answers to', () => {
     setPref('brushTool', true);
-    // The SFX tool also wants the Rust engine, which this lane has not got:
-    // SfxTool.dom.test.js takes it with the engine in.
-    for (const t of TOOLS.filter((x) => x !== 'sfx')) {
+    for (const t of TOOLS) {
       setTool(t);
       expect(app.tool).toBe(t);
     }
@@ -978,12 +976,12 @@ describe('the tool enum', () => {
     expect(app.tool).toBe('text');
   });
 
-  it('falls back to pan when the brushTool preference is switched off while armed', () => {
+  it('falls back to the start tool when the brushTool preference is switched off while armed', () => {
     setPref('brushTool', true);
     setTool('brush');
     expect(app.tool).toBe('brush');
     setPref('brushTool', false);
-    expect(app.tool).toBe('pan');
+    expect(app.tool).toBe('place');
   });
 });
 

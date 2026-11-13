@@ -50,7 +50,7 @@ import { typingSel, selectedRange, askPending, askFacePick, lineSel } from './ty
 import { faceAt } from './runs.js';
 import { sidecarReady, detectCurrentPage, detectAllPages } from './sidecar.js';
 import { SHORTCUTS, keyLabel, hasShortcutHandler, matchesWords, runShortcut, actionOff } from './shortcuts.svelte.js';
-import { sfxToolOn, isComics } from './prefs.svelte.js';
+import { isComics, prefs } from './prefs.svelte.js';
 import { clipToBubble, toggleFade } from './box-mask-actions.js';
 import { jobs } from './jobs.svelte.js';
 import { startPatternPick, canPickPattern } from './pattern-pick.svelte.js';
@@ -152,8 +152,16 @@ function togglePanel(id) {
   else setHidden(id, true);
 }
 
-// The rail's caret: the same flag and the same save.
+// The rail's caret: the same flag and the same save. In the peek view there
+// is no column, and the page itself swaps to its raw (the rail's Raw button).
 function toggleRaw() {
+  // A translate chapter has its own raw/cleaned switch (the pane's Cleaned),
+  // and no column to show either.
+  if (isTranslateChapter()) return false;
+  if (prefs.rawView === 'peek') {
+    app.viewRaw = !app.viewRaw;
+    return;
+  }
   app.sidebarHidden = !app.sidebarHidden;
   saveSidebar();
 }
@@ -228,7 +236,6 @@ const RUNS = {
   'view.raw': { when: typeset, run: toggleRaw },
   'panel.options': { when: typeset, run: () => togglePanel('options') },
   'panel.queue': { when: typeset, run: () => togglePanel('queue') },
-  'panel.sfx': { when: () => typeset() && sfxToolOn(), run: () => togglePanel('sfx') },
   'panel.ai': { when: typeset, run: () => togglePanel('ai') },
 
   'detect.page': { when: canDetect, run: () => detectCurrentPage() },

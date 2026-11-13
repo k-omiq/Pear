@@ -186,14 +186,15 @@ describe('the live state', () => {
   });
 
   it('has an id list the UI can iterate', () => {
-    expect(PANEL_IDS).toEqual(['options', 'sfx', 'queue', 'ai']);
+    expect(PANEL_IDS).toEqual(['options', 'queue', 'ai']);
   });
 
-  it('opens the SFX window hidden, and a layout saved before it existed gets it', () => {
-    expect(defaultGeometry(1440).sfx.hidden).toBe(true);
-    const old = JSON.stringify({ options: defaultGeometry(1440).options, queue: defaultGeometry(1440).queue });
+  it('opens the AI panel hidden, and a layout saved before it existed gets it; a saved SFX window is dropped', () => {
+    expect(defaultGeometry(1440).ai.hidden).toBe(true);
+    const old = JSON.stringify({ options: defaultGeometry(1440).options, queue: defaultGeometry(1440).queue, sfx: { x: 1, y: 1, w: 300, h: 300, hidden: false, z: 3 } });
     const out = sanitize(old, 1440, 900);
-    expect(out.sfx.hidden).toBe(true);
+    expect(out.ai.hidden).toBe(true);
+    expect(out.sfx).toBe(undefined);
     expect(out.options).toEqual(clampPanel(defaultGeometry(1440).options, 1440, 900));
   });
 });

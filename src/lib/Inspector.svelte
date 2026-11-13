@@ -34,6 +34,7 @@
 
   import { editBurst } from './edit-burst.js';
   import FontPicker from './FontPicker.svelte';
+  import SfxPanel from './SfxPanel.svelte';
   import { sizingOf, sizeSetting, setSizeSetting, steppedSize, SIZE_MIN, SIZE_MAX, foldPatternFill } from './data.js';
   import { loadedPatterns, loadPatternLibrary, importPatterns, removePatternSet, useLoadedPattern } from './pattern-library.svelte.js';
   import { isTauri, pickFilesTauri } from './importer.js';
@@ -125,6 +126,7 @@
   // inspector-tabs.svelte.js. The panel is one of two writers, not the owner.
   import {
     inspectorTab,
+    shownInspectorTabs,
     setInspectorTab,
     effectsSubTab,
     setEffectsSubTab,
@@ -155,22 +157,32 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { typingSel, setTypingSel, clearTypingSel, selectedRange, faceAsk, takeFaceAsk, askPending, keepsEdit, endEditIfAway } from './typing-selection.svelte.js';
 
+  // `onSettings` opens Settings, for the SFX tab's note when the engine it
+  // needs is not the one running.
+  let { onSettings = null } = $props();
+
   const box = $derived(app.selectedId ? byId(app.selectedId) : null);
   // A locked box shows its settings and takes no change to them.
   const locked = $derived(boxLocked(box));
   // The tag this box's style answers to (LET-1), for the Tag style section.
   const tagName = $derived(box ? boxTagName(box.id) : null);
 
-  // Four tabs across the top, one job each. What used to be five stacked
-  // accordions in one scroll is now four panels the height of the panel: the
-  // controls did not change, only how many of them are in front of you at once.
-  const TABS = [
+  // Tabs across the top, one job each. What used to be five stacked
+  // accordions in one scroll is now a panel the height of the panel per job:
+  // the controls did not change, only how many of them are in front of you at
+  // once. SFX is the fifth while it is on in Settings: the box's sound type,
+  // the letters' layout and the sound's own effects (SfxPanel), here with the
+  // rest of the box rather than in a window and a tool of their own.
+  const ALL_TABS = [
     ['text', 'Text'],
     ['fill', 'Fill'],
     ['effects', 'Effects'],
     ['layout', 'Layout'],
+    ['sfx', 'SFX'],
   ];
-  const tab = $derived(inspectorTab.id);
+  const TABS = $derived(ALL_TABS.filter(([id]) => shownInspectorTabs().includes(id)));
+  // A tab that is not on the strip (SFX switched off) shows the first one.
+  const tab = $derived(shownInspectorTabs().includes(inspectorTab.id) ? inspectorTab.id : 'text');
   const setTab = setInspectorTab;
 
   // WAI-ARIA tabs: roving tabindex, Left/Right move and activate, Home/End
@@ -193,8 +205,8 @@
   }
 
   // The Effects tab is a group segment over the group's own sub-tabs, both
-  // in words (inspector-tabs.svelte.js has the list). SFX is not here: it has
-  // its own window (SfxWindow.svelte).
+  // in words (inspector-tabs.svelte.js has the list). SFX is not here: it is
+  // a main tab of its own.
   const effectsTab = $derived(effectsSubTab.id);
   const effectsGroup = $derived(effectsGroupOf(effectsSubTab.id));
   const groupTabs = $derived(effectsTabsIn(effectsGroup));
@@ -3211,6 +3223,13 @@
       </div>
     {/if}
 
+    <!-- ===== SFX ===== -->
+    {#if tab === 'sfx'}
+      <div class="insp-pane" role="tabpanel" id="insp-pane-sfx" aria-labelledby="insp-tab-sfx">
+        <SfxPanel {box} pg={page()} {touch} arm={armSnap} {onSettings} />
+      </div>
+    {/if}
+
     <!-- ===== Layout ===== -->
     {#if tab === 'layout'}
       <div class="insp-pane" role="tabpanel" id="insp-pane-layout" aria-labelledby="insp-tab-layout">
@@ -3505,7 +3524,8 @@
     top: -12px;
     z-index: 2;
     display: grid;
-    grid-template-columns: repeat(4, minmax(52px, 1fr));
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(44px, 1fr);
     gap: 4px;
     margin: -12px -12px 2px;
     padding: 12px 12px 8px;

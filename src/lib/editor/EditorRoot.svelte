@@ -19,9 +19,8 @@
   import Pager from './Pager.svelte';
   import FloatingPanel from './FloatingPanel.svelte';
   import Inspector from '../Inspector.svelte';
-  import SfxWindow from '../SfxWindow.svelte';
   import AiPanel from './AiPanel.svelte';
-  import { sfxToolOn, isComics } from '../prefs.svelte.js';
+  import { isComics, prefs } from '../prefs.svelte.js';
   import Queue from '../Queue.svelte';
   import BulkStylePanel from '../BulkStylePanel.svelte';
   import BoxMenu from './BoxMenu.svelte';
@@ -63,8 +62,11 @@
 
   // The reference sidebar is redundant when the canvas itself is showing the
   // raw, so it goes with the rest - and the canvas takes back the width it was
-  // inset by, rather than leaving a column of nothing down the left.
-  const canvasLeft = $derived((split || app.sidebarHidden ? 0 : app.leftWidth) + RAIL_W);
+  // inset by, rather than leaving a column of nothing down the left. The peek
+  // view (Settings > Editor > Raw page) has no column at all: the page swaps
+  // to its raw in place instead (the rail's Raw button).
+  const sideShown = $derived(!split && !app.sidebarHidden && prefs.rawView !== 'peek');
+  const canvasLeft = $derived((sideShown ? app.leftWidth : 0) + RAIL_W);
 
   // One pass over the boxes, then a lookup per line - see `pageProgress`, which
   // is also what the project pill's whole-chapter figure is built from.
@@ -178,7 +180,7 @@
     {#if !translate}<BulkStylePanel />{/if}
   </div>
 
-  {#if !split && !app.sidebarHidden}<RefSidebar />{/if}
+  {#if sideShown}<RefSidebar />{/if}
   <RailTools />
 
   <ChromePills {onFontLib} {onSettings} />
@@ -204,13 +206,8 @@
     <!-- The title follows the body: the panel says what it is showing, and while
          the brush is armed it is not showing a text box's options. -->
     <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'} rightInset={canvasRight}>
-      <Inspector />
+      <Inspector {onSettings} />
     </FloatingPanel>
-    {#if sfxToolOn()}
-      <FloatingPanel id="sfx" title="SFX" rightInset={canvasRight}>
-        <SfxWindow {onSettings} />
-      </FloatingPanel>
-    {/if}
     <FloatingPanel id="ai" title="AI" rightInset={canvasRight}>
       <AiPanel />
     </FloatingPanel>

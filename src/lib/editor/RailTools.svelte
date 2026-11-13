@@ -19,32 +19,32 @@
     sidebarMaxWidth,
     isTranslateMode,
     isTranslateChapter,
+    page,
   } from '../store.svelte.js';
-  import { prefs, sfxToolOn } from '../prefs.svelte.js';
+  import { prefs } from '../prefs.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
-  import { sfxAvailable } from '../sfx.js';
-  import { engineSwitch } from '../engine-switch.svelte.js';
   import { panels, showPanel } from './panels.svelte.js';
+  import { keyLabel } from '../shortcuts.svelte.js';
   import { aiKey, refreshKey } from '../agent/key.svelte.js';
   // Whether a key is set decides the AI tab; asked once.
   if (aiKey.set == null) refreshKey();
 
   // A translate chapter has no reference sidebar - the canvas is already showing
-  // the raw - so the rail keeps only the hand, and the caret that would offer to
-  // bring a sidebar back goes with it. `noSide` rather than `app.sidebarHidden`
-  // everywhere the geometry is concerned: there is nothing to the left of the
-  // rail in either case, so it sits at 0 and the resize is inert.
+  // the raw - so the rail has no tools at all, and the caret that would offer
+  // to bring a sidebar back goes with it. `noSide` rather than
+  // `app.sidebarHidden` everywhere the geometry is concerned: there is nothing
+  // to the left of the rail in either case, so it sits at 0 and the resize is
+  // inert.
   const translate = $derived(isTranslateMode());
   // A translate chapter never has it, typesetting tools shown or not: the
-  // page swaps between raw and cleaned in place instead (TranslatePane).
-  const noSide = $derived(isTranslateChapter() || app.sidebarHidden);
-
-  // The SFX tool draws with the Rust engine. The engine is module state, so
-  // what stands for "it changed" is read here (as the SFX panel does).
-  const sfxReady = $derived.by(() => {
-    engineSwitch.phase;
-    return sfxAvailable();
-  });
+  // page swaps between raw and cleaned in place instead (TranslatePane). Nor
+  // does the peek view (Settings > Editor > Raw page): there the Raw button
+  // below swaps the page to its raw in place, the same way.
+  const peekView = $derived(prefs.rawView === 'peek');
+  const noSide = $derived(isTranslateChapter() || app.sidebarHidden || peekView);
+  const hasRaw = $derived(!!page()?.raw);
+  // The key, if the user gave "Show or hide raw page" one, for the tip.
+  const rawKey = $derived(keyLabel('view.raw'));
 
   // The ceiling moves with the window - see `sidebarMaxWidth`. Tracked here so
   // the separator's `aria-valuemax` is the width the drag would actually stop
@@ -141,12 +141,6 @@
       !translate && panels.ai.hidden && aiKey.set && { id: 'ai', title: 'AI panel' },
     ].filter(Boolean),
   );
-  // The SFX tool and its window are one button: picking the tool brings the
-  // window back, so a sound can be drawn and tuned from the same place.
-  function pickSfx() {
-    setTool('sfx');
-    if (app.tool === 'sfx') showPanel('sfx');
-  }
 </script>
 
 <svelte:window onresize={() => (viewportW = window.innerWidth)} />
@@ -184,12 +178,30 @@
   ></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="ed-rail-stack" onpointerdown={keepClick}>
+  <!-- No tools at all in a translate chapter: its page is there to be read,
+     and a drag on it moves it. The caret is not merely redundant there -
+     pressing it would advertise a sidebar showing the same raw the canvas
+     already is. -->
+  {#if !translate}
   <div class="ed-rail-tools">
-    <!-- All three go together in a translate chapter, and what is left is one
-         button: the hand. The caret is not merely redundant there - pressing it
-         would advertise a sidebar showing the same raw the canvas already is. -->
-    {#if !translate}
-      {#if !isTranslateChapter()}
+      {#if !isTranslateChapter() && peekView}
+      <!-- The peek view's one way to the raw that stays: the page itself
+           swaps (`app.viewRaw`), and holding \ peeks for as long as it is
+           held. -->
+      <button
+        class:on={app.viewRaw}
+        aria-pressed={app.viewRaw}
+        onclick={() => (app.viewRaw = !app.viewRaw)}
+        disabled={!hasRaw && !app.viewRaw}
+        aria-label={app.viewRaw ? 'Show the cleaned page' : 'Show the raw page'}
+        data-tip={!hasRaw && !app.viewRaw
+          ? 'No raw for this page'
+          : `${app.viewRaw ? 'Showing the raw - press to go back' : 'Show the raw page'}${rawKey ? ` (${rawKey})` : ''} · hold \\ to peek`}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+      </button>
+      <span class="sep"></span>
+      {:else if !isTranslateChapter()}
       <button
         class="caret"
         onclick={toggleSidebar}
@@ -212,9 +224,9 @@
       </button>
       <!-- The Text tool keeps its incidental pan: past 4px of travel the press
            becomes a scroll and adds nothing, and a box takes a double click, so
-           neither a slipped press nor a lone click leaves a stray empty box. The hand below is the tool
-           for moving around deliberately - with it, no press can ever add a box -
-           and it is what the double-click-for-bulk shortcut vacated. -->
+           neither a slipped press nor a lone click leaves a stray empty box.
+           Moving around on purpose is the held hand, with any tool: Space +
+           drag, or the middle button (Canvas.svelte). -->
       <button
         class:on={app.tool === 'text'}
         onclick={() => setTool('text')}
@@ -223,24 +235,11 @@
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7V5h16v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>
       </button>
-      {#if sfxToolOn()}
-        <!-- Press, drag, let go: a sound effect along the drag. Off (not gone)
-             under the browser engine, which has no SFX layout. -->
-        <button
-          class:on={app.tool === 'sfx'}
-          onclick={pickSfx}
-          disabled={!sfxReady}
-          aria-label="SFX tool"
-          data-tip={sfxReady ? 'SFX tool - drag to draw a sound, and its window' : 'SFX tool - needs the Rust text engine'}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17c4-1 6-6 9-9" /><path d="M13 8l-1 4 4-1" /><path d="M16 4l1-2" /><path d="M19 7l2-1" /><path d="M18 11h3" /></svg>
-        </button>
-      {/if}
       {#if prefs.brushTool}
         <!-- The brush is a pointer mode, not an effect: arming it changes what a
-             press on the page does, the way the hand tool does. Every other ink
-             setting lives under the Inspector's Effects tab; this one does not,
-             because it is a way of pointing. -->
+             press on the page does. Every other ink setting lives under the
+             Inspector's Effects tab; this one does not, because it is a way of
+             pointing. -->
         <button
           class:on={app.tool === 'brush'}
           onclick={() => setTool('brush')}
@@ -250,16 +249,8 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20c0-3 1.5-4 3-4s2.5 1 2.5 2.5S8.5 21 7 21c-1.7 0-3-.4-3-1z" /><path d="M9.5 17.5 19.4 6.2a2 2 0 0 0-2.9-2.7L5.6 13.8" /></svg>
         </button>
       {/if}
-    {/if}
-    <button
-      class:on={app.tool === 'pan'}
-      onclick={() => setTool('pan')}
-      aria-label="Hand tool"
-      data-tip="Hand tool - drag to move around the page"
-    >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0" /><path d="M14 10V4a2 2 0 0 0-4 0v2" /><path d="M10 10.5V6a2 2 0 0 0-4 0v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" /></svg>
-    </button>
   </div>
+  {/if}
   {#if docked.length}
     <div class="ed-rail-dock">
       {#each docked as d (d.id)}

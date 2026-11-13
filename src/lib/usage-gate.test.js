@@ -74,18 +74,14 @@ describe('the comic tools under general use', () => {
     resetCombo('detect.page');
   });
 
-  it('treat the SFX tool as off without changing its switch', () => {
+  it('treat SFX as off without changing its switch', () => {
     setPref('sfxTool', true);
-    setTool('sfx');
     expect(sfxToolOn()).toBe(true);
     setPref('usage', 'general');
     expect(sfxToolOn()).toBe(false);
-    expect(actionOff('tool.sfx')).toBe(true);
-    expect(app.tool).toBe('text');
     expect(prefs.sfxTool).toBe(true);
     setPref('usage', 'comics');
     expect(sfxToolOn()).toBe(true);
-    expect(actionOff('tool.sfx')).toBe(false);
   });
 });
 

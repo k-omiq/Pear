@@ -10,9 +10,10 @@
     page,
     placeActiveAt,
     addEmptyBox,
-    addSfxBox,
     setPageDims,
     setPageDimsForSrc,
+    pageForSrc,
+    hasPageSpace,
     deselect,
     lineByN,
     applyFit,
@@ -24,7 +25,7 @@
     gotoPage,
     toast,
   } from '../store.svelte.js';
-  import { rememberPagePixels, notePageImage } from '../page-pixels.js';
+  import { rememberPagePixels, notePageImage, pageRasterSrc } from '../page-pixels.js';
   import { pageArtSrc } from '../page-art.svelte.js';
   import { wasPageImage, RESIDENT_RADIUS } from '../page-images.js';
   import {
@@ -45,22 +46,64 @@
   } from './strip.js';
   import { publishStripScroll, stripReveal } from './strip-sync.svelte.js';
   import { pageRectPick } from '../page-rect-pick.svelte.js';
-  import { showPanel, setHidden } from './panels.svelte.js';
-  import { sfxAsk } from '../sfx-live.svelte.js';
   import { releaseLeavingImages } from '../release-image.js';
+  import { prefs } from '../prefs.svelte.js';
 
   // Handle for dock Fit button.
   let { onReady } = $props();
 
-  // The SFX window belongs to the SFX tool: picking the tool brings it
-  // (RailTools.svelte, the tool's shortcut), and leaving the tool for any
-  // other, by any door, puts it away.
-  let toolWas = app.tool;
-  $effect(() => {
-    const t = app.tool;
-    if (toolWas === 'sfx' && t !== 'sfx') setHidden('sfx', true);
-    toolWas = t;
-  });
+  // ---------- the hand, held ----------
+  // There is no hand tool to pick in a typeset chapter. Holding Space turns
+  // any tool into the hand until it is let go, and the middle button drags
+  // the page whatever is held: the image-editor way. While either is on, the
+  // boxes are deaf (`.boxlayer.pan`), so a press anywhere on the stage moves
+  // the page and never a box.
+  let spaceHeld = $state(false);
+  // A hand drag in progress (Space or the middle button): the closed hand.
+  let handDrag = $state(false);
+  const handOn = $derived(spaceHeld || handDrag || app.tool === 'pan');
+
+  // Where a key is typing rather than commanding: Space there is a space.
+  const typingAt = (t) =>
+    t instanceof Element &&
+    !!t.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
+  const isSpace = (e) => e.code === 'Space' || e.key === ' ';
+  // A control the keyboard is working: Space is its key (a button presses, a
+  // picker opens), so it keeps it. Reached by the keyboard is `:focus-visible`;
+  // a button that only kept the focus of a mouse click (the tool just picked)
+  // is not, and Space there is the hand. Inside an open menu, list or dialog
+  // it is always the menu's.
+  const CONTROL =
+    'button, a[href], summary, [role="button"], [role="tab"], [role="switch"], [role="checkbox"], [role="radio"], [role="option"], [role="menuitem"], [role="slider"], [role="separator"], [tabindex]';
+  const keyboardOwns = (t) =>
+    t instanceof Element &&
+    (!!t.closest('[role="menu"], [role="listbox"], [role="dialog"], [role="menubar"]') ||
+      (t.matches(CONTROL) && t.matches(':focus-visible')));
+  function onSpaceDown(e) {
+    if (!isSpace(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (typingAt(e.target) || app.editingId || keyboardOwns(e.target)) return;
+    // A modal or a full-window screen over the editor keeps its own keys.
+    if (document.querySelector('.modal-overlay.open, .settings-screen, .onboarding-screen')) return;
+    // Taken here, in the capture phase, so neither a mouse-focused button
+    // (Space clicks it) nor a shortcut bound to Space also answers.
+    e.preventDefault();
+    e.stopPropagation();
+    if (!spaceHeld) spaceHeld = true;
+  }
+  function onSpaceUp(e) {
+    // macOS sends no key-up for a key let go while Cmd is down, so Cmd's own
+    // key-up lets go of the hand too. Still held, the key's repeats take it
+    // back at once.
+    if (e.key === 'Meta' && spaceHeld) {
+      spaceHeld = false;
+      return;
+    }
+    if (!isSpace(e) || !spaceHeld) return;
+    spaceHeld = false;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  const dropSpace = () => (spaceHeld = false);
 
   let scrollEl;
   let stageEl;
@@ -563,12 +606,24 @@
     pageRectPick.finish(a.pg, a.x, a.y, bx, by);
   }
 
+  // The held hand, ahead of everything on the stage: capture phase, so a box,
+  // a gizmo or a handle under the press never sees it. Space + the primary
+  // button, or the middle button on its own.
+  function onStagePointerDownCapture(e) {
+    if (!(e.button === 1 || (e.button === 0 && spaceHeld))) return;
+    // The middle button's own default is autoscroll (Windows) or a paste
+    // (Linux); neither is wanted over the page.
+    e.preventDefault();
+    e.stopPropagation();
+    startPanPointer(e, false, true);
+  }
+
   function onStagePointerDown(e) {
     // The primary button and nothing else. A right-click is on its way to a
-    // context menu and a middle one is a paste on some platforms; neither is a
-    // request to drag the page around or to leave a box where it landed.
+    // context menu, and the middle one is the held hand above.
     if (e.button !== 0) return;
     if (app.bulk.active) return; // bulk mode: only box clicks matter
+    // The hand in a translate chapter, which has nothing on its page to press.
     if (app.tool === 'pan') {
       // The one thing on the stage the hand does not take: a box being typed
       // into. `.boxlayer.pan` already makes every other box deaf, so this is
@@ -594,69 +649,12 @@
     }
     const hit = frameCoords(e);
     if (!hit) return;
-    if (app.tool === 'sfx') {
-      startSfxDrag(e, hit);
-      return;
-    }
     const pg = hit.pg;
     // The page under the pointer decides, not the current one, and it is handed
     // on so the box lands where the click did. `placeActiveAt` moves the index
     // onto it - see `focusPage`.
     if (pg.activeLineN != null && lineByN(pg, pg.activeLineN)) placeActiveAt(hit.x, hit.y, pg);
     else deselect();
-  }
-
-  // ---------- the SFX tool ----------
-  // Press, drag, let go: the drag is the path the sound's first line runs
-  // along (`addSfxBox`), drawn as a line while it is being made. A press that
-  // never travelled is a click, and a click only drops the selection, as it
-  // does on the empty page with the Place tool: a sound needs a direction.
-  // The drag is in the first page's px from where it started, as a pattern
-  // pick's corners are, so one that crosses a seam on a strip stays on its
-  // page. Escape drops it.
-  const SFX_MIN_PX = 6;
-  let sfxDrag = $state(null);
-  function startSfxDrag(e, hit) {
-    e.preventDefault();
-    const pid = e.pointerId;
-    e.target.setPointerCapture?.(pid);
-    sfxDrag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
-    const ac = new AbortController();
-    const end = () => {
-      ac.abort();
-      sfxDrag = null;
-    };
-    const move = (ev) => {
-      if (ev.pointerId !== pid || !sfxDrag) return;
-      sfxDrag.x1 = ev.clientX;
-      sfxDrag.y1 = ev.clientY;
-    };
-    const up = (ev) => {
-      if (ev.pointerId !== pid) return;
-      const dx = ev.clientX - e.clientX;
-      const dy = ev.clientY - e.clientY;
-      end();
-      if (Math.hypot(dx, dy) < SFX_MIN_PX) {
-        deselect();
-        return;
-      }
-      const id = addSfxBox({ x: hit.x, y: hit.y }, { x: hit.x + dx / app.zoom, y: hit.y + dy / app.zoom }, hit.pg);
-      if (id == null) return;
-      // Straight to the controls the new sound is tuned with: its window,
-      // its Sound field taking the typing, so the stock sound is replaced.
-      showPanel('sfx');
-      sfxAsk.typeFor = id;
-    };
-    const key = (ev) => {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      end();
-    };
-    document.addEventListener('pointermove', move, { signal: ac.signal });
-    document.addEventListener('pointerup', up, { signal: ac.signal });
-    document.addEventListener('pointercancel', (ev) => ev.pointerId === pid && end(), { signal: ac.signal });
-    document.addEventListener('keydown', key, { signal: ac.signal, capture: true });
   }
 
   // The Text tool adds a box on the SECOND of two clicks, not the first: one
@@ -703,7 +701,7 @@
   // `addsBox` is read once, here, rather than at the end of the gesture: the
   // press is what decided what this drag is, and a tool switched by a keyboard
   // shortcut mid-drag must not change the answer under it.
-  function startPanPointer(e, addsBox) {
+  function startPanPointer(e, addsBox, hand = false) {
     const pid = e.pointerId;
     // The gesture follows the pointer even once it leaves the window: without
     // the capture, a button released outside gets no pointerup here at all and
@@ -711,8 +709,17 @@
     // landed on rather than on `.stage`, because a captured pointer's events are
     // retargeted at the capture element - and the release below resolves which
     // page a new box goes on from `ev.target`. The listeners stay on `document`:
-    // a captured pointer's events still bubble to it.
-    e.target.setPointerCapture?.(pid);
+    // a captured pointer's events still bubble to it. A held hand adds no box,
+    // and its press may have landed on a box, which must not be sent the rest
+    // of a drag it never saw start - so it is the stage that takes it.
+    // A pointer the browser no longer counts as down cannot be captured; the
+    // drag still runs on the document listeners below.
+    try {
+      (hand ? stageEl : e.target).setPointerCapture?.(pid);
+    } catch {
+      /* not capturable */
+    }
+    if (hand) handDrag = true;
     const startX = e.clientX,
       startY = e.clientY;
     const sl = scrollEl.scrollLeft,
@@ -733,7 +740,9 @@
       if (ev.pointerId !== pid) return;
       const dx = ev.clientX - startX,
         dy = ev.clientY - startY;
-      if (!panning && Math.hypot(dx, dy) > 4) panning = true;
+      // A held hand moves from the first pixel; only a press that might still
+      // be a click waits to see it travel.
+      if (!panning && (hand || Math.hypot(dx, dy) > 4)) panning = true;
       if (!panning) return;
       setLive(true);
       // Scroll takes what it can hold; the rest becomes the free offset. Both
@@ -765,6 +774,7 @@
       live.delete(ac);
       ac.abort();
       setLive(false);
+      if (hand) handDrag = false;
       // A press that panned or was taken away is not half of a double click.
       if (addsBox && (panning || ev.type !== 'pointerup')) firstClick = null;
       if (addsBox && !panning && ev.type === 'pointerup') {
@@ -823,6 +833,15 @@
     const img = e.currentTarget;
     if (!img.naturalWidth || !img.naturalHeight) return;
     const src = img.currentSrc || img.src;
+    // The raw shown in place of the cleaned page (the held peek, the Raw
+    // switch, a translate chapter) is not the page's raster (`pageRasterSrc`).
+    // Its size may differ from the cleaned one's, and measuring it would move
+    // every box into its space and back again on each switch; its pixels are
+    // never the ones a fit reads, and caching them would push out the ones
+    // that are. It measures a page nothing has measured yet, and no more.
+    const owns = pageForSrc(src);
+    const standIn = !!owns && pageRasterSrc(owns) !== src;
+    if (standIn && hasPageSpace(owns)) return;
     const target = setPageDimsForSrc(src, img.naturalWidth, img.naturalHeight);
     // No page owns this URL any more, and there are two ways that happens.
     //
@@ -864,8 +883,10 @@
     // `notePageImage` is what makes the deferral safe for a click that beats the
     // callback - see page-pixels.js. It is a map write and nothing more.
     const pixelId = (target ?? owner ?? page()).id;
-    notePageImage(pixelId, src, img);
-    queuePixels(pixelId, src, img);
+    if (!standIn) {
+      notePageImage(pixelId, src, img);
+      queuePixels(pixelId, src, img);
+    }
     // Only when the measurement was about the page being drawn: a fit
     // recomputed off another page's dimensions is the same lie one step later.
     //
@@ -912,6 +933,9 @@
 
   function syncStrip() {
     if (!strip || !scrollEl || !stripEl) return;
+    // Not while a zoom is drawn as a transform: the column's rect is scaled
+    // and its heights are not. The settle's own zoom effect asks again.
+    if (pinchAt) return;
     // A frame per page or nothing: a half-mounted column would answer with the
     // pages it happens to have, which is a jump to a page nobody scrolled to.
     // Only the first `pages.length` entries are asked about - a chapter swapped
@@ -1001,29 +1025,36 @@
   // So while the gesture moves, the layout stays at the zoom it started at and
   // the frame (the column, in a strip) is scaled with one CSS transform: the
   // art and the boxes are one picture and move together. The zoom is laid out
-  // once, when the gesture settles. The transform puts the frame where the
-  // layout at the new zoom will put it (`placeOn`), so the settle does not
-  // jump: the same centring, the same scroll, clamped as the browser will
-  // clamp it.
+  // once, when the gesture settles, and the frame is then placed exactly where
+  // the transform had it (`placeFrame`), so the settle does not jump.
+  //
+  // Every zoom keeps a point still: the one under the pointer for the wheel
+  // and a pinch, the middle of the viewport for the dock, a shortcut or a
+  // typed zoom. The scroll moves the page as far as it can and the hand-pan
+  // takes the rest (`placeFrame`), so the point stays put whether the page is
+  // bigger than the viewport or not, bounded only as a hand-pan is (KEEP px
+  // of page stay on screen). A strip's column scrolls down and never pans
+  // down, so that axis is the scroll's alone. Fit centres the page again.
   //
   // `pinch` is what the template reads; `pinchAt` is what the layout was when
   // the gesture began, which the steps are worked out against.
   let pinch = $state(null);
   let pinchAt = null;
   let pinchSettle = null;
+  // How long after the last step the gesture counts as over. Long enough to
+  // bridge the gap between two notches of a mouse wheel, short enough that the
+  // deferred repaints land while the user is still looking at the page they
+  // asked for.
+  const ZOOM_SETTLE_MS = 140;
+  // Drops wheel steps not yet applied (set in onMount, where the wheel lives).
+  let dropWheel = () => {};
+  // Set while this file lays out a zoom it has placed itself (a gesture's
+  // settle), so the zoom effect below does not place it a second time.
+  let placingZoom = false;
   const pinchCss = $derived(
     pinch ? `transform-origin:0 0;transform:translate(${pinch.dx}px,${pinch.dy}px) scale(${pinch.s});` : '',
   );
 
-  // Where the frame's leading edge sits in the viewport along one axis, at a
-  // frame of `size` px: `.stage` is the viewport at least and the frame plus
-  // its padding at most, and centres the frame in what is left (styles.css),
-  // and the scroll keeps its offset unless the content has become too short
-  // for it.
-  function placeOn(size, view, padA, padB, scroll) {
-    const content = Math.max(view, size + padA + padB);
-    return padA + (content - padA - padB - size) / 2 - clamp(scroll, 0, content - view);
-  }
   // The frame's laid-out size at a zoom: the page, or the column - as wide as
   // its widest page and as tall as its frames, which sit on the layout grid
   // (`stripFrameHeight`).
@@ -1031,54 +1062,134 @@
     if (strip) return { w: maxPageWidth(app.pages) * z, h: stripOffsets(app.pages, z).total };
     return { w: p.w * z, h: p.h * z };
   }
+  const frameEl = () => (strip ? stripEl : pageFrameEl);
 
-  function pinchTo(target) {
+  // The viewport, where its content box starts on screen, and the stage's
+  // padding (read off the element, as the fit does).
+  function viewNow() {
+    const cs = getComputedStyle(stageEl);
+    const px = (v) => parseFloat(v) || 0;
+    const sr = scrollEl.getBoundingClientRect();
+    return {
+      vw: scrollEl.clientWidth,
+      vh: scrollEl.clientHeight,
+      ox: sr.left + scrollEl.clientLeft,
+      oy: sr.top + scrollEl.clientTop,
+      pl: px(cs.paddingLeft),
+      pr: px(cs.paddingRight),
+      pt: px(cs.paddingTop),
+      pb: px(cs.paddingBottom),
+    };
+  }
+  // The frame's leading edge in the viewport, as drawn (pan and any pinch
+  // transform included).
+  function frameAt(v) {
+    const r = frameEl().getBoundingClientRect();
+    return { x: r.left - v.ox, y: r.top - v.oy };
+  }
+
+  // Where the frame's leading edge may rest along one axis, at a frame of
+  // `size` px, for an edge that wants to be at `want`. `.stage` is the
+  // viewport at least and the frame plus its padding at most, and centres the
+  // frame in what is left (styles.css), so with the scroll alone the edge can
+  // be anywhere from `home` (scroll 0) to `home - (content - view)`. On a
+  // `free` axis the pan holds the rest, bounded as a hand-pan is.
+  function restAt(want, size, view, padA, padB, free) {
+    const content = Math.max(view, size + padA + padB);
+    const home = padA + (content - padA - padB - size) / 2;
+    if (!free) return home - clamp(home - want, 0, content - view);
+    const keep = Math.min(KEEP, size);
+    return clamp(want, keep - size, view - keep);
+  }
+
+  // Put the frame's leading edge at (x, y) at the zoom now laid out: the
+  // scroll takes what it can and the hand-pan the rest.
+  function placeFrame(x, y, v = viewNow()) {
+    const size = frameSize(app.zoom);
+    const axis = (want, len, view, padA, padB, key) => {
+      const content = Math.max(view, len + padA + padB);
+      const home = padA + (content - padA - padB - len) / 2;
+      scrollEl[key] = clamp(home - want, 0, content - view);
+      // Read back: the browser rounds a scroll offset to its own grid.
+      return want - (home - scrollEl[key]);
+    };
+    const restX = axis(x, size.w, v.vw, v.pl, v.pr, 'scrollLeft');
+    const restY = axis(y, size.h, v.vh, v.pt, v.pb, 'scrollTop');
+    // On the device-pixel grid, as `clampTo` keeps a drag; and a crumb left by
+    // the scroll's rounding is no pan at all.
+    const dpr = window.devicePixelRatio || 1;
+    const snap = (n) => (Math.abs(n) < 0.5 ? 0 : Math.round(n * dpr) / dpr);
+    const next = { x: snap(restX), y: strip ? 0 : snap(restY) };
+    if (next.x !== pan.x || next.y !== pan.y) pan = next;
+  }
+
+  // One step of a gesture to the zoom `target`, keeping the screen point `at`
+  // (client px) still; the viewport's middle with no point.
+  function pinchTo(target, at = null) {
     const z = normalizeZoom(target);
     if (!isFinite(z)) return;
     if (!pinchAt) {
-      if (!scrollEl || !stageEl || !(strip ? stripEl : pageFrameEl)) {
+      if (!scrollEl || !stageEl || !frameEl()) {
         setZoom(z);
         return;
       }
-      const cs = getComputedStyle(stageEl);
-      const px = (v) => parseFloat(v) || 0;
+      const v = viewNow();
+      const f = frameAt(v);
       pinchAt = {
+        ...v,
         base: app.zoom,
         page: app.pageIndex,
-        vw: scrollEl.clientWidth,
-        vh: scrollEl.clientHeight,
+        x0: f.x,
+        y0: f.y,
         sl: scrollEl.scrollLeft,
         st: scrollEl.scrollTop,
-        pl: px(cs.paddingLeft),
-        pr: px(cs.paddingRight),
-        pt: px(cs.paddingTop),
-        pb: px(cs.paddingBottom),
       };
       setZoomLive(true);
     }
+    // Every step re-arms the settle, so a gesture opened by any door ends.
+    clearTimeout(pinchSettle);
+    pinchSettle = setTimeout(() => endPinch(), ZOOM_SETTLE_MS);
     const a = pinchAt;
-    const from = frameSize(a.base);
+    const s0 = pinch ? pinch.s : 1;
+    const x0 = pinch ? pinch.x : a.x0;
+    const y0 = pinch ? pinch.y : a.y0;
+    const s = z / a.base;
+    const cx = at ? at.x - a.ox : a.vw / 2;
+    const cy = at ? at.y - a.oy : a.vh / 2;
     const to = frameSize(z);
-    pinch = {
-      z,
-      s: z / a.base,
-      dx: placeOn(to.w, a.vw, a.pl, a.pr, a.sl) - placeOn(from.w, a.vw, a.pl, a.pr, a.sl),
-      dy: placeOn(to.h, a.vh, a.pt, a.pb, a.st) - placeOn(from.h, a.vh, a.pt, a.pb, a.st),
-    };
+    const x = restAt(cx - (cx - x0) * (s / s0), to.w, a.vw, a.pl, a.pr, true);
+    const y = restAt(cy - (cy - y0) * (s / s0), to.h, a.vh, a.pt, a.pb, !strip);
+    pinch = { z, s, x, y, dx: x - a.x0, dy: y - a.y0 };
     app.zoomGesture = z;
   }
 
-  // The gesture over: laid out at the zoom it reached (`commit`), or dropped
-  // because something else has decided the zoom or the page meanwhile.
+  // The gesture over: laid out at the zoom it reached (`commit`) and placed
+  // where it was drawn, or dropped because something else has decided the
+  // zoom or the page meanwhile.
   function endPinch(commit = true) {
     clearTimeout(pinchSettle);
     pinchSettle = null;
-    const z = pinch?.z;
+    const g = pinch;
     const began = pinchAt;
     pinch = null;
     pinchAt = null;
     app.zoomGesture = 0;
-    if (commit && began && z != null && z !== app.zoom) setZoom(z);
+    dropWheel();
+    if (commit && began && g && g.z !== app.zoom) {
+      // A scroll during the gesture moved the drawn frame with it: it is
+      // where it was put, less how far the content scrolled since.
+      const x = g.x - (scrollEl.scrollLeft - began.sl);
+      const y = g.y - (scrollEl.scrollTop - began.st);
+      placingZoom = true;
+      try {
+        setZoom(g.z);
+        // Laid out now, so the scroll has the room the new zoom gives it.
+        flushSync();
+        placeFrame(x, y);
+      } finally {
+        placingZoom = false;
+      }
+    }
     setZoomLive(false);
   }
 
@@ -1093,20 +1204,52 @@
     if (z !== pinchAt.base || (!strip && i !== pinchAt.page)) untrack(() => endPinch(false));
   });
 
-  // Zooming does not cancel a pan - a user who has pushed the page aside to see
-  // a corner expects to be able to zoom into it - but it does change what
-  // "almost off screen" means, so the offset is re-bounded against the new
-  // frame. `untrack` on the read is what stops this writing its own dependency
-  // and re-running forever.
+  // A zoom set from outside this file (the dock's buttons and readout, a
+  // shortcut) keeps the middle of the viewport still. The frame is read
+  // before the DOM takes the new zoom (`$effect.pre`) and placed after it.
+  // A fit centres the page itself, and a gesture's settle is placed by
+  // `endPinch`, so neither is touched here.
+  let zoomSeen = untrack(() => app.zoom);
+  let zoomFrom = null;
+  $effect.pre(() => {
+    const z = app.zoom;
+    untrack(() => {
+      zoomFrom = null;
+      if (z === zoomSeen || placingZoom || app.isFit || !scrollEl || !stageEl || !frameEl()) return;
+      const v = viewNow();
+      // As drawn: a gesture still open is drawn at its own zoom.
+      zoomFrom = { z: pinch?.z ?? zoomSeen, ...frameAt(v) };
+    });
+  });
   $effect(() => {
-    app.zoom;
-    const cur = untrack(() => ({ x: pan.x, y: pan.y }));
-    const next = clampPan(cur, cur);
-    if (next.x !== cur.x || next.y !== cur.y) pan = next;
-    // A zoom changes a strip's height without scrolling it, so the page under
-    // the viewport's centre changes with no scroll event to notice. Queued, so
-    // it runs after the frames have been laid out at the new zoom.
-    untrack(queueStripSync);
+    const z = app.zoom;
+    untrack(() => {
+      const from = zoomFrom;
+      zoomFrom = null;
+      zoomSeen = z;
+      if (from && !placingZoom && !app.isFit && scrollEl && stageEl && from.z > 0) {
+        const v = viewNow();
+        const k = z / from.z;
+        const to = frameSize(z);
+        const cx = v.vw / 2;
+        const cy = v.vh / 2;
+        placeFrame(
+          restAt(cx - (cx - from.x) * k, to.w, v.vw, v.pl, v.pr, true),
+          restAt(cy - (cy - from.y) * k, to.h, v.vh, v.pt, v.pb, !strip),
+          v,
+        );
+      } else {
+        // Re-bounded against the new frame: what "almost off screen" means
+        // has changed with the zoom.
+        const cur = { x: pan.x, y: pan.y };
+        const next = clampPan(cur, cur);
+        if (next.x !== cur.x || next.y !== cur.y) pan = next;
+      }
+      // A zoom changes a strip's height without scrolling it, so the page under
+      // the viewport's centre changes with no scroll event to notice. Queued, so
+      // it runs after the frames have been laid out at the new zoom.
+      queueStripSync();
+    });
   });
 
   onMount(() => {
@@ -1146,55 +1289,82 @@
     });
     ro.observe(scrollEl);
     // Passive: this never cancels a scroll, it only reads where one got to.
-    const onScroll = () => queueStripSync();
+    // A scroll while a zoom is open (a wheel that is a scroll again, the
+    // scrollbar) settles the zoom where it is drawn: its steps are worked out
+    // against the scroll it began at.
+    const onScroll = () => {
+      if (pinchAt && (scrollEl.scrollLeft !== pinchAt.sl || scrollEl.scrollTop !== pinchAt.st)) endPinch();
+      queueStripSync();
+    };
     scrollEl.addEventListener('scroll', onScroll, { passive: true });
     // The first answer, before the user has scrolled anything: a chapter opens
     // at the top, and the reference strip has to be told so.
     queueStripSync();
-    // Continuous in the wheel's own delta rather than a fixed step per event,
-    // the same shape the reference strip's pinch already had (see `RefSidebar`).
-    // A trackpad pinch arrives as sixty to a hundred small events, and a flat
-    // ×1.1 on each of them crossed the entire zoom range in one flick - the page
-    // leapt to the ceiling and back. `exp` keeps it geometric like the dock's
-    // buttons, so the same travel is the same ratio wherever the zoom starts,
-    // and the ends are still `setZoom`'s clamp.
-    const ZOOM_PER_PX = 0.0035;
-    // How long after the last wheel event the gesture counts as over. Long
-    // enough to bridge the gap between two notches of a mouse wheel, short
-    // enough that the deferred repaints land while the user is still looking at
-    // the page they asked for.
-    const ZOOM_SETTLE_MS = 140;
-    // The events since the last frame, as one delta. A trackpad pinch delivers
-    // far more than sixty events a second and each `setZoom` rebuilds every
-    // mounted box, re-reads two bounding rects through `clampPan`, and re-runs
-    // the strip metrics - so at best the page was re-laid-out several times per
-    // displayed frame, and at worst the main thread never caught up and the
-    // gesture lagged behind the fingers.
+    // The wheel zooms at the pointer. Ctrl/Cmd + wheel always does (a trackpad
+    // pinch arrives as exactly that); the plain wheel does too in a paged
+    // chapter while Settings says so (`prefs.wheelZoom`) - Shift or Alt with
+    // it, or a sideways swipe, still scrolls. A strip's plain wheel is always
+    // its scroll: down the column is how a webtoon is read.
     //
-    // Summing is exact rather than approximate: the step is `exp(-dy * k)` and
-    // `exp(-a*k) * exp(-b*k) === exp(-(a+b)*k)`, so one frame's worth of events
-    // applied together lands on the same zoom as applying them one at a time.
-    let wheelDelta = 0;
+    // Continuous in the wheel's own delta rather than a fixed step per event:
+    // a trackpad pinch is sixty to a hundred small events, and a flat step on
+    // each crossed the whole range in one flick. `exp` keeps it geometric, so
+    // the same travel is the same ratio wherever the zoom starts. A mouse
+    // notch is one lone event whose delta depends on the platform (4 px to
+    // 120), so a lone event is at least a tenth of a step up or down, and no
+    // event is more than a quarter.
+    const ZOOM_PER_PX = 0.0035;
+    const NOTCH_MIN = Math.log(1.1);
+    const STEP_MAX = Math.log(1.25);
+    // An event this long after the last one is a notch of its own.
+    const NOTCH_GAP_MS = 80;
+    // The events since the last frame, as one step: each `pinchTo` re-reads
+    // nothing from the layout, but a frame is all the screen can show.
+    // Summing logs is exact: `exp(a) * exp(b) === exp(a + b)`.
+    let wheelLog = 0;
+    let wheelAt = null;
     let wheelRaf = 0;
+    let lastWheel = -Infinity;
     const applyWheel = () => {
       wheelRaf = 0;
-      const dy = wheelDelta;
-      wheelDelta = 0;
-      if (dy) pinchTo((pinch?.z ?? app.zoom) * Math.exp(-dy * ZOOM_PER_PX));
+      const k = wheelLog;
+      wheelLog = 0;
+      if (k) pinchTo((pinch?.z ?? app.zoom) * Math.exp(k), wheelAt);
     };
     const onWheel = (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        wheelDelta += e.deltaY;
-        clearTimeout(pinchSettle);
-        pinchSettle = setTimeout(() => endPinch(), ZOOM_SETTLE_MS);
-        if (!wheelRaf) wheelRaf = requestAnimationFrame(applyWheel);
+      if (!e.ctrlKey && !e.metaKey) {
+        if (!prefs.wheelZoom || strip || e.shiftKey || e.altKey) return;
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
       }
+      e.preventDefault();
+      if (!app.loaded) return;
+      const dy = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? scrollEl.clientHeight : 1);
+      if (!dy) return;
+      let step = -dy * ZOOM_PER_PX;
+      const lone = e.timeStamp - lastWheel > NOTCH_GAP_MS;
+      lastWheel = e.timeStamp;
+      if (lone && Math.abs(dy) >= 4) step = Math.sign(step) * Math.max(Math.abs(step), NOTCH_MIN);
+      wheelLog += clamp(step, -STEP_MAX, STEP_MAX);
+      wheelAt = { x: e.clientX, y: e.clientY };
+      if (!wheelRaf) wheelRaf = requestAnimationFrame(applyWheel);
     };
+    dropWheel = () => {
+      wheelLog = 0;
+      if (wheelRaf) cancelAnimationFrame(wheelRaf);
+      wheelRaf = 0;
+    };
+    // Space is heard before anything else in the window (capture), and let go
+    // wherever focus went; leaving the window lets go of it too.
+    window.addEventListener('keydown', onSpaceDown, true);
+    window.addEventListener('keyup', onSpaceUp, true);
+    window.addEventListener('blur', dropSpace);
     scrollEl.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       ro.disconnect();
       scrollEl.removeEventListener('wheel', onWheel);
+      window.removeEventListener('keydown', onSpaceDown, true);
+      window.removeEventListener('keyup', onSpaceUp, true);
+      window.removeEventListener('blur', dropSpace);
       scrollEl.removeEventListener('scroll', onScroll);
       if (syncQueued) cancelAnimationFrame(syncQueued);
       if (wheelRaf) cancelAnimationFrame(wheelRaf);
@@ -1208,22 +1378,25 @@
 <svelte:document onpointerdowncapture={countPress} />
 
 <div class="editor-scroll" bind:this={scrollEl}>
-  <!-- One cursor per tool, because the two that both pan are otherwise
-       indistinguishable until you press: the hand says it will move the page,
-       the crosshair says a click lands a box where it points. -->
+  <!-- One cursor per tool: the hand (held Space, the middle button, or a
+       translate chapter's page) says it will move the page, the crosshair
+       says a click lands a box where it points. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="stage"
     class:zooming={!!pinch}
     bind:this={stageEl}
+    onpointerdowncapture={onStagePointerDownCapture}
     onpointerdown={onStagePointerDown}
-    style={app.bulk.active
-      ? 'cursor:pointer'
-      : app.tool === 'pan'
+    style={handDrag || (handOn && panLive)
+      ? 'cursor:grabbing'
+      : handOn
         ? 'cursor:grab'
-        : app.tool === 'text' || app.tool === 'sfx'
-          ? 'cursor:crosshair'
-          : ''}
+        : app.bulk.active
+          ? 'cursor:pointer'
+          : app.tool === 'text'
+            ? 'cursor:crosshair'
+            : ''}
   >
     <!-- The pan is a transform rather than a change to the layout box on
          purpose: it moves the picture without touching the stage's scroll size
@@ -1276,7 +1449,7 @@
             {/if}
           </div>
         {/each}
-        <div class="strip-overlay boxlayer" class:pan={app.tool === 'pan'}>
+        <div class="strip-overlay boxlayer" class:pan={handOn}>
           <!-- Mount individual boxes whose derived painted strip bounds intersect the
                resident artwork window, or that are selected/editing targets. Offscreen
                owner pages with no intersecting boxes render nothing. -->
@@ -1345,7 +1518,7 @@
                  re-fits only when that page is the one on screen. -->
             <img class="page-img" src={srcOf(m.pg)} alt="Page" crossorigin="anonymous" decoding="async" onload={(e) => onCleanedLoad(e, m.pg)} />
           {/if}
-          <div class="boxlayer" class:pan={app.tool === 'pan'}>
+          <div class="boxlayer" class:pan={handOn}>
             <!-- Same as the strip above: a translate chapter draws no boxes. -->
             {#if !translate}
               {#each m.pg.boxes as box (box.id)}
@@ -1388,15 +1561,6 @@
   </div>
 {/if}
 
-{#if sfxDrag}
-  <!-- The path being drawn, in screen px: from the press to the pointer. -->
-  <svg class="sfx-drag" aria-hidden="true">
-    <line x1={sfxDrag.x0} y1={sfxDrag.y0} x2={sfxDrag.x1} y2={sfxDrag.y1} />
-    <circle cx={sfxDrag.x0} cy={sfxDrag.y0} r="4" />
-    <circle cx={sfxDrag.x1} cy={sfxDrag.y1} r="4" />
-  </svg>
-{/if}
-
 {#if gizmoUi.letter}
   <!-- The SFX gizmo's key, while a letter is picked: each part in its colour. -->
   <div class="sfx-legend" role="note" aria-label="Letter handles">
@@ -1419,23 +1583,6 @@
 {/if}
 
 <style>
-  /* Over everything and deaf to the pointer: the drag's own listeners are on
-     the document. The page-facing palette the gizmos use (WarpGizmo.svelte),
-     since it is drawn over the paper in both themes. */
-  .sfx-drag {
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
-    pointer-events: none;
-    z-index: 50;
-    overflow: visible;
-  }
-  .sfx-drag line {
-    stroke: var(--gizmo-accent, #00d5e0);
-    stroke-width: 2;
-    stroke-dasharray: 6 4;
-  }
   /* The SFX gizmo's key: drawn over the paper in both themes, in the gizmo's
      own colours (SfxGizmo.svelte), at the canvas's bottom-right, level with
      the zoom dock and clear of it. */
@@ -1500,10 +1647,5 @@
     fill: #d8d8d8;
     stroke: #303030;
     stroke-width: 1.1;
-  }
-  .sfx-drag circle {
-    fill: #fff;
-    stroke: var(--gizmo-accent-deep, #00818a);
-    stroke-width: 1.5;
   }
 </style>

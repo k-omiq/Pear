@@ -31,7 +31,7 @@ describe('the comic actions under general use', () => {
     const run = editorActionHandlers();
     engine.reads = 0;
     setPref('usage', 'general');
-    for (const id of ['detect.page', 'detect.chapter', 'ocr.draw', 'bubble.approvePage', 'settings.detection', 'settings.guide', 'panel.sfx']) {
+    for (const id of ['detect.page', 'detect.chapter', 'ocr.draw', 'bubble.approvePage', 'settings.detection', 'settings.guide']) {
       expect(run[id](), id).toBe(false);
     }
     expect(engine.reads).toBe(0);

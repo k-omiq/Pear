@@ -1,6 +1,6 @@
 <script>
   // The SFX pane: the sound a box is lettered as, and every number of it. It
-  // is the body of the SFX window (SfxWindow.svelte), top to bottom:
+  // is the SFX tab of the Text box options (Inspector.svelte), top to bottom:
   //
   //   stage        the box's own text as the engine paints it, pinned
   //   sound        the words the box says (the Inspector's Content, here too)
@@ -47,7 +47,7 @@
   import { settleNoise } from './exporter.js';
   import ColorPicker from './ColorPicker.svelte';
   import { sfxAvailable, sfxKinds, sfxKind, sfxPick, sfxPickText, sfxResolved, applySfxKind, clearSfx, startSfx, clearSfxKind } from './sfx.js';
-  import { sfxLive, sfxAsk } from './sfx-live.svelte.js';
+  import { sfxLive } from './sfx-live.svelte.js';
   import { cardSpec, cardKeys, cachedCard, keepCard, paintCard, paintStage, previewDpr } from './sfx-preview.js';
 
   /**
@@ -144,14 +144,7 @@
     setBoxText(box, v, pg, { fit: false });
     touch();
   }
-  // A sound just drawn: the next keys are its words.
   let soundEl = $state(null);
-  $effect(() => {
-    if (sfxAsk.typeFor == null || sfxAsk.typeFor !== box.id || !soundEl) return;
-    sfxAsk.typeFor = null;
-    soundEl.focus();
-    soundEl.select();
-  });
   function remove() {
     clearSfx(box.style, false, box);
     touch();
