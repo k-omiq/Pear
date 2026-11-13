@@ -41,15 +41,30 @@ export function toApiTools(list) {
 
 export const systemBlocks = (text) => [{ type: 'text', text, cache_control: CACHE }];
 
-// The chat as sent: the same messages, with the cache mark on the last block
-// only. Marks are never stored in the chat, so an old one cannot pile up.
+// The chat as sent: the same messages, with cache marks on two blocks - the
+// chat's end, where this request writes the cache, and the end of the user
+// message before it, where the request before this one wrote it. The cache
+// looks back at most 20 blocks from a mark for an earlier write, and a turn of
+// many calls adds more than that; the second mark sits right on the last
+// write, so it is read however many blocks came since. With the tools' and
+// the system prompt's marks that is 4, the most the API takes. Marks are never
+// stored in the chat, so an old one cannot pile up.
 export function withCacheMark(messages) {
   const out = messages.map((m) => (typeof m.content === 'string' ? { ...m, content: [{ type: 'text', text: m.content }] } : m));
-  const last = out[out.length - 1];
-  if (!last?.content?.length) return out;
-  const content = last.content.slice();
-  content[content.length - 1] = { ...content[content.length - 1], cache_control: CACHE };
-  out[out.length - 1] = { ...last, content };
+  const mark = (i) => {
+    const m = out[i];
+    if (!m?.content?.length) return;
+    const content = m.content.slice();
+    content[content.length - 1] = { ...content[content.length - 1], cache_control: CACHE };
+    out[i] = { ...m, content };
+  };
+  mark(out.length - 1);
+  for (let i = out.length - 2; i >= 0; i--) {
+    if (out[i].role === 'user') {
+      mark(i);
+      break;
+    }
+  }
   return out;
 }
 
@@ -108,6 +123,58 @@ export function dropOldImages(messages, from = messages.length) {
   });
 }
 
+// The chat made safe to send, in place. The API refuses a whole request for
+// one bad block, and the chat is sent again with every later prompt, so one
+// bad block would break every prompt after it. Out go: text blocks that are
+// only white space (a model can answer "\n\n" before a call), empty messages,
+// and results for calls that are not in the message before. In go: a result
+// for any call that has none. Two messages in a row from one side join.
+// `dropThinking` drops thinking blocks too: allowed for turns before the
+// current prompt, and they may not pass from one model to another.
+export function tidyChat(messages, { dropThinking = false } = {}) {
+  const blank = (b) => b?.type === 'text' && !String(b.text ?? '').trim();
+  const thinking = (b) => b?.type === 'thinking' || b?.type === 'redacted_thinking';
+  let list = [];
+  for (const m of messages) {
+    if (m?.role !== 'user' && m?.role !== 'assistant') continue;
+    let content = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : [];
+    content = content.filter((b) => b && !blank(b) && !(dropThinking && thinking(b)));
+    if (!content.length) continue;
+    const last = list[list.length - 1];
+    if (last?.role === m.role) list[list.length - 1] = { ...last, content: [...last.content, ...content] };
+    else list.push({ ...m, content });
+  }
+  // A chat starts with the user.
+  while (list.length && list[0].role !== 'user') list.shift();
+
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    if (m.role === 'assistant') {
+      out.push(m);
+      const ids = m.content.filter((b) => b.type === 'tool_use').map((b) => b.id);
+      if (!ids.length) continue;
+      const next = list[i + 1]?.role === 'user' ? list[i + 1] : null;
+      const given = new Map((next?.content ?? []).filter((b) => b.type === 'tool_result').map((b) => [b.tool_use_id, b]));
+      const results = ids.map(
+        (id) => given.get(id) ?? { type: 'tool_result', tool_use_id: id, is_error: true, content: [{ type: 'text', text: 'Not run: the request ended before this call.' }] },
+      );
+      const rest = (next?.content ?? []).filter((b) => b.type !== 'tool_result');
+      out.push({ ...(next ?? { role: 'user' }), content: [...results, ...rest] });
+      if (next) i++;
+    } else {
+      // A user message not right after the assistant's calls has no call to answer.
+      const content = m.content.filter((b) => b.type !== 'tool_result');
+      if (!content.length) continue;
+      const last = out[out.length - 1];
+      if (last?.role === 'user') out[out.length - 1] = { ...last, content: [...last.content, ...content] };
+      else out.push({ ...m, content });
+    }
+  }
+  messages.splice(0, messages.length, ...out);
+  return messages;
+}
+
 export function addUsage(sum, u) {
   if (!u) return sum;
   sum.input += u.input_tokens ?? 0;
@@ -129,8 +196,17 @@ const aborted = (err, signal) => signal?.aborted || err?.name === 'AbortError' |
 // toolDone {id, name, ok, result}, usage {usage}.
 // Returns { stop, usage, turns, toolCalls, images }: stop is the model's
 // stop_reason ('end_turn', 'max_tokens', 'refusal'), or 'stopped', 'turns'.
-export async function agentLoop({ client, model, system, tools, messages, runTool, onEvent = () => {}, signal = null, limits = {} }) {
+export async function agentLoop({ client, model, system, tools, messages, runTool, onEvent: tell = () => {}, signal = null, limits = {} }) {
   const lim = { ...LIMITS, ...limits };
+  // A fault in what shows the chat must never stop the loop between a call
+  // and its result: the chat would be left broken for every later prompt.
+  const onEvent = (e) => {
+    try {
+      tell(e);
+    } catch (err) {
+      console.error('AI panel event failed', err);
+    }
+  };
   const usage = emptyUsage();
   let calls = 0;
   let images = 0;
@@ -141,6 +217,7 @@ export async function agentLoop({ client, model, system, tools, messages, runToo
   while (turns < lim.turns) {
     if (signal?.aborted) return done('stopped');
     turns++;
+    tidyChat(messages);
     let msg;
     try {
       const stream = client.messages.stream(
@@ -185,7 +262,11 @@ export async function agentLoop({ client, model, system, tools, messages, runToo
       else if (++calls > lim.toolCalls) r = { ok: false, error: `this request reached its limit of ${lim.toolCalls} tool calls. Stop and tell the user what was done and what is left.` };
       else {
         onEvent({ type: 'tool', id: block.id, name: block.name, input: block.input });
-        r = await runTool(block.name, block.input ?? {});
+        try {
+          r = await runTool(block.name, block.input ?? {});
+        } catch (err) {
+          r = { ok: false, error: `the app failed: ${err?.message ?? err}` };
+        }
       }
       const out = toToolContent(r, lim.images - images, lim.imageBytes - bytes);
       images += out.images;

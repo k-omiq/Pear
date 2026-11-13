@@ -9,15 +9,15 @@ import { app } from '../store.svelte.js';
 import { listTools, callTool } from './registry.js';
 import { callContext, beginPromptRun, endPromptRun, stopPromptRun } from './run.svelte.js';
 import { PANEL_INSTRUCTIONS } from './instructions.js';
-import { agentLoop, toApiTools, systemBlocks, dropOldImages, pushUserText, emptyUsage, addUsage } from './loop.js';
+import { agentLoop, toApiTools, systemBlocks, dropOldImages, tidyChat, pushUserText, emptyUsage, addUsage } from './loop.js';
 import { aiKey, refreshKey, keyError } from './key.svelte.js';
 import { chapterKey } from './windows.js';
 import './tools/index.js';
 
 export const MODELS = {
-  fast: { id: 'claude-haiku-5-5', label: 'Fast', note: 'Haiku 5.5 - quick edits' },
-  balanced: { id: 'claude-sonnet-5-5', label: 'Balanced', note: 'Sonnet 5.5 - typesetting and checks' },
-  best: { id: 'claude-opus-5-5', label: 'Best', note: 'Opus 5.5 - hard SFX and style matching' },
+  fast: { id: 'claude-haiku-5-5', label: 'Haiku 5.5', kind: 'fast', note: 'Quick edits. The cheapest.' },
+  balanced: { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', kind: 'balanced', note: 'Typesetting and checks.' },
+  best: { id: 'claude-opus-5-5', label: 'Opus 5.5', kind: 'best', note: 'Hard SFX and style matching. The slowest and dearest.' },
 };
 
 // Tools the panel does not offer: the chapter list and windows are the MCP
@@ -33,6 +33,17 @@ const BIG = /\b(typeset|letter|place|check|look|review|proof|proofread|spell|gra
 export function autoModel(text) {
   const words = String(text ?? '').trim().split(/\s+/).filter(Boolean).length;
   return words <= 16 && !BIG.test(text) ? 'fast' : 'balanced';
+}
+
+// Auto never steps down inside a chat. The cache belongs to one model: a
+// switch sends the whole chat again, tools and instructions too, at full
+// price. So once a chat has used Balanced, Auto stays on Balanced.
+const RANK = { fast: 0, balanced: 1 };
+function stickyAuto(pick) {
+  if (!messages.length) return pick;
+  const before = [...panel.chat].reverse().find((m) => m.role === 'assistant' && m.model)?.model;
+  const was = before === 'best' ? 'balanced' : before;
+  return RANK[was] > RANK[pick] ? was : pick;
 }
 
 const KEY = 'mt.aiPanel';
@@ -158,7 +169,7 @@ export async function sendPrompt(text) {
     return false;
   }
   followChapter();
-  const which = panel.model === 'auto' ? autoModel(words) : panel.model;
+  const which = panel.model === 'auto' ? stickyAuto(autoModel(words)) : panel.model;
   panel.error = null;
   panel.running = true;
   panel.using = which;
@@ -166,8 +177,9 @@ export async function sendPrompt(text) {
   panel.chat.push({ role: 'assistant', text: '', tools: [], cards: [], model: which });
   const reply = panel.chat[panel.chat.length - 1];
 
-  // Pictures from earlier prompts leave the chat; this prompt's stay.
-  messages = dropOldImages(messages);
+  // Pictures and thinking from earlier prompts leave the chat; this prompt's
+  // stay. Whatever an earlier prompt left half done is mended first.
+  messages = tidyChat(dropOldImages(messages), { dropThinking: true });
   pushUserText(messages, words);
 
   controller = new AbortController();
