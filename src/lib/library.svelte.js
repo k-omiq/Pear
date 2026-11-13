@@ -31,6 +31,7 @@ import {
   clearPending,
   settleEdits,
   setTool,
+  leaveHand,
   deselect,
   closeBulk,
   normalizeChapterMode,
@@ -2178,6 +2179,7 @@ export async function setChapterMode(projectId, chapterId, mode) {
     app.chapterMode = next;
     app.translateTypeset = false;
     app.viewCleaned = false;
+    app.viewRaw = false;
     // The same tool reset an open in translate mode performs - the rail is about
     // to lose the two tools the user may currently be holding. Ending inline
     // editing and closing bulk state prevents stuck editingId and phantom bulk.
@@ -2188,7 +2190,7 @@ export async function setChapterMode(projectId, chapterId, mode) {
       // Nothing places a box in a translate chapter, including a "Place
       // chapter" still measuring.
       cancelChapterPlace();
-    }
+    } else leaveHand();
     c.mode = next;
     markUnsaved();
     return next;
@@ -2507,6 +2509,7 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   // A translate chapter always opens as the page and the typing pane.
   app.translateTypeset = false;
   app.viewCleaned = false;
+  app.viewRaw = false;
   // And its line breaker from the chapter's own record, for the same reason:
   // the load's refit measures under it (DET-3). A record from before the field
   // opens with what this machine laid it out with; the first save stamps it.
@@ -2544,6 +2547,7 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   // while it is on - so a chapter opened in it always lands on the hand rather
   // than on whatever the previous chapter was left holding.
   if (mode === 'translate') setTool('pan');
+  else leaveHand();
   // Order matters. loadProjectPages ends in markUnsaved(), which only schedules
   // a save while a chapterRef is set; setting the ref after it, then marking
   // saved, means opening a chapter never schedules a write of what it just read.
@@ -2914,6 +2918,10 @@ export function closeChapter() {
   app.chapterMode = 'typeset';
   app.translateTypeset = false;
   app.viewCleaned = false;
+  app.viewRaw = false;
+  // The translate chapter's hand goes with it: whatever opens next is typeset
+  // until it says otherwise.
+  leaveHand();
   // And so does the layout, for the same reason - it belonged to the project the
   // closed chapter was in.
   app.projectLayout = 'pages';

@@ -36,7 +36,7 @@
   let drag = null;
 
   const selected = $derived(pg.boxes.find((b) => b.id === app.selectedId) ?? null);
-  const handles = $derived(selected && selected.fit && !app.peekRaw ? outlinePoints(selected.fit) : []);
+  const handles = $derived(selected && selected.fit && !app.peekRaw && !app.viewRaw ? outlinePoints(selected.fit) : []);
   const placed = $derived(new Set(pg.boxes.map((b) => b.lineN).filter((n) => n != null)));
   // Detected blocks with no box yet: what the detector found and nobody placed.
   const unplaced = $derived(

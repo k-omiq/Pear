@@ -24,7 +24,7 @@ import { textEngine, setTextEngine } from './text-engine/index.js';
 import { defaultStyle, normalizeStyle } from './data.js';
 import { clearLayoutMemo, setTypesetEnabled, typesetEnabled } from './measure.js';
 import { sfxKinds, sfxPick, sfxKind, sfxResolved } from './sfx.js';
-import { sfxLive, sfxAsk } from './sfx-live.svelte.js';
+import { sfxLive } from './sfx-live.svelte.js';
 import { installFakeCanvas } from '../test/fake-canvas.js';
 import { domRustEngine } from '../test/dom-rust-engine.js';
 
@@ -177,16 +177,6 @@ describe('the types', () => {
     await fireEvent.input(sound, { target: { value: 'KRAK' } });
     expect(box.text).toBe('KRAK');
     expect(touch).toHaveBeenCalledTimes(1);
-  });
-
-  it('takes the typing for a sound just drawn, its stock words selected', async () => {
-    sfxAsk.typeFor = 'b';
-    const { view } = mounted();
-    await tick();
-    const sound = view.getByRole('textbox', { name: 'Sound' });
-    expect(document.activeElement).toBe(sound);
-    expect([sound.selectionStart, sound.selectionEnd]).toEqual([0, 4]);
-    expect(sfxAsk.typeFor).toBe(null);
   });
 
   it('applies a type on a click, tells the Inspector once, and marks the card', async () => {

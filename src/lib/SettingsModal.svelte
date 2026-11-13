@@ -668,12 +668,30 @@
           {#if isComics()}
           <div class="set-item">
             <div class="set-line">
-              <span class="set-label">SFX tool <span class="set-badge">Beta</span></span>
-              {@render toggle('sfxTool', 'SFX tool (beta)', prefs.sfxTool)}
+              <span class="set-label">SFX options <span class="set-badge">Beta</span></span>
+              {@render toggle('sfxTool', 'SFX options (beta)', prefs.sfxTool)}
             </div>
-            <p class="set-desc">Draw sound effects on the page, and pick their type in Effects &gt; SFX.</p>
+            <p class="set-desc">An SFX tab in Text box options: turn any box into a sound effect and pick its type.</p>
           </div>
           {/if}
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Mouse wheel zooms</span>
+              {@render toggle('wheelZoom', 'Mouse wheel zooms', prefs.wheelZoom)}
+            </div>
+            <p class="set-desc">The wheel zooms where the pointer is. Off, it scrolls. Ctrl or Cmd + wheel always zooms. Hold Space and drag, or drag with the middle button, to move the page.</p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Raw page</span>
+              <div class="seg" role="group" aria-label="Raw page">
+                {#each [['side', 'Side by side'], ['peek', 'Peek']] as [v, label] (v)}
+                  <button class:on={prefs.rawView === v} aria-pressed={prefs.rawView === v} onclick={() => setPref('rawView', v)}>{label}</button>
+                {/each}
+              </div>
+            </div>
+            <p class="set-desc">Side by side shows the raw in a column beside the page. Peek swaps the page itself to the raw: use the eye button on the tool strip, or hold \.</p>
+          </div>
         </section>
 
         <section class="settings-section">

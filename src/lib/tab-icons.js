@@ -50,11 +50,15 @@ export const iconPattern = wrap(
 // An arrow pointing UP, which the direction pad rotates for the other seven.
 export const iconArrowUp = wrap('<path d="M10 16V4.6"/><path d="M5.6 9 10 4.4 14.4 9"/>');
 
+// A burst with its rays: the sound a box can be lettered as.
+export const iconSfx = wrap('<path d="M3.5 14.5c3.3-.8 5-5 7.5-7.5"/><path d="M11 7l-.8 3.3 3.3-.8"/><path d="M13.3 3.3l.8-1.6"/><path d="M15.8 5.8l1.6-.8"/><path d="M15 9.2h2.5"/>');
+
 export const tabIcons = {
   text: iconText,
   fill: iconFill,
   effects: iconEffects,
   layout: iconLayout,
+  sfx: iconSfx,
 };
 
 // ---- the brush panel's tabs ----

@@ -110,11 +110,11 @@ describe('Settings under general use', () => {
   it('has no Detection tab, no SFX row and no balloon fit, and comics use brings them back', async () => {
     const view = await settings();
     expect(tabNames(view)).toContain('Detection');
-    expect(view.container.textContent).toContain('SFX tool');
+    expect(view.container.textContent).toContain('SFX options');
     setPref('usage', 'general');
     await tick();
     expect(tabNames(view)).not.toContain('Detection');
-    expect(view.container.textContent).not.toContain('SFX tool');
+    expect(view.container.textContent).not.toContain('SFX options');
     settingsView.tab = 'typesetting';
     await tick();
     expect(view.container.textContent).not.toContain('Fit text to balloon');

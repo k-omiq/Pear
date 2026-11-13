@@ -30,7 +30,7 @@
 // The one exception is a key heard in one place only - the typing pane's
 // Enter, Tab and Escape (`ctx` below): there the key has one meaning, so it
 // rebinds like any other.
-import { prefs, setPref, isComics, sfxToolOn } from './prefs.svelte.js';
+import { prefs, setPref, isComics } from './prefs.svelte.js';
 
 // ---------- platform ----------
 function detectMac() {
@@ -280,12 +280,10 @@ export function formatCombo(combo) {
 const T = { whenTyping: true };
 const DEFS = [
   // Tools. The digits count down the tool rail in the order it draws them.
-  // The SFX tool sits under Text on the rail but keeps Mod+5, the key it came with.
+  // There is no hand to pick: it is held (Space, or the middle button).
   { id: 'tool.place', label: 'Place tool', group: 'Tools', combo: 'Mod+1', keywords: 'paste queued line', ...T },
   { id: 'tool.text', label: 'Text tool', group: 'Tools', combo: 'Mod+2', keywords: 'new box add', ...T },
   { id: 'tool.brush', label: 'Brush tool', group: 'Tools', combo: 'Mod+3', keywords: 'hand letter draw', ...T },
-  { id: 'tool.pan', label: 'Hand tool', group: 'Tools', combo: 'Mod+4', keywords: 'pan move scroll', ...T },
-  { id: 'tool.sfx', label: 'SFX tool', group: 'Tools', combo: 'Mod+5', keywords: 'sound effect draw', ...T },
 
   // Edit. Copy and paste box are not live while typing: in a field, Mod+C and
   // Mod+V are the field's own.
@@ -362,7 +360,6 @@ const DEFS = [
   // Panels, and the Inspector's tabs.
   { id: 'panel.options', label: 'Show or hide box options', group: 'Panels', combo: null, keywords: 'inspector window', ...T },
   { id: 'panel.queue', label: 'Show or hide text queue', group: 'Panels', combo: null, keywords: 'lines window', ...T },
-  { id: 'panel.sfx', label: 'Show or hide SFX window', group: 'Panels', combo: null, keywords: 'sound effect', ...T },
   { id: 'panel.ai', label: 'Show or hide AI panel', group: 'Panels', combo: null, keywords: 'claude chat agent assistant', ...T },
   { id: 'inspector.tabNext', label: 'Next options tab', group: 'Panels', combo: 'Mod+]', keywords: 'inspector', ...T },
   { id: 'inspector.tabPrev', label: 'Previous options tab', group: 'Panels', combo: 'Mod+[', keywords: 'inspector', ...T },
@@ -447,7 +444,6 @@ const BY_ID = new Map(SHORTCUTS.map((s) => [s.id, s]));
 
 export const shortcutById = (id) => BY_ID.get(id) ?? null;
 export function defaultCombo(id) {
-  if (id === 'tool.pan') return prefs.brushTool ? 'Mod+4' : 'Mod+3';
   return BY_ID.get(id)?.combo ?? null;
 }
 
@@ -467,7 +463,6 @@ const COMICS_ONLY = new Set([
 // and no row, and its key does nothing.
 export const actionOff = (id) =>
   (id === 'tool.brush' && !prefs.brushTool) ||
-  ((id === 'tool.sfx' || id === 'panel.sfx') && !sfxToolOn()) ||
   (!isComics() && COMICS_ONLY.has(id));
 const activeShortcuts = () => SHORTCUTS.filter((s) => !actionOff(s.id));
 

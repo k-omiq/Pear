@@ -141,7 +141,7 @@ describe('combo spelling', () => {
     expect(eventCombo(e)).toBe('Alt+3');
     expect(matchesCombo(e, 'Mod+Alt+3')).toBe(false);
     const fn = vi.fn();
-    registerShortcutHandlers({ 'tool.pan': fn });
+    registerShortcutHandlers({ 'tool.text': fn });
     expect(dispatchShortcut(e)).toBe(null);
     expect(fn).not.toHaveBeenCalled();
     expect(e.preventDefault).not.toHaveBeenCalled();
@@ -235,89 +235,81 @@ describe('the registry itself', () => {
   });
 
   it('carries the tool modes in rail order according to brushTool preference', () => {
-    // With brushTool off: Mod+3 is pan, Mod+4 is unassigned, and tool.brush is absent from groups.
+    // With brushTool off: Mod+3 does nothing, and tool.brush is absent from groups.
+    // There is no hand tool to key: the hand is held (Space).
     setPref('brushTool', false);
     expect(defaultCombo('tool.place')).toBe('Mod+1');
     expect(defaultCombo('tool.text')).toBe('Mod+2');
-    expect(defaultCombo('tool.pan')).toBe('Mod+3');
-    expect(lookupShortcut(press('Digit3', { mod: true }))?.id).toBe('tool.pan');
+    expect(SHORTCUTS.some((s) => s.id === 'tool.pan')).toBe(false);
+    expect(lookupShortcut(press('Digit3', { mod: true }))).toBe(null);
     expect(lookupShortcut(press('Digit4', { mod: true }))).toBe(null);
     const groupsOff = shortcutGroups();
     expect(groupsOff.flatMap((g) => g.items).some((s) => s.id === 'tool.brush')).toBe(false);
     const rows = (on) => SHORTCUTS.filter((s) => !s.altOf && (on || s.id !== 'tool.brush')).length;
     expect(groupsOff.flatMap((g) => g.items).length).toBe(rows(false));
 
-    // With brushTool on: Mod+3 is tool.brush, Mod+4 is tool.pan, and tool.brush is in groups.
+    // With brushTool on: Mod+3 is tool.brush, and tool.brush is in groups.
     setPref('brushTool', true);
-    expect(defaultCombo('tool.place')).toBe('Mod+1');
-    expect(defaultCombo('tool.text')).toBe('Mod+2');
     expect(defaultCombo('tool.brush')).toBe('Mod+3');
-    expect(defaultCombo('tool.pan')).toBe('Mod+4');
     expect(lookupShortcut(press('Digit3', { mod: true }))?.id).toBe('tool.brush');
-    expect(lookupShortcut(press('Digit4', { mod: true }))?.id).toBe('tool.pan');
+    expect(lookupShortcut(press('Digit4', { mod: true }))).toBe(null);
     const groupsOn = shortcutGroups();
     expect(groupsOn.flatMap((g) => g.items).some((s) => s.id === 'tool.brush')).toBe(true);
     expect(groupsOn.flatMap((g) => g.items).length).toBe(rows(true));
   });
 
-  it('has the SFX tool on Mod+5 while Settings has it on, and nothing when off', () => {
-    setPref('sfxTool', true);
-    expect(defaultCombo('tool.sfx')).toBe('Mod+5');
-    expect(lookupShortcut(press('Digit5', { mod: true }))?.id).toBe('tool.sfx');
-    setPref('sfxTool', false);
-    expect(comboFor('tool.sfx')).toBe(null);
+  it('has no SFX tool or window key: SFX is a tab of the box options', () => {
+    expect(SHORTCUTS.some((s) => s.id === 'tool.sfx' || s.id === 'panel.sfx')).toBe(false);
     expect(lookupShortcut(press('Digit5', { mod: true }))).toBe(null);
-    expect(shortcutGroups().flatMap((g) => g.items).some((s) => s.id === 'tool.sfx')).toBe(false);
-    setPref('sfxTool', true);
   });
 });
 
 // ---------------------------------------------------------------------------
 describe('overrides', () => {
   it('answers with the default until the user says otherwise', () => {
-    expect(comboFor('tool.pan')).toBe('Mod+3');
-    expect(isCustomCombo('tool.pan')).toBe(false);
+    expect(comboFor('tool.text')).toBe('Mod+2');
+    expect(isCustomCombo('tool.text')).toBe(false);
     expect(comboFor('no.such.shortcut')).toBe(null);
   });
 
   it('takes a rebind, canonicalises it, and persists only what changed', () => {
-    const r = setCombo('tool.pan', 'shift+Mod+H');
+    const r = setCombo('tool.text', 'shift+Mod+H');
     expect(r).toEqual({ ok: true, combo: 'Mod+Shift+h' });
-    expect(comboFor('tool.pan')).toBe('Mod+Shift+h');
-    expect(isCustomCombo('tool.pan')).toBe(true);
+    expect(comboFor('tool.text')).toBe('Mod+Shift+h');
+    expect(isCustomCombo('tool.text')).toBe(true);
     // One key in the blob: the rest of the registry is still its defaults, and
     // stays free to have them moved by a later build.
     const saved = JSON.parse(store['mt.prefs']);
-    expect(saved.shortcuts).toEqual({ 'tool.pan': 'Mod+Shift+h' });
+    expect(saved.shortcuts).toEqual({ 'tool.text': 'Mod+Shift+h' });
   });
 
   it('drops the override when the user rebinds back to the default', () => {
-    setCombo('tool.pan', 'Mod+Shift+h');
-    expect(setCombo('tool.pan', 'mod+3').ok).toBe(true);
-    expect(isCustomCombo('tool.pan')).toBe(false);
+    setCombo('tool.text', 'Mod+Shift+h');
+    expect(setCombo('tool.text', 'mod+2').ok).toBe(true);
+    expect(isCustomCombo('tool.text')).toBe(false);
     expect(JSON.parse(store['mt.prefs']).shortcuts).toEqual({});
   });
 
   it('refuses a combo another action already holds, and says which', () => {
-    const r = setCombo('tool.pan', 'Mod+1');
+    const r = setCombo('tool.text', 'Mod+1');
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('conflict');
     expect(r.conflict.id).toBe('tool.place');
     // And nothing moved.
-    expect(comboFor('tool.pan')).toBe('Mod+3');
+    expect(comboFor('tool.text')).toBe('Mod+2');
     // A conflict is against the combo in force, not the default it started at.
-    setCombo('tool.pan', 'Mod+Shift+h');
-    expect(conflictFor('Mod+Shift+h')?.id).toBe('tool.pan');
-    expect(conflictFor('Mod+3')).toBe(null);
+    setCombo('tool.text', 'Mod+Shift+h');
+    expect(conflictFor('Mod+Shift+h')?.id).toBe('tool.text');
+    expect(conflictFor('Mod+2')).toBe(null);
     // Rebinding a shortcut onto the combo it already has is not a conflict.
-    expect(conflictFor('Mod+Shift+h', 'tool.pan')).toBe(null);
-    expect(setCombo('tool.pan', 'Mod+Shift+h').ok).toBe(true);
+    expect(conflictFor('Mod+Shift+h', 'tool.text')).toBe(null);
+    expect(setCombo('tool.text', 'Mod+Shift+h').ok).toBe(true);
   });
 
   it('refuses an unknown id and an unusable combo', () => {
     expect(setCombo('no.such.shortcut', 'Mod+9')).toEqual({ ok: false, reason: 'unknown' });
-    expect(setCombo('tool.pan', 'Shift')).toEqual({ ok: false, reason: 'invalid' });
-    expect(comboFor('tool.pan')).toBe('Mod+3');
+    expect(setCombo('tool.text', 'Shift')).toEqual({ ok: false, reason: 'invalid' });
+    expect(comboFor('tool.text')).toBe('Mod+2');
   });
 
   it('rebinds the typing pane keys, Enter, Tab and the arrows included', () => {
@@ -406,28 +398,28 @@ describe('overrides', () => {
     // mean; the registry dispatch runs first, so a rebind onto one would
     // steal it from every context it serves.
     for (const combo of ['Escape', 'Tab', 'ArrowLeft', 'ArrowRight', 'Shift+ArrowDown']) {
-      const r = setCombo('tool.pan', combo);
+      const r = setCombo('tool.text', combo);
       expect(r.ok).toBe(false);
       expect(r.reason).toBe('contextual');
     }
     // Nothing was written - only the empty map beforeEach persists.
     expect(JSON.parse(store['mt.prefs']).shortcuts).toEqual({});
-    expect(comboFor('tool.pan')).toBe('Mod+3');
+    expect(comboFor('tool.text')).toBe('Mod+2');
   });
 
   it('resets one shortcut and all of them', () => {
-    setCombo('tool.pan', 'Mod+Shift+h');
+    setCombo('tool.text', 'Mod+Shift+h');
     setCombo('edit.undo', 'Mod+Alt+z');
-    expect(resetCombo('tool.pan')).toBe(true);
-    expect(comboFor('tool.pan')).toBe('Mod+3');
+    expect(resetCombo('tool.text')).toBe(true);
+    expect(comboFor('tool.text')).toBe('Mod+2');
     // Nothing to reset is not a failure to reset, but it is not a write either.
-    expect(resetCombo('tool.pan')).toBe(false);
+    expect(resetCombo('tool.text')).toBe(false);
     expect(resetCombo('no.such.shortcut')).toBe(false);
     expect(comboFor('edit.undo')).toBe('Mod+Alt+z');
     resetAllCombos();
     for (const s of SHORTCUTS) {
       if (s.id === 'tool.brush') expect(comboFor(s.id)).toBe(null);
-      else if (s.id === 'tool.pan') expect(comboFor(s.id)).toBe('Mod+3');
+      else if (s.id === 'tool.text') expect(comboFor(s.id)).toBe('Mod+2');
       else expect(comboFor(s.id)).toBe(s.combo);
     }
     expect(JSON.parse(store['mt.prefs']).shortcuts).toEqual({});
@@ -437,15 +429,15 @@ describe('overrides', () => {
     store['mt.prefs'] = JSON.stringify({
       typeset: false,
       shortcuts: {
-        'tool.pan': 'Mod+Shift+h',
-        'tool.text': 42, // not a string
+        'tool.text': 'Mod+Shift+h',
+        'view.fit': 42, // not a string
         'tool.place': '   ', // not a combo
       },
     });
     // A fresh module registry is the only honest way to run the load path.
     vi.resetModules();
     const fresh = await import('./prefs.svelte.js');
-    expect(fresh.prefs.shortcuts).toEqual({ 'tool.pan': 'Mod+Shift+h' });
+    expect(fresh.prefs.shortcuts).toEqual({ 'tool.text': 'Mod+Shift+h' });
   });
 
   it('prunes loaded overrides for unknown ids and unspeakable combos', async () => {
@@ -453,7 +445,7 @@ describe('overrides', () => {
       typeset: false,
       shortcuts: {
         'ghost.action': 'Mod+q', // an id this build does not know
-        'tool.pan': 'Mod+Shift+h', // sane, stays
+        'tool.text': 'Mod+Shift+h', // sane, stays
         'box.delete': 'Mod+Hyper', // a combo no keypress can produce
         'box.duplicate': '', // a key the user took away, stays
       },
@@ -465,7 +457,7 @@ describe('overrides', () => {
     await import('./prefs.svelte.js');
     await new Promise((resolve) => queueMicrotask(resolve));
     const fresh = await import('./prefs.svelte.js');
-    expect(fresh.prefs.shortcuts).toEqual({ 'tool.pan': 'Mod+Shift+h', 'box.duplicate': '' });
+    expect(fresh.prefs.shortcuts).toEqual({ 'tool.text': 'Mod+Shift+h', 'box.duplicate': '' });
   });
 
   it('keeps a preference that is not an object out of the map', () => {
@@ -478,10 +470,8 @@ describe('overrides', () => {
   });
 
   it('ignores an override that is not a combo and falls back to the default', () => {
-    setPref('shortcuts', { 'tool.pan': 'Hyper+k' });
-    expect(comboFor('tool.pan')).toBe('Mod+3');
-    setPref('brushTool', true);
-    expect(comboFor('tool.pan')).toBe('Mod+4');
+    setPref('shortcuts', { 'tool.text': 'Hyper+k' });
+    expect(comboFor('tool.text')).toBe('Mod+2');
   });
 });
 
@@ -497,15 +487,15 @@ describe('dispatch', () => {
 
   it('runs the handler and swallows the key', () => {
     const fn = vi.fn();
-    registerShortcutHandlers({ 'tool.pan': fn });
-    const e = press('Digit3', { mod: true });
-    expect(dispatchShortcut(e)).toBe('tool.pan');
+    registerShortcutHandlers({ 'tool.text': fn });
+    const e = press('Digit2', { mod: true });
+    expect(dispatchShortcut(e)).toBe('tool.text');
     expect(fn).toHaveBeenCalledTimes(1);
     expect(e.preventDefault).toHaveBeenCalled();
   });
 
   it('leaves a key alone when nothing is bound to it or nothing is listening', () => {
-    const e = press('Digit3', { mod: true });
+    const e = press('Digit2', { mod: true });
     // Registered by nobody: the press is not ours to prevent.
     expect(dispatchShortcut(e)).toBe(null);
     expect(e.preventDefault).not.toHaveBeenCalled();
@@ -527,9 +517,9 @@ describe('dispatch', () => {
     const tool = vi.fn();
     const del = vi.fn();
     const undo = vi.fn();
-    registerShortcutHandlers({ 'tool.pan': tool, 'box.delete': del, 'edit.undo': undo });
+    registerShortcutHandlers({ 'tool.text': tool, 'box.delete': del, 'edit.undo': undo });
     // The whole point of the rebind: a mode switch still works mid-sentence.
-    expect(dispatchShortcut(press('Digit3', { mod: true }), { typing: true })).toBe('tool.pan');
+    expect(dispatchShortcut(press('Digit2', { mod: true }), { typing: true })).toBe('tool.text');
     // These two would eat the box being typed into, or fight the field's own
     // undo stack.
     expect(dispatchShortcut(press('Delete'), { typing: true })).toBe(null);
@@ -543,22 +533,22 @@ describe('dispatch', () => {
 
   it('unregisters cleanly', () => {
     const fn = vi.fn();
-    const release = registerShortcutHandlers({ 'tool.pan': fn });
+    const release = registerShortcutHandlers({ 'tool.text': fn });
     release();
-    expect(dispatchShortcut(press('Digit3', { mod: true }))).toBe(null);
+    expect(dispatchShortcut(press('Digit2', { mod: true }))).toBe(null);
     expect(fn).not.toHaveBeenCalled();
   });
 
   it('sends the rebound key to the action, not the old one', () => {
     const place = vi.fn();
     const pan = vi.fn();
-    registerShortcutHandlers({ 'tool.place': place, 'tool.pan': pan });
+    registerShortcutHandlers({ 'tool.place': place, 'tool.text': pan });
     setCombo('tool.place', 'Mod+Alt+p');
     dispatchShortcut(press('KeyP', { key: 'π', mod: true, alt: true }));
     expect(place).toHaveBeenCalledTimes(1);
     // The vacated combo does nothing until something is bound to it.
     expect(dispatchShortcut(press('Digit1', { mod: true }))).toBe(null);
-    expect(setCombo('tool.pan', 'Mod+1').ok).toBe(true);
+    expect(setCombo('tool.text', 'Mod+1').ok).toBe(true);
     dispatchShortcut(press('Digit1', { mod: true }));
     expect(pan).toHaveBeenCalledTimes(1);
   });
@@ -585,9 +575,9 @@ describe('dispatch', () => {
     const text = vi.fn();
     const pan = vi.fn();
     const place = vi.fn();
-    registerShortcutHandlers({ 'tool.text': text, 'tool.pan': pan, 'tool.place': place });
+    registerShortcutHandlers({ 'tool.text': text, 'view.fit': pan, 'tool.place': place });
     expect(setCombo('tool.text', 't').ok).toBe(true);
-    expect(setCombo('tool.pan', 'Shift+h').ok).toBe(true);
+    expect(setCombo('view.fit', 'Shift+h').ok).toBe(true);
     // Option+Q is 'œ' on a Mac: a character, however it is spelled.
     expect(setCombo('tool.place', 'Alt+q').ok).toBe(true);
     const t = press('KeyT');
@@ -600,7 +590,7 @@ describe('dispatch', () => {
     expect(place).not.toHaveBeenCalled();
     // Out of a field the rebound keys are the shortcuts they were bound as.
     expect(dispatchShortcut(press('KeyT'))).toBe('tool.text');
-    expect(dispatchShortcut(press('KeyH', { key: 'H', shift: true }))).toBe('tool.pan');
+    expect(dispatchShortcut(press('KeyH', { key: 'H', shift: true }))).toBe('view.fit');
     expect(dispatchShortcut(press('KeyQ', { key: 'œ', alt: true }))).toBe('tool.place');
     // A field's editing keys are typing too.
     expect(setCombo('tool.text', 'Space').ok).toBe(true);
@@ -625,12 +615,12 @@ describe('dispatch', () => {
     try {
       const first = vi.fn();
       const second = vi.fn();
-      registerShortcutHandlers({ 'tool.pan': first });
-      registerShortcutHandlers({ 'tool.pan': second });
+      registerShortcutHandlers({ 'tool.text': first });
+      registerShortcutHandlers({ 'tool.text': second });
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0][0])).toContain('tool.pan');
+      expect(String(warn.mock.calls[0][0])).toContain('tool.text');
       // The newcomer is the one wired up.
-      expect(dispatchShortcut(press('Digit3', { mod: true }))).toBe('tool.pan');
+      expect(dispatchShortcut(press('Digit2', { mod: true }))).toBe('tool.text');
       expect(second).toHaveBeenCalledTimes(1);
       expect(first).not.toHaveBeenCalled();
     } finally {
@@ -638,23 +628,16 @@ describe('dispatch', () => {
     }
   });
 
-  it('dispatches Mod+3 and Mod+4 according to brushTool preference', () => {
+  it('dispatches Mod+3 according to brushTool preference', () => {
     const brush = vi.fn();
-    const pan = vi.fn();
-    registerShortcutHandlers({ 'tool.brush': brush, 'tool.pan': pan });
-
-    // With brushTool: false (default), Mod+3 is pan, Mod+4 is unassigned
-    expect(dispatchShortcut(press('Digit3', { mod: true }))).toBe('tool.pan');
-    expect(pan).toHaveBeenCalledTimes(1);
-    expect(dispatchShortcut(press('Digit4', { mod: true }))).toBe(null);
+    registerShortcutHandlers({ 'tool.brush': brush });
+    // With brushTool: false (default), Mod+3 is unassigned.
+    expect(dispatchShortcut(press('Digit3', { mod: true }))).toBe(null);
     expect(brush).not.toHaveBeenCalled();
-
-    // With brushTool: true, Mod+3 is brush, Mod+4 is pan
+    // With brushTool: true, Mod+3 is the brush.
     setPref('brushTool', true);
     expect(dispatchShortcut(press('Digit3', { mod: true }))).toBe('tool.brush');
     expect(brush).toHaveBeenCalledTimes(1);
-    expect(dispatchShortcut(press('Digit4', { mod: true }))).toBe('tool.pan');
-    expect(pan).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -730,20 +713,20 @@ describe('the rebind capture lifecycle', () => {
     capture.setOpen(true);
     expect(win.armed).toBe(false);
     capture.setOpen(false);
-    capture.begin('tool.pan');
+    capture.begin('tool.text');
     expect(win.armed).toBe(false);
     capture.setOpen(false);
     expect(win.armed).toBe(false);
     // Both together do - and keys reach it.
     capture.setOpen(true);
-    capture.begin('tool.pan');
+    capture.begin('tool.text');
     expect(win.armed).toBe(true);
     win.fire(press('KeyH', { shift: true }));
     expect(win.armed).toBe(false); // binding finished the capture
     // Clicking the row that already listens cancels rather than restarting.
     capture.setOpen(true);
-    expect(capture.begin('tool.pan')).toBe('tool.pan');
-    expect(capture.begin('tool.pan')).toBe(null);
+    expect(capture.begin('tool.text')).toBe('tool.text');
+    expect(capture.begin('tool.text')).toBe(null);
     expect(win.armed).toBe(false);
   });
 
