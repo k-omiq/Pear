@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { agentLoop, toApiTools, withCacheMark, toToolContent, dropOldImages, pushUserText } from './loop.js';
+import { agentLoop, toApiTools, withCacheMark, toToolContent, dropOldImages, pushUserText, tidyChat } from './loop.js';
 
 // A fake model: each turn returns the next scripted message, and records what
 // it was sent.
@@ -127,7 +127,10 @@ describe('agentLoop', () => {
     ];
     const marked = withCacheMark(msgs);
     expect(marked[1].content[0].cache_control).toEqual({ type: 'ephemeral' });
-    expect(marked[0].content[0].cache_control).toBeUndefined();
+    // The end of the user message before: where the last request wrote.
+    expect(marked[0].content[0].cache_control).toEqual({ type: 'ephemeral' });
+    const three = withCacheMark([...msgs, { role: 'user', content: [{ type: 'text', text: 'three' }] }]);
+    expect(three.map((m) => !!m.content[0].cache_control)).toEqual([true, false, true]);
     // The stored chat is untouched.
     expect(msgs[1].content[0].cache_control).toBeUndefined();
   });
@@ -207,5 +210,40 @@ describe('review fixes', () => {
     };
     const err = await agentLoop({ client, model: 'm', system: [], tools: [], messages: [{ role: 'user', content: 'x' }], runTool: async () => ({ ok: true, result: {} }) }).catch((e) => e);
     expect(err.usage).toMatchObject({ input: 7, output: 3 });
+  });
+});
+
+describe('tidyChat', () => {
+  const text = (t) => ({ type: 'text', text: t });
+  it('drops blank text and the empty messages it leaves, and joins one side in a row', () => {
+    const m = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: [text('\n\n')] },
+      { role: 'user', content: [text('again')] },
+    ];
+    tidyChat(m);
+    expect(m).toEqual([{ role: 'user', content: [text('hi'), text('again')] }]);
+  });
+  it('gives a call with no result one, and drops results with no call', () => {
+    const m = [
+      { role: 'user', content: [text('go'), { type: 'tool_result', tool_use_id: 'x', content: [] }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'view', input: {} }] },
+      { role: 'user', content: [text('next')] },
+    ];
+    tidyChat(m);
+    expect(m[0].content).toEqual([text('go')]);
+    expect(m[2].content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'a', is_error: true });
+    expect(m[2].content[1]).toEqual(text('next'));
+  });
+  it('drops thinking only when asked', () => {
+    const think = { type: 'thinking', thinking: 'hm', signature: 's' };
+    const m = [
+      { role: 'user', content: [text('go')] },
+      { role: 'assistant', content: [think, text('ok')] },
+    ];
+    tidyChat(m);
+    expect(m[1].content).toHaveLength(2);
+    tidyChat(m, { dropThinking: true });
+    expect(m[1].content).toEqual([text('ok')]);
   });
 });

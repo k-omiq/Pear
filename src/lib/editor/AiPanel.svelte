@@ -103,6 +103,7 @@
               <ProposalCard pageId={c.pageId} id={c.id} was={c.was} />
             {/each}
             {#if m.stopped}<div class="aip-meta">Stopped.</div>{/if}
+            {#if m.model && !(panel.running && i === panel.chat.length - 1)}<div class="aip-meta">{MODELS[m.model]?.label ?? ''}</div>{/if}
             {#if panel.running && i === panel.chat.length - 1 && !m.text}
               <div class="aip-meta">{MODELS[panel.using]?.label ?? ''} is working…</div>
             {/if}
@@ -130,11 +131,16 @@
 
     <div class="aip-foot">
       <label class="aip-model">
-        <span class="sr">Model</span>
-        <select value={panel.model} onchange={(e) => setModel(e.currentTarget.value)} disabled={panel.running} title="Auto picks Fast for short edits and Balanced for the rest">
+        <span>Model</span>
+        <select
+          value={panel.model}
+          onchange={(e) => setModel(e.currentTarget.value)}
+          disabled={panel.running}
+          title={panel.model === 'auto' ? 'Auto picks Haiku for short edits and Sonnet for the rest' : MODELS[panel.model]?.note}
+        >
           <option value="auto">Auto</option>
           {#each Object.entries(MODELS) as [k, m] (k)}
-            <option value={k} title={m.note}>{m.label}</option>
+            <option value={k} title={m.note}>{m.label} · {m.kind}</option>
           {/each}
         </select>
       </label>
@@ -261,6 +267,11 @@
     color: var(--t3);
     font-size: 11.5px;
   }
+  .aip-model {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
   .aip-model select {
     font: inherit;
     color: var(--t2);
@@ -284,12 +295,5 @@
   .aip-new:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
   }
 </style>
