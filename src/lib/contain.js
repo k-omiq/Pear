@@ -16,6 +16,7 @@
 //       straight { s, text, isCurve: false, lines, inks, shift, lineH, blockH,
 //                  blockY, anchorX, indents, lineX, baseY }
 //       curved   { s, text, isCurve: true, layout }
+//                (vertical text also says `vertical: true`)
 //                (an SFX layout's glyphs also carry `sx`, `sy` and `skew`)
 //       `opts.cache: false` keeps the layout out of measure.js's memo.
 //   placeAtHeight(place, cand)       -> `place` moved to `cand`'s height, for a
@@ -92,6 +93,7 @@ import {
   arcLayout,
   circleLayout,
   pathLayout,
+  verticalLayout,
 } from './measure.js';
 import {
   strokeReach,
@@ -143,7 +145,23 @@ export function boxCandidate(box, text, runs = null) {
 // SFX counts only while the Rust engine can lay it out (`sfxActive`); otherwise
 // the box is the plain text it falls back to.
 export function curvedStyle(s) {
+  return bentStyle(s) || verticalStyle(s);
+}
+function bentStyle(s) {
   return !!(sfxActive(s) || (s?.path?.on && (s.path.pts?.length ?? 0) >= 2) || s?.circle?.on || (s?.curve && s.curve !== 0));
+}
+
+// Vertical text (`verticalLayout`): set in columns, glyph by glyph like the
+// curves, and below them all in precedence - a bend switched on wins, as the
+// Inspector switches the others off.
+export function verticalStyle(s) {
+  return !!s?.vertical && !bentStyle(s);
+}
+
+// A vertical box the app may still size: Auto widens it by its columns, Fit
+// to box sizes its type. Nothing else about it is placed by hand.
+export function sizesVertically(cand) {
+  return verticalStyle(cand?.style) && handPlaced(cand, false) == null;
 }
 
 // ===== auto and manual =====
@@ -184,9 +202,10 @@ export const handPlacedBox = (cand) => handPlaced(cand) != null;
 
 // What makes a box manual whatever its sizing switch says, as the flag names it,
 // or null.
-function handPlaced(cand) {
+function handPlaced(cand, vertical = true) {
   const s = cand?.style;
-  if (curvedStyle(s)) return REVIEW_REASONS.curve;
+  if (bentStyle(s)) return REVIEW_REASONS.curve;
+  if (vertical && verticalStyle(s)) return REVIEW_REASONS.vertical;
   if (warpActive(s, cand?.w, cand?.h)) return REVIEW_REASONS.warp;
   if (inkActive(s?.ink)) return REVIEW_REASONS.ink;
   // Shapes drawn by hand make the box manual. A bubble link does not: it
@@ -256,6 +275,8 @@ export function placeBlock(cand, opts) {
         : arcLayout(text, s, size);
     return { s, text, isCurve: true, layout };
   }
+  // Columns, glyph by glyph: read as a curve by everything below.
+  if (!blank && verticalStyle(s)) return { s, text, isCurve: true, layout: verticalLayout(text, s, size, cand.w, cand.h), vertical: true };
   // Guarded as `neededHeight` and `baselineInLine` guard it, so a style missing
   // the field is one line height to every reader rather than 0 to one of them.
   const lineH = size * (s.lineHeight > 0 ? s.lineHeight : 1);

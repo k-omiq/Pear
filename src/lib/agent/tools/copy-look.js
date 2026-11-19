@@ -178,7 +178,7 @@ defineTool({
     const here = new Set(knownTags(app.pages).map((t) => t.name));
     const shown = looks.map((l) => ({ ...l, ...(here.has(l.tag) ? null : { notHere: true }) }));
     if (!apply) return { from: src.key, looks: shown };
-    if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes to letter');
+    if (isTranslateMode()) throw new ToolError('the typesetting tools are hidden in this chapter\'s layout, so it has no boxes to letter');
     if (!ctx.stillPinned()) throw new ToolError('the chapter changed in the app, so nothing was changed');
 
     const skipped = [];

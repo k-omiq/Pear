@@ -6,6 +6,7 @@
 // imports fonts.js) must not import it back, or the two load half-built.
 import { app, fontMissing } from './store.svelte.js';
 import { prefs, setPref } from './prefs.svelte.js';
+import { fontsWritten } from './fonts.js';
 
 // The user's own fonts first: they were put there on purpose, for this work,
 // and a letterer with three manga faces should not scroll past forty Google
@@ -18,8 +19,9 @@ import { prefs, setPref } from './prefs.svelte.js';
 export function fontGroups() {
   const hidden = new Set(prefs.hiddenBuiltinFonts);
   const shown = new Set(prefs.shownSystemFonts);
+  const off = new Set(prefs.disabledUserFonts);
   return [
-    { key: 'user', label: 'Your fonts', fonts: app.fonts.user },
+    { key: 'user', label: 'Your fonts', fonts: off.size ? app.fonts.user.filter((f) => !off.has(f.name)) : app.fonts.user },
     { key: 'builtin', label: 'Built-in', fonts: app.fonts.builtin.filter((f) => !hidden.has(f.name)) },
     { key: 'system', label: 'System', fonts: app.fonts.system.filter((f) => shown.has(f.name)) },
   ].filter((g) => g.fonts.length);
@@ -32,7 +34,7 @@ export function fontGroups() {
 export function isFontOffered(name) {
   const named = (f) => f.name === name;
   return (
-    app.fonts.user.some(named) ||
+    (app.fonts.user.some(named) && !prefs.disabledUserFonts.includes(name)) ||
     (app.fonts.builtin.some(named) && !prefs.hiddenBuiltinFonts.includes(name)) ||
     (app.fonts.system.some(named) && prefs.shownSystemFonts.includes(name))
   );
@@ -56,10 +58,43 @@ export const isSystemShown = (name) => prefs.shownSystemFonts.includes(name);
 export function setBuiltinHidden(name, hide) {
   const cur = prefs.hiddenBuiltinFonts;
   setPref('hiddenBuiltinFonts', hide ? [...without(cur, name), name] : without(cur, name));
+  fontsWritten();
 }
 export function setSystemShown(name, show) {
   const cur = prefs.shownSystemFonts;
   setPref('shownSystemFonts', show ? [...without(cur, name), name] : without(cur, name));
+  fontsWritten();
+}
+
+// ---- the Font Library's on/off switch ----
+// One switch per family, whatever kind: on is offered by the menus, off is
+// not, and a box already set in a family that is off keeps drawing in it.
+// Each kind keeps its exceptions in its own list (prefs.svelte.js), so a
+// fresh install offers its own fonts and the built-ins and none of the
+// hundreds of fonts the machine has installed.
+//
+// `names` may be many: switching a whole search result is one write.
+export function isFamilyOn(kind, name) {
+  if (kind === 'user') return !prefs.disabledUserFonts.includes(name);
+  if (kind === 'builtin') return !prefs.hiddenBuiltinFonts.includes(name);
+  return prefs.shownSystemFonts.includes(name);
+}
+export function setFamiliesOn(kind, names, on) {
+  const list = new Set(names);
+  const key = kind === 'user' ? 'disabledUserFonts' : kind === 'builtin' ? 'hiddenBuiltinFonts' : 'shownSystemFonts';
+  // The user's and the built-in lists hold the ones that are off; the system
+  // list holds the ones that are on.
+  const listed = kind === 'system' ? on : !on;
+  const cur = prefs[key].filter((n) => !list.has(n));
+  setPref(key, listed ? [...cur, ...list] : cur);
+  fontsWritten();
+}
+export const setFamilyOn = (kind, name, on) => setFamiliesOn(kind, [name], on);
+
+// A family renamed in the library keeps its switch.
+export function carryFamilySwitch(from, to) {
+  if (!prefs.disabledUserFonts.includes(from)) return;
+  setPref('disabledUserFonts', [...without(prefs.disabledUserFonts, from), to]);
 }
 
 

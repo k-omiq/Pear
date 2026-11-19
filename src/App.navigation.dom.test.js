@@ -21,7 +21,7 @@ vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({
   onCloseRequested: async (callback) => { calls.close = callback; }, destroy: calls.destroy,
 }) }));
 vi.mock('./lib/editor/EditorRoot.svelte', () => ({ default: () => {} }));
-vi.mock('./lib/FontModal.svelte', () => ({ default: () => {} }));
+vi.mock('./lib/FontLibrary.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/BrushModal.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/SettingsModal.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/ExportDialog.svelte', () => ({ default: () => {} }));

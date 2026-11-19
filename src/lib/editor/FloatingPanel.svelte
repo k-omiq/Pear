@@ -10,7 +10,9 @@
   // `rightInset`: a column down the right the panel is kept out of - the
   // translate chapter's typing pane. Only where it is drawn: the stored place
   // is left alone, so a typeset chapter puts the panel back where it was.
-  let { id, title, count = null, rightInset = 0, children } = $props();
+  // `ondock`: the header's way into the column down the right, for the panes
+  // a layout can dock (layouts.svelte.js). Absent, the panel only floats.
+  let { id, title, count = null, rightInset = 0, ondock = null, children } = $props();
 
   const g = $derived(panels[id]);
   const x = $derived(
@@ -136,6 +138,11 @@
     <header class="fpanel-head" onpointerdown={(e) => drag(e, 'move')}>
       <span class="fpanel-title">{title}</span>
       {#if count}<span class="fpanel-count">{count}</span>{/if}
+      {#if ondock}
+        <button class="fpanel-hide" onclick={ondock} aria-label="Dock {title}" title="Dock {title} on the right">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M14 4v16" /></svg>
+        </button>
+      {/if}
       <button
         class="fpanel-hide"
         onclick={() => setHidden(id, true)}

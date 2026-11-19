@@ -6,6 +6,9 @@
   import { untrack } from 'svelte';
   import { releaseLeavingImages } from '../release-image.js';
 
+  // The width the editor has room for (insets.js); the stored one otherwise.
+  let { width = null } = $props();
+
   const strip = $derived(isLongstrip());
   const rawWidth = $derived(app.rawZoom === 0 ? '100%' : 100 * app.rawZoom + '%');
   const rawLabel = $derived(app.rawZoom === 0 ? 'Fit' : Math.round(app.rawZoom * 100) + '%');
@@ -45,7 +48,7 @@
   }
 </script>
 
-<aside class="ed-side" style="width:{app.leftWidth}px">
+<aside class="ed-side" style="width:{width ?? app.leftWidth}px">
   {#if strip}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="ed-side-scroll" bind:this={scrollEl} onwheel={onWheel}>

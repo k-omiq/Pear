@@ -15,12 +15,16 @@ import {
   settleEdits,
   isTranslateMode,
   isTranslateChapter,
-  setTranslateTypeset,
+  setTypesetTools,
+  chooseLayout,
+  queueDocked,
+  optionsDocked,
   stepLine,
   gotoPage,
   setLineText,
 } from './store.svelte.js';
 import { initHistory, resetHistory } from './editor/history.svelte.js';
+import { setLayouts, layouts, adoptLayouts, onLayoutsChange } from './layouts.svelte.js';
 import { setMacKeyboard, setCombo, resetAllCombos } from './shortcuts.svelte.js';
 
 let raf;
@@ -32,7 +36,7 @@ beforeEach(() => {
   setMacKeyboard(true);
   app.chapterRef = null;
   app.chapterMode = 'translate';
-  app.translateTypeset = false;
+  setLayouts(null);
   loadProjectPages([
     {
       id: 1, w: 800, h: 1200, boxes: [],
@@ -54,7 +58,7 @@ afterEach(() => {
   resetHistory();
   loadProjectPages([]);
   app.chapterMode = 'typeset';
-  app.translateTypeset = false;
+  setLayouts(null);
   resetAllCombos();
   vi.clearAllTimers();
   vi.useRealTimers();
@@ -144,17 +148,99 @@ it('lets go of the field with Esc, and Enter on the row goes back in', async () 
   expect(document.activeElement).toBe(english(view));
 });
 
-it('shows and hides the typesetting tools without leaving the translate chapter', () => {
+it('shows and hides the typesetting tools for the open chapter only, never saved', () => {
+  let writes = 0;
+  onLayoutsChange(() => writes++);
   expect(isTranslateMode()).toBe(true);
-  expect(setTranslateTypeset(true)).toBe(true);
+  expect(setTypesetTools(true)).toBe(true);
   expect(isTranslateMode()).toBe(false);
   expect(isTranslateChapter()).toBe(true);
+  // The switch is this chapter's: the layout every translate chapter uses is
+  // untouched, and nothing was written.
+  expect(layouts.use.translate).toBe('translate');
+  expect(writes).toBe(0);
+  // The Translate preset with the tools out docks the options above the queue.
+  expect(optionsDocked()).toBe(true);
   app.tool = 'text';
-  setTranslateTypeset(false);
+  setTypesetTools(false);
   expect(isTranslateMode()).toBe(true);
   expect(app.tool).toBe('pan');
+  // A typeset chapter's tools can go too, still without saving anything.
   app.chapterMode = 'typeset';
-  expect(setTranslateTypeset(true)).toBe(false);
+  expect(isTranslateMode()).toBe(false);
+  setTypesetTools(false);
+  expect(isTranslateMode()).toBe(true);
+  expect(layouts.use.typeset).toBe('typeset');
+  expect(writes).toBe(0);
+  onLayoutsChange(null);
+});
+
+it('drops the tools switch when a chapter opens or closes', () => {
+  setTypesetTools(true);
+  expect(isTranslateMode()).toBe(false);
+  // The next open (every open loads its pages) starts from the layout again.
+  loadProjectPages([{ id: 9, w: 800, h: 1200, boxes: [], lines: [{ n: 1, jp: 'か', en: '' }] }]);
+  expect(isTranslateMode()).toBe(true);
+  setTypesetTools(true);
+  // Closed: nothing is loaded, and nothing is switched.
+  app.loaded = false;
+  expect(isTranslateMode()).toBe(true);
+  expect(setTypesetTools(true)).toBe(false);
+  loadProjectPages([{ id: 9, w: 800, h: 1200, boxes: [], lines: [] }]);
+  expect(app.loaded).toBe(true);
+  expect(isTranslateMode()).toBe(true);
+});
+
+it('a picked preset replaces the tools switch, and is saved', () => {
+  let writes = 0;
+  onLayoutsChange(() => writes++);
+  setTypesetTools(true);
+  chooseLayout('typeset');
+  expect(layouts.use.translate).toBe('typeset');
+  expect(writes).toBe(1);
+  expect(isTranslateMode()).toBe(false);
+  chooseLayout('translate');
+  // The switch went with the preset pick: the Translate preset's tools are off.
+  expect(isTranslateMode()).toBe(true);
+  onLayoutsChange(null);
+});
+
+it("takes another window's layouts without taking this chapter's tools", () => {
+  // Tools out here (a preset), the text tool armed.
+  chooseLayout('typeset');
+  app.tool = 'text';
+  // The other window goes back to the Translate preset.
+  adoptLayouts({ use: { translate: 'translate', typeset: 'typeset' } });
+  expect(layouts.use.translate).toBe('translate');
+  // The panes follow; the tools in use here stay, and nothing was dropped.
+  expect(queueDocked()).toBe(true);
+  expect(isTranslateMode()).toBe(false);
+  expect(app.tool).toBe('text');
+  // The next chapter opened follows the adopted layout.
+  loadProjectPages([{ id: 9, w: 800, h: 1200, boxes: [], lines: [] }]);
+  expect(isTranslateMode()).toBe(true);
+  // With no chapter open, an adopted layout is simply used.
+  app.loaded = false;
+  adoptLayouts({ use: { translate: 'typeset' } });
+  expect(layouts.use.translate).toBe('typeset');
+});
+
+it('offers Add line only in a translate chapter with the tools hidden', async () => {
+  let view = render(Queue);
+  await flush();
+  expect(view.queryByText('Add line')).not.toBeNull();
+  cleanup();
+  // A typeset chapter with its tools hidden has no free lines: no Add line,
+  // and its Add text waits for the tools.
+  app.chapterMode = 'typeset';
+  setTypesetTools(false);
+  view = render(Queue);
+  await flush();
+  expect(view.queryByText('Add line')).toBeNull();
+  expect(view.getByText('Add text').closest('button').disabled).toBe(true);
+  setTypesetTools(true);
+  await flush();
+  expect(view.getByText('Add text').closest('button').disabled).toBe(false);
 });
 
 it('follows the keys as the user rebound them', async () => {
@@ -312,9 +398,9 @@ it('ends a line pick when the page turns, the chapter closes or the mode switche
   gotoPage(0);
   await flush();
   await arm();
-  setTranslateTypeset(true);
+  setTypesetTools(true);
   expect(pageRectPick.active).toBe(false);
-  setTranslateTypeset(false);
+  setTypesetTools(false);
   await flush();
   await arm();
   const shown = page();

@@ -56,18 +56,33 @@ export function glyphReach(g) {
   return Number.isFinite(sx) ? g.w * sx : g.w;
 }
 
+// Vertical text (`verticalLayout`) says how its glyphs run: `flow` is the way
+// down the column, and `cx`, `cy`, `cell` the stretch of column a glyph takes,
+// which for an upright letter is not the way the letter is turned. A Return
+// there (`bx`, `by`) has its caret at the end of the column it closes.
 function edge(g, side) {
+  if (g.flow != null) {
+    const h = (side * g.cell) / 2;
+    return { x: g.cx + h * Math.cos(g.flow), y: g.cy + h * Math.sin(g.flow), rot: g.flow };
+  }
   const h = (side * glyphReach(g)) / 2;
   return { x: g.x + h * Math.cos(g.rot), y: g.y + h * Math.sin(g.rot), rot: g.rot };
 }
+
+// Whether a caret may stand before column glyph `i` (one per code point): not
+// before a mark joined to the letter ahead of it.
+const joined = (g) => g?.flow != null && g.ch === '' && g.bx == null;
 
 // Where the caret stands before glyph `i` (after the last one at `i` = n), as
 // `{ x, y, rot }`. With no glyphs, at the box centre.
 export function caretAt(glyphs, i) {
   const n = glyphs?.length ?? 0;
   if (!n) return { x: 0, y: 0, rot: 0 };
+  if (i >= 0 && i < n && glyphs[i].bx != null) return { x: glyphs[i].bx, y: glyphs[i].by, rot: glyphs[i].flow };
   if (i <= 0) return edge(glyphs[0], -1);
   if (i >= n) return edge(glyphs[n - 1], 1);
+  // A column wrapped here: the caret is at the top of the next one.
+  if (glyphs[i].flow != null && glyphs[i - 1].flow != null && glyphs[i].col !== glyphs[i - 1].col) return edge(glyphs[i], -1);
   const a = edge(glyphs[i - 1], 1);
   const b = edge(glyphs[i], -1);
   return {
@@ -89,13 +104,16 @@ export function glyphNearest(glyphs, x, y) {
   let bestAlong = 0;
   for (let i = 0; i < n; i++) {
     const g = glyphs[i];
-    const c = Math.cos(g.rot);
-    const sn = Math.sin(g.rot);
-    const dx = x - g.x;
-    const dy = y - g.y;
+    if (joined(g)) continue;
+    const col = g.flow != null;
+    const turn = col ? g.flow : g.rot;
+    const c = Math.cos(turn);
+    const sn = Math.sin(turn);
+    const dx = x - (col ? g.cx : g.x);
+    const dy = y - (col ? g.cy : g.y);
     const along = dx * c + dy * sn;
     const across = -dx * sn + dy * c;
-    const off = Math.max(0, Math.abs(along) - glyphReach(g) / 2);
+    const off = Math.max(0, Math.abs(along) - (col ? g.cell : glyphReach(g)) / 2);
     const d = Math.hypot(off, across);
     if (d < bestD) {
       bestD = d;
@@ -120,11 +138,66 @@ export function selectionBoxes(glyphs, i, j) {
   const out = [];
   const n = glyphs?.length ?? 0;
   for (let k = Math.max(0, Math.min(i, j)); k < Math.min(n, Math.max(i, j)); k++) {
+    const g = glyphs[k];
+    if (g.flow != null) {
+      // In a column: from the glyph's own start to its end where a
+      // neighbour is in another column, and nothing for a Return.
+      if (g.bx != null) continue;
+      const same = (m) => m >= 0 && m < n && glyphs[m].col === g.col && glyphs[m].bx == null;
+      const a = same(k - 1) ? caretAt(glyphs, k) : edge(g, -1);
+      const b = same(k + 1) ? caretAt(glyphs, k + 1) : edge(g, 1);
+      out.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, w: Math.hypot(b.x - a.x, b.y - a.y), rot: g.flow });
+      continue;
+    }
     const a = caretAt(glyphs, k);
     const b = caretAt(glyphs, k + 1);
-    out.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, w: Math.hypot(b.x - a.x, b.y - a.y), rot: glyphs[k].rot });
+    out.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, w: Math.hypot(b.x - a.x, b.y - a.y), rot: g.rot });
   }
   return out;
+}
+
+// A column glyph in the zoomed px the marks are drawn in, from the page px it
+// was placed in.
+export function zoomColumnGlyph(g, z) {
+  const out = { ...g, x: g.x * z, y: g.y * z, w: g.w * z, cx: g.cx * z, cy: g.cy * z, cell: g.cell * z };
+  if (g.bx != null) {
+    out.bx = g.bx * z;
+    out.by = g.by * z;
+  }
+  return out;
+}
+
+// The arrow keys in vertical text, as the glyph the caret goes before, or
+// null when the glyphs are not columns. Up and Down step along the column,
+// Left goes to the next column (columns run right to left) and Right to the
+// one before, at the nearest point along it - past the last column to the
+// end, before the first to the start.
+export function columnKey(glyphs, i, key) {
+  const n = glyphs?.length ?? 0;
+  if (!n || glyphs[0].flow == null) return null;
+  const at = Math.max(0, Math.min(n, i));
+  if (key === 'ArrowUp' || key === 'ArrowDown') {
+    const step = key === 'ArrowUp' ? -1 : 1;
+    let k = at + step;
+    while (k > 0 && k < n && joined(glyphs[k])) k += step;
+    return Math.max(0, Math.min(n, k));
+  }
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight') return null;
+  const colOf = (k) => (k >= n ? glyphs[n - 1].col : glyphs[k].bx != null ? glyphs[k].col - 1 : glyphs[k].col);
+  const want = colOf(at) + (key === 'ArrowLeft' ? 1 : -1);
+  const here = caretAt(glyphs, at);
+  let best = null;
+  let bestD = Infinity;
+  for (let k = 0; k <= n; k++) {
+    if (k < n && joined(glyphs[k])) continue;
+    if (colOf(k) !== want) continue;
+    const d = Math.abs(caretAt(glyphs, k).y - here.y);
+    if (d < bestD) {
+      bestD = d;
+      best = k;
+    }
+  }
+  return best ?? (key === 'ArrowLeft' ? n : 0);
 }
 
 // Where a caret key takes the caret on curved text, as a raw offset, or null

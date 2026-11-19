@@ -550,6 +550,22 @@ import {
               <span class="lbl">Letter</span>
               <input type="number" aria-label="Letter spacing" min={letterSpacingRange(s.size).min} max={letterSpacingRange(s.size).max} step="0.5" value={s.letterSpacing} onchange={(e) => num('letterSpacing', e.target.value, letterSpacingRange(s.size).min, letterSpacingRange(s.size).max)} />
             </div>
+            <div class="brow" class:off={!app.bulk.mask.vertical}>
+              {@render tick('vertical')}
+              <span class="lbl">Direction</span>
+              <div class="seg" role="group" aria-label="Direction">
+                <button class:on={!s.vertical} onclick={() => set('vertical', false)}>Across</button>
+                <button class:on={!!s.vertical} onclick={() => set('vertical', true)}>Down</button>
+              </div>
+            </div>
+            <div class="brow" class:off={!app.bulk.mask.verticalLatin}>
+              {@render tick('verticalLatin')}
+              <span class="lbl">Latin</span>
+              <div class="seg" role="group" aria-label="Latin letters">
+                <button class:on={s.verticalLatin !== 'sideways'} onclick={() => set('verticalLatin', 'upright')}>Upright</button>
+                <button class:on={s.verticalLatin === 'sideways'} onclick={() => set('verticalLatin', 'sideways')}>Sideways</button>
+              </div>
+            </div>
           </div>
         </div>
 

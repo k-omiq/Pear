@@ -161,3 +161,34 @@ describe('a scale', () => {
     expect(b.style.strokeEffects[0].size).toBe(8);
   });
 });
+
+// Vertical text turns Auto round: the height is the user's and the width is
+// what the columns need (`hugColumns`), about the box's centre.
+describe('Auto on vertical text', () => {
+  const columnsW = (b, cols) => Math.max(30, Math.ceil((cols - 1) * b.style.size * b.style.lineHeight + b.style.size + 2 * textInset(b.style)));
+  it('widens the box by its columns, and narrows it again', () => {
+    // 400 tall: 19 cells of 20 px a column, so 40 letters are three columns.
+    const b = open({ text: 'あ'.repeat(40), style: { vertical: true } });
+    const cx = b.x + b.w / 2;
+    autoFitBox(b);
+    expect(b.w).toBe(columnsW(b, 3));
+    expect(b.x + b.w / 2).toBeCloseTo(cx, 6);
+    expect(b.h).toBe(400);
+    setBoxText(b, 'あ'.repeat(10));
+    expect(b.w).toBe(columnsW(b, 1));
+  });
+
+  it('keeps a width set by hand, which makes the box Fixed', () => {
+    const b = open({ text: 'あ'.repeat(40), style: { vertical: true } });
+    autoFitBox(b);
+    resizeBox(page().id, b.id, { w: 300 });
+    expect(sizingOf(b.style)).toBe('fixed');
+    expect(b.w).toBe(300);
+  });
+
+  it('leaves a Fixed vertical box as it is', () => {
+    const b = open({ text: 'あ'.repeat(40), style: { vertical: true, autoHeight: false } });
+    autoFitBox(b);
+    expect(b.w).toBe(200);
+  });
+});

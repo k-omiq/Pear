@@ -315,17 +315,26 @@ describe('with a type on', () => {
     expect([box.style.sfx.kern, box.style.sfx.joinBars]).toEqual([true, true]);
   });
 
-  it('resets the path and the letter edits', async () => {
+  it('adds and removes the curve line, and resets the letter edits', async () => {
     const { view, box } = await on();
-    box.style.sfx.paths = [{ a: [-2, 0], b: [2, 0], bend: 0 }];
-    box.style.sfx.glyphs = { '0:0': { dx: 1, dy: 0, rot: 0, s: 1 } };
     await tab(view, 'Layout');
-    await fireEvent.click(view.getByRole('button', { name: 'Reset path' }));
+    // Off at first: the button adds it.
+    expect(box.style.sfx.guide).toBe(false);
+    await fireEvent.click(view.getByRole('button', { name: 'Add curve line' }));
+    expect(box.style.sfx.guide).toBe(true);
+    await tick();
+    // A bent line, then Remove: the handles go and the line is straight.
+    box.style.sfx.paths = [{ a: [-2, 0], b: [2, 0], bend: 0.3 }];
+    box.style.sfx.glyphs = { '0:0': { dx: 1, dy: 0, rot: 0, s: 1 } };
+    await tick();
+    await fireEvent.click(view.getByRole('button', { name: 'Remove curve line' }));
     expect(plain(box.style.sfx.paths)).toEqual([]);
+    expect(box.style.sfx.guide).toBe(false);
+    await tick();
+    expect(view.getByRole('button', { name: 'Add curve line' })).toBeTruthy();
     await fireEvent.click(view.getByRole('button', { name: 'Reset letters' }));
     expect(box.style.sfx.glyphs).toEqual({});
     await tick();
-    expect(view.getByRole('button', { name: 'Reset path' }).disabled).toBe(true);
     expect(view.getByRole('button', { name: 'Reset letters' }).disabled).toBe(true);
   });
 

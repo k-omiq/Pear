@@ -6,7 +6,7 @@
 <script>
   import EditorRoot from './lib/editor/EditorRoot.svelte';
   import { focusActiveField } from './lib/Queue.svelte';
-  import FontModal from './lib/FontModal.svelte';
+  import FontLibrary from './lib/FontLibrary.svelte';
   import BrushModal from './lib/BrushModal.svelte';
   import SettingsModal from './lib/SettingsModal.svelte';
   import ExportDialog from './lib/ExportDialog.svelte';
@@ -23,7 +23,7 @@
   import Onboarding from './lib/onboarding/Onboarding.svelte';
   import { onboarding, offerOnboardingAtBoot, finishOnboarding } from './lib/onboarding/onboarding.svelte.js';
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, setTranslateTypeset, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
+  import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
   import { editBurst } from './lib/edit-burst.js';
   import { sizeSetting, setSizeSetting, steppedSize } from './lib/data.js';
@@ -37,6 +37,7 @@
   import { flushPanels } from './lib/editor/panels.svelte.js';
   import { switchHistoryPage } from './lib/editor/history-file.svelte.js';
   import { restoreFonts, scanSystemFonts } from './lib/fonts.js';
+  import { fontLibraryView, openFontLibrary, closeFontLibrary, closeFontLibraryWindow, followFontChanges } from './lib/font-window.svelte.js';
   import { isTauri } from './lib/importer.js';
   import { checkSidecar } from './lib/sidecar.js';
   import { initDoor, initChapterWindowDoor, closeDoorForQuit } from './lib/agent/door.svelte.js';
@@ -49,7 +50,6 @@
   import { route, goBack, goEditor } from './lib/route.svelte.js';
   import { watchFontLoads, installContextMenuGuard, isReloadKey, isEditableTarget, ownsArrowKeys } from './lib/shell-guards.js';
 
-  let fontModalOpen = $state(false);
   let paletteOpen = $state(false);
   let newChapterOpen = $state(false);
   let newChapterBusy = $state(false);
@@ -111,6 +111,9 @@
     // each follows the others' writes.
     watchProjectRecords();
     restoreFonts();
+    // The Font Library is a window of its own: what it changes, this window
+    // reads again.
+    followFontChanges();
     // What this machine has installed, so a system font the user shows is in
     // the menus from the start. Not awaited: nothing on screen needs it yet.
     scanSystemFonts();
@@ -268,6 +271,9 @@
   async function agentWindowsClosed() {
     if (role.agent) return true;
     await closeDoorForQuit();
+    // Not waited for: the library saves as it goes, so it has nothing to
+    // finish, and the quit should not wait on it.
+    closeFontLibraryWindow();
     const left = await closeAgentWindows();
     if (left > 0) {
       toastError(`An AI window could not close (${left} left) - save or close it first, then quit again`);
@@ -486,14 +492,6 @@
     'inspector.tabEffects': () => setInspectorTab('effects'),
     'inspector.tabLayout': () => setInspectorTab('layout'),
 
-    // A translate chapter's typesetting tools, shown and hidden. Declined in a
-    // typeset chapter, which has them all the time.
-    'translate.typesetTools': () => {
-      if (!isTranslateChapter()) return false;
-      setTranslateTypeset(!app.translateTypeset);
-      toast(app.translateTypeset ? 'Typesetting tools shown' : 'Typesetting tools hidden');
-    },
-
     // The palette (FLOW-4). It closes itself on its own key: while it is up,
     // the modal guard in `onKeydown` keeps this dispatch from running at all.
     'palette.open': () => {
@@ -501,7 +499,7 @@
     },
     'fonts.open': () => {
       if (isTranslateMode()) return false;
-      fontModalOpen = true;
+      openFontLibrary();
     },
   });
   // The rest of the named actions: editor-actions.js.
@@ -588,16 +586,17 @@
       if (drawRead.open) return (drawRead.open = false);
       if (app.bulk.active) return closeBulk();
       if (settingsView.open) return closeSettings();
-      if (fontModalOpen) return (fontModalOpen = false);
+      if (fontLibraryView.open) return closeFontLibrary();
       if (brushTool.manager) return closeBrushManager();
       return deselect();
     }
     // Suppress global editor shortcuts while a modal overlay is open. Markup
     // contract, relied on by this query: every app modal renders a root
     // `.modal-overlay` element and carries the `open` class only while it is
-    // showing (FontModal, ExportDialog do; so must any modal added later, or
-    // this line has to be taught about it). Settings and the first-run setup
-    // are full-window screens, `.settings-screen` and `.onboarding-screen`,
+    // showing (ExportDialog does; so must any modal added later, or
+    // this line has to be taught about it). Settings, the first-run setup and
+    // the in-window Font Library are full-window screens, `.settings-screen`
+    // and `.onboarding-screen`,
     // mounted only while open.
     if (typeof document !== 'undefined' && document.querySelector('.modal-overlay.open, .settings-screen, .onboarding-screen')) return;
     if (route.name !== 'editor') return;
@@ -711,7 +710,7 @@
 />
 
 {#if route.name === 'editor'}
-  <EditorRoot onFontLib={() => (fontModalOpen = true)} onSettings={openSettings} />
+  <EditorRoot onFontLib={openFontLibrary} onSettings={openSettings} />
 {:else if booted}
   <HomeFrame onSettings={openSettings}>
     {#if route.name === 'project'}
@@ -747,7 +746,9 @@
   projectId={versionsRef.projectId}
   chapterId={versionsRef.chapterId}
 />
-<FontModal bind:open={fontModalOpen} />
+<!-- The Font Library is its own window in the desktop app; here only when
+     there is no second window to open (a browser). -->
+{#if fontLibraryView.open}<FontLibrary embedded onclose={closeFontLibrary} />{/if}
 <BrushModal />
 <SettingsModal bind:open={settingsView.open} />
 <ExportDialog />

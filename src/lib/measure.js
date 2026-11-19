@@ -714,6 +714,223 @@ export function pathLayout(text, style, sizePx, boxW, boxH) {
   return out;
 }
 
+// ---- vertical text (tategaki) ----
+//
+// Columns run top to bottom and are ordered right to left, as manga reads.
+// Same contract as `arcLayout`: one entry per code point of `text`, positions
+// from the BOX CENTRE in the px `sizePx` is in, `rot` in radians, each glyph
+// drawn centred on its anchor. A Return starts a new column, and a column
+// wraps at the box's content height. `align` places each column along its
+// length (left = top, center = middle, right = bottom); the block is centred
+// across the box. Line height is the column pitch, letter spacing the extra
+// gap down a column.
+//
+// CJK, kana and (by default) Latin letters stand upright, one to an em cell.
+// The long mark, waves, dashes, ellipses and brackets turn a quarter
+// clockwise (the SFX layout's `turns_upright`, plus the brackets). Small kana
+// sit high and to the right (the SFX layout's nudge), and 、。 move to the
+// cell's top right. `verticalLatin: 'sideways'` turns each Latin word a
+// quarter and runs it down the column. A lone two-digit number stands upright
+// as a pair (tate-chu-yoko).
+//
+// Each entry also carries what the caret needs (curve-caret.js): `flow`, the
+// way the text runs (π/2, down), `col`, and `cx`, `cy`, `cell`, the stretch
+// of column it takes. A Return is an entry with nothing to draw at the top of
+// the column it starts; `bx`, `by` is the end of the column it closes.
+const VERT_TURN = new Set([...'ー〜～…‥—―－-~–‐‒「」『』（）【】〔〕［］｛｝〈〉《》〖〗〘〙〚〛｟｠()[]{}<>＜＞']);
+const VERT_SMALL = new Set([...'ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ']);
+const VERT_CORNER = new Set([...'、。，．']);
+// What never starts a column: it hangs off the end of the one before.
+const VERT_NO_START = new Set([...'、。，．・：；！？!?ー…‥」』）】〕］｝〉》〗〙〛｠)]}', ...VERT_SMALL]);
+const VERT_WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꥠ-꥿가-힣豈-﫿︰-﹏＀-￯\u{1F000}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u;
+const VERT_JOIN = /^(?:\p{M}|‍|[︀-️]|[\u{E0100}-\u{E01EF}]|[\u{1F3FB}-\u{1F3FF}])$/u;
+const HALF_PI = Math.PI / 2;
+
+export function verticalLayout(text, style, sizePx, boxW, boxH) {
+  if (!text || !(sizePx > 0) || !style || !(style.size > 0)) return [];
+  const scale = sizePx / style.size;
+  const ls = (Number(style.letterSpacing) || 0) * scale;
+  const pitch = sizePx * (style.lineHeight > 0 ? style.lineHeight : 1);
+  const room = Math.max(sizePx, ((Number(boxH) || 0) - 2 * textInset(style)) * scale);
+  const sideways = style.verticalLatin === 'sideways';
+  const align = style.align === 'left' || style.align === 'right' ? style.align : 'center';
+  const css = engine ? familyFor(style) : null;
+  const font = engine ? fontShorthand(style, sizePx, css) : null;
+  const kept = engine ? keptFor(font) : null;
+  const key = `${ls}|${pitch}|${room}|${sideways ? 1 : 0}|${align}|${text}`;
+  const hit = kept?.vert.get(key);
+  if (hit) return hit;
+  const adv = kept?.adv ?? null;
+  const advOf = (ch) => (engine ? advance(ch, style, sizePx, css, font, adv) : VERT_WIDE.test(ch) ? sizePx : sizePx * 0.55);
+
+  const chars = [...text];
+  const n = chars.length;
+  // Each code point's cluster head (itself, or the letter a mark joins).
+  const head = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const joins = i > 0 && chars[i] !== '\n' && chars[i - 1] !== '\n' && (VERT_JOIN.test(chars[i]) || chars[i - 1] === '‍');
+    head[i] = joins ? head[i - 1] : i;
+  }
+  const cluster = (i) => {
+    let s = chars[i];
+    for (let k = i + 1; k < n && head[k] === i; k++) s += chars[k];
+    return s;
+  };
+  const space = (ch) => ch === ' ' || ch === '\t' || ch === ' ';
+  const narrow = (i) => head[i] === i && chars[i] !== '\n' && !space(chars[i]) && chars[i] !== '　' && !VERT_WIDE.test(chars[i]);
+
+  // The units a column is filled with: a letter, a space, a Latin word, a
+  // two-digit pair. Each cell is { i (cluster head), len, kind }.
+  const units = [];
+  for (let i = 0; i < n; ) {
+    if (head[i] !== i) {
+      i++;
+      continue;
+    }
+    const ch = chars[i];
+    if (ch === '\n') {
+      units.push({ nl: i });
+      i++;
+      continue;
+    }
+    if (space(ch) || ch === '　') {
+      const len = ch === '　' ? sizePx : advOf(ch);
+      units.push({ space: true, cells: [{ i, len, kind: sideways && ch !== '　' ? 'side' : 'up' }] });
+      i++;
+      continue;
+    }
+    if (!narrow(i)) {
+      const kind = VERT_TURN.has(ch) ? 'turn' : 'up';
+      units.push({ cells: [{ i, len: kind === 'turn' ? advOf(cluster(i)) || sizePx : sizePx, kind }] });
+      i++;
+      continue;
+    }
+    // A run of Latin: as far as the next space, Return or wide letter.
+    const run = [];
+    let j = i;
+    while (j < n && (head[j] !== j || narrow(j))) {
+      if (head[j] === j) run.push(j);
+      j++;
+    }
+    if (run.length === 2 && /^[0-9]$/.test(chars[run[0]]) && /^[0-9]$/.test(chars[run[1]])) {
+      units.push({ tcy: true, cells: [{ i: run[0], len: sizePx, kind: 'tcy', pair: run[1] }] });
+    } else {
+      units.push({
+        word: run.length > 1,
+        cells: run.map((k) => {
+          const kind = sideways ? 'side' : VERT_TURN.has(chars[k]) ? 'turn' : 'up';
+          return { i: k, len: kind === 'up' ? sizePx : advOf(cluster(k)) || sizePx * 0.5, kind };
+        }),
+      });
+    }
+    i = j;
+  }
+
+  // Into columns.
+  const unitLen = (u) => u.cells.reduce((a, c) => a + c.len, 0) + Math.max(0, u.cells.length - 1) * ls;
+  const cols = [{ cells: [], len: 0 }];
+  const breaks = [];
+  const queue = units.slice().reverse();
+  while (queue.length) {
+    const u = queue.pop();
+    if (u.nl != null) {
+      cols.push({ cells: [], len: 0 });
+      breaks.push({ i: u.nl, col: cols.length - 1 });
+      continue;
+    }
+    const len = unitLen(u);
+    // A word longer than a whole column is broken a letter at a time.
+    if (u.word && len > room + 0.01) {
+      for (let k = u.cells.length - 1; k >= 0; k--) queue.push({ cells: [u.cells[k]] });
+      continue;
+    }
+    let col = cols[cols.length - 1];
+    const gap = col.cells.length ? ls : 0;
+    if (col.cells.length && col.len + gap + len > room + 0.01) {
+      if (u.space) {
+        // A space at the end of a column takes no room there.
+        for (const c of u.cells) col.cells.push({ ...c, len: 0, gap: 0 });
+        continue;
+      }
+      if (!VERT_NO_START.has(chars[u.cells[0].i])) {
+        cols.push((col = { cells: [], len: 0 }));
+      }
+    }
+    u.cells.forEach((c) => {
+      const g = col.cells.length ? ls : 0;
+      col.cells.push({ ...c, gap: g });
+      col.len += g + c.len;
+    });
+  }
+
+  // Placed: columns right to left, the block centred across the box.
+  const ncol = cols.length;
+  const blockW = (ncol - 1) * pitch + sizePx;
+  const colX = (k) => blockW / 2 - sizePx / 2 - k * pitch;
+  const top = (k) => {
+    const free = room - cols[k].len;
+    return -room / 2 + (align === 'left' || free <= 0 ? 0 : align === 'right' ? free : free / 2);
+  };
+  const out = new Array(n);
+  const put = (i, g) => {
+    out[i] = g;
+    // A mark joined to the letter is drawn with it, and takes no room.
+    for (let k = i + 1; k < n && head[k] === i; k++) {
+      out[k] = { ch: '', x: g.x, y: g.y, rot: g.rot, w: 0, flow: HALF_PI, col: g.col, cx: g.cx, cy: g.cy + g.cell / 2, cell: 0 };
+    }
+  };
+  cols.forEach((col, k) => {
+    const x = colX(k);
+    let a = top(k);
+    for (const c of col.cells) {
+      a += c.gap;
+      const mid = a + c.len / 2;
+      const ch = chars[c.i];
+      if (c.kind === 'tcy') {
+        const w1 = advOf(chars[c.i]);
+        const w2 = advOf(chars[c.pair]);
+        const half = (w1 + w2) / 2;
+        put(c.i, { ch: cluster(c.i), x: x - half + w1 / 2, y: mid, rot: 0, w: w1, flow: HALF_PI, col: k, cx: x, cy: a + c.len / 4, cell: c.len / 2 });
+        put(c.pair, { ch: cluster(c.pair), x: x + half - w2 / 2, y: mid, rot: 0, w: w2, flow: HALF_PI, col: k, cx: x, cy: a + (3 * c.len) / 4, cell: c.len / 2 });
+      } else {
+        let dx = 0;
+        let dy = 0;
+        if (VERT_SMALL.has(ch)) {
+          dx = 0.12 * sizePx;
+          dy = -0.2 * sizePx;
+        } else if (VERT_CORNER.has(ch)) {
+          dx = 0.5 * sizePx;
+          dy = -0.5 * sizePx;
+        }
+        const turned = c.kind !== 'up';
+        const cl = cluster(c.i);
+        put(c.i, { ch: cl, x: x + dx, y: mid + dy, rot: turned ? HALF_PI : 0, w: advOf(cl), flow: HALF_PI, col: k, cx: x, cy: mid, cell: c.len });
+      }
+      a += c.len;
+    }
+    col.end = a;
+  });
+  for (const b of breaks) {
+    const x = colX(b.col);
+    const y = top(b.col);
+    out[b.i] = { ch: '', x, y, rot: 0, w: 0, flow: HALF_PI, col: b.col, cx: x, cy: y, cell: 0, bx: colX(b.col - 1), by: cols[b.col - 1].end };
+  }
+  // Each glyph's ink, read when it is asked for (`placedInk`).
+  for (const g of out) {
+    if (!g.ch) continue;
+    let ink;
+    Object.defineProperty(g, 'ink', { enumerable: true, configurable: true, get: () => (ink === undefined ? (ink = glyphInk(g.ch, style, sizePx)) : ink) });
+  }
+  out.cols = ncol;
+  if (kept) {
+    kept.vert.set(key, out);
+    kept.lineHeld += n;
+    measureMemoSize += n;
+    if (measureMemoSize > MEASURE_MEMO_MAX) trimMeasureMemo();
+  }
+  return out;
+}
+
 // Greedy word-wrap to a max pixel width. Respects explicit newlines.
 export function wrapLines(text, style, sizePx, maxWidth) {
   if (!text) return [''];
@@ -1283,7 +1500,7 @@ function plainRunLines(text, measure, width) {
 // nobody sees (DET-4).
 const MEASURE_MEMO_MAX = 40000;
 // font -> { adv: Map(string -> advance), ink: Map(string -> metrics), fns: Map(spacing -> `lineWidthIn`),
-//          line: Map(spacing|text -> `lineClusters`), lineHeld }
+//          line: Map(spacing|text -> `lineClusters`), vert: Map(key -> `verticalLayout`), lineHeld }
 // An advance or an ink counts 1 toward the bound; a curved line counts its
 // code points (`lineHeld` is their sum for the font), since it holds a width,
 // a character and an ink for each, and a curved solve keeps one per size it
@@ -1319,7 +1536,7 @@ function keptFor(font) {
   if (engine?.loading()) return null;
   let k = measureMemo.get(font);
   if (k) measureMemo.delete(font);
-  else k = { adv: new Map(), ink: new Map(), fns: new Map(), line: new Map(), lineHeld: 0 };
+  else k = { adv: new Map(), ink: new Map(), fns: new Map(), line: new Map(), vert: new Map(), lineHeld: 0 };
   // Last in the map is last used, so the trim below drops the oldest first.
   measureMemo.set(font, k);
   return k;
@@ -1370,6 +1587,7 @@ function trimMeasureMemo() {
       k.adv.clear();
       k.ink.clear();
       k.line.clear();
+      k.vert.clear();
       k.lineHeld = 0;
     }
     measureMemoSize = 0;
@@ -1864,6 +2082,7 @@ export function measureMemoHeld() {
   for (const k of measureMemo.values()) {
     n += k.adv.size + k.ink.size;
     for (const line of k.line.values()) n += line.chars.length;
+    for (const v of k.vert.values()) n += v.length;
   }
   return n;
 }

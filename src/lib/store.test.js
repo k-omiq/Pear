@@ -119,7 +119,10 @@ const outside = (color, size, opacity = 1) => normalizeStrokeEffect({ size, posi
 import { setPref } from './prefs.svelte.js';
 import { bindTags, unbindTags, tags, lineTags, setLineTags } from './tags.svelte.js';
 import { initHistory, resetHistory, undo, redo, peekStack, queueStepNext, record, stepHere, stepAllowed, setOffscreenSink } from './editor/history.svelte.js';
-import { moveLine, isTranslateChapter } from './store.svelte.js';
+import { moveLine, isTranslateChapter, setTypesetTools } from './store.svelte.js';
+import { setLayouts } from './layouts.svelte.js';
+// A layout one test picks must not be the next test's.
+afterEach(() => setLayouts(null));
 import {
   deleteLine,
   setLineRect,
@@ -1207,6 +1210,8 @@ const BULK_VALUES = () => ({
   valign: 'top',
   lineHeight: 1.8,
   letterSpacing: 3,
+  vertical: true,
+  verticalLatin: 'sideways',
   color: '#123456',
   noFill: true,
   opacity: 0.33,
@@ -4845,7 +4850,7 @@ describe('lines added, deleted and drawn', () => {
   beforeEach(() => {
     app.chapterRef = null;
     app.chapterMode = 'translate';
-    app.translateTypeset = false;
+    setLayouts(null);
     loadProjectPages(doc());
     page().activeLineN = 2;
     initHistory();
@@ -5050,7 +5055,7 @@ describe('lines added, deleted and drawn: the edges', () => {
   beforeEach(() => {
     app.chapterRef = null;
     app.chapterMode = 'translate';
-    app.translateTypeset = false;
+    setLayouts(null);
     loadProjectPages(five());
     page().activeLineN = 1;
     app.errors = [];
@@ -5165,7 +5170,7 @@ describe('lines added, deleted and drawn: the edges', () => {
   });
 
   it('records a pending placeholder whose line has words before deleting it, so undo brings the words back', () => {
-    app.translateTypeset = true;
+    setTypesetTools(true);
     addBoxAt(page(), { text: 'typed words', x: 200, y: 200 });
     const b = page().boxes.at(-1);
     deleteBox(b.id);
@@ -5230,7 +5235,7 @@ describe('lines added, deleted and drawn: the edges', () => {
   it('gates undo and redo in translate mode on the entry on top, for the keys and the buttons', () => {
     record({ t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } });
     expect([stepAllowed('undo'), stepHere('undo')]).toEqual([false, false]);
-    expect(app.toast.msg).toBe('Nothing to undo here: a translate chapter edits the queue, not the canvas');
+    expect(app.toast.msg).toBe('Nothing to undo here: with the typesetting tools hidden, undo steps the queue only');
     expect(peekStack().undo).toHaveLength(1);
     record({ t: 'group', pageId: 1, items: [{ t: 'move', pageId: 1, boxId: 'gone', before: { x: 1 }, after: { x: 2 } }] });
     expect(stepHere('undo')).toBe(false);
@@ -5264,7 +5269,7 @@ describe('lines added, deleted and drawn: the edges', () => {
   });
 
   it('takes a blank free line with its box in a translate chapter, and a pending placeholder\'s line always', () => {
-    app.translateTypeset = true;
+    setTypesetTools(true);
     // A blank line, no drawn box: nothing to keep, so it goes with its box.
     const n = addQueueLine();
     placeActiveAt(300, 300);
@@ -5282,7 +5287,7 @@ describe('lines added, deleted and drawn: the edges', () => {
   });
 
   it('keeps a free line, text and drawn box, when its box is deleted in a translate chapter', () => {
-    app.translateTypeset = true;
+    setTypesetTools(true);
     const n = addQueueLine();
     setLineText(page(), n, 'kept');
     setLineRect(page(), n, [100, 100, 300, 170]);

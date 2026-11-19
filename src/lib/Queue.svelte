@@ -273,7 +273,7 @@
     // the rest of the row is the handle.
     if (e.target.closest('textarea, input, select, [contenteditable], .qmenu, .qtagform, .qjp, .qalt-text, .qrow-more, .badge-draw')) return;
     const y0 = e.clientY;
-    const scroller = listEl.closest('.fpanel-body, .tpane-body');
+    const scroller = listEl.closest('.fpanel-body, .tpane-body, .dock-body');
     let y = y0;
     let raf = 0;
     drag = { n: line.n, on: false, to: null, mark: null };
@@ -707,7 +707,7 @@
 
   function followActiveLine() {
     followRaf = 0;
-    const scroller = listEl?.closest('.fpanel-body, .tpane-body');
+    const scroller = listEl?.closest('.fpanel-body, .tpane-body, .dock-body');
     const row = listEl?.querySelector('.qrow.active');
     if (!scroller || !row) return;
     const rowR = row.getBoundingClientRect();
@@ -824,7 +824,7 @@
   {/if}
   {#if p.lines.length === 0}
     <div class="qhint">
-      No lines yet.<br />{translate
+      No lines yet.<br />{translate && pane
         ? 'Run Detect to read this page, or import a JSON of numbered text.'
         : 'Import a JSON of numbered text to populate the queue, or add a text box below.'}
     </div>
@@ -1082,9 +1082,11 @@
   {/snippet}
 
 
-  {#if !translate}
+  <!-- A free line exists only in a translate chapter: a typeset chapter's line
+       is its box, so with the tools hidden it has nothing to add here. -->
+  {#if !(translate && pane)}
     <div class="qadd">
-      <button class="qadd-btn" disabled={!app.pages.length} onclick={addText}>
+      <button class="qadd-btn" disabled={!app.pages.length || translate} title={translate ? 'Show the typesetting tools to add a text box' : undefined} onclick={addText}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" /></svg>
         Add text
       </button>

@@ -32,8 +32,6 @@ import {
   settleEdits,
   setTool,
   leaveHand,
-  deselect,
-  closeBulk,
   normalizeChapterMode,
   normalizeLayout,
   normalizeOcrLanguage,
@@ -41,6 +39,8 @@ import {
   toast,
   toastError,
   cancelChapterPlace,
+  settleLayoutTools,
+  isTranslateMode,
   useChapterTypesetting,
   stampTypesetting,
   noteTypesettingSaved,
@@ -375,7 +375,7 @@ async function readProject(root, slug, problems, dupes) {
     chapters,
     unreadable: false,
   };
-  recordBase.set(project, recordFields(project));
+  recordBase.set(project.dir, recordFields(project));
   return project;
 }
 
@@ -601,6 +601,9 @@ export async function scanLibrary() {
     // reading, and nothing here is an improvement on it.
     if (!owns()) return;
     library.projects = found;
+    // The live entries, not `found`: the heal bumps `thumbRev` on them, and
+    // only the state proxy tells the card to load the new file.
+    void healMissingCovers(library.projects, owns);
     const notes = [];
     if (problems.length) notes.push(`Could not read: ${problems.join(', ')}`);
     if (dupes.length) {
@@ -722,6 +725,8 @@ export const deleteProject = guarded(async function deleteProject(projectId) {
   await assertClosedElsewhere({ projectId });
   assertProjectClosed(projectId);
   await fsx.trash(p.dir);
+  recordBase.delete(p.dir);
+  coverHeal.delete(p.dir);
   library.projects = library.projects.filter((x) => x.id !== projectId);
 });
 
@@ -767,6 +772,64 @@ async function reassignCover(p, remaining) {
   return { coverChapterId: null, coverPageId: null };
 }
 
+// A project can reach the library without a thumb.png: chapters written by a
+// script, an agent transfer or a hand copy never pass through `buildChapter`,
+// so nobody drew one, and the card stayed blank. The scan makes the missing
+// ones, one project at a time and off the scan's own path. The record keeps
+// its `updatedAt` (or keeps having none), so a healed cover never reorders the
+// grid.
+//
+// Per folder, what the heal knows: a project seen with a cover is not asked
+// again while its chapter count stays the same (no IPC per project per scan),
+// and one that failed - raws still being written, say - is tried again on the
+// next scans, up to COVER_HEAL_TRIES, and afresh once its chapters change.
+const coverHeal = new Map(); // dir -> { chapters, done, tries }
+const COVER_HEAL_TRIES = 3;
+export function _resetCoverHealForTests() {
+  coverHeal.clear();
+}
+async function healMissingCovers(projects, stillOwned) {
+  for (const p of projects) {
+    if (!stillOwned()) return;
+    if (p.unreadable || p.duplicate || !p.chapters?.length) continue;
+    const dir = p.dir;
+    let state = coverHeal.get(dir);
+    if (!state || state.chapters !== p.chapters.length) {
+      state = { chapters: p.chapters.length, done: false, tries: 0 };
+      coverHeal.set(dir, state);
+    }
+    if (state.done || state.tries >= COVER_HEAL_TRIES) continue;
+    // A scan that lands while this one awaits rebuilds the catalogue: the
+    // bump and the record belong on the entry the grid shows now.
+    const live = () => library.projects.find((x) => x.dir === dir && !x.unreadable) ?? p;
+    try {
+      if (await fsx.exists(await fsx.join(dir, 'thumb.png'))) {
+        state.done = true;
+        continue;
+      }
+      state.tries++;
+      const readable = p.chapters.filter((c) => !c.unreadable);
+      // The chapter the record already names goes first, so a cover that was
+      // chosen keeps its chapter when it can.
+      const order = [...readable.filter((c) => c.id === p.coverChapterId), ...readable.filter((c) => c.id !== p.coverChapterId)];
+      const cover = await reassignCover(p, order);
+      if (!cover.coverChapterId) continue;
+      state.done = true;
+      const q = live();
+      if (cover.coverChapterId !== q.coverChapterId || cover.coverPageId !== q.coverPageId) {
+        const record = await writeProjectRecord(q, { ...cover, updatedAt: q.updatedAt });
+        const r = live();
+        r.coverChapterId = record.coverChapterId;
+        r.coverPageId = record.coverPageId;
+      }
+      const r = live();
+      r.thumbRev = (r.thumbRev ?? 0) + 1;
+    } catch {
+      /* a project with no cover is cosmetic; the next scan tries again */
+    }
+  }
+}
+
 // A whole-record rewrite, so everything the project owns is named here. The
 // layout above all: it is chosen once at creation and can never be chosen again,
 // so dropping it would silently turn a webtoon project back into a paged one.
@@ -794,7 +857,7 @@ async function writeProjectRecordNow(p, patch) {
   return withRecordLock(path, async () => {
     const { updatedAt, ...own } = patch ?? {};
     const mine = { ...recordFields(p), ...own };
-    const base = recordBase.get(p);
+    const base = recordBase.get(p.dir);
     let fields = mine;
     if (base) {
       let disk = null;
@@ -805,13 +868,16 @@ async function writeProjectRecordNow(p, patch) {
       }
       if (disk) fields = merge3(base, mine, disk);
     }
-    const record = { schema: SCHEMA, id: p.id, ...fields, updatedAt: updatedAt ?? now() };
+    // A patch that names `updatedAt` keeps that stamp, even none (a heal on a
+    // record that never had one); any other write is stamped now.
+    const stamp = patch && 'updatedAt' in patch ? updatedAt : now();
+    const record = { schema: SCHEMA, id: p.id, ...fields, ...(stamp != null ? { updatedAt: stamp } : {}) };
     // Written only while set, so no other project's record gains the key.
     if (!record.layoutGuessed) delete record.layoutGuessed;
     // The key order every record has been written in.
     const ordered = Object.fromEntries(RECORD_ORDER.filter((k) => k in record).map((k) => [k, record[k]]));
     await writeJson(path, ordered);
-    recordBase.set(p, recordFields(ordered));
+    recordBase.set(p.dir, recordFields(ordered));
     adoptRecord(p, ordered, mine);
     announceRecord(p.dir);
     return ordered;
@@ -834,8 +900,10 @@ const recordFields = (p) => ({
 });
 
 // What this window last read from or wrote to each project's record: the base
-// both sides of a merge changed from.
-const recordBase = new WeakMap();
+// both sides of a merge changed from. Keyed by folder, not by the entry: the
+// catalogue holds $state proxies of the objects readProject made, and a proxy
+// is never the same key as the object it wraps.
+const recordBase = new Map();
 
 // Another window's changes, now on disk, into this window's catalogue entry -
 // and into the live guide and tags when this is the open series.
@@ -860,9 +928,9 @@ async function refreshRecord(dir) {
     .then(async () => {
       const disk = projectFieldsOf(await readJson(await fsx.join(dir, 'project.json')));
       const mine = recordFields(p);
-      const base = recordBase.get(p);
+      const base = recordBase.get(p.dir);
       adoptRecord(p, base ? merge3(base, mine, disk) : disk, mine);
-      recordBase.set(p, disk);
+      recordBase.set(p.dir, disk);
     })
     .catch(() => {
       /* a record mid-write or unreadable: the next write merges from disk */
@@ -2177,20 +2245,13 @@ export async function setChapterMode(projectId, chapterId, mode) {
 
   if (app.chapterRef?.projectId === projectId && app.chapterRef?.chapterId === chapterId) {
     app.chapterMode = next;
-    app.translateTypeset = false;
     app.viewCleaned = false;
     app.viewRaw = false;
-    // The same tool reset an open in translate mode performs - the rail is about
-    // to lose the two tools the user may currently be holding. Ending inline
-    // editing and closing bulk state prevents stuck editingId and phantom bulk.
-    if (next === 'translate') {
-      deselect();
-      closeBulk();
-      setTool('pan');
-      // Nothing places a box in a translate chapter, including a "Place
-      // chapter" still measuring.
-      cancelChapterPlace();
-    } else leaveHand();
+    // The chapter now shows the layout its new kind uses. The same tool reset
+    // an open performs: a layout without the typesetting tools takes away the
+    // tools the user may be holding, ends inline editing, closes bulk and
+    // stops a "Place chapter" still measuring (`settleLayoutTools`).
+    settleLayoutTools();
     c.mode = next;
     markUnsaved();
     return next;
@@ -2506,8 +2567,7 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   // afterwards would call an untouched translate/typeset open a user edit.
   const mode = normalizeChapterMode(record.mode);
   app.chapterMode = mode;
-  // A translate chapter always opens as the page and the typing pane.
-  app.translateTypeset = false;
+  // The chapter opens with the layout its kind uses (layouts.svelte.js).
   app.viewCleaned = false;
   app.viewRaw = false;
   // And its line breaker from the chapter's own record, for the same reason:
@@ -2543,10 +2603,11 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   // And so does the tag registry: this project's vocabulary and size memory,
   // not whatever the last project left behind.
   bindProjectSeries(p);
-  // Translate mode has no place and no text tool, and `setTool` refuses them
-  // while it is on - so a chapter opened in it always lands on the hand rather
-  // than on whatever the previous chapter was left holding.
-  if (mode === 'translate') setTool('pan');
+  // A layout without the typesetting tools has no place and no text tool, and
+  // `setTool` refuses them while it is on - so a chapter opened in one always
+  // lands on the hand rather than on whatever the previous chapter was left
+  // holding.
+  if (isTranslateMode()) setTool('pan');
   else leaveHand();
   // Order matters. loadProjectPages ends in markUnsaved(), which only schedules
   // a save while a chapterRef is set; setting the ref after it, then marking
@@ -2916,7 +2977,6 @@ export function closeChapter() {
   // editor stripped for the next chapter opened - and `openChapter` writes it
   // anyway, so this is only about what the app is between two chapters.
   app.chapterMode = 'typeset';
-  app.translateTypeset = false;
   app.viewCleaned = false;
   app.viewRaw = false;
   // The translate chapter's hand goes with it: whatever opens next is typeset

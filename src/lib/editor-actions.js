@@ -24,6 +24,13 @@ import {
   isLongstrip,
   isTranslateMode,
   isTranslateChapter,
+  typesetToolsShown,
+  queueDocked,
+  optionsDocked,
+  activeLayout,
+  chooseLayout,
+  setLayoutField,
+  toast,
   openBulk,
   nextPageWithWork,
   placeDetectedInChapter,
@@ -62,7 +69,8 @@ import { showActiveRow, drawLineBox, deleteLineWithUndo } from './Queue.svelte';
 import { exportImages } from './exporter.js';
 import { goProject, goLibrary } from './route.svelte.js';
 
-// A chapter open in typeset mode: what nearly every action needs.
+// A chapter open with the typesetting tools out (the layout's, see
+// layouts.svelte.js): what nearly every action needs.
 const typeset = () => app.loaded && !isTranslateMode();
 const boxSelected = () => typeset() && app.selectedId != null && !!byId(app.selectedId);
 const tagged = () => boxSelected() && !!boxTagName();
@@ -234,9 +242,26 @@ const RUNS = {
   'view.zoomOut': { when: () => app.loaded, run: () => zoomOut() },
   'view.zoomActual': { when: () => app.loaded, run: () => zoomReset() },
   'view.raw': { when: typeset, run: toggleRaw },
-  'panel.options': { when: typeset, run: () => togglePanel('options') },
-  'panel.queue': { when: typeset, run: () => togglePanel('queue') },
+  // A docked pane is never hidden, so these are for the floating windows.
+  'panel.options': { when: () => typeset() && !optionsDocked(), run: () => togglePanel('options') },
+  'panel.queue': { when: () => app.loaded && !queueDocked(), run: () => togglePanel('queue') },
   'panel.ai': { when: typeset, run: () => togglePanel('ai') },
+
+  // The layout (the rail's Layout menu): a preset, or one pane at a time.
+  'layout.translate': { when: () => app.loaded && (isComics() || isTranslateChapter()), run: () => chooseLayout('translate') },
+  'layout.typeset': { when: () => app.loaded, run: () => chooseLayout('typeset') },
+  'layout.custom': { when: () => app.loaded, run: () => chooseLayout('custom') },
+  'layout.queueDock': { when: () => app.loaded, run: () => setLayoutField('queue', queueDocked() ? 'floating' : 'docked') },
+  'layout.optionsDock': { when: typeset, run: () => setLayoutField('options', activeLayout().options === 'docked' ? 'floating' : 'docked') },
+  // The old one-click "Typeset" of the typing pane, kept on its old id (and
+  // key) so a rebinding still holds: the layout's tools, in any chapter.
+  'translate.typesetTools': {
+    when: () => app.loaded,
+    run: () => {
+      setLayoutField('tools', !typesetToolsShown());
+      toast(typesetToolsShown() ? 'Typesetting tools shown' : 'Typesetting tools hidden');
+    },
+  },
 
   'detect.page': { when: canDetect, run: () => detectCurrentPage() },
   'detect.chapter': { when: canDetect, run: () => detectAllPages() },
@@ -244,7 +269,7 @@ const RUNS = {
   'jobs.retry': { when: () => !!retryable() && sidecarReady() && !app.detecting, run: () => retryable()?.retry() },
   'ocr.draw': { when: () => true, run: () => { drawRead.open = true; } },
 
-  'translate.cleaned': { when: () => isTranslateChapter() && app.translateTypeset, run: () => { app.viewCleaned = !app.viewCleaned; } },
+  'translate.cleaned': { when: () => isTranslateChapter() && typesetToolsShown(), run: () => { app.viewCleaned = !app.viewCleaned; } },
   // The typing pane's active line. Delete's keys are the row's own (Queue.svelte);
   // this is the action they name, for whatever runs it by id.
   'line.delete': { when: activeLine, run: () => deleteLineWithUndo(page().activeLineN) },

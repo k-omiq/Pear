@@ -4,6 +4,7 @@ import { defaultSpecial } from './special.js';
 import { untrack } from 'svelte';
 import { applyLineOrder, deleteOrder, lineLabels } from './reading-order.js';
 import { pageRectPick } from './page-rect-pick.svelte.js';
+import { comboFor as layoutComboFor, layoutIdFor, useLayout, setComboField, onLayoutsAdopt } from './layouts.svelte.js';
 import {
   PAGE_W,
   PAGE_H,
@@ -116,6 +117,7 @@ import {
   REVIEW_REASONS,
   CONTAIN_TOL,
   curvedStyle,
+  sizesVertically,
 } from './contain.js';
 import { fitPolygon, visualCentre } from './outline-geom.js';
 import { neededHeight, growToFit, heightToFit, hasHangul } from './typeset.js';
@@ -283,6 +285,9 @@ function givePlainWrap(b, p) {
 export function loadProjectPages(rawPages, { plain = false } = {}) {
   // A pick waiting on the pages being replaced has nothing left to land on.
   pageRectPick.cancel('closed');
+  // Every chapter opens with its layout's own tools: the last one's switch
+  // (`setTypesetTools`) was that chapter's alone.
+  toolsOverride = null;
   const takenBoxes = new Set();
   const takenPages = new Set();
   let minted = 0;
@@ -731,13 +736,11 @@ export const app = $state({
   // back to the default: two chapters in different modes must each open the way
   // their own file says, whichever was opened first.
   chapterMode: 'typeset',
-  // A translate chapter with its typesetting tools shown (see
-  // `setTranslateTypeset`). A view of the session, not of the file: every open
-  // and every close puts it back to hidden, so a translate chapter always opens
-  // as the page and the typing pane.
-  translateTypeset: false,
-  // With those tools out, whether the page shows its cleaned version rather
-  // than the raw. Off whenever the tools go away or a chapter opens.
+  // Whether the typesetting tools are out is the layout's (layouts.svelte.js,
+  // `typesetToolsShown` below), not a field here.
+  // In a translate chapter with those tools out, whether the page shows its
+  // cleaned version rather than the raw. Off whenever the tools go away or a
+  // chapter opens.
   viewCleaned: false,
   // The open chapter's PROJECT's layout, mirrored from its project.json - see
   // LAYOUTS. Like the mode above it is a property of what is open rather than a
@@ -1359,6 +1362,11 @@ export function autoFitBox(b, p = page(), { solve = false } = {}) {
   const text = boxText(b, p);
   if (sfxActive(b.style)) return hugSfxBox(b, p, text);
   const cand = boxCandidate(b, text, runsFor(b, p, text));
+  // Vertical text: Fit to box sizes its type, Auto widens it by its columns.
+  if (sizesVertically(cand)) {
+    if (b.style.fitText) return fitTextToBox(b, p, cand);
+    if (b.style.autoHeight !== false && cand.w > 0) return hugColumns(b, p, cand);
+  }
   if (b.style.fitText && !handPlacedBox(cand)) return fitTextToBox(b, p, cand);
   if (!isAutoBox(cand)) {
     reviewBox(b, p);
@@ -1372,6 +1380,30 @@ export function autoFitBox(b, p = page(), { solve = false } = {}) {
   const r = fitBox(cand, { page: p, strip: stripOf(p), minSize: minSizeFor(b, p) });
   const changed = writeFit(b, r);
   writeReview(b, r.review);
+  return changed;
+}
+
+// Auto for vertical text: the width is what its columns need at the height
+// the box has, both ways, about the box's centre (the block is centred across
+// it), and kept on the page where the page is wide enough.
+function hugColumns(b, p, cand) {
+  const place = placeBlock(cand);
+  const s = b.style;
+  const cols = place?.layout?.cols ?? 0;
+  let changed = false;
+  if (cols > 0) {
+    const pitch = s.size * (s.lineHeight > 0 ? s.lineHeight : 1);
+    const w = Math.max(MIN_BOX_H, Math.ceil((cols - 1) * pitch + s.size + 2 * textInset(s)));
+    if (w !== b.w) {
+      let x = b.x + (b.w - w) / 2;
+      const pw = p?.w ?? 0;
+      if (pw >= w) x = Math.min(Math.max(0, x), pw - w);
+      b.x = x;
+      b.w = w;
+      changed = true;
+    }
+  }
+  reviewBox(b, p, changed ? undefined : place);
   return changed;
 }
 
@@ -4473,37 +4505,112 @@ export const normalizeChapterMode = (m) => (CHAPTER_MODES.includes(m) ? m : 'typ
 // exactly as a direct property read would.
 //
 // Two questions, not one. `isTranslateChapter` is what the chapter IS - it picks
-// the split workspace (page beside the typing pane), the auto-detect on open and
-// the translated count. `isTranslateMode` is whether the typesetting tools are
-// held back right now: a translate chapter keeps them hidden until the user
-// reveals them (`setTranslateTypeset`), and every box-adding door in the app
-// asks this one, so revealing them is the whole of "typeset in translate mode".
+// how its lines behave (free lines, numbered bubbles, the typing keys), the
+// auto-detect on open and the translated count. Whether the typesetting tools
+// are out is the editor's LAYOUT (layouts.svelte.js): a preset or the user's
+// own mix of panes, picked from the rail's Layout menu and remembered per kind
+// of chapter. `isTranslateMode` keeps its old name and is that layout's
+// "tools hidden": every box-adding door in the app asks it.
 export const isTranslateChapter = () => app.chapterMode === 'translate';
-export const isTranslateMode = () => app.chapterMode === 'translate' && !app.translateTypeset;
+// The tools switch (`Mod+Shift+T`, the palette, the Layout menu's switch) is the
+// open chapter's only, like the old session flag: it is never saved, and it
+// ends with the chapter. Every open goes through `loadProjectPages`, which
+// clears it; a close leaves nothing loaded, where it is not read.
+let toolsOverride = $state(null); // true | false | null (the layout's own)
+const overrideTools = () => (app.loaded ? toolsOverride : null);
+export const activeLayout = () => {
+  const combo = layoutComboFor(app.chapterMode);
+  const tools = overrideTools();
+  return tools == null || tools === combo.tools ? combo : { ...combo, tools };
+};
+export const activeLayoutId = () => layoutIdFor(app.chapterMode);
+export const typesetToolsShown = () => activeLayout().tools;
+export const isTranslateMode = () => !typesetToolsShown();
+// Where the queue and the Text box options sit now. The options are never
+// drawn while the tools are hidden, docked or not.
+export const queueDocked = () => activeLayout().queue === 'docked';
+export const optionsDocked = () => typesetToolsShown() && activeLayout().options === 'docked';
 
-// Show or hide the typesetting tools in a translate chapter. Hiding them does
-// what switching a chapter to translate does: the tools the rail is about to
-// lose are let go, so nothing is left armed, selected or mid-placement.
-export function setTranslateTypeset(on) {
-  if (!isTranslateChapter()) return false;
-  on = !!on;
-  if (app.translateTypeset === on) return true;
+// The tools the rail is about to lose are let go, so nothing is left armed,
+// selected or mid-placement. Run on the way from shown to hidden, whatever
+// asked for it (the switch, a preset, a chapter kind switched).
+function dropTypesetTools() {
+  settleEdits();
+  deselect();
+  closeBulk();
+  setTool('pan');
+  cancelChapterPlace();
+  app.peekRaw = false;
+  app.viewRaw = false;
+  app.viewCleaned = false;
+}
+
+// Every change of layout goes through here, so the tools are let go or picked
+// up the same way whichever control asked.
+function changeLayout(write) {
+  const was = typesetToolsShown();
+  write();
+  const now = typesetToolsShown();
   // The page under a waiting pick changes what it is for (a pattern needs the
-  // box it was asked from, which the hidden tools stop drawing).
-  pageRectPick.cancel('mode');
-  if (!on) {
-    settleEdits();
+  // box it was asked from, which hidden tools stop drawing; a line's box is
+  // drawn on a page that now shows other things), so it ends either way.
+  if (was !== now) pageRectPick.cancel('mode');
+  if (was && !now) dropTypesetTools();
+  else if (!was && now) leaveHand();
+  return true;
+}
+
+// A preset ('translate', 'typeset') or the custom slot, for the open
+// chapter's kind.
+export function chooseLayout(id) {
+  // A preset brings its own tools, so the chapter's own switch gives way.
+  return changeLayout(() => {
+    toolsOverride = null;
+    useLayout(app.chapterMode, id);
+  });
+}
+// One pane choice: 'tools' (boolean), 'queue' or 'options' ('docked' /
+// 'floating'). The result is the matching preset, or the custom slot.
+// 'tools' is the open chapter's switch (`setTypesetTools`), never saved.
+export function setLayoutField(field, value) {
+  if (field === 'tools') return setTypesetTools(value);
+  return changeLayout(() => setComboField(app.chapterMode, field, value));
+}
+
+// Show or hide the typesetting tools in the open chapter only. The name is the
+// old one (its key and its action are still `translate.typesetTools`), and it
+// now works in any chapter. With no chapter open there is nothing to switch.
+export function setTypesetTools(on) {
+  if (!app.loaded) return false;
+  return changeLayout(() => {
+    const tools = !!on;
+    toolsOverride = tools === layoutComboFor(app.chapterMode).tools ? null : tools;
+  });
+}
+
+// Another window's saved layouts arrive (prefs-sync). They change the panes
+// here at once, but never take the tools from - or give them to - the chapter
+// open in this window: an agent's chapter window mid-run keeps the tools it is
+// using. The next chapter opened follows the new layout. Whatever changes still
+// goes through `changeLayout`, so nothing is left armed or mid-placement.
+onLayoutsAdopt((write) =>
+  changeLayout(() => {
+    const was = typesetToolsShown();
+    write();
+    if (app.loaded && typesetToolsShown() !== was) toolsOverride = was;
+  }),
+);
+
+// A chapter that has just opened, or whose kind just changed, with the layout
+// its kind uses: anything the hidden tools would have held is let go, and a
+// layout with tools picks a tool the rail shows.
+export function settleLayoutTools() {
+  if (isTranslateMode()) {
     deselect();
     closeBulk();
     setTool('pan');
     cancelChapterPlace();
-    app.peekRaw = false;
-    app.viewRaw = false;
-    app.viewCleaned = false;
-  }
-  app.translateTypeset = on;
-  if (on) leaveHand();
-  return true;
+  } else leaveHand();
 }
 
 // ---------- the project's page layout ----------
@@ -5843,7 +5950,7 @@ function freeLineBox(p, ln, imgX, imgY, rect = ln.rect) {
 // and the view stays where it is. One `place` step. Returns the box, or a
 // string saying why not.
 export function addBoxAt(p, { lineN = null, text = null, x, y, rect = null, style = null } = {}) {
-  if (isTranslateMode()) return 'this chapter is in translate mode';
+  if (isTranslateMode()) return 'the typesetting tools are hidden in this chapter\'s layout';
   if (!p) return 'no such page';
   settleEdits();
   let ln;
@@ -7413,6 +7520,9 @@ export function resizeBox(pageId, boxId, geom, base = null) {
   // Figma's text boxes do, so the next edit keeps it. A scale is not one -
   // the text scales with the box.
   if (!scale && !hand && sizingOf(b.style) === 'auto' && Number.isFinite(geom.h) && geom.h !== oh) b.style.autoHeight = false;
+  // Vertical text turns that round: Auto is its width, and a width set by
+  // hand is the box's.
+  if (!scale && sizingOf(b.style) === 'auto' && Number.isFinite(geom.w) && geom.w !== ow && sizesVertically(boxCandidate(b, null))) b.style.autoHeight = false;
   const mode = sizingOf(b.style);
   let nw = Number.isFinite(geom.w) ? geom.w : b.w;
   let nh = Number.isFinite(geom.h) ? geom.h : b.h;
@@ -7796,6 +7906,8 @@ export const BULK_PROPS = [
   'valign',
   'lineHeight',
   'letterSpacing',
+  'vertical',
+  'verticalLatin',
   // Fill & Stroke & Shadow. `gradient`, `pattern`, `strokes` and `shadows`
   // are whole-value leaves: a bulk edit moves the entire gradient / the entire
   // stroke list, never one field of one stroke. Splitting a list by index
@@ -7867,7 +7979,7 @@ export const BULK_WHOLE_LEAVES = ['gradient', 'pattern', 'strokeEffects', 'shado
 // BULK_PROPS would be a header that ticks nothing, and the tests pin the two
 // together. Every key appears in exactly one group.
 export const GROUPS = {
-  font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing'],
+  font: ['font', 'size', 'bold', 'italic', 'boldWeight', 'italicAngle', 'uppercase', 'align', 'valign', 'lineHeight', 'letterSpacing', 'vertical', 'verticalLatin'],
   fill: ['color', 'noFill', 'opacity', 'fillOpacity', 'blendMode', 'blending', 'blur', 'motionBlur', 'strokeEffects', 'gradient', 'pattern', 'colorOverlays', 'gradientOverlays', 'patternOverlay'],
   shadow: ['shadows', 'outerGlow', 'innerGlow', 'innerShadows', 'satin', 'bevel'],
   warp: ['curve', 'circle', 'roughen.on', 'roughen.amount', 'roughen.detail', 'roughen.seed', 'roughen.grit', 'wobble.on', 'special'],

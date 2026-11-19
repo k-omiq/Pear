@@ -55,7 +55,7 @@ defineTool({
   input: { type: 'object', additionalProperties: false, properties: { pages: pagesSchema } },
   write: true,
   async run({ pages } = {}, ctx) {
-    if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes');
+    if (isTranslateMode()) throw new ToolError('the typesetting tools are hidden in this chapter\'s layout, so it has no boxes');
     const ps = pagesOf(pages).filter((p) => placeableDetectedLines(p).length);
     if (!ps.length) return { placed: 0, pages: [], note: 'nothing to place: no detected lines without a box on those pages. Run detect first if a page has none.' };
     const measured = await measureForPlace(ps);
@@ -143,7 +143,7 @@ defineTool({
   write: true,
   async run({ pages } = {}, ctx) {
     if (!isComics()) throw new ToolError('detection is off: this app is set to general use', 'The user can switch to Comics in Settings, General.');
-    if (isTranslateMode()) throw new ToolError('this chapter is in translate mode');
+    if (isTranslateMode()) throw new ToolError('the typesetting tools are hidden in this chapter\'s layout');
     if (!sidecarReady()) throw new ToolError('the detection engine is not ready', 'Ask the user to check it in Settings, System.');
     if (app.detecting) throw new ToolError('detection is already running', 'Wait, then call again.');
     const asked = pagesOf(pages);

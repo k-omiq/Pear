@@ -967,7 +967,7 @@ defineTool({
   async run({ ops, dryRun = false, compact = false }, ctx) {
     if (!Array.isArray(ops) || !ops.length) throw new ToolError('ops must be a non-empty list', 'Use ops: [{ where: { selection: true }, set: { style: { size: "+2" } } }].');
     if (ops.length > MAX_OPS) throw new ToolError(`at most ${MAX_OPS} ops in one call`, 'Split the work, or use wider selectors.');
-    if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes to edit');
+    if (isTranslateMode()) throw new ToolError('the typesetting tools are hidden in this chapter\'s layout, so it has no boxes to edit');
     // The AI panel never writes words over the user's (TXT-4): the text tool
     // turns them into proposals the user takes or drops.
     if (ctx?.door === 'panel' && ops.some((op) => op?.set && typeof op.set === 'object' && 'text' in op.set)) {

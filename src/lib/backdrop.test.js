@@ -129,7 +129,7 @@ describe('pageArtSrc', () => {
     expect(pageArtSrc({ raw: 'raw' }, {})).toBe('raw');
     expect(pageArtSrc(pg, { peekRaw: true })).toBe('raw');
     expect(pageArtSrc(pg, { chapterMode: 'translate' })).toBe('raw');
-    expect(pageArtSrc(pg, { chapterMode: 'translate', translateTypeset: true, viewCleaned: true })).toBe('clean');
+    expect(pageArtSrc(pg, { chapterMode: 'translate', tools: true, viewCleaned: true })).toBe('clean');
     expect(pageArtSrc(null, {})).toBe(null);
   });
 });

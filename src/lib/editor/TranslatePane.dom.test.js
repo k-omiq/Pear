@@ -12,9 +12,11 @@ vi.mock('../sidecar.js', async (original) => ({
   detectAllPages: () => { engine.reads++; },
 }));
 import TranslatePane from './TranslatePane.svelte';
+import AutoDetect from './AutoDetect.svelte';
+import { setLayouts } from '../layouts.svelte.js';
 import { setPref } from '../prefs.svelte.js';
 import BubbleNumbers from './BubbleNumbers.svelte';
-import { app, loadProjectPages, page } from '../store.svelte.js';
+import { app, loadProjectPages, page, setTypesetTools } from '../store.svelte.js';
 
 beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', () => 0);
@@ -35,7 +37,7 @@ afterEach(() => {
   loadProjectPages([]);
   app.chapterMode = 'typeset';
   app.projectOcrLanguage = 'ja';
-  app.translateTypeset = false;
+  setLayouts(null);
   app.viewCleaned = false;
   vi.unstubAllGlobals();
 });
@@ -47,8 +49,16 @@ it('shows where the translator is and which way the series reads', async () => {
   expect(view.getByText('Right to left')).toBeTruthy();
   await fireEvent.click(view.getByRole('button', { name: 'Keyboard keys' }));
   expect(view.getByText('Find or add a tag')).toBeTruthy();
-  await fireEvent.click(view.getByRole('button', { name: /Typeset/ }));
-  expect(app.translateTypeset).toBe(true);
+  expect(view.getByText('Show or hide the typesetting tools')).toBeTruthy();
+  // No mode switch in the pane: the tools are the rail's Layout menu.
+  expect(view.queryByRole('button', { name: /Typeset/ })).toBe(null);
+  // Docked, the header floats it; in the floating window there is no such button.
+  expect(view.queryByRole('button', { name: 'Float the text queue' })).toBe(null);
+  cleanup();
+  let floated = 0;
+  const docked = render(TranslatePane, { onfloat: () => floated++ });
+  await fireEvent.click(docked.getByRole('button', { name: 'Float the text queue' }));
+  expect(floated).toBe(1);
 });
 
 it('offers the cleaned pages with the typesetting tools out, and drops back to raw when they go', async () => {
@@ -56,12 +66,13 @@ it('offers the cleaned pages with the typesetting tools out, and drops back to r
   const view = render(TranslatePane);
   await tick();
   expect(view.queryByRole('button', { name: /Cleaned/ })).toBe(null);
-  app.translateTypeset = true;
+  setTypesetTools(true);
   await tick();
   await fireEvent.click(view.getByRole('button', { name: /Cleaned/ }));
   expect(app.viewCleaned).toBe(true);
-  await fireEvent.click(view.getByRole('button', { name: /Typeset/ }));
-  expect(app.translateTypeset).toBe(false);
+  setTypesetTools(false);
+  await tick();
+  expect(view.queryByRole('button', { name: /Cleaned/ })).toBe(null);
   expect(app.viewCleaned).toBe(false);
 });
 
@@ -93,6 +104,7 @@ it('under general use offers no Detect, says no engine is missing, and reads not
     loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [] }]);
     app.loaded = true;
     app.chapterRef = { projectId: 'p', chapterId: 'old-translate' };
+    render(AutoDetect);
     const view = render(TranslatePane);
     await tick();
     expect(view.getByText('Add text in the list below.')).toBeTruthy();
@@ -103,6 +115,7 @@ it('under general use offers no Detect, says no engine is missing, and reads not
     // Comics use with the engine up reads a chapter nobody has read.
     setPref('usage', 'comics');
     app.chapterRef = { projectId: 'p', chapterId: 'fresh' };
+    render(AutoDetect);
     const comics = render(TranslatePane);
     await tick();
     expect(comics.getByRole('button', { name: 'Detect this page' })).toBeTruthy();

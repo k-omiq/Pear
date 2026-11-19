@@ -22,7 +22,6 @@ import {
   setBoxText,
   setRangesFace,
   writeLineText,
-  isTranslateMode,
   isTranslateChapter,
   boxLocked,
   allFonts,
@@ -84,7 +83,7 @@ defineTool({
       }
       if (rows.length) out.push({ page: app.pages.indexOf(p) + 1, lines: rows });
     }
-    return { count, pages: out, ...(count > MAX_LINES ? { truncated: true } : null), ...(isTranslateMode() ? { mode: 'translate' } : null) };
+    return { count, pages: out, ...(count > MAX_LINES ? { truncated: true } : null), ...(isTranslateChapter() ? { mode: 'translate' } : null) };
   },
 });
 

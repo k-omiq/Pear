@@ -1,20 +1,19 @@
 <script>
   // ===== The typing pane of a translate chapter =====
   //
-  // A translate chapter is two halves: the page on the left, numbered bubble by
-  // bubble in reading order (BubbleNumbers), and this pane on the right, where
-  // each number's English is typed. The split between them is the user's: the
-  // edge drags (and takes the arrow keys), and the width is kept on this
-  // computer.
+  // A translate chapter is the page, numbered bubble by bubble in reading order
+  // (BubbleNumbers), and this pane, where each number's English is typed: the
+  // queue (Queue.svelte) given room, plus what a translator needs around it -
+  // where they are, how far through, which way the series reads, the cleaned
+  // pages once the typesetting tools are out, and the keys.
   //
-  // The pane is the queue (Queue.svelte) given room, plus what a translator
-  // needs around it: where they are, how far through, which way the series
-  // reads, the typesetting tools behind one switch, and the keys.
+  // Where it sits is the layout's (layouts.svelte.js): docked in the column
+  // down the right (DockPane.svelte), or in the floating queue window. Either
+  // way it is the same pane. `onfloat`, given by the dock, is the header's way
+  // to the floating window.
   //
-  // Detection runs on its own the first time a chapter that has never been read
-  // is opened, because a translate chapter with no lines has nothing to type
-  // against.
-  import { onMount, untrack } from 'svelte';
+  // The never-read chapter's first detection is AutoDetect.svelte's, so it runs
+  // wherever the pane is, and with the window hidden too.
   import Queue from '../Queue.svelte';
   import {
     app,
@@ -22,77 +21,13 @@
     translatedCount,
     chapterProgress,
     readingDirection,
-    setTranslateTypeset,
-    toast,
+    typesetToolsShown,
   } from '../store.svelte.js';
   import { sidecarReady, detectAllPages, detectCurrentPage } from '../sidecar.js';
   import { isComics } from '../prefs.svelte.js';
   import { comboFor, defaultCombo, formatCombo } from '../shortcuts.svelte.js';
 
-  let { width = $bindable(420) } = $props();
-
-  // ---------- the split ----------
-  const KEY = 'mt.translatePane';
-  const MIN = 320;
-  // The page keeps at least this much, so it can still be read beside the pane.
-  const PAGE_MIN = 360;
-  const maxW = () => Math.max(MIN, (typeof window === 'undefined' ? 1440 : window.innerWidth) - PAGE_MIN);
-  const clampW = (w) => Math.round(Math.min(maxW(), Math.max(MIN, w)));
-  const defaultW = () => clampW((typeof window === 'undefined' ? 1440 : window.innerWidth) * 0.4);
-
-  function load() {
-    let saved = null;
-    try {
-      saved = Number(localStorage.getItem(KEY));
-    } catch {
-      /* private window, blocked storage: the default stands */
-    }
-    width = Number.isFinite(saved) && saved > 0 ? clampW(saved) : defaultW();
-  }
-  function save() {
-    try {
-      localStorage.setItem(KEY, String(width));
-    } catch {
-      /* the split still works for this session */
-    }
-  }
-  onMount(load);
-
-  let dragging = $state(false);
-  function onSplitDown(e) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const x0 = e.clientX;
-    const w0 = width;
-    dragging = true;
-    const move = (ev) => (width = clampW(w0 + (x0 - ev.clientX)));
-    const up = () => {
-      dragging = false;
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', up);
-      save();
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', up);
-  }
-  function onSplitKey(e) {
-    const step = e.shiftKey ? 64 : 16;
-    if (e.key === 'ArrowLeft') width = clampW(width + step);
-    else if (e.key === 'ArrowRight') width = clampW(width - step);
-    else if (e.key === 'Home') width = clampW(maxW());
-    else if (e.key === 'End') width = MIN;
-    else return;
-    e.preventDefault();
-    e.stopPropagation();
-    save();
-  }
-  function resetSplit() {
-    width = defaultW();
-    save();
-  }
-  const onResize = () => (width = clampW(width));
+  let { onfloat = null } = $props();
 
   // ---------- where the translator is ----------
   const p = $derived(page());
@@ -101,31 +36,11 @@
   const share = $derived(chapter.total ? chapter.translated / chapter.total : 0);
   const rtl = $derived(readingDirection() === 'rtl');
   const typesetKey = $derived(formatCombo(comboFor('translate.typesetTools')));
+  const tools = $derived(typesetToolsShown());
 
   // ---------- detection ----------
   const engineReady = $derived(sidecarReady());
-  const neverRead = $derived(app.pages.length > 0 && !app.pages.some((q) => q.detect || q.lines?.length));
   const batch = $derived(app.detectBatch);
-
-  // Once per chapter opened: a chapter nobody has detected yet is detected now.
-  // A chapter that has lines from anywhere (a JSON import, a previous run) is
-  // never re-read behind the user's back - that is the Detect menu's job.
-  const tried = new Set();
-  $effect(() => {
-    const ref = app.chapterRef;
-    const ready = engineReady;
-    const fresh = neverRead;
-    if (!ref || !app.loaded) return;
-    const key = `${ref.projectId}/${ref.chapterId}`;
-    untrack(() => {
-      if (tried.has(key) || app.detecting) return;
-      if (!fresh) return void tried.add(key);
-      // General use has no detection: an old translate chapter is typed by hand.
-      if (!ready || !isComics()) return;
-      tried.add(key);
-      detectAllPages();
-    });
-  });
 
   // ---------- the keys ----------
   let keysOpen = $state(false);
@@ -152,7 +67,7 @@
     ['Speaker', [k('translate.speaker')]],
     ['Source text', [k('translate.source')]],
     ['Page note', [k('translate.note')]],
-    ['Typesetting tools', [typesetKey]],
+    ['Show or hide the typesetting tools', [typesetKey]],
     ['Every command', [k('palette.open')]],
   ]);
 
@@ -161,32 +76,9 @@
   // Offered once any page has a cleaned file; a page without one stays raw.
   const hasCleaned = $derived(app.pages.some((q) => q.cleaned || q.cleanedFile));
   const pageCleaned = $derived(!!(p.cleaned || p.cleanedFile));
-
-  function toggleTypeset() {
-    setTranslateTypeset(!app.translateTypeset);
-    toast(app.translateTypeset ? 'Typesetting tools shown' : 'Typesetting tools hidden');
-  }
 </script>
 
-<svelte:window onresize={onResize} />
-
-<aside class="tpane" class:dragging style="width:{width}px" aria-label="Translation">
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-  <div
-    class="tpane-split"
-    role="separator"
-    aria-orientation="vertical"
-    aria-label="Resize the page and the typing pane"
-    aria-valuenow={width}
-    aria-valuemin={MIN}
-    aria-valuemax={maxW()}
-    tabindex="0"
-    title="Drag to resize · double-click to reset"
-    onpointerdown={onSplitDown}
-    onkeydown={onSplitKey}
-    ondblclick={resetSplit}
-  ></div>
-
+<section class="tpane" aria-label="Translation">
   <header class="tpane-head">
     <div class="tpane-where">
       <span class="tpane-page">Page {app.pageIndex + 1}{" "}<span class="tpane-of">of {app.pages.length}</span></span>
@@ -199,7 +91,7 @@
         </svg>
         <span class="tpane-dir-text">{rtl ? 'Right to left' : 'Left to right'}</span>
       </span>
-      {#if app.translateTypeset && hasCleaned}
+      {#if tools && hasCleaned}
         <button
           class="tpane-btn"
           class:on={app.viewCleaned}
@@ -215,19 +107,14 @@
           Cleaned
         </button>
       {/if}
-      <button
-        class="tpane-btn"
-        class:on={app.translateTypeset}
-        aria-pressed={app.translateTypeset}
-        onclick={toggleTypeset}
-        title={`${app.translateTypeset ? 'Hide' : 'Show'} the typesetting tools${typesetKey ? ` (${typesetKey})` : ''}`}
-      >
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7V5h16v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>
-        Typeset
-      </button>
       <button class="tpane-btn icon" class:on={keysOpen} aria-pressed={keysOpen} aria-label="Keyboard keys" title="Keyboard keys" onclick={() => (keysOpen = !keysOpen)}>
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" /></svg>
       </button>
+      {#if onfloat}
+        <button class="tpane-btn icon" aria-label="Float the text queue" title="Float the text queue" onclick={onfloat}>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="13" height="13" rx="2" /><path d="M10 3h11v11" /><path d="M21 3l-8 8" /></svg>
+        </button>
+      {/if}
     </div>
     <div class="tpane-meter" role="progressbar" aria-label="Chapter translated" aria-valuemin="0" aria-valuemax={chapter.total} aria-valuenow={chapter.translated} title="{chapter.translated} of {chapter.total} lines translated in this chapter">
       <span style="transform:scaleX({share.toFixed(4)})"></span>
@@ -275,55 +162,18 @@
     {/if}
     <Queue />
   </div>
-</aside>
+</section>
 
 <style>
   .tpane {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 25;
     display: flex;
     flex-direction: column;
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
     min-width: 0;
     background: var(--panel);
-    border-left: 1px solid var(--line2);
   }
-  .tpane.dragging {
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  /* The edge is the handle: wider than it looks, so it is easy to catch. */
-  .tpane-split {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: -5px;
-    width: 10px;
-    cursor: col-resize;
-    z-index: 2;
-    touch-action: none;
-  }
-  .tpane-split::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 4px;
-    width: 2px;
-    background: transparent;
-    transition: background 0.15s;
-  }
-  .tpane-split:hover::after,
-  .tpane.dragging .tpane-split::after,
-  .tpane-split:focus-visible::after {
-    background: var(--accent);
-  }
-  .tpane-split:focus-visible {
-    outline: none;
-  }
-
   .tpane-head {
     flex: none;
     container-type: inline-size;

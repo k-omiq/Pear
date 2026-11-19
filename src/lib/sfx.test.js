@@ -133,9 +133,15 @@ const cand = (style, text = 'BOOM') => ({ x: 0, y: 0, w: 200, h: 100, style, tex
 describe('the sfx field of a style', () => {
   it('is off, with no type, paths or edits, in a new style and in an old chapter', () => {
     for (const s of [defaultStyle(), normalizeStyle({})]) {
-      expect(s.sfx).toMatchObject({ on: false, kind: null, seed: 1, power: 50, rough: 50, momentum: 50, paths: [], glyphs: {}, before: null });
+      expect(s.sfx).toMatchObject({ on: false, kind: null, seed: 1, power: 50, rough: 50, momentum: 50, paths: [], guide: false, glyphs: {}, before: null });
       expect(s.sfx.caption).toEqual({ text: '', side: 'below', size: 0.3, color: '#111111' });
     }
+  });
+
+  it('shows the curve line of an old box that bent one, and not of one that did not', () => {
+    expect(normalizeSfx({ on: true, paths: [{ a: [-1, 0], b: [1, 0], bend: 0.2 }] }).guide).toBe(true);
+    expect(normalizeSfx({ on: true, paths: [] }).guide).toBe(false);
+    expect(normalizeSfx({ on: true, guide: false, paths: [{ a: [-1, 0], b: [1, 0], bend: 0.2 }] }).guide).toBe(false);
   });
 
   it('round-trips a good recipe', () => {
@@ -144,6 +150,7 @@ describe('the sfx field of a style', () => {
       flow: { from: 0.8, to: 2, pow: 1.5 }, follow: 0.3, gap: 0.2, bigTighter: 0.4, slant: -10, rise: 5,
       jitter: { rot: 10, size: 0.2, off: 0.1 },
       paths: [{ a: [-1, 0.5], b: [1.5, -0.5], bend: 0.3 }],
+      guide: true,
       glyphs: { '0:2': { dx: 0.1, dy: -0.2, rot: 15, s: 1.2 } },
       caption: { text: 'boom', side: 'right', size: 0.5, color: '#ff0000' },
       before: { curve: 10, circle: false, path: true },
@@ -178,7 +185,7 @@ describe('the sfx field of a style', () => {
 
   it('keeps at most one path per group the engine lays out', () => {
     const p = { a: [0, 0], b: [1, 0], bend: 0 };
-    expect(normalizeSfx({ paths: Array.from({ length: 9 }, () => p) }).paths).toHaveLength(SFX_MAX_GROUPS);
+    expect(normalizeSfx({ paths: Array.from({ length: SFX_MAX_GROUPS + 5 }, () => p) }).paths).toHaveLength(SFX_MAX_GROUPS);
   });
 
   it('is plain text again on a newborn box', () => {

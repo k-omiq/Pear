@@ -116,3 +116,23 @@ it('a previewed family changes only the family, and goes back when the look ends
   expect(fontPreviewing('b1')).toBe(false);
   expect(JSON.stringify(b)).toBe(before);
 });
+
+it('leaves out a family switched off in the Font Library, and still shows it on a box set in it', async () => {
+  const { setFamilyOn } = await import('./font-menu.js');
+  setFamilyOn('user', 'Bangers', false);
+  try {
+    let view = render(FontPicker, { props: { value: 'Anime Ace', label: 'Font', onpick: vi.fn() } });
+    await fireEvent.click(view.getByRole('button', { name: 'Font' }));
+    await tick();
+    expect(options().map((o) => o.textContent.trim())).toEqual(['Anime Ace', 'Wild Words']);
+    cleanup();
+    // A box already set in it: the picker names it, with why it is not listed.
+    view = render(FontPicker, { props: { value: 'Bangers', label: 'Font', onpick: vi.fn() } });
+    await fireEvent.click(view.getByRole('button', { name: 'Font' }));
+    await tick();
+    expect(options().some((o) => o.textContent.includes('Bangers'))).toBe(true);
+    expect(document.body.textContent).toContain('not in menus');
+  } finally {
+    setFamilyOn('user', 'Bangers', true);
+  }
+});

@@ -4,13 +4,14 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ZoomDock from './ZoomDock.svelte';
-import { app, loadProjectPages, page, settleEdits, addQueueLine, addBoxAt } from '../store.svelte.js';
+import { app, loadProjectPages, page, settleEdits, addQueueLine, addBoxAt, setTypesetTools } from '../store.svelte.js';
+import { setLayouts } from '../layouts.svelte.js';
 import { initHistory, resetHistory, record } from './history.svelte.js';
 
 beforeEach(() => {
   app.chapterRef = null;
   app.chapterMode = 'translate';
-  app.translateTypeset = false;
+  setLayouts(null);
   loadProjectPages([{ id: 1, w: 800, h: 1200, boxes: [], lines: [{ n: 1, type: 'dialogue', jp: 'a', en: 'b' }] }]);
   initHistory();
   resetHistory();
@@ -21,7 +22,7 @@ afterEach(() => {
   resetHistory();
   loadProjectPages([]);
   app.chapterMode = 'typeset';
-  app.translateTypeset = false;
+  setLayouts(null);
 });
 
 it('shows undo and redo, and dims undo when a box step is on top in translate mode', async () => {
@@ -34,13 +35,13 @@ it('shows undo and redo, and dims undo when a box step is on top in translate mo
   await tick();
   expect(undoBtn().disabled).toBe(false);
   // A box edit made while the typesetting tools were shown.
-  app.translateTypeset = true;
+  setTypesetTools(true);
   addBoxAt(page(), { text: 'hi', x: 100, y: 100 });
   settleEdits();
   record({ t: 'move', pageId: 1, boxId: page().boxes.at(-1).id, before: { x: 1 }, after: { x: 2 } });
   await tick();
   expect(undoBtn().disabled).toBe(false);
-  app.translateTypeset = false;
+  setTypesetTools(false);
   await tick();
   expect(undoBtn().disabled).toBe(true);
   expect(undoBtn().isConnected).toBe(true);

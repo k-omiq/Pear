@@ -219,7 +219,7 @@ describe('validateStylePatch', () => {
   it('enforces normalized array lengths and reachable indexes', () => {
     expect(validateStylePatch({ gradient: { stops: [stop] } })[0].error).toContain('at least 2');
     expect(validateStylePatch({ gradient: { stops: Array.from({ length: 9 }, () => stop) } })[0].error).toContain('at most 8');
-    expect(validateStylePatch({ sfx: { paths: Array.from({ length: 5 }, () => sfxPath) } })[0].error).toContain('at most 4');
+    expect(validateStylePatch({ sfx: { paths: Array.from({ length: 33 }, () => sfxPath) } })[0].error).toContain('at most 32');
     expect(validateStylePatch({ gradient: { stops: { 7: { pos: 1 } } } })).toEqual([]);
     expect(validateStylePatch({ gradient: { stops: { 8: { pos: 1 } } } })[0].error).toContain('below 8');
     // The strokes are a Photoshop effect that comes more than once: at most
@@ -375,10 +375,11 @@ describe('styleSchemaText', () => {
   // core and glow and the splash's colour; to 19800 for the crack's break
   // off and its motion, and to 19900 for the box stroke at the cuts; to
   // 20300 for the text outline at the cuts, the lightning's aim and the
-  // splash's landing (fix round 1, 2026-11-11).
-  it('describes every key, field and item in under 20300 characters', () => {
+  // splash's landing (fix round 1, 2026-11-11); to 20500 for vertical text
+  // and its Latin letters, and the SFX curve line switch (2026-11-16).
+  it('describes every key, field and item in under 20500 characters', () => {
     const text = styleSchemaText();
-    expect(text.length).toBeLessThan(20300);
+    expect(text.length).toBeLessThan(20500);
     expect(text).toMatch(/^BLEND = normal\|dissolve\|/);
     expect(text).toContain('outerGlow.blend: enum BLEND - ');
     // A shared object is printed whole once; after, its path points back.

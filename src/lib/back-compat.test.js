@@ -1344,6 +1344,34 @@ describe('a project saved before ink existed', () => {
   });
 });
 
+// Vertical text is newer than both eras: every style on disk lacks the two
+// fields, and must open horizontal.
+describe('a project saved before vertical text existed', () => {
+  it('opens every older style as horizontal text with upright Latin', () => {
+    for (const raw of [ERA1_STYLE, ERA2_STYLE]) {
+      const s = normalizeStyle(JSON.parse(raw));
+      expect(s.vertical).toBe(false);
+      expect(s.verticalLatin).toBe('upright');
+    }
+  });
+
+  it('keeps a vertical style through a save, and reads junk as the default', () => {
+    const once = normalizeStyle({ size: 28, vertical: true, verticalLatin: 'sideways' });
+    expect(once.vertical).toBe(true);
+    expect(once.verticalLatin).toBe('sideways');
+    expect(normalizeStyle(JSON.parse(JSON.stringify(once)))).toEqual(once);
+    const junk = normalizeStyle({ vertical: 'yes', verticalLatin: 'diagonal' });
+    expect(junk.vertical).toBe(false);
+    expect(junk.verticalLatin).toBe('upright');
+  });
+
+  it('carries the fields through a preset', () => {
+    const list = parsePresets(JSON.stringify({ list: [{ id: 'pr_v', name: 'Tate', style: { ...JSON.parse(ERA2_STYLE), vertical: true, verticalLatin: 'sideways' } }] }));
+    expect(list[0].style.vertical).toBe(true);
+    expect(list[0].style.verticalLatin).toBe('sideways');
+  });
+});
+
 // The warp mesh is newer still, and the same gate applies twice over: every
 // call site reads `style.warp.pts` without guarding it, and a `pts` array that
 // does not match its own grid would have the painter reading past the end of

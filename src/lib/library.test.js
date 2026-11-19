@@ -142,6 +142,7 @@ const {
   projectById,
   createChapterFromPages,
   readChapterPackageSources,
+  _resetCoverHealForTests,
 } = await import('./library.svelte.js');
 
 function seedProject(slug, json, chapters = []) {
@@ -165,6 +166,7 @@ beforeEach(async () => {
   fsx._tree.trashed.length = 0;
   fsx._tree.dirs.add('/lib');
   await setRoot('/lib');
+  _resetCoverHealForTests();
 });
 
 describe('scanLibrary', () => {
@@ -713,6 +715,52 @@ describe('cover thumbnail lifecycle and rollback', () => {
     });
 
     expect(fsx._tree.files.has(`${p.dir}/thumb.png`)).toBe(false);
+  });
+
+  // A project built outside the app (a script, an agent transfer) has chapters
+  // but no thumb.png, and its card stayed blank for good.
+  it('a scan draws the cover a project is missing, without moving it in the grid', async () => {
+    const p = await createProject('Series');
+    await withThumbSupport(async () => {
+      await createChapter({ projectId: p.id, number: 1, title: '', files: [fakeFile('a.png', 1)] });
+      const rec = JSON.parse(fsx._tree.files.get(`${p.dir}/project.json`));
+      fsx._tree.files.set(`${p.dir}/project.json`, JSON.stringify({ ...rec, coverChapterId: null, coverPageId: null }));
+      fsx._tree.files.delete(`${p.dir}/thumb.png`);
+
+      await scanLibrary();
+      await vi.waitFor(() => expect(fsx._tree.files.has(`${p.dir}/thumb.png`)).toBe(true));
+      await vi.waitFor(() => expect(projectById(p.id).coverChapterId).toBeTruthy());
+      const after = JSON.parse(fsx._tree.files.get(`${p.dir}/project.json`));
+      expect(after.coverChapterId).toBe(projectById(p.id).chapters[0].id);
+      expect(after.updatedAt).toBe(rec.updatedAt);
+      expect(projectById(p.id).thumbRev).toBe(1);
+    });
+  });
+
+  it('a healed cover keeps a record with no updatedAt stamp-free, and a failed one is tried again', async () => {
+    const p = await createProject('Series');
+    await withThumbSupport(async () => {
+      await createChapter({ projectId: p.id, number: 1, title: '', files: [fakeFile('a.png', 1)] });
+      const { updatedAt, ...rec } = JSON.parse(fsx._tree.files.get(`${p.dir}/project.json`));
+      fsx._tree.files.set(`${p.dir}/project.json`, JSON.stringify({ ...rec, coverChapterId: null, coverPageId: null }));
+      fsx._tree.files.delete(`${p.dir}/thumb.png`);
+
+      // The first scan cannot read the chapter yet (a script still writing it).
+      const chapterJson = [...fsx._tree.files.keys()].find((k) => k.endsWith('/chapter.json'));
+      const saved = fsx._tree.files.get(chapterJson);
+      fsx._tree.files.set(chapterJson, '{ not json');
+      await scanLibrary();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(fsx._tree.files.has(`${p.dir}/thumb.png`)).toBe(false);
+
+      fsx._tree.files.set(chapterJson, saved);
+      await scanLibrary();
+      await vi.waitFor(() => expect(fsx._tree.files.has(`${p.dir}/thumb.png`)).toBe(true));
+      await vi.waitFor(() => expect(projectById(p.id).thumbRev).toBe(1));
+      const after = JSON.parse(fsx._tree.files.get(`${p.dir}/project.json`));
+      expect(after.coverChapterId).toBeTruthy();
+      expect('updatedAt' in after).toBe(false);
+    });
   });
 
   it('rolls back thumb.png if project.json write fails after thumbnail is written', async () => {

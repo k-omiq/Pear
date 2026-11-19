@@ -475,7 +475,7 @@ function layoutBox(box, p) {
   // Where each line's baseline sits inside its line box - the browser's own
   // placement, so the raster draws the glyphs where the editor does.
   const baseY = isCurve ? 0 : place.baseY;
-  return { s, lineH, baseY, pad, padL, padT, padR, padB, isCurve, sfx: !!place.sfx, lines, layout, caption, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
+  return { s, lineH, baseY, pad, padL, padT, padR, padB, isCurve, sfx: !!place.sfx, vertical: !!place.vertical, lines, layout, caption, leftExtra, topExtra, ox, oy, blockX, blockY, lineX, cw, ch };
 }
 
 // The caption beside an SFX (`style.sfx.caption`): a line of small straight
@@ -764,7 +764,9 @@ export function glyphJob(box, L) {
     // forms. Letters the SFX layout placed are shaped on their own, by
     // design; an SFX box whose placement the engine refused is laid out as
     // a curve, and is one.
-    if (!L.sfx) job.line = true;
+    // Vertical text is placed a letter at a time down its columns, so it is
+    // shaped so too.
+    if (!L.sfx && !L.vertical) job.line = true;
     // A curved box has no wrapped lines, so its gradient spans the box - which
     // is what 'box' scope means and the only scope the curved path has.
     const rect = { x: L.ox, y: L.oy, w: box.w, h: box.h };

@@ -1564,9 +1564,7 @@
 {#if gizmoUi.letter}
   <!-- The SFX gizmo's key, while a letter is picked: each part in its colour. -->
   <div class="sfx-legend" role="note" aria-label="Letter handles">
-    <span><svg viewBox="0 0 12 12" aria-hidden="true"><path class="lg-x" d="M1 6h7" /><path class="lg-xh" d="M7 2.5 11 6 7 9.5z" /></svg>Sideways</span>
-    <span><svg viewBox="0 0 12 12" aria-hidden="true"><path class="lg-y" d="M6 11V4" /><path class="lg-yh" d="M2.5 5 6 1l3.5 4z" /></svg>Up/down</span>
-    <span><svg viewBox="0 0 12 12" aria-hidden="true"><rect class="lg-free" x="2" y="2" width="8" height="8" /></svg>Free</span>
+    <span>Drag the letter to move</span>
     <span><svg viewBox="0 0 12 12" aria-hidden="true"><circle class="lg-ring" cx="6" cy="6" r="4.2" /></svg>Rotate</span>
     <span><svg viewBox="0 0 12 12" aria-hidden="true"><rect class="lg-scale" x="2" y="2" width="8" height="8" /></svg>Scale</span>
   </div>
@@ -1616,27 +1614,6 @@
     height: 12px;
     flex: none;
     overflow: visible;
-  }
-  .lg-x {
-    stroke: #75d9ff;
-    stroke-width: 1.8;
-    fill: none;
-  }
-  .lg-xh {
-    fill: #75d9ff;
-  }
-  .lg-y {
-    stroke: #f2c94c;
-    stroke-width: 1.8;
-    fill: none;
-  }
-  .lg-yh {
-    fill: #f2c94c;
-  }
-  .lg-free {
-    fill: rgba(255, 140, 115, 0.45);
-    stroke: #f4f4f4;
-    stroke-width: 1.2;
   }
   .lg-ring {
     fill: none;

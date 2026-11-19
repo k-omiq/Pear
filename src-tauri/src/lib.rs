@@ -12,6 +12,8 @@ mod durability;
 mod trash;
 mod font_coverage;
 mod font_decode;
+// The Font Library's window and its marketplace downloads.
+mod font_library;
 // Linux-only at runtime; compiled under `test` everywhere so its unit tests
 // run on the Mac too (the code is plain POSIX).
 #[cfg(any(target_os = "linux", test))]
@@ -69,6 +71,9 @@ pub fn run() {
       system_fonts::system_font_face,
       font_coverage::system_font_coverage,
       font_decode::font_to_sfnt,
+      font_library::font_library_open,
+      font_library::font_library_close,
+      font_library::font_fetch,
       durability::fsync_path,
       trash::trash_path,
       agent_mcp::agent_door_start,

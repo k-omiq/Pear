@@ -56,7 +56,8 @@ const TEXT = 'BOOM';
 function mounted(sfx = {}) {
   const style = normalizeStyle({ ...defaultStyle(), font: 'Bangers', size: 40 });
   applySfxKind(style, 'impact');
-  Object.assign(style.sfx, sfx);
+  // The curve line on, so the path handles show; a test of it off says so.
+  Object.assign(style.sfx, { guide: true }, sfx);
   loadProjectPages([{ id: 1, w: 800, h: 1200, lines: [], boxes: [{ id: 'b', lineN: null, text: TEXT, x: 0, y: 0, w: 400, h: 200, style }] }]);
   const box = page().boxes[0];
   const view = render(SfxGizmo, { box, pageId: 1, z: 1, text: TEXT, toLocal: (e) => [e.clientX, e.clientY] });
@@ -94,6 +95,16 @@ async function pick(view, box, key = '0:0', i = 0) {
 }
 
 describe('the paths', () => {
+  it('shows no curve line while the box has it off', async () => {
+    const { view } = mounted({ guide: false });
+    await tick();
+    expect(q(view, '[data-sfx-end="0:a"]')).toBe(null);
+    expect(q(view, '[data-sfx-bend="0"]')).toBe(null);
+    expect(q(view, '.guide')).toBe(null);
+    // The letters can still be picked.
+    expect(view.container.querySelectorAll('[data-sfx-letter]')).toHaveLength(4);
+  });
+
   it('shows the ends, the end arrow and the bend of the path the engine made', async () => {
     const { view, box } = mounted();
     await tick();
@@ -159,10 +170,10 @@ describe('a letter', () => {
     await pick(view, box);
     expect(q(view, '[data-sfx-ring]')).not.toBe(null);
     expect(q(view, '[data-sfx-scale]')).not.toBe(null);
-    expect(q(view, '[data-sfx-arrow="x"]')).not.toBe(null);
-    expect(q(view, '[data-sfx-arrow="y"]')).not.toBe(null);
-    expect(q(view, '[data-sfx-plane]')).not.toBe(null);
-    expect(q(view, '[data-sfx-centre]')).not.toBe(null);
+    // The letter is its own move handle: no arrows, square or centre.
+    expect(q(view, '[data-sfx-arrow]')).toBe(null);
+    expect(q(view, '[data-sfx-plane]')).toBe(null);
+    expect(q(view, '[data-sfx-centre]')).toBe(null);
     expect(q(view, '[data-sfx-outline] path').getAttribute('d')).toMatch(/^M/);
     expect(+q(view, '[data-sfx-ring]').getAttribute('r')).toBeCloseTo(104, 6);
     expect(gizmoUi.letter).toBe(true);
@@ -184,21 +195,6 @@ describe('a letter', () => {
     expect(q(view, '[data-sfx-ring]')).not.toBe(null);
     undo();
     expect(page().boxes[0].style.sfx.glyphs).toEqual({});
-  });
-
-  it('moves freely by the square and by the centre', async () => {
-    const { view, box } = mounted();
-    await tick();
-    const l = placed(box).letters[1];
-    await pick(view, box, '0:1', 1);
-    const c = centreOf(box, 1);
-    await drag(q(view, '[data-sfx-plane]'), [c[0] + 30, c[1] - 30], [[c[0] + 50, c[1] - 20]]);
-    expect(glyph(box, '0:1').dx).toBeCloseTo(20 / l.unit, 3);
-    expect(glyph(box, '0:1').dy).toBeCloseTo(10 / l.unit, 3);
-    const c2 = centreOf(box, 1);
-    await drag(q(view, '[data-sfx-centre]'), c2, [[c2[0] - 20, c2[1] - 10]]);
-    expect(box.style.sfx.glyphs['0:1']?.dx ?? 0).toBeCloseTo(0, 2);
-    expect(box.style.sfx.glyphs['0:1']?.dy ?? 0).toBeCloseTo(0, 2);
   });
 
   it('turns by the ring by the angle swept, not to the pointer, and Shift snaps to 15°', async () => {
@@ -229,21 +225,6 @@ describe('a letter', () => {
     expect(glyph(box).s).toBeCloseTo(2, 2);
   });
 
-  it('moves along the screen x only by the sideways arrow, and y only by the up/down one', async () => {
-    const { view, box } = mounted();
-    await tick();
-    const l = placed(box).letters[0];
-    await pick(view, box);
-    const c = centreOf(box);
-    await drag(q(view, '[data-sfx-arrow="x"]'), [c[0] + 50, c[1]], [[c[0] + 80, c[1] + 25]]);
-    expect(glyph(box).dx).toBeCloseTo(30 / l.unit, 3);
-    expect(glyph(box).dy).toBe(0);
-    const c2 = centreOf(box);
-    await drag(q(view, '[data-sfx-arrow="y"]'), [c2[0], c2[1] - 50], [[c2[0] + 30, c2[1] - 75]]);
-    expect(glyph(box).dx).toBeCloseTo(30 / l.unit, 3);
-    expect(glyph(box).dy).toBeCloseTo(-25 / l.unit, 3);
-  });
-
   it('puts back what a part changes on a double press of that part', async () => {
     const { view, box } = mounted({ glyphs: { '0:3': { dx: 0.5, dy: 0.3, rot: 20, s: 1.5 } } });
     await tick();
@@ -257,19 +238,7 @@ describe('a letter', () => {
     expect(glyph(box, '0:3')).toEqual({ dx: 0.5, dy: 0.3, rot: 0, s: 1.5 });
     await twice('[data-sfx-scale]', [c()[0] + 44, c()[1] + 44]);
     expect(glyph(box, '0:3')).toEqual({ dx: 0.5, dy: 0.3, rot: 0, s: 1 });
-    await twice('[data-sfx-arrow="x"]', [c()[0] + 50, c()[1]]);
-    expect(glyph(box, '0:3')).toEqual({ dx: 0, dy: 0.3, rot: 0, s: 1 });
-    await twice('[data-sfx-arrow="y"]', [c()[0], c()[1] - 50]);
-    expect(box.style.sfx.glyphs).toEqual({});
-    // The square, the centre and the body.
-    box.style.sfx.glyphs = { '0:3': { dx: 0.5, dy: 0.3, rot: 20, s: 1.5 } };
-    await tick();
-    await twice('[data-sfx-plane]', [c()[0] + 30, c()[1] - 30]);
-    expect(glyph(box, '0:3')).toEqual({ dx: 0, dy: 0, rot: 20, s: 1.5 });
-    box.style.sfx.glyphs = { '0:3': { dx: 0.5, dy: 0.3, rot: 20, s: 1.5 } };
-    await tick();
-    await twice('[data-sfx-centre]', c());
-    expect(glyph(box, '0:3')).toEqual({ dx: 0, dy: 0, rot: 20, s: 1.5 });
+    // The body puts the whole letter back.
     await twice('[data-sfx-letter="0:3"]', c());
     expect(box.style.sfx.glyphs).toEqual({});
   });

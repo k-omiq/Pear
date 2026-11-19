@@ -162,7 +162,14 @@
     box.style.sfx.kern = true;
     touch();
   }
-  function resetPaths() {
+  // The curve line: added, its handles show on the page and bend the lines;
+  // removed, the handles go and the lines run straight again.
+  function addCurve() {
+    box.style.sfx.guide = true;
+    touch();
+  }
+  function removeCurve() {
+    box.style.sfx.guide = false;
     box.style.sfx.paths = [];
     touch();
   }
@@ -170,7 +177,7 @@
     box.style.sfx.glyphs = {};
     touch();
   }
-  const hasPaths = $derived((sfx?.paths?.length ?? 0) > 0);
+  const hasCurve = $derived(!!sfx?.guide || (sfx?.paths?.length ?? 0) > 0);
   const hasGlyphs = $derived(Object.keys(sfx?.glyphs ?? {}).length > 0);
 
   function setStyle(key, v) {
@@ -723,7 +730,11 @@
       <div class="insp-rule"></div>
       <div class="sfx-acts wrap">
         <button type="button" class="rbtn sfx-small" disabled={!layoutSet} title={sfx.kind ? "Every number above back to the type's" : 'Every number above back to a plain row'} onclick={resetLayout}>{sfx.kind ? 'Back to type' : 'Reset'}</button>
-        <button type="button" class="rbtn sfx-small" disabled={!hasPaths} title="The lines run where the type puts them" onclick={resetPaths}>Reset path</button>
+        {#if hasCurve}
+          <button type="button" class="rbtn sfx-small" data-sfx-curve="remove" title="Take the curve line away: its handles go and the lines run straight again" onclick={removeCurve}>Remove curve line</button>
+        {:else}
+          <button type="button" class="rbtn sfx-small" data-sfx-curve="add" title="Show a curve line on each line of the sound: drag its ends and its middle to bend the letters" onclick={addCurve}>Add curve line</button>
+        {/if}
         <button type="button" class="rbtn sfx-small" disabled={!hasGlyphs} title="Letters moved, turned or sized by hand go back" onclick={resetGlyphs}>Reset letters</button>
       </div>
     </div>

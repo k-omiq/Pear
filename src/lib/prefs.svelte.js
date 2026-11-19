@@ -16,10 +16,12 @@
 import { setBoxDefaults, setLegacyTypeset, setFxDefaults, normalizeFxDefaults, fxStored } from './data.js';
 import { app, setTool, setBrushToolAllowed, setHomeTool, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
 import { normalizeOcrModels } from './ocr-models.js';
+import { cleanCategories } from './font-categories.js';
 import { useTextEngine } from './engine-switch.svelte.js';
 import { setPaintWorkerAllowed } from './text-engine/paint-mirror.js';
 import { setTextEdges } from './text-edges.svelte.js';
 import { guide, onSeriesTypeset, SERIES_TYPESET_KEYS } from './guide.svelte.js';
+import { setLayouts, adoptLayouts, snapshotLayouts, onLayoutsChange, normalizeLayouts } from './layouts.svelte.js';
 
 const KEY = 'mt.prefs';
 
@@ -119,6 +121,18 @@ export const prefs = $state({
   // computer, and another machine's copy of the chapter has its own.
   hiddenBuiltinFonts: [],
   shownSystemFonts: [],
+  // The user's own families switched off in the Font Library: still in the
+  // library, still drawn by any box set in them, just not offered. Exceptions
+  // again - a font the user adds is on.
+  disabledUserFonts: [],
+  // The font marketplaces the user added, as [{ url, name }]: a JSON manifest
+  // each (docs/FONT_MARKETPLACE.md). Only the addresses; what they list is
+  // fetched when the user asks.
+  fontMarketplaces: [],
+  // The user's own groups of their families in the Font Library, as
+  // [{ id, name, families: [name] }] (font-categories.js). A family can be in
+  // several or in none.
+  fontCategories: [],
   // The families last picked in a font picker, newest first (`noteRecentFont`
   // in font-menu.js). A machine preference like the two above.
   recentFonts: [],
@@ -193,9 +207,22 @@ function applyUsage(usageNew) {
 }
 
 // The two font lists are string arrays; anything else in them is dropped.
-const NAME_LIST_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts', 'recentFonts'];
+const NAME_LIST_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts', 'disabledUserFonts', 'recentFonts'];
 const cleanNames = (v) =>
   Array.isArray(v) ? [...new Set(v.filter((n) => typeof n === 'string' && n.trim()))] : null;
+// [{ url, name }], https addresses only, one entry per address.
+const MAX_MARKETS = 50;
+function cleanMarkets(v) {
+  if (!Array.isArray(v)) return null;
+  const out = [];
+  for (const m of v) {
+    const url = typeof m?.url === 'string' ? m.url.trim() : '';
+    if (!/^https?:\/\//i.test(url) || out.some((o) => o.url === url)) continue;
+    out.push({ url, name: typeof m.name === 'string' ? m.name.slice(0, 120) : '' });
+    if (out.length >= MAX_MARKETS) break;
+  }
+  return out;
+}
 
 // The box defaults, split by what a value of theirs may be. Named once so the
 // setter's validation and the loader's validation cannot drift apart.
@@ -259,6 +286,9 @@ function persist() {
         shortcuts: $state.snapshot(prefs.shortcuts),
         hiddenBuiltinFonts: $state.snapshot(prefs.hiddenBuiltinFonts),
         shownSystemFonts: $state.snapshot(prefs.shownSystemFonts),
+        disabledUserFonts: $state.snapshot(prefs.disabledUserFonts),
+        fontMarketplaces: $state.snapshot(prefs.fontMarketplaces),
+        fontCategories: $state.snapshot(prefs.fontCategories),
         ocrModels: $state.snapshot(prefs.ocrModels),
         keepEnglish: prefs.keepEnglish,
         secondReader: prefs.secondReader,
@@ -271,6 +301,9 @@ function persist() {
         usage: prefs.usage,
         defaultChapterMode: prefs.defaultChapterMode,
         defaultOcrLanguage: prefs.defaultOcrLanguage,
+        // The editor's layouts (layouts.svelte.js): which panes each kind of
+        // chapter opens with, and the custom one.
+        layouts: snapshotLayouts(),
         legacyTypeset,
         defaultsRev: DEFAULTS_REV,
       }),
@@ -290,6 +323,14 @@ export function setPref(key, value) {
   if (key === 'fxDefaults') value = normalizeFxDefaults(value);
   if (NAME_LIST_KEYS.includes(key)) {
     value = cleanNames(value);
+    if (!value) return;
+  }
+  if (key === 'fontMarketplaces') {
+    value = cleanMarkets(value);
+    if (!value) return;
+  }
+  if (key === 'fontCategories') {
+    value = cleanCategories(value);
     if (!value) return;
   }
   // A number preference is stored as a number in range or not at all: a NaN from
@@ -388,7 +429,15 @@ function load() {
     const names = saved ? cleanNames(saved[k]) : null;
     if (names) prefs[k] = names;
   }
+  const markets = saved ? cleanMarkets(saved.fontMarketplaces) : null;
+  if (markets) prefs.fontMarketplaces = markets;
+  const categories = saved ? cleanCategories(saved.fontCategories) : null;
+  if (categories) prefs.fontCategories = categories;
   prefs.ocrModels = normalizeOcrModels(saved?.ocrModels);
+  // No `layouts` at all (every blob from before them) is the presets: a
+  // translate chapter opens as the page and the typing pane, a typeset one
+  // with its tools and floating panels, as they always did.
+  setLayouts(saved?.layouts);
   // Each kind read on its own: one unreadable default is dropped (that effect
   // starts from the factory), the rest stand.
   const fx = normalizeFxDefaults(saved?.fxDefaults);
@@ -453,7 +502,9 @@ function load() {
   // Here and not at first use: a chapter can open before anything asks, and
   // the engine has to be standing in the way of its first fit by then. A
   // no-op for 'browser', which is every install that never touched the switch.
-  useTextEngine(prefs.textEngine);
+  // The Font Library's own window lays out no text, and the engine would hold
+  // a copy of every font there for nothing (main.js says which window it is).
+  if (globalThis.__MT_WINDOW__ !== 'fonts') useTextEngine(prefs.textEngine);
   if (freshInstall) persist();
 }
 
@@ -464,7 +515,12 @@ function load() {
 // the setup's four are adopted, each checked the way `load` checks it: the
 // rest are this window's own until it writes them. Nothing is persisted
 // here, so two windows cannot echo a change back and forth.
+// The Font Library's lists are adopted the same way: the library is a window
+// of its own (font-window.svelte.js), and a family switched on there has to
+// reach the menus of the window the user letters in.
 const SHARED_KEYS = ['onboarded', 'usage', 'defaultChapterMode', 'defaultOcrLanguage'];
+const SHARED_FONT_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts', 'disabledUserFonts'];
+const sameList = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 export function adoptSharedPrefs(raw) {
   let saved = null;
   try {
@@ -479,7 +535,28 @@ export function adoptSharedPrefs(raw) {
     const ok = BOOL_KEYS.includes(k) ? typeof v === 'boolean' : ENUM_KEYS[k].includes(v);
     if (ok && prefs[k] !== v) prefs[k] = v;
   }
+  for (const k of SHARED_FONT_KEYS) {
+    const names = cleanNames(saved[k]);
+    if (names && !sameList(names, prefs[k])) prefs[k] = names;
+  }
+  const markets = cleanMarkets(saved.fontMarketplaces);
+  if (markets && JSON.stringify(markets) !== JSON.stringify(prefs.fontMarketplaces)) prefs.fontMarketplaces = markets;
+  const categories = cleanCategories(saved.fontCategories);
+  if (categories && JSON.stringify(categories) !== JSON.stringify(prefs.fontCategories)) prefs.fontCategories = categories;
+  if (saved.layouts && typeof saved.layouts === 'object') {
+    const next = normalizeLayouts(saved.layouts);
+    if (JSON.stringify(next) !== JSON.stringify(snapshotLayouts())) adoptLayouts(next);
+  }
   applyUsage(prefs.usage !== usageWas);
+}
+// The same adoption, from whatever is stored now: what a window runs when
+// another tells it the fonts changed.
+export function adoptStoredPrefs() {
+  try {
+    adoptSharedPrefs(localStorage.getItem(KEY));
+  } catch {
+    /* nothing stored, or no storage */
+  }
 }
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
@@ -502,3 +579,5 @@ export function clearFxDefault(kind) {
 }
 
 load();
+// A layout picked in the editor is written with the rest of the blob.
+onLayoutsChange(persist);

@@ -81,7 +81,7 @@ defineTool({
   },
   write: true,
   async run({ id, parts, at } = {}, ctx) {
-    if (isTranslateMode()) throw new ToolError('this chapter is in translate mode and has no boxes');
+    if (isTranslateMode()) throw new ToolError('the typesetting tools are hidden in this chapter\'s layout, so it has no boxes');
     const p = app.pages.find((pg) => pg.boxes?.some((b) => b.id === id));
     if (!p) throw new ToolError(`no box "${id}"`, 'query lists the box ids');
     const b = p.boxes.find((x) => x.id === id);

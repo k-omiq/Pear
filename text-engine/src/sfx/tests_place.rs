@@ -107,9 +107,19 @@ fn utf16_ranges_count_surrogate_pairs_as_two() {
 
 #[test]
 fn groups_past_the_limit_fold_into_the_last() {
-    let g = groups("a\nb\nc\nd\ne\nf", true).unwrap();
+    let text: Vec<String> = (0..MAX_GROUPS + 2).map(|i| format!("{}", (b'a' + (i % 26) as u8) as char)).collect();
+    let g = groups(&text.join("\n"), true).unwrap();
     assert_eq!(g.len(), MAX_GROUPS);
     assert_eq!(g[MAX_GROUPS - 1].len(), 3);
+}
+
+#[test]
+fn one_letter_a_line_keeps_every_line() {
+    // A column typed by hand: each letter on a line of its own stays its own
+    // group, not folded into a row after the fourth.
+    let g = groups("B\nO\nO\nO\nO\nM", true).unwrap();
+    assert_eq!(g.len(), 6);
+    assert!(g.iter().all(|g| g.len() == 1));
 }
 
 // ---- kinds and pick ------------------------------------------------------

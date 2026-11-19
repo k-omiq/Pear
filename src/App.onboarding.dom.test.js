@@ -27,7 +27,7 @@ vi.mock('./lib/agent/windows.js', async (original) => ({
 vi.mock('./lib/agent/door.svelte.js', async (original) => ({ ...await original(), initDoor: () => {}, initChapterWindowDoor: async () => {} }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: async () => '0.0.0' }));
 vi.mock('./lib/editor/EditorRoot.svelte', () => ({ default: () => {} }));
-vi.mock('./lib/FontModal.svelte', () => ({ default: () => {} }));
+vi.mock('./lib/FontLibrary.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/BrushModal.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/ExportDialog.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/Toast.svelte', () => ({ default: () => {} }));

@@ -1,5 +1,5 @@
 <script>
-  // The brush library, as a window: the counterpart of FontModal. Every
+  // The brush library, as a window: the counterpart of the Font Library. Every
   // installed brush with its tip, its name, what it is worth, and the two
   // things a letterer does to one - edit its settings, or remove it - plus the
   // import that adds more. Opened from the panel's Manage button and from a

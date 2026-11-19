@@ -16,7 +16,7 @@ vi.mock('./lib/fonts.js', async (original) => ({ ...await original(), restoreFon
 vi.mock('./lib/importer.js', async (original) => ({ ...await original(), isTauri: () => false }));
 vi.mock('./lib/sidecar.js', () => ({ checkSidecar: async () => null }));
 vi.mock('./lib/editor/EditorRoot.svelte', () => ({ default: () => {} }));
-vi.mock('./lib/FontModal.svelte', () => ({ default: () => {} }));
+vi.mock('./lib/FontLibrary.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/BrushModal.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/SettingsModal.svelte', () => ({ default: () => {} }));
 vi.mock('./lib/ExportDialog.svelte', () => ({ default: () => {} }));

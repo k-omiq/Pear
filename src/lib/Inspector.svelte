@@ -153,7 +153,7 @@
     isAtomicInput,
   } from './editor/field-undo.svelte.js';
   import { copyRuns, fieldSpans, rangeFace, faceAt, runsKey } from './runs.js';
-  import { curvedStyle } from './contain.js';
+  import { curvedStyle, verticalStyle } from './contain.js';
   import { onDestroy, tick, untrack } from 'svelte';
   import { typingSel, setTypingSel, clearTypingSel, selectedRange, faceAsk, takeFaceAsk, askPending, keepsEdit, endEditIfAway } from './typing-selection.svelte.js';
 
@@ -283,6 +283,34 @@
   // and the look the sound type wrote goes back to the box's own.
   function sfxOff(st) {
     if (st.sfx?.on) clearSfx(st, true);
+  }
+
+  // Vertical text (`verticalStyle`): columns, set glyph by glyph like the
+  // bends, so the two exclude each other the way the bends do. An Auto box
+  // turns round with it - its width and height swap about its centre - so
+  // the columns start from the height the lines had.
+  const columns = $derived(!!box && verticalStyle(box.style));
+  function setVertical(on) {
+    const s = box?.style;
+    if (!s || !!s.vertical === on) return;
+    s.vertical = on;
+    if (on) {
+      s.curve = 0;
+      s.circle.on = false;
+      s.path.on = false;
+    }
+    const turn = sizing === 'auto' && !boxLocked(box) && box.w !== box.h;
+    if (turn) {
+      const cx = box.x + box.w / 2;
+      const cy = box.y + box.h / 2;
+      const w = box.h;
+      const h = box.w;
+      box.x = cx - w / 2;
+      box.y = cy - h / 2;
+      box.w = w;
+      box.h = h;
+    }
+    touch(turn ? { geom: true } : undefined);
   }
 
   // Percentages are what the panel shows for every 0..1 alpha; the style keeps
@@ -2506,8 +2534,8 @@
           <div class="grp">
             <span class="lbl" title="Bend the baseline upward/downward">Arc</span>
             <div class="slider-row">
-              <input type="range" min="-100" max="100" step="1" value={s.curve} disabled={s.path.on || s.circle.on} title={s.path.on || s.circle.on ? 'Curve path or Circle is on; they override Arc' : undefined} aria-label="Arc" oninput={(e) => { if (+e.target.value) sfxOff(s); setNum(s, 'curve', e.target.value, -100, 100); }} />
-              <input class="num-s" type="number" min="-100" max="100" step="1" value={s.curve} disabled={s.path.on || s.circle.on} title={s.path.on || s.circle.on ? 'Curve path or Circle is on; they override Arc' : 'Bend the baseline upward/downward'} aria-label="Arc, amount" onchange={(e) => { if (+e.target.value) sfxOff(s); commitNum(s, 'curve', e, -100, 100); }} />
+              <input type="range" min="-100" max="100" step="1" value={s.curve} disabled={s.path.on || s.circle.on} title={s.path.on || s.circle.on ? 'Curve path or Circle is on; they override Arc' : undefined} aria-label="Arc" oninput={(e) => { if (+e.target.value) { sfxOff(s); s.vertical = false; } setNum(s, 'curve', e.target.value, -100, 100); }} />
+              <input class="num-s" type="number" min="-100" max="100" step="1" value={s.curve} disabled={s.path.on || s.circle.on} title={s.path.on || s.circle.on ? 'Curve path or Circle is on; they override Arc' : 'Bend the baseline upward/downward'} aria-label="Arc, amount" onchange={(e) => { if (+e.target.value) { sfxOff(s); s.vertical = false; } commitNum(s, 'curve', e, -100, 100); }} />
             </div>
           </div>
           <div class="insp-rule"></div>
@@ -2523,6 +2551,7 @@
                 s.circle.on = !s.circle.on;
                 if (s.circle.on) {
                   s.path.on = false;
+                  s.vertical = false;
                   sfxOff(s);
                 }
                 touch();
@@ -2575,6 +2604,7 @@
                 s.path.on = !s.path.on;
                 if (s.path.on) {
                   s.circle.on = false;
+                  s.vertical = false;
                   sfxOff(s);
                 }
                 if (s.path.on && s.path.pts.length < 2) s.path.pts = defaultPathPts(box.w, box.h);
@@ -3274,7 +3304,7 @@
             <span class="lbl">Align</span>
             <div class="seg">
               {#each ['left', 'center', 'right'] as al (al)}
-                <button type="button" class:on={s.align === al} aria-pressed={s.align === al} title={al} onclick={() => { s.align = al; touch(); }}>
+                <button type="button" class:on={s.align === al} aria-pressed={s.align === al} title={columns ? { left: 'top', center: 'middle', right: 'bottom' }[al] : al} onclick={() => { s.align = al; touch(); }}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">{#each alignIcons[al] as d}<path {d} />{/each}</svg>
                 </button>
               {/each}
@@ -3284,13 +3314,37 @@
             <span class="lbl">Vertical</span>
             <div class="seg">
               {#each ['top', 'middle', 'bottom'] as va (va)}
-                <button type="button" class:on={s.valign === va} aria-pressed={s.valign === va} title={va} onclick={() => { s.valign = va; touch(); }}>
+                <button type="button" class:on={s.valign === va} aria-pressed={s.valign === va} disabled={columns} title={columns ? 'Columns are centred across the box' : va} onclick={() => { s.valign = va; touch(); }}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">{#each valignIcons[va] as d}<path {d} />{/each}</svg>
                 </button>
               {/each}
             </div>
           </div>
         </div>
+        {#if !s.sfx?.on}
+          <!-- Writing direction: Down sets the text in columns, right to left
+               (`verticalLayout`). SFX has its own Down, in its panel. -->
+          <div class="row2">
+            <div class="field">
+              <span class="lbl" id="insp-dir-lbl">Direction</span>
+              <div class="seg" role="radiogroup" aria-labelledby="insp-dir-lbl">
+                <button type="button" role="radio" class:on={!s.vertical} aria-checked={!s.vertical} title="Lines across, top to bottom" onclick={() => setVertical(false)}>Across</button>
+                <button type="button" role="radio" class:on={!!s.vertical} aria-checked={!!s.vertical} title="Columns down, right to left. Turns off the arc, the circle and the path" onclick={() => setVertical(true)}>Down</button>
+              </div>
+            </div>
+            {#if s.vertical}
+              <div class="field">
+                <span class="lbl" id="insp-latin-lbl">Latin letters</span>
+                <div class="seg" role="radiogroup" aria-labelledby="insp-latin-lbl">
+                  <button type="button" role="radio" class:on={s.verticalLatin !== 'sideways'} aria-checked={s.verticalLatin !== 'sideways'} title="One letter a cell, standing up" onclick={() => { s.verticalLatin = 'upright'; touch(); }}>Upright</button>
+                  <button type="button" role="radio" class:on={s.verticalLatin === 'sideways'} aria-checked={s.verticalLatin === 'sideways'} title="Each word turned a quarter, running down the column" onclick={() => { s.verticalLatin = 'sideways'; touch(); }}>Sideways</button>
+                </div>
+              </div>
+            {:else}
+              <div></div>
+            {/if}
+          </div>
+        {/if}
         <!-- Line height and letter spacing get a row of their own. Nested two
              columns deep they were ~60px wide, which is a number field with no
              room left for its stepper. -->

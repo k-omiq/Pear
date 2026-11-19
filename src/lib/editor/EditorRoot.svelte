@@ -13,6 +13,7 @@
   import Canvas from './Canvas.svelte';
   import RefSidebar from './RefSidebar.svelte';
   import RailTools, { RAIL_W } from './RailTools.svelte';
+  import { fitInsets } from './insets.js';
   import ChromePills from './ChromePills.svelte';
   import AiRunPill from './AiRunPill.svelte';
   import ZoomDock from './ZoomDock.svelte';
@@ -26,10 +27,12 @@
   import BoxMenu from './BoxMenu.svelte';
   import FaceMenu from './FaceMenu.svelte';
   import TranslatePane from './TranslatePane.svelte';
-  import { app, page, pageProgress, isTranslateMode, isTranslateChapter, isLongstrip } from '../store.svelte.js';
+  import DockPane from './DockPane.svelte';
+  import AutoDetect from './AutoDetect.svelte';
+  import { app, page, pageProgress, isTranslateMode, isTranslateChapter, isLongstrip, queueDocked, optionsDocked, setLayoutField } from '../store.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
   import { registerShortcutHandlers } from '../shortcuts.svelte.js';
-  import { loadPanels, clampAll } from './panels.svelte.js';
+  import { loadPanels, clampAll, panels, showPanel } from './panels.svelte.js';
   import { setResidentWindow } from '../page-images.js';
   import { residentRadiusFor } from './strip.js';
 
@@ -48,16 +51,22 @@
     }),
   );
 
-  // A translate chapter is the raw page, the queue and the way around them.
-  // Mount typeset controls in typeset mode.
+  // What is shown is the layout's (layouts.svelte.js, the rail's Layout menu),
+  // not the chapter's: the typesetting tools out or not, and the queue and the
+  // Text box options each docked in the column down the right or floating.
   const translate = $derived(isTranslateMode());
-  // A translate chapter is split in two, tools shown or not: the page, and the
-  // typing pane down the right (TranslatePane). The canvas is inset by the
-  // pane's width exactly as it is by the sidebar's, so fit measures the half
-  // the page actually has.
-  const split = $derived(isTranslateChapter());
+  // A translate chapter's queue is the typing pane, docked or floating.
+  const translateChapter = $derived(isTranslateChapter());
+  const qDock = $derived(queueDocked());
+  const oDock = $derived(optionsDocked());
+  // The column down the right (DockPane), while anything is docked in it. The
+  // canvas is inset by its width exactly as it is by the sidebar's, so fit
+  // measures the part of the window the page actually has.
+  const split = $derived(qDock || oDock);
   let paneWidth = $state(420);
-  const canvasRight = $derived(split ? paneWidth : 0);
+  // The window's width, for `fitInsets`: the sidebar and the dock together may
+  // not squeeze the page below a readable strip.
+  let vw = $state(typeof window === 'undefined' ? 1440 : window.innerWidth);
   const strip = $derived(isLongstrip());
 
   // The reference sidebar is redundant when the canvas itself is showing the
@@ -65,8 +74,13 @@
   // inset by, rather than leaving a column of nothing down the left. The peek
   // view (Settings > Editor > Raw page) has no column at all: the page swaps
   // to its raw in place instead (the rail's Raw button).
-  const sideShown = $derived(!split && !app.sidebarHidden && prefs.rawView !== 'peek');
-  const canvasLeft = $derived((sideShown ? app.leftWidth : 0) + RAIL_W);
+  // A translate chapter's page is already the raw, so it never has the column.
+  const sideShown = $derived(!translateChapter && !app.sidebarHidden && prefs.rawView !== 'peek');
+  // What is drawn, not what is stored (insets.js): the user's widths come back
+  // as soon as the window has room for them.
+  const insets = $derived(fitInsets({ vw, rail: RAIL_W, side: sideShown ? app.leftWidth : 0, dock: split ? paneWidth : 0 }));
+  const canvasLeft = $derived(insets.side + RAIL_W);
+  const canvasRight = $derived(insets.dock);
 
   // One pass over the boxes, then a lookup per line - see `pageProgress`, which
   // is also what the project pill's whole-chapter figure is built from.
@@ -86,9 +100,26 @@
     );
   });
 
+  // A translate chapter's floating queue is its typing pane, the one place its
+  // lines are typed. It shares the queue window's geometry (and its hidden flag)
+  // with typeset chapters, so a queue hidden there must not leave a translate
+  // chapter opening with no typing pane: on each open, and whenever the layout
+  // floats it, it comes up shown. Hiding it afterwards is the user's.
+  const typingWindow = $derived(app.loaded && translateChapter && !qDock);
+  $effect(() => {
+    void app.chapterRef;
+    if (!typingWindow) return;
+    untrack(() => {
+      if (panels.queue.hidden) showPanel('queue');
+    });
+  });
+
   // Clamp without writing: see `clampAll`. A window the user shrank must not be
   // able to make the layout they chose smaller for good.
-  const onResize = () => clampAll(window.innerWidth, window.innerHeight, false);
+  const onResize = () => {
+    vw = window.innerWidth;
+    clampAll(window.innerWidth, window.innerHeight, false);
+  };
 
   // What the last `setResidentWindow` was asked for - see the guard inside the
   // effect. Plain variables rather than state: they are written by the effect
@@ -180,8 +211,8 @@
     {#if !translate}<BulkStylePanel />{/if}
   </div>
 
-  {#if sideShown}<RefSidebar />{/if}
-  <RailTools />
+  {#if sideShown}<RefSidebar width={insets.side} />{/if}
+  <RailTools sideWidth={insets.side} />
 
   <ChromePills {onFontLib} {onSettings} />
   <AiRunPill />
@@ -203,23 +234,35 @@
   {/if}
 
   {#if !translate}
-    <!-- The title follows the body: the panel says what it is showing, and while
-         the brush is armed it is not showing a text box's options. -->
-    <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'} rightInset={canvasRight}>
-      <Inspector {onSettings} />
-    </FloatingPanel>
+    {#if !oDock}
+      <!-- The title follows the body: the panel says what it is showing, and
+           while the brush is armed it is not showing a text box's options. -->
+      <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'} rightInset={canvasRight} ondock={() => setLayoutField('options', 'docked')}>
+        <Inspector {onSettings} />
+      </FloatingPanel>
+    {/if}
     <FloatingPanel id="ai" title="AI" rightInset={canvasRight}>
       <AiPanel />
     </FloatingPanel>
   {/if}
   {#if split}
-    <TranslatePane bind:width={paneWidth} />
-  {:else}
-    <!-- General use has no detected lines queued for placing, only its text. -->
-    <FloatingPanel id="queue" title={isComics() ? 'Text queue' : 'Text list'} count={`${placed} / ${total} placed`}>
-      <Queue />
+    <DockPane bind:width={paneWidth} shown={insets.dock} options={oDock} queue={qDock} {onSettings} />
+  {/if}
+  {#if !qDock}
+    <!-- General use has no detected lines queued for placing, only its text.
+         A translate chapter's window is its typing pane, which says its own
+         counts. -->
+    <FloatingPanel
+      id="queue"
+      title={isComics() ? 'Text queue' : 'Text list'}
+      count={translateChapter ? null : `${placed} / ${total} placed`}
+      rightInset={canvasRight}
+      ondock={() => setLayoutField('queue', 'docked')}
+    >
+      {#if translateChapter}<TranslatePane />{:else}<Queue />{/if}
     </FloatingPanel>
   {/if}
+  {#if translateChapter}<AutoDetect />{/if}
 
   <!-- A box's right-click menu (FLOW-9), drawn here over the panels rather
        than inside the box, where the page frame would clip it. -->

@@ -15,6 +15,7 @@
 
 import { cloneStyle, markUnsaved, reviewBox, pageById, settleEdits } from './store.svelte.js';
 import { record } from './editor/history.svelte.js';
+import { SFX_MAX_GROUPS } from './data.js';
 
 // A second press within this long and this near, on the same part, is a
 // double: it resets what that part changes.
@@ -25,10 +26,6 @@ export const DOUBLE_PX = 12;
 export const GLYPH_RESET = Object.freeze({
   ring: { rot: 0 },
   scale: { s: 1 },
-  x: { dx: 0 },
-  y: { dy: 0 },
-  plane: { dx: 0, dy: 0 },
-  centre: { dx: 0, dy: 0 },
   letter: { dx: 0, dy: 0, rot: 0, s: 1 },
 });
 
@@ -120,7 +117,7 @@ export function ownPaths(sfx, placed) {
   const have = sfx.paths ?? [];
   if (have.length >= (placed?.length ?? 0)) return;
   const out = JSON.parse(JSON.stringify(have));
-  for (let i = out.length; i < Math.min(4, placed.length); i++) {
+  for (let i = out.length; i < Math.min(SFX_MAX_GROUPS, placed.length); i++) {
     const q = placed[i];
     out.push({ a: [round(q.a[0]), round(q.a[1])], b: [round(q.b[0]), round(q.b[1])], bend: round(q.bend ?? 0) });
   }

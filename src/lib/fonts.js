@@ -537,6 +537,45 @@ async function dbDelete(keys) {
   });
 }
 
+// Puts and deletes in one transaction: a face moved is a record written under
+// its new key and the old key dropped, and a crash between two transactions
+// would leave the face in both places or in neither.
+async function dbWrite(puts, deletes) {
+  if (!puts.length && !deletes.length) return;
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const k of deletes) store.delete(k);
+    for (const r of puts) store.put(r);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ---- other windows ----
+// Every window has its own copy of the font lists and its own registered
+// faces; IndexedDB is the one they share. A window that writes a record says
+// so (`setFontsWrittenHook`, font-window.svelte.js sends it on as an event),
+// and the others read the records again (`syncUserFonts`).
+let writtenHook = null;
+export function setFontsWrittenHook(fn) {
+  writtenHook = fn ?? null;
+}
+export function fontsWritten() {
+  writtenHook?.();
+}
+
+// What a record is, for telling a face replaced in another window from the
+// one already loaded here: the time it was written, or, for a record from
+// before records carried one, its file name and size.
+function recStamp(rec) {
+  if (rec?.at) return `at:${rec.at}`;
+  const size = rec?.data?.byteLength ?? rec?.data?.size ?? 0;
+  return `${rec?.file ?? ''}|${size}`;
+}
+const faceStamps = new Map();
+
 // ---- who else follows the user's faces ----
 // The browser is handed every face through `FontFace` below and needs nothing
 // more. The Rust text engine measures from the same bytes, and only while it
@@ -664,7 +703,9 @@ async function registerFace(family, data, slot) {
   const desc = {};
   if (isBold(slot)) desc.weight = '700';
   if (isItalic(slot)) desc.style = 'italic';
-  const buf = data instanceof ArrayBuffer ? data : await data.arrayBuffer();
+  // A Blob is read; bytes are bytes, whichever realm made them (an
+  // `instanceof ArrayBuffer` is false for a buffer from another window).
+  const buf = typeof data?.arrayBuffer === 'function' ? await data.arrayBuffer() : data;
   const psName = parsePostScriptName(buf);
   const face = new FontFace(family, buf, desc);
   await face.load();
@@ -714,6 +755,7 @@ export async function _restoreFontRecords(records) {
     try {
       await registerFace(rec.name, rec.data, slot);
       putGroupFace(rec.name, slot, rec.file);
+      faceStamps.set(recordKey(rec.name, slot), recStamp(rec));
     } catch {
       /* skip bad font */
     }
@@ -766,7 +808,7 @@ export async function installFontFace({ family, slot, file, data }) {
   putGroupFace(family, slot, file);
   noteFontsChanged();
   try {
-    await dbPut({ key: recordKey(family, slot), name: family, slot, file, data: buf });
+    await saveFace({ name: family, slot, file, data: buf });
   } catch (e) {
     couldNotSave(family, slot, file, buf);
     toastError(`"${family}" loaded but could not be saved - ${e?.message || e}`);
@@ -800,10 +842,24 @@ export async function restoreFonts() {
 // a file into a slot the guesser would not have chosen.
 export async function addFontFile(file, target = null) {
   const inferred = parseFontFilename(file.name);
-  const family = target?.family || inferred.family;
-  const slot = target?.slot || inferred.slot;
+  return addFontData({
+    family: target?.family || inferred.family,
+    slot: target?.slot || inferred.slot,
+    file: file.name,
+    read: () => file.arrayBuffer(),
+  });
+}
+
+// The one way bytes become a user face: a dropped file, a file in a folder
+// import, a marketplace download. `read` gives the bytes (or `data` is them);
+// `source` is kept on the record (where a marketplace face came from). Returns
+// { family, slot }, false when the name cannot be used, null when the bytes
+// would not load. `quiet` leaves the per-face "already has" toast out.
+export async function addFontData({ family, slot, file, data = null, read = null, source = null, quiet = false }) {
+  family = String(family || '').trim();
+  if (!FACE_SLOTS.includes(slot)) slot = 'regular';
   if (!family) {
-    toastError(`Could not read a font name from "${file.name}"`);
+    toastError(`Could not read a font name from "${file}"`);
     return false;
   }
   if (app.fonts.builtin.some((f) => f.name === family)) {
@@ -811,54 +867,75 @@ export async function addFontFile(file, target = null) {
     return false;
   }
   const current = app.fonts.user.find((f) => f.name === family)?.faces?.[slot];
-  if (current && current.file === file.name) {
-    toast(`"${family}" already has this ${SLOT_LABEL[slot].toLowerCase()} face`);
+  if (current && current.file === file && !data) {
+    if (!quiet) toast(`"${family}" already has this ${SLOT_LABEL[slot].toLowerCase()} face`);
     return null;
   }
   let buf;
   try {
-    buf = await file.arrayBuffer();
+    buf = data ?? (await read());
+    if (ArrayBuffer.isView(buf)) buf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     await registerFace(family, buf, slot);
   } catch {
-    toastError(`Could not load "${file.name}": unsupported or corrupt`);
+    toastError(`Could not load "${file}": unsupported or corrupt`);
     return null;
   }
-  putGroupFace(family, slot, file.name);
+  putGroupFace(family, slot, file);
   // A face the user adds mid-session is the same event as one restored at boot:
   // any box already using this family was measured without it.
   noteFontsChanged();
   try {
-    await dbPut({ key: recordKey(family, slot), name: family, slot, file: file.name, data: buf });
+    await saveFace({ name: family, slot, file, data: buf, ...(source ? { source } : null) });
   } catch (e) {
     // The face is loaded and usable for this session - it is the persistence
     // that failed - so this is a warning and not a rejection. Reported
     // separately from the load failure above because the two ask the user for
     // completely different things.
-    couldNotSave(family, slot, file.name, buf);
+    couldNotSave(family, slot, file, buf);
     toastError(`"${family}" loaded but could not be saved - ${e?.message || e}`);
   }
   return { family, slot };
 }
 
+async function saveFace(rec) {
+  const full = { key: recordKey(rec.name, rec.slot), ...rec, at: Date.now() };
+  await dbPut(full);
+  faceStamps.set(full.key, recStamp(full));
+  fontsWritten();
+}
+
 // The drop/browse entry point. One toast for the whole drop rather than one per
 // file, since the point of grouping is that four files are one font.
 export async function addFontFiles(files) {
+  const faces = [...files].map((f) => {
+    const { family, slot } = parseFontFilename(f.name);
+    return { family, slot, file: f.name, read: () => f.arrayBuffer() };
+  });
+  return addFontFaces(faces);
+}
+
+// Many faces at once, with one toast: [{ family, slot, file, read | data }].
+// Returns how many faces went in.
+export async function addFontFaces(faces, { onProgress = null } = {}) {
   // Faces, not files. Two files can infer the same family and slot -
   // `Wildwords.ttf` beside `Wildwords-Regular.ttf` is a common foundry pairing
   // - and the second overwrites the first, so counting files claimed a face the
   // library card underneath would not show.
   const added = new Map();
-  for (const f of [...files]) {
-    const r = await addFontFile(f);
+  let done = 0;
+  for (const f of faces) {
+    const r = await addFontData({ ...f, quiet: faces.length > 1 });
     if (r) added.set(recordKey(r.family, r.slot), r.family);
+    onProgress?.(++done, faces.length);
   }
-  if (!added.size) return; // whatever went wrong already said so
+  if (!added.size) return 0; // whatever went wrong already said so
   const families = [...new Set(added.values())];
   if (families.length === 1) {
     toast(added.size === 1 ? `Added font "${families[0]}"` : `Added "${families[0]}" - ${added.size} faces`);
   } else {
     toast(`Added ${added.size} faces across ${families.length} fonts`);
   }
+  return added.size;
 }
 
 // Drop a single face. The family goes with it when that was its last one -
@@ -870,8 +947,10 @@ export async function removeFontFace(name, slot) {
   if (g.faces) g.faces[slot] = null;
   unregisterFace(name, slot);
   faceWatcher?.removed(name, slot);
+  faceStamps.delete(recordKey(name, slot));
   try {
     await dbDelete([recordKey(name, slot)]);
+    fontsWritten();
   } catch {
     /* ignore */
   }
@@ -890,10 +969,233 @@ export async function removeUserFont(name) {
   for (const slot of FACE_SLOTS) unregisterFace(name, slot);
   faceWatcher?.removedFamily(name);
   noteFontsChanged(); // see removeFontFace
+  for (const slot of FACE_SLOTS) faceStamps.delete(recordKey(name, slot));
   try {
     await dbDelete(FACE_SLOTS.map((s) => recordKey(name, s)));
+    fontsWritten();
   } catch {
     /* ignore */
   }
   toast('Font removed');
+}
+
+// ---- moving faces between slots and families ----
+// The Font Library's drag and its "Move to…" menu. A face is a record keyed by
+// `family::slot`, so a move is a record written under a new key and the old
+// one dropped - in one transaction - and the face registered again under its
+// new family and descriptors. A move onto a filled slot swaps the two, so a
+// mistake is always one more move to undo and no face is ever lost by a drop.
+//
+// `moves` is [{ from: { family, slot }, to: { family, slot } }], applied in
+// order to the records as they stand. Returns how many faces moved.
+export async function applyFaceMoves(moves) {
+  if (!moves?.length) return 0;
+  let rows;
+  try {
+    rows = await dbGetAll();
+  } catch (e) {
+    toastError(`Font library unavailable - ${e?.message || e}`);
+    return 0;
+  }
+  const before = new Map();
+  for (const r of rows) {
+    if (!r?.name) continue;
+    const slot = FACE_SLOTS.includes(r.slot) ? r.slot : 'regular';
+    before.set(recordKey(r.name, slot), { ...r, slot });
+  }
+  const after = new Map(before);
+  // A family a move makes goes in the list where the face came from, so a
+  // renamed family stays where it was.
+  const placeAfter = new Map();
+  let moved = 0;
+  for (const { from, to } of moves) {
+    if (!app.fonts.user.some((f) => f.name === to.family) && !placeAfter.has(to.family)) placeAfter.set(to.family, from.family);
+    if (!from || !to || !FACE_SLOTS.includes(to.slot) || !to.family) continue;
+    const a = recordKey(from.family, from.slot);
+    const b = recordKey(to.family, to.slot);
+    if (a === b) continue;
+    const src = after.get(a);
+    if (!src) continue;
+    if (app.fonts.builtin.some((f) => f.name === to.family)) {
+      toast(`"${to.family}" is a built-in font`);
+      continue;
+    }
+    const dst = after.get(b);
+    after.delete(a);
+    after.set(b, { ...src, key: b, name: to.family, slot: to.slot });
+    if (dst) after.set(a, { ...dst, key: a, name: from.family, slot: from.slot });
+    moved++;
+  }
+  if (!moved) return 0;
+  const at = Date.now();
+  const puts = [];
+  const deletes = [];
+  for (const [k, r] of after) {
+    if (before.get(k) === r) continue;
+    const rec = { ...r, at };
+    after.set(k, rec);
+    puts.push(rec);
+  }
+  for (const k of before.keys()) if (!after.has(k)) deletes.push(k);
+  try {
+    await dbWrite(puts, deletes);
+  } catch (e) {
+    toastError(`Could not move the face - ${e?.message || e}`);
+    return 0;
+  }
+  // This session, after the records: register what landed, then let go of
+  // what left. Registering first keeps a box set in the family drawing in a
+  // real face the whole way through.
+  for (const r of puts) {
+    try {
+      await registerFace(r.name, r.data, r.slot);
+      faceStamps.set(r.key, recStamp(r));
+    } catch {
+      /* the bytes loaded before; a face that will not load now stays on record */
+    }
+  }
+  for (const k of deletes) {
+    const r = before.get(k);
+    unregisterFace(r.name, r.slot);
+    faceStamps.delete(k);
+    faceWatcher?.removed(r.name, r.slot);
+  }
+  rebuildUserList(after, placeAfter);
+  noteFontsChanged();
+  fontsWritten();
+  return moved;
+}
+
+// The user list, rebuilt from the records after a move or a sync. A new
+// array, never the old one edited: `fontByName` keys its index on the arrays
+// and their lengths, and a rename changes neither. Families keep their order;
+// a new one goes after the family named for it in `placeAfter`, else at the
+// end.
+function rebuildUserList(records, placeAfter = null) {
+  const faces = new Map();
+  for (const r of records.values()) {
+    if (!faces.has(r.name)) faces.set(r.name, emptyFaces());
+    faces.get(r.name)[r.slot] = { file: r.file };
+  }
+  // Faces this session holds that never reached the library (`unsavedFaces`)
+  // stay where they are.
+  for (const u of unsavedFaces.values()) {
+    if (!faces.has(u.name)) faces.set(u.name, emptyFaces());
+    faces.get(u.name)[u.slot] ??= { file: u.file };
+  }
+  const order = app.fonts.user.map((f) => f.name);
+  for (const name of faces.keys()) {
+    if (order.includes(name)) continue;
+    const at = order.indexOf(placeAfter?.get(name));
+    if (at >= 0) order.splice(at + 1, 0, name);
+    else order.push(name);
+  }
+  app.fonts.user = order
+    .filter((name) => faces.has(name) && !app.fonts.builtin.some((f) => f.name === name))
+    .map((name) => {
+      const old = app.fonts.user.find((f) => f.name === name);
+      return { ...(old || { name, css: `'${name}'`, real: true }), faces: faces.get(name) };
+    });
+}
+
+// One face to another slot or family (a swap when that slot is filled).
+export async function moveFontFace(from, to) {
+  const n = await applyFaceMoves([{ from, to }]);
+  if (n) toast(to.family === from.family ? `Moved to ${SLOT_LABEL[to.slot]}` : `Moved to "${to.family}" · ${SLOT_LABEL[to.slot]}`);
+  return n;
+}
+
+// Every face of `from` into `into`, slot for slot. A slot `into` already has
+// is not swapped here: that face stays in `from`, and the caller says so.
+// Renaming to a name nobody has is the same thing with nothing in the way.
+export async function mergeUserFonts(from, into) {
+  into = String(into || '').trim();
+  if (!into || into === from) return { moved: 0, kept: [] };
+  const src = app.fonts.user.find((f) => f.name === from);
+  if (!src) return { moved: 0, kept: [] };
+  const dst = app.fonts.user.find((f) => f.name === into);
+  const moves = [];
+  const kept = [];
+  for (const slot of FACE_SLOTS) {
+    if (!src.faces?.[slot]) continue;
+    if (dst?.faces?.[slot]) kept.push(slot);
+    else moves.push({ from: { family: from, slot }, to: { family: into, slot } });
+  }
+  const moved = await applyFaceMoves(moves);
+  return { moved, kept };
+}
+
+// A family renamed (or merged, when the new name is taken). Boxes set in the
+// old name look for it by that name, so they show it as missing until they
+// are set in the new one.
+export async function renameUserFont(from, to) {
+  const name = String(to || '').trim();
+  if (!name || name === from) return false;
+  if (app.fonts.builtin.some((f) => f.name === name)) {
+    toast(`"${name}" is a built-in font`);
+    return false;
+  }
+  const merging = app.fonts.user.some((f) => f.name === name);
+  const { moved, kept } = await mergeUserFonts(from, name);
+  if (!moved) {
+    if (kept.length) toast(`"${name}" already has every face "${from}" has`);
+    return false;
+  }
+  if (kept.length) toast(`Merged into "${name}" · ${kept.map((s) => SLOT_LABEL[s]).join(', ')} kept in "${from}" (already filled)`);
+  else toast(merging ? `Merged into "${name}"` : `Renamed to "${name}"`);
+  return true;
+}
+
+// ---- following another window's writes ----
+// The records as they stand now, made this window's fonts: a face another
+// window added or replaced is registered here, one it removed is let go, and
+// a face whose record is unchanged is not touched - a box set in it keeps
+// drawing through the whole sync. Faces this session could not save are left
+// alone; nothing on disk says anything about them. Runs one at a time.
+let syncing = null;
+export function syncUserFonts() {
+  syncing = (syncing ?? Promise.resolve()).then(syncOnce, syncOnce);
+  return syncing;
+}
+async function syncOnce() {
+  if (typeof indexedDB === 'undefined') return false;
+  let rows;
+  try {
+    rows = await dbGetAll();
+  } catch {
+    return false;
+  }
+  const want = new Map();
+  for (const r of rows) {
+    if (!r?.name || !r.data) continue;
+    if (app.fonts.builtin.some((f) => f.name === r.name)) continue;
+    const slot = FACE_SLOTS.includes(r.slot) ? r.slot : 'regular';
+    want.set(recordKey(r.name, slot), { ...r, slot });
+  }
+  let changed = false;
+  for (const g of app.fonts.user) {
+    for (const slot of FACE_SLOTS) {
+      const k = recordKey(g.name, slot);
+      if (!g.faces?.[slot] || want.has(k) || unsavedFaces.has(k)) continue;
+      unregisterFace(g.name, slot);
+      faceStamps.delete(k);
+      faceWatcher?.removed(g.name, slot);
+      changed = true;
+    }
+  }
+  for (const [k, r] of want) {
+    const loaded = app.fonts.user.find((f) => f.name === r.name)?.faces?.[r.slot];
+    if (loaded && loaded.file === r.file && faceStamps.get(k) === recStamp(r)) continue;
+    try {
+      await registerFace(r.name, r.data, r.slot);
+      faceStamps.set(k, recStamp(r));
+      changed = true;
+    } catch {
+      want.delete(k);
+    }
+  }
+  if (!changed) return false;
+  rebuildUserList(want);
+  noteFontsChanged();
+  return true;
 }

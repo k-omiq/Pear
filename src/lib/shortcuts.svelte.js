@@ -361,6 +361,15 @@ const DEFS = [
   { id: 'panel.options', label: 'Show or hide box options', group: 'Panels', combo: null, keywords: 'inspector window', ...T },
   { id: 'panel.queue', label: 'Show or hide text queue', group: 'Panels', combo: null, keywords: 'lines window', ...T },
   { id: 'panel.ai', label: 'Show or hide AI panel', group: 'Panels', combo: null, keywords: 'claude chat agent assistant', ...T },
+  // The layout (layouts.svelte.js): what the editor shows, in place of the old
+  // translate and typeset modes. The tools switch keeps its old id, so a key
+  // the user gave it still holds.
+  { id: 'translate.typesetTools', label: 'Show or hide typesetting tools', group: 'Panels', combo: 'Mod+Shift+t', keywords: 'layout translate typeset mode boxes', ...T },
+  { id: 'layout.translate', label: 'Layout: Translate', group: 'Panels', combo: null, keywords: 'typing pane mode workspace', ...T },
+  { id: 'layout.typeset', label: 'Layout: Typeset', group: 'Panels', combo: null, keywords: 'tools floating mode workspace', ...T },
+  { id: 'layout.custom', label: 'Layout: Custom', group: 'Panels', combo: null, keywords: 'own mix mode workspace', ...T },
+  { id: 'layout.queueDock', label: 'Dock or float text queue', group: 'Panels', combo: null, keywords: 'layout side column window', ...T },
+  { id: 'layout.optionsDock', label: 'Dock or float box options', group: 'Panels', combo: null, keywords: 'layout inspector side column window', ...T },
   { id: 'inspector.tabNext', label: 'Next options tab', group: 'Panels', combo: 'Mod+]', keywords: 'inspector', ...T },
   { id: 'inspector.tabPrev', label: 'Previous options tab', group: 'Panels', combo: 'Mod+[', keywords: 'inspector', ...T },
   { id: 'inspector.tabText', label: 'Text tab', group: 'Panels', combo: 'Mod+Alt+1', keywords: 'inspector options', ...T },
@@ -381,7 +390,6 @@ const DEFS = [
   // there is the field's own (select all, undo). On a Mac Option+letter would
   // type a character, so the pane takes the press first. Not Option+N/E/U/I:
   // those are dead keys.
-  { id: 'translate.typesetTools', label: 'Show or hide typesetting tools', group: 'Translate', combo: 'Mod+Shift+t', ...T },
   { id: 'translate.cleaned', label: 'Show cleaned or raw page', group: 'Translate', combo: null, keywords: 'original', ...T },
   { id: 'translate.next', label: 'Next line', group: 'Translate', combo: 'Enter', ctx: 'field', inField: true },
   { id: 'translate.nextAlt', label: 'Next line', group: 'Translate', combo: 'Tab', ctx: 'field', inField: true, altOf: 'translate.next' },
@@ -458,6 +466,7 @@ const COMICS_ONLY = new Set([
   'view.regions', 'review.next',
   'detect.page', 'detect.chapter', 'jobs.retry', 'ocr.draw',
   'settings.detection', 'settings.guide',
+  'layout.translate',
 ]);
 // A tool switched off in Settings, or one the usage does not have, has no key
 // and no row, and its key does nothing.

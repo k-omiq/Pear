@@ -16,12 +16,13 @@
   //   the curve's middle that bends it. An end follows the pointer from where
   //   it was grabbed; the diamond follows only the pointer's distance across
   //   the chord.
-  // - A press on a letter picks it and moves it at once. The picked letter
-  //   shows its real outline and the gizmo, centred on it and upright on the
-  //   screen whatever the box's turn and flip: a ring that turns it (Blender
-  //   style: by the angle swept, never jumping to the pointer; Shift for 15°
-  //   steps), an arrow that moves it along the screen's x only, one along its
-  //   y only, a square and the centre that move it freely, and an arm that
+  //   The curve line shows only when the box has it on (`sfx.guide`): the
+  //   SFX panel adds it and removes it.
+  // - A press on a letter picks it and moves it at once: the letter itself is
+  //   the move handle. The picked letter shows its real outline and the
+  //   gizmo, centred on it and upright on the screen whatever the box's turn
+  //   and flip: a ring that turns it (Blender style: by the angle swept,
+  //   never jumping to the pointer; Shift for 15° steps) and an arm that
   //   sizes it. A second press on the same part within 400 ms puts back what
   //   that part changes; Delete or Backspace puts the whole letter back,
   //   Escape lets it go, and the arrow keys do nothing.
@@ -55,7 +56,6 @@
     sfxEdit,
     isDouble,
     gizmoScale,
-    screenAxis,
     frameLoop,
   } from './sfx-gizmo.js';
 
@@ -68,7 +68,8 @@
   const cx = $derived((box.w * z) / 2);
   const cy = $derived((box.h * z) / 2);
   const placed = $derived(sfxPlacement(text, s, em));
-  const paths = $derived(placed?.paths ?? []);
+  // The curve line's handles, only while the box shows it.
+  const paths = $derived(s.sfx?.guide ? (placed?.paths ?? []) : []);
   const letters = $derived(placed?.letters ?? []);
   const mirror = $derived(mirrorCss(s, box.w * z, box.h * z));
   // Undoes the flip and the box's turn: what is drawn through it is upright
@@ -187,18 +188,12 @@
     sfxEdit(box, pageId, (sfx) => setGlyph(sfx, key, GLYPH_RESET[part]));
   }
 
-  // A free move, or along one screen axis (`axis` 'x' or 'y').
-  function move(e, part, l, axis = null) {
+  // A free move: the letter follows the pointer.
+  function move(e, part, l) {
     const key = keyOf(l);
     const g0 = { ...glyphOf(box.style.sfx, key) };
     drag(e, part, (p, _ev, st) => {
-      let now = p;
-      if (axis) {
-        const u = screenAxis(s.rotation, s.flipH, s.flipV, axis);
-        const d = (p[0] - st[0]) * u[0] + (p[1] - st[1]) * u[1];
-        now = [st[0] + u[0] * d, st[1] + u[1] * d];
-      }
-      const got = sfxMove(l, st, now, g0.dx, g0.dy);
+      const got = sfxMove(l, st, p, g0.dx, g0.dy);
       if (got) setGlyph(box.style.sfx, key, { dx: got[0], dy: got[1] });
     });
   }
@@ -225,8 +220,6 @@
     const l = pickedLetter;
     const key = keyOf(l);
     if (pressedTwice(e, part)) return reset(e, part, key);
-    if (part === 'x' || part === 'y') return move(e, part, l, part);
-    if (part === 'plane' || part === 'centre') return move(e, part, l);
     const g0 = { ...glyphOf(box.style.sfx, key) };
     const c = [...l.centre];
     if (part === 'scale') {
@@ -453,82 +446,6 @@
           <rect class="pad" x={62 * k * D - 12 * q} y={62 * k * D - 12 * q} width={24 * q} height={24 * q} />
         </g>
       </g>
-
-      <g class="arrow x" class:hot={isHot('x')}>
-        <line class="shaft" aria-hidden="true" x1={9 * k} y1="0" x2={76 * k} y2="0" />
-        <polygon class="head" aria-hidden="true" points="{92 * k},0 {92 * k - 17 * q},{-5.5 * q} {92 * k - 17 * q},{5.5 * q}" />
-        <line
-          class="band"
-          data-sfx-arrow="x"
-          x1={9 * k}
-          y1="0"
-          x2={94 * k}
-          y2="0"
-          role="button"
-          tabindex="-1"
-          aria-label="Move sideways"
-          onpointerdown={(e) => onPartDown(e, 'x')}
-          {...hover('x')}
-        >
-          <title>Move sideways</title>
-        </line>
-      </g>
-
-      <g class="arrow y" class:hot={isHot('y')}>
-        <line class="shaft" aria-hidden="true" x1="0" y1={-9 * k} x2="0" y2={-76 * k} />
-        <polygon class="head" aria-hidden="true" points="0,{-92 * k} {-5.5 * q},{-92 * k + 17 * q} {5.5 * q},{-92 * k + 17 * q}" />
-        <line
-          class="band"
-          data-sfx-arrow="y"
-          x1="0"
-          y1={-9 * k}
-          x2="0"
-          y2={-94 * k}
-          role="button"
-          tabindex="-1"
-          aria-label="Move up or down"
-          onpointerdown={(e) => onPartDown(e, 'y')}
-          {...hover('y')}
-        >
-          <title>Move up or down</title>
-        </line>
-      </g>
-
-      <rect
-        class="plane"
-        class:hot={isHot('plane')}
-        data-sfx-plane
-        x={30 * k - 8.5 * q}
-        y={-30 * k - 8.5 * q}
-        width={17 * q}
-        height={17 * q}
-        role="button"
-        tabindex="-1"
-        aria-label="Move freely"
-        onpointerdown={(e) => onPartDown(e, 'plane')}
-        {...hover('plane')}
-      >
-        <title>Move freely</title>
-      </rect>
-
-      <g class="centre" class:hot={isHot('centre')}>
-        <rect class="box" aria-hidden="true" x={-5.5 * q} y={-5.5 * q} width={11 * q} height={11 * q} />
-        <rect
-          class="pad"
-          data-sfx-centre
-          x={-11 * q}
-          y={-11 * q}
-          width={22 * q}
-          height={22 * q}
-          role="button"
-          tabindex="-1"
-          aria-label="Move freely"
-          onpointerdown={(e) => onPartDown(e, 'centre')}
-          {...hover('centre')}
-        >
-          <title>Move freely</title>
-        </rect>
-      </g>
     </g>
   {/if}
 </svg>
@@ -641,39 +558,18 @@
   .ring.held .ring-hit {
     cursor: grabbing;
   }
-  .arm,
-  .shaft {
+  .arm {
     stroke-width: 2.2;
     stroke-linecap: butt;
-  }
-  .hot .arm,
-  .hot .shaft {
-    stroke-width: 3.8;
-  }
-  .arm {
     stroke: #d8d8d8;
+  }
+  .hot .arm {
+    stroke-width: 3.8;
   }
   .scale .box {
     fill: #d8d8d8;
     stroke: #303030;
     stroke-width: 1.1;
-  }
-  .arrow.x .shaft {
-    stroke: #75d9ff;
-  }
-  .arrow.x .head {
-    fill: #75d9ff;
-  }
-  .arrow.y .shaft {
-    stroke: #f2c94c;
-  }
-  .arrow.y .head {
-    fill: #f2c94c;
-  }
-  .head {
-    stroke: #303030;
-    stroke-width: 1.1;
-    stroke-linejoin: round;
   }
   .band {
     stroke: transparent;
@@ -686,32 +582,5 @@
   }
   .part-hit {
     cursor: nwse-resize;
-  }
-  .arrow.x .band {
-    cursor: ew-resize;
-  }
-  .arrow.y .band {
-    cursor: ns-resize;
-  }
-  .plane {
-    fill: rgba(255, 140, 115, 0.45);
-    stroke: #303030;
-    stroke-width: 1.1;
-    pointer-events: all;
-    cursor: move;
-  }
-  .plane.hot {
-    fill: rgba(255, 140, 115, 0.7);
-  }
-  .centre .box {
-    fill: #fff;
-    stroke: #303030;
-    stroke-width: 1.1;
-  }
-  .centre.hot .box {
-    stroke-width: 1.8;
-  }
-  .centre .pad {
-    cursor: move;
   }
 </style>

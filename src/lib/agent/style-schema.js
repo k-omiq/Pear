@@ -361,6 +361,7 @@ export const STYLE_SCHEMA = {
       b: point('end [x,y] em'),
       bend: number('bend, + bows left of a->b', -2, 2),
     }, ['a', 'b']), { maxItems: SFX_MAX_GROUPS }),
+    guide: boolean('curve handles shown'),
     glyphs: readOnly('set through edit set.letters (the letters tool reads them)'),
     caption: object('small translation beside the SFX', {
       text: string('caption text; empty=none'),
@@ -428,6 +429,8 @@ export const STYLE_SCHEMA = {
     marks: readOnly('set through the Colour paint tool'),
   }),
   curve: number('arc: negative=frown, positive=smile'),
+  vertical: boolean('columns, right to left'),
+  verticalLatin: choice('Latin in columns', ['upright', 'sideways']),
   shape: choice('line-breaking shape', ['auto', 'oval', 'rect', 'off']),
   minOrphan: number('minimum solo-word letters'),
   hyphenate: boolean('split words that fit no line'),

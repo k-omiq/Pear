@@ -21,7 +21,7 @@ import { resolveFace, postScriptNameFor } from './fonts.js';
 import { applyCase, canMeasure, textInset, contentWidth, blockYFor, faceFor, lineFaces } from './measure.js';
 import { textEngine, engineDraws, enginesNow, enginesAre } from './text-engine/index.js';
 import { drawnFace, drawnRuns } from './text-engine/drawn-face.js';
-import { boxCandidate, placeBlock, curvedStyle } from './contain.js';
+import { boxCandidate, placeBlock, curvedStyle, verticalStyle } from './contain.js';
 import { runFamilies, normalizeRuns, textCheck, runsField, faceOf } from './runs.js';
 import { sfxActive } from './sfx.js';
 import { normalizeFit, normalizeAuto, normalizeOutline, blendIfActive, BLEND_RANGE_FULL, CONTOUR_LABELS, FX_GRADIENT_STYLES, shadowOwnAngle, GRADIENT_MAX_STOPS, instanceOn, blendingSwitch, outlineRun, outlineBands, strokesFromBands } from './data.js';
@@ -817,6 +817,10 @@ export function lettersOnlyStyle(s) {
 //             with a per-glyph tangent. A type layer has no path to follow, so
 //             Photoshop re-renders it as a straight paragraph in the box rect.
 //   circle  - the closed ring (circleLayout). Same failure as `path`.
+//   vertical - our columns (verticalLayout): the turned marks, small kana,
+//             Latin upright or sideways and the two-digit pairs are ours, and
+//             Photoshop's vertical type (its orientation flag) sets all of
+//             them its own way, with its own breaks. Pixels, as the curves.
 //   flip    - the mirror is baked into the pixels (paintBoxOnPage's ctx.scale
 //             in exporter.js), but a type layer's transform below is
 //             [cos, sin, -sin, cos, tx, ty], which has determinant +1 and so
@@ -863,6 +867,7 @@ export function isRasterOnly(style) {
     s.curve ||
     (s.path?.on && (s.path.pts?.length ?? 0) >= 2) ||
     s.circle?.on ||
+    verticalStyle(s) ||
     // SFX lettering is placed letter by letter, scaled and leaned: not a type
     // layer's one run of text. Only while the Rust engine lays it out.
     sfxActive(s) ||
@@ -2547,6 +2552,9 @@ export async function reconstructForeign(psd) {
             // through a PSD whose embedded project Photoshop has rewritten.
             valign: 'top',
             color: st.fillColor ? rgbHex(st.fillColor) : '#000000',
+            // Photoshop's vertical type, as columns: it sets Latin turned
+            // sideways unless told otherwise, so that is how it comes in.
+            ...(n.text.orientation === 'vertical' ? { vertical: true, verticalLatin: 'sideways' } : null),
             ...fxStyle,
           },
         });

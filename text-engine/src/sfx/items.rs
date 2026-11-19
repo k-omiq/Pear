@@ -8,8 +8,10 @@
 
 use crate::engine::extends_cluster;
 
-/// More groups than this are folded into the last one.
-pub const MAX_GROUPS: usize = 4;
+/// More groups than this are folded into the last one. High enough that a
+/// sound typed one letter a line (a hand-made column) keeps every letter on
+/// a line of its own.
+pub const MAX_GROUPS: usize = 32;
 /// Most items in one text. Past it the text is refused.
 pub const MAX_ITEMS: usize = 400;
 

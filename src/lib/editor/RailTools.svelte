@@ -19,8 +19,11 @@
     sidebarMaxWidth,
     isTranslateMode,
     isTranslateChapter,
+    queueDocked,
+    optionsDocked,
     page,
   } from '../store.svelte.js';
+  import LayoutMenu from './LayoutMenu.svelte';
   import { prefs } from '../prefs.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
   import { panels, showPanel } from './panels.svelte.js';
@@ -42,6 +45,9 @@
   // below swaps the page to its raw in place, the same way.
   const peekView = $derived(prefs.rawView === 'peek');
   const noSide = $derived(isTranslateChapter() || app.sidebarHidden || peekView);
+  // The sidebar's drawn width (EditorRoot, insets.js): narrower than the stored
+  // one while a docked column leaves the page too little room.
+  let { sideWidth = null } = $props();
   const hasRaw = $derived(!!page()?.raw);
   // The key, if the user gave "Show or hide raw page" one, for the tip.
   const rawKey = $derived(keyLabel('view.raw'));
@@ -124,18 +130,24 @@
 
   const keepClick = (e) => e.stopPropagation();
 
+  // The Layout menu (LayoutMenu.svelte), on the rail in every chapter: the
+  // one place the panes are chosen.
+  let layoutBtn = $state(null);
+  let layoutOpen = $state(false);
+
   // A hidden floating panel is a tab here, under the tools, and nowhere else:
   // one tab per panel, apart from the tool strip and from each other, in the
   // inverse of the chrome's colour so it reads against both the dark art and
   // the strip. Shown again, the panel comes back where it was and its tab
   // goes. The names are the panels' own titles (EditorRoot.svelte). A
   // translate chapter has no options panel, so no tab for it either.
+  // A pane docked in the column down the right is never hidden, so it has no
+  // tab either: only a floating window does.
   const docked = $derived(
     [
-      !translate && panels.options.hidden && { id: 'options', title: brushArmed() ? 'Brush' : 'Text box options' },
+      !translate && !optionsDocked() && panels.options.hidden && { id: 'options', title: brushArmed() ? 'Brush' : 'Text box options' },
       // The SFX window has no tab: the SFX tool above is its way back.
-      // A translate chapter's queue is the typing pane, which never docks.
-      !isTranslateChapter() && panels.queue.hidden && { id: 'queue', title: 'Text queue' },
+      !queueDocked() && panels.queue.hidden && { id: 'queue', title: 'Text queue' },
       // The AI panel's tab shows once a key is set; before that the panel is
       // an action away (palette, shortcut) and Settings says how to start.
       !translate && panels.ai.hidden && aiKey.set && { id: 'ai', title: 'AI panel' },
@@ -155,7 +167,7 @@
 <div
   class="ed-rail"
   class:hidden={noSide}
-  style="left:{noSide ? 0 : app.leftWidth}px"
+  style="left:{noSide ? 0 : (sideWidth ?? app.leftWidth)}px"
   onpointerdown={onRailPointerDown}
 >
   <!-- The band that advertises the resize - and, being the widget, the thing
@@ -251,6 +263,24 @@
       {/if}
   </div>
   {/if}
+  <div class="ed-rail-layout">
+    <div class="ed-rail-tools">
+    <button
+      bind:this={layoutBtn}
+      class:on={layoutOpen}
+      onclick={() => (layoutOpen = !layoutOpen)}
+      aria-haspopup="menu"
+      aria-expanded={layoutOpen}
+      aria-label="Layout"
+      data-tip={layoutOpen ? null : 'Layout - which panes, docked or floating'}
+    >
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="18.5" cy="12" r="1.7" /></svg>
+    </button>
+    </div>
+    {#if layoutOpen}
+      <LayoutMenu anchor={layoutBtn} onClose={() => (layoutOpen = false)} />
+    {/if}
+  </div>
   {#if docked.length}
     <div class="ed-rail-dock">
       {#each docked as d (d.id)}
@@ -284,6 +314,10 @@
 <style>
   /* The one rail button that can be off: the SFX tool under the browser
      engine. Dimmed, and no hover, so it does not offer what it refuses. */
+  /* The Layout menu is portalled to the body (LayoutMenu.svelte); this box only groups its button. */
+  .ed-rail-layout {
+    position: relative;
+  }
   .ed-rail-tools button:disabled {
     opacity: 0.4;
     cursor: default;

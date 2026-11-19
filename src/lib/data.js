@@ -524,6 +524,13 @@ export function defaultStyle() {
     special: defaultSpecial(),
     // warp: per-character circular arc, -100..100 (negative = frown, positive = smile)
     curve: 0,
+    // Vertical text (`verticalLayout` in measure.js): columns top to bottom,
+    // right to left. Below the arc, the circle, the path and SFX in
+    // precedence. `verticalLatin` is how Latin letters stand in a column:
+    // 'upright' (stacked a letter a cell) or 'sideways' (a word turned a
+    // quarter clockwise). A style saved before either is horizontal.
+    vertical: false,
+    verticalLatin: 'upright',
     // ---- typesetting (see typeset.js) ----
     // How lines are broken. 'auto' is the scanlation shaping - square or oval
     // block, no hourglass, no orphaned short words, no word ever split - with
@@ -1891,7 +1898,8 @@ function normalizeStop(st) {
 }
 
 // At most this many text groups: a group past it joins the last.
-export const SFX_MAX_GROUPS = 4;
+// Kept in step with the engine (text-engine/src/sfx/items.rs MAX_GROUPS).
+export const SFX_MAX_GROUPS = 32;
 export const SFX_DIRS = ['h', 'v'];
 export const SFX_CAPTION_SIDES = ['below', 'above', 'left', 'right'];
 export const STROKE_ORDERS = ['merged', 'each'];
@@ -1931,6 +1939,10 @@ function sfxDefault() {
     rise: null,
     jitter: null,
     paths: [],
+    // Whether the curve line (each line's path, its ends and its bend
+    // handle) shows on the page. Off until the user adds it; Remove takes the
+    // curve away and the letters run straight again.
+    guide: false,
     glyphs: {},
     caption: { text: '', side: 'below', size: 0.3, color: '#111111' },
     before: null,
@@ -2032,6 +2044,8 @@ export function normalizeSfx(x) {
     rise: clampOrNull(x?.rise, -30, 30),
     jitter,
     paths,
+    // A box saved before the switch shows its line when it has bent one.
+    guide: x?.guide === true || (x?.guide == null && paths.length > 0),
     glyphs,
     caption: {
       text: typeof c.text === 'string' ? c.text : '',
@@ -2233,6 +2247,8 @@ export function normalizeStyle(s) {
     boldWeight: Math.min(BOLD_WEIGHT_MAX, Math.max(BOLD_WEIGHT_MIN, num(flat.boldWeight, d.boldWeight))),
     italicAngle: Math.min(ITALIC_ANGLE_MAX, Math.max(ITALIC_ANGLE_MIN, num(flat.italicAngle, d.italicAngle))),
     fitText: flat.fitText === true,
+    vertical: flat.vertical === true,
+    verticalLatin: flat.verticalLatin === 'sideways' ? 'sideways' : 'upright',
     fitMax: Math.min(200, Math.max(0, num(flat.fitMax, 0))),
     blur: Math.max(0, num(src.blur, 0)),
     fillOpacity: legacyFill ? 1 : Math.min(1, Math.max(0, num(flat.fillOpacity, 1))),
@@ -2495,6 +2511,7 @@ export const REVIEW_REASONS = Object.freeze({
   // the tool left it alone.
   manual: 'sized by hand',
   curve: 'text on a curve',
+  vertical: 'vertical text',
   warp: 'warped',
   // Hand-drawn ink and mask shapes sit at box-local px from the box's corner,
   // which growing the box would slide against its text (contain.js).

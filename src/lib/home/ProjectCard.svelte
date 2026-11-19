@@ -9,7 +9,16 @@
   // name holds the rest. Deleting asks first, on the card itself.
   let { project, confirming = false, pages = 0, onOpen, onAskDelete, onCancelDelete, onDelete } = $props();
 
-  const thumb = $derived(convertFileSrc(joinPath(project.dir, 'thumb.png')));
+  // `thumbRev` moves when the library draws a missing cover, so the card asks
+  // for the new file instead of keeping the failed load.
+  const thumb = $derived(
+    convertFileSrc(joinPath(project.dir, 'thumb.png')) + (project.thumbRev ? `?v=${project.thumbRev}` : ''),
+  );
+  let broken = $state(false);
+  $effect(() => {
+    thumb;
+    broken = false;
+  });
   const chapterLine = $derived(plural(project.chapters.length, word('chapter').toLowerCase()));
   // Format chapter count and relative timestamp.
   const touched = $derived(relativeTime(project.updatedAt));
@@ -34,7 +43,7 @@
 <div class="pcard" class:unreadable={project.unreadable} {oncontextmenu}>
   <button class="pcard-cover" onclick={() => onOpen(project)} disabled={project.unreadable} aria-label="Open {project.name}">
     {#if !project.unreadable}
-      <img src={thumb} alt="" onerror={(e) => (e.currentTarget.style.visibility = 'hidden')} />
+      <img src={thumb} alt="" style:visibility={broken ? 'hidden' : null} onerror={() => (broken = true)} />
     {/if}
   </button>
   <div class="pcard-meta">

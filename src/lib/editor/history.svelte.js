@@ -1097,7 +1097,7 @@ export function queueStepNext(dir = 'undo') {
 // this toast rather than moving a box nobody can see.
 export function stepHere(dir = 'undo') {
   if (isTranslateMode() && !queueStepNext(dir)) {
-    toast('Nothing to undo here: a translate chapter edits the queue, not the canvas');
+    toast('Nothing to undo here: with the typesetting tools hidden, undo steps the queue only');
     return false;
   }
   return dir === 'undo' ? undo() : redo();

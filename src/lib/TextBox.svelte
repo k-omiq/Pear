@@ -56,7 +56,7 @@
   } from './editor/field-undo.svelte.js';
   import { copyRuns, editedSpan, runsKey, shiftRuns, patchRuns } from './runs.js';
   import { smoothPath, splitPath, nearestOnPath, toggleSmooth } from './bezier-path.js';
-  import { arcLayout, circleLayout, pathLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, lineFaces, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
+  import { arcLayout, circleLayout, pathLayout, verticalLayout, pathPolyline, removePathAnchor, applyCase, casedRuns, lineFaces, layoutLines, brokenLines, lineIndents, textInset, contentWidth, balloonWidthsFor, inkShiftY, charWidths } from './measure.js';
   import {
     strokeBands,
     rgba,
@@ -81,7 +81,7 @@
   import { warpActive, meshMap, unwarpPoint, unwarpWith } from './warp.js';
   import { paintWarpedBox, renderBoxTexture, paintWarpedTexture, boxNoiseOrigin, boxFootprint } from './exporter.js';
   import { meshWarper } from './warp-paint.js';
-  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull, lettersInkRect } from './contain.js';
+  import { boxCandidate, placeBlock, blockReach, keptBreaks, breaksWords, boxHull, lettersInkRect, verticalStyle } from './contain.js';
   import { HANDLE_KINDS, ARM_LENGTH, handleFrame, handlePoint, dragHandle, dragArm, armEnd } from './special.js';
   import { sfxActive, sfxLayout } from './sfx.js';
   import { engineSwitch } from './engine-switch.svelte.js';
@@ -110,7 +110,7 @@
   import { inkOverhang } from './paint-reach.js';
   import { screenPoint, flipPoint, flipDelta, mirrorTransform, mirrorCss } from './box-frame.js';
   import { editLines, drawEditLines, rawOffset, domPoint, rawEdit, stepChar } from './edit-lines.js';
-  import { glyphIndex, rawIndex, glyphsMatch, caretAt, caretNearest, glyphNearest, selectionBoxes, caretKey, wordAt, glyphReach } from './curve-caret.js';
+  import { glyphIndex, rawIndex, glyphsMatch, caretAt, caretNearest, glyphNearest, selectionBoxes, caretKey, wordAt, glyphReach, zoomColumnGlyph, columnKey } from './curve-caret.js';
   import { typeModel } from './type-rows.js';
   import { caretAt as rowCaret, selectionRects, rowExtent, offsetAt, wordPress, linePress, moveCaret, lineDeleteSpan, rawAtDrawn, boundKey, editStops } from './flat-caret.js';
 
@@ -1563,7 +1563,9 @@
     enginePaints;
     return sfxActive(s);
   });
-  const curved = $derived(!!(sfxCurve || (s.path?.on && (s.path.pts?.length ?? 0) >= 2) || s.circle?.on || s.curve));
+  // Vertical text is set in columns glyph by glyph, below the bends.
+  const columns = $derived(!sfxCurve && verticalStyle(s));
+  const curved = $derived(!!(sfxCurve || (s.path?.on && (s.path.pts?.length ?? 0) >= 2) || s.circle?.on || s.curve || columns));
   const curveEdit = $derived(editing && curved && glyphsMatch(text, applyCase(text, s)));
   // An IME's text is not the box's until the composition ends, but it is on
   // the curve while it is being composed: the editable holds it by then.
@@ -1585,6 +1587,7 @@
     if (sfxGlyphs?.length) return sfxGlyphs;
     if (s.path?.on && (s.path.pts?.length ?? 0) >= 2) return pathLayout(t, s, effSize, box.w, box.h);
     if (s.circle?.on) return circleLayout(t, s, effSize);
+    if (columns) return verticalLayout(t, s, effSize, box.w, box.h);
     return arcLayout(t, s, effSize);
   });
 
@@ -3331,6 +3334,17 @@
     const f = rawOffset(node, sel.focusNode, sel.focusOffset);
     if (a == null || f == null) return false;
     const v = node.textContent;
+    // Columns: the arrows go by the columns (`columnKey`).
+    const cols = columns ? (typeCurve ? typeGlyphs : layout) : null;
+    if (cols && !e.metaKey && !e.altKey && !e.ctrlKey) {
+      const gi = columnKey(cols, typeCurve ? curveGlyph(f) : glyphIndex(v, f), key);
+      if (gi != null) {
+        e.preventDefault();
+        const to = typeCurve ? curveRaw(gi) : rawIndex(v, gi);
+        setRawSel(shift ? a : to, to);
+        return true;
+      }
+    }
     if (key === 'Kill') {
       e.preventDefault();
       applyEdit(node, a !== f ? [Math.min(a, f), Math.max(a, f)] : curveCut(v, f, 'deleteHardLineForward'), 'deleteContentForward');
@@ -3641,7 +3655,8 @@
   // ----- the curve, as a picture -----
   // The glyphs the painter places (`placeBlock`'s, in page px from the box
   // centre), in the zoomed px the marks are drawn in.
-  const typeGlyphs = $derived(typeCurve ? typed.glyphs.map((g) => ({ ...g, x: g.x * z, y: g.y * z, w: g.w * z })) : null);
+  // A column's glyphs carry their stretch of the column too (`verticalLayout`).
+  const typeGlyphs = $derived(typeCurve ? typed.glyphs.map((g) => (g.flow == null ? { ...g, x: g.x * z, y: g.y * z, w: g.w * z } : zoomColumnGlyph(g, z))) : null);
   // A raw offset as a glyph, and a glyph as a raw offset. The glyphs are the
   // CASED text's, which is longer where uppercasing made a letter two
   // (`typed.map`).
