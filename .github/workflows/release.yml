@@ -59,7 +59,7 @@ jobs:
           # back to CPU when there is no usable driver - so on a machine with
           # no GPU this same download simply runs on the CPU.
           #
-          # glibc 2.39 floor: Ubuntu 24.04, Mint 22, Fedora 39, Debian 13,
+          # glibc 2.39 floor: Ubuntu 24.04, Mint 22, Fedora 40, Debian 13,
           # Arch and newer. Reaching Ubuntu 22.04 or Debian 12 would take a
           # Flatpak, which carries its own runtime.
           #
@@ -97,15 +97,23 @@ jobs:
           node-version: 20
           cache: npm
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
-          targets: ${{ matrix.target }}
+          # Pinned: Rust 1.100 changed the build directory layout and breaks
+          # ort-sys 2.0.0-rc.13's copy-dylibs (dynamic_link.rs). Raise it once
+          # ort-sys is updated.
+          toolchain: "1.99.1"
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
           key: ${{ matrix.platform }}
       - run: npm ci
+      - name: Build the text engine
+        # text-engine/js/generated/mt_text.wasm is a build product, not in git.
+        # Without it the app still builds but ships with no Rust text engine.
+        run: npm run build:engine
       - name: ONNX Runtime without AVX
         # pyke's prebuilt x86_64 ONNX Runtime needs AVX2 and dies with SIGILL
         # at start-up on CPUs without it (Pentium Silver, Celeron, older
