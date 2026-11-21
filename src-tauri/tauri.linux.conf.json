@@ -1,6 +1,11 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
-    "resources": ["gpu-libs/lib"]
+    "resources": ["gpu-libs/lib"],
+    "linux": {
+      "deb": {
+        "depends": ["libc6 (>= 2.39)", "libstdc++6 (>= 13.1)"]
+      }
+    }
   }
 }

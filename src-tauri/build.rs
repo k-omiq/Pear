@@ -18,7 +18,8 @@ fn main() {
 ///
 /// `bin/` holds libraries ONNX Runtime dlopens from the executable's own
 /// directory (it derives the path from the executable, no search path); they
-/// must land beside the binary. `lib/` holds libraries the executable links
+/// must land beside the binary; on Windows the Microsoft C++ runtime joins
+/// them (see `stage_vc_runtime`). `lib/` holds libraries the executable links
 /// against, found through the rpath set below. Both directories always exist,
 /// empty or not, because the bundle configs name them as directories: an
 /// empty directory bundles nothing, a named file that is missing is an error
@@ -129,6 +130,10 @@ fn stage_gpu_libs() {
         println!("cargo:rerun-if-changed={}", src.display());
     }
 
+    if target_os == "windows" && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        stage_vc_runtime(&stage.join("bin"), fatal);
+    }
+
     if target_os == "linux" {
         // Dev builds find the dawn library beside the binary; installed builds
         // find it under the resource dir tauri.linux.conf.json ships it to.
@@ -141,5 +146,146 @@ fn stage_gpu_libs() {
                  expected ARM64 release lane; x86_64 builds may pass --features gpu-webgpu or gpu-cuda"
             );
         }
+    }
+}
+
+/// The Microsoft C++ runtime, deployed app-local beside the executable.
+///
+/// pyke's ONNX Runtime is built against the DLL runtime (/MD), so the
+/// executable imports msvcp140.dll and msvcp140_1.dll, and the provider
+/// libraries import vcruntime140.dll and vcruntime140_1.dll as well. A clean
+/// Windows has none of them - only the Universal CRT (`api-ms-win-crt-*`) is
+/// part of the OS - so without these the installed app dies at once with
+/// 0xC0000135 (DLL not found). A machine with Visual Studio, like every build
+/// machine, has them in System32, which is why only a clean machine shows it.
+///
+/// Linking the runtime statically is not an option: `+crt-static` against
+/// ORT's /MD objects is a RuntimeLibrary mismatch. Running vc_redist from the
+/// installer would need admin rights the per-user NSIS install does not have.
+/// Microsoft allows app-local deployment of the files in the Visual Studio
+/// `Redist\MSVC\<version>\<arch>\Microsoft.VC14x.CRT` folder, and Windows
+/// searches the executable's directory first, so the app also gets the runtime
+/// it was built with rather than whatever older copy System32 holds.
+///
+/// Every DLL in that folder is copied; these are the ones something we ship
+/// imports, so their absence fails a release build.
+fn stage_vc_runtime(bin: &Path, fatal: bool) {
+    const NEEDED: [&str; 4] = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll"];
+    for v in ["VCToolsRedistDir", "VCINSTALLDIR"] {
+        println!("cargo:rerun-if-env-changed={v}");
+    }
+    let fail = |msg: String| {
+        let msg = format!(
+            "{msg}. The Windows bundle needs the Microsoft C++ runtime beside the executable or \
+             the app will not start on a machine without Visual Studio. Install the MSVC v14x \
+             x64 redistributable component of Visual Studio (part of the C++ build tools \
+             workload), or point VCToolsRedistDir at a `VC\\Redist\\MSVC\\<version>` folder."
+        );
+        assert!(!fatal, "{msg}");
+        println!("cargo:warning={msg}");
+    };
+    let arch = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x64",
+        Ok("aarch64") => "arm64",
+        Ok("x86") => "x86",
+        other => return fail(format!("no MSVC runtime folder for target arch {other:?}")),
+    };
+    let Some(crt) = find_vc_crt_dir(arch) else {
+        return fail(format!(
+            "cannot find the Visual Studio {arch} C++ runtime folder \
+             (VC\\Redist\\MSVC\\<version>\\{arch}\\Microsoft.VC14x.CRT)"
+        ));
+    };
+    let entries = match fs::read_dir(&crt) {
+        Ok(e) => e,
+        Err(e) => return fail(format!("cannot read {}: {e}", crt.display())),
+    };
+    let mut copied = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if !name.ends_with(".dll") {
+            continue;
+        }
+        if let Err(e) = fs::copy(entry.path(), bin.join(&name)) {
+            return fail(format!("cannot stage {name} from {}: {e}", crt.display()));
+        }
+        println!("cargo:rerun-if-changed={}", entry.path().display());
+        copied.push(name);
+    }
+    let missing: Vec<_> = NEEDED.iter().filter(|n| !copied.iter().any(|c| c == *n)).collect();
+    if !missing.is_empty() {
+        return fail(format!("{} has no {missing:?}", crt.display()));
+    }
+}
+
+/// The newest `Microsoft.VC14x.CRT` folder for `arch`: from VCToolsRedistDir
+/// when a Developer prompt set it, else from the Visual Studio vswhere finds.
+/// cargo does not run under vcvars (rustc locates MSVC by itself), so on a
+/// GitHub runner and a plain shell the vswhere path is the one taken.
+fn find_vc_crt_dir(arch: &str) -> Option<PathBuf> {
+    let crt_in = |redist_ver: PathBuf| -> Option<PathBuf> {
+        let mut dirs: Vec<PathBuf> = fs::read_dir(redist_ver.join(arch))
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                p.is_dir() && n.starts_with("Microsoft.VC14") && n.ends_with(".CRT")
+            })
+            .collect();
+        dirs.sort();
+        dirs.pop()
+    };
+    if let Some(dir) = env::var_os("VCToolsRedistDir") {
+        return crt_in(PathBuf::from(dir));
+    }
+    let vc_dirs: Vec<PathBuf> = match env::var_os("VCINSTALLDIR") {
+        Some(dir) => vec![PathBuf::from(dir)],
+        None => vswhere_installs().into_iter().map(|p| p.join("VC")).collect(),
+    };
+    for vc in vc_dirs {
+        // The version this Visual Studio's own tools redistribute, when it
+        // says; otherwise the highest numbered one present.
+        let pinned = fs::read_to_string(vc.join(r"Auxiliary\Build\Microsoft.VCRedistVersion.default.txt"))
+            .ok()
+            .map(|v| vc.join(r"Redist\MSVC").join(v.trim()));
+        if let Some(dir) = pinned.and_then(&crt_in) {
+            return Some(dir);
+        }
+        let mut versions: Vec<(Vec<u32>, PathBuf)> = fs::read_dir(vc.join(r"Redist\MSVC"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                let key: Option<Vec<u32>> = n.split('.').map(|s| s.parse().ok()).collect();
+                key.map(|k| (k, e.path()))
+            })
+            .collect();
+        versions.sort();
+        if let Some(dir) = versions.into_iter().rev().find_map(|(_, p)| crt_in(p)) {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// Visual Studio installs that have the x64 C++ tools, newest first.
+fn vswhere_installs() -> Vec<PathBuf> {
+    let Some(pf86) = env::var_os("ProgramFiles(x86)") else { return Vec::new() };
+    let vswhere = PathBuf::from(pf86).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+    let out = std::process::Command::new(vswhere)
+        .args(["-latest", "-products", "*"])
+        .args(["-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"])
+        .args(["-property", "installationPath"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+        _ => Vec::new(),
     }
 }
