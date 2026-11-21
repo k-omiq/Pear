@@ -356,6 +356,11 @@ const DEFS = [
   { id: 'view.zoomActual', label: 'Zoom to 100%', group: 'View', combo: null, keywords: 'actual size reset', ...T },
   { id: 'view.fit', label: 'Fit page to window', group: 'View', combo: null, keywords: 'zoom whole', ...T },
   { id: 'view.raw', label: 'Show or hide raw page', group: 'View', combo: null, keywords: 'compare original reference sidebar japanese', ...T },
+  // Held, not toggled: the raw shows while the key is down and the cleaned page
+  // is back when it comes up (App.svelte's keyup). Not while typing: a bare \
+  // is a character there.
+  { id: 'view.peekRaw', label: 'Peek at the raw page (hold)', group: 'View', combo: '\\', keywords: 'hold compare original before cleaning japanese' },
+  { id: 'view.text', label: 'Show or hide the text', group: 'View', combo: null, keywords: 'boxes lettering hide all see art under', ...T },
 
   // Panels, and the Inspector's tabs.
   { id: 'panel.options', label: 'Show or hide box options', group: 'Panels', combo: null, keywords: 'inspector window', ...T },

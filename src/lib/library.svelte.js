@@ -2247,6 +2247,7 @@ export async function setChapterMode(projectId, chapterId, mode) {
     app.chapterMode = next;
     app.viewCleaned = false;
     app.viewRaw = false;
+    app.textHidden = false;
     // The chapter now shows the layout its new kind uses. The same tool reset
     // an open performs: a layout without the typesetting tools takes away the
     // tools the user may be holding, ends inline editing, closes bulk and
@@ -2570,6 +2571,7 @@ async function loadChapter(p, c, projectId, chapterId, mine) {
   // The chapter opens with the layout its kind uses (layouts.svelte.js).
   app.viewCleaned = false;
   app.viewRaw = false;
+  app.textHidden = false;
   // And its line breaker from the chapter's own record, for the same reason:
   // the load's refit measures under it (DET-3). A record from before the field
   // opens with what this machine laid it out with; the first save stamps it.
@@ -2979,6 +2981,7 @@ export function closeChapter() {
   app.chapterMode = 'typeset';
   app.viewCleaned = false;
   app.viewRaw = false;
+  app.textHidden = false;
   // The translate chapter's hand goes with it: whatever opens next is typeset
   // until it says otherwise.
   leaveHand();

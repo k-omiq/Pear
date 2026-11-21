@@ -5,7 +5,7 @@
   // (BubbleNumbers), and this pane, where each number's English is typed: the
   // queue (Queue.svelte) given room, plus what a translator needs around it -
   // where they are, how far through, which way the series reads, the cleaned
-  // pages once the typesetting tools are out, and the keys.
+  // pages once the typesetting tools are out, and the switch for those tools.
   //
   // Where it sits is the layout's (layouts.svelte.js): docked in the column
   // down the right (DockPane.svelte), or in the floating queue window. Either
@@ -22,10 +22,12 @@
     chapterProgress,
     readingDirection,
     typesetToolsShown,
+    setLayoutField,
+    toast,
   } from '../store.svelte.js';
   import { sidecarReady, detectAllPages, detectCurrentPage } from '../sidecar.js';
   import { isComics } from '../prefs.svelte.js';
-  import { comboFor, defaultCombo, formatCombo } from '../shortcuts.svelte.js';
+  import { comboFor, formatCombo, keyLabel } from '../shortcuts.svelte.js';
 
   let { onfloat = null } = $props();
 
@@ -42,34 +44,13 @@
   const engineReady = $derived(sidecarReady());
   const batch = $derived(app.detectBatch);
 
-  // ---------- the keys ----------
-  let keysOpen = $state(false);
-  const k = (id) => formatCombo(comboFor(id));
-  // ⌥1–9 while the tag keys are the default run; once any is rebound, the
-  // first and last as they are now.
-  function tagRange() {
-    const ids = Array.from({ length: 9 }, (_, i) => `translate.tag${i + 1}`);
-    if (ids.every((id) => comboFor(id) === defaultCombo(id))) return `${k('translate.tag1')}–9`;
-    return `${k(ids[0])} … ${k(ids[8])}`;
+  // The typesetting tools, one switch away: the same action as its key
+  // (editor-actions.js `translate.typesetTools`), for the open chapter only.
+  function toggleTypeset() {
+    setLayoutField('tools', !tools);
+    toast(typesetToolsShown() ? 'Typesetting tools shown' : 'Typesetting tools hidden');
   }
-  const keyRows = $derived([
-    ['Next line, on to the next page', [k('translate.next'), k('translate.nextAlt')]],
-    ['Previous line', [k('translate.prev')]],
-    ['Line break in the English', [formatCombo('Shift+Enter')]],
-    ['Leave the field', [k('translate.leave')]],
-    ['Step lines, outside a field', [k('translate.lineDown'), k('translate.lineUp')]],
-    ['Back into the line, outside a field', [k('translate.edit')]],
-    ['Turn the page, outside a field', [k('translate.pagePrev'), k('translate.pageNext')]],
-    ['Delete the line, outside a field', [k('line.delete')]],
-    ['Toggle tag 1 to 9', [tagRange()]],
-    ['Find or add a tag', [k('translate.tagPicker')]],
-    ['Clear the line’s tags', [k('translate.clearTags')]],
-    ['Speaker', [k('translate.speaker')]],
-    ['Source text', [k('translate.source')]],
-    ['Page note', [k('translate.note')]],
-    ['Show or hide the typesetting tools', [typesetKey]],
-    ['Every command', [k('palette.open')]],
-  ]);
+  const peekKey = $derived(keyLabel('view.peekRaw'));
 
   // The cleaned pages, in place of a raw sidebar: with the typesetting tools
   // out, one switch swaps the page between the raw and its cleaned version.
@@ -98,7 +79,7 @@
           aria-pressed={app.viewCleaned}
           onclick={() => (app.viewCleaned = !app.viewCleaned)}
           title={app.viewCleaned
-            ? 'Showing the cleaned pages - press to show the raws. Hold \\ to peek at the raw'
+            ? `Showing the cleaned pages - press to show the raws.${peekKey ? ` Hold ${peekKey} to peek at the raw` : ''}`
             : pageCleaned
               ? 'Show the cleaned pages instead of the raws'
               : 'Show the cleaned pages instead of the raws (this page has none yet)'}
@@ -107,8 +88,15 @@
           Cleaned
         </button>
       {/if}
-      <button class="tpane-btn icon" class:on={keysOpen} aria-pressed={keysOpen} aria-label="Keyboard keys" title="Keyboard keys" onclick={() => (keysOpen = !keysOpen)}>
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" /></svg>
+      <button
+        class="tpane-btn"
+        class:on={tools}
+        aria-pressed={tools}
+        onclick={toggleTypeset}
+        title={`${tools ? 'Hide' : 'Show'} the typesetting tools${typesetKey ? ` (${typesetKey})` : ''}`}
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7V5h16v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>
+        Typeset
       </button>
       {#if onfloat}
         <button class="tpane-btn icon" aria-label="Float the text queue" title="Float the text queue" onclick={onfloat}>
@@ -120,18 +108,6 @@
       <span style="transform:scaleX({share.toFixed(4)})"></span>
     </div>
   </header>
-
-  {#if keysOpen}
-    <div class="tpane-keys" role="region" aria-label="Keyboard keys">
-      <dl>
-        {#each keyRows as [label, keys] (label)}
-          <dt>{label}</dt>
-          <dd>{#each keys.filter(Boolean) as key, i (i)}<kbd>{key}</kbd>{/each}</dd>
-        {/each}
-      </dl>
-      <p>The Translation keys can be changed in Settings ▸ Keyboard.</p>
-    </div>
-  {/if}
 
   <div class="tpane-body">
     {#if app.detecting && batch}
@@ -274,50 +250,6 @@
     transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .tpane-keys {
-    flex: none;
-    max-height: 45%;
-    overflow: auto;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--line);
-    background: var(--panel2);
-  }
-  .tpane-keys dl {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 6px 12px;
-    margin: 0;
-    font-size: 11.5px;
-  }
-  .tpane-keys dt {
-    color: var(--t2);
-  }
-  .tpane-keys dd {
-    margin: 0;
-    display: flex;
-    gap: 4px;
-    justify-content: flex-end;
-  }
-  .tpane-keys p {
-    margin: 10px 0 0;
-    font-size: 11px;
-    color: var(--t3);
-  }
-  kbd {
-    display: inline-flex;
-    align-items: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    justify-content: center;
-    border: 1px solid var(--line2);
-    border-bottom-width: 2px;
-    border-radius: 5px;
-    background: var(--surface);
-    color: var(--text);
-    font: 500 10.5px/1 system-ui, -apple-system, sans-serif;
-    white-space: nowrap;
-  }
 
   .tpane-body {
     flex: 1 1 auto;

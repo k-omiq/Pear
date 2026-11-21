@@ -27,7 +27,7 @@
   import { copyStyle, pasteStyle } from './lib/presets.svelte.js';
   import { editBurst } from './lib/edit-burst.js';
   import { sizeSetting, setSizeSetting, steppedSize } from './lib/data.js';
-  import { dispatchShortcut, pressed, registerShortcutHandlers } from './lib/shortcuts.svelte.js';
+  import { dispatchShortcut, pressed, registerShortcutHandlers, comboFor, eventKeyName } from './lib/shortcuts.svelte.js';
   import { editorActionHandlers } from './lib/editor-actions.js';
   import { setInspectorTab, cycleInspectorTab } from './lib/inspector-tabs.svelte.js';
   import { settingsView, openSettings, closeSettings } from './lib/settings-tabs.svelte.js';
@@ -367,9 +367,14 @@
     sourcesOpen = true;
   }
 
-  // The raw-page peek ends with its key, wherever focus went meanwhile.
+  // The raw-page peek (FLOW-7, "Peek at the raw page", \ by default) ends with
+  // its key, wherever focus went meanwhile: the key half of whatever it is
+  // bound to. A modifier let go first does not end it; the key itself, or the
+  // window losing focus, does.
   function onKeyup(e) {
-    if (e.key === '\\' && app.peekRaw) app.peekRaw = false;
+    if (!app.peekRaw) return;
+    const key = comboFor('view.peekRaw')?.split('+').pop();
+    if (key && eventKeyName(e) === key) app.peekRaw = false;
   }
 
   // Arrow keys, as the step they move a box by. Shift multiplies it.
@@ -612,13 +617,6 @@
     // widget's own keys): that control has said what the key meant there.
     if (typing || e.defaultPrevented) return;
     const mod = e.metaKey || e.ctrlKey;
-    // Hold \ to see the raw page in place of the cleaned one (FLOW-7). Held,
-    // not toggled: let go and the cleaned page is back (`onKeyup`).
-    if (!mod && !e.altKey && e.key === '\\') {
-      e.preventDefault();
-      if (!isTranslateMode()) app.peekRaw = true;
-      return;
-    }
     // Tab / Shift+Tab: cycle box selection in document order, but only when
     // focus is not on a focusable UI control (e.g. sidebar inputs or inspector buttons).
     if (!mod && e.key === 'Tab' && app.selectedId) {

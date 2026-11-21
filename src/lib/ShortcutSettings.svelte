@@ -247,7 +247,6 @@
     <li><b>Esc</b> closes what is open, then deselects.</li>
     <li><b>Tab</b> steps through the boxes on the page.</li>
     <li><b>Arrows</b> nudge the selected box, or turn the page. Hold <b>Shift</b> for bigger steps.</li>
-    <li>Hold <b>\</b> to see the raw page.</li>
   </ul>
   <div class="set-actions">
     {#if confirmReset}<button class="btn tiny" onclick={() => (confirmReset = false)}>Cancel</button>{/if}

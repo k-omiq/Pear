@@ -18,6 +18,8 @@
   import { engineSwitch, engineHasNoFont } from './engine-switch.svelte.js';
   import ReaderChoice from './ReaderChoice.svelte';
   import ShortcutSettings from './ShortcutSettings.svelte';
+  import { NAVIGATION_PRESETS, navigationPreset } from './editor/navigation.js';
+  import { isMacKeyboard } from './shortcuts.svelte.js';
   import { door, setDoorOn, setDoorPort, rotateToken, DEFAULT_PORT } from './agent/door.svelte.js';
   import { connectLines, doorUrl } from './agent/connect.js';
   import { aiKey, refreshKey, saveKey, clearKey, testKey } from './agent/key.svelte.js';
@@ -437,6 +439,13 @@
           : 'Checking…',
   );
 
+
+  // Moving the page (editor/navigation.js): the preset these rows are, and
+  // one row changed on its own.
+  const navPreset = $derived(navigationPreset(prefs.navigation));
+  const setNav = (field, value) => setPref('navigation', { ...prefs.navigation, [field]: value });
+  const modName = isMacKeyboard() ? 'Cmd' : 'Ctrl';
+  const altName = isMacKeyboard() ? 'Option' : 'Alt';
 </script>
 
 <!-- One switch, written once. Every preference toggle in here is the same three
@@ -676,10 +685,43 @@
           {/if}
           <div class="set-item">
             <div class="set-line">
-              <span class="set-label">Mouse wheel zooms</span>
-              {@render toggle('wheelZoom', 'Mouse wheel zooms', prefs.wheelZoom)}
+              <span class="set-label">Moving the page</span>
+              <div class="seg" role="group" aria-label="Moving the page">
+                {#each [['trackpad', 'Trackpad'], ['mouse', 'Mouse']] as [id, label] (id)}
+                  <button class:on={navPreset === id} aria-pressed={navPreset === id} onclick={() => setPref('navigation', NAVIGATION_PRESETS[id])}>{label}</button>
+                {/each}
+                {#if !navPreset}<button class="on" aria-pressed="true" disabled>Custom</button>{/if}
+              </div>
             </div>
-            <p class="set-desc">The wheel zooms where the pointer is. Off, it scrolls. Ctrl or Cmd + wheel always zooms. Hold Space and drag, or drag with the middle button, to move the page.</p>
+            <p class="set-desc">
+              {prefs.navigation.wheel === 'zoom'
+                ? `The wheel zooms where the pointer is. Shift or ${altName} + wheel scrolls. A trackpad's two-finger scroll zooms too.`
+                : `Two fingers or the wheel scroll the page. Pinch, or ${modName} + wheel, zooms where the pointer is.`}
+              Hold Space and drag to move the page.
+            </p>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Mouse wheel</span>
+              <div class="seg" role="group" aria-label="Mouse wheel">
+                {#each [['scroll', 'Scroll'], ['zoom', 'Zoom']] as [v, label] (v)}
+                  <button class:on={prefs.navigation.wheel === v} aria-pressed={prefs.navigation.wheel === v} onclick={() => setNav('wheel', v)}>{label}</button>
+                {/each}
+              </div>
+            </div>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Middle button drag moves the page</span>
+              {@render toggle('navigation', 'Middle button drag moves the page', prefs.navigation.middlePan, false, (v) => setNav('middlePan', v))}
+            </div>
+          </div>
+          <div class="set-item">
+            <div class="set-line">
+              <span class="set-label">Drag on empty canvas moves the page</span>
+              {@render toggle('navigation', 'Drag on empty canvas moves the page', prefs.navigation.emptyPan, false, (v) => setNav('emptyPan', v))}
+            </div>
+            <p class="set-desc">A drag that starts on the space around the page.</p>
           </div>
           <div class="set-item">
             <div class="set-line">

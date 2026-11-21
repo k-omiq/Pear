@@ -17,6 +17,7 @@ import { setBoxDefaults, setLegacyTypeset, setFxDefaults, normalizeFxDefaults, f
 import { app, setTool, setBrushToolAllowed, setHomeTool, setMinFontSize, setInheritBoxStyle } from './store.svelte.js';
 import { normalizeOcrModels } from './ocr-models.js';
 import { cleanCategories } from './font-categories.js';
+import { defaultNavigation, normalizeNavigation } from './editor/navigation.js';
 import { useTextEngine } from './engine-switch.svelte.js';
 import { setPaintWorkerAllowed } from './text-engine/paint-mirror.js';
 import { setTextEdges } from './text-edges.svelte.js';
@@ -63,9 +64,12 @@ export const prefs = $state({
   // the tab goes, and boxes that have SFX keep it. The key keeps its old
   // name (it was the SFX tool's), so a stored choice still reads.
   sfxTool: true,
-  // The plain mouse wheel zooms at the pointer in a paged chapter. Off, it
-  // scrolls, and Ctrl/Cmd + wheel zooms (always, in either case).
-  wheelZoom: true,
+  // How the page is moved (editor/navigation.js, as in manga-cleaner): what
+  // a plain wheel does, and which drags move the page. Starts on the trackpad
+  // mix - two fingers scroll, a pinch zooms. It replaces the old "Mouse wheel
+  // zooms" switch (`wheelZoom`), which was on for everyone and turned a
+  // trackpad's scroll into a zoom; that key is no longer read.
+  navigation: defaultNavigation(),
   // How the raw page is seen while typesetting: 'side', the reference column
   // beside the page; 'peek', no column, and the page itself swaps to the raw
   // from a button or a held key, the way a translate chapter does.
@@ -226,7 +230,7 @@ function cleanMarkets(v) {
 
 // The box defaults, split by what a value of theirs may be. Named once so the
 // setter's validation and the loader's validation cannot drift apart.
-const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'wheelZoom', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector', 'paintWorker', 'onboarded'];
+const BOOL_KEYS = ['defaultAutoHeight', 'defaultHyphenate', 'defaultBalloon', 'brushTool', 'sfxTool', 'inheritBoxStyle', 'keepEnglish', 'secondReader', 'secondDetector', 'paintWorker', 'onboarded'];
 const NUM_KEYS = { defaultMinOrphan: [1, 8], minFontSize: [4, 48] };
 const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['browser', 'rust'], textEdges: ['smooth', 'crisp'],
   usage: ['comics', 'general'],
@@ -280,7 +284,7 @@ function persist() {
         minFontSize: prefs.minFontSize,
         brushTool: prefs.brushTool,
         sfxTool: prefs.sfxTool,
-        wheelZoom: prefs.wheelZoom,
+        navigation: $state.snapshot(prefs.navigation),
         rawView: prefs.rawView,
         inheritBoxStyle: prefs.inheritBoxStyle,
         shortcuts: $state.snapshot(prefs.shortcuts),
@@ -320,6 +324,7 @@ export function setPref(key, value) {
   // a number - and an array is an object too, but not the kind of map this is.
   if (key === 'shortcuts' && (!value || typeof value !== 'object' || Array.isArray(value))) return;
   if (key === 'ocrModels') value = normalizeOcrModels(value);
+  if (key === 'navigation') value = normalizeNavigation(value);
   if (key === 'fxDefaults') value = normalizeFxDefaults(value);
   if (NAME_LIST_KEYS.includes(key)) {
     value = cleanNames(value);
@@ -434,6 +439,7 @@ function load() {
   const categories = saved ? cleanCategories(saved.fontCategories) : null;
   if (categories) prefs.fontCategories = categories;
   prefs.ocrModels = normalizeOcrModels(saved?.ocrModels);
+  prefs.navigation = normalizeNavigation(saved?.navigation);
   // No `layouts` at all (every blob from before them) is the presets: a
   // translate chapter opens as the page and the typing pane, a typeset one
   // with its tools and floating panels, as they always did.

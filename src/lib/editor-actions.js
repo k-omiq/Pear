@@ -30,6 +30,7 @@ import {
   chooseLayout,
   setLayoutField,
   toast,
+  deselect,
   openBulk,
   nextPageWithWork,
   placeDetectedInChapter,
@@ -241,12 +242,29 @@ const RUNS = {
   'view.zoomOut': { when: () => app.loaded, run: () => zoomOut() },
   'view.zoomActual': { when: () => app.loaded, run: () => zoomReset() },
   'view.raw': { when: typeset, run: toggleRaw },
+  // A key press starts the peek and its key-up ends it (App.svelte). Run from
+  // the palette there is no key to let go, so there it is a switch.
+  'view.peekRaw': {
+    when: () => app.loaded && !isTranslateMode(),
+    run: (e) => {
+      app.peekRaw = e ? true : !app.peekRaw;
+    },
+  },
+  'view.text': {
+    when: typeset,
+    run: () => {
+      app.textHidden = !app.textHidden;
+      // A hidden box is not one to go on editing blind.
+      if (app.textHidden) deselect();
+      toast(app.textHidden ? 'Text hidden' : 'Text shown');
+    },
+  },
   // A docked pane is never hidden, so these are for the floating windows.
   'panel.options': { when: typeset, run: () => togglePanel('options') },
   'panel.queue': { when: () => app.loaded && !queueDocked(), run: () => togglePanel('queue') },
   'panel.ai': { when: typeset, run: () => togglePanel('ai') },
 
-  // The layout (the rail's Layout menu): a preset, or one pane at a time.
+  // The layout, from the command list or a key: a preset, or one pane at a time.
   'layout.translate': { when: () => app.loaded && (isComics() || isTranslateChapter()), run: () => chooseLayout('translate') },
   'layout.typeset': { when: () => app.loaded, run: () => chooseLayout('typeset') },
   'layout.custom': { when: () => app.loaded, run: () => chooseLayout('custom') },

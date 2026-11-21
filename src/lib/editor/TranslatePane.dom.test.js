@@ -16,7 +16,7 @@ import AutoDetect from './AutoDetect.svelte';
 import { setLayouts } from '../layouts.svelte.js';
 import { setPref } from '../prefs.svelte.js';
 import BubbleNumbers from './BubbleNumbers.svelte';
-import { app, loadProjectPages, page, setTypesetTools } from '../store.svelte.js';
+import { app, loadProjectPages, page, setTypesetTools, typesetToolsShown } from '../store.svelte.js';
 
 beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', () => 0);
@@ -47,11 +47,16 @@ it('shows where the translator is and which way the series reads', async () => {
   await tick();
   expect(view.getByText('1 / 2 on this page')).toBeTruthy();
   expect(view.getByText('Right to left')).toBeTruthy();
-  await fireEvent.click(view.getByRole('button', { name: 'Keyboard keys' }));
-  expect(view.getByText('Find or add a tag')).toBeTruthy();
-  expect(view.getByText('Show or hide the typesetting tools')).toBeTruthy();
-  // No mode switch in the pane: the tools are the rail's Layout menu.
-  expect(view.queryByRole('button', { name: /Typeset/ })).toBe(null);
+  // No keys list in the pane: they live in Settings > Shortcuts.
+  expect(view.queryByRole('button', { name: 'Keyboard keys' })).toBe(null);
+  // The Typeset button is the tools switch, for the open chapter.
+  const typeset = view.getByRole('button', { name: /Typeset/ });
+  expect(typeset.getAttribute('aria-pressed')).toBe('false');
+  await fireEvent.click(typeset);
+  expect(typesetToolsShown()).toBe(true);
+  expect(typeset.getAttribute('aria-pressed')).toBe('true');
+  await fireEvent.click(typeset);
+  expect(typesetToolsShown()).toBe(false);
   // Docked, the header floats it; in the floating window there is no such button.
   expect(view.queryByRole('button', { name: 'Float the text queue' })).toBe(null);
   cleanup();

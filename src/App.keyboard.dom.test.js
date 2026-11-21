@@ -231,3 +231,44 @@ it('Escape in a text field ends an armed page pick', async () => {
   // With no pick waiting, Escape in the field is the field's again.
   expect(arrow(field, 'Escape').defaultPrevented).toBe(false);
 });
+
+// ===========================================================================
+// The raw peek and the text switch
+// ===========================================================================
+const keyOn = (type, init) => {
+  const ev = new KeyboardEvent(type, { bubbles: true, cancelable: true, ...init });
+  document.body.dispatchEvent(ev);
+  return ev;
+};
+
+it('holding the peek key shows the raw, letting go brings the cleaned page back', async () => {
+  await openEditor();
+  expect(keyOn('keydown', { key: '\\', code: 'Backslash' }).defaultPrevented).toBe(true);
+  expect(app.peekRaw).toBe(true);
+  keyOn('keyup', { key: 'a', code: 'KeyA' });
+  expect(app.peekRaw).toBe(true);
+  keyOn('keyup', { key: '\\', code: 'Backslash' });
+  expect(app.peekRaw).toBe(false);
+});
+
+it('the peek follows its rebound key, and the text switch hides and shows every box', async () => {
+  const { setCombo, resetAllCombos, runShortcut } = await import('./lib/shortcuts.svelte.js');
+  await openEditor();
+  expect(setCombo('view.peekRaw', 'Alt+Shift+k').ok).toBe(true);
+  try {
+    keyOn('keydown', { key: '\\', code: 'Backslash' });
+    expect(app.peekRaw).toBe(false);
+    keyOn('keydown', { key: 'K', code: 'KeyK', altKey: true, shiftKey: true });
+    expect(app.peekRaw).toBe(true);
+    keyOn('keyup', { key: 'k', code: 'KeyK' });
+    expect(app.peekRaw).toBe(false);
+  } finally {
+    resetAllCombos();
+  }
+  expect(runShortcut('view.text')).toBe(true);
+  expect(app.textHidden).toBe(true);
+  // Nothing is left selected under a hidden box.
+  expect(app.selectedId).toBe(null);
+  expect(runShortcut('view.text')).toBe(true);
+  expect(app.textHidden).toBe(false);
+});

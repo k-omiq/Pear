@@ -22,7 +22,6 @@
     queueDocked,
     page,
   } from '../store.svelte.js';
-  import LayoutMenu from './LayoutMenu.svelte';
   import { prefs } from '../prefs.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
   import { panels, showPanel } from './panels.svelte.js';
@@ -50,6 +49,7 @@
   const hasRaw = $derived(!!page()?.raw);
   // The key, if the user gave "Show or hide raw page" one, for the tip.
   const rawKey = $derived(keyLabel('view.raw'));
+  const peekKey = $derived(keyLabel('view.peekRaw'));
 
   // The ceiling moves with the window - see `sidebarMaxWidth`. Tracked here so
   // the separator's `aria-valuemax` is the width the drag would actually stop
@@ -129,11 +129,6 @@
 
   const keepClick = (e) => e.stopPropagation();
 
-  // The Layout menu (LayoutMenu.svelte), on the rail in every chapter: the
-  // one place the panes are chosen.
-  let layoutBtn = $state(null);
-  let layoutOpen = $state(false);
-
   // A hidden floating panel is a tab here, under the tools, and nowhere else:
   // one tab per panel, apart from the tool strip and from each other, in the
   // inverse of the chrome's colour so it reads against both the dark art and
@@ -207,7 +202,7 @@
         aria-label={app.viewRaw ? 'Show the cleaned page' : 'Show the raw page'}
         data-tip={!hasRaw && !app.viewRaw
           ? 'No raw for this page'
-          : `${app.viewRaw ? 'Showing the raw - press to go back' : 'Show the raw page'}${rawKey ? ` (${rawKey})` : ''} · hold \\ to peek`}
+          : `${app.viewRaw ? 'Showing the raw - press to go back' : 'Show the raw page'}${rawKey ? ` (${rawKey})` : ''}${peekKey ? ` · hold ${peekKey} to peek` : ''}`}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
       </button>
@@ -262,24 +257,6 @@
       {/if}
   </div>
   {/if}
-  <div class="ed-rail-layout">
-    <div class="ed-rail-tools">
-    <button
-      bind:this={layoutBtn}
-      class:on={layoutOpen}
-      onclick={() => (layoutOpen = !layoutOpen)}
-      aria-haspopup="menu"
-      aria-expanded={layoutOpen}
-      aria-label="Layout"
-      data-tip={layoutOpen ? null : 'Layout - which panes, docked or floating'}
-    >
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="18.5" cy="12" r="1.7" /></svg>
-    </button>
-    </div>
-    {#if layoutOpen}
-      <LayoutMenu anchor={layoutBtn} onClose={() => (layoutOpen = false)} />
-    {/if}
-  </div>
   {#if docked.length}
     <div class="ed-rail-dock">
       {#each docked as d (d.id)}
@@ -313,10 +290,6 @@
 <style>
   /* The one rail button that can be off: the SFX tool under the browser
      engine. Dimmed, and no hover, so it does not offer what it refuses. */
-  /* The Layout menu is portalled to the body (LayoutMenu.svelte); this box only groups its button. */
-  .ed-rail-layout {
-    position: relative;
-  }
   .ed-rail-tools button:disabled {
     opacity: 0.4;
     cursor: default;

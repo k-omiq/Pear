@@ -51,7 +51,7 @@
     }),
   );
 
-  // What is shown is the layout's (layouts.svelte.js, the rail's Layout menu),
+  // What is shown is the layout's (layouts.svelte.js),
   // not the chapter's: the typesetting tools out or not, and the queue docked
   // in the column down the right or floating. Only the queue docks.
   const translate = $derived(isTranslateMode());

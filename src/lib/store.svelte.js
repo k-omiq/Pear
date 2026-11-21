@@ -729,6 +729,10 @@ export const app = $state({
   // The raw page shown in place until switched back (the Raw button of the
   // peek view, Settings > Editor > Raw page). Off whenever a chapter opens.
   viewRaw: false,
+  // Every text box hidden on the canvas, so the art under them can be seen
+  // (the "Show or hide the text" action). A view only: the export and the
+  // boxes themselves are untouched. Off whenever a chapter opens.
+  textHidden: false,
   chapterRef: null, // { projectId, chapterId } while a chapter is open
   // The open chapter's workflow mode, mirrored from its chapter.json - see
   // CHAPTER_MODES. It is a property of the chapter and not a preference of the
@@ -4508,11 +4512,11 @@ export const normalizeChapterMode = (m) => (CHAPTER_MODES.includes(m) ? m : 'typ
 // how its lines behave (free lines, numbered bubbles, the typing keys), the
 // auto-detect on open and the translated count. Whether the typesetting tools
 // are out is the editor's LAYOUT (layouts.svelte.js): a preset or the user's
-// own mix of panes, picked from the rail's Layout menu and remembered per kind
+// own mix of panes, picked from the command list and remembered per kind
 // of chapter. `isTranslateMode` keeps its old name and is that layout's
 // "tools hidden": every box-adding door in the app asks it.
 export const isTranslateChapter = () => app.chapterMode === 'translate';
-// The tools switch (`Mod+Shift+T`, the palette, the Layout menu's switch) is the
+// The tools switch (`Mod+Shift+T`, the palette, the typing pane's Typeset) is the
 // open chapter's only, like the old session flag: it is never saved, and it
 // ends with the chapter. Every open goes through `loadProjectPages`, which
 // clears it; a close leaves nothing loaded, where it is not read.
@@ -4541,6 +4545,7 @@ function dropTypesetTools() {
   app.peekRaw = false;
   app.viewRaw = false;
   app.viewCleaned = false;
+  app.textHidden = false;
 }
 
 // Every change of layout goes through here, so the tools are let go or picked

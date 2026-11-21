@@ -48,6 +48,7 @@
   import { pageRectPick } from '../page-rect-pick.svelte.js';
   import { releaseLeavingImages } from '../release-image.js';
   import { prefs } from '../prefs.svelte.js';
+  import { wheelZooms, panStart } from './navigation.js';
 
   // Handle for dock Fit button.
   let { onReady } = $props();
@@ -133,6 +134,46 @@
   function resetPan() {
     if (untrack(() => pan.x !== 0 || pan.y !== 0)) pan = { x: 0, y: 0 };
   }
+
+  // ---------- scroll room ----------
+  // As in manga-cleaner: once the page is zoomed (not at Fit), half a
+  // viewport of empty canvas on every side of it, so each edge can be pulled
+  // to the middle of the screen and a trackpad's two-finger scroll (or the
+  // wheel) moves the page in any direction, with the trackpad's own momentum.
+  // At Fit there is none: the whole page is on screen and should not move.
+  //
+  // The room is extra padding on `.stage` (`--room-x`/`--room-y`,
+  // styles.css), so everything that reads the stage's padding - the zoom's
+  // placement (`viewNow`), the scroll's range - takes it with no second copy.
+  // Fit alone must not: `computeFit` takes it off again.
+  //
+  // Written here, with the scroll that makes up for it, and not in the
+  // markup: the page must stay where it is on screen when the room comes or
+  // goes, and the two have to land together. Declared ahead of the zoom
+  // effects below, so a zoom that brings the room is placed against it.
+  let viewW = $state(0);
+  let viewH = $state(0);
+  const roomOn = $derived(app.loaded && !app.isFit);
+  const roomX = $derived(roomOn ? Math.round(viewW / 2) : 0);
+  const roomY = $derived(roomOn ? Math.round(viewH / 2) : 0);
+  let roomApplied = { x: 0, y: 0 };
+  $effect(() => {
+    const rx = roomX;
+    const ry = roomY;
+    untrack(() => {
+      if (!stageEl || !scrollEl) return;
+      if (rx === roomApplied.x && ry === roomApplied.y) return;
+      const el = frameEl();
+      const before = el?.getBoundingClientRect();
+      stageEl.style.setProperty('--room-x', `${rx}px`);
+      stageEl.style.setProperty('--room-y', `${ry}px`);
+      const after = el?.getBoundingClientRect();
+      // Moved by exactly as far as the new padding pushed it, so it stays put.
+      scrollEl.scrollLeft += before && after ? after.left - before.left : rx - roomApplied.x;
+      scrollEl.scrollTop += before && after ? after.top - before.top : ry - roomApplied.y;
+      roomApplied = { x: rx, y: ry };
+    });
+  });
 
   // Work that has to happen but not now. `requestIdleCallback` is not in every
   // engine this ships to (WebKit only shipped it recently, and the test
@@ -450,8 +491,9 @@
     const vh = scrollEl.clientHeight;
     const cs = getComputedStyle(stageEl);
     const px = (v) => parseFloat(v) || 0;
-    const padX = px(cs.paddingLeft) + px(cs.paddingRight);
-    const padY = px(cs.paddingTop) + px(cs.paddingBottom);
+    // Without the scroll room: Fit is measured against the page's own air.
+    const padX = px(cs.paddingLeft) + px(cs.paddingRight) - 2 * roomApplied.x;
+    const padY = px(cs.paddingTop) + px(cs.paddingBottom) - 2 * roomApplied.y;
     // The pads are in the key too: a stylesheet whose padding responds to
     // anything - a media query, a theme - must re-fit, and the viewport size
     // alone would not have changed.
@@ -610,7 +652,7 @@
   // a gizmo or a handle under the press never sees it. Space + the primary
   // button, or the middle button on its own.
   function onStagePointerDownCapture(e) {
-    if (!(e.button === 1 || (e.button === 0 && spaceHeld))) return;
+    if (panStart(e, { nav: prefs.navigation, held: spaceHeld }) !== 'grab') return;
     // The middle button's own default is autoscroll (Windows) or a paste
     // (Linux); neither is wanted over the page.
     e.preventDefault();
@@ -637,6 +679,12 @@
     // `setTool` refuses the other two while it is on, so this is unreachable -
     // which is exactly why it is cheap to keep: the cost of being wrong is a
     // stray box on a page the user is not typesetting.
+    // A drag on the empty canvas around the page, when Settings says so
+    // (navigation.js): the hand, without holding anything.
+    if (panStart(e, { nav: prefs.navigation, held: false }) === 'empty') {
+      startPanPointer(e, false);
+      return;
+    }
     if (translate) return;
     if (e.target.closest?.('.tbox')) return;
     if (!strip && !e.target.classList.contains('boxlayer')) return;
@@ -1266,6 +1314,9 @@
     const measureStage = () => {
       gizmoUi.stageW = scrollEl.clientWidth;
       gizmoUi.stageH = scrollEl.clientHeight;
+      // The scroll room is half of each.
+      viewW = scrollEl.clientWidth;
+      viewH = scrollEl.clientHeight;
     };
     measureStage();
     const ro = new ResizeObserver(() => {
@@ -1300,11 +1351,12 @@
     // The first answer, before the user has scrolled anything: a chapter opens
     // at the top, and the reference strip has to be told so.
     queueStripSync();
-    // The wheel zooms at the pointer. Ctrl/Cmd + wheel always does (a trackpad
-    // pinch arrives as exactly that); the plain wheel does too in a paged
-    // chapter while Settings says so (`prefs.wheelZoom`) - Shift or Alt with
-    // it, or a sideways swipe, still scrolls. A strip's plain wheel is always
-    // its scroll: down the column is how a webtoon is read.
+    // The wheel, as manga-cleaner reads it (navigation.js `wheelZooms`):
+    // Ctrl/Cmd + wheel always zooms at the pointer (a trackpad pinch arrives
+    // as exactly that), and so does the plain wheel when Settings says the
+    // wheel zooms - Shift or Alt with it, or a sideways swipe, still scrolls.
+    // Everything else is the scroller's own: a trackpad's two-finger scroll
+    // moves the page natively, momentum and all, into the scroll room.
     //
     // Continuous in the wheel's own delta rather than a fixed step per event:
     // a trackpad pinch is sixty to a hundred small events, and a flat step on
@@ -1332,11 +1384,9 @@
       if (k) pinchTo((pinch?.z ?? app.zoom) * Math.exp(k), wheelAt);
     };
     const onWheel = (e) => {
-      if (!e.ctrlKey && !e.metaKey) {
-        if (!prefs.wheelZoom || strip || e.shiftKey || e.altKey) return;
-        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
-      }
+      if (!wheelZooms(e, prefs.navigation)) return;
       e.preventDefault();
+      if (e.ctrlKey) lastCtrlWheel = e.timeStamp;
       if (!app.loaded) return;
       const dy = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? scrollEl.clientHeight : 1);
       if (!dy) return;
@@ -1347,6 +1397,27 @@
       wheelLog += clamp(step, -STEP_MAX, STEP_MAX);
       wheelAt = { x: e.clientX, y: e.clientY };
       if (!wheelRaf) wheelRaf = requestAnimationFrame(applyWheel);
+    };
+    // WebKit's own pinch: gesture events, with the scale since the pinch
+    // began. Taken only while no Ctrl wheel is coming (an engine that sends
+    // both would otherwise zoom twice), and always cancelled, so the webview
+    // never magnifies the whole window.
+    let lastCtrlWheel = -Infinity;
+    let gestureFrom = 0;
+    const PINCH_WHEEL_GAP_MS = 250;
+    const wheelsPinch = (e) => e.timeStamp - lastCtrlWheel < PINCH_WHEEL_GAP_MS;
+    const onGestureStart = (e) => {
+      e.preventDefault();
+      gestureFrom = pinch?.z ?? app.zoom;
+    };
+    const onGestureChange = (e) => {
+      e.preventDefault();
+      if (!app.loaded || !gestureFrom || wheelsPinch(e) || !(e.scale > 0)) return;
+      pinchTo(gestureFrom * e.scale, { x: e.clientX, y: e.clientY });
+    };
+    const onGestureEnd = (e) => {
+      e.preventDefault();
+      gestureFrom = 0;
     };
     dropWheel = () => {
       wheelLog = 0;
@@ -1359,9 +1430,15 @@
     window.addEventListener('keyup', onSpaceUp, true);
     window.addEventListener('blur', dropSpace);
     scrollEl.addEventListener('wheel', onWheel, { passive: false });
+    scrollEl.addEventListener('gesturestart', onGestureStart);
+    scrollEl.addEventListener('gesturechange', onGestureChange);
+    scrollEl.addEventListener('gestureend', onGestureEnd);
     return () => {
       ro.disconnect();
       scrollEl.removeEventListener('wheel', onWheel);
+      scrollEl.removeEventListener('gesturestart', onGestureStart);
+      scrollEl.removeEventListener('gesturechange', onGestureChange);
+      scrollEl.removeEventListener('gestureend', onGestureEnd);
       window.removeEventListener('keydown', onSpaceDown, true);
       window.removeEventListener('keyup', onSpaceUp, true);
       window.removeEventListener('blur', dropSpace);
@@ -1472,6 +1549,7 @@
               {#if pageHasVisibleBoxes(pg, i)}
                 <div
                   class="page-boxlayer"
+                  class:text-off={app.textHidden}
                   data-page-id={pg.id}
                   style="top:{stripLayout.tops[i] ?? 0}px; left:calc(50% - {(pg.w * app.zoom) / 2}px); width:{pg.w * app.zoom}px; height:{pg.h * app.zoom}px;"
                 >
@@ -1518,7 +1596,7 @@
                  re-fits only when that page is the one on screen. -->
             <img class="page-img" src={srcOf(m.pg)} alt="Page" crossorigin="anonymous" decoding="async" onload={(e) => onCleanedLoad(e, m.pg)} />
           {/if}
-          <div class="boxlayer" class:pan={handOn}>
+          <div class="boxlayer" class:pan={handOn} class:text-off={app.textHidden}>
             <!-- Same as the strip above: a translate chapter draws no boxes. -->
             {#if !translate}
               {#each m.pg.boxes as box (box.id)}

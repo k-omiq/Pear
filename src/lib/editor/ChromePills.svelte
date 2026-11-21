@@ -116,8 +116,9 @@
   const progress = $derived(translate ? null : chapterProgress(app.pages));
   const nextKey = $derived(formatCombo(comboFor('review.next')));
   const regionsKey = $derived(formatCombo(comboFor('view.regions')));
+  const peekKey = $derived(formatCombo(comboFor('view.peekRaw')));
   const regionsTip = $derived(
-    `Regions - bubble outlines, detected text, line numbers${regionsKey ? ` (${regionsKey})` : ''}. Hold \\ to see the raw page`,
+    `Regions - bubble outlines, detected text, line numbers${regionsKey ? ` (${regionsKey})` : ''}.${peekKey ? ` Hold ${peekKey} to see the raw page` : ''}`,
   );
 </script>
 
