@@ -4526,10 +4526,8 @@ export const activeLayout = () => {
 export const activeLayoutId = () => layoutIdFor(app.chapterMode);
 export const typesetToolsShown = () => activeLayout().tools;
 export const isTranslateMode = () => !typesetToolsShown();
-// Where the queue and the Text box options sit now. The options are never
-// drawn while the tools are hidden, docked or not.
+// Where the queue sits now. Only the queue docks; the options always float.
 export const queueDocked = () => activeLayout().queue === 'docked';
-export const optionsDocked = () => typesetToolsShown() && activeLayout().options === 'docked';
 
 // The tools the rail is about to lose are let go, so nothing is left armed,
 // selected or mid-placement. Run on the way from shown to hidden, whatever
@@ -4569,8 +4567,7 @@ export function chooseLayout(id) {
     useLayout(app.chapterMode, id);
   });
 }
-// One pane choice: 'tools' (boolean), 'queue' or 'options' ('docked' /
-// 'floating'). The result is the matching preset, or the custom slot.
+// One pane choice: 'tools' (boolean) or 'queue' ('docked' / 'floating'). The result is the matching preset, or the custom slot.
 // 'tools' is the open chapter's switch (`setTypesetTools`), never saved.
 export function setLayoutField(field, value) {
   if (field === 'tools') return setTypesetTools(value);

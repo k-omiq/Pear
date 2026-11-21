@@ -103,13 +103,6 @@
       <button role="menuitemradio" aria-checked={combo.queue === 'floating'} class:on={combo.queue === 'floating'} onclick={() => setLayoutField('queue', 'floating')}>Floating</button>
     </span>
   </div>
-  <div class="lay-pane" role="group" aria-label="Text box options">
-    <span class="lay-label" class:off={!combo.tools}>Text box options</span>
-    <span class="lay-seg">
-      <button role="menuitemradio" aria-checked={combo.options === 'docked'} class:on={combo.options === 'docked'} disabled={!combo.tools} onclick={() => setLayoutField('options', 'docked')}>Docked</button>
-      <button role="menuitemradio" aria-checked={combo.options === 'floating'} class:on={combo.options === 'floating'} disabled={!combo.tools} onclick={() => setLayoutField('options', 'floating')}>Floating</button>
-    </span>
-  </div>
   <p class="lay-note">The layout and panes are remembered for {kind} chapters.</p>
 </div>
 

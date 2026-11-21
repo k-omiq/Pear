@@ -20,7 +20,6 @@
     isTranslateMode,
     isTranslateChapter,
     queueDocked,
-    optionsDocked,
     page,
   } from '../store.svelte.js';
   import LayoutMenu from './LayoutMenu.svelte';
@@ -145,7 +144,7 @@
   // tab either: only a floating window does.
   const docked = $derived(
     [
-      !translate && !optionsDocked() && panels.options.hidden && { id: 'options', title: brushArmed() ? 'Brush' : 'Text box options' },
+      !translate && panels.options.hidden && { id: 'options', title: brushArmed() ? 'Brush' : 'Text box options' },
       // The SFX window has no tab: the SFX tool above is its way back.
       !queueDocked() && panels.queue.hidden && { id: 'queue', title: 'Text queue' },
       // The AI panel's tab shows once a key is set; before that the panel is

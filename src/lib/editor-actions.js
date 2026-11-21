@@ -26,7 +26,6 @@ import {
   isTranslateChapter,
   typesetToolsShown,
   queueDocked,
-  optionsDocked,
   activeLayout,
   chooseLayout,
   setLayoutField,
@@ -243,7 +242,7 @@ const RUNS = {
   'view.zoomActual': { when: () => app.loaded, run: () => zoomReset() },
   'view.raw': { when: typeset, run: toggleRaw },
   // A docked pane is never hidden, so these are for the floating windows.
-  'panel.options': { when: () => typeset() && !optionsDocked(), run: () => togglePanel('options') },
+  'panel.options': { when: typeset, run: () => togglePanel('options') },
   'panel.queue': { when: () => app.loaded && !queueDocked(), run: () => togglePanel('queue') },
   'panel.ai': { when: typeset, run: () => togglePanel('ai') },
 
@@ -252,7 +251,6 @@ const RUNS = {
   'layout.typeset': { when: () => app.loaded, run: () => chooseLayout('typeset') },
   'layout.custom': { when: () => app.loaded, run: () => chooseLayout('custom') },
   'layout.queueDock': { when: () => app.loaded, run: () => setLayoutField('queue', queueDocked() ? 'floating' : 'docked') },
-  'layout.optionsDock': { when: typeset, run: () => setLayoutField('options', activeLayout().options === 'docked' ? 'floating' : 'docked') },
   // The old one-click "Typeset" of the typing pane, kept on its old id (and
   // key) so a rebinding still holds: the layout's tools, in any chapter.
   'translate.typesetTools': {

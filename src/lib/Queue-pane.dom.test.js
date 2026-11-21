@@ -18,7 +18,6 @@ import {
   setTypesetTools,
   chooseLayout,
   queueDocked,
-  optionsDocked,
   stepLine,
   gotoPage,
   setLineText,
@@ -159,8 +158,6 @@ it('shows and hides the typesetting tools for the open chapter only, never saved
   // untouched, and nothing was written.
   expect(layouts.use.translate).toBe('translate');
   expect(writes).toBe(0);
-  // The Translate preset with the tools out docks the options above the queue.
-  expect(optionsDocked()).toBe(true);
   app.tool = 'text';
   setTypesetTools(false);
   expect(isTranslateMode()).toBe(true);

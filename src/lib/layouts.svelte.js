@@ -1,7 +1,8 @@
 // ===== The editor's layouts (UI combos) =====
 // What the editor shows is a layout, not a mode: whether the typesetting tools
-// are out, and whether the text queue and the Text box options sit docked in
-// the column down the right or float as windows. See docs/UI_COMBOS.md.
+// are out, and whether the text queue sits docked in the column down the
+// right or floats as a window. Only the queue docks: the Text box options and
+// the AI chat are always windows. See docs/UI_COMBOS.md.
 //
 // A chapter's kind (chapter.json `mode`, 'translate' or 'typeset') is data -
 // what its lines are - and it only picks which layout the chapter opens with:
@@ -16,11 +17,10 @@ export const LAYOUT_IDS = ['translate', 'typeset', 'custom'];
 export const LAYOUT_KINDS = ['translate', 'typeset'];
 
 export const PRESETS = Object.freeze({
-  // The page beside the typing pane. With the tools turned on, the Text box
-  // options dock above the queue, in the same column.
-  translate: Object.freeze({ tools: false, queue: 'docked', options: 'docked' }),
+  // The page beside the typing pane.
+  translate: Object.freeze({ tools: false, queue: 'docked' }),
   // Tools out, every panel a window over the page.
-  typeset: Object.freeze({ tools: true, queue: 'floating', options: 'floating' }),
+  typeset: Object.freeze({ tools: true, queue: 'floating' }),
 });
 
 export const LAYOUT_NAMES = { translate: 'Translate', typeset: 'Typeset', custom: 'Custom' };
@@ -32,14 +32,13 @@ export function normalizeCombo(raw, fallback = PRESETS.translate) {
   return {
     tools: typeof r.tools === 'boolean' ? r.tools : fallback.tools,
     queue: pick(r.queue, DOCK, fallback.queue),
-    options: pick(r.options, DOCK, fallback.options),
   };
 }
 
-export const sameCombo = (a, b) => a.tools === b.tools && a.queue === b.queue && a.options === b.options;
+export const sameCombo = (a, b) => a.tools === b.tools && a.queue === b.queue;
 
 // The custom layout a kind starts with, before the user has made one.
-const CUSTOM_DEFAULT = Object.freeze({ tools: true, queue: 'docked', options: 'docked' });
+const CUSTOM_DEFAULT = Object.freeze({ tools: true, queue: 'docked' });
 
 // The stored shape, every field checked; anything unreadable is its default.
 // No blob at all is what every install before layouts has, and its answer is

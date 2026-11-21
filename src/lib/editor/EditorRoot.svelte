@@ -29,7 +29,7 @@
   import TranslatePane from './TranslatePane.svelte';
   import DockPane from './DockPane.svelte';
   import AutoDetect from './AutoDetect.svelte';
-  import { app, page, pageProgress, isTranslateMode, isTranslateChapter, isLongstrip, queueDocked, optionsDocked, setLayoutField } from '../store.svelte.js';
+  import { app, page, pageProgress, isTranslateMode, isTranslateChapter, isLongstrip, queueDocked, setLayoutField } from '../store.svelte.js';
   import { brushArmed } from '../brush-tool.svelte.js';
   import { registerShortcutHandlers } from '../shortcuts.svelte.js';
   import { loadPanels, clampAll, panels, showPanel } from './panels.svelte.js';
@@ -52,17 +52,16 @@
   );
 
   // What is shown is the layout's (layouts.svelte.js, the rail's Layout menu),
-  // not the chapter's: the typesetting tools out or not, and the queue and the
-  // Text box options each docked in the column down the right or floating.
+  // not the chapter's: the typesetting tools out or not, and the queue docked
+  // in the column down the right or floating. Only the queue docks.
   const translate = $derived(isTranslateMode());
   // A translate chapter's queue is the typing pane, docked or floating.
   const translateChapter = $derived(isTranslateChapter());
   const qDock = $derived(queueDocked());
-  const oDock = $derived(optionsDocked());
   // The column down the right (DockPane), while anything is docked in it. The
   // canvas is inset by its width exactly as it is by the sidebar's, so fit
   // measures the part of the window the page actually has.
-  const split = $derived(qDock || oDock);
+  const split = $derived(qDock);
   let paneWidth = $state(420);
   // The window's width, for `fitInsets`: the sidebar and the dock together may
   // not squeeze the page below a readable strip.
@@ -234,19 +233,17 @@
   {/if}
 
   {#if !translate}
-    {#if !oDock}
-      <!-- The title follows the body: the panel says what it is showing, and
-           while the brush is armed it is not showing a text box's options. -->
-      <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'} rightInset={canvasRight} ondock={() => setLayoutField('options', 'docked')}>
-        <Inspector {onSettings} />
-      </FloatingPanel>
-    {/if}
+    <!-- The title follows the body: the panel says what it is showing, and
+         while the brush is armed it is not showing a text box's options. -->
+    <FloatingPanel id="options" title={brushArmed() ? 'Brush' : 'Text box options'} rightInset={canvasRight}>
+      <Inspector {onSettings} />
+    </FloatingPanel>
     <FloatingPanel id="ai" title="AI" rightInset={canvasRight}>
       <AiPanel />
     </FloatingPanel>
   {/if}
   {#if split}
-    <DockPane bind:width={paneWidth} shown={insets.dock} options={oDock} queue={qDock} {onSettings} />
+    <DockPane bind:width={paneWidth} shown={insets.dock} />
   {/if}
   {#if !qDock}
     <!-- General use has no detected lines queued for placing, only its text.

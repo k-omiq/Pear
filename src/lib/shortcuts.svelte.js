@@ -369,7 +369,6 @@ const DEFS = [
   { id: 'layout.typeset', label: 'Layout: Typeset', group: 'Panels', combo: null, keywords: 'tools floating mode workspace', ...T },
   { id: 'layout.custom', label: 'Layout: Custom', group: 'Panels', combo: null, keywords: 'own mix mode workspace', ...T },
   { id: 'layout.queueDock', label: 'Dock or float text queue', group: 'Panels', combo: null, keywords: 'layout side column window', ...T },
-  { id: 'layout.optionsDock', label: 'Dock or float box options', group: 'Panels', combo: null, keywords: 'layout inspector side column window', ...T },
   { id: 'inspector.tabNext', label: 'Next options tab', group: 'Panels', combo: 'Mod+]', keywords: 'inspector', ...T },
   { id: 'inspector.tabPrev', label: 'Previous options tab', group: 'Panels', combo: 'Mod+[', keywords: 'inspector', ...T },
   { id: 'inspector.tabText', label: 'Text tab', group: 'Panels', combo: 'Mod+Alt+1', keywords: 'inspector options', ...T },
