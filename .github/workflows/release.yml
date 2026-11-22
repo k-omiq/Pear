@@ -22,6 +22,14 @@ on:
         required: false
         default: ""
 
+# The x86_64 Linux lane links an ONNX Runtime built here without AVX
+# ("ONNX Runtime without AVX" below). Its source, github.com/microsoft/onnxruntime,
+# returned 404 on 2026-11-21, so that build cannot run. "off" links pyke's
+# prebuilt runtime instead, which needs AVX2 (as v0.3.1 did). Set "on" again
+# once the source is reachable.
+env:
+  ORT_BASELINE: "off"
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -119,7 +127,7 @@ jobs:
         # at start-up on CPUs without it (Pentium Silver, Celeron, older
         # Atom). This lane links its own baseline build instead; see
         # scripts/ci/build-onnxruntime-baseline.sh.
-        if: matrix.platform == 'linux-x86_64'
+        if: matrix.platform == 'linux-x86_64' && env.ORT_BASELINE == 'on'
         uses: ./.github/actions/onnxruntime-baseline
       - name: Build app
         # Linux builds only the .deb here; the AppImage is assembled from it by
@@ -142,7 +150,7 @@ jobs:
         # crashes itself on Rust binaries (internal SIGSEGV reading
         # /proc/self/maps). The runner's root is the guest's library root;
         # Dawn comes from gpu-libs, where build.rs staged it.
-        if: matrix.platform == 'linux-x86_64'
+        if: matrix.platform == 'linux-x86_64' && env.ORT_BASELINE == 'on'
         run: |
           docker run --rm -v /:/host:ro debian:trixie sh -c '
             set -e
