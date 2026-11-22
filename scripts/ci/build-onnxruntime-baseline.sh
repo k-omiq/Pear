@@ -52,9 +52,31 @@ echo "::endgroup::"
 # The pyke tool clones branch rel-<version> itself unless ./onnxruntime is
 # already on a branch of that name. Clone the release tag instead, so the
 # source is exactly the tagged commit, and name the branch the tool expects.
+#
+# Sources in order. github.com/microsoft/onnxruntime returned 404 from
+# 2026-11-21, so a mirror follows it. Any source is safe: git checks every
+# object against its hash, and the commit must equal ORT_COMMIT below, which
+# pins the whole tree and every submodule commit. Mirrors drop connections
+# now and then, hence the retries.
+ORT_SOURCES=${ORT_SOURCES:-"https://github.com/microsoft/onnxruntime https://gitcode.com/gh_mirrors/on/onnxruntime.git"}
 echo "::group::Fetch ONNX Runtime v$ORT_VERSION"
-git clone -q --depth 1 --branch "v$ORT_VERSION" --recurse-submodules --shallow-submodules \
-  https://github.com/microsoft/onnxruntime ort-artifacts/onnxruntime
+fetched=""
+for src in $ORT_SOURCES; do
+  for attempt in 1 2 3 4; do
+    rm -rf ort-artifacts/onnxruntime
+    if GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone -q --depth 1 --branch "v$ORT_VERSION" \
+        --recurse-submodules --shallow-submodules "$src" ort-artifacts/onnxruntime; then
+      fetched=$src
+      break 2
+    fi
+    echo "fetching from $src failed (attempt $attempt)" >&2
+    # A source that is gone fails the same way every time; do not wait on it.
+    GIT_TERMINAL_PROMPT=0 git ls-remote "$src" HEAD >/dev/null 2>&1 || break
+    sleep 15
+  done
+done
+[ -n "$fetched" ] || { echo "could not fetch ONNX Runtime v$ORT_VERSION from: $ORT_SOURCES" >&2; exit 1; }
+echo "ONNX Runtime source: $fetched"
 got=$(git -C ort-artifacts/onnxruntime rev-parse HEAD)
 if [ "$got" != "$ORT_COMMIT" ]; then
   echo "v$ORT_VERSION is $got, expected $ORT_COMMIT" >&2

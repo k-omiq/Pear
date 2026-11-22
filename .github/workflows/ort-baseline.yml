@@ -1,0 +1,30 @@
+name: ONNX Runtime baseline
+
+# Builds the no-AVX ONNX Runtime + Dawn for the x86_64 Linux lane, proves it
+# on a CPU without AVX (qemu as Nehalem), and saves it to the Actions cache on
+# main. Release and dev builds started from a tag restore that cache instead of
+# spending a long build on it. Runs when the build script or the action
+# changes, or by hand.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/ci/build-onnxruntime-baseline.sh
+      - scripts/ci/check-ort-baseline.sh
+      - .github/actions/onnxruntime-baseline/**
+      - .github/workflows/ort-baseline.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ort-baseline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    name: Build and check (linux-x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/onnxruntime-baseline

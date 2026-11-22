@@ -25,12 +25,11 @@ on:
         default: ""
 
 # The x86_64 Linux lane links an ONNX Runtime built here without AVX
-# ("ONNX Runtime without AVX" below). Its source, github.com/microsoft/onnxruntime,
-# returned 404 on 2026-11-21, so that build cannot run. "off" links pyke's
-# prebuilt runtime instead, which needs AVX2 (as v0.3.1 did). Set "on" again
-# once the source is reachable.
+# ("ONNX Runtime without AVX" below), so the app runs on every x86-64 CPU.
+# "off" would link pyke's prebuilt runtime instead, which needs AVX2: an
+# emergency switch only, never a release setting.
 env:
-  ORT_BASELINE: "off"
+  ORT_BASELINE: "on"
 
 concurrency:
   group: dev-build-${{ github.ref }}
