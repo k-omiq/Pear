@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+const q = new URLSearchParams(location.search);
+const fam = q.get('f');
+document.write(`<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=${encodeURIComponent(fam).replace(/%20/g,'+')}&display=block">`);
+</script>
+<style>html,body{margin:0;background:#fff}div{height:100vh;display:flex;align-items:center;justify-content:center;padding:0 10px;box-sizing:border-box;font-size:44px;color:#111;white-space:nowrap;overflow:hidden}</style>
+</head><body><div id="t"></div>
+<script>
+document.getElementById('t').style.fontFamily = `'${fam}'`;
+document.getElementById('t').textContent = q.get('t') || 'Hey! Wait for me!';
+document.fonts.load(`44px '${fam}'`).then(() => document.fonts.ready).then(() => {
+  const t = document.getElementById('t'); let px = 44;
+  const fits = () => { const r = document.createRange(); r.selectNodeContents(t); return r.getBoundingClientRect().width <= innerWidth - 20; };
+  while (!fits() && px > 12) t.style.fontSize = (--px) + 'px';
+  setTimeout(() => (document.title = 'READY'), 200);
+});
+</script></body></html>

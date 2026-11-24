@@ -1,17 +1,15 @@
 <div align="center">
 
 <pre>
-█▀▄▀█ ▄▀█ █▄ █ █▀▀ ▄▀█   ▀█▀ █▄█ █▀█ █▀▀ █▀ █▀▀ ▀█▀ ▀█▀ █▀▀ █▀█
-█ ▀ █ █▀█ █ ▀█ █▄█ █▀█    █   █  █▀▀ ██▄ ▄█ ██▄  █   █  ██▄ █▀▄
+█▀█ █▀▀ ▄▀█ █▀█
+█▀▀ ██▄ █▀█ █▀▄
 
-        lettering for scanlation, without Photoshop
+lettering for scanlation, without Photoshop
 </pre>
 
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-111?logo=apple&logoColor=white)](#install)
 [![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4?logo=windows&logoColor=white)](#install)
 [![Linux](https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-FCC624?logo=linux&logoColor=black)](#install)
-[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
-[![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](https://svelte.dev)
 [![latest](https://img.shields.io/badge/latest-v0.4.1-E8A33D)](https://typesetter.komiq.cc)
 [![license](https://img.shields.io/badge/license-MIT-6E8CBF)](LICENSE.md)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/vhuYWbZNX5)
@@ -19,78 +17,111 @@
 
 </div>
 
-A desktop app that puts translated lettering into speech balloons. Light on
-memory, works over hundreds of pages, no Photoshop needed.
+**Pear** is a desktop app for putting translated text into manga and comic
+speech bubbles. It finds the bubbles, reads the original text, and places
+your translation in them. Then you style it. No Photoshop needed.
 
-**[Download](https://typesetter.komiq.cc)** · **[User guide (HOWTO)](HOWTO.md)**
+**[Download](https://typesetter.komiq.cc)** · **[User guide](HOWTO.md)** · **[Font marketplace guide](FONT_MARKETPLACE.md)**
 
-> Public beta. In daily use, but expect rough edges.
+> Public beta. People use it every day, but expect rough edges.
 
-![The editor](.github/readme/editor.png)
+![The editor: placed text, a styled sound effect, and the text queue](.github/readme/editor.png)
 
-## Recommended use
+## How it works
 
-Translators work in **translate** mode: translate each bubble and tag it
-(tagging shortcuts are still in progress). Typesetters then set a font per tag,
-place the text boxes, and tune them. Auto placement can be turned off.
+1. **Add pages.** Drop in a chapter. Pear finds the text bubbles and reads
+   the Japanese, Chinese or Korean text.
+2. **Translate.** Type the English next to each numbered bubble. Tag each
+   line (dialogue, thought, SFX, …).
+3. **Typeset.** Pear puts each line in its bubble and fits it. Each tag has
+   its own font and style, so most lines need no work.
+4. **Polish and export.** Fix the few lines that need it, add effects to
+   sound effects, and export the pages.
+
+![Translate view: numbered bubbles on the left, the typing pane on the right](.github/readme/translate.png)
 
 ## Features
 
-- Text box detection and auto placement
-- **Tags**, so you stop scrolling the font list for every line. Tags are saved
-  per project, so the first tagging pass is the slow one
-- Auto fit to balloon. It is flaky, so it can be turned off in Settings, or per
-  bubble with a shortcut
-- Autosave
-- Bulk restyle by tag or by selection, for when you change your mind
-- Effects: transform (warp), stacked strokes and shadows, text clipping
-  (untested), circular curve, arc, a controllable curve for wavy text, motion
-  blur and normal blur, font roughening, text mask clipping
-- Fills: solid, pattern and gradient (a better colour picker is in progress)
-- The normal layout controls you expect
-- Export to PNG, JPG, WebP or JSON, per page or per chapter
-- Auto updates
-- Low resource use, with heavy offloading to disk
+**Getting the text in**
 
-> **Do not use PSD export yet.** It is unfinished, and low priority, because it
-> is genuinely hard.
+- **Bubble detection and OCR.** Finds text bubbles and reads Japanese,
+  Chinese and Korean. Runs on your GPU when it can.
+- **Translate view.** Bubbles are numbered on the page. You type in a pane
+  beside it, one line per bubble.
+- **Auto placement.** Each line goes into its bubble and is sized to fit.
+  Turn it off in Settings, or per bubble.
+
+**Styling**
+
+- **Tags.** Give a tag a font and look once. Every line with that tag uses
+  it. Tags are saved per series.
+- **Bulk restyle.** Change every box with a tag, or every selected box, at
+  once.
+- **Fills.** Solid colour, gradient, or pattern (screentone).
+- **Effects.** Strokes, shadows, glow and bevel (like Photoshop layer
+  styles), warp, arcs and curves, liquify, blur and motion blur, rough
+  edges, and special effects like cracks and lightning.
+- **Sound effects.** SFX tools with 12 sound types that lay out and size the
+  letters for you.
+
+**Fonts**
+
+- **Font library.** Add your own fonts, sort them into categories, and turn
+  fonts on or off in the menus.
+- **Font marketplaces.** Add a font list by its link and install fonts with
+  one click. Anyone can host one: see the
+  **[font marketplace guide](FONT_MARKETPLACE.md)**.
+
+**Everything else**
+
+- **Export** to PNG, JPG, WebP or JSON, per page or per chapter.
+- **Autosave**, undo for every edit, and snapshots before risky changes.
+- **Shortcuts** for every action, all rebindable.
+- **Light on memory.** Works through hundreds of pages and keeps heavy data
+  on disk.
+- **Auto updates**, signature-checked.
+- **AI helper (optional).** Bring your own Claude API key to let it place and
+  style text for you.
+
+> **Do not use PSD export yet.** It is not finished.
+
+![The font library with a marketplace added](.github/readme/fonts.png)
 
 ## Install
 
-Grab the installer from **<https://typesetter.komiq.cc>**.
+Get the installer from **<https://typesetter.komiq.cc>**.
 
-- macOS (Apple Silicon): open the `.dmg`, drag the app to Applications. The
-  bundle is not notarised yet, so first launch needs right-click > **Open**.
-- Windows: run the setup `.exe`.
-- Linux (x86_64 or ARM64): choose the download matching your architecture.
-  Install the `.deb`, or mark the `.AppImage`
-  executable and run it. Both use your distro's GTK 3 and WebKitGTK 4.1
-  (the `.deb` pulls them in; the AppImage tells you the install command if
-  they are missing: `libwebkit2gtk-4.1-0` on Debian and Ubuntu,
-  `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch).
-  - The Linux builds need glibc 2.39 or newer: Ubuntu 24.04, Mint 22, Fedora
-    39, Debian 13, Arch, or anything newer. On an older distro it refuses to
-    start with `version 'GLIBC_2.39' not found`, and there is no build that
-    does: the floor comes from the prebuilt ONNX Runtime, which is compiled
-    against glibc 2.38 with or without a GPU feature. Reaching Ubuntu 22.04 or
-    Debian 12 would take a Flatpak, which carries its own runtime.
-  - The x86_64 build uses WebGPU over Vulkan when a usable driver is there and
-    the CPU when it is not. The ARM64 build is CPU-only because its prebuilt
-    ONNX Runtime has no WebGPU or CUDA provider.
-  - The x86_64 build runs on any x86-64 CPU, including ones without AVX
-    (Pentium Silver, Celeron, older Atom). Its ONNX Runtime is built in CI at
-    the plain x86-64 baseline; the prebuilt one needs AVX2 and crashed at
-    start-up with `Illegal instruction` on those CPUs.
+- **macOS (Apple Silicon):** open the `.dmg` and drag Pear to Applications.
+  The app is not notarised yet, so the first time, right-click it and choose
+  **Open**.
+- **Windows:** run the setup `.exe`.
+- **Linux (x86_64 or ARM64):** install the `.deb`, or make the `.AppImage`
+  executable and run it. Pick the file for your CPU.
 
-  `ldd --version` prints your glibc version.
+Updates arrive inside the app.
 
-Updates arrive in-app and are signature-verified. Each Linux build only
-updates to its own kind.
+<details>
+<summary><b>Linux notes</b></summary>
+
+- You need **glibc 2.39 or newer**: Ubuntu 24.04, Mint 22, Fedora 39,
+  Debian 13, Arch, or newer. Check with `ldd --version`. On older systems the
+  app stops with `version 'GLIBC_2.39' not found`.
+- Both builds use your system's GTK 3 and WebKitGTK 4.1. The `.deb` installs
+  them. The AppImage tells you the command if they are missing
+  (`libwebkit2gtk-4.1-0` on Debian and Ubuntu, `webkit2gtk4.1` on Fedora,
+  `webkit2gtk-4.1` on Arch).
+- The x86_64 build uses your GPU through Vulkan (WebGPU) when it can, and the
+  CPU when it cannot. It runs on every x86-64 CPU, including ones without AVX.
+- The ARM64 build uses the CPU only.
+- Each Linux build only updates to its own kind (`.deb` to `.deb`, AppImage
+  to AppImage).
+
+</details>
 
 ## Build from source
 
-Requires [Node](https://nodejs.org) 20+ and a [Rust toolchain](https://rustup.rs)
-(see the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)).
+You need [Node](https://nodejs.org) 20+ and [Rust](https://rustup.rs) (see
+the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)).
 
 ```sh
 git clone https://github.com/komiq-cc/manga-typesetter.git
@@ -98,51 +129,46 @@ cd manga-typesetter
 npm install
 
 npm run tauri dev     # run it
-npm run tauri build   # bundle in src-tauri/target/release/bundle
-npm test              # vitest
+npm run tauri build   # make installers in src-tauri/target/release/bundle
+npm test              # run the tests
 ```
 
-Detection models download on first use and are cached under your home
-directory; nothing ships in the bundle. Chinese and Korean recognizers can be
-selected independently under **Settings → System → Models**. PP-OCRv6 Medium
-is the quality-first Chinese default. Korean defaults to the Korean-specific
-PP-OCRv5 model; PP-OCRv6 does not support Korean. Alternate smaller or legacy
-models remain available.
+Detection models are not in the app. They download the first time you use
+them. Pick the Chinese and Korean readers in **Settings → Detection**.
 
-### GPU
+<details>
+<summary><b>GPU details</b></summary>
 
-Detection and OCR run on the GPU where one is usable, falling back to CPU per
-model, and the settings dialog names the device in use:
+Detection and OCR use the GPU when they can, and fall back to the CPU per
+model. Settings shows which device is in use.
 
-- macOS: CoreML.
-- Windows: CUDA on NVIDIA machines with CUDA 13 and cuDNN 9 installed,
-  otherwise DirectML (any GPU, nothing to install).
-- Linux: WebGPU over Vulkan (any GPU, nothing to install), CPU when there is
-  no usable driver. An NVIDIA-only CUDA build exists for people with CUDA 13 +
-  cuDNN 9, and is faster than WebGPU on those machines:
+- **macOS:** CoreML.
+- **Windows:** CUDA on NVIDIA with CUDA 13 and cuDNN 9 installed, otherwise
+  DirectML (any GPU, nothing to install).
+- **Linux:** WebGPU over Vulkan (any GPU), CPU when there is no usable
+  driver. A CUDA build exists for NVIDIA with CUDA 13 + cuDNN 9:
 
   ```sh
   npm run tauri build -- --features gpu-cuda --config src-tauri/tauri.linux-cuda.conf.json
   ```
 
-  Plain `cargo build` on Linux has no GPU provider; pass `--features gpu-webgpu`
-  or `gpu-cuda`, not both. The WebGPU feature only links on a host with glibc
-  2.38+ and GCC 13's libstdc++ (Ubuntu 24.04 or newer).
+  Plain `cargo build` on Linux has no GPU provider. Pass
+  `--features gpu-webgpu` or `gpu-cuda`, not both. The WebGPU feature needs
+  glibc 2.38+ and GCC 13's libstdc++ (Ubuntu 24.04 or newer).
 
-Set `MT_DEVICE=cpu` (or `cuda`, `directml`, `webgpu`, `coreml`) before
-launching to pin a device when a driver misbehaves. The first device probe
-runs in a helper copy of the app (`app --probe-device`), so a driver that
-aborts while starting up only kills that helper; detection then stays on CPU
-for the rest of the run and the log says why.
+To force a device when a driver misbehaves, set `MT_DEVICE=cpu` (or `cuda`,
+`directml`, `webgpu`, `coreml`) before you start the app. The first device
+check runs in a helper process (`app --probe-device`), so a crashing driver
+only stops the helper, and detection stays on the CPU.
 
-On Linux the app switches WebKit's DMA-BUF renderer off when the NVIDIA
-proprietary driver is loaded (a blank window otherwise). Set
-`WEBKIT_DISABLE_DMABUF_RENDERER=0` before launching to force it back on; the
-app leaves the variable alone when it is already set.
+With the NVIDIA driver on Linux, the app turns off WebKit's DMA-BUF renderer
+(the window is blank otherwise). Set `WEBKIT_DISABLE_DMABUF_RENDERER=0` to
+turn it back on.
 
-The AppImage bundles no GTK or WebKit on purpose: it uses the host's, exactly
-like the `.deb`, so WebKit's UI process and its helper processes are always the
-same version on every distro. `scripts/build-appimage.sh` explains why.
+The AppImage uses your system's GTK and WebKit, like the `.deb`.
+`scripts/build-appimage.sh` explains why.
+
+</details>
 
 ## Built with
 
@@ -154,10 +180,10 @@ same version on every distro. `scripts/build-appimage.sh` explains why.
 Detection models from
 [deepghs/manga109_yolo](https://huggingface.co/deepghs/manga109_yolo) and
 [kha-white/manga-ocr](https://github.com/kha-white/manga-ocr), plus PP-OCRv4/v5
-Korean and PP-OCRv5/v6 Chinese recognizers published by
+Korean and PP-OCRv5/v6 Chinese readers published by
 [RapidOCR](https://github.com/RapidAI/RapidOCR). No model weights ship in the
-app - they download on first use from a byte-for-byte RapidOCR mirror, and
-each carries its publisher's own terms rather than this project's.
+app. They download on first use from a byte-for-byte RapidOCR mirror, and
+each keeps its publisher's own terms.
 
 ## License
 

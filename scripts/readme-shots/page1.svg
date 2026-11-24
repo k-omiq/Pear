@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1560" viewBox="0 0 1100 1560">
+  <defs>
+    <pattern id="hlines" width="6" height="6" patternUnits="userSpaceOnUse">
+      <rect width="6" height="6" fill="#fff"/><rect y="0" width="6" height="2" fill="#000"/>
+    </pattern>
+    <pattern id="dots" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="9" height="9" fill="#fff"/><circle cx="4.5" cy="4.5" r="1.9" fill="#000"/>
+    </pattern>
+    <pattern id="dotsfine" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="7" height="7" fill="#fff"/><circle cx="3.5" cy="3.5" r="1.1" fill="#000"/>
+    </pattern>
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity="1"/>
+    </linearGradient>
+    <clipPath id="p1"><rect x="40" y="40" width="1020" height="470"/></clipPath>
+    <clipPath id="p2"><rect x="40" y="540" width="500" height="470"/></clipPath>
+    <clipPath id="p3"><rect x="560" y="540" width="500" height="470"/></clipPath>
+    <clipPath id="p4"><rect x="40" y="1040" width="1020" height="480"/></clipPath>
+    <!-- a spiky-haired head and shoulders, origin at the neck -->
+    <g id="hero">
+      <path d="M-170 260 Q-170 70 0 60 Q170 70 170 260 Z" fill="#000"/>
+      <rect x="-28" y="-10" width="56" height="80" fill="#000"/>
+      <circle cx="0" cy="-70" r="78" fill="#000"/>
+      <path d="M-78 -90 L-120 -200 L-40 -140 L-20 -230 L20 -150 L70 -220 L70 -130 L130 -170 L80 -60 Z" fill="#000"/>
+    </g>
+    <g id="rival">
+      <path d="M-160 260 Q-160 80 0 70 Q160 80 160 260 Z" fill="#000"/>
+      <rect x="-26" y="0" width="52" height="80" fill="#000"/>
+      <ellipse cx="0" cy="-55" rx="72" ry="80" fill="#000"/>
+      <path d="M-72 -70 Q-90 -170 0 -150 Q90 -170 72 -70 L95 -20 L60 -60 Z" fill="#000"/>
+    </g>
+  </defs>
+  <rect width="1100" height="1560" fill="#fff"/>
+
+  <!-- Panel 1: line tone sky, two figures -->
+  <g clip-path="url(#p1)">
+    <rect x="40" y="40" width="1020" height="470" fill="url(#hlines)"/>
+    <rect x="40" y="240" width="1020" height="270" fill="url(#fade)" opacity=".55"/>
+    <use href="#rival" transform="translate(250 420) scale(.85)"/>
+    <use href="#hero" transform="translate(830 420) scale(.95) scale(-1 1)"/>
+    <ellipse cx="300" cy="140" rx="185" ry="88" fill="#fff" stroke="#000" stroke-width="4"/>
+    <path d="M250 222 L215 300 L290 226 Z" fill="#fff" stroke="#000" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M253 218 L292 222" stroke="#fff" stroke-width="6"/>
+    <ellipse cx="780" cy="160" rx="170" ry="90" fill="#fff" stroke="#000" stroke-width="4"/>
+    <path d="M845 240 L900 300 L815 245 Z" fill="#fff" stroke="#000" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M818 243 L846 236" stroke="#fff" stroke-width="6"/>
+  </g>
+  <rect x="40" y="40" width="1020" height="470" fill="none" stroke="#000" stroke-width="6"/>
+
+  <!-- Panel 2: dot tone, one figure -->
+  <g clip-path="url(#p2)">
+    <rect x="40" y="540" width="500" height="470" fill="url(#dots)"/>
+    <use href="#hero" transform="translate(175 860) scale(.8)"/>
+    <ellipse cx="345" cy="680" rx="165" ry="105" fill="#fff" stroke="#000" stroke-width="4"/>
+    <path d="M290 778 L262 850 L330 782 Z" fill="#fff" stroke="#000" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M292 775 L328 779" stroke="#fff" stroke-width="6"/>
+  </g>
+  <rect x="40" y="540" width="500" height="470" fill="none" stroke="#000" stroke-width="6"/>
+
+  <!-- Panel 3: speed lines, burst -->
+  <g clip-path="url(#p3)">
+    <rect x="560" y="540" width="500" height="470" fill="#fff"/>
+    <g stroke="#000" stroke-width="3">
+      <path d="M810 760 L560 540 M810 760 L620 540 M810 760 L690 540 M810 760 L760 540 M810 760 L860 540 M810 760 L930 540 M810 760 L1000 540 M810 760 L1060 560 M810 760 L1060 640 M810 760 L1060 720 M810 760 L1060 820 M810 760 L1060 900 M810 760 L1060 990 M810 760 L990 1010 M810 760 L900 1010 M810 760 L720 1010 M810 760 L620 1010 M810 760 L560 980 M810 760 L560 880 M810 760 L560 790 M810 760 L560 700 M810 760 L560 620"/>
+    </g>
+    <circle cx="810" cy="780" r="140" fill="#fff"/>
+    <use href="#rival" transform="translate(815 905) scale(.7)"/>
+    <path d="M810 575 L835 625 L895 600 L870 650 L940 660 L880 690 L920 730 L855 718 L840 760 L810 722 L780 760 L765 718 L700 730 L740 690 L680 660 L750 650 L725 600 L785 625 Z" fill="#fff" stroke="#000" stroke-width="4" stroke-linejoin="round"/>
+    <ellipse cx="700" cy="925" rx="120" ry="62" fill="#fff" stroke="#000" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>
+  </g>
+  <rect x="560" y="540" width="500" height="470" fill="none" stroke="#000" stroke-width="6"/>
+
+  <!-- Panel 4: big shout -->
+  <g clip-path="url(#p4)">
+    <rect x="40" y="1040" width="1020" height="480" fill="url(#dotsfine)"/>
+    <g stroke="#000" stroke-width="3">
+      <path d="M550 1240 L40 1040 M550 1240 L180 1040 M550 1240 L320 1040 M550 1240 L460 1040 M550 1240 L640 1040 M550 1240 L780 1040 M550 1240 L920 1040 M550 1240 L1060 1060 M550 1240 L1060 1180 M550 1240 L1060 1320 M550 1240 L1060 1460 M550 1240 L40 1180 M550 1240 L40 1320 M550 1240 L40 1460"/>
+    </g>
+    <use href="#hero" transform="translate(250 1330) scale(1.1)"/>
+    <use href="#rival" transform="translate(860 1350) scale(.95)"/>
+    <path d="M550 1080 C700 1080 760 1160 760 1240 C760 1330 690 1390 550 1392 C410 1390 340 1330 340 1240 C340 1160 400 1080 550 1080 Z" fill="#fff" stroke="#000" stroke-width="5"/>
+  </g>
+  <rect x="40" y="1040" width="1020" height="480" fill="none" stroke="#000" stroke-width="6"/>
+</svg>

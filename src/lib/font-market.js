@@ -1,6 +1,6 @@
 // ===== Font marketplaces =====
 // A marketplace is a JSON manifest at an address the user adds; we host ours,
-// anyone can host one. The format is docs/FONT_MARKETPLACE.md, and
+// anyone can host one. The format is FONT_MARKETPLACE.md, and
 // `parseManifest` is its one reader: everything a manifest says is checked
 // here, and a font that fails a check is listed with the reason, never
 // half-installed.

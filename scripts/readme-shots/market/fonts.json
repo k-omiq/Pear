@@ -1,0 +1,168 @@
+{
+  "format": "pear-font-market",
+  "version": 1,
+  "name": "Demo Fonts",
+  "description": "Free OFL fonts for lettering.",
+  "homepage": "https://example.com/",
+  "updated": "2026-11-24",
+  "fonts": [
+    {
+      "id": "bubblegum-sans",
+      "family": "Bubblegum Sans",
+      "description": "A round, friendly dialogue face.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/bubblegum-sans.png",
+      "tags": [
+        "dialogue",
+        "casual"
+      ],
+      "files": [
+        {
+          "url": "files/BubblegumSans-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    },
+    {
+      "id": "gochi-hand",
+      "family": "Gochi Hand",
+      "description": "Loose handwriting for asides and notes.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/gochi-hand.png",
+      "tags": [
+        "handwriting",
+        "thought"
+      ],
+      "files": [
+        {
+          "url": "files/GochiHand-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    },
+    {
+      "id": "knewave",
+      "family": "Knewave",
+      "description": "Thick brush caps for sound effects.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/knewave.png",
+      "tags": [
+        "sfx",
+        "bold"
+      ],
+      "files": [
+        {
+          "url": "files/Knewave-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    },
+    {
+      "id": "butcherman",
+      "family": "Butcherman",
+      "description": "Dripping letters for horror scenes.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/butcherman.png",
+      "tags": [
+        "sfx",
+        "horror"
+      ],
+      "files": [
+        {
+          "url": "files/Butcherman-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    },
+    {
+      "id": "londrina-solid",
+      "family": "Londrina Solid",
+      "description": "Tall solid caps for titles and signs.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/londrina-solid.png",
+      "tags": [
+        "title"
+      ],
+      "files": [
+        {
+          "url": "files/LondrinaSolid-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    },
+    {
+      "id": "short-stack",
+      "family": "Short Stack",
+      "description": "Even, readable comic lettering.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/short-stack.png",
+      "tags": [
+        "dialogue"
+      ],
+      "files": [
+        {
+          "url": "files/ShortStack-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    },
+    {
+      "id": "fuzzy-bubbles",
+      "family": "Fuzzy Bubbles",
+      "description": "Soft hand lettering for quiet lines.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/fuzzy-bubbles.png",
+      "tags": [
+        "handwriting",
+        "thought"
+      ],
+      "files": [
+        {
+          "url": "files/FuzzyBubbles-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    },
+    {
+      "id": "rubik-wet-paint",
+      "family": "Rubik Wet Paint",
+      "description": "Paint drips for loud effects.",
+      "license": {
+        "name": "OFL-1.1",
+        "url": "https://openfontlicense.org"
+      },
+      "preview": "previews/rubik-wet-paint.png",
+      "tags": [
+        "sfx",
+        "title"
+      ],
+      "files": [
+        {
+          "url": "files/RubikWetPaint-Regular.ttf",
+          "style": "Regular"
+        }
+      ]
+    }
+  ]
+}
