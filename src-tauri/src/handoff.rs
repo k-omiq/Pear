@@ -10,7 +10,7 @@
 use crate::data_folder::{contains, free_name, now_secs, stamp, write_atomic, SUBFOLDER};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -161,6 +161,7 @@ pub struct FileInfo {
     pub exists: bool,
     pub w: u32,
     pub h: u32,
+    pub size: u64,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -196,7 +197,8 @@ pub fn read(root: &Path, claim: &str) -> Result<Message, String> {
             let info = match message_file(&dir, rel) {
                 Ok(p) if p.is_file() => {
                     let (w, h) = image::image_dimensions(&p).unwrap_or((0, 0));
-                    FileInfo { exists: true, w, h }
+                    let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                    FileInfo { exists: true, w, h, size }
                 }
                 _ => FileInfo::default(),
             };
@@ -207,24 +209,67 @@ pub fn read(root: &Path, claim: &str) -> Result<Message, String> {
     Ok(out)
 }
 
-/// Moves one message file into the library. A rename keeps a hard link.
+/// Puts one message file into the library as a hard link (a copy where the
+/// drive has no links), so the claim stays whole until `done`: a crash or a
+/// failed apply puts back a message with every file in it. The raw in a
+/// message is itself a link to the cleaner's page, so the raw is still on
+/// disk once for both apps.
 pub fn take(root: &Path, claim: &str, rel: &str, dest: &Path) -> Result<(), String> {
     let src = message_file(&claim_dir(root, claim)?, rel)?;
     library_dest(root, dest)?;
     if fs::symlink_metadata(dest).is_ok() {
         return Err(format!("{} is already there", dest.display()));
     }
-    fs::rename(&src, dest).map_err(|e| format!("Could not move {rel} into the library: {e}"))
+    if fs::hard_link(&src, dest).is_ok() {
+        return Ok(());
+    }
+    // A copy lands under a temporary name first, so `dest` is never half a
+    // file.
+    let tmp = free_name(&dest.with_file_name(format!(
+        ".{}.taking",
+        dest.file_name().and_then(|n| n.to_str()).unwrap_or("page")
+    )));
+    let copied = fs::copy(&src, &tmp)
+        .and_then(|_| File::open(&tmp)?.sync_all())
+        .and_then(|_| fs::rename(&tmp, dest));
+    copied.map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("Could not bring {rel} into the library: {e}")
+    })
 }
 
-/// The reverse of `take`, for an apply that failed part-way.
+/// Undoes a `take` for an apply that failed before it was written: deletes
+/// the library's link. Only while the claim still has its own, so the last
+/// copy of a page is never deleted.
 pub fn give_back(root: &Path, claim: &str, rel: &str, from: &Path) -> Result<(), String> {
-    let dst = message_file(&claim_dir(root, claim)?, rel)?;
+    let kept = message_file(&claim_dir(root, claim)?, rel)?;
     library_dest(root, from)?;
-    if fs::symlink_metadata(&dst).is_ok() {
-        return Err(format!("{rel} is already back"));
+    if !kept.is_file() {
+        return Err(format!("{rel} is not in the message any more, so the library keeps its copy"));
     }
-    fs::rename(from, &dst).map_err(|e| e.to_string())
+    fs::remove_file(from).map_err(|e| e.to_string())
+}
+
+/// Is a message file byte for byte the library file at `path`? Size first,
+/// then sha256 (a re-sent page that did not change is not filed again).
+pub fn same(root: &Path, claim: &str, rel: &str, path: &Path) -> Result<bool, String> {
+    use sha2::{Digest, Sha256};
+    let src = message_file(&claim_dir(root, claim)?, rel)?;
+    let lib = root.join(SUBFOLDER);
+    if !path.is_absolute() || !contains(&lib, path) {
+        return Err(format!("{} is not inside the library", path.display()));
+    }
+    let (Ok(a), Ok(b)) = (fs::metadata(&src), fs::metadata(path)) else { return Ok(false) };
+    if a.len() != b.len() {
+        return Ok(false);
+    }
+    let hash = |p: &Path| -> Result<Vec<u8>, String> {
+        let mut f = File::open(p).map_err(|e| e.to_string())?;
+        let mut h = Sha256::new();
+        std::io::copy(&mut f, &mut h).map_err(|e| e.to_string())?;
+        Ok(h.finalize().to_vec())
+    };
+    Ok(hash(&src)? == hash(path)?)
 }
 
 /// A message that cannot be filed goes to `handoff/rejected/<key>-<date>/`
@@ -291,6 +336,11 @@ pub fn handoff_give_back<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: Stri
 }
 
 #[tauri::command]
+pub fn handoff_same<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, claim: String, rel: String, path: String) -> Result<bool, String> {
+    same(&shared_root(&app, &root)?, &claim, &rel, Path::new(&path))
+}
+
+#[tauri::command]
 pub fn handoff_put_back<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, claim: String, key: String) -> Result<String, String> {
     put_back(&shared_root(&app, &root)?, &claim, &key).map(str::to_string)
 }
@@ -344,11 +394,22 @@ mod tests {
         let dest = root.join(SUBFOLDER).join("S").join("c").join("raws").join("001.png");
         take(&root, &c, "raws/001.png", &dest).unwrap();
         assert!(dest.is_file());
+        assert!(inbox(&root).join(&c).join("raws").join("001.png").is_file(), "the claim stays whole");
+        assert!(same(&root, &c, "cleaned/001.png", &dest).unwrap(), "same bytes");
+        fs::write(dest.with_file_name("other.png"), b"other").unwrap();
+        assert!(!same(&root, &c, "cleaned/001.png", &dest.with_file_name("other.png")).unwrap());
+        assert!(same(&root, &c, "cleaned/001.png", &root.join("x.png")).is_err(), "only library files");
         assert!(take(&root, &c, "cleaned/001.png", &dest).is_err(), "never over an existing file");
         assert!(take(&root, &c, "cleaned/001.png", &root.join("outside.png")).is_err(), "only into the library");
         assert!(take(&root, &c, "../handoff.json", &dest.with_file_name("x.png")).is_err());
         give_back(&root, &c, "raws/001.png", &dest).unwrap();
         assert!(!dest.exists());
+        assert!(inbox(&root).join(&c).join("raws").join("001.png").is_file());
+        // A library file whose message copy is gone is never deleted.
+        take(&root, &c, "raws/001.png", &dest).unwrap();
+        fs::remove_file(inbox(&root).join(&c).join("raws").join("001.png")).unwrap();
+        assert!(give_back(&root, &c, "raws/001.png", &dest).is_err());
+        assert!(dest.is_file());
         done(&root, &c).unwrap();
         assert!(list(&root).unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
