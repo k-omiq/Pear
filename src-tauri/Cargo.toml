@@ -146,6 +146,10 @@ block2 = "0.6"
 # staged by build.rs and bundled by tauri.windows.conf.json.
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6", features = ["windows-native"] }
+# `GetFileInformationByHandle`, the file id that keeps hard links together when
+# the data folder moves to another drive (data_folder.rs `link_key`). 0.61 is
+# already in the lockfile through tauri, so this adds no crate.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 ort = { version = "2.0.0-rc.10", features = ["cuda", "directml"] }
 
 # The kernel keyring: no D-Bus or system library to link, but it lasts until

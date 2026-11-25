@@ -586,12 +586,32 @@ pub fn is_dataless(meta: &fs::Metadata) -> bool {
 }
 
 #[cfg(unix)]
-fn link_key(meta: &fs::Metadata) -> Option<(u64, u64)> {
+fn link_key(_path: &Path, meta: &fs::Metadata) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     (meta.nlink() > 1).then(|| (meta.dev(), meta.ino()))
 }
-#[cfg(not(unix))]
-fn link_key(_meta: &fs::Metadata) -> Option<(u64, u64)> {
+#[cfg(windows)]
+fn link_key(path: &Path, meta: &fs::Metadata) -> Option<(u64, u64)> {
+    // Volume serial and file index, the Windows inode, from the file's own
+    // handle (`MetadataExt::file_index` is unstable). Without it a hard-linked
+    // page was copied twice on a move to another drive, and the verify step
+    // could not see the links it lost.
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    if !meta.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is a valid out value, and
+    // the handle stays open for the whole call.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 || info.nNumberOfLinks < 2 {
+        return None;
+    }
+    Some((u64::from(info.dwVolumeSerialNumber), (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)))
+}
+#[cfg(not(any(unix, windows)))]
+fn link_key(_path: &Path, _meta: &fs::Metadata) -> Option<(u64, u64)> {
     None
 }
 
@@ -613,7 +633,7 @@ fn walk(root: &Path, rel: &Path, tree: &mut Tree, seen: &mut std::collections::H
             tree.items.push(Item { rel: r.clone(), kind: Kind::Dir, size: 0, link: None });
             walk(root, &r, tree, seen, dataless)?;
         } else {
-            let link = link_key(&meta);
+            let link = link_key(&e.path(), &meta);
             if link.is_none_or(|k| seen.insert(k)) {
                 tree.bytes += meta.len();
             }
@@ -1762,14 +1782,13 @@ pub mod tests {
         assert!(!partial_of(&to).exists());
         let s = status(&paths);
         assert_eq!((s.state, s.pointer.unwrap().path), ("ok", to.display().to_string()));
+        let a = to.join(SUBFOLDER).join("Series").join("001").join("raws").join("001.png");
+        let b = to.join("Cleaner").join("page.png");
+        let key = |p: &Path| link_key(p, &fs::metadata(p).unwrap());
+        assert!(key(&a).is_some(), "the copy is still linked");
+        assert_eq!(key(&a), key(&b), "the hard link is kept");
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let a = fs::metadata(to.join(SUBFOLDER).join("Series").join("001").join("raws").join("001.png")).unwrap();
-            let b = fs::metadata(to.join("Cleaner").join("page.png")).unwrap();
-            assert_eq!((a.ino(), a.nlink()), (b.ino(), 2), "the hard link is kept");
-            assert!(fs::symlink_metadata(to.join(SUBFOLDER).join("link.json")).unwrap().file_type().is_symlink());
-        }
+        assert!(fs::symlink_metadata(to.join(SUBFOLDER).join("link.json")).unwrap().file_type().is_symlink());
         delete_old_copy(&paths, &aside).unwrap();
         assert!(!aside.exists());
         assert!(delete_old_copy(&paths, &to).is_err(), "the folder in use is never deleted");
