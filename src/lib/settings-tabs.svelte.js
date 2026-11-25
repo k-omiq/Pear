@@ -15,14 +15,18 @@ export const SERIES_SETTINGS_TABS = ['series', 'styles', 'guide'];
 // The ids of the old six-tab modal, for any caller still using them.
 const OLD_TABS = { project: 'series', system: 'detection' };
 
-export const settingsView = $state({ open: false, tab: 'general' });
+// `section`: a row the modal scrolls to once it is open (its
+// `data-section`), then clears. The first-run data folder card sends the
+// user to 'data-folder'.
+export const settingsView = $state({ open: false, tab: 'general', section: null });
 
 // Open Settings, on `tab` when it names one. Anything else - including the
 // click event a plain `onclick={onSettings}` hands over - opens it on the tab
 // it was last on, which is what the gear buttons have always done.
-export function openSettings(tab) {
+export function openSettings(tab, section) {
   const id = typeof tab === 'string' ? (OLD_TABS[tab] ?? tab) : null;
   if (SETTINGS_TABS.includes(id)) settingsView.tab = id;
+  settingsView.section = typeof section === 'string' ? section : null;
   settingsView.open = true;
 }
 

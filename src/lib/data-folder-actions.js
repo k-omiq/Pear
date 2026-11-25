@@ -70,6 +70,21 @@ export async function pickAndSetUp() {
   }
 }
 
+// Legacy mode, the first-run card's "Move": the same setup, at the default
+// place (`~/Manga Library`) with no folder to pick. Returns true when the
+// library moved in, so the card can record the answer.
+export async function setUpAtDefault(root) {
+  try {
+    if (!(await warnIfSynced(await inspectFolder(root)))) return false;
+    const r = await setUpSharedFolder(root, { confirm: confirmClosed });
+    toast(`Your library is now in the shared folder at ${root}.${moved(r)}`);
+    return true;
+  } catch (e) {
+    report(e, 'Could not set up the shared folder');
+    return false;
+  }
+}
+
 // Pending mode: "Move your library into the shared folder". When the shared
 // folder has a library of this app already, the user is asked to use that
 // one instead; this app's old library then stays where it is, untouched.

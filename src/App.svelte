@@ -22,6 +22,7 @@
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
   import Onboarding from './lib/onboarding/Onboarding.svelte';
   import DataFolderCard from './lib/home/DataFolderCard.svelte';
+  import DataFolderFirstRun from './lib/home/DataFolderFirstRun.svelte';
   import DataFolderMissing from './lib/home/DataFolderMissing.svelte';
   import { dataFolder, initDataFolder, recheckDataFolder } from './lib/data-folder.svelte.js';
   import { watchHandoffs } from './lib/handoff.svelte.js';
@@ -741,6 +742,7 @@
 {:else if booted}
   <HomeFrame onSettings={openSettings}>
     <DataFolderCard />
+    <DataFolderFirstRun />
     {#if route.name === 'project'}
       <ProjectView
         onNewChapter={(id) => openNewChapter(id)}
