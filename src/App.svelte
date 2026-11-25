@@ -78,7 +78,7 @@
   async function onWindowFocus() {
     if (route.name === 'editor') checkOutsideChange();
     if (role.agent) return;
-    if ((await recheckDataFolder()) && route.name !== 'editor') scanLibrary();
+    if ((await recheckDataFolder()) && route.name !== 'editor' && dataFolder.mode !== 'unavailable') scanLibrary();
   }
 
   // What this window is for: the user's main window, or one opened for an AI
@@ -572,6 +572,8 @@
     // blocked everywhere, even while typing, but the key carries on below so a
     // shortcut the user has bound to one of these combos still fires.
     if (isReloadKey(e)) e.preventDefault();
+    // The data folder is not there: only its own screen's buttons answer.
+    if (dataFolder.mode === 'unavailable') return;
     // An IME mid-composition owns the keyboard: isComposing is the standard
     // flag, keyCode 229 is how some engines mark the synthetic keys. Acting
     // on either would steal keystrokes from the composition window.
@@ -612,7 +614,8 @@
       if (app.exportOpen) return (app.exportOpen = false);
       if (drawRead.open) return (drawRead.open = false);
       if (app.bulk.active) return closeBulk();
-      if (settingsView.open) return closeSettings();
+      // Not while a data folder change runs: Settings shows how it went.
+      if (settingsView.open) return dataFolder.busy ? undefined : closeSettings();
       if (fontLibraryView.open) return closeFontLibrary();
       if (brushTool.manager) return closeBrushManager();
       return deselect();
@@ -729,7 +732,11 @@
   onblur={() => (app.peekRaw = false)}
 />
 
-{#if route.name === 'editor'}
+{#if booted && dataFolder.mode === 'unavailable'}
+  <!-- In place of every screen, not over them: nothing behind it can be
+       reached, and no library is scanned or written. -->
+  <DataFolderMissing />
+{:else if route.name === 'editor'}
   <EditorRoot onFontLib={openFontLibrary} onSettings={openSettings} />
 {:else if booted}
   <HomeFrame onSettings={openSettings}>
@@ -750,6 +757,7 @@
   <div class="boot"></div>
 {/if}
 
+{#if !(booted && dataFolder.mode === 'unavailable')}
 <NewChapterDialog
   bind:open={newChapterOpen}
   bind:busy={newChapterBusy}
@@ -778,5 +786,5 @@
 <!-- Over the route rather than in place of it, as Settings is, so running
      the setup again from the editor keeps the chapter mounted. -->
 {#if onboarding.open}<Onboarding />{/if}
-<DataFolderMissing />
+{/if}
 <Toast />

@@ -5,8 +5,8 @@
   import { checkSidecar, modelsCacheInfo, clearModelsCache } from './sidecar.js';
   import ThemePicker from './ThemePicker.svelte';
   import { library, projectById, setProjectOcrLanguage } from './library.svelte.js';
-  import { dataFolder, forgetOldCopy } from './data-folder.svelte.js';
-  import { pickAndSetUp, adoptNow, pickAndMove, pickExisting, askDeleteOldCopy } from './data-folder-actions.js';
+  import { dataFolder, forgetOldCopy, refreshBlockers } from './data-folder.svelte.js';
+  import { pickAndSetUp, adoptNow, useSharedNow, pickAndMove, pickExisting, askDeleteOldCopy } from './data-folder-actions.js';
   import { settingsView, shownSettingsTab, closeSettings } from './settings-tabs.svelte.js';
   import SeriesGuide from './SeriesGuide.svelte';
   import LetteringSetup from './LetteringSetup.svelte';
@@ -399,9 +399,27 @@
       await fn();
     } finally {
       folderBusy = false;
+      refreshBlockers();
     }
   }
-  const folderLocked = $derived(!isTauri() || folderBusy || dataFolder.busy || !!app.chapterRef);
+  // Why a data folder change cannot start now, said before a button is
+  // pressed: this app (an open chapter, a job, an AI window) or Manga
+  // Cleaner being open. Using the shared library moves nothing, so the
+  // cleaner may be open for it.
+  const folderLocked = $derived(!isTauri() || folderBusy || dataFolder.busy || !!dataFolder.blocked.local);
+  const folderWhy = $derived(dataFolder.blocked.local || dataFolder.blocked.cleaner);
+  const BLOCKER_POLL_MS = 3000;
+  $effect(() => {
+    if (!open) return;
+    refreshBlockers();
+    const timer = setInterval(refreshBlockers, BLOCKER_POLL_MS);
+    return () => clearInterval(timer);
+  });
+  // Settings stays open while a move runs: its result and any question it
+  // asks are shown here.
+  function closeIfIdle() {
+    if (!dataFolder.busy && !folderBusy) open = false;
+  }
 
   $effect(() => {
     if (open) {
@@ -547,7 +565,13 @@
 >
   <nav class="set-side" aria-label="Settings sections">
     <div class="set-side-head">
-      <button class="set-back" aria-label="Close settings" title="Close (Esc)" onclick={() => (open = false)}>
+      <button
+        class="set-back"
+        aria-label="Close settings"
+        title={dataFolder.busy || folderBusy ? 'Wait for the data folder change to finish' : 'Close (Esc)'}
+        disabled={dataFolder.busy || folderBusy}
+        onclick={closeIfIdle}
+      >
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
       </button>
       <h1>Settings</h1>
@@ -731,18 +755,23 @@
               <div class="set-ctl">
                 {#if dataFolder.mode === 'legacy'}
                   <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(pickAndSetUp)}>Set up shared folder…</button>
+                {:else if dataFolder.mode === 'pending' && dataFolder.bothLibraries}
+                  <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(useSharedNow)}>Use the shared library</button>
                 {:else if dataFolder.mode === 'pending'}
-                  <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(adoptNow)}>Move my library in</button>
+                  <button class="btn tiny" disabled={folderLocked || !!dataFolder.blocked.cleaner} onclick={() => folderAction(adoptNow)}>Move my library in</button>
                 {:else if dataFolder.mode === 'shared'}
-                  <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(pickAndMove)}>Move data folder…</button>
+                  <button class="btn tiny" disabled={folderLocked || !!dataFolder.blocked.cleaner} onclick={() => folderAction(pickAndMove)}>Move data folder…</button>
                 {/if}
-                <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(pickExisting)}>Use existing folder…</button>
+                <button class="btn tiny" disabled={folderLocked || !!dataFolder.blocked.cleaner} onclick={() => folderAction(pickExisting)}>Use existing folder…</button>
               </div>
             </div>
             <p class="set-desc">
               {#if dataFolder.mode === 'shared'}
                 <span class="set-path" title={dataFolder.root}>{dataFolder.root}</span><br />
                 Shared with Manga Cleaner. Chapters you save there show up here.
+              {:else if dataFolder.mode === 'pending' && dataFolder.bothLibraries}
+                <span class="set-path" title={library.root}>{library.root}</span><br />
+                The shared folder at {dataFolder.root} already has a typesetter library. Use it to get Manga Cleaner's chapters here; your library here stays where it is.
               {:else if dataFolder.mode === 'pending'}
                 <span class="set-path" title={library.root}>{library.root}</span><br />
                 Manga Cleaner set up a shared folder at {dataFolder.root}. Your library is still here; move it in to share it.
@@ -754,7 +783,7 @@
                 Only this app uses this folder. Set up a shared folder to keep your library with Manga Cleaner's and get its chapters here when you save them there.
               {/if}
               {#if dataFolder.detail}<br />{dataFolder.detail}{/if}
-              {#if app.chapterRef}<br />Close the open chapter to change it.{/if}
+              {#if folderWhy}<br /><span data-testid="df-why">{folderWhy}</span>{/if}
               {#if !isTauri()}<br />Changing it needs the desktop app.{/if}
             </p>
           </div>
