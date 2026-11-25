@@ -141,7 +141,10 @@ export function buildChapterPackage({
   };
 
   files['manifest.json'] = [strToU8(JSON.stringify(manifest, null, 2)), { level: 6 }];
-  files['chapter.json'] = [strToU8(JSON.stringify(record, null, 2)), { level: 6 }];
+  // The link to a Manga Cleaner chapter names this computer's data folder
+  // ids; a copy made from the package is a chapter of its own.
+  const { cleanerLink: _link, ...shared } = record;
+  files['chapter.json'] = [strToU8(JSON.stringify(shared, null, 2)), { level: 6 }];
   if (typeof translations === 'string') {
     files['translations.json'] = [strToU8(translations), { level: 6 }];
   }

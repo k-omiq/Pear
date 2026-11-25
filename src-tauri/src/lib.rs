@@ -3,6 +3,10 @@ mod agent_mcp;
 // The in-app AI panel: the Claude API key and the streaming proxy.
 mod ai_api;
 mod app_icon;
+// The data folder shared with Manga Cleaner (SHARED_DATA_FOLDER.md).
+mod data_folder;
+// Filing the cleaner's messages: the file moves (handoff.svelte.js decides).
+mod handoff;
 // `pub` because the `.sut` parser and its scorer are reachable from the crate's
 // tests as well as from the `brush_import` command below.
 pub mod brush;
@@ -96,10 +100,34 @@ pub fn run() {
       ai_api::ai_key_clear,
       ai_api::ai_request,
       ai_api::ai_abort,
-      app_icon::set_theme_icon
+      app_icon::set_theme_icon,
+      data_folder::data_folder_status,
+      data_folder::data_folder_inspect,
+      data_folder::data_folder_default_root,
+      data_folder::data_folder_move_busy,
+      data_folder::data_folder_cleaner_running,
+      data_folder::data_folder_open,
+      data_folder::data_folder_release,
+      data_folder::data_folder_setup,
+      data_folder::data_folder_adopt,
+      data_folder::data_folder_move,
+      data_folder::data_folder_use_existing,
+      data_folder::data_folder_delete_old,
+      data_folder::data_folder_size,
+      handoff::handoff_list,
+      handoff::handoff_recover,
+      handoff::handoff_claim,
+      handoff::handoff_read,
+      handoff::handoff_take,
+      handoff::handoff_give_back,
+      handoff::handoff_same,
+      handoff::handoff_put_back,
+      handoff::handoff_reject,
+      handoff::handoff_done
     ])
     .manage(agent_mcp::AgentDoor::default())
     .manage(ai_api::AiApi::default())
+    .manage(data_folder::DataFolderState::default())
     // A window gone frees the chapters it held (agent_mcp.rs).
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::Destroyed = event {

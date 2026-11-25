@@ -159,6 +159,17 @@ export async function withinHome(dir) {
   return d === home || d.startsWith(home + '/');
 }
 
+// In Shared mode the library root is `<data folder>/Typesetter`, which only
+// setup and move may create; data-folder.svelte.js turns this on.
+let rootMustExist = false;
+export function setRootMustExist(on) {
+  rootMustExist = !!on;
+}
+// Every recursive mkdir under the library (a chapter folder, masks/, logs/,
+// a snapshot) refuses while the root is gone, so a vanished data folder is
+// never brought back as a new, empty tree.
+fsx.guardMkdir?.(() => (rootMustExist && library.root ? [library.root] : []));
+
 export async function setRoot(path) {
   library.root = path;
   try {
@@ -304,8 +315,28 @@ async function readChapter(projectDir, slug) {
     // Absent reads as 'typeset', which is what every chapter written before this
     // field existed actually is - so no chapter on disk changes behaviour.
     mode: normalizeChapterMode(raw.mode),
+    cleanerLink: linkOf(raw.cleanerLink),
     unreadable: false,
   };
+}
+
+// Which Manga Cleaner chapter this one was sent from (SHARED_DATA_FOLDER.md),
+// as the catalogue keeps it: the ids and the time of the last send. The page
+// map stays on disk; only the handoff reads it.
+function linkOf(l) {
+  if (!l || typeof l !== 'object' || !l.libraryId || !l.projectId || !l.chapterId) return null;
+  return {
+    libraryId: String(l.libraryId),
+    projectId: String(l.projectId),
+    chapterId: String(l.chapterId),
+    sentAt: typeof l.sentAt === 'string' ? l.sentAt : null,
+  };
+}
+
+// The same for a project: which cleaner project it was filed from.
+function projectLinkOf(l) {
+  if (!l || typeof l !== 'object' || !l.libraryId || !l.projectId) return null;
+  return { libraryId: String(l.libraryId), projectId: String(l.projectId) };
 }
 
 // A folder copied inside the library - the obvious way to back one up - carries
@@ -399,6 +430,8 @@ function projectFieldsOf(raw) {
     exportScale: normalizeExportScale(raw.exportScale),
     ...projectTags(raw),
     guide: sanitizeGuide(raw.guide),
+    // Set on a project made for a Manga Cleaner series (SHARED_DATA_FOLDER.md).
+    cleanerLink: projectLinkOf(raw.cleanerLink),
   };
 }
 
@@ -570,7 +603,16 @@ export async function scanLibrary() {
   const dupes = [];
   const seenIds = new Set();
   try {
-    if (!(await fsx.exists(root))) await fsx.mkdir(root);
+    // Never made here (SHARED_DATA_FOLDER.md section 5): a library folder on
+    // an unplugged drive must not come back as a new, empty one. A legacy
+    // library that was never written to is just empty until its first
+    // project makes it.
+    if (!(await fsx.exists(root))) {
+      if (!owns()) return;
+      library.projects = [];
+      library.error = rootMustExist ? `The library folder is missing: ${root}` : '';
+      return;
+    }
     for (const slug of await subdirs(root)) {
       const marker = await fsx.join(root, slug, 'project.json');
       if (!(await fsx.exists(marker))) continue; // not a project directory
@@ -686,7 +728,12 @@ async function freeDir(parent, name, taken) {
 // `undefined` every existing caller passes, is 'pages'.
 // `layoutGuessed`: the caller asked no layout, so `layout` is only a default
 // (see projectFieldsOf).
-export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja', layoutGuessed = false, exportScale = 1 } = {}) {
+// `cleanerLink`: the Manga Cleaner project this one is filed from (the
+// handoff), written only when given.
+export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja', layoutGuessed = false, exportScale = 1, cleanerLink = null } = {}) {
+  if (rootMustExist && !(await fsx.exists(library.root))) {
+    throw new Error(`The library folder is missing: ${library.root}`);
+  }
   const taken = new Set(library.projects.map((p) => p.slug));
   const { slug, dir } = await freeDir(library.root, name, taken);
   await fsx.mkdir(dir);
@@ -708,9 +755,10 @@ export async function createProject(name, { layout = 'pages', ocrLanguage = 'ja'
     tags: [],
     tagSizes: {},
     guide: sanitizeGuide(null),
+    ...(projectLinkOf(cleanerLink) ? { cleanerLink: projectLinkOf(cleanerLink) } : null),
   };
   await writeJson(await fsx.join(dir, 'project.json'), record);
-  const project = { ...record, layoutGuessed: !!layoutGuessed, slug, dir, chapters: [], unreadable: false };
+  const project = { ...record, layoutGuessed: !!layoutGuessed, cleanerLink: projectLinkOf(cleanerLink), slug, dir, chapters: [], unreadable: false };
   library.projects = [project, ...library.projects];
   return project;
 }
@@ -874,6 +922,7 @@ async function writeProjectRecordNow(p, patch) {
     const record = { schema: SCHEMA, id: p.id, ...fields, ...(stamp != null ? { updatedAt: stamp } : {}) };
     // Written only while set, so no other project's record gains the key.
     if (!record.layoutGuessed) delete record.layoutGuessed;
+    if (!record.cleanerLink) delete record.cleanerLink;
     // The key order every record has been written in.
     const ordered = Object.fromEntries(RECORD_ORDER.filter((k) => k in record).map((k) => [k, record[k]]));
     await writeJson(path, ordered);
@@ -884,7 +933,7 @@ async function writeProjectRecordNow(p, patch) {
   });
 }
 
-const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide'];
+const RECORD_ORDER = ['schema', 'id', 'name', 'createdAt', 'updatedAt', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide', 'cleanerLink'];
 
 // The record as this window would write it from its catalogue entry.
 const recordFields = (p) => ({
@@ -897,6 +946,7 @@ const recordFields = (p) => ({
   ocrLanguage: normalizeOcrLanguage(p.ocrLanguage),
   exportScale: normalizeExportScale(p.exportScale),
   ...seriesFields(p),
+  cleanerLink: projectLinkOf(p.cleanerLink),
 });
 
 // What this window last read from or wrote to each project's record: the base
@@ -910,7 +960,7 @@ const recordBase = new Map();
 function adoptRecord(p, fields, mine) {
   const sameAs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   let series = false;
-  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide']) {
+  for (const k of ['name', 'coverChapterId', 'coverPageId', 'layout', 'layoutGuessed', 'ocrLanguage', 'exportScale', 'tags', 'tagSizes', 'guide', 'cleanerLink']) {
     if (!(k in fields) || sameAs(fields[k], mine[k])) continue;
     p[k] = fields[k];
     if (k === 'tags' || k === 'tagSizes' || k === 'guide') series = true;
@@ -1187,7 +1237,10 @@ async function copyInto(dir, name, bytes, used) {
 // `typesetting` is the record's field for a chapter that already had one - an
 // imported package - and undefined for a new chapter, which starts 'smart'
 // (`newTypesetting`).
-async function buildChapter(p, number, title, copy, mode = 'typeset', typesetting) {
+// `extra.fields` are more record fields (the handoff's `cleanerLink`), and
+// `extra.rollback` runs first on the failure path, before the directory goes:
+// a handoff moves files in rather than copying them, and moves them back.
+async function buildChapter(p, number, title, copy, mode = 'typeset', typesetting, extra = null) {
   // Same hole as createProject, and here it fires on the FAILURE path: the
   // rollback below is a recursive remove, and it must never be pointed at a
   // directory this run did not bring into being.
@@ -1225,6 +1278,7 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
       typesetting: typesetting === undefined ? newTypesetting() : normalizeTypesetting(typesetting),
       createdAt: now(),
       updatedAt: now(),
+      ...(extra?.fields ?? null),
       pages,
     };
     await writeJson(await fsx.join(dir, 'chapter.json'), record);
@@ -1249,6 +1303,7 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
       typeset: isTypeset(pages),
       progress: chapterProgress(pages),
       mode: record.mode,
+      cleanerLink: linkOf(record.cleanerLink),
       unreadable: false,
     };
 
@@ -1290,6 +1345,13 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
         await fsx.remove(await fsx.join(p.dir, 'thumb.png'));
       } catch {
         /* ignore */
+      }
+    }
+    if (extra?.rollback) {
+      try {
+        await extra.rollback();
+      } catch {
+        /* best-effort: what could not go back stays in the directory below */
       }
     }
     // Only what this run created. If mkdir itself failed there is nothing of
@@ -1621,6 +1683,11 @@ export const restoreChapterSnapshot = guarded(async function (projectId, chapter
   // which is the catalogue's handle on this chapter and must not change under
   // it whatever a file in the shelf says.
   record.id = current.id ?? record.id;
+  // The link to the cleaner's chapter is about where the chapter came from,
+  // not about one version of it: a restore keeps the current one, so the next
+  // send still finds this chapter and its pages.
+  if (current.cleanerLink) record.cleanerLink = current.cleanerLink;
+  else delete record.cleanerLink;
   // commitPages advances from the version being replaced, including a restore
   // to an older record inside the same millisecond as the preceding change.
   record.updatedAt = current.updatedAt;
@@ -1631,6 +1698,7 @@ export const restoreChapterSnapshot = guarded(async function (projectId, chapter
   c.title = record.title ?? '';
   c.createdAt = record.createdAt;
   c.mode = normalizeChapterMode(record.mode);
+  c.cleanerLink = linkOf(record.cleanerLink);
   const history = await fsx.join(c.dir, 'logs', 'history.json');
   try {
     await fsx.remove(history);
@@ -2152,6 +2220,289 @@ export const removeAllCleaned = guarded(async function removeAllCleaned(projectI
   return previous.length;
 });
 
+// ---------- the cleaner's handoff ----------
+//
+// Manga Cleaner sends a cleaned chapter through the shared data folder
+// (SHARED_DATA_FOLDER.md section 8; handoff.svelte.js claims and checks the
+// messages). The files are LINKED in: a raw in a message is a hard link to
+// the cleaner's own copy, and a second link keeps it on disk once for both
+// apps, while the claimed message stays whole until it is filed. The links
+// go through `mover` (the Rust side in the app), because the claimed message
+// folder is a dot folder.
+//
+// Each input page is the consumer's checked view of one message page, in the
+// cleaner's order: { sourceIdx, rawRel, rawName, cleanedRel, cleanedName, w,
+// h }. `w`/`h` is the size of both files. `mover.take(rel, dest)` moves a
+// message file to a new path in the library; `mover.giveBack(rel, from)`
+// undoes it; `mover.same(rel, path)` says whether a message file is byte for
+// byte a library file.
+
+const sameLink = (l, libraryId, projectId) => !!l && l.libraryId === libraryId && l.projectId === projectId;
+
+// The project a cleaner project was filed into, by id, never by name: two
+// series can share a name.
+export function projectByCleanerLink(libraryId, projectId) {
+  return library.projects.find((p) => !p.unreadable && !p.duplicate && sameLink(p.cleanerLink, libraryId, projectId)) ?? null;
+}
+
+// The chapter a cleaner chapter was filed as, if any.
+export function chapterByCleanerLink(libraryId, projectId, chapterId) {
+  for (const p of library.projects) {
+    if (p.unreadable) continue;
+    for (const c of p.chapters ?? []) {
+      const l = c.cleanerLink;
+      if (!c.unreadable && sameLink(l, libraryId, projectId) && l.chapterId === chapterId) return { p, c };
+    }
+  }
+  return null;
+}
+
+// Open in this window, or on its way there: a message waits for it to close.
+export function chapterBusy(chapterId) {
+  return app.chapterRef?.chapterId === chapterId || opening?.chapterId === chapterId;
+}
+
+async function takeInto(mover, moved, rel, dir, name, used) {
+  const fileName = await freeFileName(dir, name, used);
+  used.add(fileName);
+  const dest = await fsx.join(dir, fileName);
+  await mover.take(rel, dest);
+  moved.push([rel, dest]);
+  return fileName;
+}
+
+// Back into the claimed message, newest first, so a failed apply can put
+// the claim back whole: a message is never half applied.
+async function giveBack(mover, moved) {
+  for (const [rel, dest] of [...moved].reverse()) {
+    try {
+      await mover.giveBack(rel, dest);
+    } catch {
+      /* it stays where it landed; the record does not name it */
+    }
+  }
+  moved.length = 0;
+}
+
+const sentLink = (link, pages) => ({
+  libraryId: String(link.libraryId),
+  projectId: String(link.projectId),
+  chapterId: String(link.chapterId),
+  sentAt: link.sentAt,
+  pages,
+});
+
+const blankPage = (id, file, cleaned, w, h) => ({ id, file, cleaned, w, h, lines: [], detect: null, boxes: [] });
+
+// A new chapter from a message.
+export async function createChapterFromHandoff({ projectId, number, title, pages: input, link, mover, mode = 'typeset' }) {
+  const p = projectById(projectId);
+  if (!p) throw new Error('No such project');
+  if (!input?.length) throw new Error('The cleaner sent no pages');
+  const moved = [];
+  const linkPages = [];
+  return buildChapter(
+    p,
+    number,
+    title,
+    async (dir, cover) => {
+      const rawsDir = await fsx.join(dir, 'raws');
+      await fsx.mkdir(rawsDir);
+      const cleanedDir = await fsx.join(dir, 'cleaned');
+      const ensureCleaned = lazyDir(cleanedDir);
+      const usedRaws = new Set();
+      const usedCleaned = new Set();
+      const pages = [];
+      for (let i = 0; i < input.length; i++) {
+        const src = input[i];
+        const file = await takeInto(mover, moved, src.rawRel, rawsDir, src.rawName, usedRaws);
+        let cleaned = null;
+        if (src.cleanedRel) cleaned = await takeInto(mover, moved, src.cleanedRel, await ensureCleaned(), src.cleanedName, usedCleaned);
+        pages.push(blankPage(i + 1, file, cleaned, src.w, src.h));
+        linkPages.push({ sourceIdx: src.sourceIdx, pageId: i + 1 });
+        if (i === 0) {
+          const drawn = cleaned ? await fsx.join(cleanedDir, cleaned) : await fsx.join(rawsDir, file);
+          await cover.offer(await fsx.readFile(drawn).catch(() => null));
+        }
+      }
+      return pages;
+    },
+    mode,
+    undefined,
+    { fields: { cleanerLink: sentLink(link, linkPages) }, rollback: () => giveBack(mover, moved) },
+  );
+}
+
+// Where the pages a send adds go: each after the matched page before it in
+// the cleaner's order (after the ones already placed there), the pages
+// before the first matched one in front of it, and all of them at the end
+// when nothing matched. Pages the user reordered keep Pear's order, because
+// a matched page is never moved.
+function placeNew(next, plan) {
+  let after = null; // id of the page the next new one goes after
+  const leading = [];
+  for (const step of plan) {
+    if (step.pageId != null) {
+      after = step.pageId;
+      continue;
+    }
+    if (!step.page) continue;
+    if (after == null) {
+      leading.push(step.page);
+      continue;
+    }
+    const at = next.findIndex((pg) => pg.id === after);
+    next.splice(at + 1, 0, step.page);
+    after = step.page.id;
+  }
+  if (!leading.length) return;
+  const firstMatched = plan.find((s) => s.pageId != null)?.pageId;
+  const at = firstMatched == null ? next.length : next.findIndex((pg) => pg.id === firstMatched);
+  next.splice(at < 0 ? next.length : at, 0, ...leading);
+}
+
+// Holds this chapter against the other windows (agent/windows.js) for the
+// length of `fn`: claimed, so no agent window opens it, and its record
+// locked, so no other window's write lands between the read and the write.
+const applyingKeys = new Set();
+async function holdingChapter(projectId, chapterId, path, fn) {
+  const key = chapterKey(projectId, chapterId);
+  applyingKeys.add(key);
+  try {
+    await asOpen(() => claimChapter(projectId, chapterId));
+    return await withRecordLock(path, fn);
+  } finally {
+    applyingKeys.delete(key);
+    syncOpenChapters();
+  }
+}
+
+// A newer send of a chapter already here, which must be closed. Pages match
+// by the cleaner's `sourceIdx` through `cleanerLink.pages`:
+//   matched    the new cleaned file replaces the old one (which goes to
+//              logs/previous-cleaned); when the raw's size changed the new
+//              raw replaces the old one too and the page is respaced, so its
+//              boxes follow the new size;
+//   unmatched  added, in the cleaner's order next to its matched neighbours
+//              (`placeNew`);
+//   missing    pages the send does not list are kept.
+// A send no newer than the last one filed is reported `stale` and changes
+// nothing. A snapshot is taken first, like every other source edit, and the
+// whole apply runs inside the mutation gate, so an open waits for it.
+export const applyHandoffToChapter = guarded(async function applyHandoffToChapter(projectId, chapterId, { pages: input, link, mover }) {
+  const c = chapterById(projectId, chapterId);
+  if (!c) throw new Error('No such chapter');
+  if (c.unreadable) throw new Error('This chapter could not be read');
+  // Only these say "open": the send then waits for the chapter to close.
+  // Any other failure, whatever its words, is a failure.
+  await asOpen(() => assertClosedElsewhere({ chapterId }));
+  await asOpen(() => assertClosed(chapterId));
+  const path = await fsx.join(c.dir, 'chapter.json');
+  return holdingChapter(projectId, chapterId, path, () => applyNow(c, path, chapterId, input, link, mover));
+});
+
+async function asOpen(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    err.chapterOpen = true;
+    throw err;
+  }
+}
+
+async function applyNow(c, path, chapterId, input, link, mover) {
+  const chapterText = await fsx.readTextFile(path);
+  const record = JSON.parse(chapterText);
+  const had = record.cleanerLink && typeof record.cleanerLink === 'object' ? record.cleanerLink : null;
+  if (had?.sentAt && !(Date.parse(link.sentAt) > Date.parse(had.sentAt))) return { stale: true };
+  const before = await requireSnapshot(c.dir, chapterText, record, 'before-cleaner');
+
+  const pages = record.pages ?? [];
+  const ids = new Set(pages.map((pg) => pg.id));
+  const linkPages = (Array.isArray(had?.pages) ? had.pages : []).filter((m) => Number.isInteger(m?.sourceIdx) && ids.has(m.pageId));
+  const bySource = new Map(linkPages.map((m) => [m.sourceIdx, m.pageId]));
+  const numeric = (v) => (Number.isFinite(v) ? v : 0);
+  let nextId = Math.max(0, ...pages.map((pg) => numeric(pg.id)), ...(had?.pages ?? []).map((m) => numeric(m?.pageId))) + 1;
+
+  const rawsDir = await fsx.join(c.dir, 'raws');
+  const cleanedDir = await fsx.join(c.dir, 'cleaned');
+  const ensureCleaned = lazyDir(cleanedDir);
+  const usedCleaned = await usedCleanedNames(c.dir, pages);
+  const usedRaws = new Set(pages.map((pg) => pg.file).filter(Boolean));
+  const next = pages.map((pg) => ({ ...pg }));
+  const previous = [];
+  const moved = [];
+  const notes = newNotes();
+  const plan = [];
+  let replaced = 0;
+  let added = 0;
+  try {
+    for (const src of input) {
+      const pageId = bySource.get(src.sourceIdx);
+      if (pageId != null) {
+        plan.push({ pageId });
+        const idx = next.findIndex((pg) => pg.id === pageId);
+        let pg = next[idx];
+        const resized = hasPageSpace(pg) && (pg.w !== src.w || pg.h !== src.h);
+        if (resized) {
+          // A replaced source: a new raw, in its own new file (page files
+          // are never written over), and the page moves into its space.
+          await fsx.mkdir(rawsDir);
+          const file = await takeInto(mover, moved, src.rawRel, rawsDir, src.rawName, usedRaws);
+          pg = { ...respacePage(pg, { w: src.w, h: src.h }, notes), file };
+          if (!src.cleanedRel && pg.cleaned) {
+            previous.push(pg.cleaned);
+            pg.cleaned = null;
+          }
+        }
+        // A cleaned page whose bytes are the ones already here is left as
+        // it is: no new file, nothing in logs/previous-cleaned.
+        const unchanged =
+          !resized && src.cleanedRel && pg.cleaned && mover.same
+            ? await mover.same(src.cleanedRel, await fsx.join(cleanedDir, pg.cleaned)).catch(() => false)
+            : false;
+        if (src.cleanedRel && !unchanged) {
+          const name = await takeInto(mover, moved, src.cleanedRel, await ensureCleaned(), src.cleanedName, usedCleaned);
+          if (!resized) pg = respacePage(pg, { w: src.w, h: src.h }, notes);
+          if (pg.cleaned) previous.push(pg.cleaned);
+          pg = { ...pg, cleaned: name };
+        }
+        if (resized || (src.cleanedRel && !unchanged)) replaced++;
+        next[idx] = pg;
+        continue;
+      }
+      await fsx.mkdir(rawsDir);
+      const file = await takeInto(mover, moved, src.rawRel, rawsDir, src.rawName, usedRaws);
+      let cleaned = null;
+      if (src.cleanedRel) cleaned = await takeInto(mover, moved, src.cleanedRel, await ensureCleaned(), src.cleanedName, usedCleaned);
+      const id = nextId++;
+      plan.push({ page: blankPage(id, file, cleaned, src.w, src.h) });
+      linkPages.push({ sourceIdx: src.sourceIdx, pageId: id });
+      added++;
+    }
+    placeNew(next, plan);
+    record.cleanerLink = sentLink(link, linkPages);
+    await commitPages(c, path, record, next);
+  } catch (e) {
+    await giveBack(mover, moved);
+    throw e;
+  }
+  // Written: from here a failure must not put the message back to be filed
+  // again (handoff.svelte.js deletes the claim instead).
+  try {
+    sourceUndos.set(chapterId, before);
+    c.cleanerLink = linkOf(record.cleanerLink);
+    await dropCleaned(c.dir, previous.filter(Boolean), next);
+    await afterRespace(c, notes);
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    err.committed = true;
+    throw err;
+  }
+  return { stale: false, replaced, added, pageCount: next.length };
+}
+
 // Lines for the pages a translations file covers. It says what is on pages
 // 1..N; it says nothing about whether the chapter has pages after that, so it
 // never shortens the chapter and never appends to it.
@@ -2316,7 +2667,16 @@ let loadedRef = null;
 // claims it first, and a refusal changes nothing here - the chapter on screen
 // stays. Whatever the open came to, the window then says which chapters it
 // holds, so a superseded or failed open lets its claim go.
+// Why no chapter may open now ('' when one may): the data folder module says
+// so while a move or a switch runs.
+let openGate = () => '';
+export function setOpenGate(fn) {
+  openGate = typeof fn === 'function' ? fn : () => '';
+}
+
 export async function openChapter(projectId, chapterId) {
+  const why = openGate();
+  if (why) throw new Error(why);
   const key = chapterKey(projectId, chapterId);
   // Held from before the claim to the end of the open, so a sync made by any
   // other open meanwhile keeps this one's claim.
@@ -2337,6 +2697,7 @@ function syncOpenChapters() {
   const keys = new Set([...openingKeys].map((o) => o.key));
   if (app.chapterRef) keys.add(chapterKey(app.chapterRef.projectId, app.chapterRef.chapterId));
   if (opening) keys.add(chapterKey(opening.projectId, opening.chapterId));
+  for (const k of applyingKeys) keys.add(k);
   syncChapters([...keys]);
 }
 

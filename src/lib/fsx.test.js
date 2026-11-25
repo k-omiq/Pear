@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   fsync: 'ok',
   scope: null,
   enospc: false,
+  dirs: new Set(),
 }));
 
 const guard = (p) => {
@@ -55,6 +56,12 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   async remove(p) {
     guard(p);
     h.disk.delete(p);
+  },
+  async mkdir(p) {
+    h.dirs.add(p);
+  },
+  async exists(p) {
+    return h.disk.has(p) || h.dirs.has(p);
   },
 }));
 
@@ -192,6 +199,45 @@ describe('writeFileAtomic to a dialog-picked file outside the scope', () => {
     expect(h.disk.get(TARGET)).toBe(GOOD);
     expect(h.writes).toHaveLength(1);
     expect(h.writes[0]).not.toBe(TARGET);
+  });
+
+  it('never writes in place inside a library or the shared data folder', async () => {
+    const LIBRARY = '/Volumes/Work/Manga Library';
+    const PAGE = `${LIBRARY}/Typesetter/S/001/cleaned/001.png`;
+    h.scope = new Set([PAGE]);
+    fsx.guardInPlaceWrites(() => [LIBRARY]);
+    try {
+      await expect(fsx.writeFileAtomic(PAGE, BYTES)).rejects.toThrow('forbidden path');
+      expect(h.disk.has(PAGE)).toBe(false);
+      // A picked file elsewhere still gets the dialog's in-place write.
+      h.scope = new Set([PICKED]);
+      await fsx.writeFileAtomic(PICKED, BYTES);
+      expect(h.disk.get(PICKED)).toEqual(BYTES);
+      expect(fsx._insideGuarded('C:\\Data\\lib\\x.png')).toBe(false);
+      fsx.guardInPlaceWrites(() => ['C:\\Data\\Lib']);
+      expect(fsx._insideGuarded('c:/data/lib/x.png')).toBe(true);
+      expect(fsx._insideGuarded('C:\\Data\\Library2\\x.png')).toBe(false);
+    } finally {
+      fsx.guardInPlaceWrites(null);
+    }
+  });
+
+  it('never makes a folder inside a library root that has gone', async () => {
+    const ROOT = '/Volumes/Work/Manga Library/Typesetter';
+    fsx.guardMkdir(() => [ROOT]);
+    try {
+      await expect(fsx.mkdir(`${ROOT}/Series/001/masks`)).rejects.toThrow('The library folder is missing');
+      await expect(fsx.mkdir(ROOT)).rejects.toThrow('missing');
+      expect(h.dirs.size).toBe(0);
+      await fsx.mkdir('/Users/me/elsewhere');
+      expect(h.dirs.has('/Users/me/elsewhere')).toBe(true);
+      h.dirs.add(ROOT);
+      await fsx.mkdir(`${ROOT}/Series/001/masks`);
+      expect(h.dirs.has(`${ROOT}/Series/001/masks`)).toBe(true);
+    } finally {
+      fsx.guardMkdir(null);
+      h.dirs.clear();
+    }
   });
 
   it('leaves library records atomic: a text record never falls back to an in-place write', async () => {

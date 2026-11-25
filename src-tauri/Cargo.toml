@@ -6,8 +6,9 @@ authors = ["k-omiq"]
 license = "MIT"
 repository = "https://github.com/k-omiq/Pear"
 edition = "2021"
-# 1.85 since `wuff` (WOFF decoding, see below), an edition-2024 crate.
-rust-version = "1.85"
+# 1.89 for `File::try_lock` (the data folder locks, src/data_folder.rs);
+# before that 1.85, for `wuff` (WOFF decoding, see below), an edition-2024 crate.
+rust-version = "1.89"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

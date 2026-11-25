@@ -127,7 +127,39 @@ async function fsync(p) {
   }
 }
 
+// The folders an in-place write must never touch: the library root and the
+// shared data folder (library.svelte.js and data-folder.svelte.js say which).
+let guardedRoots = () => [];
+// The folders that must already exist before anything is made in them.
+let mustExistRoots = () => [];
+const foldPath = (s) =>
+  String(s ?? '')
+    .replace(/[\\/]+/g, '/')
+    .replace(/\/+$/, '');
+function within(p, r) {
+  const target = foldPath(p);
+  const root = foldPath(r);
+  if (!root) return false;
+  const win = /^[a-zA-Z]:/.test(target);
+  const [a, b] = win ? [target.toLowerCase(), root.toLowerCase()] : [target, root];
+  return a === b || a.startsWith(b + '/');
+}
+function insideGuarded(p) {
+  return guardedRoots().some((r) => within(p, r));
+}
+
 export const fsx = {
+  // `fn()` returns the folders `writeFileAtomic` may never write in place in.
+  guardInPlaceWrites(fn) {
+    guardedRoots = typeof fn === 'function' ? fn : () => [];
+  },
+  _insideGuarded: insideGuarded,
+  // `fn()` returns the folders `mkdir` may never create or create in while
+  // they are missing (the shared library root: an unplugged drive is never
+  // given a new, empty library).
+  guardMkdir(fn) {
+    mustExistRoots = typeof fn === 'function' ? fn : () => [];
+  },
   // The sweep's seam - see `liveTemps`.
   liveTemps() {
     return new Set(liveTemps);
@@ -206,7 +238,10 @@ export const fsx = {
       try {
         await m.writeFile(tmp, bytes);
       } catch (e) {
-        if (!scopeRefused(e)) throw e;
+        // Never in place inside a library: there the temp file is always in
+        // scope, and a page file written over in place would change a file
+        // a hard link shares with the other app (SHARED_DATA_FOLDER.md).
+        if (!scopeRefused(e) || insideGuarded(p)) throw e;
         liveTemps.delete(tmp);
         await m.writeFile(p, bytes);
         await fsync(p);
@@ -228,7 +263,11 @@ export const fsx = {
     }
   },
   async mkdir(p) {
-    return (await fs()).mkdir(p, { recursive: true });
+    const plugin = await fs();
+    for (const r of mustExistRoots()) {
+      if (within(p, r) && !(await plugin.exists(r))) throw new Error(`The library folder is missing: ${r}`);
+    }
+    return plugin.mkdir(p, { recursive: true });
   },
   async remove(p) {
     return (await fs()).remove(p, { recursive: true });

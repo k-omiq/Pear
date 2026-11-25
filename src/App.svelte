@@ -21,6 +21,10 @@
   import ChapterSourcesSheet from './lib/home/ChapterSourcesSheet.svelte';
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
   import Onboarding from './lib/onboarding/Onboarding.svelte';
+  import DataFolderCard from './lib/home/DataFolderCard.svelte';
+  import DataFolderMissing from './lib/home/DataFolderMissing.svelte';
+  import { dataFolder, initDataFolder, recheckDataFolder } from './lib/data-folder.svelte.js';
+  import { watchHandoffs } from './lib/handoff.svelte.js';
   import { onboarding, offerOnboardingAtBoot, finishOnboarding } from './lib/onboarding/onboarding.svelte.js';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
@@ -66,6 +70,16 @@
   let releaseUnloadFlush = null;
   let releaseFontWatch = null;
   let releaseContextMenu = null;
+  let releaseHandoffs = null;
+
+  // Back from another app: Manga Cleaner may have set the shared folder up
+  // or a drive may have come back, and a chapter.json changed elsewhere is
+  // picked up now, not at the next save (SAV-2).
+  async function onWindowFocus() {
+    if (route.name === 'editor') checkOutsideChange();
+    if (role.agent) return;
+    if ((await recheckDataFolder()) && route.name !== 'editor' && dataFolder.mode !== 'unavailable') scanLibrary();
+  }
 
   // What this window is for: the user's main window, or one opened for an AI
   // agent's chapter (agent/windows.js), which opens that chapter at boot.
@@ -100,6 +114,9 @@
     releasePageSwitch = setPageSwitchHook(switchHistoryPage);
     try {
       await initRoot();
+      // The shared data folder (SHARED_DATA_FOLDER.md) may put the library
+      // somewhere else, so it is settled before the first scan.
+      await initDataFolder();
     } catch (e) {
       // Display root resolution failure on the library screen.
       library.error = `Could not work out where your library lives: ${e?.message ?? e}`;
@@ -131,6 +148,9 @@
     } else {
       // The AI door opens only if the user left it on (Settings, AI).
       initDoor();
+      if (dataFolder.notice) toast(dataFolder.notice);
+      // Chapters Manga Cleaner sends: main window only.
+      releaseHandoffs = watchHandoffs();
     }
   });
 
@@ -519,6 +539,8 @@
     releaseFontWatch = null;
     releaseContextMenu?.();
     releaseContextMenu = null;
+    releaseHandoffs?.();
+    releaseHandoffs = null;
   });
 
   function hasTextSelection() {
@@ -550,6 +572,8 @@
     // blocked everywhere, even while typing, but the key carries on below so a
     // shortcut the user has bound to one of these combos still fires.
     if (isReloadKey(e)) e.preventDefault();
+    // The data folder is not there: only its own screen's buttons answer.
+    if (dataFolder.mode === 'unavailable') return;
     // An IME mid-composition owns the keyboard: isComposing is the standard
     // flag, keyCode 229 is how some engines mark the synthetic keys. Acting
     // on either would steal keystrokes from the composition window.
@@ -590,7 +614,8 @@
       if (app.exportOpen) return (app.exportOpen = false);
       if (drawRead.open) return (drawRead.open = false);
       if (app.bulk.active) return closeBulk();
-      if (settingsView.open) return closeSettings();
+      // Not while a data folder change runs: Settings shows how it went.
+      if (settingsView.open) return dataFolder.busy ? undefined : closeSettings();
       if (fontLibraryView.open) return closeFontLibrary();
       if (brushTool.manager) return closeBrushManager();
       return deselect();
@@ -703,14 +728,19 @@
 <svelte:window
   onkeydown={onKeydown}
   onkeyup={onKeyup}
-  onfocus={() => route.name === 'editor' && checkOutsideChange()}
+  onfocus={onWindowFocus}
   onblur={() => (app.peekRaw = false)}
 />
 
-{#if route.name === 'editor'}
+{#if booted && dataFolder.mode === 'unavailable'}
+  <!-- In place of every screen, not over them: nothing behind it can be
+       reached, and no library is scanned or written. -->
+  <DataFolderMissing />
+{:else if route.name === 'editor'}
   <EditorRoot onFontLib={openFontLibrary} onSettings={openSettings} />
 {:else if booted}
   <HomeFrame onSettings={openSettings}>
+    <DataFolderCard />
     {#if route.name === 'project'}
       <ProjectView
         onNewChapter={(id) => openNewChapter(id)}
@@ -727,6 +757,7 @@
   <div class="boot"></div>
 {/if}
 
+{#if !(booted && dataFolder.mode === 'unavailable')}
 <NewChapterDialog
   bind:open={newChapterOpen}
   bind:busy={newChapterBusy}
@@ -755,4 +786,5 @@
 <!-- Over the route rather than in place of it, as Settings is, so running
      the setup again from the editor keeps the chapter mounted. -->
 {#if onboarding.open}<Onboarding />{/if}
+{/if}
 <Toast />
