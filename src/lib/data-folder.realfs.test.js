@@ -42,7 +42,18 @@ vi.mock('./fsx.js', async () => {
 
 const { library, setRoot, scanLibrary, createProject } = await import('./library.svelte.js');
 const df = await import('./data-folder.svelte.js');
-const { dataFolder, _setDataFolderCommands, _resetDataFolderForTests, initDataFolder, setUpSharedFolder, rootForPick } = df;
+const {
+  dataFolder,
+  _setDataFolderCommands,
+  _resetDataFolderForTests,
+  initDataFolder,
+  recheckDataFolder,
+  setUpSharedFolder,
+  moveDataFolder,
+  useSharedLibrary,
+  useExistingFolder,
+  rootForPick,
+} = df;
 
 let tmp;
 let n = 0;
@@ -95,7 +106,7 @@ describe('the mode', () => {
     await initDataFolder();
     expect(dataFolder.mode).toBe('legacy');
     expect(library.root).toBe(legacy);
-    expect(names()).toEqual(['data_folder_recover', 'data_folder_status']);
+    expect(names()).toEqual(['data_folder_status']);
   });
 
   it('is unavailable when the folder is missing, and nothing makes it', async () => {
@@ -182,5 +193,86 @@ describe('setting up', () => {
       path === base ? { exists: true, isDir: true, empty: false, marker: false } : { exists: false, isDir: false, empty: false, marker: false };
     expect((await rootForPick(base)).root).toBe(join(base, 'Manga Library'));
     expect(await readdir(base)).toEqual(['Documents']);
+  });
+});
+
+describe('a move that did not finish', () => {
+  it('is unavailable while a journal is left, opens nothing, and notes what recovery did', async () => {
+    const { root, target } = await fixture();
+    await mkdir(target, { recursive: true });
+    await setRoot(target);
+    status = { state: 'moving', pointer: { schema: 1, path: root, folderId: 'f1' }, detail: 'Close Manga Cleaner to finish the move of the data folder.' };
+    await initDataFolder();
+    expect(dataFolder.mode).toBe('unavailable');
+    expect(dataFolder.detail).toMatch(/Close Manga Cleaner/);
+    expect(names()).not.toContain('data_folder_open');
+    status = { ...ok(root, true), recovered: { note: 'A move that was stopped has been finished.', oldCopy: '/old.moved-2026-11-25-1000' } };
+    await recheckDataFolder();
+    expect(dataFolder.mode).toBe('shared');
+    expect(dataFolder.notice).toMatch(/finished/);
+    expect(dataFolder.oldCopies).toEqual([{ path: '/old.moved-2026-11-25-1000' }]);
+  });
+
+  it('never runs on the shared library when its lock cannot be taken', async () => {
+    const { root, target } = await fixture();
+    await mkdir(target, { recursive: true });
+    await setRoot(target);
+    status = ok(root, true);
+    replies.data_folder_open = () => {
+      throw new Error('Another copy of the typesetter is using this data folder.');
+    };
+    await initDataFolder();
+    expect(dataFolder.mode).toBe('unavailable');
+    expect(dataFolder.detail).toMatch(/Another copy/);
+  });
+
+  it('a failed move asks where things stand, and does not open the old folder by guess', async () => {
+    const { root, target } = await fixture();
+    await mkdir(target, { recursive: true });
+    await setRoot(target);
+    status = ok(root, true);
+    await initDataFolder();
+    calls = [];
+    replies.data_folder_move = () => {
+      status = { state: 'moving', pointer: { schema: 1, path: root, folderId: 'f1' }, detail: 'not finished' };
+      throw new Error('The pointer could not be written. The move is not finished.');
+    };
+    await expect(moveDataFolder(join(tmp, 'elsewhere'))).rejects.toThrow(/not finished/);
+    expect(names()).toEqual(['data_folder_move_busy', 'data_folder_move', 'data_folder_status']);
+    expect(dataFolder.mode).toBe('unavailable');
+    expect(dataFolder.busy).toBe(false);
+  });
+});
+
+describe('two libraries', () => {
+  it('says so in pending mode, and using the shared one leaves the old one where it is', async () => {
+    const { legacy, root, target } = await fixture({ legacyProject: true });
+    await mkdir(target, { recursive: true });
+    status = ok(root, true);
+    await initDataFolder();
+    expect(dataFolder.mode).toBe('pending');
+    expect(dataFolder.bothLibraries).toBe(true);
+    await useSharedLibrary();
+    expect(calls).toContainEqual(['data_folder_adopt', { legacy: null }]);
+    expect(dataFolder.mode).toBe('shared');
+    expect(library.root).toBe(target);
+    expect(await readdir(legacy)).toEqual(['series']);
+  });
+
+  it('use existing asks when the drive cannot tell whether Manga Cleaner is open', async () => {
+    const { root, target } = await fixture();
+    status = { state: 'none', pointer: null };
+    await initDataFolder();
+    let tries = 0;
+    replies.data_folder_use_existing = async ({ confirmed }) => {
+      tries++;
+      if (!confirmed) throw new Error('CANNOT_TELL: This drive cannot tell whether Manga Cleaner is open.');
+      await mkdir(target, { recursive: true });
+      status = ok(root, true);
+      return { schema: 1, path: root, folderId: 'f1' };
+    };
+    await useExistingFolder(root, { confirm: async () => true });
+    expect(tries).toBe(2);
+    await expect(useExistingFolder(root, { confirm: async () => false })).rejects.toThrow('Nothing was moved.');
   });
 });
