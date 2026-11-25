@@ -1009,7 +1009,6 @@ mod tests {
             language: Language::Eng,
             score: 0.45,
             kind: Some("bubble".into()),
-            ..Default::default()
         };
         let regions = [[100, 100, 280, 220], [300, 100, 480, 220]];
         let out = split_by_regions(vec![blk], &regions, 800, "ja");

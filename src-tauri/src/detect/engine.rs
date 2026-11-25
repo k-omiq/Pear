@@ -302,6 +302,7 @@ impl DetectEngine {
     }
 
     /// Runs page analysis on a blocking thread, loading models as needed.
+    #[allow(clippy::too_many_arguments)]
     fn analyze_blocking(
         &self,
         bytes: &[u8],
@@ -395,8 +396,8 @@ impl DetectEngine {
         if recovered {
             return Err("the detection engine panicked earlier and has been reset; try again".to_string());
         }
-        if !s.ocr.contains_key(&model) {
-            s.ocr.insert(model, load_recognizer(dir, model)?);
+        if let std::collections::hash_map::Entry::Vacant(e) = s.ocr.entry(model) {
+            e.insert(load_recognizer(dir, model)?);
         }
         let recognizer = s.ocr.get_mut(&model).expect("loaded above");
         recognizer
@@ -685,6 +686,7 @@ pub fn cache_clear(models_dir: &Path) -> CacheClear {
 // ---------------------------------------------------------------------------
 
 /// Detect text blocks (+ optional OCR) and panels on one page.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn detect_analyze(
     state: tauri::State<'_, DetectEngine>,

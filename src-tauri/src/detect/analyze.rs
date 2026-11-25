@@ -275,6 +275,7 @@ fn recognize_blocks(
 }
 
 /// Detect, read, and order text and panels on one page.
+#[allow(clippy::too_many_arguments)]
 pub fn analyze(
     img: &DynamicImage,
     detector: &mut TextDetector,

@@ -89,7 +89,7 @@ impl Scorer {
         let Some(oracle) = self.oracle.as_ref() else {
             // Nothing to grade against: take the largest reading.
             // `map_or` rather than `is_none_or`: the crate's declared MSRV is 1.77.
-            let bigger = self.best.as_ref().map_or(true, |b| img.len() > b.len());
+            let bigger = self.best.as_ref().is_none_or(|b| img.len() > b.len());
             if bigger {
                 self.best = Some(img);
                 self.best_inverted = false;
@@ -103,7 +103,7 @@ impl Scorer {
         let flipped = diff(&small, oracle, true);
         let (d, inverted) =
             if flipped < straight { (flipped, true) } else { (straight, false) };
-        if self.best_diff.map_or(true, |b| d < b) {
+        if self.best_diff.is_none_or(|b| d < b) {
             self.best = Some(img);
             self.best_diff = Some(d);
             self.best_inverted = inverted;

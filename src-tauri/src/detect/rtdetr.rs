@@ -223,6 +223,7 @@ fn preprocess(image: &DynamicImage) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode(
     label_shape: &[i64],
     labels: &[i64],

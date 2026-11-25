@@ -8,7 +8,26 @@ fn main() {
     // `gpu-libs/`. On a clean checkout that directory does not exist yet, so
     // resolving before staging fails the build outright.
     stage_gpu_libs();
-    tauri_build::build();
+    tauri_build::try_build(windows_manifest(tauri_build::Attributes::new())).expect("tauri-build failed");
+}
+
+/// The Windows app manifest (Common Controls 6), embedded by the linker in
+/// every binary this package links rather than by tauri-build's resource file,
+/// which reaches only the app. A `cargo test` binary without it gets Common
+/// Controls 5, which lacks entry points Tauri imports, and Windows refuses to
+/// start it: 0xC0000139 (STATUS_ENTRYPOINT_NOT_FOUND) before any test runs.
+/// The file is tauri-build's own default manifest.
+fn windows_manifest(attrs: tauri_build::Attributes) -> tauri_build::Attributes {
+    let msvc = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if !msvc {
+        return attrs;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("windows-app-manifest.xml");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    attrs.windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest())
 }
 
 /// ONNX Runtime's GPU execution providers are shared libraries the bundle has
@@ -214,7 +233,7 @@ fn stage_vc_runtime(bin: &Path, fatal: bool) {
     }
     let missing: Vec<_> = NEEDED.iter().filter(|n| !copied.iter().any(|c| c == *n)).collect();
     if !missing.is_empty() {
-        return fail(format!("{} has no {missing:?}", crt.display()));
+        fail(format!("{} has no {missing:?}", crt.display()));
     }
 }
 
@@ -249,7 +268,7 @@ fn find_vc_crt_dir(arch: &str) -> Option<PathBuf> {
         let pinned = fs::read_to_string(vc.join(r"Auxiliary\Build\Microsoft.VCRedistVersion.default.txt"))
             .ok()
             .map(|v| vc.join(r"Redist\MSVC").join(v.trim()));
-        if let Some(dir) = pinned.and_then(&crt_in) {
+        if let Some(dir) = pinned.and_then(crt_in) {
             return Some(dir);
         }
         let mut versions: Vec<(Vec<u32>, PathBuf)> = fs::read_dir(vc.join(r"Redist\MSVC"))

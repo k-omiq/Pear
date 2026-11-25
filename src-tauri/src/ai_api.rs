@@ -205,6 +205,7 @@ pub fn take_text(carry: &mut Vec<u8>, bytes: &[u8]) -> Option<String> {
   (!out.is_empty()).then_some(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn ai_request(
   app: AppHandle,
