@@ -102,7 +102,6 @@ pub fn run() {
       ai_api::ai_abort,
       app_icon::set_theme_icon,
       data_folder::data_folder_status,
-      data_folder::data_folder_recover,
       data_folder::data_folder_inspect,
       data_folder::data_folder_default_root,
       data_folder::data_folder_move_busy,
@@ -121,6 +120,7 @@ pub fn run() {
       handoff::handoff_read,
       handoff::handoff_take,
       handoff::handoff_give_back,
+      handoff::handoff_same,
       handoff::handoff_put_back,
       handoff::handoff_reject,
       handoff::handoff_done

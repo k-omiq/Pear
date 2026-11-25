@@ -88,8 +88,8 @@ Six decisions carry the design:
 
 A cleaner chapter is named everywhere by `(libraryId, projectId, chapterId)`,
 so two libraries (a reinstall, a second machine, "use existing folder") can
-never collide. Cloud attempt journals in the cleaner's app data are tagged with
-the `libraryId` they were made for; recovery skips other libraries' attempts.
+never collide. (Not done in version 1: the cleaner's cloud attempt journals are
+still keyed by chapter id only; see docs/findings.md.)
 
 A page's file hash is not an identity: re-cleaning can replace a page's source
 (`replace_source`) and change its hash and size.
@@ -149,39 +149,77 @@ no chapter open, no job running and (Pear) no agent window editing.
    as a `..` chain. Moving the library breaks that chain, and the export's
    "never overwrite the raws" guard and the `_cleaned` folder would then point
    at the wrong place. Under each job lock, every such path that leaves the
-   library is rewritten as absolute. Paths inside the library stay relative.
-   (Done once; idempotent; a test moves a library and then exports.)
+   tree being moved (the legacy library for a setup, the whole data folder for
+   a move) is rewritten as absolute. Paths inside it stay relative.
+   (Idempotent; a test moves a library and then exports.)
 2. **Cloud placeholders.** Files that are only in the cloud (macOS
    `SF_DATALESS`, Windows `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`) are
    listed; the move refuses until they are downloaded, and says how many.
 3. **Free space**: the target volume needs the tree's size (counting each
    hard-linked file once) plus 5 percent.
 
-**The move**, journaled in `move-journal.json`
-(`{schema, kind, from, to, startedAt, phase}`):
+**The journal.** Both apps write and read the same file,
+`<state dir>/MangaLibrary/move-journal.json`, so either app can finish a move
+the other one started:
 
-1. Phase `copying`. Same volume: one `rename`, then go to step 4.
-2. Other volume: copy into `<to>.partial`:
+```json
+{
+  "schema": 1,
+  "app": "manga-cleaner" | "pear",
+  "kind": "setup" | "move",
+  "method": "rename" | "copy",
+  "from": "<abs>",
+  "to": "<abs>",
+  "pointerFile": "<abs path of the pointer to write>",
+  "pointer": { "path": "<abs>", "folderId": "<uuid>" },
+  "startedAt": "<RFC 3339>",
+  "phase": "copying" | "copied" | "switched"
+}
+```
+
+`kind` is `setup` when only one app's own library moves into `<root>/<App>/`
+(a first setup or an adopt), `move` when the whole data folder moves.
+
+**The move:**
+
+1. Write the journal: phase `copying`, method `rename`.
+2. Try one `rename(from, to)`. It worked: go to step 5.
+3. It failed across volumes: rewrite the journal with method `copy` **before**
+   anything is copied. Copy into `<to>.partial`:
    - hard links kept: a file whose (device, inode) was already copied is
      linked to its first copy;
    - symlinks copied as symlinks;
    - every file and folder fsynced.
-3. Verify: same relative paths, sizes and link groups; the cleaner also checks
+4. Verify: same relative paths, sizes and link groups; the cleaner also checks
    every page against the sha256 in its manifests. Rename `<to>.partial` to
-   `<to>`. Phase `copied`.
-4. Write the pointer. Phase `switched`.
-5. Cross-volume only: rename the old tree to `<from>.moved-<date>`. It is
-   deleted only when the user says so in Settings ("Old copy at X, 9.2 GB.
-   Delete it?"), after the app has started at the new place.
-6. Remove the journal.
+   `<to>`.
+5. Phase `copied`. Write the pointer. Phase `switched`.
+6. Method `copy` only: rename the old tree to `<from>.moved-<date>`. It is
+   deleted only when the user says so in Settings, after the app has started
+   at the new place. Delete refuses any path that is, holds, or sits inside
+   the live data folder or a library, or whose marker has the live `folderId`.
+7. Remove the journal.
 
-**Recovery** at every start, before anything else, under `move.lock`:
-- `copying`: delete `<to>.partial`, remove the journal. Data is whole at
-  `from`.
-- `copied`: write the pointer if it is not written yet, then as `switched`.
-- `switched`: finish step 5 and 6.
-- A same-volume rename either happened or did not; the pointer write after it
-  is redone from the journal.
+**Recovery**, run by either app at start and again at every status check,
+under `move.lock`:
+
+- A journal that does not parse, or has an unknown schema: leave it alone,
+  never delete it, and stay Unavailable ("An unfinished move needs a newer
+  version").
+- `kind` `move` while the other app holds its lock in `from` or `to`: do
+  nothing yet, stay Unavailable ("Close the other app to finish the move").
+- `copying`, method `rename`: `to` there and `from` gone means the rename
+  happened, so go on as `copied`. Otherwise nothing moved: remove the journal.
+- `copying`, method `copy`: delete `<to>.partial`, and delete `to` if it is
+  there (step 3 started from an absent or empty `to`, so anything there is
+  this move's own finished copy). Remove the journal. Data is whole at `from`.
+- `copied`: write the pointer, then as `switched`.
+- `switched`: method `copy` and `from` still there: set it aside (step 6).
+  Remove the journal.
+
+**While a journal exists, both apps are Unavailable.** No app opens a library
+at `from` or `to` until the journal is gone, so no edit lands in a tree that
+recovery is about to set aside.
 
 **Setup from Legacy** moves only this app's own data into `<root>/<App>/`,
 creates the marker (with a new `folderId`) if missing, then writes the
@@ -366,6 +404,13 @@ page and writes the message. Setting `saveCleanedTo`:
 - When a re-cleaned page brings a new raw, Pear keeps the old raw on disk.
 - Every file move in `handoff/` is done by Rust on both sides (dot names are
   outside Pear's JS file scope).
+
+- A Save with a cleaned page whose bytes equal the one Pear already has does
+  not replace it (no churn in `logs/previous-cleaned`).
+- The cleaner deletes its own `.staging-*` and `.stale-*` folders older than
+  one hour before each Save. Pear never reads them.
+- Raws are hard-linked only when the cleaner's page file is inside the data
+  folder; a legacy chapter that still reads the user's scan file is copied.
 
 ## 12. Later, not in version 1
 
