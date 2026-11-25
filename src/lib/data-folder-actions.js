@@ -6,6 +6,7 @@
 // went. The changes themselves are data-folder.svelte.js.
 
 import { toast, toastError } from './store.svelte.js';
+import { library } from './library.svelte.js';
 import {
   dataFolder,
   rootForPick,
@@ -15,6 +16,7 @@ import {
   moveLibraryIntoShared,
   moveDataFolder,
   useExistingFolder,
+  useSharedLibrary,
   deleteOldCopy,
   oldCopySize,
 } from './data-folder.svelte.js';
@@ -41,8 +43,10 @@ async function warnIfSynced(info) {
   return ask(`${info.syncWarning}\n\nUse this folder anyway?`, 'Use it');
 }
 
+const BOTH = 'BOTH_LIBRARIES:';
+
 function report(e, what) {
-  const msg = String(e?.message ?? e);
+  const msg = String(e?.message ?? e).replace(BOTH, '').trim();
   if (msg === 'Nothing was moved.') return;
   toastError(`${what}: ${msg}`);
 }
@@ -66,13 +70,32 @@ export async function pickAndSetUp() {
   }
 }
 
-// Pending mode: "Move your library into the shared folder".
+// Pending mode: "Move your library into the shared folder". When the shared
+// folder has a library of this app already, the user is asked to use that
+// one instead; this app's old library then stays where it is, untouched.
 export async function adoptNow() {
   try {
     const r = await moveLibraryIntoShared({ confirm: confirmClosed });
     toast(`Your library is now in the shared folder.${moved(r)}`);
   } catch (e) {
-    report(e, 'Could not move your library');
+    if (!String(e?.message ?? e).startsWith(BOTH)) return report(e, 'Could not move your library');
+    await useSharedNow();
+  }
+}
+
+// Pending mode with two libraries: use the one in the shared folder.
+export async function useSharedNow() {
+  const old = library.root;
+  try {
+    const yes = await ask(
+      `The shared folder already has a typesetter library, from another computer or an earlier setup. Use that one?\n\nYour library at ${old} stays where it is, untouched. You can still open its chapters from there later.`,
+      'Use the shared library',
+    );
+    if (!yes) return;
+    await useSharedLibrary();
+    toast(`Now using the library in the shared folder. Your old library is still at ${old}.`);
+  } catch (e) {
+    report(e, 'Could not use the shared library');
   }
 }
 
@@ -84,7 +107,9 @@ export async function pickAndMove() {
     const { root, info } = await rootForPick(picked);
     if (info.marker) {
       const use = await ask(`${root} is already a data folder. Use it instead? Nothing is moved.`, 'Use it');
-      if (use) await useExistingFolder(root);
+      if (!use) return;
+      await useExistingFolder(root, { confirm: confirmClosed });
+      toast(`Using the data folder at ${root}.`);
       return;
     }
     if (!(await warnIfSynced(info))) return;
@@ -105,7 +130,7 @@ export async function pickExisting() {
       toastError('That folder is not a shared data folder (it has no manga-library.json).');
       return;
     }
-    await useExistingFolder(picked);
+    await useExistingFolder(picked, { confirm: confirmClosed });
     toast(`Using the data folder at ${picked}.`);
   } catch (e) {
     report(e, 'Could not use that folder');
@@ -120,7 +145,8 @@ export async function pickInstead() {
     if (!picked) return;
     const { root, info } = await rootForPick(picked);
     if (info.marker) {
-      await useExistingFolder(root);
+      await useExistingFolder(root, { confirm: confirmClosed });
+      toast(`Using the data folder at ${root}.`);
       return;
     }
     const make = await ask(`Make a new, empty data folder at ${root}? Your library at the old place is not touched.`, 'Make it');

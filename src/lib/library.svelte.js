@@ -2667,7 +2667,16 @@ let loadedRef = null;
 // claims it first, and a refusal changes nothing here - the chapter on screen
 // stays. Whatever the open came to, the window then says which chapters it
 // holds, so a superseded or failed open lets its claim go.
+// Why no chapter may open now ('' when one may): the data folder module says
+// so while a move or a switch runs.
+let openGate = () => '';
+export function setOpenGate(fn) {
+  openGate = typeof fn === 'function' ? fn : () => '';
+}
+
 export async function openChapter(projectId, chapterId) {
+  const why = openGate();
+  if (why) throw new Error(why);
   const key = chapterKey(projectId, chapterId);
   // Held from before the claim to the end of the open, so a sync made by any
   // other open meanwhile keeps this one's claim.

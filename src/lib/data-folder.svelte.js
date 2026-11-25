@@ -17,7 +17,7 @@
 //                created. Recovery runs in Rust at every status check.
 
 import { fsx } from './fsx.js';
-import { library, setRoot, setRootMustExist, scanLibrary } from './library.svelte.js';
+import { library, setRoot, setRootMustExist, scanLibrary, setOpenGate } from './library.svelte.js';
 import { app } from './store.svelte.js';
 import { jobs } from './jobs.svelte.js';
 import { chapterWindows, windowRole } from './agent/windows.js';
@@ -270,9 +270,13 @@ async function withConfirm(run, confirm) {
   }
 }
 
+// No chapter opens while the library is being moved or switched.
+const openGate = () => (dataFolder.busy ? 'The data folder is being moved. Wait for it to finish.' : '');
+
 async function busyWith(fn) {
   const why = await whyNotNow();
   if (why) throw new Error(why);
+  setOpenGate(openGate);
   dataFolder.busy = true;
   try {
     return await fn();
