@@ -10,7 +10,7 @@ lettering for scanlation, without Photoshop
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-111?logo=apple&logoColor=white)](#install)
 [![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4?logo=windows&logoColor=white)](#install)
 [![Linux](https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-FCC624?logo=linux&logoColor=black)](#install)
-[![latest](https://img.shields.io/badge/latest-v0.4.1-E8A33D)](https://typesetter.komiq.cc)
+[![latest](https://img.shields.io/badge/latest-v0.5.0-E8A33D)](https://typesetter.komiq.cc)
 [![license](https://img.shields.io/badge/license-MIT-6E8CBF)](LICENSE.md)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/vhuYWbZNX5)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/komiq)
