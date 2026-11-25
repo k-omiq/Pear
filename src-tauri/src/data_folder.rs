@@ -646,6 +646,66 @@ fn walk(root: &Path, rel: &Path, tree: &mut Tree, seen: &mut std::collections::H
     Ok(())
 }
 
+/// Whether `dir` can hold hard links. exFAT, FAT and some network shares
+/// cannot: there a linked file is copied once per name (contract R4: raws are
+/// then stored twice, never lost).
+fn links_work(dir: &Path) -> bool {
+    let (a, b) = (dir.join(".link-probe"), dir.join(".link-probe-2"));
+    let ok = std::fs::write(&a, b"").is_ok() && std::fs::hard_link(&a, &b).is_ok();
+    let _ = std::fs::remove_file(&b);
+    let _ = std::fs::remove_file(&a);
+    ok
+}
+
+/// The smallest unit the volume holding `path` gives a file, so the space
+/// check counts each file rounded up to it: exFAT clusters reach 128 KB, and a
+/// library of small files then needs far more than its byte total.
+#[cfg(unix)]
+fn cluster_size(path: &Path) -> u64 {
+    use std::os::unix::ffi::OsStrExt;
+    let mut p = path;
+    while !p.exists() {
+        match p.parent() {
+            Some(parent) => p = parent,
+            None => return 4096,
+        }
+    }
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return 4096 };
+    // SAFETY: an all-zero statvfs is a valid out value, and `c` is a valid C
+    // string for the whole call.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return 4096;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    (st.f_frsize as u64).clamp(512, 1 << 20)
+}
+
+#[cfg(not(unix))]
+fn cluster_size(_path: &Path) -> u64 {
+    4096
+}
+
+/// macOS keeps extended attributes on exFAT and FAT as `._<name>` files
+/// beside each file it writes. They are not part of the library, so the
+/// copy check leaves them out on both sides.
+fn apple_double(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("._"))
+}
+
+impl Tree {
+    /// What a copy takes at the new place: each file rounded up to the
+    /// volume's cluster, a hard-linked file once where links work.
+    fn copy_bytes(&self, links: bool, cluster: u64) -> u64 {
+        let mut seen = std::collections::HashSet::new();
+        self.items
+            .iter()
+            .filter(|i| i.kind == Kind::File && (!links || i.link.is_none_or(|k| seen.insert(k))))
+            .map(|i| i.size.div_ceil(cluster) * cluster)
+            .sum()
+    }
+}
+
 pub fn scan_tree(root: &Path, dataless: Dataless) -> Result<Tree, String> {
     let mut tree = Tree { items: Vec::new(), bytes: 0, dataless: 0 };
     let mut seen = std::collections::HashSet::new();
@@ -679,7 +739,7 @@ pub fn free_space(path: &Path) -> Option<u64> {
     }
 }
 
-fn copy_tree(from: &Path, to: &Path, tree: &Tree) -> Result<(), String> {
+fn copy_tree(from: &Path, to: &Path, tree: &Tree, links: bool) -> Result<(), String> {
     fs::create_dir_all(to).map_err(|e| format!("Could not create {}: {e}", to.display()))?;
     let mut first: HashMap<(u64, u64), PathBuf> = HashMap::new();
     let mut dirs = vec![to.to_path_buf()];
@@ -706,7 +766,7 @@ fn copy_tree(from: &Path, to: &Path, tree: &Tree) -> Result<(), String> {
                 }
             }
             Kind::File => {
-                if let Some(key) = item.link {
+                if let Some(key) = item.link.filter(|_| links) {
                     if let Some(prev) = first.get(&key) {
                         fs::hard_link(prev, &dst).map_err(|e| format!("Could not link {}: {e}", dst.display()))?;
                         continue;
@@ -725,22 +785,24 @@ fn copy_tree(from: &Path, to: &Path, tree: &Tree) -> Result<(), String> {
     Ok(())
 }
 
-/// Same relative paths, sizes and hard-link groups, or the copy is not
-/// trusted.
-fn verify_copy(original: &Tree, copy: &Path) -> Result<(), String> {
+/// Same relative paths, sizes and hard-link groups (where the new place has
+/// links), or the copy is not trusted.
+fn verify_copy(original: &Tree, copy: &Path, links: bool) -> Result<(), String> {
     let found = scan_tree(copy, &|_| false)?;
-    if found.items.len() != original.items.len() {
-        return Err(format!("The copy has {} items, the original {}", found.items.len(), original.items.len()));
+    let kept = |t: &Tree| t.items.iter().filter(|i| !apple_double(&i.rel)).cloned().collect::<Vec<_>>();
+    let (original_items, found_items) = (kept(original), kept(&found));
+    if found_items.len() != original_items.len() {
+        return Err(format!("The copy has {} items, the original {}", found_items.len(), original_items.len()));
     }
     let mut groups: HashMap<(u64, u64), Option<(u64, u64)>> = HashMap::new();
-    for (a, b) in original.items.iter().zip(found.items.iter()) {
+    for (a, b) in original_items.iter().zip(found_items.iter()) {
         if a.rel != b.rel || a.kind != b.kind {
             return Err(format!("The copy differs at {}", a.rel.display()));
         }
         if a.kind == Kind::File && a.size != b.size {
             return Err(format!("{} has a different size in the copy", a.rel.display()));
         }
-        if let Some(k) = a.link {
+        if let Some(k) = a.link.filter(|_| links) {
             match groups.get(&k) {
                 None => {
                     groups.insert(k, b.link);
@@ -1069,8 +1131,13 @@ pub fn run_move(paths: &Paths, kind: &str, from: &Path, to: &Path, pointer: Poin
         }
     }
 
+    if let Err(e) = fs::create_dir_all(&partial) {
+        return undo(format!("Could not create {}: {e}", partial.display()));
+    }
+    let links = links_work(&partial);
     if let Some(free) = (opts.free_space)(parent) {
-        let need = tree.bytes + tree.bytes / 20;
+        let need = tree.copy_bytes(links, cluster_size(&partial));
+        let need = need + need / 20;
         if free < need {
             return undo(format!(
                 "Not enough space: the move needs {} MB and the drive has {} MB free.",
@@ -1079,7 +1146,7 @@ pub fn run_move(paths: &Paths, kind: &str, from: &Path, to: &Path, pointer: Poin
             ));
         }
     }
-    if let Err(e) = copy_tree(from, &partial, &tree).and_then(|_| verify_copy(&tree, &partial)) {
+    if let Err(e) = copy_tree(from, &partial, &tree, links).and_then(|_| verify_copy(&tree, &partial, links)) {
         return undo(e);
     }
     (opts.before_switch)();
@@ -1756,6 +1823,28 @@ pub mod tests {
         // Using the shared one leaves the old library where it is.
         assert_eq!(adopt(&paths, None, &MoveOpts::default()).unwrap().method, "none");
         assert_tree(&legacy);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_copy_without_links_copies_each_name_and_skips_apple_double_files() {
+        let d = scratch("nolinks");
+        let from = d.join("old");
+        library_tree(&from);
+        let raw = from.join("Series").join("001").join("raws").join("001.png");
+        fs::hard_link(&raw, from.join("page.png")).unwrap();
+        let tree = scan_tree(&from, &|_| false).unwrap();
+        let to = d.join("new");
+        copy_tree(&from, &to, &tree, false).unwrap();
+        let page = to.join("page.png");
+        assert_eq!(fs::read(&page).unwrap(), fs::read(&raw).unwrap());
+        assert!(link_key(&page, &fs::metadata(&page).unwrap()).is_none(), "copied, not linked");
+        // What macOS leaves on exFAT: not part of the library.
+        fs::write(to.join("._page.png"), b"xattrs").unwrap();
+        verify_copy(&tree, &to, false).unwrap();
+        assert!(verify_copy(&tree, &to, true).is_err(), "where links work, a lost link is refused");
+        assert!(tree.copy_bytes(false, 4096) > tree.copy_bytes(true, 4096), "each name is counted");
+        assert_eq!(tree.copy_bytes(true, 1 << 17) % (1 << 17), 0, "rounded to the cluster");
         fs::remove_dir_all(d).unwrap();
     }
 
