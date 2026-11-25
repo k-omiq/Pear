@@ -1,0 +1,7 @@
+# Every text file is checked out with LF, on Windows too. Tests compare text
+# fixtures byte for byte, and Node scripts start with a #! line, so a CRLF
+# checkout made the Windows CI fail where Linux and macOS passed.
+* text=auto eol=lf
+
+# Kept exactly as published (it mixes line endings).
+src/test/fonts/OFL-Bangers.txt -text

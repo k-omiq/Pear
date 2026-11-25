@@ -120,7 +120,7 @@ Updates arrive inside the app.
 
 ## Build from source
 
-You need [Node](https://nodejs.org) 20+ and [Rust](https://rustup.rs) (see
+You need [Node](https://nodejs.org) 26 and [Rust](https://rustup.rs) (see
 the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)).
 
 ```sh
