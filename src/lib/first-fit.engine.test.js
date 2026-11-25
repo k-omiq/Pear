@@ -154,11 +154,12 @@ const fontLibrary = fakeIndexedDB();
 const chapterFile = () => join(c.dir, 'chapter.json');
 const record = async () => JSON.parse(await readFile(chapterFile(), 'utf8'));
 // Every file under the chapter, by content: what an open may not change.
+// Keyed by its path inside the chapter with forward slashes on every platform.
 async function digest(dir = c.dir, out = {}) {
   for (const e of await readdir(dir, { withFileTypes: true })) {
     const at = join(dir, e.name);
     if (e.isDirectory()) await digest(at, out);
-    else out[at.slice(c.dir.length)] = createHash('sha256').update(await readFile(at)).digest('hex');
+    else out[at.slice(c.dir.length).replaceAll('\\', '/')] = createHash('sha256').update(await readFile(at)).digest('hex');
   }
   return out;
 }

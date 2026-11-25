@@ -795,7 +795,10 @@ describe('boxInkRect is the ink the exporter paints', () => {
   const EFFECTS = [
     ['a blur', 'WAVE', { blur: 4, strokeEffects: [] }, 1.5 * 4],
     ['a smear along x', 'WAVE', { strokeEffects: [], motionBlur: { on: true, x: 2, y: 0, amount: 4 } }, 0],
-    ['a diagonal smear', 'WAVE', { strokeEffects: [], motionBlur: { on: true, x: 1, y: -1.5, amount: 3 } }, 0],
+    // A smear's outermost copies are a hundredth of full strength. Skia on
+    // x64 rounds the faint edge of one up to a level where ARM rounds it to
+    // nothing, so its ink reaches one supersample row (half a pixel) further.
+    ['a diagonal smear', 'WAVE', { strokeEffects: [], motionBlur: { on: true, x: 1, y: -1.5, amount: 3 } }, 0, 0.5],
     ['a crumple', 'WAVE', { strokeEffects: [], roughen: { on: true, amount: 8, detail: 0.05, seed: 7 } }, 8 / 2],
     [
       'an include mask',
@@ -826,7 +829,7 @@ describe('boxInkRect is the ink the exporter paints', () => {
     ['a perspective drag', 'WAVE', { strokeEffects: [], warp: PERSPECTIVE }, 0],
   ];
 
-  it.each(EFFECTS)('%s', (label, text, extra, loose) => {
+  it.each(EFFECTS)('%s', (label, text, extra, loose, spill = 0) => {
     loadProjectPages([
       {
         id: 1,
@@ -845,7 +848,7 @@ describe('boxInkRect is the ink the exporter paints', () => {
     for (const k of ['x0', 'y0', 'x1', 'y1']) {
       const missed = k.endsWith('0') ? want[k] - got[k] : got[k] - want[k];
       const msg = `${k}: raster ${got[k]} vs check ${want[k]}`;
-      expect(missed, msg).toBeLessThanOrEqual(SLACK);
+      expect(missed, msg).toBeLessThanOrEqual(SLACK + spill);
       expect(-missed, msg).toBeLessThanOrEqual(SLACK + ROUNDED_OUT + loose);
     }
   });

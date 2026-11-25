@@ -142,13 +142,18 @@ describe('each pass is the picture the canvas made', () => {
   // canvas adds its copies in eight bits, each rounded, and a copy at a
   // hundredth of full strength that is also shared between four pixels
   // rounds to nothing along every edge; the engine sums them first.
+  //
+  // How those eight-bit copies round depends on the CPU Skia runs on, not on
+  // the engine: the plain smear is within 0.4 of a level on ARM and 2.6 on
+  // x64, the slanted one 2.6 on ARM and 1.1 on x64 (CI, 2026-11). The smears
+  // are held to the wider of the two, and may hold a little less ink.
   const CASES = {
     'a hard shadow': [{ shadows: [{ ...SHADOW, blur: 0 }] }, 2, 32],
     'a soft shadow': [{ shadows: [SHADOW] }, 2, 16],
     'two shadows over an outline': [{ strokes: [{ color: '#ffffff', width: 3, opacity: 1 }], shadows: [{ ...SHADOW, blur: 0 }, { x: 10, y: 10, blur: 8, color: '#000000', opacity: 0.5 }] }, 1.5, 28],
     'a blur': [{ blur: 2 }, 4, 20],
-    'a smear': [{ motionBlur: { on: true, x: 2, y: 0, amount: 8 } }, 1, 8],
-    'a smear on a slant': [{ motionBlur: { on: true, x: 1.5, y: -1, amount: 12 } }, 3.5, 16, 1.09],
+    'a smear': [{ motionBlur: { on: true, x: 2, y: 0, amount: 8 } }, 3, 16, 1.03, 0.95],
+    'a smear on a slant': [{ motionBlur: { on: true, x: 1.5, y: -1, amount: 12 } }, 3.5, 16, 1.09, 0.95],
     'a mask that keeps': [{ clip: { on: true, mode: 'include', shapes: [{ kind: 'ellipse', cx: 130, cy: 65, rx: 90, ry: 40 }] } }, 1.2, 72],
     'a mask that cuts, drawn with the brush': [{ clip: { on: true, mode: 'exclude', shapes: [{ kind: 'stroke', size: 16, pts: [[20, 20], [120, 70], [240, 40]] }, { kind: 'stroke', size: 20, pts: [[60, 100]] }, { kind: 'poly', pts: [[180, 80], [250, 85], [220, 125]] }] } }, 1, 72],
     // Not the smear with them: @napi-rs/canvas loses a blurred canvas that
@@ -163,18 +168,19 @@ describe('each pass is the picture the canvas made', () => {
   // are not whole, so the three shadow cases are held at the scales where
   // they are, and the rounding on its own below.
   const WHOLE_SCALES = new Set(['a hard shadow', 'a soft shadow', 'two shadows over an outline']);
-  for (const [name, [over, mean, worst, inkMost = 1.03]] of Object.entries(CASES)) {
+  for (const [name, [over, mean, worst, inkMost = 1.03, inkLeast = 0.97]] of Object.entries(CASES)) {
     it(name, () => {
       for (const scale of WHOLE_SCALES.has(name) ? [1, 2] : [1, 2, 2.74]) {
         const a = texture(boxOf(over), whole, scale);
         const b = texture(boxOf(over), canvasPasses, scale);
         expect([a.ox, a.oy, a.cw, a.ch]).toEqual([b.ox, b.oy, b.cw, b.ch]);
         const d = against(a.img, b.img);
-        expect(d.n, `scale ${scale}`).toBeGreaterThan(500);
-        expect(d.mean, `scale ${scale}: mean`).toBeLessThan(mean);
-        expect(d.worst, `scale ${scale}: worst`).toBeLessThan(worst);
-        expect(d.ink, `scale ${scale}: ink`).toBeGreaterThan(0.97);
-        expect(d.ink, `scale ${scale}: ink`).toBeLessThan(inkMost);
+        // Soft, so a failure reports every scale and not just the first.
+        expect.soft(d.n, `scale ${scale}`).toBeGreaterThan(500);
+        expect.soft(d.mean, `scale ${scale}: mean`).toBeLessThan(mean);
+        expect.soft(d.worst, `scale ${scale}: worst`).toBeLessThan(worst);
+        expect.soft(d.ink, `scale ${scale}: ink`).toBeGreaterThan(inkLeast);
+        expect.soft(d.ink, `scale ${scale}: ink`).toBeLessThan(inkMost);
       }
     });
   }
@@ -409,11 +415,13 @@ describe('a turned box on the page', () => {
         const a = layer(box, whole, scale);
         const b = layer(box, canvasPasses, scale);
         // Within two pixels on every side: the old one was a resample.
-        for (const k of ['left', 'top', 'right', 'bottom']) expect(Math.abs(a[k] - b[k]), `${k} at ${scale}`).toBeLessThanOrEqual(3 * scale);
+        for (const k of ['left', 'top', 'right', 'bottom']) expect.soft(Math.abs(a[k] - b[k]), `${k} at ${scale}`).toBeLessThanOrEqual(3 * scale);
         const d = against(onPage(a, 600 * scale, 400 * scale), onPage(b, 600 * scale, 400 * scale));
-        expect(d.ink, `ink at ${scale}`).toBeGreaterThan(0.95);
-        expect(d.ink, `ink at ${scale}`).toBeLessThan(1.05);
-        expect(d.mean, `mean at ${scale}`).toBeLessThan(12);
+        // A smear is the canvas's eight-bit copies again (see the cases
+        // above): on x64 the turned one holds 0.937 of the engine's ink.
+        expect.soft(d.ink, `ink at ${scale}`).toBeGreaterThan(over.motionBlur ? 0.92 : 0.95);
+        expect.soft(d.ink, `ink at ${scale}`).toBeLessThan(1.05);
+        expect.soft(d.mean, `mean at ${scale}`).toBeLessThan(12);
       }
     });
   }

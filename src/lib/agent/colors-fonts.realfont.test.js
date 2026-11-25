@@ -89,7 +89,9 @@ describe('renderFontSheet (real canvas)', () => {
     { n: 1, name: 'Comic Neue', css: "'Comic Neue', cursive", missing: false },
     { n: 2, name: 'Bangers', css: "'Bangers', cursive", missing: false },
     { n: 3, name: 'DejaVu Sans', css: "'DejaVu Sans', sans-serif", missing: false },
-    { n: 4, name: 'Ghost', css: "'Ghost', sans-serif", missing: true },
+    // A missing face draws in its fallback. Named, not left to the generic
+    // `sans-serif`, which Skia resolves to nothing on a Linux runner.
+    { n: 4, name: 'Ghost', css: "'Ghost', 'DejaVu Sans', sans-serif", missing: true },
   ];
 
   it('draws a sheet of the layout size with every sample inked, each face its own', async () => {

@@ -409,8 +409,12 @@ function resetHand() {
 // its own 800ms persistence timer; only its immediate, positively observed
 // setter is excluded. Missing, unfamiliar and similarly named origins stay
 // conservative, including every unrecognized save/Keep-duration timer.
+// The frame that called setTimeout or clearTimeout, with Windows' backslashes
+// turned into slashes so one pattern reads a stack from every platform.
+const callerFrame = (stack) => (stack?.split('\n')[2]?.trim() ?? '').replaceAll('\\', '/');
+
 function timerSource(ms, setterStack) {
-  const caller = setterStack?.split('\n')[2]?.trim() ?? '';
+  const caller = callerFrame(setterStack);
   if (ms === DOC_SAVE_MS && /^at schedule \(.*\/src\/lib\/editor\/history-file\.svelte\.js:\d+:\d+\)$/.test(caller)) return 'history';
   if (ms === DOC_SAVE_MS && /^at markUnsaved \(.*\/src\/lib\/store\.svelte\.js:\d+:\d+\)$/.test(caller)) return 'document';
   if (ms === KEEP_WAIT_MS && /^at keepFirstFit \(.*\/src\/lib\/store\.svelte\.js:\d+:\d+\)$/.test(caller)) return 'keep';
@@ -456,7 +460,7 @@ beforeAll(async () => {
     const observed = state.timers.get(id);
     // One actual clearer stack, captured before the original clear call.
     const clearerStack = observed ? new Error('observed timer clear').stack : null;
-    const clearerCaller = clearerStack?.split('\n')[2]?.trim() ?? '';
+    const clearerCaller = callerFrame(clearerStack);
     const clearerSource = /^at (markSaved|flushSave|markUnsaved) \(.*\/src\/lib\/store\.svelte\.js:\d+:\d+\)$/.exec(clearerCaller)?.[1] ?? 'unknown';
     const context = saverObserver.scope?.getStore();
     const invocation = saverObserver.invocationScope?.getStore();

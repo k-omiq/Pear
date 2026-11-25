@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { guardedPath, requestPath, createCollector } from '../../../scripts/text-port/collector.mjs';
 
 describe('collector path guard', () => {
   it('accepts only data-serving and run-upload routes', () => {
-    expect(requestPath('/tmp/tp', 'GET', '/fonts/fonts.json')).toBe('/tmp/tp/fonts/fonts.json');
-    expect(requestPath('/tmp/tp', 'GET', '/corpus/layout.json')).toBe('/tmp/tp/corpus/layout.json');
-    expect(requestPath('/tmp/tp', 'PUT', '/runs/ref-cr/a/png/p.a.png?append=1')).toBe('/tmp/tp/runs/ref-cr/a/png/p.a.png');
+    // As the platform spells the path (D:\tmp\tp\... on Windows).
+    expect(requestPath('/tmp/tp', 'GET', '/fonts/fonts.json')).toBe(resolve('/tmp/tp/fonts/fonts.json'));
+    expect(requestPath('/tmp/tp', 'GET', '/corpus/layout.json')).toBe(resolve('/tmp/tp/corpus/layout.json'));
+    expect(requestPath('/tmp/tp', 'PUT', '/runs/ref-cr/a/png/p.a.png?append=1')).toBe(resolve('/tmp/tp/runs/ref-cr/a/png/p.a.png'));
     expect(() => requestPath('/tmp/tp', 'PUT', '/fonts/font.ttf')).toThrow();
     expect(() => requestPath('/tmp/tp', 'GET', '/runs/ref-cr/a/manifest.json')).toThrow();
   });
@@ -73,7 +74,7 @@ describe('collector runs are written once', () => {
       // A second page starting the same run would empty the file: refused.
       const again = await put('metrics.jsonl', '');
       expect(again.status).toBe(409);
-      expect(await again.text()).toMatch(/already has metrics\.jsonl/);
+      expect(await again.text()).toMatch(/already has \S*metrics\.jsonl/);
       expect((await put('png/p.a.png', 'other')).status).toBe(409);
       expect(readFileSync(join(data, 'runs/ref-cr/a/metrics.jsonl'), 'utf8')).toBe('{"id":"m.a"}\n');
       expect((await put('manifest.json', '{"engine":"ref-cr","runId":"a"}')).status).toBe(204);

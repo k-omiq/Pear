@@ -3,6 +3,13 @@
 // the text it holds. Comments are left out (Svelte's block anchors are not
 // structure) and so is the scoped-style class Svelte adds, which is a hash of
 // the stylesheet and not something a user or a selector of ours can see.
+//
+// Long decimals in attribute values (a letter's place on an arc) are cut to 10
+// significant digits: the last digits of Math.sin and friends differ between
+// x64 and ARM builds of Node, and a snapshot is about structure, not the 17th
+// digit.
+const LONG_DECIMAL = /-?\d+\.\d{8,}/g;
+const roundLong = (v) => v.replace(LONG_DECIMAL, (m) => String(Number(Number(m).toPrecision(10))));
 export function domOutline(node, depth = 0) {
   const out = [];
   const pad = '  '.repeat(depth);
@@ -18,7 +25,7 @@ export function domOutline(node, depth = 0) {
     const classes = [...child.classList].filter((c) => !/^svelte-/.test(c)).join('.');
     const attrs = [...child.attributes]
       .filter((a) => a.name !== 'class')
-      .map((a) => `${a.name}=${JSON.stringify(a.value)}`)
+      .map((a) => `${a.name}=${JSON.stringify(roundLong(a.value))}`)
       .join(' ');
     out.push(`${pad}${child.tagName.toLowerCase()}${classes ? `.${classes}` : ''}${attrs ? ` ${attrs}` : ''}`);
     out.push(...domOutline(child, depth + 1));
