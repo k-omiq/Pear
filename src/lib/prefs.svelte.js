@@ -185,6 +185,11 @@ export const prefs = $state({
   // The source language a new series starts with. The codes are the ones a
   // project stores (`OCR_LANGUAGES` in store.svelte.js).
   defaultOcrLanguage: 'ja',
+  // The Home card that offers the shared data folder once, in Legacy mode
+  // (SHARED_DATA_FOLDER.md section 7, "First run asks once"): 'ask' until
+  // answered, then 'notNow' or 'moved'. Answered, the card does not come
+  // back; Settings > Data folder still offers the setup.
+  dataFolderFirstRun: 'ask',
 });
 
 // One gate for every comic-only tool and word.
@@ -237,6 +242,7 @@ const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['b
   rawView: ['side', 'peek'],
   defaultChapterMode: ['typeset', 'translate'],
   defaultOcrLanguage: ['ja', 'zh', 'ko'],
+  dataFolderFirstRun: ['ask', 'notNow', 'moved'],
 };
 
 // Push the box defaults to where a box is actually born. The store seeds a new
@@ -305,6 +311,7 @@ function persist() {
         usage: prefs.usage,
         defaultChapterMode: prefs.defaultChapterMode,
         defaultOcrLanguage: prefs.defaultOcrLanguage,
+        dataFolderFirstRun: prefs.dataFolderFirstRun,
         // The editor's layouts (layouts.svelte.js): which panes each kind of
         // chapter opens with, and the custom one.
         layouts: snapshotLayouts(),
@@ -518,13 +525,14 @@ function load() {
 // blob once and write all of it back on their next change. Without this, a
 // window that loaded while the setup was open would write back
 // `onboarded: false` and the old usage over what the setup just chose. Only
-// the setup's four are adopted, each checked the way `load` checks it: the
-// rest are this window's own until it writes them. Nothing is persisted
-// here, so two windows cannot echo a change back and forth.
+// the setup's four and the data folder card's answer are adopted, each
+// checked the way `load` checks it: the rest are this window's own until it
+// writes them. Nothing is persisted here, so two windows cannot echo a
+// change back and forth.
 // The Font Library's lists are adopted the same way: the library is a window
 // of its own (font-window.svelte.js), and a family switched on there has to
 // reach the menus of the window the user letters in.
-const SHARED_KEYS = ['onboarded', 'usage', 'defaultChapterMode', 'defaultOcrLanguage'];
+const SHARED_KEYS = ['onboarded', 'usage', 'defaultChapterMode', 'defaultOcrLanguage', 'dataFolderFirstRun'];
 const SHARED_FONT_KEYS = ['hiddenBuiltinFonts', 'shownSystemFonts', 'disabledUserFonts'];
 const sameList = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 export function adoptSharedPrefs(raw) {

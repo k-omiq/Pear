@@ -150,10 +150,19 @@
       if (before?.isConnected) before.focus?.();
     };
   });
-  // A section opens at its top, not at the last one's scroll.
+  // A section opens at its top, not at the last one's scroll, unless a row
+  // was asked for (`openSettings(tab, section)`): then that row.
   $effect(() => {
     tab;
     if (panelEl) panelEl.scrollTop = 0;
+  });
+  $effect(() => {
+    const section = settingsView.section;
+    if (!open || !section || !panelEl) return;
+    tick().then(() => {
+      panelEl?.querySelector(`[data-section="${section}"]`)?.scrollIntoView?.({ block: 'center' });
+      settingsView.section = null;
+    });
   });
 
   const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -749,7 +758,7 @@
 
         <section class="settings-section">
           <h3 class="settings-title">Files</h3>
-          <div class="set-item">
+          <div class="set-item" data-section="data-folder">
             <div class="set-line">
               <span class="set-label">Data folder</span>
               <div class="set-ctl">

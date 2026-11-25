@@ -28,6 +28,9 @@ const OLD_COPIES_KEY = 'mt.oldDataCopies';
 
 export const dataFolder = $state({
   mode: 'legacy',
+  // False until the first status check has decided the mode: the first-run
+  // card waits for it rather than showing for the moment before.
+  checked: false,
   // The data folder the pointer names, or null.
   root: null,
   // Rust's word for the pointer's state ("none", "ok", "missing",
@@ -113,6 +116,7 @@ async function holdsLibrary(dir) {
 
 function enter(mode) {
   dataFolder.mode = mode;
+  dataFolder.checked = true;
   setRootMustExist(mode === 'shared' || mode === 'unavailable');
 }
 
@@ -245,6 +249,15 @@ export async function whyNotNow() {
 async function cleanerBlocker() {
   if (!dataFolder.root || dataFolder.mode === 'legacy' || dataFolder.mode === 'unavailable') return '';
   const running = await call('data_folder_cleaner_running', { root: dataFolder.root }).catch(() => null);
+  return running === true ? 'Close Manga Cleaner first.' : '';
+}
+
+// Legacy mode has no data folder to ask about, but the place a first setup
+// would use may already be one (joined, not made), and then setup refuses
+// while Manga Cleaner runs there. The first-run card asks about that place.
+export async function cleanerBlockerAt(root) {
+  if (!root || !available()) return '';
+  const running = await call('data_folder_cleaner_running', { root }).catch(() => null);
   return running === true ? 'Close Manga Cleaner first.' : '';
 }
 
@@ -388,6 +401,7 @@ export function forgetOldCopy(path) {
 export function _resetDataFolderForTests() {
   Object.assign(dataFolder, {
     mode: 'legacy',
+    checked: false,
     root: null,
     state: 'none',
     detail: '',
