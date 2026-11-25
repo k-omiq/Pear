@@ -117,6 +117,24 @@ pub fn free_name(base: &Path) -> PathBuf {
     }
 }
 
+/// Flushes a file just copied. Windows flushes only through a handle that can
+/// write, so a read-only open is refused there ("Access is denied"); a file
+/// that is itself read-only gives no such handle and is left to the system.
+pub(crate) fn flush_copied(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        match std::fs::OpenOptions::new().write(true).open(path) {
+            Ok(f) => f.sync_all(),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        File::open(path)?.sync_all()
+    }
+}
+
 pub fn sync_dir(dir: &Path) {
     #[cfg(unix)]
     if let Ok(f) = File::open(dir) {
@@ -676,8 +694,7 @@ fn copy_tree(from: &Path, to: &Path, tree: &Tree) -> Result<(), String> {
                     first.insert(key, dst.clone());
                 }
                 fs::copy(&src, &dst).map_err(|e| format!("Could not copy {}: {e}", src.display()))?;
-                File::open(&dst)
-                    .and_then(|f| f.sync_all())
+                flush_copied(&dst)
                     .map_err(|e| format!("Could not flush {}: {e}", dst.display()))?;
             }
         }
@@ -1531,7 +1548,8 @@ pub mod tests {
         let d = scratch("pointer");
         let file = d.join("nested").join("data-folder.json");
         assert_eq!(read_pointer(&file), PointerRead::None);
-        let p = Pointer { schema: 1, path: "/Users/me/Manga Library".into(), folder_id: new_uuid() };
+        // Built from the scratch folder: "/Users/me" is not absolute on Windows.
+        let p = Pointer { schema: 1, path: d.join("Manga Library").display().to_string(), folder_id: new_uuid() };
         write_pointer(&file, &p).unwrap();
         assert_eq!(read_pointer(&file), PointerRead::Ok(p.clone()));
         let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
@@ -2013,6 +2031,14 @@ pub mod tests {
         let cleaner = take_lock(&root, OTHER_LOCK).unwrap().unwrap();
         assert_eq!(use_existing(&paths, &root, false).unwrap_err(), "Manga Cleaner is open. Close it first.");
         drop(cleaner);
+        // A child process another test forks in parallel can share the lock's
+        // open file for a moment before its exec closes it, so wait for it.
+        for _ in 0..200 {
+            if lock_is_held(&root, OTHER_LOCK) == Some(false) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert_eq!(use_existing(&paths, &root, false).unwrap().folder_id, "abc");
         assert_eq!(status(&paths).state, "ok");
         assert!(sync_warning(Path::new("/Users/me/Library/CloudStorage/Dropbox/x"), None).is_some());

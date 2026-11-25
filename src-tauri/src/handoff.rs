@@ -230,7 +230,7 @@ pub fn take(root: &Path, claim: &str, rel: &str, dest: &Path) -> Result<(), Stri
         dest.file_name().and_then(|n| n.to_str()).unwrap_or("page")
     )));
     let copied = fs::copy(&src, &tmp)
-        .and_then(|_| File::open(&tmp)?.sync_all())
+        .and_then(|_| crate::data_folder::flush_copied(&tmp))
         .and_then(|_| fs::rename(&tmp, dest));
     copied.map_err(|e| {
         let _ = fs::remove_file(&tmp);
