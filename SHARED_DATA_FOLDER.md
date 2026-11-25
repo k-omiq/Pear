@@ -197,7 +197,8 @@ the other one started:
 6. Method `copy` only: rename the old tree to `<from>.moved-<date>`. It is
    deleted only when the user says so in Settings, after the app has started
    at the new place. Delete refuses any path that is, holds, or sits inside
-   the live data folder or a library, or whose marker has the live `folderId`.
+   the live data folder or a library. (Not the marker: a moved copy keeps the
+   folder's `folderId` by design.)
 7. Remove the journal.
 
 **Recovery**, run by either app at start and again at every status check,
