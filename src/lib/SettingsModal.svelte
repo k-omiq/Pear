@@ -4,7 +4,9 @@
   import { app, saveExportPrefs, toast, toastError } from './store.svelte.js';
   import { checkSidecar, modelsCacheInfo, clearModelsCache } from './sidecar.js';
   import ThemePicker from './ThemePicker.svelte';
-  import { library, setRoot, scanLibrary, withinHome, projectById, setProjectOcrLanguage } from './library.svelte.js';
+  import { library, projectById, setProjectOcrLanguage } from './library.svelte.js';
+  import { dataFolder, forgetOldCopy } from './data-folder.svelte.js';
+  import { pickAndSetUp, adoptNow, pickAndMove, pickExisting, askDeleteOldCopy } from './data-folder-actions.js';
   import { settingsView, shownSettingsTab, closeSettings } from './settings-tabs.svelte.js';
   import SeriesGuide from './SeriesGuide.svelte';
   import LetteringSetup from './LetteringSetup.svelte';
@@ -388,33 +390,18 @@
     }
   }
 
-  async function chooseRoot() {
-    if (!isTauri()) {
-      toast('Choosing a folder needs the desktop app');
-      return;
-    }
-
-    if (app.chapterRef) {
-      toast('Close the open chapter before changing the library folder');
-      return;
-    }
+  // The data folder buttons. One change at a time; each one says how it went.
+  let folderBusy = $state(false);
+  async function folderAction(fn) {
+    if (folderBusy) return;
+    folderBusy = true;
     try {
-      const { open: pick } = await import('@tauri-apps/plugin-dialog');
-      const dir = await pick({ directory: true, defaultPath: library.root });
-      if (!dir) return;
-      // Library folder must be inside home directory.
-      if (!(await withinHome(dir))) {
-        toast('The library has to live inside your home folder for now.');
-        return;
-      }
-      await setRoot(dir);
-      await scanLibrary();
-      toast('Library folder changed');
-    } catch (e) {
-      toast(`Couldn't set folder: ${e}`);
+      await fn();
+    } finally {
+      folderBusy = false;
     }
   }
-
+  const folderLocked = $derived(!isTauri() || folderBusy || dataFolder.busy || !!app.chapterRef);
 
   $effect(() => {
     if (open) {
@@ -740,21 +727,52 @@
           <h3 class="settings-title">Files</h3>
           <div class="set-item">
             <div class="set-line">
-              <span class="set-label">Library folder</span>
+              <span class="set-label">Data folder</span>
               <div class="set-ctl">
-                <button
-                  class="btn tiny"
-                  disabled={!isTauri() || !!app.chapterRef}
-                  title={app.chapterRef ? 'Close the open chapter first' : 'Pick a different library folder'}
-                  onclick={chooseRoot}
-                >Change…</button>
+                {#if dataFolder.mode === 'legacy'}
+                  <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(pickAndSetUp)}>Set up shared folder…</button>
+                {:else if dataFolder.mode === 'pending'}
+                  <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(adoptNow)}>Move my library in</button>
+                {:else if dataFolder.mode === 'shared'}
+                  <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(pickAndMove)}>Move data folder…</button>
+                {/if}
+                <button class="btn tiny" disabled={folderLocked} onclick={() => folderAction(pickExisting)}>Use existing folder…</button>
               </div>
             </div>
             <p class="set-desc">
-              <span class="set-path" title={library.root}>{library.root || 'Not set'}</span>
+              {#if dataFolder.mode === 'shared'}
+                <span class="set-path" title={dataFolder.root}>{dataFolder.root}</span><br />
+                Shared with Manga Cleaner. Chapters you save there show up here.
+              {:else if dataFolder.mode === 'pending'}
+                <span class="set-path" title={library.root}>{library.root}</span><br />
+                Manga Cleaner set up a shared folder at {dataFolder.root}. Your library is still here; move it in to share it.
+              {:else if dataFolder.mode === 'unavailable'}
+                <span class="set-path" title={dataFolder.root ?? ''}>{dataFolder.root ?? 'Not set'}</span><br />
+                Not found. Reconnect the drive, or choose another folder.
+              {:else}
+                <span class="set-path" title={library.root}>{library.root || 'Not set'}</span><br />
+                Only this app uses this folder. Set up a shared folder to keep your library with Manga Cleaner's and get its chapters here when you save them there.
+              {/if}
+              {#if dataFolder.detail}<br />{dataFolder.detail}{/if}
               {#if app.chapterRef}<br />Close the open chapter to change it.{/if}
+              {#if !isTauri()}<br />Changing it needs the desktop app.{/if}
             </p>
           </div>
+          {#each dataFolder.oldCopies as copy (copy.path)}
+            <div class="set-item">
+              <div class="set-line">
+                <span class="set-label">Old copy</span>
+                <div class="set-ctl">
+                  <button class="btn tiny" onclick={() => forgetOldCopy(copy.path)}>Keep it</button>
+                  <button class="btn tiny" disabled={!isTauri() || folderBusy} onclick={() => folderAction(() => askDeleteOldCopy(copy.path))}>Delete…</button>
+                </div>
+              </div>
+              <p class="set-desc">
+                <span class="set-path" title={copy.path}>{copy.path}</span><br />
+                Left behind by a move to another drive. Delete it once you have checked your library at the new place.
+              </p>
+            </div>
+          {/each}
           <div class="set-item">
             <div class="set-line">
               <span class="set-label">Default export folder</span>
