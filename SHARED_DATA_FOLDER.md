@@ -227,6 +227,8 @@ creates the marker (with a new `folderId`) if missing, then writes the
 pointer. The other app finds itself in Pending mode at its next start or
 focus.
 
+**First run asks once.** In Legacy mode each app shows a card on Home, once, that offers Setup at the default location. Move runs Setup there. Choose folder opens Settings > Data folder. Not now records the answer in that app's own settings, so the card does not come back, and Settings > Data folder still offers Setup. Nothing moves until the user clicks. Each app keeps its own answer. Once either app has run Setup, the other app is in Pending mode and shows its Pending card instead.
+
 **Default location**: `~/Manga Library`, not `~/Documents`. Documents is
 often synced (iCloud "Desktop and Documents" on macOS, OneDrive on Windows),
 and a synced library uploads gigabytes of caches and can have its files
