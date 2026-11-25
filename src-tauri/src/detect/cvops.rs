@@ -263,7 +263,7 @@ pub fn fill_poly(mask: &mut [u8], w: usize, h: usize, poly: &[(i32, i32)]) {
             }
         }
         xs.sort_unstable();
-        for pair in xs.chunks_exact(2) {
+        for pair in xs.as_chunks::<2>().0 {
             let x1 = (pair[0] + XY_ONE - 1) >> XY_SHIFT;
             let x2 = pair[1] >> XY_SHIFT;
             if x1 < w as i64 && x2 >= 0 {

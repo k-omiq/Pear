@@ -411,7 +411,7 @@ fn read_coverage(path: &Path, face_index: u32) -> Result<Coverage, String> {
     file.read_exact(&mut directory).map_err(io)?;
     let mut cmap = None;
     let mut picture = false;
-    for record in directory.chunks_exact(16) {
+    for record in directory.as_chunks::<16>().0 {
         let name = be32(record, 0).unwrap_or(0);
         if name == tag(b"cmap") {
             cmap = Some((be32(record, 8).unwrap_or(0), be32(record, 12).unwrap_or(0)));

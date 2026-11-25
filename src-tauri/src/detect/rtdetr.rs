@@ -215,7 +215,7 @@ fn preprocess(image: &DynamicImage) -> Result<Vec<f32>, String> {
     );
     let plane = INPUT_SIZE * INPUT_SIZE;
     let mut out = vec![0.0; 3 * plane];
-    for (i, rgb) in resized.chunks_exact(3).enumerate() {
+    for (i, rgb) in resized.as_chunks::<3>().0.iter().enumerate() {
         for c in 0..3 {
             out[c * plane + i] = f32::from(rgb[c]) / 255.0;
         }

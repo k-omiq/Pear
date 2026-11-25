@@ -447,7 +447,7 @@ fn offscreen_roots(pg: &Pages) -> Vec<i64> {
 /// A UTF-16BE key equals this ASCII name.
 fn is_key(bytes: &[u8], name: &str) -> bool {
     bytes.len() == name.len() * 2
-        && bytes.chunks_exact(2).zip(name.bytes()).all(|(c, n)| c[0] == 0 && c[1] == n)
+        && bytes.as_chunks::<2>().0.iter().zip(name.bytes()).all(|(c, n)| c[0] == 0 && c[1] == n)
 }
 
 /// `(width, height, cols, rows, plane bytes)` from an Offscreen `Attribute`.
@@ -506,7 +506,7 @@ fn tile(seg: &[u8], tw: u32, th: u32, plane: usize) -> Option<Tile> {
     }
     if bits == 1 {
         let (tw, th) = (tw as usize, th as usize);
-        if plane % th != 0 {
+        if !plane.is_multiple_of(th) {
             return None;
         }
         let stride = plane / th;

@@ -62,7 +62,7 @@ impl Raster {
     pub fn as_python_saw_it(&self) -> DynamicImage {
         assert_eq!(self.cn, 3, "only colour crops go to the OCR");
         let mut out = self.data.clone();
-        for px in out.chunks_exact_mut(3) {
+        for px in out.as_chunks_mut::<3>().0 {
             px.swap(0, 2);
         }
         DynamicImage::ImageRgb8(
@@ -811,8 +811,8 @@ mod tests {
             b.angle = angle;
             let crops = gather_crops(&img, &mask, &b, lines_mode, true);
             assert_eq!(crops.len(), 1);
-            assert!(crops[0].data.chunks_exact(3).any(|p| p == [255, 255, 255]));
-            assert!(crops[0].data.chunks_exact(3).any(|p| p == [10, 20, 30]));
+            assert!(crops[0].data.as_chunks::<3>().0.contains(&[255, 255, 255]));
+            assert!(crops[0].data.as_chunks::<3>().0.contains(&[10, 20, 30]));
             assert!(gather_crops(&img, &empty, &b, lines_mode, true)[0]
                 .data.iter().all(|v| *v == 255));
             assert_eq!(gather_crops(&img, &full, &b, lines_mode, true),

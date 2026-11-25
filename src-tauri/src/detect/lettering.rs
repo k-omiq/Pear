@@ -217,7 +217,7 @@ pub fn refine(page: &Raster, probability: &GrayImage, boxes: &[[i32; 4]]) -> Gra
     mark_boxes(&mut support, w, h, boxes, 2);
     let gray: Vec<u8> = page
         .data
-        .chunks_exact(3)
+        .as_chunks::<3>().0.iter()
         .map(|rgb| {
             ((u32::from(rgb[0]) * 4899
                 + u32::from(rgb[1]) * 9617
