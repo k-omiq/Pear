@@ -9,7 +9,9 @@
 // This module claims a message by renaming it, checks it, files it as a new
 // chapter or as a newer send of a chapter already here (library.svelte.js,
 // `createChapterFromHandoff` and `applyHandoffToChapter`), and deletes the
-// claim. A chapter that is open waits: the claim goes back and the message is
+// claim. Files are linked in, so the claim stays whole until it is deleted: a
+// crash or a failed apply puts back a message with every file in it, and one
+// filed already is dropped as stale when it comes round again. A chapter that is open waits: the claim goes back and the message is
 // filed once the chapter closes. A message that does not check out goes to
 // `handoff/rejected/` with the reason.
 //
@@ -45,6 +47,7 @@ const tauriIO = {
   read: (root, claim) => invoke('handoff_read', { root, claim }),
   take: (root, claim, rel, dest) => invoke('handoff_take', { root, claim, rel, dest }),
   giveBack: (root, claim, rel, from) => invoke('handoff_give_back', { root, claim, rel, from }),
+  same: (root, claim, rel, path) => invoke('handoff_same', { root, claim, rel, path }),
   putBack: (root, claim, key) => invoke('handoff_put_back', { root, claim, key }),
   reject: (root, claim, key, reason) => invoke('handoff_reject', { root, claim, key, reason }),
   done: (root, claim) => invoke('handoff_done', { root, claim }),
@@ -153,9 +156,22 @@ export function _resetHandoffForTests() {
 
 const DEFER_TEXT = 'Cleaner sent new pages for this chapter. They apply when you close it.';
 
+// A send no newer than the last one filed for its chapter.
+const isStale = (sentAt, last) => Number.isFinite(Date.parse(last ?? '')) && !(Date.parse(sentAt) > Date.parse(last));
+
 // Files one claimed message. Returns what happened.
 async function fileClaim(root, claim, key) {
-  const msg = checkMessage(await io.read(root, claim));
+  const read = await io.read(root, claim);
+  // Staleness before the files are checked: a send filed already (its claim
+  // was not deleted, say) is dropped, never rejected for what it lacks.
+  const ids = read?.doc?.cleaner;
+  const known = ids && [ids.libraryId, ids.projectId, ids.chapterId].every((v) => typeof v === 'string' && v);
+  const filed = known ? chapterByCleanerLink(ids.libraryId, ids.projectId, ids.chapterId) : null;
+  if (filed && isStale(read.doc.sentAt, filed.c.cleanerLink?.sentAt)) {
+    await io.done(root, claim);
+    return { outcome: 'stale' };
+  }
+  const msg = checkMessage(read);
   if (msg.error) {
     await io.reject(root, claim, key, msg.error);
     toastError(`A chapter from Manga Cleaner could not be filed: ${msg.error}. It was set aside in handoff/rejected.`);
@@ -164,13 +180,13 @@ async function fileClaim(root, claim, key) {
   const mover = {
     take: (rel, dest) => io.take(root, claim, rel, dest),
     giveBack: (rel, from) => io.giveBack(root, claim, rel, from),
+    same: (rel, path) => io.same(root, claim, rel, path),
   };
   const { link } = msg;
   const found = chapterByCleanerLink(link.libraryId, link.projectId, link.chapterId);
   if (found) {
     const { p, c } = found;
-    const last = Date.parse(c.cleanerLink?.sentAt ?? '');
-    if (Number.isFinite(last) && !(Date.parse(link.sentAt) > last)) {
+    if (isStale(link.sentAt, c.cleanerLink?.sentAt)) {
       await io.done(root, claim);
       return { outcome: 'stale' };
     }
@@ -186,7 +202,9 @@ async function fileClaim(root, claim, key) {
       result = await applyHandoffToChapter(p.id, c.id, { pages: msg.pages, link, mover });
     } catch (e) {
       if (e?.chapterOpen) return wait();
-      await io.putBack(root, claim, key);
+      // Written already: the claim goes, it is not filed a second time.
+      if (e?.committed) await io.done(root, claim).catch(() => {});
+      else await io.putBack(root, claim, key);
       throw e;
     }
     await io.done(root, claim);

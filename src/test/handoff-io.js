@@ -1,7 +1,8 @@
 // The handoff's file side (src-tauri/src/handoff.rs) over node:fs, for the
 // filer's tests. Same names, same checks, same results; the Rust side has its
 // own unit tests for the real thing.
-import { readdir, readFile, rename, rm, mkdir, stat, writeFile, lstat } from 'node:fs/promises';
+import { readdir, readFile, rename, rm, mkdir, stat, writeFile, lstat, link, copyFile, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join, sep } from 'node:path';
 
 const plain = (n) => typeof n === 'string' && n && n !== '.' && n !== '..' && !/[\\/]/.test(n);
@@ -86,25 +87,46 @@ export function nodeHandoffIO(lib = (root) => join(root, 'Typesetter')) {
           const rel = pg?.[k];
           if (typeof rel !== 'string') continue;
           try {
-            const size = imageSize(await readFile(messageFile(dir, rel)));
-            files[rel] = { exists: true, w: size?.w ?? 0, h: size?.h ?? 0 };
+            const buf = await readFile(messageFile(dir, rel));
+            const size = imageSize(buf);
+            files[rel] = { exists: true, w: size?.w ?? 0, h: size?.h ?? 0, size: buf.length };
           } catch {
-            files[rel] = { exists: false, w: 0, h: 0 };
+            files[rel] = { exists: false, w: 0, h: 0, size: 0 };
           }
         }
       }
       return { doc, error: null, files };
     },
+    // Linked in (a copy where linking fails): the claim stays whole.
+    noLinks: false,
     async take(root, claim, rel, dest) {
       const src = messageFile(claimDir(root, claim), rel);
       if (!inLibrary(root, dest)) throw new Error(`${dest} is not inside the library`);
       if (await exists(dest)) throw new Error(`${dest} is already there`);
-      await rename(src, dest);
+      if (io.failTake?.(rel)) throw new Error(`Could not bring ${rel} into the library`);
+      if (!io.noLinks) {
+        try {
+          await link(src, dest);
+          return;
+        } catch {
+          /* copied below */
+        }
+      }
+      await copyFile(src, dest);
     },
     async giveBack(root, claim, rel, from) {
-      const dst = messageFile(claimDir(root, claim), rel);
+      const kept = messageFile(claimDir(root, claim), rel);
       if (!inLibrary(root, from)) throw new Error(`${from} is not inside the library`);
-      await rename(from, dst);
+      if (!(await exists(kept))) throw new Error(`${rel} is not in the message any more`);
+      await unlink(from);
+    },
+    async same(root, claim, rel, path) {
+      const src = messageFile(claimDir(root, claim), rel);
+      if (!inLibrary(root, path)) throw new Error(`${path} is not inside the library`);
+      const [a, b] = await Promise.all([stat(src).catch(() => null), stat(path).catch(() => null)]);
+      if (!a || !b || a.size !== b.size) return false;
+      const sha = async (p) => createHash('sha256').update(await readFile(p)).digest('hex');
+      return (await sha(src)) === (await sha(path));
     },
     async putBack(root, claim, key) {
       const from = claimDir(root, claim);

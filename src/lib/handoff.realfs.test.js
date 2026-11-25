@@ -512,6 +512,98 @@ describe('claims and refusals', () => {
   });
 });
 
+describe('a claim stays whole until it is filed', () => {
+  it('a failed delete of the claim puts back a whole message, and the next pass drops it as stale', async () => {
+    await send({ sentAt: T1, pages: THREE });
+    const realDone = io.done;
+    io.done = async () => {
+      throw new Error('the drive went away');
+    };
+    const [r] = await checkHandoffs(dataRoot);
+    expect(r.outcome).toBe('failed');
+    const { c } = onlyChapter();
+    // Linked in, not moved: every file is still in the message.
+    expect(await inboxNames()).toEqual([KEY]);
+    expect((await readdir(join(inbox(), KEY, 'raws'))).sort()).toEqual(['001.jpg', '002.png', '003.png']);
+    expect((await readdir(join(inbox(), KEY, 'cleaned'))).sort()).toEqual(['001.png', '002.png']);
+    io.done = realDone;
+    _resetHandoffForTests();
+    const before = await readFile(join(c.dir, 'chapter.json'), 'utf8');
+    const [again] = await checkHandoffs(dataRoot);
+    expect(again.outcome).toBe('stale');
+    expect(await readFile(join(c.dir, 'chapter.json'), 'utf8')).toBe(before);
+    expect(await inboxNames()).toEqual([]);
+    expect((await stat(join(cleanerCopies, 'c7-0-40x60.jpg'))).nlink).toBe(2);
+  });
+
+  it('copies where the drive has no hard links', async () => {
+    io.noLinks = true;
+    await send({ sentAt: T1, pages: THREE });
+    const [r] = await checkHandoffs(dataRoot);
+    expect(r.outcome).toBe('created');
+    const { c } = onlyChapter();
+    expect(await readFile(join(c.dir, 'cleaned', '002.png'))).toEqual(png(220));
+  });
+
+  it('drops an old send as stale before its files are checked', async () => {
+    await send({ sentAt: T2, pages: THREE });
+    await checkHandoffs(dataRoot);
+    const key = await send({ sentAt: T1, pages: THREE });
+    await rm(join(inbox(), key, 'cleaned', '002.png'));
+    const [r] = await checkHandoffs(dataRoot);
+    expect(r.outcome).toBe('stale');
+    await expect(stat(join(dataRoot, 'handoff', 'rejected'))).rejects.toThrow();
+    expect(await inboxNames()).toEqual([]);
+  });
+
+  it('a failure that says "open" is a failure, not a wait for the chapter', async () => {
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    await send({ sentAt: T2, pages: [{ src: 0, raw: 10, cleaned: 250, jpeg: true }] });
+    io.failTake = () => {
+      throw new Error('Could not open the page file');
+    };
+    const [r] = await checkHandoffs(dataRoot);
+    expect(r).toMatchObject({ outcome: 'failed', error: 'Could not open the page file' });
+    expect(await inboxNames()).toEqual([KEY]);
+  });
+});
+
+describe('a re-send that did not change a page', () => {
+  it('leaves a cleaned page with the same bytes as it is, with nothing in previous-cleaned', async () => {
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    await send({
+      sentAt: T2,
+      pages: [
+        { src: 0, raw: 10, cleaned: 210, jpeg: true },
+        { src: 1, raw: 20, cleaned: 221 },
+        { src: 2, raw: 30, cleaned: null },
+      ],
+    });
+    const [r] = await checkHandoffs(dataRoot);
+    expect(r).toMatchObject({ outcome: 'updated', replaced: 1, added: 0 });
+    const { c } = onlyChapter();
+    const rec = await record(c);
+    expect(rec.pages.map((pg) => pg.cleaned)).toEqual(['001.png', '002-2.png', null]);
+    expect(await readdir(join(c.dir, 'logs', 'previous-cleaned'))).toEqual(['002.png']);
+    expect(await readdir(join(c.dir, 'cleaned'))).toEqual(['001.png', '002-2.png']);
+    // The same send again, newer: nothing changes on disk but the time.
+    await send({
+      sentAt: T3,
+      pages: [
+        { src: 0, raw: 10, cleaned: 210, jpeg: true },
+        { src: 1, raw: 20, cleaned: 221 },
+        { src: 2, raw: 30, cleaned: null },
+      ],
+    });
+    const [r3] = await checkHandoffs(dataRoot);
+    expect(r3).toMatchObject({ outcome: 'updated', replaced: 0 });
+    expect(await readdir(join(c.dir, 'logs', 'previous-cleaned'))).toEqual(['002.png']);
+    expect((await record(c)).pages.map((pg) => pg.cleaned)).toEqual(['001.png', '002-2.png', null]);
+  });
+});
+
 // The message the cleaner's writer test compares its output to
 // (SHARED_DATA_FOLDER.md section 10), checked into both repositories.
 const GOLDEN = join(dirname(fileURLToPath(import.meta.url)), '..', 'test', 'fixtures', 'handoff', 'golden');

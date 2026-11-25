@@ -165,6 +165,10 @@ let rootMustExist = false;
 export function setRootMustExist(on) {
   rootMustExist = !!on;
 }
+// Every recursive mkdir under the library (a chapter folder, masks/, logs/,
+// a snapshot) refuses while the root is gone, so a vanished data folder is
+// never brought back as a new, empty tree.
+fsx.guardMkdir?.(() => (rootMustExist && library.root ? [library.root] : []));
 
 export async function setRoot(path) {
   library.root = path;
@@ -2220,16 +2224,18 @@ export const removeAllCleaned = guarded(async function removeAllCleaned(projectI
 //
 // Manga Cleaner sends a cleaned chapter through the shared data folder
 // (SHARED_DATA_FOLDER.md section 8; handoff.svelte.js claims and checks the
-// messages). The files are MOVED in, never copied: a raw in a message is a
-// hard link to the cleaner's own copy, and a rename keeps the link, so the
-// raw is on disk once for both apps. The moves go through `mover` (the Rust
-// side in the app), because the claimed message folder is a dot folder.
+// messages). The files are LINKED in: a raw in a message is a hard link to
+// the cleaner's own copy, and a second link keeps it on disk once for both
+// apps, while the claimed message stays whole until it is filed. The links
+// go through `mover` (the Rust side in the app), because the claimed message
+// folder is a dot folder.
 //
 // Each input page is the consumer's checked view of one message page, in the
 // cleaner's order: { sourceIdx, rawRel, rawName, cleanedRel, cleanedName, w,
 // h }. `w`/`h` is the size of both files. `mover.take(rel, dest)` moves a
 // message file to a new path in the library; `mover.giveBack(rel, from)`
-// undoes it.
+// undoes it; `mover.same(rel, path)` says whether a message file is byte for
+// byte a library file.
 
 const sameLink = (l, libraryId, projectId) => !!l && l.libraryId === libraryId && l.projectId === projectId;
 
@@ -2363,7 +2369,7 @@ async function holdingChapter(projectId, chapterId, path, fn) {
   const key = chapterKey(projectId, chapterId);
   applyingKeys.add(key);
   try {
-    await claimChapter(projectId, chapterId);
+    await asOpen(() => claimChapter(projectId, chapterId));
     return await withRecordLock(path, fn);
   } finally {
     applyingKeys.delete(key);
@@ -2384,22 +2390,26 @@ async function holdingChapter(projectId, chapterId, path, fn) {
 // nothing. A snapshot is taken first, like every other source edit, and the
 // whole apply runs inside the mutation gate, so an open waits for it.
 export const applyHandoffToChapter = guarded(async function applyHandoffToChapter(projectId, chapterId, { pages: input, link, mover }) {
-  const opened = (e) => {
-    if (/open/i.test(String(e?.message ?? ''))) e.chapterOpen = true;
-    return e;
-  };
-  let c, path;
-  try {
-    ({ c, path } = await chapterFile(projectId, chapterId));
-  } catch (e) {
-    throw opened(e);
-  }
-  try {
-    return await holdingChapter(projectId, chapterId, path, () => applyNow(c, path, chapterId, input, link, mover));
-  } catch (e) {
-    throw opened(e);
-  }
+  const c = chapterById(projectId, chapterId);
+  if (!c) throw new Error('No such chapter');
+  if (c.unreadable) throw new Error('This chapter could not be read');
+  // Only these say "open": the send then waits for the chapter to close.
+  // Any other failure, whatever its words, is a failure.
+  await asOpen(() => assertClosedElsewhere({ chapterId }));
+  await asOpen(() => assertClosed(chapterId));
+  const path = await fsx.join(c.dir, 'chapter.json');
+  return holdingChapter(projectId, chapterId, path, () => applyNow(c, path, chapterId, input, link, mover));
 });
+
+async function asOpen(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    err.chapterOpen = true;
+    throw err;
+  }
+}
 
 async function applyNow(c, path, chapterId, input, link, mover) {
   const chapterText = await fsx.readTextFile(path);
@@ -2446,13 +2456,19 @@ async function applyNow(c, path, chapterId, input, link, mover) {
             pg.cleaned = null;
           }
         }
-        if (src.cleanedRel) {
+        // A cleaned page whose bytes are the ones already here is left as
+        // it is: no new file, nothing in logs/previous-cleaned.
+        const unchanged =
+          !resized && src.cleanedRel && pg.cleaned && mover.same
+            ? await mover.same(src.cleanedRel, await fsx.join(cleanedDir, pg.cleaned)).catch(() => false)
+            : false;
+        if (src.cleanedRel && !unchanged) {
           const name = await takeInto(mover, moved, src.cleanedRel, await ensureCleaned(), src.cleanedName, usedCleaned);
           if (!resized) pg = respacePage(pg, { w: src.w, h: src.h }, notes);
           if (pg.cleaned) previous.push(pg.cleaned);
           pg = { ...pg, cleaned: name };
         }
-        if (resized || src.cleanedRel) replaced++;
+        if (resized || (src.cleanedRel && !unchanged)) replaced++;
         next[idx] = pg;
         continue;
       }
@@ -2472,10 +2488,18 @@ async function applyNow(c, path, chapterId, input, link, mover) {
     await giveBack(mover, moved);
     throw e;
   }
-  sourceUndos.set(chapterId, before);
-  await dropCleaned(c.dir, previous.filter(Boolean), next);
-  await afterRespace(c, notes);
-  c.cleanerLink = linkOf(record.cleanerLink);
+  // Written: from here a failure must not put the message back to be filed
+  // again (handoff.svelte.js deletes the claim instead).
+  try {
+    sourceUndos.set(chapterId, before);
+    c.cleanerLink = linkOf(record.cleanerLink);
+    await dropCleaned(c.dir, previous.filter(Boolean), next);
+    await afterRespace(c, notes);
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    err.committed = true;
+    throw err;
+  }
   return { stale: false, replaced, added, pageCount: next.length };
 }
 
