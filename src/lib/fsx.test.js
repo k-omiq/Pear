@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   fsync: 'ok',
   scope: null,
   enospc: false,
+  dirs: new Set(),
 }));
 
 const guard = (p) => {
@@ -55,6 +56,12 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   async remove(p) {
     guard(p);
     h.disk.delete(p);
+  },
+  async mkdir(p) {
+    h.dirs.add(p);
+  },
+  async exists(p) {
+    return h.disk.has(p) || h.dirs.has(p);
   },
 }));
 
@@ -212,6 +219,24 @@ describe('writeFileAtomic to a dialog-picked file outside the scope', () => {
       expect(fsx._insideGuarded('C:\\Data\\Library2\\x.png')).toBe(false);
     } finally {
       fsx.guardInPlaceWrites(null);
+    }
+  });
+
+  it('never makes a folder inside a library root that has gone', async () => {
+    const ROOT = '/Volumes/Work/Manga Library/Typesetter';
+    fsx.guardMkdir(() => [ROOT]);
+    try {
+      await expect(fsx.mkdir(`${ROOT}/Series/001/masks`)).rejects.toThrow('The library folder is missing');
+      await expect(fsx.mkdir(ROOT)).rejects.toThrow('missing');
+      expect(h.dirs.size).toBe(0);
+      await fsx.mkdir('/Users/me/elsewhere');
+      expect(h.dirs.has('/Users/me/elsewhere')).toBe(true);
+      h.dirs.add(ROOT);
+      await fsx.mkdir(`${ROOT}/Series/001/masks`);
+      expect(h.dirs.has(`${ROOT}/Series/001/masks`)).toBe(true);
+    } finally {
+      fsx.guardMkdir(null);
+      h.dirs.clear();
     }
   });
 

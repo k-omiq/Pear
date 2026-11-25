@@ -130,19 +130,22 @@ async function fsync(p) {
 // The folders an in-place write must never touch: the library root and the
 // shared data folder (library.svelte.js and data-folder.svelte.js say which).
 let guardedRoots = () => [];
+// The folders that must already exist before anything is made in them.
+let mustExistRoots = () => [];
 const foldPath = (s) =>
   String(s ?? '')
     .replace(/[\\/]+/g, '/')
     .replace(/\/+$/, '');
-function insideGuarded(p) {
+function within(p, r) {
   const target = foldPath(p);
+  const root = foldPath(r);
+  if (!root) return false;
   const win = /^[a-zA-Z]:/.test(target);
-  return guardedRoots().some((r) => {
-    const root = foldPath(r);
-    if (!root) return false;
-    const [a, b] = win ? [target.toLowerCase(), root.toLowerCase()] : [target, root];
-    return a === b || a.startsWith(b + '/');
-  });
+  const [a, b] = win ? [target.toLowerCase(), root.toLowerCase()] : [target, root];
+  return a === b || a.startsWith(b + '/');
+}
+function insideGuarded(p) {
+  return guardedRoots().some((r) => within(p, r));
 }
 
 export const fsx = {
@@ -151,6 +154,12 @@ export const fsx = {
     guardedRoots = typeof fn === 'function' ? fn : () => [];
   },
   _insideGuarded: insideGuarded,
+  // `fn()` returns the folders `mkdir` may never create or create in while
+  // they are missing (the shared library root: an unplugged drive is never
+  // given a new, empty library).
+  guardMkdir(fn) {
+    mustExistRoots = typeof fn === 'function' ? fn : () => [];
+  },
   // The sweep's seam - see `liveTemps`.
   liveTemps() {
     return new Set(liveTemps);
@@ -254,7 +263,11 @@ export const fsx = {
     }
   },
   async mkdir(p) {
-    return (await fs()).mkdir(p, { recursive: true });
+    const plugin = await fs();
+    for (const r of mustExistRoots()) {
+      if (within(p, r) && !(await plugin.exists(r))) throw new Error(`The library folder is missing: ${r}`);
+    }
+    return plugin.mkdir(p, { recursive: true });
   },
   async remove(p) {
     return (await fs()).remove(p, { recursive: true });
