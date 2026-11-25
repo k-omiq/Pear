@@ -22,6 +22,7 @@
     'before-restore': 'Before a restore',
     'before-cleaned': 'Before cleaned pages changed',
     'before-translations': 'Before translations were added',
+    'before-cleaner': 'Before Manga Cleaner sent new pages',
     'outside-change': 'Changed outside the app',
     'app-edits': 'Your edits before a reload',
   };

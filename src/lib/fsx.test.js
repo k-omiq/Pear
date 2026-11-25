@@ -194,6 +194,27 @@ describe('writeFileAtomic to a dialog-picked file outside the scope', () => {
     expect(h.writes[0]).not.toBe(TARGET);
   });
 
+  it('never writes in place inside a library or the shared data folder', async () => {
+    const LIBRARY = '/Volumes/Work/Manga Library';
+    const PAGE = `${LIBRARY}/Typesetter/S/001/cleaned/001.png`;
+    h.scope = new Set([PAGE]);
+    fsx.guardInPlaceWrites(() => [LIBRARY]);
+    try {
+      await expect(fsx.writeFileAtomic(PAGE, BYTES)).rejects.toThrow('forbidden path');
+      expect(h.disk.has(PAGE)).toBe(false);
+      // A picked file elsewhere still gets the dialog's in-place write.
+      h.scope = new Set([PICKED]);
+      await fsx.writeFileAtomic(PICKED, BYTES);
+      expect(h.disk.get(PICKED)).toEqual(BYTES);
+      expect(fsx._insideGuarded('C:\\Data\\lib\\x.png')).toBe(false);
+      fsx.guardInPlaceWrites(() => ['C:\\Data\\Lib']);
+      expect(fsx._insideGuarded('c:/data/lib/x.png')).toBe(true);
+      expect(fsx._insideGuarded('C:\\Data\\Library2\\x.png')).toBe(false);
+    } finally {
+      fsx.guardInPlaceWrites(null);
+    }
+  });
+
   it('leaves library records atomic: a text record never falls back to an in-place write', async () => {
     h.scope = new Set([TARGET]);
     await expect(fsx.writeTextFileAtomic(TARGET, NEXT)).rejects.toThrow('forbidden path');

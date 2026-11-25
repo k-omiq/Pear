@@ -127,7 +127,30 @@ async function fsync(p) {
   }
 }
 
+// The folders an in-place write must never touch: the library root and the
+// shared data folder (library.svelte.js and data-folder.svelte.js say which).
+let guardedRoots = () => [];
+const foldPath = (s) =>
+  String(s ?? '')
+    .replace(/[\\/]+/g, '/')
+    .replace(/\/+$/, '');
+function insideGuarded(p) {
+  const target = foldPath(p);
+  const win = /^[a-zA-Z]:/.test(target);
+  return guardedRoots().some((r) => {
+    const root = foldPath(r);
+    if (!root) return false;
+    const [a, b] = win ? [target.toLowerCase(), root.toLowerCase()] : [target, root];
+    return a === b || a.startsWith(b + '/');
+  });
+}
+
 export const fsx = {
+  // `fn()` returns the folders `writeFileAtomic` may never write in place in.
+  guardInPlaceWrites(fn) {
+    guardedRoots = typeof fn === 'function' ? fn : () => [];
+  },
+  _insideGuarded: insideGuarded,
   // The sweep's seam - see `liveTemps`.
   liveTemps() {
     return new Set(liveTemps);
@@ -206,7 +229,10 @@ export const fsx = {
       try {
         await m.writeFile(tmp, bytes);
       } catch (e) {
-        if (!scopeRefused(e)) throw e;
+        // Never in place inside a library: there the temp file is always in
+        // scope, and a page file written over in place would change a file
+        // a hard link shares with the other app (SHARED_DATA_FOLDER.md).
+        if (!scopeRefused(e) || insideGuarded(p)) throw e;
         liveTemps.delete(tmp);
         await m.writeFile(p, bytes);
         await fsync(p);
