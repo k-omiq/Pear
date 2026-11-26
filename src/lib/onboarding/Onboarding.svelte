@@ -25,6 +25,7 @@
   import WelcomeStep from './WelcomeStep.svelte';
   import UsageStep from './UsageStep.svelte';
   import DetectionStep from './DetectionStep.svelte';
+  import JoinStep from './JoinStep.svelte';
   import DiscordInvite from './DiscordInvite.svelte';
 
   const HEADINGS = {
@@ -32,6 +33,7 @@
     theme: 'Pick a theme',
     scope: 'Pear changes text, not pictures',
     usage: 'What will you use Pear for?',
+    join: 'One folder for both apps',
     detection: 'Detection and OCR',
     community: 'Join the community',
   };
@@ -47,7 +49,7 @@
   const total = $derived(steps.length);
   const last = $derived(position === total);
   // Continue waits for a pick on the usage step; everywhere else it can act.
-  const canContinue = $derived(step !== 'usage' || !!onboarding.usage);
+  const canContinue = $derived((step !== 'usage' || !!onboarding.usage) && (step !== 'join' || onboarding.joined));
 
   let root = $state(null);
   let heading = $state(null);
@@ -125,6 +127,8 @@
           <p class="note">To clean comic pages, use <a class="link" href={CLEANER_URL} onclick={openCleaner}>Manga Cleaner</a>.</p>
         {:else if step === 'usage'}
           <UsageStep />
+        {:else if step === 'join'}
+          <JoinStep />
         {:else if step === 'detection'}
           <DetectionStep />
         {:else}

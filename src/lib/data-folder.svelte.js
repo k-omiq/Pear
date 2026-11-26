@@ -16,14 +16,18 @@
 //                a blocking screen in place of the app, and nothing is
 //                created. Recovery runs in Rust at every status check.
 
+import { addNotice } from './data-folder-notices.svelte.js';
 import { fsx } from './fsx.js';
 import { library, setRoot, setRootMustExist, scanLibrary, setOpenGate } from './library.svelte.js';
 import { app } from './store.svelte.js';
 import { jobs } from './jobs.svelte.js';
 import { chapterWindows, windowRole } from './agent/windows.js';
+import { prefs, setPref } from './prefs.svelte.js';
+import { shownText } from './data-folder-words.js';
 
 export const SUBFOLDER = 'Typesetter';
 export const DEFAULT_NAME = 'Manga Library';
+const MARKER_FILE = 'manga-library.json';
 const OLD_COPIES_KEY = 'mt.oldDataCopies';
 
 export const dataFolder = $state({
@@ -50,7 +54,37 @@ export const dataFolder = $state({
   blocked: { local: '', cleaner: '' },
   // Old copies a cross-volume move set aside: [{ path }].
   oldCopies: readOldCopies(),
+  // The start question to ask (SHARED_DATA_FOLDER.md section 5.1), or null:
+  // 'joinStep' (row C, a step of the first-run setup), 'join' (row D, the
+  // dialog's Join variant) or 'setup' (row F, its Set up variant).
+  start: null,
+  // Manga Cleaner has run on this computer (section 4.1), once asked.
+  sister: null,
+  // After a quiet setup (row E): where the library now lives, for the one
+  // notice that says so. Cleared once shown.
+  quietRoot: '',
+  // A stopped move was just finished (or rolled back) and the folder is
+  // being opened: the Unavailable screen says "Finishing the move…", never
+  // "not found", until the mode is decided (section 11).
+  finishing: false,
 });
+
+// The start answers (section 5.3), as prefs keeps them.
+export const startAnswers = () => prefs.dataFolderFirstRun;
+export function recordStartAnswer(question, how) {
+  setPref('dataFolderFirstRun', { ...prefs.dataFolderFirstRun, [question]: how });
+}
+// Each question is asked at most once a session, even before it is
+// answered: a dialog closed after a failure does not come back on focus.
+const askedThisSession = new Set();
+function ask(question) {
+  if (askedThisSession.has(question)) return;
+  askedThisSession.add(question);
+  dataFolder.start = question;
+}
+export function dismissStart() {
+  dataFolder.start = null;
+}
 
 function readOldCopies() {
   try {
@@ -100,8 +134,8 @@ export const typesetterRoot = (root) => fsx.join(root, SUBFOLDER);
 fsx.guardInPlaceWrites?.(() => [library.root, dataFolder.root].filter(Boolean));
 
 // Whether a legacy library folder holds anything to move: a project folder.
-// An unreadable folder counts as holding something, so it is offered rather
-// than abandoned.
+// A folder that cannot be read (outside the file scope, a drive gone) holds
+// nothing this app can move, so it is never "a library" (section 11).
 async function holdsLibrary(dir) {
   try {
     if (!dir || !(await fsx.exists(dir))) return false;
@@ -109,12 +143,30 @@ async function holdsLibrary(dir) {
       if (e.isDirectory && (await fsx.exists(await fsx.join(dir, e.name, 'project.json')))) return true;
     }
     return false;
+  } catch (e) {
+    console.warn('[data folder] could not read', dir, e);
+    return false;
+  }
+}
+
+// A library root this app last used in Shared mode: `<data folder>/Typesetter`,
+// whose data folder has its marker, or cannot be read or is gone (the other
+// app moved it, a drive is out). The pointer wins over such a root: it is
+// never the old private library.
+async function wasSharedRoot(dir) {
+  const parts = String(dir ?? '').split(/[\\/]+/).filter(Boolean);
+  if (parts.at(-1) !== SUBFOLDER) return false;
+  const parent = String(dir).replace(/[\\/]+[^\\/]+[\\/]*$/, '');
+  try {
+    if (!(await fsx.exists(parent))) return true;
+    return await fsx.exists(await fsx.join(parent, MARKER_FILE));
   } catch {
     return true;
   }
 }
 
 function enter(mode) {
+  dataFolder.finishing = false;
   dataFolder.mode = mode;
   dataFolder.checked = true;
   setRootMustExist(mode === 'shared' || mode === 'unavailable');
@@ -122,7 +174,11 @@ function enter(mode) {
 
 function noteRecovered(r) {
   if (!r) return;
-  if (r.note) dataFolder.notice = r.note;
+  if (r.note) {
+    // Said once, in a notice that stays until closed (data-folder-notices).
+    dataFolder.notice = shownText(r.note);
+    addNotice({ id: `recovered:${dataFolder.notice}`, text: dataFolder.notice });
+  }
   noteOldCopy(r);
 }
 
@@ -141,8 +197,11 @@ async function openShared(root, target) {
 
 // Decides the mode from Rust's status of the pointer and this app's root.
 async function settle(st) {
+  // Leaving a stopped move: until the mode is decided the screen says the
+  // move is finishing, not "not found" (the state changes before the mode).
+  if (dataFolder.mode === 'unavailable' && (dataFolder.state === 'moving' || st?.recovered) && st?.state !== 'moving') dataFolder.finishing = true;
   dataFolder.state = st?.state ?? 'none';
-  dataFolder.detail = st?.detail ?? '';
+  dataFolder.detail = shownText(st?.detail ?? '');
   dataFolder.root = st?.pointer?.path ?? null;
   dataFolder.bothLibraries = false;
   noteRecovered(st?.recovered);
@@ -151,9 +210,21 @@ async function settle(st) {
   const root = dataFolder.root;
   const target = await typesetterRoot(root);
   const here = samePath(library.root, target);
-  const legacyHolds = !here && (await holdsLibrary(library.root));
+  // The pointer wins over a stale Shared root (the folder moved while this
+  // app was closed): it is not an old library to keep.
+  const stale = !here && (await wasSharedRoot(library.root));
+  const legacyHolds = !here && !stale && (await holdsLibrary(library.root));
   if (st.typesetterReady && (here || !legacyHolds)) return openShared(root, target);
-  if (here) {
+  // Section 5.1: this app set up or joined this folder before (a stored
+  // accepted answer, or v1 `moved`), but its subfolder is empty, as a v1
+  // setup with nothing to move (or a crash) can leave it. Its library file
+  // is made without asking. Not when the old place still holds titles:
+  // those are offered as a move (row D), never left behind.
+  const accepted = () => {
+    const a = startAnswers();
+    return a.setup === 'accepted' || a.join === 'accepted';
+  };
+  if (here || (st.typesetter === 'none' && !legacyHolds && accepted())) {
     // Switched to a data folder whose Typesetter library is not made yet:
     // made now, empty. Anything else in its place is never run on.
     try {
@@ -165,18 +236,14 @@ async function settle(st) {
     return openShared(root, target);
   }
   dataFolder.bothLibraries = !!st.typesetterReady && legacyHolds;
-  // Nothing of ours to bring: the empty library is made in the shared
-  // folder (an adopt with nothing to move), under move.lock like any setup.
-  if (!legacyHolds && !app.chapterRef) {
-    try {
-      await call('data_folder_adopt', { legacy: null });
-    } catch {
-      /* the cleaner is moving the folder, say: offered again on focus */
-      return enter('pending');
-    }
-    return openShared(root, target);
-  }
   enter('pending');
+  if (dataFolder.bothLibraries) return;
+  // Rows C and D: this app has no subfolder yet. A first launch asks in the
+  // first-run setup, an app used before asks in the dialog; either once.
+  const answers = startAnswers();
+  if (answers.join) return;
+  const firstLaunch = !legacyHolds && !answers.setup && !prefs.onboarded;
+  ask(firstLaunch ? 'joinStep' : 'join');
 }
 
 async function refresh() {
@@ -210,12 +277,57 @@ export async function initDataFolder() {
       return;
     }
     await refresh();
+    if (dataFolder.mode === 'legacy') await startWithoutPointer();
   } catch (e) {
     dataFolder.detail = `The shared data folder could not be used: ${e?.message ?? e}`;
     // Pending only while this app still runs on its own old library.
     const onShared = dataFolder.root && samePath(library.root, await typesetterRoot(dataFolder.root).catch(() => ''));
     enter(dataFolder.state === 'none' ? 'legacy' : dataFolder.state === 'ok' && !onShared ? 'pending' : 'unavailable');
   }
+}
+
+// Rows E and F (section 5.1): no pointer. Without Manga Cleaner on this
+// computer the library moves into the shared layout by itself (a quiet
+// setup, one rename or nothing); with it, the dialog asks. A setup the user
+// declined is neither asked nor done again.
+async function startWithoutPointer() {
+  const answers = startAnswers();
+  if (answers.setup === 'declined') return;
+  const sister = await call('data_folder_sister').catch(() => null);
+  dataFolder.sister = typeof sister?.present === 'boolean' ? sister.present : null;
+  if (dataFolder.sister === true) {
+    if (!answers.setup) ask('setup');
+    return;
+  }
+  if (dataFolder.sister === false) await quietSetup();
+}
+
+// Row E. Every check is Rust's, made twice, the second time under
+// move.lock just before the rename (section 5.2); any that fails leaves
+// Legacy mode and says nothing.
+async function quietSetup() {
+  if (jobs.items.some((j) => j.running) || app.chapterRef) return;
+  let root;
+  try {
+    root = await call('data_folder_default_root');
+    const legacy = (await holdsLibrary(library.root)) ? library.root : null;
+    setOpenGate(openGate);
+    dataFolder.busy = true;
+    const r = await call('data_folder_quiet_setup', { root, legacy });
+    if (!r?.done) {
+      if (r?.reason) console.info('[data folder] no quiet setup:', r.reason);
+      return;
+    }
+    noteOldCopy(r.report);
+  } catch (e) {
+    console.warn('[data folder] quiet setup', e);
+    return;
+  } finally {
+    dataFolder.busy = false;
+  }
+  recordStartAnswer('setup', 'accepted');
+  await settleAfter();
+  if (dataFolder.mode === 'shared') dataFolder.quietRoot = root;
 }
 
 // On window focus: the cleaner may have set the folder up, a drive may have
@@ -317,12 +429,14 @@ async function afterChange(report) {
 export const inspectFolder = (path) => call('data_folder_inspect', { path });
 export const defaultDataRoot = () => call('data_folder_default_root');
 
-// Where a folder the user picked puts the data folder: the folder itself when
-// it is empty, missing or already a data folder, else a `Manga Library`
-// folder inside it.
+// Where a folder the user picked puts the data folder, as Manga Cleaner
+// does: a `Manga Library` folder inside it, always, unless the pick is a data
+// folder already (then that one is used). A picked empty folder is never
+// used as the root itself: it may be a drive's top folder, which cannot be
+// renamed or removed.
 export async function rootForPick(picked) {
   const info = await inspectFolder(picked);
-  if (info.marker || (info.isDir && info.empty) || !info.exists) return { root: picked, info };
+  if (info.marker) return { root: picked, info };
   const inside = await fsx.join(picked, DEFAULT_NAME);
   return { root: inside, info: await inspectFolder(inside) };
 }
@@ -410,8 +524,26 @@ export function _resetDataFolderForTests() {
     oldCopies: [],
     bothLibraries: false,
     blocked: { local: '', cleaner: '' },
+    start: null,
+    sister: null,
+    quietRoot: '',
+    finishing: false,
   });
+  askedThisSession.clear();
   setRootMustExist(false);
+}
+
+// What a setup or a join would move, for the dialog (section 5.4).
+export async function startPlan(root) {
+  const legacy = (await holdsLibrary(library.root)) ? library.root : null;
+  return call('data_folder_plan', { root, legacy });
+}
+export const copyProgress = () => call('data_folder_progress');
+export const revealDataFolder = (path) => call('data_folder_reveal', { path });
+export async function sisterPresent() {
+  if (dataFolder.sister != null) return dataFolder.sister;
+  const r = await call('data_folder_sister').catch(() => null);
+  return r?.present === true;
 }
 
 // Exposed for the tests of the mode decision.

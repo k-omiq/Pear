@@ -5,6 +5,8 @@
   import { dataFolder, refreshBlockers } from '../data-folder.svelte.js';
   import { adoptNow, useSharedNow } from '../data-folder-actions.js';
   import { library } from '../library.svelte.js';
+  import { prefs } from '../prefs.svelte.js';
+  import { shownPath } from '../data-folder-words.js';
 
   const BLOCKER_POLL_MS = 3000;
   let busy = $state(false);
@@ -18,7 +20,13 @@
     }
   }
 
-  const pending = $derived(dataFolder.mode === 'pending');
+  // Not while the start dialog or the first-run step asks (section 5.1),
+  // and never after the Join question was declined: it is not asked again.
+  // Two libraries is not that question, so its card stays.
+  const pending = $derived(
+    dataFolder.mode === 'pending' &&
+      (dataFolder.bothLibraries || (!dataFolder.start && prefs.dataFolderFirstRun.join !== 'declined')),
+  );
   $effect(() => {
     if (!pending) return;
     refreshBlockers();
@@ -38,10 +46,10 @@
     <div class="df-text">
       {#if dataFolder.bothLibraries}
         <strong>The shared folder already has a library</strong>
-        <span>Manga Cleaner's data folder at {dataFolder.root} already holds a typesetter library, from another computer or an earlier setup. Use it to get Manga Cleaner's chapters here. Your library at {library.root} stays where it is.</span>
+        <span>Manga Cleaner's data folder at {shownPath(dataFolder.root)} already holds a typesetter library, from another computer or an earlier setup. Use it to get Manga Cleaner's chapters here. Your library at {shownPath(library.root)} stays where it is.</span>
       {:else}
         <strong>Move your library into the shared folder</strong>
-        <span>Manga Cleaner keeps its data in {dataFolder.root}. Move your library there to get its chapters here when you save them in Manga Cleaner.</span>
+        <span>Manga Cleaner keeps its data in {shownPath(dataFolder.root)}. Move your library there to get its chapters here when you save them in Manga Cleaner.</span>
       {/if}
       {#if why}<span class="df-why" data-testid="df-card-why">{why}</span>{/if}
     </div>

@@ -4,23 +4,29 @@
 // Settings' "Run setup again". The screen reads this and changes it only
 // through the functions below.
 import { prefs, setPref } from '../prefs.svelte.js';
+import { dataFolder } from '../data-folder.svelte.js';
 
 // The steps, in order. Detection is asked only of a comics install: general
 // use hides detection, so asking about it would be asking about nothing.
-const COMICS_STEPS = ['welcome', 'theme', 'scope', 'usage', 'detection', 'community'];
+// "Join" (SHARED_DATA_FOLDER.md section 5.5) is asked only on a first launch
+// that finds Manga Cleaner's data folder (row C), before the models.
+const COMICS_STEPS = ['welcome', 'theme', 'scope', 'usage', 'join', 'detection', 'community'];
 const GENERAL_STEPS = COMICS_STEPS.filter((s) => s !== 'detection');
 
 // `usage` is what was picked on the usage step during this run, or null
 // before a pick. It is kept apart from `prefs.usage`, which is 'comics' on a
 // fresh install whether or not anyone chose it, so Continue can wait for a
 // real pick.
-export const onboarding = $state({ open: false, step: 'welcome', usage: null });
+// `join`: this run asks the Join step (fixed when it opens, so answering it
+// does not take the step out from under the person). `joined`: answered.
+export const onboarding = $state({ open: false, step: 'welcome', usage: null, join: false, joined: false });
 
 // The steps of the path the current pick puts the person on. Before a pick
 // that is the shorter path, so the progress bar grows by one when Comics is
 // picked rather than shrinking when General use is.
 export function onboardingSteps() {
-  return onboarding.usage === 'comics' ? COMICS_STEPS : GENERAL_STEPS;
+  const steps = onboarding.usage === 'comics' ? COMICS_STEPS : GENERAL_STEPS;
+  return onboarding.join ? steps : steps.filter((s) => s !== 'join');
 }
 
 // Open the setup on its first step. Without `force` it opens only for an
@@ -35,6 +41,8 @@ export function offerOnboarding({ force = false } = {}) {
   // effect. Without this the row would show nothing picked while the app
   // hides the comic tools, and Skip would keep that choice unseen.
   onboarding.usage = force || prefs.usage === 'general' ? prefs.usage : null;
+  onboarding.join = dataFolder.start === 'joinStep';
+  onboarding.joined = false;
   onboarding.open = true;
   return true;
 }
@@ -59,8 +67,10 @@ export function nextOnboardingStep() {
   const steps = onboardingSteps();
   const i = steps.indexOf(onboarding.step);
   if (i < 0 || i >= steps.length - 1) return finishOnboarding();
-  // The usage step cannot be passed without a pick, Enter included.
+  // The usage step cannot be passed without a pick, Enter included, nor
+  // the Join step without an answer.
   if (onboarding.step === 'usage' && !onboarding.usage) return;
+  if (onboarding.step === 'join' && !onboarding.joined) return;
   onboarding.step = steps[i + 1];
 }
 

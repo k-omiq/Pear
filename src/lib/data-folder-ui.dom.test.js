@@ -156,6 +156,16 @@ describe('the not-found screen', () => {
     expect(view.getByTestId('df-detail').textContent).toMatch(/Close Manga Cleaner/);
     expect(view.queryByRole('button', { name: 'Choose another folder…' })).toBeNull();
   });
+
+  it('while the folder opens after a recovery says "Finishing the move…", never "not found"', async () => {
+    Object.assign(dataFolder, { mode: 'unavailable', state: 'ok', finishing: true, root: '/mnt/d2/Manga Library', detail: '' });
+    const view = render(DataFolderMissing);
+    await settle();
+    expect(view.getByRole('heading').textContent).toBe('Finishing the move…');
+    expect(view.queryByText(/Reconnect the drive/)).toBeNull();
+    expect(view.queryByRole('button')).toBeNull();
+    dataFolder.finishing = false;
+  });
 });
 
 describe('Settings ▸ Data folder', () => {

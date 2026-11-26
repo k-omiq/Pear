@@ -160,6 +160,143 @@ export function nodeHandoffIO(lib = (root) => join(root, 'Typesetter')) {
     async moveBusy() {
       return io.busy;
     },
+    // Version 2: a stamp per folder (its inode and modified time), a waiting
+    // message's handoff.json read in place, page facts, a shared raw.
+    peeks: 0,
+    // Reads of a waiting message's raws in place (not of a claimed one).
+    inPlaceFacts: 0,
+    async scan(root) {
+      const out = [];
+      for (const e of await readdir(inbox(root), { withFileTypes: true }).catch(() => [])) {
+        if (!e.isDirectory() || e.name.startsWith('.')) continue;
+        const st = await stat(join(inbox(root), e.name));
+        out.push({ key: e.name, stamp: `${st.mtimeMs}-${st.ino}` });
+      }
+      return out.sort((a, b) => (a.key < b.key ? -1 : 1));
+    },
+    async peek(root, key) {
+      if (!plain(key) || key.startsWith('.')) throw new Error(`${key} is not a message name`);
+      io.peeks++;
+      const dir = join(inbox(root), key);
+      try {
+        return { gone: false, doc: JSON.parse(await readFile(join(dir, 'handoff.json'), 'utf8')), error: null };
+      } catch (e) {
+        return { gone: !(await exists(dir)), doc: null, error: e.message };
+      }
+    },
+    async facts(root, name, rels, pear) {
+      const claimed = name.startsWith('.claimed-');
+      if (!claimed) io.inPlaceFacts++;
+      const dir = claimed ? claimDir(root, name) : join(inbox(root), name);
+      const fact = async (p) => {
+        try {
+          const buf = await readFile(p);
+          const size = imageSize(buf);
+          return { exists: true, sha: createHash('sha256').update(buf).digest('hex'), w: size?.w ?? 0, h: size?.h ?? 0 };
+        } catch {
+          return { exists: false, sha: null, w: 0, h: 0 };
+        }
+      };
+      const message = [];
+      for (const rel of rels) message.push(await fact(messageFile(dir, rel)).catch(() => ({ exists: false, sha: null, w: 0, h: 0 })));
+      const out = [];
+      for (const p of pear) {
+        if (!inLibrary(root, p)) throw new Error(`${p} is not inside the library`);
+        out.push(await fact(p));
+      }
+      return { message, pear: out };
+    },
+    // Content candidates (8.4.2): the twin of handoff.rs `content_scan`,
+    // with the same early stop (ENOUGH) and budget (BUDGET). `scanGate`, when
+    // set, is awaited first (a test holds a scan open with it).
+    statCalls: 0,
+    hashCalls: 0,
+    scans: 0,
+    scanGate: null,
+    async contentScan(root, dirs, titles) {
+      io.scans++;
+      if (io.scanGate) await io.scanGate;
+      const ENOUGH = 3;
+      const BUDGET = 24;
+      const bySize = new Map();
+      for (const d of dirs) {
+        if (!inLibrary(root, d.dir)) throw new Error(`${d.dir} is not inside the library`);
+        for (const e of await readdir(join(d.dir, 'raws'), { withFileTypes: true }).catch(() => [])) {
+          if (!e.isFile() || e.name.startsWith('.')) continue;
+          io.statCalls++;
+          const size = (await stat(join(d.dir, 'raws', e.name))).size;
+          if (!bySize.has(size)) bySize.set(size, []);
+          bySize.get(size).push([d.project, join(d.dir, 'raws', e.name)]);
+        }
+      }
+      const sha = async (p) => {
+        io.hashCalls++;
+        return readFile(p).then((b) => createHash('sha256').update(b).digest('hex'), () => null);
+      };
+      const out = [];
+      for (const t of titles) {
+        const allow = new Set(t.allow);
+        const lists = t.messages.map((m) => [m.name.startsWith('.claimed-') ? claimDir(root, m.name) : join(inbox(root), m.name), m.rels]);
+        const longest = Math.max(0, ...lists.map(([, r]) => r.length));
+        const counts = new Map();
+        const pearSha = new Map();
+        let hashed = 0;
+        scan: for (let i = 0; i < longest; i++) {
+          for (const [dir, rels] of lists) {
+            if (i >= rels.length) continue;
+            let file;
+            try {
+              file = messageFile(dir, rels[i]);
+            } catch {
+              continue;
+            }
+            io.statCalls++;
+            const st = await stat(file).catch(() => null);
+            if (!st?.isFile()) continue;
+            const cands = (bySize.get(st.size) ?? []).filter(([p]) => allow.has(p));
+            if (!cands.length) continue;
+            if (hashed >= BUDGET) break scan;
+            hashed++;
+            const mine = await sha(file);
+            if (!mine) continue;
+            const matched = new Set();
+            for (const [project, path] of cands) {
+              if (matched.has(project)) continue;
+              let theirs = pearSha.get(path);
+              if (theirs === undefined) {
+                if (hashed >= BUDGET) break scan;
+                hashed++;
+                theirs = await sha(path);
+                pearSha.set(path, theirs);
+              }
+              if (theirs === mine) {
+                matched.add(project);
+                counts.set(project, (counts.get(project) ?? 0) + 1);
+                if (counts.get(project) >= ENOUGH) break scan;
+              }
+            }
+          }
+        }
+        out.push({ id: t.id, hashed, found: [...counts].map(([project, identical]) => ({ project, identical })).sort((a, b) => b.identical - a.identical) });
+      }
+      return out;
+    },
+    noShare: false,
+    async shareRaw(root, claim, rel, dest) {
+      const src = messageFile(claimDir(root, claim), rel);
+      if (!inLibrary(root, dest)) throw new Error(`${dest} is not inside the library`);
+      const s = await stat(src);
+      if (io.noShare || s.nlink < 2 || !(await io.same(root, claim, rel, dest))) return false;
+      const tmp = `${dest}.sharing`;
+      try {
+        await link(src, tmp);
+        await rename(tmp, dest);
+        return true;
+      } catch {
+        await unlink(tmp).catch(() => {});
+        return false;
+      }
+    },
   };
   return io;
 }

@@ -20,6 +20,9 @@ import {
   deleteOldCopy,
   oldCopySize,
 } from './data-folder.svelte.js';
+import { plainError, shownPath, homePath } from './data-folder-words.js';
+import { fsx } from './fsx.js';
+import { addNotice } from './data-folder-notices.svelte.js';
 
 async function dialog() {
   return import('@tauri-apps/plugin-dialog');
@@ -45,14 +48,27 @@ async function warnIfSynced(info) {
 
 const BOTH = 'BOTH_LIBRARIES:';
 
+// In plain words (SHARED_DATA_FOLDER.md section 11); the raw text goes to
+// the log.
 function report(e, what) {
   const msg = String(e?.message ?? e).replace(BOTH, '').trim();
   if (msg === 'Nothing was moved.') return;
-  toastError(`${what}: ${msg}`);
+  toastError(`${what}: ${plainError(msg)}`);
 }
 
 const moved = (r) =>
-  r?.oldCopy ? ` The old copy is kept at ${r.oldCopy} until you delete it in Settings.` : '';
+  r?.oldCopy ? ` The old copy is kept at ${shownPath(r.oldCopy)} until you delete it in Settings.` : '';
+
+// After a quiet setup (section 5.2), once: "Your library now lives in
+// ~/Manga Library." with "Show", which opens the folder. A notice that stays
+// (data-folder-notices.svelte.js), never a passing toast.
+export async function quietSetupNotice() {
+  const root = dataFolder.quietRoot;
+  if (!root) return;
+  dataFolder.quietRoot = '';
+  const home = await fsx.homeDir().catch(() => '');
+  addNotice({ id: `quiet:${root}`, text: `Your library now lives in ${homePath(root, home)}.`, reveal: root });
+}
 
 // Legacy mode: "Set up shared folder…".
 export async function pickAndSetUp() {
@@ -64,7 +80,7 @@ export async function pickAndSetUp() {
     const { root, info } = await rootForPick(picked);
     if (!(await warnIfSynced(info))) return;
     const r = await setUpSharedFolder(root, { confirm: confirmClosed });
-    toast(`Your library is now in the shared folder at ${root}.${moved(r)}`);
+    toast(`Your library is now in the shared folder at ${shownPath(root)}.${moved(r)}`);
   } catch (e) {
     report(e, 'Could not set up the shared folder');
   }
@@ -77,7 +93,7 @@ export async function setUpAtDefault(root) {
   try {
     if (!(await warnIfSynced(await inspectFolder(root)))) return false;
     const r = await setUpSharedFolder(root, { confirm: confirmClosed });
-    toast(`Your library is now in the shared folder at ${root}.${moved(r)}`);
+    toast(`Your library is now in the shared folder at ${shownPath(root)}.${moved(r)}`);
     return true;
   } catch (e) {
     report(e, 'Could not set up the shared folder');
@@ -103,12 +119,12 @@ export async function useSharedNow() {
   const old = library.root;
   try {
     const yes = await ask(
-      `The shared folder already has a typesetter library, from another computer or an earlier setup. Use that one?\n\nYour library at ${old} stays where it is, untouched. You can still open its chapters from there later.`,
+      `The shared folder already has a typesetter library, from another computer or an earlier setup. Use that one?\n\nYour library at ${shownPath(old)} stays where it is, untouched. You can still open its chapters from there later.`,
       'Use the shared library',
     );
     if (!yes) return;
     await useSharedLibrary();
-    toast(`Now using the library in the shared folder. Your old library is still at ${old}.`);
+    toast(`Now using the library in the shared folder. Your old library is still at ${shownPath(old)}.`);
   } catch (e) {
     report(e, 'Could not use the shared library');
   }
@@ -121,15 +137,15 @@ export async function pickAndMove() {
     if (!picked) return;
     const { root, info } = await rootForPick(picked);
     if (info.marker) {
-      const use = await ask(`${root} is already a data folder. Use it instead? Nothing is moved.`, 'Use it');
+      const use = await ask(`${shownPath(root)} is already a data folder. Use it instead? Nothing is moved.`, 'Use it');
       if (!use) return;
       await useExistingFolder(root, { confirm: confirmClosed });
-      toast(`Using the data folder at ${root}.`);
+      toast(`Using the data folder at ${shownPath(root)}.`);
       return;
     }
     if (!(await warnIfSynced(info))) return;
     const r = await moveDataFolder(root, { confirm: confirmClosed });
-    toast(`The data folder is now at ${root}.${moved(r)}`);
+    toast(`The data folder is now at ${shownPath(root)}.${moved(r)}`);
   } catch (e) {
     report(e, 'Could not move the data folder');
   }
@@ -146,7 +162,7 @@ export async function pickExisting() {
       return;
     }
     await useExistingFolder(picked, { confirm: confirmClosed });
-    toast(`Using the data folder at ${picked}.`);
+    toast(`Using the data folder at ${shownPath(picked)}.`);
   } catch (e) {
     report(e, 'Could not use that folder');
   }
@@ -161,10 +177,10 @@ export async function pickInstead() {
     const { root, info } = await rootForPick(picked);
     if (info.marker) {
       await useExistingFolder(root, { confirm: confirmClosed });
-      toast(`Using the data folder at ${root}.`);
+      toast(`Using the data folder at ${shownPath(root)}.`);
       return;
     }
-    const make = await ask(`Make a new, empty data folder at ${root}? Your library at the old place is not touched.`, 'Make it');
+    const make = await ask(`Make a new, empty data folder at ${shownPath(root)}? Your library at the old place is not touched.`, 'Make it');
     if (!make || !(await warnIfSynced(info))) return;
     await setUpSharedFolder(root, { confirm: confirmClosed });
   } catch (e) {
@@ -176,7 +192,7 @@ export async function askDeleteOldCopy(path) {
   try {
     const bytes = await oldCopySize(path).catch(() => null);
     const size = bytes == null ? '' : `, ${(bytes / 1e9).toFixed(1)} GB`;
-    if (!(await ask(`Old copy at ${path}${size}. Delete it? This cannot be undone.`, 'Delete'))) return;
+    if (!(await ask(`Old copy at ${shownPath(path)}${size}. Delete it? This cannot be undone.`, 'Delete'))) return;
     await deleteOldCopy(path);
     toast('Old copy deleted.');
   } catch (e) {

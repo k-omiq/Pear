@@ -208,3 +208,41 @@ describe('first-run setup and usage', () => {
     expect(isComics()).toBe(false);
   });
 });
+
+// SHARED_DATA_FOLDER.md section 5.3: one answer per start question.
+describe('the data folder start answers', () => {
+  it.each([
+    ['ask', { setup: null, join: null }],
+    ['notNow', { setup: 'declined', join: null }],
+    ['moved', { setup: 'accepted', join: null }],
+    [{ setup: 'declined', join: 'accepted' }, { setup: 'declined', join: 'accepted' }],
+    [{ setup: 'maybe', join: 7 }, { setup: null, join: null }],
+    ['garbage', { setup: null, join: null }],
+    [undefined, { setup: null, join: null }],
+  ])('reads %j as %j', async (saved, answers) => {
+    storage['mt.prefs'] = JSON.stringify({ dataFolderFirstRun: saved, defaultsRev: 9 });
+    const { prefs } = await import('./prefs.svelte.js');
+    expect(prefs.dataFolderFirstRun).toEqual(answers);
+  });
+
+  it('stores an answer, keeps the other one, and refuses a value of another type', async () => {
+    const { prefs, setPref } = await import('./prefs.svelte.js');
+    setPref('dataFolderFirstRun', { ...prefs.dataFolderFirstRun, setup: 'declined' });
+    setPref('dataFolderFirstRun', { ...prefs.dataFolderFirstRun, join: 'declined' });
+    setPref('dataFolderFirstRun', 7);
+    expect(JSON.parse(storage['mt.prefs']).dataFolderFirstRun).toEqual({ setup: 'declined', join: 'declined' });
+    vi.resetModules();
+    const again = await import('./prefs.svelte.js');
+    expect(again.prefs.dataFolderFirstRun).toEqual({ setup: 'declined', join: 'declined' });
+  });
+
+  it('follows another window, from either form, and ignores a blob without it', async () => {
+    const { prefs, adoptSharedPrefs } = await import('./prefs.svelte.js');
+    adoptSharedPrefs(JSON.stringify({ dataFolderFirstRun: { setup: 'accepted', join: null } }));
+    expect(prefs.dataFolderFirstRun).toEqual({ setup: 'accepted', join: null });
+    adoptSharedPrefs(JSON.stringify({ usage: 'comics' }));
+    expect(prefs.dataFolderFirstRun).toEqual({ setup: 'accepted', join: null });
+    adoptSharedPrefs(JSON.stringify({ dataFolderFirstRun: 'notNow' }));
+    expect(prefs.dataFolderFirstRun).toEqual({ setup: 'declined', join: null });
+  });
+});

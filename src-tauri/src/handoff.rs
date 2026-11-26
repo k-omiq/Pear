@@ -7,7 +7,7 @@
 //! `cleaned/<name>` inside a claimed folder of `handoff/to-typesetter/`, and
 //! a destination is a new file inside `<root>/Typesetter/`.
 
-use crate::data_folder::{contains, free_name, now_secs, stamp, write_atomic, SUBFOLDER};
+use crate::data_folder::{contains, free_name, now_secs, stamp, sync_dir, write_atomic, SUBFOLDER};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
@@ -294,6 +294,352 @@ pub fn done(root: &Path, claim: &str) -> Result<(), String> {
     fs::remove_dir_all(&dir).map_err(|e| format!("Could not remove {}: {e}", dir.display()))
 }
 
+// ---------- version 2: waiting messages and linking (contract 8.4) ----------
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Entry {
+    pub key: String,
+    /// Changes whenever the folder under that key is a new one (a newer Save
+    /// replaces the whole folder, section 8.2), so a message judged already
+    /// is not read again while it waits.
+    pub stamp: String,
+}
+
+fn folder_stamp(meta: &fs::Metadata) -> String {
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let id = {
+        use std::os::unix::fs::MetadataExt;
+        meta.ino()
+    };
+    #[cfg(not(unix))]
+    let id = meta
+        .created()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("{modified:x}-{id:x}")
+}
+
+/// The messages waiting, each with its stamp, oldest name first. Dot names
+/// are never read. Lists the folder only; no message is opened.
+pub fn scan(root: &Path) -> Result<Vec<Entry>, String> {
+    let dir = inbox(root);
+    let entries = match fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("Could not read {}: {e}", dir.display())),
+    };
+    let mut out: Vec<Entry> = entries
+        .flatten()
+        .filter_map(|e| {
+            let key = e.file_name().to_str()?.to_string();
+            let meta = e.metadata().ok().filter(|m| m.is_dir())?;
+            (!key.starts_with('.')).then(|| Entry { key, stamp: folder_stamp(&meta) })
+        })
+        .collect();
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(out)
+}
+
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Peek {
+    /// The folder is not there any more.
+    pub gone: bool,
+    pub doc: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// Reads `<key>/handoff.json` of a message that is not claimed, in place
+/// (section 8.4.2): that one file only, opened, read and closed at once.
+/// Nothing is written and no image is opened.
+pub fn peek(root: &Path, key: &str) -> Result<Peek, String> {
+    key_ok(key)?;
+    let file = inbox(root).join(key).join("handoff.json");
+    let text = match fs::read_to_string(&file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Peek { gone: !inbox(root).join(key).is_dir(), error: Some("handoff.json is missing".into()), doc: None })
+        }
+        Err(e) => return Ok(Peek { error: Some(format!("handoff.json could not be read ({e})")), ..Peek::default() }),
+    };
+    Ok(match serde_json::from_str(&text) {
+        Ok(doc) => Peek { doc: Some(doc), ..Peek::default() },
+        Err(e) => Peek { error: Some(format!("handoff.json is not valid JSON ({e})")), ..Peek::default() },
+    })
+}
+
+/// A message folder by its key (waiting, not claimed) or its claim.
+fn message_dir(root: &Path, name: &str) -> Result<PathBuf, String> {
+    if name.starts_with(CLAIMED) {
+        claim_dir(root, name)
+    } else {
+        key_ok(name)?;
+        Ok(inbox(root).join(name))
+    }
+}
+
+#[derive(Serialize, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Fact {
+    pub exists: bool,
+    pub sha: Option<String>,
+    /// The pixel size after the file's EXIF rotation.
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Width and height as the page is shown: after its EXIF rotation.
+pub fn upright_size(p: &Path) -> Option<(u32, u32)> {
+    use image::metadata::Orientation::{Rotate270, Rotate270FlipH, Rotate90, Rotate90FlipH};
+    use image::ImageDecoder;
+    let mut dec = image::ImageReader::open(p).ok()?.with_guessed_format().ok()?.into_decoder().ok()?;
+    let (w, h) = dec.dimensions();
+    Some(match dec.orientation() {
+        Ok(Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH) => (h, w),
+        _ => (w, h),
+    })
+}
+
+fn sha256_hex(p: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut f = File::open(p).ok()?;
+    let mut h = Sha256::new();
+    std::io::copy(&mut f, &mut h).ok()?;
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn fact(p: &Path) -> Fact {
+    if !p.is_file() {
+        return Fact::default();
+    }
+    let (w, h) = upright_size(p).unwrap_or((0, 0));
+    Fact { exists: true, sha: sha256_hex(p), w, h }
+}
+
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Facts {
+    pub message: Vec<Fact>,
+    pub pear: Vec<Fact>,
+}
+
+/// The sha256 and upright size of message raws (`raws/<name>` of a key or a
+/// claim) and of library pages, for pairing (section 8.4.4). Only reads.
+pub fn facts(root: &Path, name: &str, rels: &[String], pear: &[String]) -> Result<Facts, String> {
+    let dir = message_dir(root, name)?;
+    let lib = root.join(SUBFOLDER);
+    let mut out = Facts::default();
+    for rel in rels {
+        out.message.push(message_file(&dir, rel).map(|p| fact(&p)).unwrap_or_default());
+    }
+    for p in pear {
+        let path = Path::new(p);
+        if !path.is_absolute() || !contains(&lib, path) {
+            return Err(format!("{p} is not inside the library"));
+        }
+        out.pear.push(fact(path));
+    }
+    Ok(out)
+}
+
+// ---------- content candidates (contract section 8.4.2) ----------
+// A Pear title whose raws hold a byte-identical copy of a message raw is a
+// candidate. A per-title question (titles are judged as a whole), asked on
+// a blocking thread, never on the webview's: sizes come from the file system
+// (no read), only files whose sizes are equal are hashed, a title stops as
+// soon as one project has `ENOUGH` identical raws, and it hashes at most
+// `BUDGET` files, spread over its chapters (their first raws first).
+
+pub const ENOUGH: usize = 3;
+pub const BUDGET: usize = 24;
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ScanDir {
+    pub project: String,
+    pub dir: String,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ScanMessage {
+    pub name: String,
+    pub rels: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ScanTitle {
+    pub id: String,
+    /// The projects this title may match (the link rule of section 8.4.2).
+    pub allow: Vec<String>,
+    pub messages: Vec<ScanMessage>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Found {
+    pub project: String,
+    pub identical: usize,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct TitleScan {
+    pub id: String,
+    pub found: Vec<Found>,
+    pub hashed: usize,
+}
+
+fn file_size(p: &Path) -> Option<u64> {
+    fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len())
+}
+
+/// The library's raws by size: one listing per chapter folder's `raws/` and
+/// a stat each. Every folder must be inside the library.
+fn raws_by_size(root: &Path, dirs: &[ScanDir]) -> Result<std::collections::HashMap<u64, Vec<(String, PathBuf)>>, String> {
+    let lib = root.join(SUBFOLDER);
+    let mut out: std::collections::HashMap<u64, Vec<(String, PathBuf)>> = std::collections::HashMap::new();
+    for d in dirs {
+        let dir = Path::new(&d.dir);
+        if !dir.is_absolute() || !contains(&lib, dir) || dir == lib {
+            return Err(format!("{} is not inside the library", d.dir));
+        }
+        let Ok(entries) = fs::read_dir(dir.join("raws")) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_file() {
+                out.entry(meta.len()).or_default().push((d.project.clone(), e.path()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Content candidates for each title, from one listing of the library.
+pub fn content_scan(root: &Path, dirs: &[ScanDir], titles: &[ScanTitle]) -> Result<Vec<TitleScan>, String> {
+    let index = raws_by_size(root, dirs)?;
+    let mut out = Vec::with_capacity(titles.len());
+    for t in titles {
+        let allow: HashSet<&str> = t.allow.iter().map(String::as_str).collect();
+        // Round robin over the chapters: the first raw of each, then the second...
+        let mut lists: Vec<(PathBuf, &[String])> = Vec::new();
+        for m in &t.messages {
+            if let Ok(dir) = message_dir(root, &m.name) {
+                lists.push((dir, &m.rels));
+            }
+        }
+        let longest = lists.iter().map(|(_, r)| r.len()).max().unwrap_or(0);
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut pear_sha: std::collections::HashMap<PathBuf, Option<String>> = std::collections::HashMap::new();
+        let mut hashed = 0usize;
+        'scan: for i in 0..longest {
+            for (dir, rels) in &lists {
+                let Some(rel) = rels.get(i) else { continue };
+                let Ok(file) = message_file(dir, rel) else { continue };
+                let Some(size) = file_size(&file) else { continue };
+                let Some(same_size) = index.get(&size) else { continue };
+                let cands: Vec<&(String, PathBuf)> = same_size.iter().filter(|(p, _)| allow.contains(p.as_str())).collect();
+                if cands.is_empty() {
+                    continue;
+                }
+                if hashed >= BUDGET {
+                    break 'scan;
+                }
+                hashed += 1;
+                let Some(mine) = sha256_hex(&file) else { continue };
+                let mut matched: HashSet<&str> = HashSet::new();
+                for (project, path) in cands {
+                    if matched.contains(project.as_str()) {
+                        continue;
+                    }
+                    let sha = match pear_sha.get(path) {
+                        Some(v) => v.clone(),
+                        None => {
+                            if hashed >= BUDGET {
+                                break 'scan;
+                            }
+                            hashed += 1;
+                            let v = sha256_hex(path);
+                            pear_sha.insert(path.clone(), v.clone());
+                            v
+                        }
+                    };
+                    if sha.as_deref() == Some(mine.as_str()) {
+                        matched.insert(project.as_str());
+                        let n = counts.entry(project.clone()).or_default();
+                        *n += 1;
+                        if *n >= ENOUGH {
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+        }
+        let mut found: Vec<Found> = counts.into_iter().map(|(project, identical)| Found { project, identical }).collect();
+        found.sort_by_key(|f| std::cmp::Reverse(f.identical));
+        out.push(TitleScan { id: t.id.clone(), found, hashed });
+    }
+    Ok(out)
+}
+
+/// More than one name on disk (the cleaner's page and the message's raw).
+fn linked(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).map(|m| m.nlink() > 1).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        crate::data_folder::has_links(path)
+    }
+}
+
+/// Identical raws (section 8.4.4): when the library raw at `dest` has the
+/// bytes of the message's raw and that raw is a hard link, the library takes
+/// the same file. Linked to a temp name beside `dest`, then renamed over it,
+/// so `dest` is never missing. Run only after `chapter.json` with the link is
+/// written. Any failure leaves everything as it was: `Ok(false)`.
+pub fn share_raw(root: &Path, claim: &str, rel: &str, dest: &Path) -> Result<bool, String> {
+    let src = message_file(&claim_dir(root, claim)?, rel)?;
+    let lib = root.join(SUBFOLDER);
+    if !dest.is_absolute() || !contains(&lib, dest) || !dest.is_file() {
+        return Err(format!("{} is not a page in the library", dest.display()));
+    }
+    if !linked(&src) || !same(root, claim, rel, dest).unwrap_or(false) {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if fs::metadata(&src).map(|m| m.ino()).ok() == fs::metadata(dest).map(|m| m.ino()).ok() {
+            return Ok(true);
+        }
+    }
+    let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("page");
+    let tmp = free_name(&dest.with_file_name(format!(".{name}.sharing-{:x}", crate::data_folder::nanos() & 0xffff_ffff)));
+    if fs::hard_link(&src, &tmp).is_err() {
+        return Ok(false);
+    }
+    if fs::rename(&tmp, dest).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return Ok(false);
+    }
+    if let Some(dir) = dest.parent() {
+        sync_dir(dir);
+    }
+    Ok(true)
+}
+
 // ---------- commands ----------
 
 /// The root the webview names must be the data folder in use, in good order.
@@ -355,6 +701,33 @@ pub fn handoff_done<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, c
     done(&shared_root(&app, &root)?, &claim)
 }
 
+#[tauri::command]
+pub fn handoff_scan<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String) -> Result<Vec<Entry>, String> {
+    scan(&shared_root(&app, &root)?)
+}
+
+#[tauri::command]
+pub fn handoff_peek<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, key: String) -> Result<Peek, String> {
+    peek(&shared_root(&app, &root)?, &key)
+}
+
+#[tauri::command]
+pub async fn handoff_facts<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, name: String, rels: Vec<String>, pear: Vec<String>) -> Result<Facts, String> {
+    let root = shared_root(&app, &root)?;
+    tauri::async_runtime::spawn_blocking(move || facts(&root, &name, &rels, &pear)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn handoff_content_scan<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, dirs: Vec<ScanDir>, titles: Vec<ScanTitle>) -> Result<Vec<TitleScan>, String> {
+    let root = shared_root(&app, &root)?;
+    tauri::async_runtime::spawn_blocking(move || content_scan(&root, &dirs, &titles)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn handoff_share_raw<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, claim: String, rel: String, dest: String) -> Result<bool, String> {
+    share_raw(&shared_root(&app, &root)?, &claim, &rel, Path::new(&dest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +746,103 @@ mod tests {
                 {"sourceIdx":1,"position":2,"raw":"raws/../../x","cleaned":null}]}"#,
         )
         .unwrap();
+    }
+
+    fn content_title(root: &Path, key: &str, pages: usize, seed: usize) -> ScanMessage {
+        let m = inbox(root).join(key);
+        fs::create_dir_all(m.join("raws")).unwrap();
+        let mut rels = Vec::new();
+        for i in 0..pages {
+            fs::write(m.join("raws").join(format!("{i:03}.png")), vec![(seed + i) as u8; 2000 + seed * 64 + i]).unwrap();
+            rels.push(format!("raws/{i:03}.png"));
+        }
+        ScanMessage { name: key.into(), rels }
+    }
+
+    #[test]
+    fn content_scan_finds_the_title_stops_early_and_keeps_to_its_budget() {
+        let root = scratch("handoff-content");
+        // Pear: project A holds copies of the message's raws, B has the same
+        // sizes and other bytes, C is not allowed.
+        let a = content_title(&root, "cleaner-L-p1-c1", 10, 1);
+        let lib = root.join(SUBFOLDER);
+        let mut dirs = Vec::new();
+        for (project, bytes_of) in [("A", true), ("B", false), ("C", true)] {
+            let ch = lib.join(project).join("001");
+            fs::create_dir_all(ch.join("raws")).unwrap();
+            for (i, rel) in a.rels.iter().enumerate() {
+                let src = inbox(&root).join(&a.name).join(rel);
+                let mut bytes = fs::read(&src).unwrap();
+                if !bytes_of {
+                    bytes[0] ^= 0xff;
+                }
+                fs::write(ch.join("raws").join(format!("{i:03}.png")), bytes).unwrap();
+            }
+            fs::write(ch.join("raws").join(".DS_Store"), b"x").unwrap();
+            dirs.push(ScanDir { project: project.into(), dir: ch.to_string_lossy().into_owned() });
+        }
+        let title = ScanTitle { id: "L|p1".into(), allow: vec!["A".into(), "B".into()], messages: vec![a] };
+        let r = content_scan(&root, &dirs, std::slice::from_ref(&title)).unwrap();
+        assert_eq!(r[0].found, vec![Found { project: "A".into(), identical: ENOUGH }], "stops once A has enough");
+        assert!(r[0].hashed <= BUDGET, "{}", r[0].hashed);
+        // No size in common: nothing hashed.
+        let other = content_title(&root, "cleaner-L-p2-c1", 5, 9);
+        let none = ScanTitle { id: "L|p2".into(), allow: vec!["A".into(), "B".into()], messages: vec![other] };
+        let r = content_scan(&root, &dirs, &[none]).unwrap();
+        assert_eq!((r[0].found.len(), r[0].hashed), (0, 0));
+        // Only folders inside the library.
+        let bad = vec![ScanDir { project: "A".into(), dir: root.to_string_lossy().into_owned() }];
+        assert!(content_scan(&root, &bad, &[title]).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `MT_BENCH_DIR=/some/dir cargo test --release --lib handoff::tests::content_scan_time -- --ignored --nocapture`
+    /// A 3,000-raw library and a 68-chapter send of 40 pages: no match (every
+    /// message raw is stat'ed) and a match on the last chapters' raws.
+    #[test]
+    #[ignore]
+    fn content_scan_time_68_chapters_against_3000_raws() {
+        let base = std::env::var("MT_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+        let root = base.join(format!("pear-bench-{}", std::process::id()));
+        let lib = root.join(SUBFOLDER);
+        let mut dirs = Vec::new();
+        for c in 0..100 {
+            let ch = lib.join("S").join(format!("{c:03}"));
+            fs::create_dir_all(ch.join("raws")).unwrap();
+            for i in 0..30 {
+                fs::write(ch.join("raws").join(format!("{i:03}.png")), vec![7u8; 400_000 + c * 30 + i]).unwrap();
+            }
+            dirs.push(ScanDir { project: format!("P{}", c / 10), dir: ch.to_string_lossy().into_owned() });
+        }
+        let mut messages = Vec::new();
+        for c in 0..68 {
+            let m = inbox(&root).join(format!("cleaner-L-p9-c{c}"));
+            fs::create_dir_all(m.join("raws")).unwrap();
+            let mut rels = Vec::new();
+            for i in 0..40 {
+                fs::write(m.join("raws").join(format!("{i:03}.png")), vec![9u8; 300_000 + c * 40 + i]).unwrap();
+                rels.push(format!("raws/{i:03}.png"));
+            }
+            messages.push(ScanMessage { name: format!("cleaner-L-p9-c{c}"), rels });
+        }
+        let allow: Vec<String> = (0..10).map(|p| format!("P{p}")).collect();
+        let title = ScanTitle { id: "L|p9".into(), allow: allow.clone(), messages: messages.clone() };
+        // What was just written goes down first, so the timing is the scan's.
+        let _ = std::process::Command::new("sync").status();
+        let t = std::time::Instant::now();
+        let r = content_scan(&root, &dirs, &[title]).unwrap();
+        println!("no match: {:?}, hashed {}", t.elapsed(), r[0].hashed);
+        // Same-size, same-bytes copies of chapter 67's raws in P3.
+        let ch = lib.join("S").join("030");
+        for i in 0..40 {
+            fs::write(ch.join("raws").join(format!("m{i:03}.png")), vec![9u8; 300_000 + 67 * 40 + i]).unwrap();
+        }
+        let title = ScanTitle { id: "L|p9".into(), allow, messages };
+        let _ = std::process::Command::new("sync").status();
+        let t = std::time::Instant::now();
+        let r = content_scan(&root, &dirs, &[title]).unwrap();
+        println!("match: {:?}, hashed {}, found {:?}", t.elapsed(), r[0].hashed, r[0].found);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -412,6 +882,75 @@ mod tests {
         assert!(dest.is_file());
         done(&root, &c).unwrap();
         assert!(list(&root).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_stamps_a_new_folder_and_peek_reads_in_place() {
+        let root = scratch("handoff-peek");
+        message(&root, "k1");
+        let before = scan(&root).unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].key, "k1");
+        let p = peek(&root, "k1").unwrap();
+        assert_eq!(p.doc.unwrap()["schema"], 1);
+        assert!(peek(&root, ".claimed-x").is_err(), "only waiting messages");
+        assert!(peek(&root, "gone").unwrap().gone);
+        // Peeking changes nothing: same names, same stamp.
+        assert_eq!(scan(&root).unwrap(), before);
+        assert_eq!(list(&root).unwrap(), vec!["k1".to_string()]);
+        // A newer Save replaces the folder: a new stamp.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::rename(inbox(&root).join("k1"), inbox(&root).join(".stale-k1")).unwrap();
+        message(&root, "k1");
+        fs::remove_dir_all(inbox(&root).join(".stale-k1")).unwrap();
+        assert_ne!(scan(&root).unwrap()[0].stamp, before[0].stamp);
+        fs::write(inbox(&root).join("k1").join("handoff.json"), "{ nope").unwrap();
+        assert!(peek(&root, "k1").unwrap().error.unwrap().contains("not valid JSON"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn facts_and_shared_raws() {
+        let root = scratch("handoff-facts");
+        let ch = root.join(SUBFOLDER).join("S").join("c").join("raws");
+        fs::create_dir_all(&ch).unwrap();
+        message(&root, "k1");
+        // The message's raw is a link to the cleaner's own page.
+        let cleaner = root.join("Cleaner");
+        fs::create_dir_all(&cleaner).unwrap();
+        fs::hard_link(inbox(&root).join("k1").join("raws").join("001.png"), cleaner.join("page.png")).unwrap();
+        let mine = ch.join("001.png");
+        fs::copy(cleaner.join("page.png"), &mine).unwrap();
+        let other = ch.join("002.png");
+        image::GrayImage::from_pixel(6, 4, image::Luma([9u8])).save(&other).unwrap();
+
+        let f = facts(&root, "k1", &["raws/001.png".into(), "raws/none.png".into()], &[mine.display().to_string(), other.display().to_string()]).unwrap();
+        assert_eq!((f.message[0].w, f.message[0].h), (4, 6));
+        assert!(!f.message[1].exists);
+        assert_eq!(f.message[0].sha, f.pear[0].sha);
+        assert_ne!(f.message[0].sha, f.pear[1].sha);
+        assert_eq!((f.pear[1].w, f.pear[1].h), (6, 4));
+        assert!(facts(&root, "k1", &[], &[root.join("x.png").display().to_string()]).is_err(), "library pages only");
+
+        let c = claim(&root, "k1").unwrap().unwrap();
+        assert!(!share_raw(&root, &c, "raws/001.png", &other).unwrap(), "different bytes are never shared");
+        assert!(share_raw(&root, &c, "raws/001.png", &mine).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&mine).unwrap().ino(), fs::metadata(cleaner.join("page.png")).unwrap().ino());
+        }
+        assert_eq!(fs::read_dir(&ch).unwrap().count(), 2, "no temp file left");
+        assert!(share_raw(&root, &c, "raws/001.png", &root.join("x.png")).is_err());
+        // A raw that is not a link (a copy) is not shared.
+        fs::remove_file(cleaner.join("page.png")).unwrap();
+        let plain_copy = ch.join("003.png");
+        fs::copy(&mine, &plain_copy).unwrap();
+        done(&root, &c).unwrap();
+        message(&root, "k2");
+        let c2 = claim(&root, "k2").unwrap().unwrap();
+        assert!(!share_raw(&root, &c2, "raws/001.png", &plain_copy).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 

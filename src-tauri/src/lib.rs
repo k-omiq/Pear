@@ -114,6 +114,11 @@ pub fn run() {
       data_folder::data_folder_use_existing,
       data_folder::data_folder_delete_old,
       data_folder::data_folder_size,
+      data_folder::data_folder_sister,
+      data_folder::data_folder_quiet_setup,
+      data_folder::data_folder_plan,
+      data_folder::data_folder_progress,
+      data_folder::data_folder_reveal,
       handoff::handoff_list,
       handoff::handoff_recover,
       handoff::handoff_claim,
@@ -123,7 +128,12 @@ pub fn run() {
       handoff::handoff_same,
       handoff::handoff_put_back,
       handoff::handoff_reject,
-      handoff::handoff_done
+      handoff::handoff_done,
+      handoff::handoff_scan,
+      handoff::handoff_peek,
+      handoff::handoff_facts,
+      handoff::handoff_content_scan,
+      handoff::handoff_share_raw
     ])
     .manage(agent_mcp::AgentDoor::default())
     .manage(ai_api::AiApi::default())

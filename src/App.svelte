@@ -22,10 +22,15 @@
   import ChapterVersionsSheet from './lib/home/ChapterVersionsSheet.svelte';
   import Onboarding from './lib/onboarding/Onboarding.svelte';
   import DataFolderCard from './lib/home/DataFolderCard.svelte';
-  import DataFolderFirstRun from './lib/home/DataFolderFirstRun.svelte';
+  import DataFolderDialog from './lib/home/DataFolderDialog.svelte';
+  import HandoffMatchBanner from './lib/home/HandoffMatchBanner.svelte';
+  import HandoffMatchScreen from './lib/home/HandoffMatchScreen.svelte';
   import DataFolderMissing from './lib/home/DataFolderMissing.svelte';
   import { dataFolder, initDataFolder, recheckDataFolder } from './lib/data-folder.svelte.js';
-  import { watchHandoffs } from './lib/handoff.svelte.js';
+  import { watchHandoffs, handoffMatch, openMatch } from './lib/handoff.svelte.js';
+  import { quietSetupNotice } from './lib/data-folder-actions.js';
+  import { loadNotices } from './lib/data-folder-notices.svelte.js';
+  import DataFolderNotices from './lib/home/DataFolderNotices.svelte';
   import { onboarding, offerOnboardingAtBoot, finishOnboarding } from './lib/onboarding/onboarding.svelte.js';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
@@ -81,6 +86,11 @@
     if (role.agent) return;
     if ((await recheckDataFolder()) && route.name !== 'editor' && dataFolder.mode !== 'unavailable') scanLibrary();
   }
+
+  // Only single Saves wait: the match screen opens by itself, on Home.
+  $effect(() => {
+    if (handoffMatch.autoOpen && route.name !== 'editor' && !onboarding.open) openMatch();
+  });
 
   // What this window is for: the user's main window, or one opened for an AI
   // agent's chapter (agent/windows.js), which opens that chapter at boot.
@@ -149,7 +159,11 @@
     } else {
       // The AI door opens only if the user left it on (Settings, AI).
       initDoor();
-      if (dataFolder.notice) toast(dataFolder.notice);
+      // One-time notices that stay until closed, shown once the first-run
+      // setup is closed: a stopped move's recovery (noted when it ran), and
+      // after a quiet setup (row E) where the library now lives.
+      loadNotices();
+      quietSetupNotice();
       // Chapters Manga Cleaner sends: main window only.
       releaseHandoffs = watchHandoffs();
     }
@@ -742,7 +756,7 @@
 {:else if booted}
   <HomeFrame onSettings={openSettings}>
     <DataFolderCard />
-    <DataFolderFirstRun />
+    <HandoffMatchBanner />
     {#if route.name === 'project'}
       <ProjectView
         onNewChapter={(id) => openNewChapter(id)}
@@ -788,5 +802,12 @@
 <!-- Over the route rather than in place of it, as Settings is, so running
      the setup again from the editor keeps the chapter mounted. -->
 {#if onboarding.open}<Onboarding />{/if}
+<!-- The start question (rows D and F) and the match screen: main window,
+     never over the editor, never over the first-run setup. -->
+{#if booted && route.name !== 'editor'}
+  <DataFolderDialog />
+  {#if handoffMatch.open}<HandoffMatchScreen />{/if}
+{/if}
 {/if}
 <Toast />
+{#if !onboarding.open}<DataFolderNotices />{/if}

@@ -7,6 +7,7 @@
   import { library, projectById, setProjectOcrLanguage } from './library.svelte.js';
   import { dataFolder, forgetOldCopy, refreshBlockers } from './data-folder.svelte.js';
   import { pickAndSetUp, adoptNow, useSharedNow, pickAndMove, pickExisting, askDeleteOldCopy } from './data-folder-actions.js';
+  import { shownPath } from './data-folder-words.js';
   import { settingsView, shownSettingsTab, closeSettings } from './settings-tabs.svelte.js';
   import SeriesGuide from './SeriesGuide.svelte';
   import LetteringSetup from './LetteringSetup.svelte';
@@ -776,19 +777,19 @@
             </div>
             <p class="set-desc">
               {#if dataFolder.mode === 'shared'}
-                <span class="set-path" title={dataFolder.root}>{dataFolder.root}</span><br />
+                <span class="set-path" title={shownPath(dataFolder.root)}>{shownPath(dataFolder.root)}</span><br />
                 Shared with Manga Cleaner. Chapters you save there show up here.
               {:else if dataFolder.mode === 'pending' && dataFolder.bothLibraries}
-                <span class="set-path" title={library.root}>{library.root}</span><br />
-                The shared folder at {dataFolder.root} already has a typesetter library. Use it to get Manga Cleaner's chapters here; your library here stays where it is.
+                <span class="set-path" title={shownPath(library.root)}>{shownPath(library.root)}</span><br />
+                The shared folder at {shownPath(dataFolder.root)} already has a typesetter library. Use it to get Manga Cleaner's chapters here; your library here stays where it is.
               {:else if dataFolder.mode === 'pending'}
-                <span class="set-path" title={library.root}>{library.root}</span><br />
-                Manga Cleaner set up a shared folder at {dataFolder.root}. Your library is still here; move it in to share it.
+                <span class="set-path" title={shownPath(library.root)}>{shownPath(library.root)}</span><br />
+                Manga Cleaner set up a shared folder at {shownPath(dataFolder.root)}. Your library is still here; move it in to share it.
               {:else if dataFolder.mode === 'unavailable'}
-                <span class="set-path" title={dataFolder.root ?? ''}>{dataFolder.root ?? 'Not set'}</span><br />
+                <span class="set-path" title={shownPath(dataFolder.root ?? '')}>{dataFolder.root ? shownPath(dataFolder.root) : 'Not set'}</span><br />
                 Not found. Reconnect the drive, or choose another folder.
               {:else}
-                <span class="set-path" title={library.root}>{library.root || 'Not set'}</span><br />
+                <span class="set-path" title={shownPath(library.root)}>{library.root ? shownPath(library.root) : 'Not set'}</span><br />
                 Only this app uses this folder. Set up a shared folder to keep your library with Manga Cleaner's and get its chapters here when you save them there.
               {/if}
               {#if dataFolder.detail}<br />{dataFolder.detail}{/if}
@@ -806,7 +807,7 @@
                 </div>
               </div>
               <p class="set-desc">
-                <span class="set-path" title={copy.path}>{copy.path}</span><br />
+                <span class="set-path" title={shownPath(copy.path)}>{shownPath(copy.path)}</span><br />
                 Left behind by a move to another drive. Delete it once you have checked your library at the new place.
               </p>
             </div>

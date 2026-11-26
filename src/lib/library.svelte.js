@@ -1237,7 +1237,9 @@ async function copyInto(dir, name, bytes, used) {
 // `typesetting` is the record's field for a chapter that already had one - an
 // imported package - and undefined for a new chapter, which starts 'smart'
 // (`newTypesetting`).
-// `extra.fields` are more record fields (the handoff's `cleanerLink`), and
+// `extra.patchRecord` sets only the keys it changes in project.json (a
+// chapter filed from Manga Cleaner, section 8.4.3). `extra.fields` are more
+// record fields (the handoff's `cleanerLink`), and
 // `extra.rollback` runs first on the failure path, before the directory goes:
 // a handoff moves files in rather than copying them, and moves them back.
 async function buildChapter(p, number, title, copy, mode = 'typeset', typesetting, extra = null) {
@@ -1328,7 +1330,16 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
     // The whole-record rewrite every project.json write is, merged with any
     // other window's (`writeProjectRecord`): the layout, the language, the tag
     // registry and the series guide ride on it with the new cover.
-    await writeProjectRecord(p, { coverChapterId, coverPageId, updatedAt });
+    if (extra?.patchRecord) {
+      // A chapter filed from Manga Cleaner into a title here (section
+      // 8.4.3): only the keys this sets, the rest of project.json as on disk.
+      const patch = willHaveCover ? { coverChapterId, coverPageId, updatedAt } : { updatedAt };
+      const turn = recordMutex.then(() => patchProjectRecordOnDisk(p, patch));
+      recordMutex = turn.catch(() => {});
+      await turn;
+    } else {
+      await writeProjectRecord(p, { coverChapterId, coverPageId, updatedAt });
+    }
 
     p.chapters = [...p.chapters, chapter].sort((a, b) => a.number - b.number);
     p.coverChapterId = coverChapterId;
@@ -2329,7 +2340,7 @@ export async function createChapterFromHandoff({ projectId, number, title, pages
     },
     mode,
     undefined,
-    { fields: { cleanerLink: sentLink(link, linkPages) }, rollback: () => giveBack(mover, moved) },
+    { fields: { cleanerLink: sentLink(link, linkPages) }, rollback: () => giveBack(mover, moved), patchRecord: true },
   );
 }
 
@@ -2502,6 +2513,138 @@ async function applyNow(c, path, chapterId, input, link, mover) {
   }
   return { stale: false, replaced, added, pageCount: next.length };
 }
+
+// ===== Linking a chapter this app already has (SHARED_DATA_FOLDER.md 8.4) =====
+
+// The project a matched cleaner title files into gets the link first
+// (section 8.4.3): a link to another cleaner library is replaced.
+export async function setProjectCleanerLink(projectId, link) {
+  const p = projectById(projectId);
+  if (!p || p.unreadable) throw new Error('No such readable project');
+  const next = projectLinkOf(link);
+  const run = recordWrite.then(async () => {
+    const turn = recordMutex.then(() => writeCleanerLinkOnly(p, next));
+    recordMutex = turn.catch(() => {});
+    await turn;
+    p.cleanerLink = next;
+  });
+  recordWrite = run.catch(() => {});
+  await run;
+  return next;
+}
+
+// Section 8.4.3: linking adds the one key to project.json as it is on disk
+// and changes nothing else. Not the whole-record rewrite: that writes the
+// record in the current form (tags, export scale, guide), and a title that
+// was only matched must not come back rewritten. No new `updatedAt` either.
+async function writeCleanerLinkOnly(p, next) {
+  await patchProjectRecordOnDisk(p, { cleanerLink: next }, ['cleanerLink']);
+}
+
+// Sets only the keys in `patch` in project.json as it is on disk; every
+// other key and value stays as it is. A key in `dropWhenNull` whose value is
+// null is removed instead. Under the same lock as the whole-record writer,
+// so another window's write is never lost; the merge base learns the keys.
+async function patchProjectRecordOnDisk(p, patch, dropWhenNull = []) {
+  const path = await fsx.join(p.dir, 'project.json');
+  return withRecordLock(path, async () => {
+    let raw;
+    try {
+      raw = await readJson(path);
+    } catch (e) {
+      throw new Error(`This title's record could not be read: ${e?.message ?? e}`);
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error("This title's record could not be read");
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null && dropWhenNull.includes(k)) delete raw[k];
+      else raw[k] = v;
+    }
+    await writeJson(path, raw);
+    const base = recordBase.get(p.dir);
+    if (base) {
+      const { updatedAt, ...fields } = patch;
+      recordBase.set(p.dir, { ...base, ...fields });
+    }
+    announceRecord(p.dir);
+    return raw;
+  });
+}
+
+// Open in this window or in another (an AI window): such a chapter is never
+// linked or replaced (section 8.4.3), it waits.
+export async function chapterOpenAnywhere(chapterId) {
+  if (chapterBusy(chapterId)) return true;
+  try {
+    await assertClosedElsewhere({ chapterId });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+// A cleaner chapter joins a chapter made here (section 8.4.4). `pairs` is
+// the pairing, [{ index, pageId }]: `index` into `input` (the message's
+// pages, as the filer checked them). The link is written with the page map
+// and the message's time. No raw, no text box and no lettering changes.
+// Cleaned files: a paired page with none takes the message's; with
+// `replace` the message's also replace the ones here, which go to
+// logs/previous-cleaned (bytes that are the same stay as they are).
+export const linkHandoffToChapter = guarded(async function linkHandoffToChapter(projectId, chapterId, { pages: input, pairs, link, mover, replace = false }) {
+  const c = chapterById(projectId, chapterId);
+  if (!c) throw new Error('No such chapter');
+  if (c.unreadable) throw new Error('This chapter could not be read');
+  await asOpen(() => assertClosedElsewhere({ chapterId }));
+  await asOpen(() => assertClosed(chapterId));
+  const path = await fsx.join(c.dir, 'chapter.json');
+  return holdingChapter(projectId, chapterId, path, async () => {
+    const chapterText = await fsx.readTextFile(path);
+    const record = JSON.parse(chapterText);
+    const pages = record.pages ?? [];
+    const before = await requireSnapshot(c.dir, chapterText, record, 'before-cleaner');
+    const cleanedDir = await fsx.join(c.dir, 'cleaned');
+    const ensureCleaned = lazyDir(cleanedDir);
+    const usedCleaned = await usedCleanedNames(c.dir, pages);
+    const next = pages.map((pg) => ({ ...pg }));
+    const moved = [];
+    const previous = [];
+    const linkPages = [];
+    let took = 0;
+    let replaced = 0;
+    try {
+      for (const { index, pageId } of pairs) {
+        const src = input[index];
+        const at = next.findIndex((pg) => pg.id === pageId);
+        if (!src || at < 0) throw new Error('The pages changed; match the chapter again');
+        linkPages.push({ sourceIdx: src.sourceIdx, pageId });
+        if (!src.cleanedRel) continue;
+        const pg = next[at];
+        if (pg.cleaned && !replace) continue;
+        if (pg.cleaned && mover.same && (await mover.same(src.cleanedRel, await fsx.join(cleanedDir, pg.cleaned)).catch(() => false))) continue;
+        const name = await takeInto(mover, moved, src.cleanedRel, await ensureCleaned(), src.cleanedName, usedCleaned);
+        if (pg.cleaned) {
+          previous.push(pg.cleaned);
+          replaced++;
+        } else took++;
+        next[at] = { ...pg, cleaned: name };
+      }
+      record.cleanerLink = sentLink(link, linkPages);
+      await commitPages(c, path, record, next);
+    } catch (e) {
+      await giveBack(mover, moved);
+      throw e;
+    }
+    try {
+      sourceUndos.set(chapterId, before);
+      c.cleanerLink = linkOf(record.cleanerLink);
+      await dropCleaned(c.dir, previous, next);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      err.committed = true;
+      throw err;
+    }
+    return { linked: linkPages.length, took, replaced, pageFiles: next.map((pg) => ({ id: pg.id, file: pg.file })) };
+  });
+});
 
 // Lines for the pages a translations file covers. It says what is on pages
 // 1..N; it says nothing about whether the chapter has pages after that, so it
