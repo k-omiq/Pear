@@ -589,8 +589,19 @@ either:
   at least 4 characters long.
 
 So "Dungeon streamer" finds "Dungeon Steamer", and "apocalypse" finds
-"Surviving the Apocalypse". Candidates are ranked: smallest distance first,
-then containment, then name order.
+"Surviving the Apocalypse".
+
+**Content candidates.** A Pear project (with the same link rule as above) is
+also a candidate when at least one raw in the message is byte-identical to
+one of that project's raws. Pear finds these cheaply: it indexes its raws by
+file size (from the file system, no read), takes the sizes of the message's
+raws the same way, and hashes only files whose sizes are equal. The result is
+cached per key with the judged state. This catches renamed titles, such as
+"wizard who killed 10k" against "The Wizard Who Lay with 10,000 Girls". It
+runs before "no candidates" decides to make a new title.
+
+Candidates are ranked: content candidates first (most identical raws first),
+then smallest name distance, then containment, then name order.
 
 **Waiting**: a message that waits stays in `handoff/to-typesetter/<key>`,
 unclaimed. To list it, Pear's Rust side reads its `handoff.json` in place
@@ -634,7 +645,11 @@ One row per waiting cleaner title:
   - **Skip this chapter**.
 - If pages cannot be paired (rule below), link and replace are not offered.
   The row says why, for example "Pages differ: 15 in Manga Cleaner, 14 in Pear", and
-  offers "Add as a separate chapter" or "Skip this chapter".
+  offers "Keep waiting" (the default), "Add as a separate chapter" or "Skip
+  this chapter". **No default ever adds a chapter beside one Pear already
+  has**: Apply with no change leaves such a chapter waiting.
+- While Pear still reads pages for pairing, the line says "Checking pages…"
+  and Apply is disabled, so the default never depends on timing.
 
 - A Pear project can be chosen by one row only. Once one row picks it, the
   other rows do not offer it.
@@ -645,7 +660,9 @@ One row per waiting cleaner title:
 One button: "Apply". Pear then files every waiting message of the rows not
 skipped, in order, each with the version 1 claim, validate and locking rules
 (section 8.3 steps 2 to 4). It writes `cleanerLink` into the chosen
-project's `project.json` first.
+project's `project.json` first. That write adds the one key to the file as
+it is on disk and changes no other key or value: the project's styles and
+settings are not rewritten in a newer form.
 
 - **Single flight.** The 3-second check pauses while the match screen is
   open, and Apply runs inside the same single flight as filing. No poll can
