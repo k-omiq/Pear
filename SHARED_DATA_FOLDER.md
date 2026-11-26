@@ -1,6 +1,9 @@
 # Shared data folder (Manga Cleaner + Pear)
 
-Contract version 1, draft 3 (after design review). The same file lives in
+Contract version 2, draft 1 (2026-11-26). Version 2 adds the start flows
+(section 5.1), the sister-app test (section 4.1) and title matching
+(section 8.4). The plan behind it is `docs/plans/library-sync-plan.md` in the
+cleaner and `PLAN_LIBRARY_SYNC.md` in Pear. The same file lives in
 both repositories: `manga-cleaner/docs/shared-data-folder.md` and
 `manga-typesetter/SHARED_DATA_FOLDER.md`. Change both together.
 
@@ -20,8 +23,16 @@ other by hand, and every page is stored twice.
 | R5 | **Sync**: "Save" in the cleaner makes the chapter appear in Pear, and a later Save updates it there. Neither app has to be open when the other acts. | Save in the cleaner, switch to Pear: the chapter is there within a few seconds. |
 | R6 | **Save destination option**: the cleaned pages go into the data folder only, or also into a folder next to the raws the user picked. | Both options work, and both sync to Pear. |
 
-Out of scope for version 1 (section 11): Pear back to the cleaner, live swap
-of a chapter Pear has open, a shared project catalog.
+Version 2 adds:
+
+| # | Requirement | Measure of done |
+|---|---|---|
+| R7 | **Bring existing titles across.** Every cleaner title can go to Pear. Where Pear already has that title, the cleaner's chapters join it. | Send all titles, match them: no title or chapter shows twice, and no Pear page, text box or lettering changed. |
+| R8 | **One app alone: no question.** Without the sister app, the library moves into the shared layout by itself. | First start with no sister: Settings shows `~/Manga Library`, nothing was asked. |
+| R9 | **Ask once, clearly.** With the sister present, a dialog asks once; an app that starts after the folder exists asks during its first run. Both directions. | Each case shows its dialog once, and never after "Not now". |
+
+Out of scope (section 12): Pear back to the cleaner, live swap of a chapter
+Pear has open, a two-way catalog that both apps write.
 
 ## 2. Architecture
 
@@ -110,6 +121,30 @@ A page's file hash is not an identity: re-cleaning can replace a page's source
 - A schema the app does not know: Unavailable mode, "set up by a newer
   version". Never overwritten.
 
+### 4.1 Is the sister app present?
+
+The **sister app** is the other app: Pear for the cleaner, the cleaner for
+Pear. "Installed" cannot be checked the same way on three systems, and an app
+that never ran has nothing to share. So the test is: **has the sister run on
+this computer?** True when any of these exists:
+
+1. the pointer file (section 4);
+2. the sister's app data folder, for its release identifier
+   (`com.mangatypesetter.app` or `com.mangacleaner.studio`), in any of the
+   system's app data locations (Tauri `app_data_dir`, `app_local_data_dir`,
+   `app_config_dir`);
+3. the sister's legacy library: Pear `~/Documents/MangaTypesetter`; the
+   cleaner `library/` inside its app data folder;
+4. the sister's webview data folder (macOS `~/Library/WebKit/<identifier>`;
+   on Windows and Linux it sits inside the app data folders of item 2).
+   Pear's Rust side does not always create its app data folder, so on macOS
+   this is the reliable sign that Pear has run.
+
+- The check only reads. It never creates any of these.
+- A dev or side-by-side build (section 4, first bullet) checks the release
+  identifiers too: it shares the dev pointer, but a real sister still counts.
+- `MANGA_SISTER_PRESENT` set to `1` or `0` overrides the result, for tests.
+
 ## 5. Modes
 
 | Mode | When | Library used | What the user sees |
@@ -123,6 +158,129 @@ A page's file hash is not an identity: re-cleaning can replace a page's source
 lock, the app lock, Pear's scan, the marker writer) refuses to create the
 root. Without this an unplugged drive or an unmounted share silently gets a
 new, empty library.
+
+### 5.1 What happens at start
+
+Each app runs this before it opens a library. Every start lands in exactly
+one row; the first row that matches wins.
+
+| # | State at start | What the app does |
+|---|---|---|
+| B | Journal exists (a move is unfinished). Checked first: with a journal, no other row is looked at. | Unavailable; recovery runs (section 7). |
+| A | Pointer good, this app's subfolder has its library file | Shared. Nothing to ask. |
+| C | Pointer good, this app has no subfolder yet, **first launch of this app** | First-run step "Join" (section 5.5). |
+| D | Pointer good, this app has no subfolder yet, the app was used before (Pending) | The dialog (section 5.4), Join variant, once. |
+| E | No pointer, **sister not present** | Quiet setup (section 5.2). |
+| F | No pointer, sister present | The dialog (section 5.4), Set up variant, once. |
+
+Unavailable for any other reason (section 5 table) stays as in version 1.
+
+"No subfolder yet" also covers a subfolder that exists but is empty. A
+non-empty subfolder without its library file is Unavailable: "The Pear (or
+Cleaner) folder inside the data folder is damaged."
+
+**First launch** means all of these: this app has no library of its own yet
+(the legacy place is absent or holds no title), AND it has never stored a
+start answer (section 5.3), AND its own first-run flow is not done (Pear:
+`prefs.onboarded` is false; the cleaner: its first-launch dialog is not
+done).
+
+### 5.2 Quiet setup (row E)
+
+The app runs Setup at the default place (`~/Manga Library`, section 7)
+without asking, only when all of these hold:
+
+- The default place is absent, or an empty folder.
+- It is on the same volume as this app's current library, so Setup is one
+  `rename`: instant, nothing copied. (No library yet: nothing to check.)
+- No file in the current library is cloud-only (section 7, step 2).
+- Neither the current library nor the default place is inside a known sync
+  folder (section 7, "Default location").
+- No job is running. (It runs before the library opens, so none can be.)
+- Every check above is made again under `move.lock`, just before the
+  rename. The other app's lock rules (section 6) apply as for any setup.
+
+If any check fails, the app stays Legacy and says nothing. Settings > Data
+folder still offers Setup. If the sister appears later, row F (or row D for
+the sister) asks then.
+
+After a quiet setup the app shows one short notice, once: "Your library now
+lives in ~/Manga Library." with a "Show" button that opens the folder.
+
+A new install with no library yet takes the same path: Setup creates the
+folder, the marker, this app's subfolder and the pointer. Nothing moves.
+
+### 5.3 Answers are kept per app
+
+Each app stores its own answer in its own settings: the cleaner
+`dataFolderPromptAnswered`, Pear `dataFolderFirstRun`. The value records
+which question was answered (`setup` or `join`) and how (`accepted`,
+`declined`). A declined question is never asked again by that app.
+Settings > Data folder always offers the action. A quiet setup stores
+`setup`/`accepted`.
+
+Version 1 values are read as: Pear `notNow`, or the cleaner `true` with no
+move done, mean `setup`/`declined`; Pear `moved`, or the cleaner `true` after
+a move, mean `setup`/`accepted`; Pear `ask` and the cleaner `false` mean no
+answer. A `setup`/`declined` answer does not block the Join question: Join
+is a different question, asked once.
+
+### 5.4 The dialog (rows D and F)
+
+A centered dialog, not a Home card. Both apps use the same structure and the
+same words with the app names swapped, each in its own visual style. The
+cleaner translates it into its locales; Pear is English only.
+
+Top to bottom:
+
+1. A small, still drawing: the two app icons, two arrows, one folder. No
+   animation loop.
+2. Title: "One folder for both apps".
+3. Two lines: "Manga Cleaner and Pear keep your titles in one place." and
+   "Chapters you clean show up in Pear when you save them."
+4. A path row: a folder icon, the path (`~/Manga Library`, or the existing
+   data folder for Join), and "Change…" which opens the folder picker. Join
+   has no "Change…": the folder is the one the sister already uses.
+5. One line that says what will happen:
+   - Set up, same volume: "Your library moves there. It takes a moment."
+   - Set up, other volume: "Your library (9.7 GB) is copied there. It takes
+     about 8 minutes." The time uses 20 MB/s and rounds up to whole minutes.
+   - Join: "Pear already uses this folder. Your library (4.4 GB) moves in
+     next to it." Same-volume and other-volume variants as for Set up.
+   - No library yet: "Nothing to move."
+6. Buttons: primary "Use one folder", secondary "Not now".
+
+States in the same dialog:
+
+- **Blocked**: "Close Pear first." (or "Close Manga Cleaner first.") with
+  "Check again". The primary button is disabled. "Cannot tell" (section 11)
+  asks the user to confirm instead.
+- **Working**: a progress bar, "Copying 5.5 of 9.7 GB". The dialog cannot be
+  closed; the version 1 busy cover holds the window.
+- **Done**: "Done. Both apps now use ~/Manga Library." In the cleaner, when
+  it has titles: "You have 19 titles in Manga Cleaner. Send them to Pear?"
+  with "Choose titles…" (section 8.4.1) and "Later". Pear cannot see the
+  cleaner's titles, so its Done state says only, when the sister is present:
+  "To bring your Manga Cleaner titles across, use Send to Pear in Manga
+  Cleaner."
+- **Failed**: the reason in plain words (section 11), never raw OS text, and
+  "Nothing was changed." when that is true.
+
+### 5.5 First-run step "Join" (row C)
+
+- Cleaner: one more step in its first-launch dialog, before the model
+  downloads.
+- Pear: one more step in its existing onboarding (`src/lib/onboarding`),
+  shown only in this case. Pear never shows a second first-run dialog.
+
+Content: "Pear already keeps its titles in ~/Manga Library. Use the same
+folder?" (names swapped in Pear) with "Use the same folder" (primary) and
+"Keep separate".
+
+- A new install has nothing to move: Join creates this app's subfolder and
+  its library file. Mode becomes Shared.
+- "Keep separate" stores `join`/`declined`. The app stays in its legacy
+  place and does not ask again.
 
 ## 6. Locks
 
@@ -227,7 +385,13 @@ creates the marker (with a new `folderId`) if missing, then writes the
 pointer. The other app finds itself in Pending mode at its next start or
 focus.
 
-**First run asks once.** In Legacy mode each app shows a card on Home, once, that offers Setup at the default location. Move runs Setup there. Choose folder opens Settings > Data folder. Not now records the answer in that app's own settings, so the card does not come back, and Settings > Data folder still offers Setup. Nothing moves until the user clicks. Each app keeps its own answer. Once either app has run Setup, the other app is in Pending mode and shows its Pending card instead.
+**First run.** Version 2 replaces the version 1 Home card with the start
+flows of section 5.1. Nothing moves without a click, except the quiet setup
+of row E, which only renames on one volume.
+
+**Pending Move** follows the same preconditions as any move: while the other
+app runs, it is refused with "Close Pear first." (or "Close Manga Cleaner
+first.").
 
 **Default location**: `~/Manga Library`, not `~/Documents`. Documents is
 often synced (iCloud "Desktop and Documents" on macOS, OneDrive on Windows),
@@ -277,6 +441,10 @@ the home folder works. The deny lists still win.
 
 - `pages` is in the cleaner's reading order. `label` and `number` may be
   `null`.
+- Version 2 adds two optional fields, with no schema change: `"send":
+  "save" | "bulk"` (one Save, or Send to Pear, section 8.4.1) and
+  `chapter.cleanedPages`, the count of pages with a cleaned file. A reader
+  that does not know them ignores them; a missing `send` means `save`.
 - `w`/`h` is the size of both files: raw and cleaned always have the same
   pixels and orientation.
 - The raw keeps its format (`png`, `jpeg`), linked from the cleaner's copy.
@@ -319,10 +487,18 @@ side.
    whole apply, so an autosave or an agent window cannot write between the
    check and the apply.
 5. **New chapter**: find the project whose `project.json` `cleanerLink` has
-   the same `libraryId` and `projectId`; else create a project with the
-   message's name and layout (a same-named project that is not linked is left
-   alone: two series can share a name). Create the chapter and `rename` the
-   files in.
+   the same `libraryId` and `projectId`.
+   - Found, and it has no unlinked chapter with the message's chapter key
+     (section 8.4.2):
+     create the chapter and `rename` the files in.
+   - Found, and it has an unlinked chapter with that key: the message
+     **waits** (section 8.4.2), as one row.
+   - Not found, and Pear has **candidates** (section 8.4.2): the message
+     waits.
+   - Not found, no candidates: create a project with the message's name and
+     layout, then the chapter, as in version 1.
+   A waiting message is put back (claim renamed to `<key>`) before anything
+   in Pear changes.
 6. **Existing chapter, closed**: take a snapshot (as every source edit does).
    Match pages by `sourceIdx` through `cleanerLink.pages`.
    - Matched: the new cleaned file replaces the old one (the old one goes to
@@ -353,6 +529,176 @@ and `project.json` gets
 Pear's `writeFileAtomic` falls back to an in-place write when the scope
 refuses a temp file. With the data folder in scope that cannot happen; an
 assertion keeps the fallback off library paths.
+
+### 8.4 Bringing titles across (version 2)
+
+**The cleaner sends, Pear matches.** The cleaner knows which chapters have
+cleaned pages and already writes a correct message per chapter. Matching
+changes Pear's files, and only Pear writes them. The cleaner never reads
+Pear's files and Pear never reads the cleaner's: the message carries all
+Pear needs.
+
+#### 8.4.1 Send to Pear (cleaner)
+
+Reached from the dialog's Done state, from Home (a "Send titles to Pear"
+button while Shared) and from Settings > Data folder.
+
+- One row per cleaner title: a checkbox, the name, "12 chapters, 9 cleaned".
+- Checked by default when at least one chapter has a cleaned page. A title
+  with none is unchecked and says "Nothing cleaned yet".
+- Each cleaner chapter stores `lastSentAt` in the cleaner's own library: the
+  time of its last Save or bulk send. A chapter is **changed** when its job
+  or manifest was modified after `lastSentAt`.
+- A title with at least one sent chapter says "Sent before" (the cleaner
+  cannot know whether Pear filed it) and sends only its changed and never
+  sent chapters. A "Send all again" option sends every chapter.
+- One button: "Send 9 titles". It writes one message per chapter through the
+  Save path (section 9), with `"send": "bulk"`, in the background, with
+  "Sending 40 of 63 chapters". It can be stopped; messages already written
+  stay valid.
+- A chapter with no cleaned page is not sent. A later Save sends it.
+
+#### 8.4.2 Candidates and Waiting to match (Pear)
+
+**Normalized name**: lowercase; Unicode NFKC; every character that is not a
+letter or a digit becomes a space; the word "the" is removed; runs of spaces
+become one; trimmed.
+
+**Chapter key**, used everywhere a chapter number is compared (here and in
+section 8.3, step 5): `label` when it reads as a decimal number (`12.5`, or
+`12,5` read as `12.5`), else `number`. A label that does not read as a
+number (`12-1`, `Extra`) has no key: that chapter is always "New chapter".
+Pear stores the key as the chapter's `number` when it creates a chapter.
+
+**Candidates** for a message are Pear's projects with no `cleanerLink`, or
+with a `cleanerLink` to a different `libraryId` (a reinstalled cleaner gets a
+new one), whose normalized name is close to the message's `project.name`.
+Choosing a project linked to another `libraryId` replaces its link; its
+chapters linked to that old `libraryId` count as unlinked. Close means
+either:
+
+- the edit distance (Levenshtein, on characters) is at most 20 percent of
+  the longer normalized name, rounded down; or
+- one normalized name contains the other as whole words, and the shorter is
+  at least 4 characters long.
+
+So "Dungeon streamer" finds "Dungeon Steamer", and "apocalypse" finds
+"Surviving the Apocalypse". Candidates are ranked: smallest distance first,
+then containment, then name order.
+
+**Waiting**: a message that waits stays in `handoff/to-typesetter/<key>`,
+unclaimed. To list it, Pear's Rust side reads its `handoff.json` in place
+(a read-only command; it opens only that file, never the images, and closes
+it at once) and never writes there. Pear keeps in memory which keys it has
+judged, with their `sentAt`. A key is judged again when its `sentAt` changes
+or a Pear project is created, renamed or deleted; otherwise a waiting
+message is neither claimed nor re-read. The cleaner retries a directory
+rename that fails with a sharing violation 5 times over 1 second, because
+Pear may have `handoff.json` open for a moment on Windows. Pear lists
+the waiting messages on every check and groups them by
+cleaner title `(libraryId, projectId)`. When any waiting message has
+`"send": "bulk"`, it shows a banner: "Manga Cleaner sent 9 titles. Match
+them to your titles." with "Match…". When only `save` messages wait, it
+opens the match screen with those rows (section 8.4.6). A newer Save of a
+waiting chapter replaces the message in place (section 8.2); Apply catches
+that (section 8.4.3).
+
+#### 8.4.3 The match screen (Pear)
+
+One row per waiting cleaner title:
+
+- Left: the cleaner title and how many chapters wait.
+- Right: a choice. The best candidate is preselected, then the other
+  candidates, then "New title in Pear", then "Skip". A row that waits for a
+  chapter number clash in an already linked project (section 8.3, step 5)
+  shows that project, fixed.
+- Under each row, a collapsed list of its chapters, each with what will
+  happen. Chapters are compared by chapter key (section 8.4.2); a chapter
+  with no key is always "New chapter".
+  - **New chapter**: the chosen project has no chapter with that number.
+  - **Already in Pear: link, keep Pear's pages** (the default when a
+    chapter with that number exists and is not linked).
+  - **Replace Pear's cleaned pages** (opt-in): as link, then the message's
+    cleaned files replace Pear's; the old ones go to `logs/previous-cleaned`.
+  - **Add as a separate chapter** (opt-in): a new linked chapter in the same
+    project, next to Pear's.
+  - **Skip this chapter**.
+- If pages cannot be paired (rule below), link and replace are not offered.
+  The row says why, for example "Pages differ: 15 here, 14 in Pear", and
+  offers "Add as a separate chapter" or "Skip this chapter".
+
+- A Pear project can be chosen by one row only. Once one row picks it, the
+  other rows do not offer it.
+- A chapter that is open in Pear (main window or an agent window) cannot be
+  linked or replaced. Its line says "Close Chapter 12 first" and Apply skips
+  it; it keeps waiting.
+
+One button: "Apply". Pear then files every waiting message of the rows not
+skipped, in order, each with the version 1 claim, validate and locking rules
+(section 8.3 steps 2 to 4). It writes `cleanerLink` into the chosen
+project's `project.json` first.
+
+- **Single flight.** The 3-second check pauses while the match screen is
+  open, and Apply runs inside the same single flight as filing. No poll can
+  file a chapter of a row between the user's choice and Apply.
+- **Re-read.** Apply reads each claimed message again. If its `sentAt`
+  differs from the one the screen showed, Pear puts it back unapplied and
+  shows that row again.
+- **Crash during Apply.** Each chapter is one apply (version 1 rule 4). A
+  crash leaves some chapters filed and the rest waiting; the claim recovery
+  of section 8.3, step 1 puts those back. The next check shows only the rows
+  that still wait. A skip of a chapter that Apply did not reach is lost and
+  is asked again.
+
+#### 8.4.4 Linking a chapter Pear already has
+
+- **Pairing** needs the same page count on both sides. Then:
+  1. Pages whose raws have the same sha256 pair with each other.
+  2. The rest pair by position among the unpaired pages (the message's
+     `pages` order against Pear's page order), and only when every such pair
+     has the same pixel size after EXIF rotation.
+  Otherwise the chapter cannot be linked. The chapter line says how pages
+  paired ("15 pages: 12 identical, 3 by position"), and the position pairs
+  show as small side-by-side thumbnails before Apply.
+- **Link, keep Pear's pages**: Pear writes `cleanerLink` (with `sentAt` from
+  the message and `pages` from the pairing) and changes no existing image,
+  no text box and no lettering. Where a paired Pear page has no cleaned
+  file, Pear takes the message's cleaned file for it. The other cleaned
+  files in the message are deleted with the message.
+- **Identical raws**: when a Pear raw has the same sha256 as the message's
+  raw, and the message's raw is a hard link (link count above 1) on the same
+  volume, Pear shares the storage. Only after `chapter.json` with the link
+  is written: Pear hard-links the message's raw to a temp name beside its
+  own raw, then `rename`s the temp file over its raw path. The message stays
+  whole until `done`. On any failure (no hard links, file in use on
+  Windows), this is skipped and nothing else changes. The bytes are the
+  same; this is the one case where a raw path gets a new file, and
+  section 2, decision 4 still holds for content. This needs a new Rust
+  command; `take` refuses an existing destination.
+- From then on, a Save of that chapter updates it as any linked chapter
+  (section 8.3, step 6). That Save replaces Pear's cleaned pages where the
+  bytes differ; the old ones are kept in `logs/previous-cleaned`.
+
+#### 8.4.5 Skip
+
+Skip claims each of that title's waiting messages, then deletes it, and
+records the skip in Pear's own folder: `(libraryId, projectId, skippedAt)`.
+Later messages for that title:
+
+- `"send": "bulk"` (a send still running, or a later Send to Pear): deleted
+  unasked.
+- `"send": "save"` with a `sentAt` after `skippedAt`: waits again, because a
+  Save is a clear wish to send. The skip record is removed when that title
+  is matched.
+
+A skipped chapter (not the whole title) is handled the same way, keyed by
+`(libraryId, projectId, chapterId)`.
+
+#### 8.4.6 Single Saves
+
+The same rules apply to one Save. An unlinked title with candidates waits,
+and the match screen shows that one row, instead of a second copy of the
+title. This fixes the version 1 duplicate.
 
 ## 9. Save in the cleaner (R5, R6)
 
@@ -393,6 +739,19 @@ page and writes the message. Setting `saveCleanedTo`:
   claim race; crash-left claim recovered; rejected message; same-named
   unlinked project left alone; autosave during apply blocked.
 - Immutability: no code path writes over an existing raw or cleaned file.
+- Version 2: the sister test (each source, and the override); every start
+  row A to F; quiet setup and each check that stops it; answers stored and
+  honoured; candidates (the examples in 8.4.2, short names, linked projects
+  excluded); waiting put back untouched; match apply for each chapter
+  choice; pairing refused on count and on size; identical raws linked;
+  skip and a later Save asking again; a single Save with a candidate makes
+  no second title.
+- **Golden fixtures, version 2**, in both repositories next to the version 1
+  one: a message for a title that has a candidate in Pear
+  ("Dungeon streamer" against a Pear project "Dungeon Steamer"), and a
+  message for a chapter that links by page map to an existing Pear chapter.
+  The cleaner's writer test compares against them; Pear's tests match and
+  file them.
 
 ## 11. Details each app settled while building
 
@@ -415,12 +774,30 @@ page and writes the message. Setting `saveCleanedTo`:
 - Raws are hard-linked only when the cleaner's page file is inside the data
   folder; a legacy chapter that still reads the user's scan file is copied.
 
-## 12. Later, not in version 1
+Added in version 2 (found in the 2026-11-25 test):
+
+- **Paths shown to the user** never carry the Windows `\\?\` (or
+  `\\?\UNC\`) prefix. Strip it from every path the UI shows.
+- **Plain errors.** Move and setup errors map the common OS errors to plain
+  words: no space left ("There is not enough free space on that drive."),
+  not allowed ("This app is not allowed to write there."), drive gone ("The
+  drive was disconnected."), in use ("A file is in use by another app."). Any
+  other error: "The move could not finish." The raw text goes to the log
+  only.
+- **Unavailable retries by itself**: while the Unavailable screen is shown,
+  each app checks again every 3 seconds, and on window focus.
+- **Unavailable heading for an unfinished move**, both apps: "Data folder
+  move not finished", not "Data folder not found".
+
+## 12. Later, not in version 2
 
 - Pear to cleaner ("send back for more cleaning"): `handoff/to-cleaner/`,
   the same rules mirrored.
 - Live update of a chapter Pear has open.
-- A shared project catalog (one list of series and chapters both apps show).
-  The `cleanerLink` records are its seed.
+- A two-way catalog that both apps write. Matching (section 8.4) covers
+  the user's need; the `cleanerLink` records stay its seed.
+- Asking before a Save replaces cleaned pages that were painted on in Pear.
+  Version 2 keeps the version 1 rule: the old file goes to
+  `logs/previous-cleaned`.
 - Dedupe of a raw imported by hand into both apps (needs a hash index). The
   supported route is: import in the cleaner, Save to Pear.
