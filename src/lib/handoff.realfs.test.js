@@ -750,6 +750,37 @@ describe('the match screen applies', () => {
     expect(library.projects).toHaveLength(1);
   });
 
+  it('writing the link adds that one key to project.json and changes nothing else', async () => {
+    // Section 8.4.3: an older record (a tag with `strokes`, no exportScale,
+    // no guide, a key this version does not know) is not rewritten in the
+    // current form by a match.
+    const theirs = await createProject('Series Name');
+    await pearChapter(theirs, 12, PLAIN3);
+    const path = join(theirs.dir, 'project.json');
+    const { exportScale, guide, tagSizes, ocrLanguage, ...kept } = JSON.parse(await readFile(path, 'utf8'));
+    const old = {
+      ...kept,
+      updatedAt: '2026-01-02T03:04:05.000Z',
+      tags: [{ id: 't1', name: 'Speech', style: { fontSize: 30, strokes: [{ width: 3, color: '#ffffff' }] } }],
+      somethingNewer: { kept: true },
+    };
+    await writeFile(path, JSON.stringify(old, null, 2));
+    await scanLibrary();
+    const before = JSON.parse(await readFile(path, 'utf8'));
+    expect(before).toEqual(old);
+    await send({ sentAt: T1, pages: PLAIN3 });
+    await checkHandoffs(dataRoot);
+    expect(handoffMatch.rows[0].candidates[0]).toBe(theirs.id);
+    const results = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(results.map((r) => r.outcome)).toEqual(['linked']);
+    const after = JSON.parse(await readFile(path, 'utf8'));
+    expect(after.cleanerLink).toEqual({ libraryId: LIB, projectId: 'p3' });
+    const { cleanerLink, ...rest } = after;
+    expect(rest).toEqual(before);
+    expect(Object.keys(rest)).toEqual(Object.keys(before));
+    expect(library.projects.find((p) => p.id === theirs.id).cleanerLink).toEqual({ libraryId: LIB, projectId: 'p3' });
+  });
+
   it('link, keep Pear’s pages: the page map, no image, box or lettering changed, a missing cleaned page taken', async () => {
     const theirs = await createProject('Series Name');
     const c = await pearChapter(theirs, 12, [
@@ -847,6 +878,24 @@ describe('the match screen applies', () => {
     const bad = await pairingFor(dataRoot, KEY, m, sized, p2.id);
     expect(bad.ok).toBe(false);
     expect(bad.why).toMatch(/Page 2 is 40x60 in Manga Cleaner and 41x60 in Pear/);
+  });
+
+  it('keep waiting, and a new chapter beside one Pear has, claim nothing and add no chapter', async () => {
+    const theirs = await createProject('Series Name');
+    const two = await pearChapter(theirs, 12, PLAIN3.slice(0, 2));
+    await send({ sentAt: T1, pages: PLAIN3 });
+    await checkHandoffs(dataRoot);
+    for (const action of ['wait', 'new']) {
+      const results = await applyMatch(dataRoot, planFor(theirs.id, { [KEY]: action }));
+      closeMatch();
+      expect(results.map((r) => r.outcome)).toEqual(['waiting']);
+      expect(await inboxNames()).toEqual([KEY]);
+      expect(library.projects.find((p) => p.id === theirs.id).chapters.map((c) => c.id)).toEqual([two.id]);
+      await checkHandoffs(dataRoot);
+      expect(handoffMatch.rows).toHaveLength(1);
+    }
+    // Shown again, but the screen does not open itself a second time.
+    expect(handoffMatch.autoOpen).toBe(false);
   });
 
   it('identical raws: the raw here becomes the cleaner’s file, only once the link is written', async () => {

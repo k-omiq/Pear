@@ -587,7 +587,7 @@ export function chapterTarget(row, choice, message) {
 
 // Files every waiting message of the rows not skipped, in order, inside the
 // filer's single flight (section 8.4.3). `plan`: [{ rowId, choice, chapters:
-// { [key]: 'new' | 'link' | 'replace' | 'separate' | 'skip' } }]. Each
+// { [key]: 'new' | 'link' | 'replace' | 'separate' | 'wait' | 'skip' } }]. Each
 // chapter is one apply with the version 1 claim, check and lock rules.
 export async function applyMatch(root, plan) {
   while (running) await running.catch(() => {});
@@ -649,6 +649,10 @@ async function applyPlan(root, plan) {
 
 async function applyChapter(root, p, m, action, c) {
   const s = m;
+  // "Keep waiting" (the default for pages that do not pair), and any 'new'
+  // that would land beside a chapter Pear has: nothing is claimed, the
+  // message waits (section 8.4.3, no default adds a chapter beside one).
+  if (action === 'wait' || (action === 'new' && c)) return { outcome: 'waiting' };
   if (action === 'skip') {
     const claim = await io.claim(root, m.key).catch(() => null);
     if (claim) await io.done(root, claim).catch(() => {});

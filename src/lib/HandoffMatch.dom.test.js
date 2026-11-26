@@ -6,7 +6,7 @@ import { tick } from 'svelte';
 // best candidate is preselected, a title here goes to one row only, and
 // Apply hands the choices to the filer. The filing itself is
 // handoff.realfs.test.js.
-const applied = vi.hoisted(() => ({ plans: [] }));
+const applied = vi.hoisted(() => ({ plans: [], pairing: null }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: async () => null }));
 vi.mock('./handoff.svelte.js', async (original) => ({
   ...(await original()),
@@ -14,6 +14,7 @@ vi.mock('./handoff.svelte.js', async (original) => ({
     applied.plans.push(plan);
     return [];
   },
+  pairingFor: (...args) => (applied.pairing ? applied.pairing(...args) : new Promise(() => {})),
 }));
 
 const { handoffMatch, openMatch, closeMatch } = await import('./handoff.svelte.js');
@@ -32,6 +33,7 @@ const row = (id, name, candidates, messages) => ({ id, libraryId: 'L', projectId
 
 beforeEach(() => {
   applied.plans = [];
+  applied.pairing = null;
   library.projects = [
     { id: 'pA', name: 'Dungeon Steamer', chapters: [] },
     { id: 'pB', name: 'Dungeon Streamers', chapters: [] },
@@ -101,5 +103,49 @@ describe('the match screen', () => {
     await settle();
     const sel = view.getByRole('combobox', { name: 'Title in Pear for Dungeon streamer' });
     expect([sel.value, sel.disabled, sel.options.length]).toEqual(['pA', true, 1]);
+  });
+
+  describe('a chapter Pear has with that number', () => {
+    const chapter = { id: 'cA1', number: 1, cleanerLink: null, dir: '/x' };
+    const pending = () => {
+      let resolve;
+      const promise = new Promise((r) => (resolve = r));
+      applied.pairing = () => promise;
+      return resolve;
+    };
+    beforeEach(() => {
+      library.projects = [{ id: 'pA', name: 'Dungeon Steamer', chapters: [chapter] }];
+      handoffMatch.rows = [row('r1', 'Dungeon streamer', ['pA'], [message('k1', 1)])];
+    });
+
+    it('says "Checking pages…" with Apply off until the pages are read; pages that do not pair keep waiting', async () => {
+      const resolve = pending();
+      openMatch();
+      const view = render(Screen);
+      await settle();
+      expect(view.getByTestId('checking').textContent).toBe('Checking pages…');
+      expect(view.queryByRole('combobox', { name: /What happens to/ })).toBeNull();
+      expect(view.getByRole('button', { name: 'Apply' }).disabled).toBe(true);
+      resolve({ ok: false, why: 'Pages differ: 15 in Manga Cleaner, 14 in Pear' });
+      await settle();
+      const sel = view.getByRole('combobox', { name: 'What happens to Chapter 1' });
+      expect(sel.value).toBe('wait');
+      expect([...sel.options].map((o) => o.textContent)).toEqual(['Keep waiting', 'Add as a separate chapter', 'Skip this chapter']);
+      expect(view.getByText('Pages differ: 15 in Manga Cleaner, 14 in Pear')).toBeTruthy();
+      await fireEvent.click(view.getByRole('button', { name: 'Apply' }));
+      await settle();
+      expect(applied.plans[0]).toEqual([{ rowId: 'r1', choice: 'pA', chapters: { k1: 'wait' } }]);
+    });
+
+    it('pages that pair default to link, never to a separate chapter', async () => {
+      const resolve = pending();
+      openMatch();
+      const view = render(Screen);
+      await settle();
+      resolve({ ok: true, pairs: [{ index: 0, pageId: 1, how: 'same', pear: 0 }], identical: 1, byPosition: 0 });
+      await settle();
+      expect(view.getByRole('combobox', { name: 'What happens to Chapter 1' }).value).toBe('link');
+      expect(view.getByRole('button', { name: 'Apply' }).disabled).toBe(false);
+    });
   });
 });

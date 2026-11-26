@@ -61,16 +61,25 @@
         if (pairings[id] !== undefined) continue;
         pairings[id] = null;
         pairingFor(dataFolder.root, m.key, m, t.chapter, choice)
-          .then((p) => (pairings[id] = p))
-          .catch((e) => (pairings[id] = { ok: false, why: `The pages could not be read: ${e?.message ?? e}` }));
-        chapterOpenAnywhere(t.chapter.id).then((v) => (open[t.chapter.id] = v));
+          .then((p) => {
+            pairings[id] = p;
+          })
+          .catch((e) => {
+            pairings[id] = { ok: false, why: `The pages could not be read: ${e?.message ?? e}` };
+          });
+        chapterOpenAnywhere(t.chapter.id).then((v) => {
+          open[t.chapter.id] = v;
+        });
       }
     }
   });
 
   const label = (m) => m.title || (m.label ? `Chapter ${m.label}` : m.number != null ? `Chapter ${m.number}` : 'A chapter');
 
-  // The choices one chapter has, and the one in force.
+  // The choices one chapter has, and the one in force. Section 8.4.3: no
+  // default ever adds a chapter beside one Pear has. A chapter that may link
+  // has no choice until its pages are read ("Checking pages…", Apply off);
+  // one whose pages do not pair keeps waiting unless the user says otherwise.
   function chapterChoice(r, m) {
     const t = targets[m.key];
     if (!t || t.action === 'skip') return { options: [], value: 'skip' };
@@ -82,8 +91,8 @@
       return { options, value: actions[m.key] ?? 'new' };
     }
     const pairing = pairings[`${m.key}|${t.chapter.id}`];
-    const paired = pairing?.ok;
-    const options = paired
+    if (!pairing) return { options: [], value: null, checking: true, chapter: t.chapter };
+    const options = pairing.ok
       ? [
           ['link', "Already in Pear: link, keep Pear's pages"],
           ['replace', "Replace Pear's cleaned pages"],
@@ -91,13 +100,17 @@
           ['skip', 'Skip this chapter'],
         ]
       : [
+          ['wait', 'Keep waiting'],
           ['separate', 'Add as a separate chapter'],
           ['skip', 'Skip this chapter'],
         ];
-    let value = actions[m.key] ?? (paired ? 'link' : pairing ? 'separate' : 'link');
-    if (!options.some(([v]) => v === value) && pairing) value = options[0][0];
+    let value = actions[m.key] ?? options[0][0];
+    if (!options.some(([v]) => v === value)) value = options[0][0];
     return { options, value, pairing, chapter: t.chapter, closeFirst: open[t.chapter.id] && (value === 'link' || value === 'replace') };
   }
+
+  // Apply waits for every pairing a line may link by.
+  const checking = $derived(rows.some((r) => choices[r.id] !== 'skip' && r.messages.some((m) => chapterChoice(r, m).checking)));
 
   async function apply() {
     busy = true;
@@ -158,16 +171,20 @@
                 {@const ch = chapterChoice(r, m)}
                 <div class="ch" data-testid="match-chapter">
                   <span class="ch-name">{label(m)}</span>
-                  <select
-                    aria-label="What happens to {label(m)}"
-                    disabled={busy}
-                    value={ch.value}
-                    onchange={(e) => (actions = { ...actions, [m.key]: e.currentTarget.value })}
-                  >
-                    {#each ch.options as [v, text] (v)}
-                      <option value={v}>{text}</option>
-                    {/each}
-                  </select>
+                  {#if ch.checking}
+                    <span class="ch-note" data-testid="checking">Checking pages…</span>
+                  {:else}
+                    <select
+                      aria-label="What happens to {label(m)}"
+                      disabled={busy}
+                      value={ch.value}
+                      onchange={(e) => (actions = { ...actions, [m.key]: e.currentTarget.value })}
+                    >
+                      {#each ch.options as [v, text] (v)}
+                        <option value={v}>{text}</option>
+                      {/each}
+                    </select>
+                  {/if}
                   {#if ch.closeFirst}
                     <span class="ch-note">Close {label(m)} first</span>
                   {:else if ch.pairing}
@@ -182,8 +199,6 @@
                         {/each}
                       </div>
                     {/if}
-                  {:else if ch.chapter}
-                    <span class="ch-note">Reading the pages…</span>
                   {/if}
                 </div>
               {/each}
@@ -194,7 +209,7 @@
     </div>
     <div class="modal-foot">
       <button class="soft-btn" disabled={busy} onclick={closeMatch}>Later</button>
-      <button class="accent-btn narrow" disabled={busy || !rows.length} onclick={apply}>{busy ? 'Applying…' : 'Apply'}</button>
+      <button class="accent-btn narrow" disabled={busy || checking || !rows.length} title={checking ? 'Checking pages…' : undefined} onclick={apply}>{busy ? 'Applying…' : 'Apply'}</button>
     </div>
   </div>
 </div>
