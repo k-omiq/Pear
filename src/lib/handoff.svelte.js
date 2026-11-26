@@ -254,7 +254,7 @@ async function fileClaim(root, claim, key, entry = null) {
   const verdict = verdictFor(summarize(read.doc), entry?.content ?? []);
   if (verdict.verdict === 'wait') {
     await io.putBack(root, claim, key);
-    if (entry) judged.set(key, { stamp: entry.stamp, summary: summarize(read.doc), content: entry.content ?? [], ...verdict });
+    if (entry) judged.set(key, { stamp: entry.stamp, summary: summarize(read.doc), content: entry.content ?? [], ...verdict, own: verdict });
     return { outcome: 'waiting' };
   }
   if (verdict.verdict === 'delete') {
@@ -487,7 +487,40 @@ function verdictFor(s, content = []) {
   }
   if (linked) return unlinkedChapterFor(linked, s.numberKey, s.libraryId) ? { verdict: 'wait', fixed: linked.id, candidates: [] } : { verdict: 'file' };
   const candidates = ranked();
-  return candidates.length ? { verdict: 'wait', fixed: null, candidates } : { verdict: 'file' };
+  // A bulk send always waits: Pear sees all its chapters before it decides
+  // a title (the screen then preselects "New title in Pear").
+  return candidates.length || s.send === 'bulk' ? { verdict: 'wait', fixed: null, candidates } : { verdict: 'file' };
+}
+
+// Section 8.3 step 5, per title: the messages of one cleaner title with no
+// title linked here are judged together. If any waits, all wait, with the
+// candidates of all of them (content counts summed), and none makes a new
+// title, so a cleaner title never splits across two titles here. Each
+// message's own verdict (`own`) is kept, so this is redone on every pass
+// from what is in the inbox now, in memory only.
+function judgeTitles(keys) {
+  const groups = new Map();
+  for (const k of keys) {
+    const j = judged.get(k);
+    const s = j?.summary;
+    if (!s || !j.own || j.own.verdict === 'delete') continue;
+    if (chapterByCleanerLink(s.libraryId, s.projectId, s.chapterId) || projectByCleanerLink(s.libraryId, s.projectId)) continue;
+    const id = `${s.libraryId}|${s.projectId}`;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(j);
+  }
+  for (const js of groups.values()) {
+    if (!js.some((j) => j.own.verdict === 'wait')) {
+      for (const j of js) Object.assign(j, j.own);
+      continue;
+    }
+    const counts = new Map();
+    for (const j of js) for (const c of j.content ?? []) counts.set(c.projectId, (counts.get(c.projectId) ?? 0) + c.identical);
+    const named = [];
+    for (const j of js) for (const id of j.own.candidates ?? []) if (!named.includes(id)) named.push(id);
+    const candidates = rankCandidates([...counts].map(([projectId, identical]) => ({ projectId, identical })), named);
+    for (const j of js) Object.assign(j, { verdict: 'wait', fixed: null, candidates });
+  }
 }
 
 // The verdict, with content candidates looked for only where they can
@@ -504,7 +537,7 @@ async function judge(root, key, doc) {
     });
     if (content.length) verdict = verdictFor(summary, content);
   }
-  return { summary, content, ...verdict };
+  return { summary, content, ...verdict, own: verdict };
 }
 
 // The rows of the screen and the banner, from the waiting messages: one per
@@ -594,6 +627,7 @@ async function runPass(root, rescan) {
     }
   }
   judgedSig = librarySig();
+  judgeTitles(keys);
   let filed = false;
   for (const { key, stamp } of entries) {
     const j = judged.get(key);

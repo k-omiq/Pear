@@ -767,6 +767,60 @@ describe('content candidates', () => {
     expect(handoffMatch.rows).toEqual([]);
   });
 
+  // The rehearsal's split: Ch 2 shares nothing with Pear, Ch 3 has raws
+  // identical to a title here. One cleaner title must stay one title.
+  const OWN = [
+    { src: 0, raw: 77, cleaned: 177, w: 33 },
+    { src: 1, raw: 78, cleaned: 178, w: 33 },
+  ];
+  const ch2 = (kind, sentAt = T1) => send({ chapterId: 'c2', sentAt, pages: OWN, name: 'wizard who killed 10k', title: 'Ch 2', number: 2, label: '2', kind });
+  const ch3 = (kind, sentAt = T1) => send({ chapterId: 'c3', sentAt, pages: PLAIN3, name: 'wizard who killed 10k', title: 'Ch 3', number: 3, label: '3', kind });
+  const wizardRow = () => handoffMatch.rows.find((r) => r.name === 'wizard who killed 10k');
+
+  it('judges a title as a whole: a chapter with no candidate waits with one that has a content candidate (one poll)', async () => {
+    const theirs = await createProject(WIZ);
+    await pearChapter(theirs, 3, PLAIN3);
+    await ch2();
+    await ch3();
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(library.projects.map((p) => p.name)).toEqual([WIZ]);
+    expect(handoffMatch.rows).toHaveLength(1);
+    expect(wizardRow().candidates).toEqual([theirs.id]);
+    expect(wizardRow().messages.map((m) => m.title)).toEqual(['Ch 2', 'Ch 3']);
+    // And stays so on the next checks.
+    await checkHandoffs(dataRoot);
+    expect(library.projects).toHaveLength(1);
+    expect(wizardRow().messages).toHaveLength(2);
+    // Apply: both chapters go to that one title.
+    const results = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(results.map((r) => r.outcome).sort()).toEqual(['created', 'linked']);
+    expect(library.projects).toHaveLength(1);
+    expect(library.projects[0].chapters.map((c) => c.number)).toEqual([2, 3]);
+  });
+
+  it('a bulk title waits with no candidate, and a later chapter with a content candidate joins its row (two polls)', async () => {
+    const theirs = await createProject(WIZ);
+    await pearChapter(theirs, 3, PLAIN3);
+    await ch2('bulk');
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(library.projects).toHaveLength(1);
+    expect(wizardRow()).toMatchObject({ candidates: [] });
+    expect([handoffMatch.bulk, handoffMatch.autoOpen]).toEqual([true, false]);
+    await ch3('bulk', T2);
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(library.projects).toHaveLength(1);
+    expect(handoffMatch.rows).toHaveLength(1);
+    expect(wizardRow().candidates).toEqual([theirs.id]);
+    expect(wizardRow().messages).toHaveLength(2);
+    expect(await inboxNames()).toHaveLength(2);
+  });
+
+  it('a Save with no candidate still files as version 1 did', async () => {
+    await ch2();
+    expect((await checkHandoffs(dataRoot)).map((r) => r.outcome)).toEqual(['created']);
+    expect(library.projects.map((p) => p.name)).toEqual(['wizard who killed 10k']);
+  });
+
   it('builds the size index once and judges a message against 3,000 raws quickly', async () => {
     const big = await createProject('Big library');
     // 3,000 raws: synthetic chapters written straight to disk, then read in.

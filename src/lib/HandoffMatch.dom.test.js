@@ -96,6 +96,17 @@ describe('the match screen', () => {
     expect(handoffMatch.open).toBe(false);
   });
 
+  it('a bulk title with no candidate preselects "New title in Pear"', async () => {
+    handoffMatch.rows = [row('r1', 'Brand new series', [], [message('k1', 1)])];
+    openMatch();
+    const view = render(Screen);
+    await settle();
+    const sel = view.getByRole('combobox', { name: 'Title in Pear for Brand new series' });
+    expect(sel.value).toBe('new');
+    expect([...sel.options].map((o) => o.textContent)).toEqual(['New title in Pear', 'Skip']);
+    expect(view.getByRole('combobox', { name: 'What happens to Chapter 1' }).value).toBe('new');
+  });
+
   it('a row fixed on a linked project offers only that project', async () => {
     handoffMatch.rows = [{ ...row('r1', 'Dungeon streamer', [], [message('k1', 1)]), fixed: 'pA' }];
     openMatch();
