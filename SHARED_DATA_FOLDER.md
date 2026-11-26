@@ -499,10 +499,18 @@ side.
      create the chapter and `rename` the files in.
    - Found, and it has an unlinked chapter with that key: the message
      **waits** (section 8.4.2), as one row.
-   - Not found, and Pear has **candidates** (section 8.4.2): the message
-     waits.
-   - Not found, no candidates: create a project with the message's name and
-     layout, then the chapter, as in version 1.
+   - Not found, and the message is `"send": "bulk"`: the message **waits**,
+     with or without candidates. A bulk send brings many chapters over
+     minutes, and Pear must see them all before it decides a title; the
+     match screen preselects "New title in Pear" when there is no candidate.
+   - Not found, `save`, and Pear has **candidates** (section 8.4.2): the
+     message waits.
+   - Not found, `save`, no candidates: create a project with the message's
+     name and layout, then the chapter, as in version 1.
+   - **Per title, never per chapter.** Candidates are judged over every
+     message of that cleaner title `(libraryId, projectId)` present in the
+     inbox. If any of them waits, all of them wait, and none of them makes a
+     new title. One cleaner title never splits across two Pear titles.
    A waiting message is put back (claim renamed to `<key>`) before anything
    in Pear changes.
 6. **Existing chapter, closed**: take a snapshot (as every source edit does).
