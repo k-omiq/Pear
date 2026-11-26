@@ -1083,6 +1083,24 @@ impl Default for MoveOpts<'_> {
     }
 }
 
+/// The top folder of a mounted drive: its device differs from its parent's.
+/// Such a folder can be written into but never renamed or removed.
+pub fn is_mount_point(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Some(parent) = p.parent() else { return true };
+        match (fs::metadata(p), fs::metadata(parent)) {
+            (Ok(a), Ok(b)) => a.dev() != b.dev() || a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        p.parent().is_none()
+    }
+}
+
 /// Moves `from` to `to` under the journal (contract section 7). The caller
 /// holds `move.lock` and has checked the other app. `pointer` is written at
 /// the switch. Same volume: one rename. Other volume (or `force_copy`): a
@@ -1117,12 +1135,26 @@ pub fn run_move(paths: &Paths, kind: &str, from: &Path, to: &Path, pointer: Poin
     }
     let parent = to.parent().ok_or("The new place has no parent folder")?;
     fs::create_dir_all(parent).map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+    // An existing empty `to` is never removed: it may be a drive's top folder
+    // (a mount point), which cannot be removed, or simply the user's. Only
+    // this app's own empty subfolder in a data folder is replaced. Elsewhere,
+    // on Unix one rename replaces an empty folder; a mount point and, on
+    // Windows (whose rename cannot replace a folder), any existing folder are
+    // refused: the app makes `Manga Library` inside a picked folder.
     let had_empty = info.exists;
     if had_empty {
-        fs::remove_dir(to).map_err(|e| format!("Could not use {}: {e}", to.display()))?;
+        let own_subfolder = to.file_name().is_some_and(|n| n == SUBFOLDER) && parent.join(MARKER).is_file();
+        if own_subfolder {
+            fs::remove_dir(to).map_err(|e| format!("Could not use {}: {e}", to.display()))?;
+        } else if is_mount_point(to) || cfg!(windows) {
+            return Err(format!(
+                "{} is a folder that is there already. Choose the folder it is in: the data folder is made inside it.",
+                to.display()
+            ));
+        }
     }
     let restore_empty = || {
-        if had_empty {
+        if had_empty && !to.exists() {
             let _ = fs::create_dir(to);
         }
     };
@@ -2180,6 +2212,32 @@ pub mod tests {
         delete_old_copy(&paths, &aside).unwrap();
         assert!(!aside.exists());
         assert!(delete_old_copy(&paths, &to).is_err(), "the folder in use is never deleted");
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_move_never_removes_an_existing_target_folder() {
+        let d = scratch("move-empty-target");
+        let paths = paths_in(&d);
+        let root = d.join("root");
+        setup(&paths, &root, None, &MoveOpts::default()).unwrap();
+        library_tree(&root.join(SUBFOLDER));
+        let there = d.join("there");
+        fs::create_dir_all(&there).unwrap();
+        let r = move_root(&paths, &there, &MoveOpts::default());
+        if cfg!(windows) {
+            // A rename cannot replace a folder there: refused, the folder kept.
+            assert!(r.unwrap_err().contains("is a folder that is there already"));
+            assert!(there.is_dir() && root.join(SUBFOLDER).is_dir());
+        } else {
+            // One rename replaces the empty folder; nothing removed it first.
+            assert_eq!(r.unwrap().method, "rename");
+            assert_tree(&there.join(SUBFOLDER));
+        }
+        // A drive's top folder is never renamed onto or removed.
+        assert!(!is_mount_point(&d));
+        #[cfg(unix)]
+        assert!(is_mount_point(Path::new("/dev")), "devfs is mounted at /dev");
         fs::remove_dir_all(d).unwrap();
     }
 
