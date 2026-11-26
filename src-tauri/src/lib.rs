@@ -132,6 +132,9 @@ pub fn run() {
       handoff::handoff_scan,
       handoff::handoff_peek,
       handoff::handoff_facts,
+      handoff::handoff_sizes,
+      handoff::handoff_raw_sizes,
+      handoff::handoff_hashes,
       handoff::handoff_share_raw
     ])
     .manage(agent_mcp::AgentDoor::default())

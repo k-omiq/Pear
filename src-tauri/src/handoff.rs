@@ -451,6 +451,79 @@ pub fn facts(root: &Path, name: &str, rels: &[String], pear: &[String]) -> Resul
     Ok(out)
 }
 
+// ---------- content candidates (contract section 8.4.2) ----------
+// A Pear title whose raws hold a byte-identical copy of a message raw is a
+// candidate. Cheap by design: sizes come from the file system (no read), and
+// only files whose sizes are equal are hashed.
+
+fn file_size(p: &Path) -> Option<u64> {
+    fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len())
+}
+
+/// The sizes of a message's files, read in place (stat only). `None` for a
+/// path that is not a message file or a file that is not there.
+pub fn sizes(root: &Path, name: &str, rels: &[String]) -> Result<Vec<Option<u64>>, String> {
+    let dir = message_dir(root, name)?;
+    Ok(rels.iter().map(|rel| message_file(&dir, rel).ok().and_then(|p| file_size(&p))).collect())
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct RawSize {
+    pub name: String,
+    pub size: u64,
+}
+
+/// The files in each chapter folder's `raws/`, with their sizes (one listing
+/// and a stat each). Every folder must be inside the library.
+pub fn raw_sizes(root: &Path, dirs: &[String]) -> Result<Vec<Vec<RawSize>>, String> {
+    let lib = root.join(SUBFOLDER);
+    let mut out = Vec::with_capacity(dirs.len());
+    for d in dirs {
+        let dir = Path::new(d);
+        if !dir.is_absolute() || !contains(&lib, dir) || dir == lib {
+            return Err(format!("{d} is not inside the library"));
+        }
+        let mut files = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir.join("raws")) {
+            for e in entries.flatten() {
+                let Ok(meta) = e.metadata() else { continue };
+                let name = e.file_name().to_string_lossy().into_owned();
+                if meta.is_file() && !name.starts_with('.') {
+                    files.push(RawSize { name, size: meta.len() });
+                }
+            }
+        }
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        out.push(files);
+    }
+    Ok(out)
+}
+
+#[derive(Serialize, Debug, Default, PartialEq)]
+pub struct Hashes {
+    pub message: Vec<Option<String>>,
+    pub pear: Vec<Option<String>>,
+}
+
+/// The sha256 of some message files (in place) and some library files: the
+/// ones whose sizes are equal. No image is decoded.
+pub fn hashes(root: &Path, name: &str, rels: &[String], pear: &[String]) -> Result<Hashes, String> {
+    let dir = message_dir(root, name)?;
+    let lib = root.join(SUBFOLDER);
+    let mut out = Hashes::default();
+    for rel in rels {
+        out.message.push(message_file(&dir, rel).ok().filter(|p| p.is_file()).and_then(|p| sha256_hex(&p)));
+    }
+    for p in pear {
+        let path = Path::new(p);
+        if !path.is_absolute() || !contains(&lib, path) {
+            return Err(format!("{p} is not inside the library"));
+        }
+        out.pear.push(Some(path).filter(|p| p.is_file()).and_then(sha256_hex));
+    }
+    Ok(out)
+}
+
 /// More than one name on disk (the cleaner's page and the message's raw).
 fn linked(path: &Path) -> bool {
     #[cfg(unix)]
@@ -578,6 +651,24 @@ pub async fn handoff_facts<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: St
 }
 
 #[tauri::command]
+pub async fn handoff_sizes<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, name: String, rels: Vec<String>) -> Result<Vec<Option<u64>>, String> {
+    let root = shared_root(&app, &root)?;
+    tauri::async_runtime::spawn_blocking(move || sizes(&root, &name, &rels)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn handoff_raw_sizes<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, dirs: Vec<String>) -> Result<Vec<Vec<RawSize>>, String> {
+    let root = shared_root(&app, &root)?;
+    tauri::async_runtime::spawn_blocking(move || raw_sizes(&root, &dirs)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn handoff_hashes<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, name: String, rels: Vec<String>, pear: Vec<String>) -> Result<Hashes, String> {
+    let root = shared_root(&app, &root)?;
+    tauri::async_runtime::spawn_blocking(move || hashes(&root, &name, &rels, &pear)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn handoff_share_raw<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, claim: String, rel: String, dest: String) -> Result<bool, String> {
     share_raw(&shared_root(&app, &root)?, &claim, &rel, Path::new(&dest))
 }
@@ -600,6 +691,58 @@ mod tests {
                 {"sourceIdx":1,"position":2,"raw":"raws/../../x","cleaned":null}]}"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn sizes_raw_index_and_hashes_for_content_candidates() {
+        let root = scratch("handoff-content");
+        message(&root, "cleaner-L-p1-c1");
+        let ch = root.join(SUBFOLDER).join("S").join("001");
+        fs::create_dir_all(ch.join("raws")).unwrap();
+        fs::copy(inbox(&root).join("cleaner-L-p1-c1").join("raws").join("001.png"), ch.join("raws").join("001.png")).unwrap();
+        fs::write(ch.join("raws").join("002.png"), b"not the same").unwrap();
+        fs::write(ch.join("raws").join(".DS_Store"), b"x").unwrap();
+        let key = "cleaner-L-p1-c1";
+        let rels = vec!["raws/001.png".to_string(), "raws/../../x".to_string(), "raws/009.png".to_string()];
+        let sz = sizes(&root, key, &rels).unwrap();
+        let own = fs::metadata(ch.join("raws").join("001.png")).unwrap().len();
+        assert_eq!(sz, vec![Some(own), None, None]);
+        assert!(sizes(&root, "../x", &rels).is_err());
+
+        let dirs = vec![ch.to_string_lossy().into_owned(), root.join(SUBFOLDER).join("S").join("none").to_string_lossy().into_owned()];
+        let index = raw_sizes(&root, &dirs).unwrap();
+        assert_eq!(index[0], vec![RawSize { name: "001.png".into(), size: own }, RawSize { name: "002.png".into(), size: 12 }]);
+        assert!(index[1].is_empty());
+        assert!(raw_sizes(&root, &[root.to_string_lossy().into_owned()]).is_err(), "only folders inside the library");
+
+        let pear = vec![ch.join("raws").join("001.png").to_string_lossy().into_owned(), ch.join("raws").join("002.png").to_string_lossy().into_owned()];
+        let h = hashes(&root, key, &rels[..1], &pear).unwrap();
+        assert_eq!(h.message[0], h.pear[0]);
+        assert!(h.message[0].is_some() && h.pear[1].is_some() && h.pear[1] != h.pear[0]);
+        assert!(hashes(&root, key, &rels[..1], &[root.join("x").to_string_lossy().into_owned()]).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `cargo test --lib handoff::tests::raw_index_time -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn raw_index_time_on_3000_raws() {
+        let root = scratch("handoff-3000");
+        let mut dirs = Vec::new();
+        for c in 0..100 {
+            let ch = root.join(SUBFOLDER).join("S").join(format!("{c:03}"));
+            fs::create_dir_all(ch.join("raws")).unwrap();
+            for i in 0..30 {
+                fs::write(ch.join("raws").join(format!("{i:03}.png")), vec![0u8; 1000 + c * 30 + i]).unwrap();
+            }
+            dirs.push(ch.to_string_lossy().into_owned());
+        }
+        let t = std::time::Instant::now();
+        let index = raw_sizes(&root, &dirs).unwrap();
+        let took = t.elapsed();
+        assert_eq!(index.iter().map(Vec::len).sum::<usize>(), 3000);
+        println!("raw index of 3000 raws in 100 chapters: {took:?}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

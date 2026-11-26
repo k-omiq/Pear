@@ -732,6 +732,69 @@ describe('waiting to match', () => {
   });
 });
 
+describe('content candidates', () => {
+  const WIZ = 'The Wizard Who Lay with 10,000 Girls';
+  it('a renamed title with a byte-identical raw waits for that title, ranked first, and links its chapter', async () => {
+    const theirs = await createProject(WIZ);
+    const ch3 = await pearChapter(theirs, 3, PLAIN3);
+    const named = await createProject('Wizard who killed 10k!');
+    await send({ sentAt: T1, pages: PLAIN3, name: 'wizard who killed 10k', title: 'Ch 3', number: 3, label: '3' });
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(await inboxNames()).toEqual([KEY]);
+    expect(handoffMatch.rows).toHaveLength(1);
+    // Content first, then the name that is close.
+    expect(handoffMatch.rows[0].candidates).toEqual([theirs.id, named.id]);
+    // Judged once: the next polls stat and hash nothing.
+    const [stats, hashed] = [io.statCalls, io.hashCalls];
+    await checkHandoffs(dataRoot);
+    await checkHandoffs(dataRoot);
+    expect([io.statCalls, io.hashCalls]).toEqual([stats, hashed]);
+    const results = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(results.map((r) => r.outcome)).toEqual(['linked']);
+    expect(library.projects.find((p) => p.id === theirs.id).chapters.map((c) => c.id)).toEqual([ch3.id]);
+  });
+
+  it('hashes nothing when no size is equal, and skips a title linked to that cleaner library', async () => {
+    const other = await createProject('Nothing alike');
+    await pearChapter(other, 1, [{ raw: 1, w: 300, h: 500 }, { raw: 2, w: 300, h: 500 }, { raw: 3, w: 300, h: 500 }]);
+    await send({ sentAt: T1, pages: PLAIN3, name: 'wizard who killed 10k' });
+    expect((await checkHandoffs(dataRoot)).map((r) => r.outcome)).toEqual(['created']);
+    expect(io.hashCalls).toBe(0);
+    // The new title is linked to this cleaner library: its raws make it no
+    // candidate for another of the cleaner's titles.
+    await send({ projectId: 'p4', chapterId: 'c9', sentAt: T1, pages: PLAIN3, name: 'Something else entirely' });
+    expect((await checkHandoffs(dataRoot)).map((r) => r.outcome)).toEqual(['created']);
+    expect(handoffMatch.rows).toEqual([]);
+  });
+
+  it('builds the size index once and judges a message against 3,000 raws quickly', async () => {
+    const big = await createProject('Big library');
+    // 3,000 raws: synthetic chapters written straight to disk, then read in.
+    for (let c = 0; c < 100; c++) {
+      const pages = [];
+      for (let i = 0; i < 30; i++) pages.push({ raw: (c * 30 + i) % 250, w: 10 + (i % 7), h: 12 + ((c + i) % 11) });
+      await pearChapter(big, c + 100, pages);
+    }
+    const theirs = await createProject(WIZ);
+    await pearChapter(theirs, 3, PLAIN3);
+    await scanLibrary();
+    await send({ sentAt: T1, pages: PLAIN3, name: 'wizard who killed 10k', number: 3, label: '3' });
+    const t0 = performance.now();
+    await checkHandoffs(dataRoot);
+    const first = performance.now() - t0;
+    expect(handoffMatch.rows[0].candidates[0]).toBe(theirs.id);
+    const indexStats = io.statCalls;
+    expect(indexStats).toBeGreaterThanOrEqual(3003);
+    // A second message: the index is not built again.
+    await send({ chapterId: 'c8', sentAt: T1, pages: PLAIN3, name: 'wizard who killed 10k', number: 4, label: '4' });
+    const t1 = performance.now();
+    await checkHandoffs(dataRoot);
+    const second = performance.now() - t1;
+    expect(io.statCalls - indexStats).toBeLessThan(20);
+    console.info(`[content candidates] 3,006 raws: first judge ${first.toFixed(0)} ms (index built), next ${second.toFixed(0)} ms`);
+  }, 60000);
+});
+
 describe('the match screen applies', () => {
   it('a single Save into its candidate makes no second title', async () => {
     const theirs = await createProject('Series Name');

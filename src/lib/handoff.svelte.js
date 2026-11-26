@@ -38,7 +38,7 @@ import { toast, toastError } from './store.svelte.js';
 import { startMode } from './prefs.svelte.js';
 import { fsx } from './fsx.js';
 import { dataFolder, samePath, typesetterRoot } from './data-folder.svelte.js';
-import { candidatesFor, chapterKey, unlinkedChapterFor, pairPages } from './handoff-match.js';
+import { candidatesFor, rankCandidates, chapterKey, unlinkedChapterFor, pairPages } from './handoff-match.js';
 
 const POLL_MS = 3000;
 
@@ -65,6 +65,11 @@ const tauriIO = {
   peek: (root, key) => invoke('handoff_peek', { root, key }),
   facts: (root, name, rels, pear) => invoke('handoff_facts', { root, name, rels, pear }),
   shareRaw: (root, claim, rel, dest) => invoke('handoff_share_raw', { root, claim, rel, dest }),
+  // Content candidates (8.4.2): sizes by stat, the library's raws by size,
+  // and the sha256 of the few files whose sizes are equal.
+  sizes: (root, name, rels) => invoke('handoff_sizes', { root, name, rels }),
+  rawSizes: (root, dirs) => invoke('handoff_raw_sizes', { root, dirs }),
+  hashes: (root, name, rels, pear) => invoke('handoff_hashes', { root, name, rels, pear }),
 };
 let io = tauriIO;
 export function _setHandoffIO(next) {
@@ -165,6 +170,7 @@ export function _resetHandoffForTests() {
   waiting.clear();
   judged.clear();
   judgedSig = '';
+  rawIndex = { sig: null, bySize: new Map() };
   autoOpened.clear();
   skips = null;
   recovered = false;
@@ -245,10 +251,10 @@ async function fileClaim(root, claim, key, entry = null) {
   // number, or when no project is linked and some are close by name (the
   // match screen asks). Otherwise its project is the one linked to the same
   // cleaner project, or a new one: never one found by name.
-  const verdict = verdictFor(summarize(read.doc));
+  const verdict = verdictFor(summarize(read.doc), entry?.content ?? []);
   if (verdict.verdict === 'wait') {
     await io.putBack(root, claim, key);
-    if (entry) judged.set(key, { stamp: entry.stamp, summary: summarize(read.doc), ...verdict });
+    if (entry) judged.set(key, { stamp: entry.stamp, summary: summarize(read.doc), content: entry.content ?? [], ...verdict });
     return { outcome: 'waiting' };
   }
   if (verdict.verdict === 'delete') {
@@ -299,6 +305,86 @@ const judged = new Map();
 let judgedSig = '';
 // Messages the screen opened itself for once (`key@sentAt`).
 const autoOpened = new Set();
+
+// ---------- content candidates (section 8.4.2) ----------
+// This app's raws by file size, from one listing per chapter folder (stat
+// only, no read). Built when a judge needs it and the chapters changed
+// since, never by a poll that has nothing new to judge.
+let rawIndex = { sig: null, bySize: new Map() };
+// At most this many library files are hashed for one message: many raws of
+// one size (blank pages) cannot make a judge slow.
+const MAX_HASHED = 256;
+
+function rawIndexSig() {
+  let out = '';
+  for (const p of library.projects) {
+    out += `${p.id}\u0001`;
+    for (const c of p.chapters ?? []) out += `${c.id}:${c.pageCount ?? ''}:${c.updatedAt ?? ''},`;
+    out += '\u0002';
+  }
+  return out;
+}
+
+async function rawsBySize(root) {
+  const sig = rawIndexSig();
+  if (rawIndex.sig === sig) return rawIndex.bySize;
+  const chapters = [];
+  for (const p of library.projects) {
+    if (p.unreadable) continue;
+    for (const c of p.chapters ?? []) if (!c.unreadable && c.dir) chapters.push({ projectId: p.id, dir: c.dir });
+  }
+  const lists = chapters.length ? await io.rawSizes(root, chapters.map((x) => x.dir)) : [];
+  const bySize = new Map();
+  chapters.forEach((x, i) => {
+    for (const f of lists[i] ?? []) {
+      const at = bySize.get(f.size);
+      const entry = { projectId: x.projectId, dir: x.dir, name: f.name };
+      if (at) at.push(entry);
+      else bySize.set(f.size, [entry]);
+    }
+  });
+  rawIndex = { sig, bySize };
+  return bySize;
+}
+
+// The projects holding a byte-identical copy of one of the message's raws,
+// [{ projectId, identical }], most first. Only projects a candidate may be
+// (the link rule of candidatesFor). Sizes first; only equal sizes hashed.
+async function contentCandidates(root, key, doc, libraryId) {
+  if (!io.sizes || !io.rawSizes || !io.hashes) return [];
+  const rels = [...new Set((doc?.pages ?? []).map((pg) => pg?.raw).filter((r) => typeof r === 'string' && r))];
+  if (!rels.length) return [];
+  const bySize = await rawsBySize(root);
+  if (!bySize.size) return [];
+  const eligible = (id) => {
+    const p = projectById(id);
+    return !!p && !p.unreadable && !p.duplicate && !(p.cleanerLink && p.cleanerLink.libraryId === libraryId);
+  };
+  const sizes = await io.sizes(root, key, rels);
+  const pairs = [];
+  rels.forEach((_, i) => {
+    if (sizes[i] == null) return;
+    for (const e of bySize.get(sizes[i]) ?? []) if (eligible(e.projectId)) pairs.push({ i, e });
+  });
+  if (!pairs.length) return [];
+  const paths = new Map();
+  for (const x of pairs) {
+    x.path = await fsx.join(x.e.dir, 'raws', x.e.name);
+    if (!paths.has(x.path) && paths.size < MAX_HASHED) paths.set(x.path, paths.size);
+  }
+  const mine = [...new Set(pairs.map((x) => x.i))];
+  const h = await io.hashes(root, key, mine.map((i) => rels[i]), [...paths.keys()]);
+  const shaOf = new Map(mine.map((i, k) => [i, h?.message?.[k] ?? null]));
+  const found = new Map();
+  for (const x of pairs) {
+    const at = paths.get(x.path);
+    const sha = shaOf.get(x.i);
+    if (at == null || !sha || h?.pear?.[at] !== sha) continue;
+    if (!found.has(x.e.projectId)) found.set(x.e.projectId, new Set());
+    found.get(x.e.projectId).add(x.i);
+  }
+  return [...found].map(([projectId, set]) => ({ projectId, identical: set.size })).sort((a, b) => b.identical - a.identical);
+}
 
 // The projects and chapters a verdict depends on: a project made, renamed,
 // deleted or linked, or a chapter added, judges every message again.
@@ -387,19 +473,38 @@ async function forgetTitleSkip(s) {
 // 'wait' for the match screen, or 'delete' it (a skipped title's bulk send,
 // or one older than the skip). `fixed` is the linked project of a chapter
 // number clash; `candidates` the projects close by name.
-function verdictFor(s) {
+// `content`: the content candidates (contentCandidates), ranked first.
+function verdictFor(s, content = []) {
   if (!s) return { verdict: 'file' };
   if (chapterByCleanerLink(s.libraryId, s.projectId, s.chapterId)) return { verdict: 'file' };
   const linked = projectByCleanerLink(s.libraryId, s.projectId);
   const skip = skipOf(s);
+  const ranked = () => rankCandidates(content, candidatesFor(s.name, s.libraryId, library.projects).map((c) => c.project.id));
   if (skip) {
     // A Save after the skip is a clear wish to send: it asks again.
     if (s.send === 'bulk' || !(Date.parse(s.sentAt) > Date.parse(skip.skippedAt))) return { verdict: 'delete' };
-    return { verdict: 'wait', fixed: linked?.id ?? null, candidates: linked ? [] : candidatesFor(s.name, s.libraryId, library.projects).map((c) => c.project.id) };
+    return { verdict: 'wait', fixed: linked?.id ?? null, candidates: linked ? [] : ranked() };
   }
   if (linked) return unlinkedChapterFor(linked, s.numberKey, s.libraryId) ? { verdict: 'wait', fixed: linked.id, candidates: [] } : { verdict: 'file' };
-  const candidates = candidatesFor(s.name, s.libraryId, library.projects).map((c) => c.project.id);
+  const candidates = ranked();
   return candidates.length ? { verdict: 'wait', fixed: null, candidates } : { verdict: 'file' };
+}
+
+// The verdict, with content candidates looked for only where they can
+// change it: a title not linked here, not dropped by a skip. Runs before
+// "no candidates" makes a new title. The result is kept with the judged key.
+async function judge(root, key, doc) {
+  const summary = doc ? summarize(doc) : null;
+  let verdict = verdictFor(summary);
+  let content = [];
+  if (summary && verdict.verdict !== 'delete' && !verdict.fixed && !chapterByCleanerLink(summary.libraryId, summary.projectId, summary.chapterId) && !projectByCleanerLink(summary.libraryId, summary.projectId)) {
+    content = await contentCandidates(root, key, doc, summary.libraryId).catch((e) => {
+      console.warn('[handoff] content candidates', e);
+      return [];
+    });
+    if (content.length) verdict = verdictFor(summary, content);
+  }
+  return { summary, content, ...verdict };
 }
 
 // The rows of the screen and the banner, from the waiting messages: one per
@@ -485,8 +590,7 @@ async function runPass(root, rescan) {
       if (e.stamp && had?.stamp === e.stamp) continue;
       const peeked = io.peek ? await io.peek(root, e.key).catch(() => null) : null;
       if (peeked?.gone) continue;
-      const summary = peeked?.doc ? summarize(peeked.doc) : null;
-      judged.set(e.key, { stamp: e.stamp, summary, ...verdictFor(summary) });
+      judged.set(e.key, { stamp: e.stamp, ...(await judge(root, e.key, peeked?.doc ?? null)) });
     }
   }
   judgedSig = librarySig();
@@ -504,7 +608,7 @@ async function runPass(root, rescan) {
       continue;
     }
     try {
-      const r = await fileClaim(root, claim, key, { stamp });
+      const r = await fileClaim(root, claim, key, { stamp, content: j.content ?? [] });
       results.push({ key, ...r });
       if (r.outcome === 'created' || r.outcome === 'updated') filed = true;
     } catch (e) {

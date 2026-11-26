@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeName, levenshtein, isClose, candidatesFor, chapterKey, unlinkedChapterFor, pairPages, pairingLine } from './handoff-match.js';
+import { normalizeName, levenshtein, isClose, candidatesFor, rankCandidates, chapterKey, unlinkedChapterFor, pairPages, pairingLine } from './handoff-match.js';
 
 // SHARED_DATA_FOLDER.md section 8.4.2 and 8.4.4.
 describe('names', () => {
@@ -35,6 +35,13 @@ describe('names', () => {
     ];
     // e is linked to another library (a reinstalled cleaner): a candidate.
     expect(candidatesFor('Dungeon streamer', 'L1', projects).map((c) => c.project.id)).toEqual(['e', 'b', 'a', 'c']);
+  });
+});
+
+describe('ranking', () => {
+  it('puts content candidates first, most identical raws first, then names, each once', () => {
+    expect(rankCandidates([{ projectId: 'a', identical: 1 }, { projectId: 'b', identical: 5 }], ['c', 'a', 'd'])).toEqual(['b', 'a', 'c', 'd']);
+    expect(rankCandidates([], ['c'])).toEqual(['c']);
   });
 });
 

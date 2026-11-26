@@ -5,6 +5,7 @@
 //   normalizeName   how two titles are compared
 //   isClose         whether a title is a candidate for another
 //   candidatesFor   this app's projects a cleaner title may belong to, ranked
+//   rankCandidates  content candidates first, then the close names
 //   chapterKey      the number two chapters are compared by
 //   pairPages       which page of a cleaner chapter is which page here
 
@@ -85,6 +86,15 @@ export function candidatesFor(name, libraryId, projects) {
       Number(b.within) - Number(a.within) ||
       String(a.project.name).localeCompare(String(b.project.name)),
   );
+  return out;
+}
+
+// The candidates in the order the screen offers them (section 8.4.2):
+// content candidates first, most identical raws first, then the ones close
+// by name in their own order, each project once.
+export function rankCandidates(content, named) {
+  const out = [...(content ?? [])].sort((a, b) => b.identical - a.identical).map((c) => c.projectId);
+  for (const id of named ?? []) if (!out.includes(id)) out.push(id);
   return out;
 }
 

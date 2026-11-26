@@ -206,6 +206,64 @@ export function nodeHandoffIO(lib = (root) => join(root, 'Typesetter')) {
       }
       return { message, pear: out };
     },
+    // Content candidates (8.4.2): sizes by stat, hashes only on request.
+    statCalls: 0,
+    hashCalls: 0,
+    async sizes(root, name, rels) {
+      if (!name.startsWith('.claimed-') && (!plain(name) || name.startsWith('.'))) throw new Error(`${name} is not a message name`);
+      const dir = name.startsWith('.claimed-') ? claimDir(root, name) : join(inbox(root), name);
+      const out = [];
+      for (const rel of rels) {
+        io.statCalls++;
+        let p;
+        try {
+          p = messageFile(dir, rel);
+        } catch {
+          out.push(null);
+          continue;
+        }
+        out.push(await stat(p).then((st) => (st.isFile() ? st.size : null), () => null));
+      }
+      return out;
+    },
+    async rawSizes(root, dirs) {
+      const out = [];
+      for (const d of dirs) {
+        if (!inLibrary(root, d)) throw new Error(`${d} is not inside the library`);
+        const files = [];
+        for (const e of await readdir(join(d, 'raws'), { withFileTypes: true }).catch(() => [])) {
+          if (!e.isFile() || e.name.startsWith('.')) continue;
+          io.statCalls++;
+          files.push({ name: e.name, size: (await stat(join(d, 'raws', e.name))).size });
+        }
+        out.push(files.sort((a, b) => (a.name < b.name ? -1 : 1)));
+      }
+      return out;
+    },
+    async hashes(root, name, rels, pear) {
+      const dir = name.startsWith('.claimed-') ? claimDir(root, name) : join(inbox(root), name);
+      const sha = async (p) => {
+        io.hashCalls++;
+        return readFile(p).then((b) => createHash('sha256').update(b).digest('hex'), () => null);
+      };
+      const message = [];
+      for (const rel of rels) {
+        let p;
+        try {
+          p = messageFile(dir, rel);
+        } catch {
+          message.push(null);
+          continue;
+        }
+        message.push(await sha(p));
+      }
+      const out = [];
+      for (const p of pear) {
+        if (!inLibrary(root, p)) throw new Error(`${p} is not inside the library`);
+        out.push(await sha(p));
+      }
+      return { message, pear: out };
+    },
     noShare: false,
     async shareRaw(root, claim, rel, dest) {
       const src = messageFile(claimDir(root, claim), rel);
