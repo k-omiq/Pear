@@ -23,15 +23,22 @@ import {
   library,
   scanLibrary,
   createProject,
+  projectById,
   projectByCleanerLink,
   chapterByCleanerLink,
   chapterBusy,
+  chapterOpenAnywhere,
   createChapterFromHandoff,
   applyHandoffToChapter,
+  linkHandoffToChapter,
+  setProjectCleanerLink,
+  readChapterRecord,
 } from './library.svelte.js';
 import { toast, toastError } from './store.svelte.js';
 import { startMode } from './prefs.svelte.js';
+import { fsx } from './fsx.js';
 import { dataFolder, samePath, typesetterRoot } from './data-folder.svelte.js';
+import { candidatesFor, chapterKey, unlinkedChapterFor, pairPages } from './handoff-match.js';
 
 const POLL_MS = 3000;
 
@@ -52,6 +59,12 @@ const tauriIO = {
   reject: (root, claim, key, reason) => invoke('handoff_reject', { root, claim, key, reason }),
   done: (root, claim) => invoke('handoff_done', { root, claim }),
   moveBusy: () => invoke('data_folder_move_busy'),
+  // Version 2 (section 8.4): the names with a stamp, a waiting message's
+  // handoff.json read in place, page facts for pairing, a shared raw.
+  scan: (root) => invoke('handoff_scan', { root }),
+  peek: (root, key) => invoke('handoff_peek', { root, key }),
+  facts: (root, name, rels, pear) => invoke('handoff_facts', { root, name, rels, pear }),
+  shareRaw: (root, claim, rel, dest) => invoke('handoff_share_raw', { root, claim, rel, dest }),
 };
 let io = tauriIO;
 export function _setHandoffIO(next) {
@@ -150,8 +163,13 @@ let running = null;
 export function _resetHandoffForTests() {
   told.clear();
   waiting.clear();
+  judged.clear();
+  judgedSig = '';
+  autoOpened.clear();
+  skips = null;
   recovered = false;
   running = null;
+  Object.assign(handoffMatch, { rows: [], bulk: false, open: false, autoOpen: false });
 }
 
 const DEFER_TEXT = 'Cleaner sent new pages for this chapter. They apply when you close it.';
@@ -159,8 +177,17 @@ const DEFER_TEXT = 'Cleaner sent new pages for this chapter. They apply when you
 // A send no newer than the last one filed for its chapter.
 const isStale = (sentAt, last) => Number.isFinite(Date.parse(last ?? '')) && !(Date.parse(sentAt) > Date.parse(last));
 
+// The number a new chapter gets: its key (section 8.4.2), so 12.5 is never
+// filed as 12; with no key, the whole number after the project's last.
+function numberFor(p, chapter) {
+  const key = chapterKey(chapter);
+  if (key != null) return key;
+  const numbers = (p.chapters ?? []).map((c) => c.number).filter(Number.isFinite);
+  return numbers.length ? Math.floor(Math.max(...numbers)) + 1 : 1;
+}
+
 // Files one claimed message. Returns what happened.
-async function fileClaim(root, claim, key) {
+async function fileClaim(root, claim, key, entry = null) {
   const read = await io.read(root, claim);
   // Staleness before the files are checked: a send filed already (its claim
   // was not deleted, say) is dropped, never rejected for what it lacks.
@@ -213,9 +240,21 @@ async function fileClaim(root, claim, key) {
     return { outcome: 'updated', chapterId: c.id, ...result };
   }
 
-  // A new chapter. Its project is the one linked to the same cleaner
-  // project, never one found by name: an unlinked project with the same name
-  // is someone else's series and is left alone.
+  // A new chapter (section 8.3, step 5). It waits, put back before anything
+  // here changes, when its linked project has an unlinked chapter with its
+  // number, or when no project is linked and some are close by name (the
+  // match screen asks). Otherwise its project is the one linked to the same
+  // cleaner project, or a new one: never one found by name.
+  const verdict = verdictFor(summarize(read.doc));
+  if (verdict.verdict === 'wait') {
+    await io.putBack(root, claim, key);
+    if (entry) judged.set(key, { stamp: entry.stamp, summary: summarize(read.doc), ...verdict });
+    return { outcome: 'waiting' };
+  }
+  if (verdict.verdict === 'delete') {
+    await io.done(root, claim);
+    return { outcome: 'skipped' };
+  }
   try {
     let p = projectByCleanerLink(link.libraryId, link.projectId);
     if (!p) {
@@ -224,9 +263,7 @@ async function fileClaim(root, claim, key) {
         cleanerLink: { libraryId: link.libraryId, projectId: link.projectId },
       });
     }
-    const numbers = (p.chapters ?? []).map((c) => c.number).filter(Number.isFinite);
-    const fromLabel = Number.parseFloat(msg.chapter.label ?? '');
-    const number = msg.chapter.number ?? (Number.isFinite(fromLabel) ? fromLabel : numbers.length ? Math.max(...numbers) + 1 : 1);
+    const number = numberFor(p, msg.chapter);
     const c = await createChapterFromHandoff({
       projectId: p.id,
       number,
@@ -247,10 +284,169 @@ async function fileClaim(root, claim, key) {
   }
 }
 
+// ---------- waiting to match (section 8.4.2) ----------
+
+// What the match screen and the banner read. `rows`: one per waiting
+// cleaner title. `bulk`: some message came from Send to Pear (a banner);
+// else only single Saves wait and the screen opens itself (`autoOpen`).
+export const handoffMatch = $state({ rows: [], bulk: false, open: false, autoOpen: false });
+
+// Key -> { stamp, summary, verdict, fixed, candidates }: what a message not
+// filed yet was judged to be. A waiting message is neither claimed nor read
+// again while its folder (`stamp`) and this app's projects (`judgedSig`)
+// stay the same. Memory only.
+const judged = new Map();
+let judgedSig = '';
+// Messages the screen opened itself for once (`key@sentAt`).
+const autoOpened = new Set();
+
+// The projects and chapters a verdict depends on: a project made, renamed,
+// deleted or linked, or a chapter added, judges every message again.
+function librarySig() {
+  let out = '';
+  for (const p of library.projects) {
+    out += `${p.id}\u0001${p.name}\u0001${p.cleanerLink?.libraryId ?? ''}:${p.cleanerLink?.projectId ?? ''}`;
+    for (const c of p.chapters ?? []) out += `\u0002${c.number}:${c.cleanerLink?.libraryId ?? ''}:${c.cleanerLink?.chapterId ?? ''}`;
+    out += '\u0003';
+  }
+  return out;
+}
+
+// The fields of a message the judging and the screen use, from its
+// handoff.json, or null when it cannot be told apart (it is then filed, and
+// the check sets it aside).
+function summarize(doc) {
+  const ids = doc?.cleaner;
+  if (!ids || ![ids.libraryId, ids.projectId, ids.chapterId].every((v) => typeof v === 'string' && v)) return null;
+  const ch = doc.chapter ?? {};
+  const pages = Array.isArray(doc.pages) ? doc.pages : [];
+  const label = typeof ch.label === 'string' && ch.label.trim() ? ch.label.trim() : null;
+  const number = Number.isFinite(ch.number) ? ch.number : null;
+  return {
+    libraryId: ids.libraryId,
+    projectId: ids.projectId,
+    chapterId: ids.chapterId,
+    sentAt: String(doc.sentAt ?? ''),
+    send: doc.send === 'bulk' ? 'bulk' : 'save',
+    name: String(doc.project?.name ?? '').trim() || 'Untitled',
+    layout: doc.project?.layout === 'longstrip' ? 'longstrip' : 'pages',
+    title: String(ch.title ?? '').trim(),
+    number,
+    label,
+    numberKey: chapterKey({ label, number }),
+    pageCount: pages.length,
+    cleanedPages: Number.isInteger(ch.cleanedPages) ? ch.cleanedPages : pages.filter((pg) => pg?.cleaned != null).length,
+  };
+}
+
+// ---------- skips (section 8.4.5), in this app's own folder ----------
+
+const SKIPS_FILE = 'handoff-skips.json';
+let skips = null; // { titles: [{ libraryId, projectId, skippedAt }], chapters: [... chapterId] }
+
+async function skipsPath() {
+  return fsx.join(library.root, SKIPS_FILE);
+}
+async function loadSkips() {
+  if (skips) return skips;
+  try {
+    const v = JSON.parse(await fsx.readTextFile(await skipsPath()));
+    const list = (x) => (Array.isArray(x) ? x.filter((r) => r && typeof r.libraryId === 'string' && typeof r.projectId === 'string' && typeof r.skippedAt === 'string') : []);
+    skips = { titles: list(v?.titles), chapters: list(v?.chapters).filter((r) => typeof r.chapterId === 'string') };
+  } catch {
+    skips = { titles: [], chapters: [] };
+  }
+  return skips;
+}
+async function saveSkips() {
+  await fsx.writeTextFileAtomic(await skipsPath(), JSON.stringify({ schema: 1, ...skips }, null, 2));
+}
+const sameTitle = (r, s) => r.libraryId === s.libraryId && r.projectId === s.projectId;
+function skipOf(s) {
+  if (!skips || !s) return null;
+  return skips.chapters.find((r) => sameTitle(r, s) && r.chapterId === s.chapterId) ?? skips.titles.find((r) => sameTitle(r, s)) ?? null;
+}
+async function recordSkip(s, chapter) {
+  await loadSkips();
+  const at = new Date().toISOString();
+  if (chapter) {
+    skips.chapters = [...skips.chapters.filter((r) => !(sameTitle(r, s) && r.chapterId === s.chapterId)), { libraryId: s.libraryId, projectId: s.projectId, chapterId: s.chapterId, skippedAt: at }];
+  } else {
+    skips.titles = [...skips.titles.filter((r) => !sameTitle(r, s)), { libraryId: s.libraryId, projectId: s.projectId, skippedAt: at }];
+  }
+  await saveSkips();
+}
+async function forgetTitleSkip(s) {
+  await loadSkips();
+  if (!skips.titles.some((r) => sameTitle(r, s))) return;
+  skips.titles = skips.titles.filter((r) => !sameTitle(r, s));
+  await saveSkips();
+}
+
+// What to do with a message not filed yet: 'file' it (section 8.3), let it
+// 'wait' for the match screen, or 'delete' it (a skipped title's bulk send,
+// or one older than the skip). `fixed` is the linked project of a chapter
+// number clash; `candidates` the projects close by name.
+function verdictFor(s) {
+  if (!s) return { verdict: 'file' };
+  if (chapterByCleanerLink(s.libraryId, s.projectId, s.chapterId)) return { verdict: 'file' };
+  const linked = projectByCleanerLink(s.libraryId, s.projectId);
+  const skip = skipOf(s);
+  if (skip) {
+    // A Save after the skip is a clear wish to send: it asks again.
+    if (s.send === 'bulk' || !(Date.parse(s.sentAt) > Date.parse(skip.skippedAt))) return { verdict: 'delete' };
+    return { verdict: 'wait', fixed: linked?.id ?? null, candidates: linked ? [] : candidatesFor(s.name, s.libraryId, library.projects).map((c) => c.project.id) };
+  }
+  if (linked) return unlinkedChapterFor(linked, s.numberKey, s.libraryId) ? { verdict: 'wait', fixed: linked.id, candidates: [] } : { verdict: 'file' };
+  const candidates = candidatesFor(s.name, s.libraryId, library.projects).map((c) => c.project.id);
+  return candidates.length ? { verdict: 'wait', fixed: null, candidates } : { verdict: 'file' };
+}
+
+// The rows of the screen and the banner, from the waiting messages: one per
+// cleaner title, its chapters in chapter order. Written only when it changed.
+function publishRows(keys) {
+  const byTitle = new Map();
+  for (const key of keys) {
+    const j = judged.get(key);
+    if (j?.verdict !== 'wait' || !j.summary) continue;
+    const s = j.summary;
+    const id = `${s.libraryId}|${s.projectId}`;
+    let row = byTitle.get(id);
+    if (!row) {
+      row = { id, libraryId: s.libraryId, projectId: s.projectId, name: s.name, layout: s.layout, fixed: j.fixed ?? null, candidates: j.candidates ?? [], messages: [] };
+      byTitle.set(id, row);
+    }
+    if (j.fixed) row.fixed = j.fixed;
+    row.messages.push({ key, stamp: j.stamp, ...s });
+  }
+  const rows = [...byTitle.values()];
+  for (const r of rows) r.messages.sort((a, b) => (a.numberKey ?? Infinity) - (b.numberKey ?? Infinity) || a.chapterId.localeCompare(b.chapterId));
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  const bulk = rows.some((r) => r.messages.some((m) => m.send === 'bulk'));
+  if (JSON.stringify(rows) !== JSON.stringify(handoffMatch.rows)) handoffMatch.rows = rows;
+  if (handoffMatch.bulk !== bulk) handoffMatch.bulk = bulk;
+  // Only single Saves: the screen opens itself, once for each send.
+  const fresh = rows.flatMap((r) => r.messages.map((m) => `${m.key}@${m.sentAt}`)).filter((k) => !autoOpened.has(k));
+  if (!bulk && fresh.length) {
+    for (const k of fresh) autoOpened.add(k);
+    handoffMatch.autoOpen = true;
+  }
+}
+
+// The messages, each with a stamp that changes with its folder. A Rust side
+// without `scan` (older tests) stamps nothing, and every message is judged
+// on each pass.
+async function listEntries(root) {
+  if (io.scan) return io.scan(root);
+  return (await io.list(root)).map((key) => ({ key, stamp: '' }));
+}
+
 // One pass over the inbox. `root` is the data folder; the library root must
 // be its `Typesetter/` and the mode Shared (checked here, so a pass never
-// files into a legacy library). Single flight.
+// files into a legacy library). Single flight, and paused while the match
+// screen is open, so nothing files a row between the user's choice and Apply.
 export function checkHandoffs(root, { rescan = true } = {}) {
+  if (handoffMatch.open) return running ?? Promise.resolve([]);
   running ??= runPass(root, rescan).finally(() => {
     running = null;
   });
@@ -266,18 +462,44 @@ async function runPass(root, rescan) {
     await io.recover(root).catch(() => 0);
   }
   // A send waiting for its open chapter is not claimed again until it closes.
-  const keys = (await io.list(root)).filter((key) => !(waiting.has(key) && chapterBusy(waiting.get(key))));
-  if (!keys.length) return results;
-  // The catalogue has to be the disk's before a send is matched to a chapter:
-  // a chapter missing from it would be filed a second time.
-  await scanLibrary();
+  const entries = (await listEntries(root)).filter((e) => !(waiting.has(e.key) && chapterBusy(waiting.get(e.key))));
+  const keys = entries.map((e) => e.key);
+  for (const k of [...judged.keys()]) if (!keys.includes(k)) judged.delete(k);
+  if (librarySig() !== judgedSig) judged.clear();
+  // Only something new costs a scan and a read: messages that wait as they
+  // did cost one listing.
+  const unjudged = entries.filter((e) => !e.stamp || judged.get(e.key)?.stamp !== e.stamp);
+  if (unjudged.length) {
+    // The catalogue has to be the disk's before a send is matched to a
+    // chapter: a chapter missing from it would be filed a second time.
+    await scanLibrary();
+    if (librarySig() !== judgedSig) judged.clear();
+    await loadSkips();
+    for (const e of entries) {
+      const had = judged.get(e.key);
+      if (e.stamp && had?.stamp === e.stamp) continue;
+      const peeked = io.peek ? await io.peek(root, e.key).catch(() => null) : null;
+      if (peeked?.gone) continue;
+      const summary = peeked?.doc ? summarize(peeked.doc) : null;
+      judged.set(e.key, { stamp: e.stamp, summary, ...verdictFor(summary) });
+    }
+  }
+  judgedSig = librarySig();
   let filed = false;
-  for (const key of keys) {
+  for (const { key, stamp } of entries) {
+    const j = judged.get(key);
+    if (!j || j.verdict === 'wait') continue;
+    judged.delete(key);
     const claim = await io.claim(root, key).catch(() => null);
     if (!claim) continue; // gone, or someone else has it
     waiting.delete(key);
+    if (j.verdict === 'delete') {
+      await io.done(root, claim).catch(() => {});
+      results.push({ key, outcome: 'skipped' });
+      continue;
+    }
     try {
-      const r = await fileClaim(root, claim, key);
+      const r = await fileClaim(root, claim, key, { stamp });
       results.push({ key, ...r });
       if (r.outcome === 'created' || r.outcome === 'updated') filed = true;
     } catch (e) {
@@ -287,7 +509,210 @@ async function runPass(root, rescan) {
     }
   }
   if (filed && rescan) await scanLibrary();
+  publishRows(keys.filter((k) => judged.get(k)?.verdict === 'wait'));
   return results;
+}
+
+// ---------- the match screen (section 8.4.3) ----------
+
+export function openMatch() {
+  handoffMatch.autoOpen = false;
+  if (handoffMatch.rows.length) handoffMatch.open = true;
+}
+export function closeMatch() {
+  handoffMatch.open = false;
+  handoffMatch.autoOpen = false;
+}
+
+// A row's choices: a fixed project (a chapter number clash in a linked
+// project), else its candidates best first, then "New title in Pear" and
+// "Skip". `taken`: projects other rows chose, not offered here.
+export function rowOptions(row, taken = new Set()) {
+  if (row.fixed) return [{ value: row.fixed, label: projectById(row.fixed)?.name ?? 'This title', fixed: true }];
+  const out = [];
+  for (const id of row.candidates) {
+    const p = projectById(id);
+    if (p && !taken.has(id)) out.push({ value: id, label: p.name });
+  }
+  out.push({ value: 'new', label: 'New title in Pear' }, { value: 'skip', label: 'Skip' });
+  return out;
+}
+
+const pearRaw = async (c, pg) => fsx.join(c.dir, 'raws', pg.file);
+
+// How a waiting chapter's pages pair with the chapter here it would link to
+// (section 8.4.4), read off the disk: { ok, why, pairs, identical,
+// byPosition, thumbs }. `name` is the message's key (waiting) or claim.
+export async function pairingFor(root, name, message, c, projectId) {
+  const record = await readChapterRecord(projectId, c.id);
+  const pages = record.pages ?? [];
+  const doc = name.startsWith('.claimed-') ? (await io.read(root, name)).doc : (await io.peek(root, name)).doc;
+  const raws = [...(doc?.pages ?? [])].sort((a, b) => (a?.position ?? 0) - (b?.position ?? 0)).map((pg) => pg.raw);
+  if (raws.length !== pages.length) return pairPages(raws, pages);
+  const facts = await io.facts(root, name, raws, await Promise.all(pages.map((pg) => pearRaw(c, pg))));
+  const pairing = pairPages(
+    facts.message.map((f, i) => ({ ...f, rel: raws[i] })),
+    facts.pear.map((f, i) => ({ ...f, pageId: pages[i].id })),
+  );
+  if (!pairing.ok) return pairing;
+  const inbox = await fsx.join(root, 'handoff', 'to-typesetter', name);
+  pairing.thumbs = await Promise.all(
+    pairing.pairs
+      .filter((x) => x.how === 'position')
+      .map(async (x) => ({
+        index: x.index,
+        cleaner: (await fsx.assetUrl?.(await fsx.join(inbox, ...raws[x.index].split('/')))) ?? null,
+        pear: (await fsx.assetUrl?.(await pearRaw(c, pages[x.pear]))) ?? null,
+      })),
+  );
+  pairing.rawRels = raws;
+  pairing.pearRaws = await Promise.all(pages.map((pg) => pearRaw(c, pg)));
+  return pairing;
+}
+
+// What a chapter of a row does with the row's choice, before the user picks:
+// 'new' (no chapter here with its number, or a new title), else the chapter
+// here it would link to and 'link'.
+export function chapterTarget(row, choice, message) {
+  if (choice === 'new' || choice === 'skip') return { action: choice === 'skip' ? 'skip' : 'new', chapter: null };
+  const p = projectById(choice);
+  const c = p ? unlinkedChapterFor(p, message.numberKey, row.libraryId) : null;
+  return c ? { action: 'link', chapter: c } : { action: 'new', chapter: null };
+}
+
+// Files every waiting message of the rows not skipped, in order, inside the
+// filer's single flight (section 8.4.3). `plan`: [{ rowId, choice, chapters:
+// { [key]: 'new' | 'link' | 'replace' | 'separate' | 'skip' } }]. Each
+// chapter is one apply with the version 1 claim, check and lock rules.
+export async function applyMatch(root, plan) {
+  while (running) await running.catch(() => {});
+  running = applyPlan(root, plan).finally(() => {
+    running = null;
+  });
+  return running;
+}
+
+async function applyPlan(root, plan) {
+  const results = [];
+  await scanLibrary();
+  await loadSkips();
+  const rows = new Map(handoffMatch.rows.map((r) => [r.id, r]));
+  for (const step of plan) {
+    const row = rows.get(step.rowId);
+    if (!row) continue;
+    const title = { libraryId: row.libraryId, projectId: row.projectId };
+    if (step.choice === 'skip') {
+      for (const m of row.messages) {
+        const claim = await io.claim(root, m.key).catch(() => null);
+        if (claim) await io.done(root, claim).catch(() => {});
+        judged.delete(m.key);
+        results.push({ key: m.key, outcome: 'skipped' });
+      }
+      await recordSkip(title, false);
+      continue;
+    }
+    let p;
+    try {
+      if (step.choice === 'new') {
+        p = projectByCleanerLink(row.libraryId, row.projectId) ?? (await createProject(row.name, { layout: row.layout, cleanerLink: title }));
+      } else {
+        p = projectById(step.choice);
+        if (!p) throw new Error('That title is not in the library any more');
+        const l = p.cleanerLink;
+        if (!l || l.libraryId !== row.libraryId || l.projectId !== row.projectId) await setProjectCleanerLink(p.id, title);
+      }
+      await forgetTitleSkip(title);
+    } catch (e) {
+      results.push({ key: row.id, outcome: 'failed', error: String(e?.message ?? e) });
+      toastError(`${row.name} could not be matched: ${e?.message ?? e}`);
+      continue;
+    }
+    for (const m of row.messages) {
+      judged.delete(m.key);
+      const target = chapterTarget(row, p.id, m);
+      const action = step.chapters?.[m.key] ?? target.action;
+      results.push({ key: m.key, ...(await applyChapter(root, p, m, action, target.chapter)) });
+    }
+  }
+  await scanLibrary();
+  judgedSig = '';
+  handoffMatch.rows = [];
+  const filed = results.filter((r) => ['created', 'linked'].includes(r.outcome)).length;
+  if (filed) toast(`Matched ${filed} chapter${filed === 1 ? '' : 's'} from Manga Cleaner.`);
+  return results;
+}
+
+async function applyChapter(root, p, m, action, c) {
+  const s = m;
+  if (action === 'skip') {
+    const claim = await io.claim(root, m.key).catch(() => null);
+    if (claim) await io.done(root, claim).catch(() => {});
+    await recordSkip(s, true);
+    return { outcome: 'skipped' };
+  }
+  const linking = action === 'link' || action === 'replace';
+  if (linking && (!c || (await chapterOpenAnywhere(c.id)))) return { outcome: 'open' };
+  const claim = await io.claim(root, m.key).catch(() => null);
+  if (!claim) return { outcome: 'gone' };
+  try {
+    const read = await io.read(root, claim);
+    // Re-read: a newer Save replaced the message after the screen showed it.
+    if (String(read?.doc?.sentAt ?? '') !== m.sentAt) {
+      await io.putBack(root, claim, m.key);
+      return { outcome: 'changed' };
+    }
+    const msg = checkMessage(read);
+    if (msg.error) {
+      await io.reject(root, claim, m.key, msg.error);
+      toastError(`A chapter from Manga Cleaner could not be filed: ${msg.error}. It was set aside in handoff/rejected.`);
+      return { outcome: 'rejected', reason: msg.error };
+    }
+    const mover = {
+      take: (rel, dest) => io.take(root, claim, rel, dest),
+      giveBack: (rel, from) => io.giveBack(root, claim, rel, from),
+      same: (rel, path) => io.same(root, claim, rel, path),
+    };
+    if (linking) {
+      const pairing = await pairingFor(root, claim, m, c, p.id);
+      if (!pairing.ok) {
+        await io.putBack(root, claim, m.key);
+        return { outcome: 'unpaired', reason: pairing.why };
+      }
+      try {
+        await linkHandoffToChapter(p.id, c.id, { pages: msg.pages, pairs: pairing.pairs, link: msg.link, mover, replace: action === 'replace' });
+      } catch (e) {
+        if (e?.chapterOpen) {
+          await io.putBack(root, claim, m.key);
+          return { outcome: 'open' };
+        }
+        throw e;
+      }
+      // Identical raws share the cleaner's file, only once the link is
+      // written; any failure leaves the page as it was.
+      for (const x of pairing.pairs) {
+        if (x.how === 'same') await io.shareRaw?.(root, claim, msg.pages[x.index].rawRel, pairing.pearRaws[x.pear]).catch(() => false);
+      }
+      await io.done(root, claim);
+      return { outcome: 'linked', chapterId: c.id };
+    }
+    const created = await createChapterFromHandoff({
+      projectId: p.id,
+      number: numberFor(p, msg.chapter),
+      title: msg.chapter.title,
+      pages: msg.pages,
+      link: msg.link,
+      mover,
+      mode: startMode(),
+    });
+    await io.done(root, claim);
+    return { outcome: 'created', chapterId: created.id };
+  } catch (e) {
+    if (e?.committed) await io.done(root, claim).catch(() => {});
+    else await io.putBack(root, claim, m.key).catch(() => {});
+    const why = String(e?.message ?? e);
+    toastError(`A chapter from Manga Cleaner could not be filed: ${why}`);
+    return { outcome: 'failed', error: why };
+  }
 }
 
 // At start, on window focus and every three seconds while the window is

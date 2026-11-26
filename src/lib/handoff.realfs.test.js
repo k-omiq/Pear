@@ -60,11 +60,12 @@ vi.mock('./fsx.js', async () => {
   };
 });
 
-const { library, setRoot, setRootMustExist, createProject, openChapter, closeChapter, saveOpenChapter, scanLibrary } =
+const { library, setRoot, setRootMustExist, createProject, createChapterFromPages, openChapter, closeChapter, saveOpenChapter, scanLibrary } =
   await import('./library.svelte.js');
 const { app } = await import('./store.svelte.js');
 const { dataFolder } = await import('./data-folder.svelte.js');
-const { checkHandoffs, _resetHandoffForTests, _setHandoffIO } = await import('./handoff.svelte.js');
+const { checkHandoffs, _resetHandoffForTests, _setHandoffIO, handoffMatch, openMatch, closeMatch, applyMatch, pairingFor, chapterTarget } =
+  await import('./handoff.svelte.js');
 
 // ---------- fixtures ----------
 
@@ -149,7 +150,7 @@ const pad = (n) => String(n).padStart(3, '0');
 // Writes a message as the cleaner does: staged under a dot name, then
 // renamed to its key. Each page is { src, raw: level, cleaned: level | null,
 // w, h, jpeg }. The raw is a hard link to a file in the cleaner's folder.
-async function send({ chapterId = 'c7', projectId = 'p3', sentAt, pages, name = 'Series Name', layout = 'pages', title = 'Chapter 12', number = 12, label = '12' }) {
+async function send({ chapterId = 'c7', projectId = 'p3', sentAt, pages, name = 'Series Name', layout = 'pages', title = 'Chapter 12', number = 12, label = '12', kind }) {
   const key = `cleaner-${LIB}-${projectId}-${chapterId}`;
   const staging = join(inbox(), `.staging-${key}-${Math.random().toString(36).slice(2)}`);
   await mkdir(join(staging, 'raws'), { recursive: true });
@@ -189,9 +190,14 @@ async function send({ chapterId = 'c7', projectId = 'p3', sentAt, pages, name = 
       project: { name, layout, readingDirection: 'rtl' },
       chapter: { title, number, label },
       pages: list,
+      ...(kind ? { send: kind } : null),
     }),
   );
+  // A message not filed yet is set aside first, as the cleaner does (8.2).
+  const stale = join(inbox(), `.stale-${key}-${Math.random().toString(36).slice(2)}`);
+  if (await stat(join(inbox(), key)).then(() => true, () => false)) await fsRename(join(inbox(), key), stale);
   await fsRename(staging, join(inbox(), key));
+  await rm(stale, { recursive: true, force: true });
   return key;
 }
 
@@ -250,17 +256,20 @@ describe('a send for a chapter this app does not have', () => {
     expect(await inboxNames()).toEqual([]);
   });
 
-  it('leaves an unlinked project with the same name alone and makes a new one', async () => {
-    const theirs = await createProject('Series Name');
+  it('files a chapter by its key, so 12.5 is never 12, and a label that is no number goes last', async () => {
     await send({ sentAt: T1, pages: THREE });
     await checkHandoffs(dataRoot);
-    expect(library.projects).toHaveLength(2);
-    expect(library.projects.find((p) => p.id === theirs.id).chapters).toHaveLength(0);
-    // A second chapter of the same cleaner project goes into the linked one.
-    await send({ chapterId: 'c8', sentAt: T1, pages: THREE, title: '', number: null, label: '13.5' });
-    await checkHandoffs(dataRoot);
+    for (const [chapterId, number, label] of [
+      ['c8', 12, '12.5'],
+      ['c9', 13, '13,5'],
+      ['c10', 14, 'Extra'],
+      ['c11', 15, null],
+    ]) {
+      await send({ chapterId, sentAt: T1, pages: THREE, title: '', number, label });
+      await checkHandoffs(dataRoot);
+    }
     const linked = library.projects.find((p) => p.cleanerLink);
-    expect(linked.chapters.map((c) => c.number)).toEqual([12, 13.5]);
+    expect(linked.chapters.map((c) => c.number)).toEqual([12, 12.5, 13.5, 14, 15]);
   });
 });
 
@@ -623,5 +632,384 @@ describe.skipIf(!haveGolden)('the golden message', () => {
     expect(rec.pages.map((pg) => [pg.w, pg.h])).toEqual(doc.pages.map((pg) => [pg.w, pg.h]));
     expect(rec.pages.some((pg) => /\.jpe?g$/i.test(pg.file))).toBe(true);
     expect(rec.cleanerLink.pages.map((m) => m.sourceIdx)).toEqual(doc.pages.map((pg) => pg.sourceIdx));
+  });
+});
+
+// ===== Version 2: waiting to match, the match screen, linking (8.4) =====
+
+const sha = async (p) => (await import('node:crypto')).createHash('sha256').update(await readFile(p)).digest('hex');
+// A chapter made here by hand: raws (and cleaned pages) of the given levels,
+// a text box on every page so nothing typeset may change.
+async function pearChapter(p, number, pages) {
+  return createChapterFromPages({
+    projectId: p.id,
+    number,
+    title: `Chapter ${number}`,
+    pages: pages.map((pg, i) => ({
+      rawName: `${pad(i + 1)}.png`,
+      rawBytes: pg.bytes ?? png(pg.raw, pg.w ?? 40, pg.h ?? 60),
+      cleanedName: pg.cleaned != null ? `${pad(i + 1)}.png` : undefined,
+      cleanedBytes: pg.cleaned != null ? png(pg.cleaned, pg.w ?? 40, pg.h ?? 60) : undefined,
+      w: pg.w ?? 40,
+      h: pg.h ?? 60,
+      boxes: [{ id: `b${i}`, lineN: null, text: `hello ${i}`, x: 1, y: 2, w: 10, h: 5, style: { fontSize: 20 } }],
+    })),
+  });
+}
+// Every file of a chapter folder (but logs and the record) by its sha256.
+async function hashes(dir) {
+  const out = {};
+  for (const sub of ['raws', 'cleaned']) {
+    for (const n of await readdir(join(dir, sub)).catch(() => [])) out[`${sub}/${n}`] = await sha(join(dir, sub, n));
+  }
+  return out;
+}
+const planFor = (choice, chapters = {}) => handoffMatch.rows.map((r) => ({ rowId: r.id, choice: typeof choice === 'function' ? choice(r) : choice, chapters }));
+const PLAIN3 = [
+  { src: 0, raw: 10, cleaned: 210 },
+  { src: 1, raw: 20, cleaned: 220 },
+  { src: 2, raw: 30, cleaned: 230 },
+];
+
+describe('waiting to match', () => {
+  it('a close name makes a single Save wait, untouched and not read again; the screen opens for it', async () => {
+    const theirs = await createProject('Series name!');
+    await send({ sentAt: T1, pages: THREE });
+    const before = await stat(join(inbox(), KEY));
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(await inboxNames()).toEqual([KEY]);
+    const after = await stat(join(inbox(), KEY));
+    expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
+    expect(library.projects).toHaveLength(1);
+    expect(library.projects[0].chapters).toHaveLength(0);
+    expect(handoffMatch.rows).toHaveLength(1);
+    expect(handoffMatch.rows[0]).toMatchObject({ name: 'Series Name', candidates: [theirs.id], fixed: null });
+    expect([handoffMatch.bulk, handoffMatch.autoOpen]).toEqual([false, true]);
+    // Judged: the next checks neither read nor claim it.
+    const peeks = io.peeks;
+    await checkHandoffs(dataRoot);
+    await checkHandoffs(dataRoot);
+    expect(io.peeks).toBe(peeks);
+    // A project made here judges it again.
+    await createProject('Something else');
+    await checkHandoffs(dataRoot);
+    expect(io.peeks).toBe(peeks + 1);
+  });
+
+  it('a Send to Pear shows the banner and never opens the screen by itself', async () => {
+    await createProject('Series Name');
+    await send({ sentAt: T1, pages: THREE, kind: 'bulk' });
+    await checkHandoffs(dataRoot);
+    expect([handoffMatch.rows.length, handoffMatch.bulk, handoffMatch.autoOpen]).toEqual([1, true, false]);
+  });
+
+  it('a linked project with an unlinked chapter of that number waits as one row with that project fixed', async () => {
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    const p = library.projects[0];
+    await pearChapter(p, 13, PLAIN3);
+    await send({ chapterId: 'c8', sentAt: T1, pages: PLAIN3, title: 'Chapter 13', number: 13, label: '13' });
+    await checkHandoffs(dataRoot);
+    expect(handoffMatch.rows).toHaveLength(1);
+    expect(handoffMatch.rows[0].fixed).toBe(p.id);
+    expect(library.projects[0].chapters.map((c) => c.number)).toEqual([12, 13]);
+    // A chapter with no key never waits on a clash: it is always new.
+    await send({ chapterId: 'c9', sentAt: T1, pages: PLAIN3, title: 'Extra', number: null, label: 'Extra' });
+    const [r] = (await checkHandoffs(dataRoot)).filter((x) => x.key.endsWith('-c9'));
+    expect(r.outcome).toBe('created');
+  });
+});
+
+describe('the match screen applies', () => {
+  it('a single Save into its candidate makes no second title', async () => {
+    const theirs = await createProject('Series Name');
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    const results = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(results.map((r) => r.outcome)).toEqual(['created']);
+    await scanLibrary();
+    expect(library.projects).toHaveLength(1);
+    expect(library.projects[0].chapters.map((c) => c.number)).toEqual([12]);
+    expect((await projectRecord(library.projects[0])).cleanerLink).toEqual({ libraryId: LIB, projectId: 'p3' });
+    expect(await inboxNames()).toEqual([]);
+    // The next Save of that title files into it with no question.
+    await send({ chapterId: 'c8', sentAt: T2, pages: THREE, number: 13, label: '13' });
+    expect((await checkHandoffs(dataRoot)).map((r) => r.outcome)).toEqual(['created']);
+    expect(library.projects).toHaveLength(1);
+  });
+
+  it('link, keep Pear’s pages: the page map, no image, box or lettering changed, a missing cleaned page taken', async () => {
+    const theirs = await createProject('Series Name');
+    const c = await pearChapter(theirs, 12, [
+      { raw: 11, cleaned: 111 },
+      { raw: 21, cleaned: 121 },
+      { raw: 31, cleaned: null },
+    ]);
+    const before = await hashes(c.dir);
+    const boxes = (await record(c)).pages.map((pg) => pg.boxes);
+    await send({ sentAt: T1, pages: PLAIN3 });
+    await checkHandoffs(dataRoot);
+    const m = handoffMatch.rows[0].messages[0];
+    expect(chapterTarget(handoffMatch.rows[0], theirs.id, m)).toMatchObject({ action: 'link' });
+    const pairing = await pairingFor(dataRoot, KEY, m, c, theirs.id);
+    expect([pairing.ok, pairing.identical, pairing.byPosition, pairing.thumbs.length]).toEqual([true, 0, 3, 3]);
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(r.outcome).toBe('linked');
+    const rec = await record(c);
+    expect(rec.cleanerLink).toMatchObject({ libraryId: LIB, projectId: 'p3', chapterId: 'c7', sentAt: T1 });
+    expect(rec.cleanerLink.pages).toEqual([
+      { sourceIdx: 0, pageId: 1 },
+      { sourceIdx: 1, pageId: 2 },
+      { sourceIdx: 2, pageId: 3 },
+    ]);
+    const after = await hashes(c.dir);
+    for (const [name, h] of Object.entries(before)) expect(after[name]).toBe(h);
+    expect(rec.pages.map((pg) => pg.boxes)).toEqual(boxes);
+    expect(rec.pages.map((pg) => pg.file)).toEqual(['001.png', '002.png', '003.png']);
+    expect(rec.pages.map((pg) => pg.cleaned)).toEqual(['001.png', '002.png', '003.png']);
+    expect(await readFile(join(c.dir, 'cleaned', '003.png'))).toEqual(png(230));
+    expect(await inboxNames()).toEqual([]);
+    // From now on a Save updates it like any linked chapter.
+    await send({ sentAt: T2, pages: [{ src: 0, raw: 10, cleaned: 212 }] });
+    const [u] = await checkHandoffs(dataRoot);
+    expect(u).toMatchObject({ outcome: 'updated', replaced: 1 });
+  });
+
+  it('replace: the message’s cleaned pages replace these, the old ones kept', async () => {
+    const theirs = await createProject('Series Name');
+    const c = await pearChapter(theirs, 12, [
+      { raw: 11, cleaned: 111 },
+      { raw: 21, cleaned: 121 },
+      { raw: 31, cleaned: 131 },
+    ]);
+    await send({ sentAt: T1, pages: [{ src: 0, raw: 10, cleaned: 210 }, { src: 1, raw: 20, cleaned: 121 }, { src: 2, raw: 30, cleaned: null }] });
+    await checkHandoffs(dataRoot);
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id, { [KEY]: 'replace' }));
+    expect(r.outcome).toBe('linked');
+    const rec = await record(c);
+    // Page 2's bytes were the same: no churn. Page 3 had none to give.
+    expect(rec.pages.map((pg) => pg.cleaned)).toEqual(['001-2.png', '002.png', '003.png']);
+    expect(await readFile(join(c.dir, 'cleaned', '001-2.png'))).toEqual(png(210));
+    expect(await readdir(join(c.dir, 'logs', 'previous-cleaned'))).toEqual(['001.png']);
+  });
+
+  it('separate: a new linked chapter next to the one here', async () => {
+    const theirs = await createProject('Series Name');
+    await pearChapter(theirs, 12, PLAIN3);
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id, { [KEY]: 'separate' }));
+    expect(r.outcome).toBe('created');
+    const p = library.projects.find((x) => x.id === theirs.id);
+    expect(p.chapters.map((c) => [c.number, !!c.cleanerLink])).toEqual([
+      [12, false],
+      [12, true],
+    ]);
+  });
+
+  it('a new title in Pear, as version 1 would have filed it', async () => {
+    await createProject('Series Name');
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    const [r] = await applyMatch(dataRoot, planFor('new'));
+    expect(r.outcome).toBe('created');
+    expect(library.projects.filter((p) => p.cleanerLink)).toHaveLength(1);
+    expect(library.projects).toHaveLength(2);
+  });
+
+  it('pairing is refused on the page count and on a page size, and then nothing is linked', async () => {
+    const theirs = await createProject('Series Name');
+    const two = await pearChapter(theirs, 12, PLAIN3.slice(0, 2));
+    await send({ sentAt: T1, pages: PLAIN3 });
+    await checkHandoffs(dataRoot);
+    const m = handoffMatch.rows[0].messages[0];
+    expect(await pairingFor(dataRoot, KEY, m, two, theirs.id)).toEqual({ ok: false, why: 'Pages differ: 3 here, 2 in Pear' });
+    const before = await readFile(join(two.dir, 'chapter.json'), 'utf8');
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id, { [KEY]: 'link' }));
+    expect(r).toMatchObject({ outcome: 'unpaired', reason: 'Pages differ: 3 here, 2 in Pear' });
+    expect(await readFile(join(two.dir, 'chapter.json'), 'utf8')).toBe(before);
+    expect(await inboxNames()).toEqual([KEY]);
+
+    const sized = await pearChapter(await createProject('Other one'), 1, [{ raw: 1 }, { raw: 2, w: 41 }, { raw: 3 }]);
+    const p2 = library.projects.find((p) => p.chapters.some((c) => c.id === sized.id));
+    const bad = await pairingFor(dataRoot, KEY, m, sized, p2.id);
+    expect(bad.ok).toBe(false);
+    expect(bad.why).toMatch(/Page 2 is 40x60 here and 41x60 in Pear/);
+  });
+
+  it('identical raws: the raw here becomes the cleaner’s file, only once the link is written', async () => {
+    const theirs = await createProject('Series Name');
+    // The same bytes the cleaner's pages have, imported here by hand.
+    const c = await pearChapter(theirs, 12, [{ raw: 10, cleaned: 111 }, { raw: 20, cleaned: 121 }, { raw: 99, cleaned: 131 }]);
+    await send({ sentAt: T1, pages: PLAIN3 });
+    await checkHandoffs(dataRoot);
+    const m = handoffMatch.rows[0].messages[0];
+    const pairing = await pairingFor(dataRoot, KEY, m, c, theirs.id);
+    expect([pairing.identical, pairing.byPosition]).toEqual([2, 1]);
+    const shares = [];
+    const realShare = io.shareRaw;
+    io.shareRaw = async (root, claim, rel, dest) => {
+      shares.push((await record(c)).cleanerLink?.chapterId ?? null);
+      return realShare(root, claim, rel, dest);
+    };
+    await applyMatch(dataRoot, planFor(theirs.id));
+    expect(shares).toEqual(['c7', 'c7']);
+    const mine = await stat(join(c.dir, 'raws', '001.png'));
+    const theirsCopy = await stat(join(cleanerCopies, 'c7-0-40x60.png'));
+    expect(mine.ino).toBe(theirsCopy.ino);
+    expect(await readFile(join(c.dir, 'raws', '001.png'))).toEqual(png(10));
+    expect((await stat(join(c.dir, 'raws', '003.png'))).ino).not.toBe((await stat(join(cleanerCopies, 'c7-2-40x60.png'))).ino);
+  });
+
+  it('identical raws on a drive without links: skipped, nothing else changes', async () => {
+    const theirs = await createProject('Series Name');
+    const c = await pearChapter(theirs, 12, [{ raw: 10, cleaned: 111 }, { raw: 20, cleaned: 121 }, { raw: 30, cleaned: 131 }]);
+    const before = await hashes(c.dir);
+    io.noShare = true;
+    await send({ sentAt: T1, pages: PLAIN3 });
+    await checkHandoffs(dataRoot);
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(r.outcome).toBe('linked');
+    expect(await hashes(c.dir)).toEqual(before);
+  });
+
+  it('a chapter open here is not linked; it keeps waiting', async () => {
+    const theirs = await createProject('Series Name');
+    const c = await pearChapter(theirs, 12, PLAIN3);
+    await send({ sentAt: T1, pages: PLAIN3 });
+    await checkHandoffs(dataRoot);
+    await openChapter(theirs.id, c.id);
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(r.outcome).toBe('open');
+    expect(await inboxNames()).toEqual([KEY]);
+    closeChapter();
+    // The title is linked now, so the chapter waits on its number, fixed.
+    await checkHandoffs(dataRoot);
+    expect(handoffMatch.rows.map((r) => r.fixed)).toEqual([theirs.id]);
+    const [again] = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(again.outcome).toBe('linked');
+    expect((await record(c)).cleanerLink.chapterId).toBe('c7');
+  });
+
+  it('re-reads each message: one replaced by a newer Save is put back and shown again', async () => {
+    const theirs = await createProject('Series Name');
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    await send({ sentAt: T2, pages: THREE });
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(r.outcome).toBe('changed');
+    expect(await inboxNames()).toEqual([KEY]);
+    expect(library.projects.find((p) => p.id === theirs.id).chapters).toHaveLength(0);
+  });
+
+  it('runs in the single flight: no check files a row while the screen is open', async () => {
+    await createProject('Series Name');
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    openMatch();
+    expect(handoffMatch.open).toBe(true);
+    // Something that would file at once waits too.
+    await send({ projectId: 'p9', chapterId: 'c1', sentAt: T1, pages: THREE, name: 'Unrelated' });
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect((await inboxNames()).sort()).toEqual([KEY, `cleaner-${LIB}-p9-c1`].sort());
+    closeMatch();
+    expect((await checkHandoffs(dataRoot)).map((x) => x.outcome)).toEqual(['created']);
+  });
+});
+
+describe('skip', () => {
+  const skipsFile = () => join(dataRoot, 'Typesetter', 'handoff-skips.json');
+
+  it('a title: deleted, recorded here; a later bulk send goes unasked, a later Save asks again', async () => {
+    await createProject('Series Name');
+    await send({ sentAt: T1, pages: THREE, kind: 'bulk' });
+    await checkHandoffs(dataRoot);
+    const [r] = await applyMatch(dataRoot, planFor('skip'));
+    expect(r.outcome).toBe('skipped');
+    expect(await inboxNames()).toEqual([]);
+    const rec = JSON.parse(await readFile(skipsFile(), 'utf8'));
+    expect(rec.titles).toEqual([{ libraryId: LIB, projectId: 'p3', skippedAt: expect.any(String) }]);
+    _resetHandoffForTests();
+    // Another Send to Pear: deleted unasked.
+    await send({ chapterId: 'c8', sentAt: new Date(Date.now() + 1000).toISOString(), pages: THREE, kind: 'bulk' });
+    expect((await checkHandoffs(dataRoot)).map((x) => x.outcome)).toEqual(['skipped']);
+    expect(await inboxNames()).toEqual([]);
+    // A Save after the skip waits again.
+    await send({ sentAt: new Date(Date.now() + 2000).toISOString(), pages: THREE });
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(handoffMatch.rows).toHaveLength(1);
+    // Matched: the skip record goes.
+    await applyMatch(dataRoot, planFor('new'));
+    expect(JSON.parse(await readFile(skipsFile(), 'utf8')).titles).toEqual([]);
+  });
+
+  it('a chapter: only that one is skipped', async () => {
+    const theirs = await createProject('Series Name');
+    await send({ sentAt: T1, pages: THREE });
+    await send({ chapterId: 'c8', sentAt: T1, pages: THREE, number: 13, label: '13' });
+    await checkHandoffs(dataRoot);
+    const results = await applyMatch(dataRoot, planFor(theirs.id, { [KEY]: 'skip' }));
+    expect(results.map((x) => x.outcome).sort()).toEqual(['created', 'skipped']);
+    expect(JSON.parse(await readFile(skipsFile(), 'utf8')).chapters).toEqual([
+      { libraryId: LIB, projectId: 'p3', chapterId: 'c7', skippedAt: expect.any(String) },
+    ]);
+    _resetHandoffForTests();
+    await send({ sentAt: new Date(Date.now() + 1000).toISOString(), pages: THREE, kind: 'bulk' });
+    expect((await checkHandoffs(dataRoot)).map((x) => x.outcome)).toEqual(['skipped']);
+  });
+});
+
+// The version 2 golden messages (SHARED_DATA_FOLDER.md section 10), checked
+// into both repositories next to the version 1 one.
+const GOLDEN2 = join(dirname(fileURLToPath(import.meta.url)), '..', 'test', 'fixtures', 'handoff', 'golden-v2');
+const haveGolden2 = await stat(join(GOLDEN2, 'candidate', 'handoff.json')).then(() => true, () => false);
+const goldenKey = (doc) => `cleaner-${doc.cleaner.libraryId}-${doc.cleaner.projectId}-${doc.cleaner.chapterId}`;
+
+describe.skipIf(!haveGolden2)('the version 2 golden messages', () => {
+  it('candidate: "Dungeon streamer" waits for "Dungeon Steamer", nothing here changes, and the row preselects it', async () => {
+    const theirs = await createProject('Dungeon Steamer');
+    const projectBefore = await readFile(join(theirs.dir, 'project.json'), 'utf8');
+    const doc = JSON.parse(await readFile(join(GOLDEN2, 'candidate', 'handoff.json'), 'utf8'));
+    expect([doc.send, doc.chapter.cleanedPages]).toEqual(['bulk', 3]);
+    await cp(join(GOLDEN2, 'candidate'), join(inbox(), goldenKey(doc)), { recursive: true });
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(await inboxNames()).toEqual([goldenKey(doc)]);
+    await scanLibrary();
+    expect(library.projects).toHaveLength(1);
+    expect(await readFile(join(theirs.dir, 'project.json'), 'utf8')).toBe(projectBefore);
+    expect(handoffMatch.bulk).toBe(true);
+    const row = handoffMatch.rows[0];
+    expect(row).toMatchObject({ name: 'Dungeon streamer', candidates: [theirs.id] });
+    expect(row.messages[0]).toMatchObject({ numberKey: 1, cleanedPages: 3, send: 'bulk' });
+  });
+
+  it('link: "link, keep Pear’s pages" writes the page map and changes no image, box or lettering', async () => {
+    const doc = JSON.parse(await readFile(join(GOLDEN2, 'link', 'handoff.json'), 'utf8'));
+    const theirs = await createProject('Surviving the Apocalypse');
+    // Chapter 3 here: the same count and sizes, its own pages.
+    const c = await pearChapter(
+      theirs,
+      3,
+      doc.pages.map((pg, i) => ({ bytes: png(60 + i, pg.w, pg.h), cleaned: 160 + i, w: pg.w, h: pg.h })),
+    );
+    const before = await hashes(c.dir);
+    const recBefore = await record(c);
+    await cp(join(GOLDEN2, 'link'), join(inbox(), goldenKey(doc)), { recursive: true });
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect([handoffMatch.bulk, handoffMatch.autoOpen]).toEqual([false, true]);
+    const [r] = await applyMatch(dataRoot, planFor(theirs.id));
+    expect(r.outcome).toBe('linked');
+    const rec = await record(c);
+    expect(rec.cleanerLink.pages).toEqual(doc.pages.map((pg, i) => ({ sourceIdx: pg.sourceIdx, pageId: i + 1 })));
+    expect(rec.cleanerLink.sentAt).toBe(doc.sentAt);
+    expect(await hashes(c.dir)).toEqual(before);
+    expect(rec.pages.map(({ boxes, file, cleaned, w, h }) => ({ boxes, file, cleaned, w, h }))).toEqual(
+      recBefore.pages.map(({ boxes, file, cleaned, w, h }) => ({ boxes, file, cleaned, w, h })),
+    );
+    expect((await projectRecord(library.projects.find((p) => p.id === theirs.id))).cleanerLink).toEqual({
+      libraryId: doc.cleaner.libraryId,
+      projectId: 'p5',
+    });
+    expect(await inboxNames()).toEqual([]);
   });
 });

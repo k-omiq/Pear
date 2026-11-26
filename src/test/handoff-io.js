@@ -160,6 +160,64 @@ export function nodeHandoffIO(lib = (root) => join(root, 'Typesetter')) {
     async moveBusy() {
       return io.busy;
     },
+    // Version 2: a stamp per folder (its inode and modified time), a waiting
+    // message's handoff.json read in place, page facts, a shared raw.
+    peeks: 0,
+    async scan(root) {
+      const out = [];
+      for (const e of await readdir(inbox(root), { withFileTypes: true }).catch(() => [])) {
+        if (!e.isDirectory() || e.name.startsWith('.')) continue;
+        const st = await stat(join(inbox(root), e.name));
+        out.push({ key: e.name, stamp: `${st.mtimeMs}-${st.ino}` });
+      }
+      return out.sort((a, b) => (a.key < b.key ? -1 : 1));
+    },
+    async peek(root, key) {
+      if (!plain(key) || key.startsWith('.')) throw new Error(`${key} is not a message name`);
+      io.peeks++;
+      const dir = join(inbox(root), key);
+      try {
+        return { gone: false, doc: JSON.parse(await readFile(join(dir, 'handoff.json'), 'utf8')), error: null };
+      } catch (e) {
+        return { gone: !(await exists(dir)), doc: null, error: e.message };
+      }
+    },
+    async facts(root, name, rels, pear) {
+      const dir = name.startsWith('.claimed-') ? claimDir(root, name) : join(inbox(root), name);
+      const fact = async (p) => {
+        try {
+          const buf = await readFile(p);
+          const size = imageSize(buf);
+          return { exists: true, sha: createHash('sha256').update(buf).digest('hex'), w: size?.w ?? 0, h: size?.h ?? 0 };
+        } catch {
+          return { exists: false, sha: null, w: 0, h: 0 };
+        }
+      };
+      const message = [];
+      for (const rel of rels) message.push(await fact(messageFile(dir, rel)).catch(() => ({ exists: false, sha: null, w: 0, h: 0 })));
+      const out = [];
+      for (const p of pear) {
+        if (!inLibrary(root, p)) throw new Error(`${p} is not inside the library`);
+        out.push(await fact(p));
+      }
+      return { message, pear: out };
+    },
+    noShare: false,
+    async shareRaw(root, claim, rel, dest) {
+      const src = messageFile(claimDir(root, claim), rel);
+      if (!inLibrary(root, dest)) throw new Error(`${dest} is not inside the library`);
+      const s = await stat(src);
+      if (io.noShare || s.nlink < 2 || !(await io.same(root, claim, rel, dest))) return false;
+      const tmp = `${dest}.sharing`;
+      try {
+        await link(src, tmp);
+        await rename(tmp, dest);
+        return true;
+      } catch {
+        await unlink(tmp).catch(() => {});
+        return false;
+      }
+    },
   };
   return io;
 }

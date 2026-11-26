@@ -1,0 +1,52 @@
+{
+  "appVersion": "test",
+  "chapter": {
+    "cleanedPages": 3,
+    "label": "1",
+    "number": 1,
+    "title": "Chapter 1"
+  },
+  "cleaner": {
+    "chapterId": "c1",
+    "libraryId": "11111111-2222-4333-8444-555555555555",
+    "projectId": "p4"
+  },
+  "from": "manga-cleaner",
+  "pages": [
+    {
+      "cleaned": "cleaned/001.png",
+      "h": 48,
+      "position": 1,
+      "raw": "raws/001.png",
+      "rawFormat": "png",
+      "sourceIdx": 0,
+      "w": 64
+    },
+    {
+      "cleaned": "cleaned/002.png",
+      "h": 48,
+      "position": 2,
+      "raw": "raws/002.jpg",
+      "rawFormat": "jpeg",
+      "sourceIdx": 1,
+      "w": 64
+    },
+    {
+      "cleaned": "cleaned/003.png",
+      "h": 4,
+      "position": 3,
+      "raw": "raws/003.png",
+      "rawFormat": "png",
+      "sourceIdx": 2,
+      "w": 3
+    }
+  ],
+  "project": {
+    "layout": "pages",
+    "name": "Dungeon streamer",
+    "readingDirection": "rtl"
+  },
+  "schema": 1,
+  "send": "bulk",
+  "sentAt": "2026-11-25T10:00:00.000Z"
+}

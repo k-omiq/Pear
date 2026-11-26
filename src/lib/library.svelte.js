@@ -2503,6 +2503,100 @@ async function applyNow(c, path, chapterId, input, link, mover) {
   return { stale: false, replaced, added, pageCount: next.length };
 }
 
+// ===== Linking a chapter this app already has (SHARED_DATA_FOLDER.md 8.4) =====
+
+// The project a matched cleaner title files into gets the link first
+// (section 8.4.3): a link to another cleaner library is replaced.
+export async function setProjectCleanerLink(projectId, link) {
+  const p = projectById(projectId);
+  if (!p || p.unreadable) throw new Error('No such readable project');
+  const next = projectLinkOf(link);
+  const run = recordWrite.then(async () => {
+    const record = await writeProjectRecord(p, { cleanerLink: next });
+    p.cleanerLink = next;
+    p.updatedAt = record.updatedAt;
+  });
+  recordWrite = run.catch(() => {});
+  await run;
+  return next;
+}
+
+// Open in this window or in another (an AI window): such a chapter is never
+// linked or replaced (section 8.4.3), it waits.
+export async function chapterOpenAnywhere(chapterId) {
+  if (chapterBusy(chapterId)) return true;
+  try {
+    await assertClosedElsewhere({ chapterId });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+// A cleaner chapter joins a chapter made here (section 8.4.4). `pairs` is
+// the pairing, [{ index, pageId }]: `index` into `input` (the message's
+// pages, as the filer checked them). The link is written with the page map
+// and the message's time. No raw, no text box and no lettering changes.
+// Cleaned files: a paired page with none takes the message's; with
+// `replace` the message's also replace the ones here, which go to
+// logs/previous-cleaned (bytes that are the same stay as they are).
+export const linkHandoffToChapter = guarded(async function linkHandoffToChapter(projectId, chapterId, { pages: input, pairs, link, mover, replace = false }) {
+  const c = chapterById(projectId, chapterId);
+  if (!c) throw new Error('No such chapter');
+  if (c.unreadable) throw new Error('This chapter could not be read');
+  await asOpen(() => assertClosedElsewhere({ chapterId }));
+  await asOpen(() => assertClosed(chapterId));
+  const path = await fsx.join(c.dir, 'chapter.json');
+  return holdingChapter(projectId, chapterId, path, async () => {
+    const chapterText = await fsx.readTextFile(path);
+    const record = JSON.parse(chapterText);
+    const pages = record.pages ?? [];
+    const before = await requireSnapshot(c.dir, chapterText, record, 'before-cleaner');
+    const cleanedDir = await fsx.join(c.dir, 'cleaned');
+    const ensureCleaned = lazyDir(cleanedDir);
+    const usedCleaned = await usedCleanedNames(c.dir, pages);
+    const next = pages.map((pg) => ({ ...pg }));
+    const moved = [];
+    const previous = [];
+    const linkPages = [];
+    let took = 0;
+    let replaced = 0;
+    try {
+      for (const { index, pageId } of pairs) {
+        const src = input[index];
+        const at = next.findIndex((pg) => pg.id === pageId);
+        if (!src || at < 0) throw new Error('The pages changed; match the chapter again');
+        linkPages.push({ sourceIdx: src.sourceIdx, pageId });
+        if (!src.cleanedRel) continue;
+        const pg = next[at];
+        if (pg.cleaned && !replace) continue;
+        if (pg.cleaned && mover.same && (await mover.same(src.cleanedRel, await fsx.join(cleanedDir, pg.cleaned)).catch(() => false))) continue;
+        const name = await takeInto(mover, moved, src.cleanedRel, await ensureCleaned(), src.cleanedName, usedCleaned);
+        if (pg.cleaned) {
+          previous.push(pg.cleaned);
+          replaced++;
+        } else took++;
+        next[at] = { ...pg, cleaned: name };
+      }
+      record.cleanerLink = sentLink(link, linkPages);
+      await commitPages(c, path, record, next);
+    } catch (e) {
+      await giveBack(mover, moved);
+      throw e;
+    }
+    try {
+      sourceUndos.set(chapterId, before);
+      c.cleanerLink = linkOf(record.cleanerLink);
+      await dropCleaned(c.dir, previous, next);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      err.committed = true;
+      throw err;
+    }
+    return { linked: linkPages.length, took, replaced, pageFiles: next.map((pg) => ({ id: pg.id, file: pg.file })) };
+  });
+});
+
 // Lines for the pages a translations file covers. It says what is on pages
 // 1..N; it says nothing about whether the chapter has pages after that, so it
 // never shortens the chapter and never appends to it.
