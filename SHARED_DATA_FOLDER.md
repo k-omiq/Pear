@@ -150,7 +150,7 @@ this computer?** True when any of these exists:
 | Mode | When | Library used | What the user sees |
 |---|---|---|---|
 | Legacy | No pointer | The old private place | Settings offers "Set up shared folder". |
-| Pending | Pointer is good, this app's data is still in its old place | The old private place | A card: "Move your library into the shared folder". |
+| Pending | Pointer is good, this app's data is still in its old place | The old private place | The dialog of section 5.4 (row D), once. Settings > Data folder keeps the offer. A Home card may also offer it until the user answers. |
 | Shared | Pointer is good, marker matches `folderId`, own subfolder has its library file (`Cleaner/index.json` or the Pear equivalent), or there was nothing to move and setup created it | `<root>/<App>/` | Normal. |
 | Unavailable | Pointer exists, but the folder is missing (unplugged drive), its marker is missing, its `folderId` differs, or a schema is newer | None | A blocking screen: "Data folder not found at X. Reconnect the drive, or choose another folder." |
 
@@ -175,7 +175,11 @@ one row; the first row that matches wins.
 
 Unavailable for any other reason (section 5 table) stays as in version 1.
 
-"No subfolder yet" also covers a subfolder that exists but is empty. A
+"No subfolder yet" also covers a subfolder that exists but is empty. One
+exception: when this app's stored answer says it already set up or joined
+this folder (`accepted`, or a version 1 value read as one), an empty
+subfolder is filled with its library file without asking, and the app is
+Shared. A version 1 setup with nothing to move can leave this state. A
 non-empty subfolder without its library file is Unavailable: "The Pear (or
 Cleaner) folder inside the data folder is damaged."
 
@@ -246,7 +250,7 @@ Top to bottom:
 5. One line that says what will happen:
    - Set up, same volume: "Your library moves there. It takes a moment."
    - Set up, other volume: "Your library (9.7 GB) is copied there. It takes
-     about 8 minutes." The time uses 20 MB/s and rounds up to whole minutes.
+     about 9 minutes." The time uses 20 MB/s and rounds up to whole minutes.
    - Join: "Pear already uses this folder. Your library (4.4 GB) moves in
      next to it." Same-volume and other-volume variants as for Set up.
    - No library yet: "Nothing to move."
