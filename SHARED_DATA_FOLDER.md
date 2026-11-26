@@ -194,8 +194,10 @@ without asking, only when all of these hold:
 - It is on the same volume as this app's current library, so Setup is one
   `rename`: instant, nothing copied. (No library yet: nothing to check.)
 - No file in the current library is cloud-only (section 7, step 2).
-- Neither the current library nor the default place is inside a known sync
-  folder (section 7, "Default location").
+- The default place is not inside a known sync folder (section 7, "Default
+  location"). The current library may be in one (Pear's legacy
+  `~/Documents/MangaTypesetter` often is): moving out of it is the point, and
+  the cloud-only check above covers the risk.
 - No job is running. (It runs before the library opens, so none can be.)
 - Every check above is made again under `move.lock`, just before the
   rename. The other app's lock rules (section 6) apply as for any setup.
@@ -589,7 +591,10 @@ then containment, then name order.
 **Waiting**: a message that waits stays in `handoff/to-typesetter/<key>`,
 unclaimed. To list it, Pear's Rust side reads its `handoff.json` in place
 (a read-only command; it opens only that file, never the images, and closes
-it at once) and never writes there. Pear keeps in memory which keys it has
+it at once) and never writes there. Only while the match screen shows a
+row that may link (section 8.4.4), Pear also reads the message's raws in
+place, to hash them and read their sizes; it never claims or writes them
+for that. Pear keeps in memory which keys it has
 judged, with their `sentAt`. A key is judged again when its `sentAt` changes
 or a Pear project is created, renamed or deleted; otherwise a waiting
 message is neither claimed nor re-read. The cleaner retries a directory
@@ -624,7 +629,7 @@ One row per waiting cleaner title:
     project, next to Pear's.
   - **Skip this chapter**.
 - If pages cannot be paired (rule below), link and replace are not offered.
-  The row says why, for example "Pages differ: 15 here, 14 in Pear", and
+  The row says why, for example "Pages differ: 15 in Manga Cleaner, 14 in Pear", and
   offers "Add as a separate chapter" or "Skip this chapter".
 
 - A Pear project can be chosen by one row only. Once one row picks it, the
