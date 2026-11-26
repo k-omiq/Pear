@@ -115,7 +115,7 @@ export function unlinkedChapterFor(project, key, libraryId) {
 export function pairPages(message, pear) {
   const m = message ?? [];
   const p = pear ?? [];
-  if (m.length !== p.length) return { ok: false, why: `Pages differ: ${m.length} here, ${p.length} in Pear` };
+  if (m.length !== p.length) return { ok: false, why: `Pages differ: ${m.length} in Manga Cleaner, ${p.length} in Pear` };
   const taken = new Set();
   const pairs = new Array(m.length).fill(null);
   m.forEach((pg, i) => {
@@ -131,7 +131,7 @@ export function pairPages(message, pear) {
     const i = restM[k];
     const j = restP[k];
     if (!(m[i]?.w > 0) || m[i].w !== p[j]?.w || m[i].h !== p[j]?.h) {
-      return { ok: false, why: `Page ${i + 1} is ${m[i]?.w ?? 0}x${m[i]?.h ?? 0} here and ${p[j]?.w ?? 0}x${p[j]?.h ?? 0} in Pear` };
+      return { ok: false, why: `Page ${i + 1} is ${m[i]?.w ?? 0}x${m[i]?.h ?? 0} in Manga Cleaner and ${p[j]?.w ?? 0}x${p[j]?.h ?? 0} in Pear` };
     }
     pairs[i] = { index: i, pageId: p[j].pageId, how: 'position', pear: j };
   }

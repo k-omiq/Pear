@@ -1601,10 +1601,10 @@ pub fn quiet_check(paths: &Paths, root: &Path, legacy: Option<&Path>, home: Opti
     if sync_warning(root, home).is_some() {
         return Err(format!("{} is in a sync folder", root.display()));
     }
+    // Only the default place must be outside a sync folder. The library may
+    // be in one (Pear's ~/Documents/MangaTypesetter often is): moving out is
+    // the point, and the cloud-only check below covers the risk.
     let Some(from) = legacy.filter(|l| holds_library(l)) else { return Ok(()) };
-    if sync_warning(from, home).is_some() {
-        return Err(format!("{} is in a sync folder", from.display()));
-    }
     if !same_volume(from, root) {
         return Err(format!("{} is on another drive", from.display()));
     }
@@ -2509,7 +2509,7 @@ pub mod tests {
         let cloud = |_: &fs::Metadata| true;
         let opts = MoveOpts { dataless: &cloud, ..MoveOpts::default() };
         assert!(!quiet_setup(&paths, &root, Some(&legacy), Some(&home), &opts, &|| {}).unwrap().done);
-        // A sync folder, for the default place or the library.
+        // The default place in a sync folder.
         let synced = d.join("Dropbox").join("Manga Library");
         assert!(!quiet_setup(&paths, &synced, Some(&legacy), Some(&home), &MoveOpts::default(), &|| {}).unwrap().done);
         assert!(!synced.exists());
@@ -2534,6 +2534,28 @@ pub mod tests {
         assert!(status(&paths).typesetter_ready);
         // A pointer now: never again.
         assert!(!q(&|| {}).done);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn quiet_setup_moves_a_library_out_of_a_sync_folder() {
+        // Contract 5.2: only the default place must be outside a sync folder.
+        // Pear's legacy ~/Documents/MangaTypesetter (and one in Dropbox) moves.
+        let d = scratch("quiet-synced-from");
+        let paths = paths_in(&d);
+        let home = d.join("home");
+        for (i, legacy) in [home.join("Documents").join("MangaTypesetter"), d.join("Dropbox").join("MangaTypesetter")].into_iter().enumerate() {
+            let _ = fs::remove_file(&paths.pointer);
+            library_tree(&legacy);
+            if cfg!(target_os = "macos") || i == 1 {
+                assert!(sync_warning(&legacy, Some(&home)).is_some(), "the library is in a sync folder");
+            }
+            let root = home.join(format!("Manga Library {i}"));
+            let r = quiet_setup(&paths, &root, Some(&legacy), Some(&home), &MoveOpts::default(), &|| {}).unwrap();
+            assert!(r.done, "{:?}", r.reason);
+            assert_eq!(r.report.unwrap().method, "rename");
+            assert!(!legacy.exists());
+        }
         fs::remove_dir_all(d).unwrap();
     }
 

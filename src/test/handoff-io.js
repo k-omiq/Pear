@@ -163,6 +163,8 @@ export function nodeHandoffIO(lib = (root) => join(root, 'Typesetter')) {
     // Version 2: a stamp per folder (its inode and modified time), a waiting
     // message's handoff.json read in place, page facts, a shared raw.
     peeks: 0,
+    // Reads of a waiting message's raws in place (not of a claimed one).
+    inPlaceFacts: 0,
     async scan(root) {
       const out = [];
       for (const e of await readdir(inbox(root), { withFileTypes: true }).catch(() => [])) {
@@ -183,7 +185,9 @@ export function nodeHandoffIO(lib = (root) => join(root, 'Typesetter')) {
       }
     },
     async facts(root, name, rels, pear) {
-      const dir = name.startsWith('.claimed-') ? claimDir(root, name) : join(inbox(root), name);
+      const claimed = name.startsWith('.claimed-');
+      if (!claimed) io.inPlaceFacts++;
+      const dir = claimed ? claimDir(root, name) : join(inbox(root), name);
       const fact = async (p) => {
         try {
           const buf = await readFile(p);

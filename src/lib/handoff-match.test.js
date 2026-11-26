@@ -81,9 +81,9 @@ describe('pairing', () => {
   });
 
   it('is refused on the count and on a size', () => {
-    expect(pairPages([pg('a')], here([pg('a'), pg('b')]))).toEqual({ ok: false, why: 'Pages differ: 1 here, 2 in Pear' });
+    expect(pairPages([pg('a')], here([pg('a'), pg('b')]))).toEqual({ ok: false, why: 'Pages differ: 1 in Manga Cleaner, 2 in Pear' });
     const bad = pairPages([pg('a'), pg('b', 10, 21)], here([pg('a'), pg('c')]));
     expect(bad.ok).toBe(false);
-    expect(pairingLine(bad)).toBe('Page 2 is 10x21 here and 10x20 in Pear');
+    expect(pairingLine(bad)).toBe('Page 2 is 10x21 in Manga Cleaner and 10x20 in Pear');
   });
 });

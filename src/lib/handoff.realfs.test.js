@@ -270,6 +270,13 @@ describe('a send for a chapter this app does not have', () => {
     }
     const linked = library.projects.find((p) => p.cleanerLink);
     expect(linked.chapters.map((c) => c.number)).toEqual([12, 12.5, 13.5, 14, 15]);
+    // A later real chapter 14 shares the number given to "Extra" but is never
+    // linked onto it: "Extra" is linked already, so 14 is its own chapter.
+    await send({ chapterId: 'c12', sentAt: T1, pages: THREE, title: '', number: 14, label: '14' });
+    const [r] = (await checkHandoffs(dataRoot)).filter((x) => x.key.endsWith('-c12'));
+    expect(r.outcome).toBe('created');
+    const after = library.projects.find((p) => p.cleanerLink);
+    expect(after.chapters.filter((c) => c.number === 14).map((c) => c.cleanerLink.chapterId).sort()).toEqual(['c10', 'c12']);
   });
 });
 
@@ -694,6 +701,8 @@ describe('waiting to match', () => {
     await createProject('Something else');
     await checkHandoffs(dataRoot);
     expect(io.peeks).toBe(peeks + 1);
+    // Its raws are read in place only for the match screen, never by the poll.
+    expect(io.inPlaceFacts).toBe(0);
   });
 
   it('a Send to Pear shows the banner and never opens the screen by itself', async () => {
@@ -713,6 +722,9 @@ describe('waiting to match', () => {
     expect(handoffMatch.rows).toHaveLength(1);
     expect(handoffMatch.rows[0].fixed).toBe(p.id);
     expect(library.projects[0].chapters.map((c) => c.number)).toEqual([12, 13]);
+    // A row that may link: the poll still reads none of its raws.
+    await checkHandoffs(dataRoot);
+    expect(io.inPlaceFacts).toBe(0);
     // A chapter with no key never waits on a clash: it is always new.
     await send({ chapterId: 'c9', sentAt: T1, pages: PLAIN3, title: 'Extra', number: null, label: 'Extra' });
     const [r] = (await checkHandoffs(dataRoot)).filter((x) => x.key.endsWith('-c9'));
@@ -823,10 +835,10 @@ describe('the match screen applies', () => {
     await send({ sentAt: T1, pages: PLAIN3 });
     await checkHandoffs(dataRoot);
     const m = handoffMatch.rows[0].messages[0];
-    expect(await pairingFor(dataRoot, KEY, m, two, theirs.id)).toEqual({ ok: false, why: 'Pages differ: 3 here, 2 in Pear' });
+    expect(await pairingFor(dataRoot, KEY, m, two, theirs.id)).toEqual({ ok: false, why: 'Pages differ: 3 in Manga Cleaner, 2 in Pear' });
     const before = await readFile(join(two.dir, 'chapter.json'), 'utf8');
     const [r] = await applyMatch(dataRoot, planFor(theirs.id, { [KEY]: 'link' }));
-    expect(r).toMatchObject({ outcome: 'unpaired', reason: 'Pages differ: 3 here, 2 in Pear' });
+    expect(r).toMatchObject({ outcome: 'unpaired', reason: 'Pages differ: 3 in Manga Cleaner, 2 in Pear' });
     expect(await readFile(join(two.dir, 'chapter.json'), 'utf8')).toBe(before);
     expect(await inboxNames()).toEqual([KEY]);
 
@@ -834,7 +846,7 @@ describe('the match screen applies', () => {
     const p2 = library.projects.find((p) => p.chapters.some((c) => c.id === sized.id));
     const bad = await pairingFor(dataRoot, KEY, m, sized, p2.id);
     expect(bad.ok).toBe(false);
-    expect(bad.why).toMatch(/Page 2 is 40x60 here and 41x60 in Pear/);
+    expect(bad.why).toMatch(/Page 2 is 40x60 in Manga Cleaner and 41x60 in Pear/);
   });
 
   it('identical raws: the raw here becomes the cleaner’s file, only once the link is written', async () => {
