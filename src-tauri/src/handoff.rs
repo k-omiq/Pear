@@ -7,7 +7,7 @@
 //! `cleaned/<name>` inside a claimed folder of `handoff/to-typesetter/`, and
 //! a destination is a new file inside `<root>/Typesetter/`.
 
-use crate::data_folder::{contains, free_name, now_secs, stamp, write_atomic, SUBFOLDER};
+use crate::data_folder::{contains, free_name, now_secs, stamp, sync_dir, write_atomic, SUBFOLDER};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
@@ -294,6 +294,212 @@ pub fn done(root: &Path, claim: &str) -> Result<(), String> {
     fs::remove_dir_all(&dir).map_err(|e| format!("Could not remove {}: {e}", dir.display()))
 }
 
+// ---------- version 2: waiting messages and linking (contract 8.4) ----------
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Entry {
+    pub key: String,
+    /// Changes whenever the folder under that key is a new one (a newer Save
+    /// replaces the whole folder, section 8.2), so a message judged already
+    /// is not read again while it waits.
+    pub stamp: String,
+}
+
+fn folder_stamp(meta: &fs::Metadata) -> String {
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let id = {
+        use std::os::unix::fs::MetadataExt;
+        meta.ino()
+    };
+    #[cfg(not(unix))]
+    let id = meta
+        .created()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("{modified:x}-{id:x}")
+}
+
+/// The messages waiting, each with its stamp, oldest name first. Dot names
+/// are never read. Lists the folder only; no message is opened.
+pub fn scan(root: &Path) -> Result<Vec<Entry>, String> {
+    let dir = inbox(root);
+    let entries = match fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("Could not read {}: {e}", dir.display())),
+    };
+    let mut out: Vec<Entry> = entries
+        .flatten()
+        .filter_map(|e| {
+            let key = e.file_name().to_str()?.to_string();
+            let meta = e.metadata().ok().filter(|m| m.is_dir())?;
+            (!key.starts_with('.')).then(|| Entry { key, stamp: folder_stamp(&meta) })
+        })
+        .collect();
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(out)
+}
+
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Peek {
+    /// The folder is not there any more.
+    pub gone: bool,
+    pub doc: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// Reads `<key>/handoff.json` of a message that is not claimed, in place
+/// (section 8.4.2): that one file only, opened, read and closed at once.
+/// Nothing is written and no image is opened.
+pub fn peek(root: &Path, key: &str) -> Result<Peek, String> {
+    key_ok(key)?;
+    let file = inbox(root).join(key).join("handoff.json");
+    let text = match fs::read_to_string(&file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Peek { gone: !inbox(root).join(key).is_dir(), error: Some("handoff.json is missing".into()), doc: None })
+        }
+        Err(e) => return Ok(Peek { error: Some(format!("handoff.json could not be read ({e})")), ..Peek::default() }),
+    };
+    Ok(match serde_json::from_str(&text) {
+        Ok(doc) => Peek { doc: Some(doc), ..Peek::default() },
+        Err(e) => Peek { error: Some(format!("handoff.json is not valid JSON ({e})")), ..Peek::default() },
+    })
+}
+
+/// A message folder by its key (waiting, not claimed) or its claim.
+fn message_dir(root: &Path, name: &str) -> Result<PathBuf, String> {
+    if name.starts_with(CLAIMED) {
+        claim_dir(root, name)
+    } else {
+        key_ok(name)?;
+        Ok(inbox(root).join(name))
+    }
+}
+
+#[derive(Serialize, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Fact {
+    pub exists: bool,
+    pub sha: Option<String>,
+    /// The pixel size after the file's EXIF rotation.
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Width and height as the page is shown: after its EXIF rotation.
+pub fn upright_size(p: &Path) -> Option<(u32, u32)> {
+    use image::metadata::Orientation::{Rotate270, Rotate270FlipH, Rotate90, Rotate90FlipH};
+    use image::ImageDecoder;
+    let mut dec = image::ImageReader::open(p).ok()?.with_guessed_format().ok()?.into_decoder().ok()?;
+    let (w, h) = dec.dimensions();
+    Some(match dec.orientation() {
+        Ok(Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH) => (h, w),
+        _ => (w, h),
+    })
+}
+
+fn sha256_hex(p: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut f = File::open(p).ok()?;
+    let mut h = Sha256::new();
+    std::io::copy(&mut f, &mut h).ok()?;
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn fact(p: &Path) -> Fact {
+    if !p.is_file() {
+        return Fact::default();
+    }
+    let (w, h) = upright_size(p).unwrap_or((0, 0));
+    Fact { exists: true, sha: sha256_hex(p), w, h }
+}
+
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Facts {
+    pub message: Vec<Fact>,
+    pub pear: Vec<Fact>,
+}
+
+/// The sha256 and upright size of message raws (`raws/<name>` of a key or a
+/// claim) and of library pages, for pairing (section 8.4.4). Only reads.
+pub fn facts(root: &Path, name: &str, rels: &[String], pear: &[String]) -> Result<Facts, String> {
+    let dir = message_dir(root, name)?;
+    let lib = root.join(SUBFOLDER);
+    let mut out = Facts::default();
+    for rel in rels {
+        out.message.push(message_file(&dir, rel).map(|p| fact(&p)).unwrap_or_default());
+    }
+    for p in pear {
+        let path = Path::new(p);
+        if !path.is_absolute() || !contains(&lib, path) {
+            return Err(format!("{p} is not inside the library"));
+        }
+        out.pear.push(fact(path));
+    }
+    Ok(out)
+}
+
+/// More than one name on disk (the cleaner's page and the message's raw).
+fn linked(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).map(|m| m.nlink() > 1).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        crate::data_folder::has_links(path)
+    }
+}
+
+/// Identical raws (section 8.4.4): when the library raw at `dest` has the
+/// bytes of the message's raw and that raw is a hard link, the library takes
+/// the same file. Linked to a temp name beside `dest`, then renamed over it,
+/// so `dest` is never missing. Run only after `chapter.json` with the link is
+/// written. Any failure leaves everything as it was: `Ok(false)`.
+pub fn share_raw(root: &Path, claim: &str, rel: &str, dest: &Path) -> Result<bool, String> {
+    let src = message_file(&claim_dir(root, claim)?, rel)?;
+    let lib = root.join(SUBFOLDER);
+    if !dest.is_absolute() || !contains(&lib, dest) || !dest.is_file() {
+        return Err(format!("{} is not a page in the library", dest.display()));
+    }
+    if !linked(&src) || !same(root, claim, rel, dest).unwrap_or(false) {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if fs::metadata(&src).map(|m| m.ino()).ok() == fs::metadata(dest).map(|m| m.ino()).ok() {
+            return Ok(true);
+        }
+    }
+    let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("page");
+    let tmp = free_name(&dest.with_file_name(format!(".{name}.sharing-{:x}", crate::data_folder::nanos() & 0xffff_ffff)));
+    if fs::hard_link(&src, &tmp).is_err() {
+        return Ok(false);
+    }
+    if fs::rename(&tmp, dest).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return Ok(false);
+    }
+    if let Some(dir) = dest.parent() {
+        sync_dir(dir);
+    }
+    Ok(true)
+}
+
 // ---------- commands ----------
 
 /// The root the webview names must be the data folder in use, in good order.
@@ -355,6 +561,27 @@ pub fn handoff_done<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, c
     done(&shared_root(&app, &root)?, &claim)
 }
 
+#[tauri::command]
+pub fn handoff_scan<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String) -> Result<Vec<Entry>, String> {
+    scan(&shared_root(&app, &root)?)
+}
+
+#[tauri::command]
+pub fn handoff_peek<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, key: String) -> Result<Peek, String> {
+    peek(&shared_root(&app, &root)?, &key)
+}
+
+#[tauri::command]
+pub async fn handoff_facts<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, name: String, rels: Vec<String>, pear: Vec<String>) -> Result<Facts, String> {
+    let root = shared_root(&app, &root)?;
+    tauri::async_runtime::spawn_blocking(move || facts(&root, &name, &rels, &pear)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn handoff_share_raw<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, claim: String, rel: String, dest: String) -> Result<bool, String> {
+    share_raw(&shared_root(&app, &root)?, &claim, &rel, Path::new(&dest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +639,75 @@ mod tests {
         assert!(dest.is_file());
         done(&root, &c).unwrap();
         assert!(list(&root).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_stamps_a_new_folder_and_peek_reads_in_place() {
+        let root = scratch("handoff-peek");
+        message(&root, "k1");
+        let before = scan(&root).unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].key, "k1");
+        let p = peek(&root, "k1").unwrap();
+        assert_eq!(p.doc.unwrap()["schema"], 1);
+        assert!(peek(&root, ".claimed-x").is_err(), "only waiting messages");
+        assert!(peek(&root, "gone").unwrap().gone);
+        // Peeking changes nothing: same names, same stamp.
+        assert_eq!(scan(&root).unwrap(), before);
+        assert_eq!(list(&root).unwrap(), vec!["k1".to_string()]);
+        // A newer Save replaces the folder: a new stamp.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::rename(inbox(&root).join("k1"), inbox(&root).join(".stale-k1")).unwrap();
+        message(&root, "k1");
+        fs::remove_dir_all(inbox(&root).join(".stale-k1")).unwrap();
+        assert_ne!(scan(&root).unwrap()[0].stamp, before[0].stamp);
+        fs::write(inbox(&root).join("k1").join("handoff.json"), "{ nope").unwrap();
+        assert!(peek(&root, "k1").unwrap().error.unwrap().contains("not valid JSON"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn facts_and_shared_raws() {
+        let root = scratch("handoff-facts");
+        let ch = root.join(SUBFOLDER).join("S").join("c").join("raws");
+        fs::create_dir_all(&ch).unwrap();
+        message(&root, "k1");
+        // The message's raw is a link to the cleaner's own page.
+        let cleaner = root.join("Cleaner");
+        fs::create_dir_all(&cleaner).unwrap();
+        fs::hard_link(inbox(&root).join("k1").join("raws").join("001.png"), cleaner.join("page.png")).unwrap();
+        let mine = ch.join("001.png");
+        fs::copy(cleaner.join("page.png"), &mine).unwrap();
+        let other = ch.join("002.png");
+        image::GrayImage::from_pixel(6, 4, image::Luma([9u8])).save(&other).unwrap();
+
+        let f = facts(&root, "k1", &["raws/001.png".into(), "raws/none.png".into()], &[mine.display().to_string(), other.display().to_string()]).unwrap();
+        assert_eq!((f.message[0].w, f.message[0].h), (4, 6));
+        assert!(!f.message[1].exists);
+        assert_eq!(f.message[0].sha, f.pear[0].sha);
+        assert_ne!(f.message[0].sha, f.pear[1].sha);
+        assert_eq!((f.pear[1].w, f.pear[1].h), (6, 4));
+        assert!(facts(&root, "k1", &[], &[root.join("x.png").display().to_string()]).is_err(), "library pages only");
+
+        let c = claim(&root, "k1").unwrap().unwrap();
+        assert!(!share_raw(&root, &c, "raws/001.png", &other).unwrap(), "different bytes are never shared");
+        assert!(share_raw(&root, &c, "raws/001.png", &mine).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&mine).unwrap().ino(), fs::metadata(cleaner.join("page.png")).unwrap().ino());
+        }
+        assert_eq!(fs::read_dir(&ch).unwrap().count(), 2, "no temp file left");
+        assert!(share_raw(&root, &c, "raws/001.png", &root.join("x.png")).is_err());
+        // A raw that is not a link (a copy) is not shared.
+        fs::remove_file(cleaner.join("page.png")).unwrap();
+        let plain_copy = ch.join("003.png");
+        fs::copy(&mine, &plain_copy).unwrap();
+        done(&root, &c).unwrap();
+        message(&root, "k2");
+        let c2 = claim(&root, "k2").unwrap().unwrap();
+        assert!(!share_raw(&root, &c2, "raws/001.png", &plain_copy).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 
