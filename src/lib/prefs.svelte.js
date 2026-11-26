@@ -185,11 +185,13 @@ export const prefs = $state({
   // The source language a new series starts with. The codes are the ones a
   // project stores (`OCR_LANGUAGES` in store.svelte.js).
   defaultOcrLanguage: 'ja',
-  // The Home card that offers the shared data folder once, in Legacy mode
-  // (SHARED_DATA_FOLDER.md section 7, "First run asks once"): 'ask' until
-  // answered, then 'notNow' or 'moved'. Answered, the card does not come
-  // back; Settings > Data folder still offers the setup.
-  dataFolderFirstRun: 'ask',
+  // The start answers for the shared data folder (SHARED_DATA_FOLDER.md
+  // section 5.3), one per question: `setup` (no data folder yet, Manga
+  // Cleaner present) and `join` (the cleaner's folder exists), each null
+  // until answered, then 'accepted' or 'declined'. A declined question is
+  // never asked again; Settings > Data folder still offers the action. The
+  // version 1 strings are read by `normalizeStartAnswer`.
+  dataFolderFirstRun: { setup: null, join: null },
 });
 
 // One gate for every comic-only tool and word.
@@ -242,8 +244,21 @@ const ENUM_KEYS = { defaultBlockShape: ['auto', 'oval', 'rect'], textEngine: ['b
   rawView: ['side', 'peek'],
   defaultChapterMode: ['typeset', 'translate'],
   defaultOcrLanguage: ['ja', 'zh', 'ko'],
-  dataFolderFirstRun: ['ask', 'notNow', 'moved'],
 };
+
+// The start answers (SHARED_DATA_FOLDER.md section 5.3), from any stored
+// form. Version 1 kept one string for its one question: 'notNow' is
+// setup/declined, 'moved' setup/accepted, 'ask' no answer. Anything else is
+// no answer, so a question is asked rather than skipped on a bad value.
+const ANSWERS = ['accepted', 'declined'];
+export function normalizeStartAnswer(v) {
+  if (v === 'notNow') return { setup: 'declined', join: null };
+  if (v === 'moved') return { setup: 'accepted', join: null };
+  const pick = (x) => (ANSWERS.includes(x) ? x : null);
+  if (v && typeof v === 'object' && !Array.isArray(v)) return { setup: pick(v.setup), join: pick(v.join) };
+  return { setup: null, join: null };
+}
+const sameAnswers = (a, b) => a.setup === b.setup && a.join === b.join;
 
 // Push the box defaults to where a box is actually born. The store seeds a new
 // box's style through `applyBoxDefaults` in data.js, and data.js is a leaf - it
@@ -311,7 +326,7 @@ function persist() {
         usage: prefs.usage,
         defaultChapterMode: prefs.defaultChapterMode,
         defaultOcrLanguage: prefs.defaultOcrLanguage,
-        dataFolderFirstRun: prefs.dataFolderFirstRun,
+        dataFolderFirstRun: { setup: prefs.dataFolderFirstRun.setup, join: prefs.dataFolderFirstRun.join },
         // The editor's layouts (layouts.svelte.js): which panes each kind of
         // chapter opens with, and the custom one.
         layouts: snapshotLayouts(),
@@ -333,6 +348,11 @@ export function setPref(key, value) {
   if (key === 'ocrModels') value = normalizeOcrModels(value);
   if (key === 'navigation') value = normalizeNavigation(value);
   if (key === 'fxDefaults') value = normalizeFxDefaults(value);
+  if (key === 'dataFolderFirstRun') {
+    // An answer is an object or a version 1 string; nothing else is taken.
+    if (!(typeof value === 'string' || (value && typeof value === 'object'))) return;
+    value = normalizeStartAnswer(value);
+  }
   if (NAME_LIST_KEYS.includes(key)) {
     value = cleanNames(value);
     if (!value) return;
@@ -418,6 +438,7 @@ function load() {
   for (const [k, values] of Object.entries(ENUM_KEYS)) {
     if (saved && values.includes(saved[k])) prefs[k] = saved[k];
   }
+  prefs.dataFolderFirstRun = normalizeStartAnswer(saved?.dataFolderFirstRun);
   // Shortcut overrides are a string->string map and nothing else; a value of
   // any other shape is dropped rather than handed to the key matcher. What is
   // loaded here is still only shape-checked: whether an id means anything and
@@ -546,6 +567,13 @@ export function adoptSharedPrefs(raw) {
   const usageWas = prefs.usage;
   for (const k of SHARED_KEYS) {
     const v = saved[k];
+    if (k === 'dataFolderFirstRun') {
+      // Only a stored answer: a blob without one says nothing about it.
+      if (v === undefined) continue;
+      const next = normalizeStartAnswer(v);
+      if (!sameAnswers(next, prefs[k])) prefs[k] = next;
+      continue;
+    }
     const ok = BOOL_KEYS.includes(k) ? typeof v === 'boolean' : ENUM_KEYS[k].includes(v);
     if (ok && prefs[k] !== v) prefs[k] = v;
   }

@@ -21,6 +21,8 @@ import { library, setRoot, setRootMustExist, scanLibrary, setOpenGate } from './
 import { app } from './store.svelte.js';
 import { jobs } from './jobs.svelte.js';
 import { chapterWindows, windowRole } from './agent/windows.js';
+import { prefs, setPref } from './prefs.svelte.js';
+import { shownText } from './data-folder-words.js';
 
 export const SUBFOLDER = 'Typesetter';
 export const DEFAULT_NAME = 'Manga Library';
@@ -50,7 +52,33 @@ export const dataFolder = $state({
   blocked: { local: '', cleaner: '' },
   // Old copies a cross-volume move set aside: [{ path }].
   oldCopies: readOldCopies(),
+  // The start question to ask (SHARED_DATA_FOLDER.md section 5.1), or null:
+  // 'joinStep' (row C, a step of the first-run setup), 'join' (row D, the
+  // dialog's Join variant) or 'setup' (row F, its Set up variant).
+  start: null,
+  // Manga Cleaner has run on this computer (section 4.1), once asked.
+  sister: null,
+  // After a quiet setup (row E): where the library now lives, for the one
+  // notice that says so. Cleared once shown.
+  quietRoot: '',
 });
+
+// The start answers (section 5.3), as prefs keeps them.
+export const startAnswers = () => prefs.dataFolderFirstRun;
+export function recordStartAnswer(question, how) {
+  setPref('dataFolderFirstRun', { ...prefs.dataFolderFirstRun, [question]: how });
+}
+// Each question is asked at most once a session, even before it is
+// answered: a dialog closed after a failure does not come back on focus.
+const askedThisSession = new Set();
+function ask(question) {
+  if (askedThisSession.has(question)) return;
+  askedThisSession.add(question);
+  dataFolder.start = question;
+}
+export function dismissStart() {
+  dataFolder.start = null;
+}
 
 function readOldCopies() {
   try {
@@ -122,7 +150,7 @@ function enter(mode) {
 
 function noteRecovered(r) {
   if (!r) return;
-  if (r.note) dataFolder.notice = r.note;
+  if (r.note) dataFolder.notice = shownText(r.note);
   noteOldCopy(r);
 }
 
@@ -142,7 +170,7 @@ async function openShared(root, target) {
 // Decides the mode from Rust's status of the pointer and this app's root.
 async function settle(st) {
   dataFolder.state = st?.state ?? 'none';
-  dataFolder.detail = st?.detail ?? '';
+  dataFolder.detail = shownText(st?.detail ?? '');
   dataFolder.root = st?.pointer?.path ?? null;
   dataFolder.bothLibraries = false;
   noteRecovered(st?.recovered);
@@ -165,18 +193,14 @@ async function settle(st) {
     return openShared(root, target);
   }
   dataFolder.bothLibraries = !!st.typesetterReady && legacyHolds;
-  // Nothing of ours to bring: the empty library is made in the shared
-  // folder (an adopt with nothing to move), under move.lock like any setup.
-  if (!legacyHolds && !app.chapterRef) {
-    try {
-      await call('data_folder_adopt', { legacy: null });
-    } catch {
-      /* the cleaner is moving the folder, say: offered again on focus */
-      return enter('pending');
-    }
-    return openShared(root, target);
-  }
   enter('pending');
+  if (dataFolder.bothLibraries) return;
+  // Rows C and D: this app has no subfolder yet. A first launch asks in the
+  // first-run setup, an app used before asks in the dialog; either once.
+  const answers = startAnswers();
+  if (answers.join) return;
+  const firstLaunch = !legacyHolds && !answers.setup && !prefs.onboarded;
+  ask(firstLaunch ? 'joinStep' : 'join');
 }
 
 async function refresh() {
@@ -210,12 +234,57 @@ export async function initDataFolder() {
       return;
     }
     await refresh();
+    if (dataFolder.mode === 'legacy') await startWithoutPointer();
   } catch (e) {
     dataFolder.detail = `The shared data folder could not be used: ${e?.message ?? e}`;
     // Pending only while this app still runs on its own old library.
     const onShared = dataFolder.root && samePath(library.root, await typesetterRoot(dataFolder.root).catch(() => ''));
     enter(dataFolder.state === 'none' ? 'legacy' : dataFolder.state === 'ok' && !onShared ? 'pending' : 'unavailable');
   }
+}
+
+// Rows E and F (section 5.1): no pointer. Without Manga Cleaner on this
+// computer the library moves into the shared layout by itself (a quiet
+// setup, one rename or nothing); with it, the dialog asks. A setup the user
+// declined is neither asked nor done again.
+async function startWithoutPointer() {
+  const answers = startAnswers();
+  if (answers.setup === 'declined') return;
+  const sister = await call('data_folder_sister').catch(() => null);
+  dataFolder.sister = typeof sister?.present === 'boolean' ? sister.present : null;
+  if (dataFolder.sister === true) {
+    if (!answers.setup) ask('setup');
+    return;
+  }
+  if (dataFolder.sister === false) await quietSetup();
+}
+
+// Row E. Every check is Rust's, made twice, the second time under
+// move.lock just before the rename (section 5.2); any that fails leaves
+// Legacy mode and says nothing.
+async function quietSetup() {
+  if (jobs.items.some((j) => j.running) || app.chapterRef) return;
+  let root;
+  try {
+    root = await call('data_folder_default_root');
+    const legacy = (await holdsLibrary(library.root)) ? library.root : null;
+    setOpenGate(openGate);
+    dataFolder.busy = true;
+    const r = await call('data_folder_quiet_setup', { root, legacy });
+    if (!r?.done) {
+      if (r?.reason) console.info('[data folder] no quiet setup:', r.reason);
+      return;
+    }
+    noteOldCopy(r.report);
+  } catch (e) {
+    console.warn('[data folder] quiet setup', e);
+    return;
+  } finally {
+    dataFolder.busy = false;
+  }
+  recordStartAnswer('setup', 'accepted');
+  await settleAfter();
+  if (dataFolder.mode === 'shared') dataFolder.quietRoot = root;
 }
 
 // On window focus: the cleaner may have set the folder up, a drive may have
@@ -410,8 +479,25 @@ export function _resetDataFolderForTests() {
     oldCopies: [],
     bothLibraries: false,
     blocked: { local: '', cleaner: '' },
+    start: null,
+    sister: null,
+    quietRoot: '',
   });
+  askedThisSession.clear();
   setRootMustExist(false);
+}
+
+// What a setup or a join would move, for the dialog (section 5.4).
+export async function startPlan(root) {
+  const legacy = (await holdsLibrary(library.root)) ? library.root : null;
+  return call('data_folder_plan', { root, legacy });
+}
+export const copyProgress = () => call('data_folder_progress');
+export const revealDataFolder = (path) => call('data_folder_reveal', { path });
+export async function sisterPresent() {
+  if (dataFolder.sister != null) return dataFolder.sister;
+  const r = await call('data_folder_sister').catch(() => null);
+  return r?.present === true;
 }
 
 // Exposed for the tests of the mode decision.

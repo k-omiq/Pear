@@ -41,6 +41,7 @@ vi.mock('./fsx.js', async () => {
 });
 
 const { library, setRoot, scanLibrary, createProject } = await import('./library.svelte.js');
+const { prefs, setPref } = await import('./prefs.svelte.js');
 const df = await import('./data-folder.svelte.js');
 const {
   dataFolder,
@@ -53,6 +54,7 @@ const {
   useSharedLibrary,
   useExistingFolder,
   rootForPick,
+  moveLibraryIntoShared,
 } = df;
 
 let tmp;
@@ -72,6 +74,8 @@ afterAll(async () => {
 // The Rust commands, recorded; `status` is what data_folder_status answers.
 beforeEach(() => {
   _resetDataFolderForTests();
+  setPref('dataFolderFirstRun', { setup: null, join: null });
+  setPref('onboarded', true);
   library.projects = [];
   calls = [];
   replies = {};
@@ -106,7 +110,9 @@ describe('the mode', () => {
     await initDataFolder();
     expect(dataFolder.mode).toBe('legacy');
     expect(library.root).toBe(legacy);
-    expect(names()).toEqual(['data_folder_status']);
+    // The sister test answered nothing: no question, no quiet setup.
+    expect(names()).toEqual(['data_folder_status', 'data_folder_sister']);
+    expect(dataFolder.start).toBe(null);
   });
 
   it('is unavailable when the folder is missing, and nothing makes it', async () => {
@@ -145,13 +151,153 @@ describe('the mode', () => {
     expect(names()).not.toContain('data_folder_adopt');
   });
 
-  it('makes the shared library at once when the old place holds nothing', async () => {
+  it('is unavailable when the subfolder is damaged', async () => {
+    const { root } = await fixture();
+    status = { state: 'damaged', pointer: { schema: 1, path: root, folderId: 'f1' }, detail: 'The Pear folder inside the data folder is damaged.', typesetter: 'damaged' };
+    await initDataFolder();
+    expect(dataFolder.mode).toBe('unavailable');
+    expect(names()).not.toContain('data_folder_adopt');
+  });
+
+  it('never shows a Windows \\?\ prefix in what it says', async () => {
+    const { root } = await fixture();
+    status = { state: 'moving', pointer: { schema: 1, path: root, folderId: 'f1' }, detail: 'Your data is still at \\\\?\\D:\\Manga Library.' };
+    await initDataFolder();
+    expect(dataFolder.detail).toBe('Your data is still at D:\\Manga Library.');
+  });
+});
+
+// SHARED_DATA_FOLDER.md section 5.1: every start lands in exactly one row.
+describe('the start table', () => {
+  const sister = (present) => (replies.data_folder_sister = () => ({ present, source: present ? 'appData' : null }));
+
+  it('B: a journal is Unavailable, whatever else holds', async () => {
+    const { root } = await fixture({ legacyProject: true });
+    status = { state: 'moving', pointer: null };
+    sister(true);
+    await initDataFolder();
+    expect(dataFolder.mode).toBe('unavailable');
+    expect(dataFolder.start).toBe(null);
+    expect(names()).not.toContain('data_folder_sister');
+    void root;
+  });
+
+  it('A: the library file is there, so Shared and nothing asked', async () => {
     const { root, target } = await fixture();
+    await mkdir(target, { recursive: true });
+    status = ok(root, true);
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.start]).toEqual(['shared', null]);
+  });
+
+  it('C: no subfolder on a first launch asks in the first-run setup, and moves nothing', async () => {
+    const { root } = await fixture();
+    setPref('onboarded', false);
     status = ok(root, false);
     await initDataFolder();
-    expect(names()).toContain('data_folder_adopt');
+    expect([dataFolder.mode, dataFolder.start]).toEqual(['pending', 'joinStep']);
+    expect(names()).not.toContain('data_folder_adopt');
+    // Joining a new install makes the library in the shared folder.
+    replies.data_folder_adopt = () => {
+      status = ok(root, true);
+      return { method: 'none' };
+    };
+    await moveLibraryIntoShared();
+    expect(dataFolder.mode).toBe('shared');
+  });
+
+  it('C needs all three: an answer stored before, or a library with a title, is not a first launch', async () => {
+    const { root } = await fixture({ legacyProject: true });
+    setPref('onboarded', false);
+    status = ok(root, false);
+    await initDataFolder();
+    expect(dataFolder.start).toBe('join');
+    _resetDataFolderForTests();
+    await fixture();
+    setPref('dataFolderFirstRun', 'notNow');
+    await initDataFolder();
+    expect(dataFolder.start).toBe('join');
+  });
+
+  it('D: an app used before asks in the dialog, once, and never after Not now', async () => {
+    const { root } = await fixture({ legacyProject: true });
+    status = ok(root, false);
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.start]).toEqual(['pending', 'join']);
+    // Asked once a session: a dialog closed is not brought back on focus.
+    df.dismissStart();
+    await recheckDataFolder();
+    expect(dataFolder.start).toBe(null);
+    // Declined: not asked at the next start either.
+    df.recordStartAnswer('join', 'declined');
+    _resetDataFolderForTests();
+    await setRoot(library.root);
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.start]).toEqual(['pending', null]);
+  });
+
+  it('D: a setup declined does not block the Join question', async () => {
+    const { root } = await fixture({ legacyProject: true });
+    setPref('dataFolderFirstRun', { setup: 'declined', join: null });
+    status = ok(root, false);
+    await initDataFolder();
+    expect(dataFolder.start).toBe('join');
+  });
+
+  it('E: no sister runs the quiet setup, records it and leaves the notice', async () => {
+    const { legacy, root, target } = await fixture({ legacyProject: true });
+    status = { state: 'none', pointer: null };
+    sister(false);
+    replies.data_folder_default_root = () => root;
+    replies.data_folder_quiet_setup = async (args) => {
+      await mkdir(root, { recursive: true });
+      await rename(legacy, target);
+      status = ok(root, true);
+      return { done: true, reason: null, report: { method: 'rename', oldCopy: null } };
+    };
+    await initDataFolder();
+    expect(calls).toContainEqual(['data_folder_quiet_setup', { root, legacy }]);
     expect(dataFolder.mode).toBe('shared');
     expect(library.root).toBe(target);
+    expect(dataFolder.quietRoot).toBe(root);
+    expect(prefs.dataFolderFirstRun).toEqual({ setup: 'accepted', join: null });
+    expect(dataFolder.start).toBe(null);
+  });
+
+  it('E: a check that fails stays Legacy and says nothing', async () => {
+    const { legacy, root } = await fixture({ legacyProject: true });
+    status = { state: 'none', pointer: null };
+    sister(false);
+    replies.data_folder_default_root = () => root;
+    replies.data_folder_quiet_setup = () => ({ done: false, reason: 'on another drive', report: null });
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.start, dataFolder.quietRoot]).toEqual(['legacy', null, '']);
+    expect(library.root).toBe(legacy);
+    expect(prefs.dataFolderFirstRun).toEqual({ setup: null, join: null });
+    expect(dataFolder.busy).toBe(false);
+  });
+
+  it('E: a setup the user declined is not done quietly', async () => {
+    await fixture({ legacyProject: true });
+    setPref('dataFolderFirstRun', 'notNow');
+    status = { state: 'none', pointer: null };
+    sister(false);
+    await initDataFolder();
+    expect(names()).not.toContain('data_folder_quiet_setup');
+    expect(names()).not.toContain('data_folder_sister');
+  });
+
+  it('F: the sister present asks the Set up dialog, once', async () => {
+    await fixture({ legacyProject: true });
+    status = { state: 'none', pointer: null };
+    sister(true);
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.start, dataFolder.sister]).toEqual(['legacy', 'setup', true]);
+    expect(names()).not.toContain('data_folder_quiet_setup');
+    df.recordStartAnswer('setup', 'declined');
+    _resetDataFolderForTests();
+    await initDataFolder();
+    expect(dataFolder.start).toBe(null);
   });
 });
 

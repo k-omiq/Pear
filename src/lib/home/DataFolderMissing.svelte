@@ -8,6 +8,12 @@
   import { dataFolder, recheckDataFolder } from '../data-folder.svelte.js';
   import { pickInstead } from '../data-folder-actions.js';
   import { scanLibrary } from '../library.svelte.js';
+  import { shownPath } from '../data-folder-words.js';
+
+  // While this screen is shown it checks again by itself (section 11):
+  // every few seconds, and on window focus (App.svelte), so a drive plugged
+  // back in or a move the other app finished needs no click.
+  const RETRY_MS = 3000;
 
   const WHY = {
     missing: 'Reconnect the drive, or choose another folder.',
@@ -15,7 +21,8 @@
     idMismatch: 'A different data folder is at that place now. Choose the right one.',
     newer: 'It was set up by a newer version of the app. Update the app, or choose another folder.',
     invalid: 'The note that says where it is could not be read. Choose the folder again.',
-    moving: 'A move of the data folder did not finish. It is finished when nothing is in its way; then press Try again.',
+    moving: 'A move of the data folder did not finish. It is finished when nothing is in its way.',
+    damaged: 'The Pear folder inside the data folder is damaged: it has files in it but no library. Move them out of that folder, or choose another folder.',
   };
 
   const moving = $derived(dataFolder.state === 'moving');
@@ -38,14 +45,24 @@
     }
   }
   const retry = () => act(async () => { await recheckDataFolder(); });
+
+  $effect(() => {
+    const timer = setInterval(async () => {
+      if (busy || dataFolder.busy) return;
+      if ((await recheckDataFolder()) && dataFolder.mode !== 'unavailable') await scanLibrary();
+    }, RETRY_MS);
+    return () => clearInterval(timer);
+  });
+  const heading = $derived(moving ? 'Data folder move not finished' : dataFolder.state === 'damaged' ? 'Data folder damaged' : 'Data folder not found');
+  const why = $derived(WHY[dataFolder.state] ?? WHY.missing);
 </script>
 
 <main class="df-block" aria-labelledby="df-title">
   <div class="df-box">
-    <h1 id="df-title">{moving ? 'Data folder move not finished' : 'Data folder not found'}</h1>
-    <p class="df-path">{dataFolder.root ?? 'No folder'}</p>
-    <p>{WHY[dataFolder.state] ?? WHY.missing}</p>
-    {#if dataFolder.detail}<p class="df-detail" data-testid="df-detail">{dataFolder.detail}</p>{/if}
+    <h1 id="df-title">{heading}</h1>
+    <p class="df-path">{dataFolder.root ? shownPath(dataFolder.root) : 'No folder'}</p>
+    <p>{why}</p>
+    {#if dataFolder.detail && !why.startsWith(dataFolder.detail.replace(/\.$/, ''))}<p class="df-detail" data-testid="df-detail">{dataFolder.detail}</p>{/if}
     <div class="df-actions">
       <button class="btn" bind:this={first} disabled={busy} onclick={retry}>Try again</button>
       {#if !moving}
