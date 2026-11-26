@@ -822,6 +822,23 @@ Added in version 2 (found in the 2026-11-25 test):
   each app checks again every 3 seconds, and on window focus.
 - **Unavailable heading for an unfinished move**, both apps: "Data folder
   move not finished", not "Data folder not found".
+- **While recovery runs** the screen says "Finishing the move…", never "not
+  found".
+- **A picked folder** for setup or move becomes `<pick>/Manga Library`; a pick
+  that already is a data folder (has the marker) is used as it is. A move
+  never removes an existing target folder: on Unix one `rename` may replace
+  an empty folder; a mount point is refused; on Windows any existing target
+  is refused.
+- **A held message folder** (Windows error 5, 32 or 33 on the rename of
+  section 8.2) is retried 5 times over 1 second. Then Save says "Pear is
+  reading this chapter. Try Save again in a moment." The earlier message
+  stays whole.
+- **One-time notices** (quiet setup, recovery) are not toasts: they show
+  after any first-run flow closes, stay until closed or "Show", are never
+  replaced by another toast, and count as shown only once seen.
+- **In Shared mode the pointer wins** over any library path an app kept
+  from before. A read or permission error never counts as "holds a
+  library".
 
 ## 12. Later, not in version 2
 
