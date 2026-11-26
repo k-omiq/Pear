@@ -2512,13 +2512,37 @@ export async function setProjectCleanerLink(projectId, link) {
   if (!p || p.unreadable) throw new Error('No such readable project');
   const next = projectLinkOf(link);
   const run = recordWrite.then(async () => {
-    const record = await writeProjectRecord(p, { cleanerLink: next });
+    const turn = recordMutex.then(() => writeCleanerLinkOnly(p, next));
+    recordMutex = turn.catch(() => {});
+    await turn;
     p.cleanerLink = next;
-    p.updatedAt = record.updatedAt;
   });
   recordWrite = run.catch(() => {});
   await run;
   return next;
+}
+
+// Section 8.4.3: linking adds the one key to project.json as it is on disk
+// and changes nothing else. Not the whole-record rewrite: that writes the
+// record in the current form (tags, export scale, guide), and a title that
+// was only matched must not come back rewritten. No new `updatedAt` either.
+async function writeCleanerLinkOnly(p, next) {
+  const path = await fsx.join(p.dir, 'project.json');
+  return withRecordLock(path, async () => {
+    let raw;
+    try {
+      raw = await readJson(path);
+    } catch (e) {
+      throw new Error(`This title's record could not be read: ${e?.message ?? e}`);
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error("This title's record could not be read");
+    if (next) raw.cleanerLink = next;
+    else delete raw.cleanerLink;
+    await writeJson(path, raw);
+    const base = recordBase.get(p.dir);
+    if (base) recordBase.set(p.dir, { ...base, cleanerLink: next });
+    announceRecord(p.dir);
+  });
 }
 
 // Open in this window or in another (an AI window): such a chapter is never
