@@ -2436,7 +2436,7 @@ pub mod tests {
         let ask = |env: Option<&str>| sister_present(&pointer, &dirs, Some(&home), env);
         assert_eq!(ask(None), Sister { present: false, source: None });
         assert_eq!(ask(Some("1")), Sister { present: true, source: Some("override") });
-        assert_eq!(ask(Some("0")).present, false);
+        assert!(!ask(Some("0")).present);
         assert_eq!(ask(Some("")).source, None, "an empty override is no override");
         // Nothing was made by asking.
         for p in [&pointer, &data, &local, &config, &home] {
@@ -2445,7 +2445,7 @@ pub mod tests {
         fs::create_dir_all(pointer.parent().unwrap()).unwrap();
         fs::write(&pointer, "{}").unwrap();
         assert_eq!(ask(None).source, Some("pointer"));
-        assert_eq!(ask(Some("0")).present, false, "the override wins");
+        assert!(!ask(Some("0")).present, "the override wins");
         fs::remove_file(&pointer).unwrap();
         for base in [&data, &local, &config] {
             fs::create_dir_all(base.join(SISTER_ID)).unwrap();

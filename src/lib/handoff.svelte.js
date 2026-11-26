@@ -463,6 +463,11 @@ async function runPass(root, rescan) {
   }
   // A send waiting for its open chapter is not claimed again until it closes.
   const entries = (await listEntries(root)).filter((e) => !(waiting.has(e.key) && chapterBusy(waiting.get(e.key))));
+  if (!entries.length) {
+    judged.clear();
+    publishRows([]);
+    return results;
+  }
   const keys = entries.map((e) => e.key);
   for (const k of [...judged.keys()]) if (!keys.includes(k)) judged.delete(k);
   if (librarySig() !== judgedSig) judged.clear();
