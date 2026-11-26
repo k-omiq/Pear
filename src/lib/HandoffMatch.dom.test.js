@@ -96,6 +96,21 @@ describe('the match screen', () => {
     expect(handoffMatch.open).toBe(false);
   });
 
+  it('a row still looking for matches says so, with Apply off, and preselects what the scan found', async () => {
+    handoffMatch.rows = [{ ...row('r1', 'wizard who killed 10k', [], [message('k1', 1)]), scanning: true }];
+    openMatch();
+    const view = render(Screen);
+    await settle();
+    expect(view.getByTestId('looking').textContent).toBe('Looking for matches…');
+    expect(view.getByRole('combobox', { name: 'Title in Pear for wizard who killed 10k' }).disabled).toBe(true);
+    expect(view.getByRole('button', { name: 'Apply' }).disabled).toBe(true);
+    handoffMatch.rows = [{ ...row('r1', 'wizard who killed 10k', ['pB'], [message('k1', 1)]), scanning: false }];
+    await settle();
+    expect(view.queryByTestId('looking')).toBeNull();
+    expect(view.getByRole('combobox', { name: 'Title in Pear for wizard who killed 10k' }).value).toBe('pB');
+    expect(view.getByRole('button', { name: 'Apply' }).disabled).toBe(false);
+  });
+
   it('a bulk title with no candidate preselects "New title in Pear"', async () => {
     handoffMatch.rows = [row('r1', 'Brand new series', [], [message('k1', 1)])];
     openMatch();

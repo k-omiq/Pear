@@ -206,63 +206,80 @@ export function nodeHandoffIO(lib = (root) => join(root, 'Typesetter')) {
       }
       return { message, pear: out };
     },
-    // Content candidates (8.4.2): sizes by stat, hashes only on request.
+    // Content candidates (8.4.2): the twin of handoff.rs `content_scan`,
+    // with the same early stop (ENOUGH) and budget (BUDGET). `scanGate`, when
+    // set, is awaited first (a test holds a scan open with it).
     statCalls: 0,
     hashCalls: 0,
-    async sizes(root, name, rels) {
-      if (!name.startsWith('.claimed-') && (!plain(name) || name.startsWith('.'))) throw new Error(`${name} is not a message name`);
-      const dir = name.startsWith('.claimed-') ? claimDir(root, name) : join(inbox(root), name);
-      const out = [];
-      for (const rel of rels) {
-        io.statCalls++;
-        let p;
-        try {
-          p = messageFile(dir, rel);
-        } catch {
-          out.push(null);
-          continue;
-        }
-        out.push(await stat(p).then((st) => (st.isFile() ? st.size : null), () => null));
-      }
-      return out;
-    },
-    async rawSizes(root, dirs) {
-      const out = [];
+    scans: 0,
+    scanGate: null,
+    async contentScan(root, dirs, titles) {
+      io.scans++;
+      if (io.scanGate) await io.scanGate;
+      const ENOUGH = 3;
+      const BUDGET = 24;
+      const bySize = new Map();
       for (const d of dirs) {
-        if (!inLibrary(root, d)) throw new Error(`${d} is not inside the library`);
-        const files = [];
-        for (const e of await readdir(join(d, 'raws'), { withFileTypes: true }).catch(() => [])) {
+        if (!inLibrary(root, d.dir)) throw new Error(`${d.dir} is not inside the library`);
+        for (const e of await readdir(join(d.dir, 'raws'), { withFileTypes: true }).catch(() => [])) {
           if (!e.isFile() || e.name.startsWith('.')) continue;
           io.statCalls++;
-          files.push({ name: e.name, size: (await stat(join(d, 'raws', e.name))).size });
+          const size = (await stat(join(d.dir, 'raws', e.name))).size;
+          if (!bySize.has(size)) bySize.set(size, []);
+          bySize.get(size).push([d.project, join(d.dir, 'raws', e.name)]);
         }
-        out.push(files.sort((a, b) => (a.name < b.name ? -1 : 1)));
       }
-      return out;
-    },
-    async hashes(root, name, rels, pear) {
-      const dir = name.startsWith('.claimed-') ? claimDir(root, name) : join(inbox(root), name);
       const sha = async (p) => {
         io.hashCalls++;
         return readFile(p).then((b) => createHash('sha256').update(b).digest('hex'), () => null);
       };
-      const message = [];
-      for (const rel of rels) {
-        let p;
-        try {
-          p = messageFile(dir, rel);
-        } catch {
-          message.push(null);
-          continue;
-        }
-        message.push(await sha(p));
-      }
       const out = [];
-      for (const p of pear) {
-        if (!inLibrary(root, p)) throw new Error(`${p} is not inside the library`);
-        out.push(await sha(p));
+      for (const t of titles) {
+        const allow = new Set(t.allow);
+        const lists = t.messages.map((m) => [m.name.startsWith('.claimed-') ? claimDir(root, m.name) : join(inbox(root), m.name), m.rels]);
+        const longest = Math.max(0, ...lists.map(([, r]) => r.length));
+        const counts = new Map();
+        const pearSha = new Map();
+        let hashed = 0;
+        scan: for (let i = 0; i < longest; i++) {
+          for (const [dir, rels] of lists) {
+            if (i >= rels.length) continue;
+            let file;
+            try {
+              file = messageFile(dir, rels[i]);
+            } catch {
+              continue;
+            }
+            io.statCalls++;
+            const st = await stat(file).catch(() => null);
+            if (!st?.isFile()) continue;
+            const cands = (bySize.get(st.size) ?? []).filter(([p]) => allow.has(p));
+            if (!cands.length) continue;
+            if (hashed >= BUDGET) break scan;
+            hashed++;
+            const mine = await sha(file);
+            if (!mine) continue;
+            const matched = new Set();
+            for (const [project, path] of cands) {
+              if (matched.has(project)) continue;
+              let theirs = pearSha.get(path);
+              if (theirs === undefined) {
+                if (hashed >= BUDGET) break scan;
+                hashed++;
+                theirs = await sha(path);
+                pearSha.set(path, theirs);
+              }
+              if (theirs === mine) {
+                matched.add(project);
+                counts.set(project, (counts.get(project) ?? 0) + 1);
+                if (counts.get(project) >= ENOUGH) break scan;
+              }
+            }
+          }
+        }
+        out.push({ id: t.id, hashed, found: [...counts].map(([project, identical]) => ({ project, identical })).sort((a, b) => b.identical - a.identical) });
       }
-      return { message, pear: out };
+      return out;
     },
     noShare: false,
     async shareRaw(root, claim, rel, dest) {

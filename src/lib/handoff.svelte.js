@@ -65,11 +65,9 @@ const tauriIO = {
   peek: (root, key) => invoke('handoff_peek', { root, key }),
   facts: (root, name, rels, pear) => invoke('handoff_facts', { root, name, rels, pear }),
   shareRaw: (root, claim, rel, dest) => invoke('handoff_share_raw', { root, claim, rel, dest }),
-  // Content candidates (8.4.2): sizes by stat, the library's raws by size,
-  // and the sha256 of the few files whose sizes are equal.
-  sizes: (root, name, rels) => invoke('handoff_sizes', { root, name, rels }),
-  rawSizes: (root, dirs) => invoke('handoff_raw_sizes', { root, dirs }),
-  hashes: (root, name, rels, pear) => invoke('handoff_hashes', { root, name, rels, pear }),
+  // Content candidates (8.4.2), per title, on a Rust blocking thread: sizes
+  // by stat, a hash only on equal size, an early stop and a budget.
+  contentScan: (root, dirs, titles) => invoke('handoff_content_scan', { root, dirs, titles }),
 };
 let io = tauriIO;
 export function _setHandoffIO(next) {
@@ -170,7 +168,7 @@ export function _resetHandoffForTests() {
   waiting.clear();
   judged.clear();
   judgedSig = '';
-  rawIndex = { sig: null, bySize: new Map() };
+  titleScans.clear();
   autoOpened.clear();
   skips = null;
   recovered = false;
@@ -254,7 +252,7 @@ async function fileClaim(root, claim, key, entry = null) {
   const verdict = verdictFor(summarize(read.doc), entry?.content ?? []);
   if (verdict.verdict === 'wait') {
     await io.putBack(root, claim, key);
-    if (entry) judged.set(key, { stamp: entry.stamp, summary: summarize(read.doc), content: entry.content ?? [], ...verdict, own: verdict });
+    if (entry) judged.set(key, { ...judge(read.doc), stamp: entry.stamp, content: entry.content ?? [], ...verdict, own: verdictFor(summarize(read.doc)) });
     return { outcome: 'waiting' };
   }
   if (verdict.verdict === 'delete') {
@@ -307,83 +305,77 @@ let judgedSig = '';
 const autoOpened = new Set();
 
 // ---------- content candidates (section 8.4.2) ----------
-// This app's raws by file size, from one listing per chapter folder (stat
-// only, no read). Built when a judge needs it and the chapters changed
-// since, never by a poll that has nothing new to judge.
-let rawIndex = { sig: null, bySize: new Map() };
-// At most this many library files are hashed for one message: many raws of
-// one size (blank pages) cannot make a judge slow.
-const MAX_HASHED = 256;
+// A per-title question, since titles are judged as a whole: does a title
+// here hold byte-identical raws? Rust answers it on a blocking thread, never
+// the webview's (`handoff_content_scan`), from one listing of the library:
+// sizes by stat, hashes only on equal size, a stop once one title here has 3
+// identical raws, at most 24 files hashed per title. A pass with a Save waits
+// for it at most SCAN_WAIT_MS (a single Save is answered in the same pass), a
+// bulk title not at all (it waits for the screen anyway); a longer
+// scan goes on in the background, its row says "Looking for matches…", and
+// the pass after it applies the answer. Title id -> { sig, state, found }.
+const titleScans = new Map();
+const SCAN_WAIT_MS = 300;
 
-function rawIndexSig() {
+// What a scan's answer depends on: the title's messages and the chapters here.
+function chaptersSig() {
   let out = '';
   for (const p of library.projects) {
     out += `${p.id}\u0001`;
-    for (const c of p.chapters ?? []) out += `${c.id}:${c.pageCount ?? ''}:${c.updatedAt ?? ''},`;
+    for (const c of p.chapters ?? []) out += `${c.id}:${c.pageCount ?? ''},`;
     out += '\u0002';
   }
   return out;
 }
 
-async function rawsBySize(root) {
-  const sig = rawIndexSig();
-  if (rawIndex.sig === sig) return rawIndex.bySize;
-  const chapters = [];
+// Starts the scans `want` names ([{ id, sig, libraryId, messages: [{ key, rels }] }])
+// in one call. Never awaited by its caller beyond SCAN_WAIT_MS.
+function startScans(root, want) {
+  const dirs = [];
   for (const p of library.projects) {
     if (p.unreadable) continue;
-    for (const c of p.chapters ?? []) if (!c.unreadable && c.dir) chapters.push({ projectId: p.id, dir: c.dir });
+    for (const c of p.chapters ?? []) if (!c.unreadable && c.dir) dirs.push({ project: p.id, dir: c.dir });
   }
-  const lists = chapters.length ? await io.rawSizes(root, chapters.map((x) => x.dir)) : [];
-  const bySize = new Map();
-  chapters.forEach((x, i) => {
-    for (const f of lists[i] ?? []) {
-      const at = bySize.get(f.size);
-      const entry = { projectId: x.projectId, dir: x.dir, name: f.name };
-      if (at) at.push(entry);
-      else bySize.set(f.size, [entry]);
+  const titles = [];
+  for (const w of want) {
+    const allow = library.projects
+      .filter((p) => !p.unreadable && !p.duplicate && !(p.cleanerLink && p.cleanerLink.libraryId === w.libraryId))
+      .map((p) => p.id);
+    if (!allow.length || !dirs.length || !io.contentScan) {
+      titleScans.set(w.id, { sig: w.sig, state: 'done', found: [] });
+      continue;
     }
-  });
-  rawIndex = { sig, bySize };
-  return bySize;
+    titleScans.set(w.id, { sig: w.sig, state: 'running', found: [] });
+    titles.push({ id: w.id, allow, messages: w.messages.map((m) => ({ name: m.key, rels: m.rels })) });
+  }
+  if (!titles.length) return Promise.resolve();
+  const sigs = new Map(want.map((w) => [w.id, w.sig]));
+  const run = io
+    .contentScan(root, dirs, titles)
+    .then((results) => {
+      for (const r of results ?? []) {
+        titleScans.set(r.id, { sig: sigs.get(r.id), state: 'done', found: (r.found ?? []).map((f) => ({ projectId: f.project, identical: f.identical })) });
+      }
+    })
+    .catch((e) => console.warn('[handoff] content scan', e))
+    .finally(() => {
+      for (const t of titles) if (titleScans.get(t.id)?.state === 'running') titleScans.set(t.id, { sig: sigs.get(t.id), state: 'done', found: [] });
+      afterScans(root);
+    });
+  return run;
 }
 
-// The projects holding a byte-identical copy of one of the message's raws,
-// [{ projectId, identical }], most first. Only projects a candidate may be
-// (the link rule of candidatesFor). Sizes first; only equal sizes hashed.
-async function contentCandidates(root, key, doc, libraryId) {
-  if (!io.sizes || !io.rawSizes || !io.hashes) return [];
-  const rels = [...new Set((doc?.pages ?? []).map((pg) => pg?.raw).filter((r) => typeof r === 'string' && r))];
-  if (!rels.length) return [];
-  const bySize = await rawsBySize(root);
-  if (!bySize.size) return [];
-  const eligible = (id) => {
-    const p = projectById(id);
-    return !!p && !p.unreadable && !p.duplicate && !(p.cleanerLink && p.cleanerLink.libraryId === libraryId);
-  };
-  const sizes = await io.sizes(root, key, rels);
-  const pairs = [];
-  rels.forEach((_, i) => {
-    if (sizes[i] == null) return;
-    for (const e of bySize.get(sizes[i]) ?? []) if (eligible(e.projectId)) pairs.push({ i, e });
-  });
-  if (!pairs.length) return [];
-  const paths = new Map();
-  for (const x of pairs) {
-    x.path = await fsx.join(x.e.dir, 'raws', x.e.name);
-    if (!paths.has(x.path) && paths.size < MAX_HASHED) paths.set(x.path, paths.size);
+// A scan that ended after its pass: the rows learn its answer now (the
+// screen may be open), and a pass files what no longer waits.
+function afterScans(root) {
+  if (running) {
+    running.finally(() => afterScans(root));
+    return;
   }
-  const mine = [...new Set(pairs.map((x) => x.i))];
-  const h = await io.hashes(root, key, mine.map((i) => rels[i]), [...paths.keys()]);
-  const shaOf = new Map(mine.map((i, k) => [i, h?.message?.[k] ?? null]));
-  const found = new Map();
-  for (const x of pairs) {
-    const at = paths.get(x.path);
-    const sha = shaOf.get(x.i);
-    if (at == null || !sha || h?.pear?.[at] !== sha) continue;
-    if (!found.has(x.e.projectId)) found.set(x.e.projectId, new Set());
-    found.get(x.e.projectId).add(x.i);
-  }
-  return [...found].map(([projectId, set]) => ({ projectId, identical: set.size })).sort((a, b) => b.identical - a.identical);
+  const keys = [...judged.keys()];
+  judgeTitles(keys, null);
+  publishRows(keys.filter((k) => judged.get(k)?.verdict === 'wait'));
+  if (!handoffMatch.open && dataFolder.mode === 'shared' && root) checkHandoffs(root).catch((e) => console.warn('Handoff check failed', e));
 }
 
 // The projects and chapters a verdict depends on: a project made, renamed,
@@ -473,7 +465,7 @@ async function forgetTitleSkip(s) {
 // 'wait' for the match screen, or 'delete' it (a skipped title's bulk send,
 // or one older than the skip). `fixed` is the linked project of a chapter
 // number clash; `candidates` the projects close by name.
-// `content`: the content candidates (contentCandidates), ranked first.
+// `content`: the content candidates of its title (titleScans), ranked first.
 function verdictFor(s, content = []) {
   if (!s) return { verdict: 'file' };
   if (chapterByCleanerLink(s.libraryId, s.projectId, s.chapterId)) return { verdict: 'file' };
@@ -493,12 +485,14 @@ function verdictFor(s, content = []) {
 }
 
 // Section 8.3 step 5, per title: the messages of one cleaner title with no
-// title linked here are judged together. If any waits, all wait, with the
-// candidates of all of them (content counts summed), and none makes a new
-// title, so a cleaner title never splits across two titles here. Each
-// message's own verdict (`own`) is kept, so this is redone on every pass
-// from what is in the inbox now, in memory only.
-function judgeTitles(keys) {
+// title linked here are judged together. If any waits (or its title has
+// content candidates, or its content scan has not answered yet), all wait,
+// with the candidates of all of them, and none makes a new title, so a
+// cleaner title never splits across two titles here. Each message's own
+// verdict (`own`) is kept, so this is redone on every pass from what is in
+// the inbox now, in memory only. With `root`, the scans it lacks are started
+// and returned; without, it only applies the answers there are.
+function judgeTitles(keys, root) {
   const groups = new Map();
   for (const k of keys) {
     const j = judged.get(k);
@@ -506,38 +500,47 @@ function judgeTitles(keys) {
     if (!s || !j.own || j.own.verdict === 'delete') continue;
     if (chapterByCleanerLink(s.libraryId, s.projectId, s.chapterId) || projectByCleanerLink(s.libraryId, s.projectId)) continue;
     const id = `${s.libraryId}|${s.projectId}`;
-    if (!groups.has(id)) groups.set(id, []);
-    groups.get(id).push(j);
+    if (!groups.has(id)) groups.set(id, { libraryId: s.libraryId, keys: [], js: [] });
+    groups.get(id).keys.push(k);
+    groups.get(id).js.push(j);
   }
-  for (const js of groups.values()) {
-    if (!js.some((j) => j.own.verdict === 'wait')) {
-      for (const j of js) Object.assign(j, j.own);
+  const lib = chaptersSig();
+  const want = [];
+  for (const [id, g] of groups) {
+    const sig = `${[...g.keys].sort().join('\u0001')}\u0002${lib}`;
+    const scan = titleScans.get(id);
+    const answered = scan?.state === 'done' && scan.sig === sig;
+    if (!answered && scan?.state !== 'running' && root) {
+      const save = g.js.some((j) => j.summary.send !== 'bulk');
+      want.push({ id, sig, save, libraryId: g.libraryId, messages: g.keys.map((k) => ({ key: k, rels: judged.get(k).rels ?? [] })) });
+    }
+    const found = answered ? scan.found : [];
+    const scanning = !answered;
+    const named = [];
+    for (const j of g.js) for (const pid of j.own.candidates ?? []) if (!named.includes(pid)) named.push(pid);
+    if (!scanning && !found.length && !g.js.some((j) => j.own.verdict === 'wait')) {
+      for (const j of g.js) Object.assign(j, j.own, { content: [], scanning: false });
       continue;
     }
-    const counts = new Map();
-    for (const j of js) for (const c of j.content ?? []) counts.set(c.projectId, (counts.get(c.projectId) ?? 0) + c.identical);
-    const named = [];
-    for (const j of js) for (const id of j.own.candidates ?? []) if (!named.includes(id)) named.push(id);
-    const candidates = rankCandidates([...counts].map(([projectId, identical]) => ({ projectId, identical })), named);
-    for (const j of js) Object.assign(j, { verdict: 'wait', fixed: null, candidates });
+    const candidates = rankCandidates(found, named);
+    for (const j of g.js) Object.assign(j, { verdict: 'wait', fixed: null, candidates, content: found, scanning });
   }
+  if (!want.length) return null;
+  // Worth a moment's wait only for a Save, which files when its scan finds
+  // nothing; a bulk title waits for the screen anyway.
+  return { run: startScans(root, want), save: want.some((w) => w.save) };
 }
 
-// The verdict, with content candidates looked for only where they can
-// change it: a title not linked here, not dropped by a skip. Runs before
-// "no candidates" makes a new title. The result is kept with the judged key.
-async function judge(root, key, doc) {
+// The verdict of one message on its own (its title's content candidates
+// come per title, judgeTitles). The raws it lists are kept for the scan.
+function judge(doc) {
   const summary = doc ? summarize(doc) : null;
-  let verdict = verdictFor(summary);
-  let content = [];
-  if (summary && verdict.verdict !== 'delete' && !verdict.fixed && !chapterByCleanerLink(summary.libraryId, summary.projectId, summary.chapterId) && !projectByCleanerLink(summary.libraryId, summary.projectId)) {
-    content = await contentCandidates(root, key, doc, summary.libraryId).catch((e) => {
-      console.warn('[handoff] content candidates', e);
-      return [];
-    });
-    if (content.length) verdict = verdictFor(summary, content);
-  }
-  return { summary, content, ...verdict, own: verdict };
+  const verdict = verdictFor(summary);
+  const rels = [...(doc?.pages ?? [])]
+    .sort((a, b) => (a?.position ?? 0) - (b?.position ?? 0))
+    .map((pg) => pg?.raw)
+    .filter((r) => typeof r === 'string' && r);
+  return { summary, rels, ...verdict, own: verdict };
 }
 
 // The rows of the screen and the banner, from the waiting messages: one per
@@ -551,10 +554,12 @@ function publishRows(keys) {
     const id = `${s.libraryId}|${s.projectId}`;
     let row = byTitle.get(id);
     if (!row) {
-      row = { id, libraryId: s.libraryId, projectId: s.projectId, name: s.name, layout: s.layout, fixed: j.fixed ?? null, candidates: j.candidates ?? [], messages: [] };
+      row = { id, libraryId: s.libraryId, projectId: s.projectId, name: s.name, layout: s.layout, fixed: j.fixed ?? null, candidates: j.candidates ?? [], scanning: false, messages: [] };
       byTitle.set(id, row);
     }
     if (j.fixed) row.fixed = j.fixed;
+    // Its content scan has not answered yet: "Looking for matches…".
+    if (j.scanning) row.scanning = true;
     row.messages.push({ key, stamp: j.stamp, ...s });
   }
   const rows = [...byTitle.values()];
@@ -623,11 +628,18 @@ async function runPass(root, rescan) {
       if (e.stamp && had?.stamp === e.stamp) continue;
       const peeked = io.peek ? await io.peek(root, e.key).catch(() => null) : null;
       if (peeked?.gone) continue;
-      judged.set(e.key, { stamp: e.stamp, ...(await judge(root, e.key, peeked?.doc ?? null)) });
+      judged.set(e.key, { stamp: e.stamp, ...judge(peeked?.doc ?? null) });
     }
   }
   judgedSig = librarySig();
-  judgeTitles(keys);
+  // Content scans a title lacks: waited for a moment, then left running.
+  const scans = judgeTitles(keys, root);
+  if (scans?.save) {
+    let timer;
+    await Promise.race([scans.run, new Promise((r) => (timer = setTimeout(r, SCAN_WAIT_MS)))]);
+    clearTimeout(timer);
+    judgeTitles(keys, null);
+  }
   let filed = false;
   for (const { key, stamp } of entries) {
     const j = judged.get(key);

@@ -33,12 +33,14 @@
 
   $effect(() => {
     const next = {};
-    for (const r of rows) next[r.id] = choices[r.id] ?? r.fixed ?? r.candidates[0] ?? 'new';
+    // A row still looking for matches gets its choice once it has them.
+    for (const r of rows) if (!r.scanning || choices[r.id]) next[r.id] = choices[r.id] ?? r.fixed ?? r.candidates[0] ?? 'new';
     // One title here per row: a later row that would take one already taken
     // falls back to its next option.
     const taken = new Set();
     for (const r of rows) {
       const c = next[r.id];
+      if (c === undefined) continue;
       if (c !== 'new' && c !== 'skip' && taken.has(c) && !r.fixed) next[r.id] = r.candidates.find((id) => !taken.has(id)) ?? 'new';
       if (next[r.id] !== 'new' && next[r.id] !== 'skip') taken.add(next[r.id]);
     }
@@ -111,6 +113,8 @@
 
   // Apply waits for every pairing a line may link by.
   const checking = $derived(rows.some((r) => choices[r.id] !== 'skip' && r.messages.some((m) => chapterChoice(r, m).checking)));
+  // Apply also waits for every row's content scan (section 8.4.2).
+  const looking = $derived(rows.some((r) => r.scanning));
 
   async function apply() {
     busy = true;
@@ -153,9 +157,12 @@
               <strong>{r.name}</strong>
               <span>{r.messages.length} chapter{r.messages.length === 1 ? '' : 's'} wait{r.messages.length === 1 ? 's' : ''}</span>
             </div>
+            {#if r.scanning}
+              <span class="looking" data-testid="looking">Looking for matches…</span>
+            {/if}
             <select
               aria-label="Title in Pear for {r.name}"
-              disabled={busy || opts.length === 1}
+              disabled={busy || r.scanning || opts.length === 1}
               value={choices[r.id]}
               onchange={(e) => (choices = { ...choices, [r.id]: e.currentTarget.value })}
             >
@@ -164,7 +171,7 @@
               {/each}
             </select>
           </div>
-          {#if choices[r.id] !== 'skip'}
+          {#if choices[r.id] && choices[r.id] !== 'skip'}
             <details class="row-chapters">
               <summary>Chapters</summary>
               {#each r.messages as m (m.key)}
@@ -209,7 +216,7 @@
     </div>
     <div class="modal-foot">
       <button class="soft-btn" disabled={busy} onclick={closeMatch}>Later</button>
-      <button class="accent-btn narrow" disabled={busy || checking || !rows.length} title={checking ? 'Checking pages…' : undefined} onclick={apply}>{busy ? 'Applying…' : 'Apply'}</button>
+      <button class="accent-btn narrow" disabled={busy || checking || looking || !rows.length} title={looking ? 'Looking for matches…' : checking ? 'Checking pages…' : undefined} onclick={apply}>{busy ? 'Applying…' : 'Apply'}</button>
     </div>
   </div>
 </div>
@@ -257,6 +264,10 @@
   select {
     max-width: 260px;
     font-size: 12px;
+  }
+  .looking {
+    font-size: 12px;
+    color: var(--t3);
   }
   .row-chapters {
     margin-top: 6px;

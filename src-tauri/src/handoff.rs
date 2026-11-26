@@ -453,73 +453,140 @@ pub fn facts(root: &Path, name: &str, rels: &[String], pear: &[String]) -> Resul
 
 // ---------- content candidates (contract section 8.4.2) ----------
 // A Pear title whose raws hold a byte-identical copy of a message raw is a
-// candidate. Cheap by design: sizes come from the file system (no read), and
-// only files whose sizes are equal are hashed.
+// candidate. A per-title question (titles are judged as a whole), asked on
+// a blocking thread, never on the webview's: sizes come from the file system
+// (no read), only files whose sizes are equal are hashed, a title stops as
+// soon as one project has `ENOUGH` identical raws, and it hashes at most
+// `BUDGET` files, spread over its chapters (their first raws first).
+
+pub const ENOUGH: usize = 3;
+pub const BUDGET: usize = 24;
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ScanDir {
+    pub project: String,
+    pub dir: String,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ScanMessage {
+    pub name: String,
+    pub rels: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ScanTitle {
+    pub id: String,
+    /// The projects this title may match (the link rule of section 8.4.2).
+    pub allow: Vec<String>,
+    pub messages: Vec<ScanMessage>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Found {
+    pub project: String,
+    pub identical: usize,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct TitleScan {
+    pub id: String,
+    pub found: Vec<Found>,
+    pub hashed: usize,
+}
 
 fn file_size(p: &Path) -> Option<u64> {
     fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len())
 }
 
-/// The sizes of a message's files, read in place (stat only). `None` for a
-/// path that is not a message file or a file that is not there.
-pub fn sizes(root: &Path, name: &str, rels: &[String]) -> Result<Vec<Option<u64>>, String> {
-    let dir = message_dir(root, name)?;
-    Ok(rels.iter().map(|rel| message_file(&dir, rel).ok().and_then(|p| file_size(&p))).collect())
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-pub struct RawSize {
-    pub name: String,
-    pub size: u64,
-}
-
-/// The files in each chapter folder's `raws/`, with their sizes (one listing
-/// and a stat each). Every folder must be inside the library.
-pub fn raw_sizes(root: &Path, dirs: &[String]) -> Result<Vec<Vec<RawSize>>, String> {
+/// The library's raws by size: one listing per chapter folder's `raws/` and
+/// a stat each. Every folder must be inside the library.
+fn raws_by_size(root: &Path, dirs: &[ScanDir]) -> Result<std::collections::HashMap<u64, Vec<(String, PathBuf)>>, String> {
     let lib = root.join(SUBFOLDER);
-    let mut out = Vec::with_capacity(dirs.len());
+    let mut out: std::collections::HashMap<u64, Vec<(String, PathBuf)>> = std::collections::HashMap::new();
     for d in dirs {
-        let dir = Path::new(d);
+        let dir = Path::new(&d.dir);
         if !dir.is_absolute() || !contains(&lib, dir) || dir == lib {
-            return Err(format!("{d} is not inside the library"));
+            return Err(format!("{} is not inside the library", d.dir));
         }
-        let mut files = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir.join("raws")) {
-            for e in entries.flatten() {
-                let Ok(meta) = e.metadata() else { continue };
-                let name = e.file_name().to_string_lossy().into_owned();
-                if meta.is_file() && !name.starts_with('.') {
-                    files.push(RawSize { name, size: meta.len() });
-                }
+        let Ok(entries) = fs::read_dir(dir.join("raws")) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_file() {
+                out.entry(meta.len()).or_default().push((d.project.clone(), e.path()));
             }
         }
-        files.sort_by(|a, b| a.name.cmp(&b.name));
-        out.push(files);
     }
     Ok(out)
 }
 
-#[derive(Serialize, Debug, Default, PartialEq)]
-pub struct Hashes {
-    pub message: Vec<Option<String>>,
-    pub pear: Vec<Option<String>>,
-}
-
-/// The sha256 of some message files (in place) and some library files: the
-/// ones whose sizes are equal. No image is decoded.
-pub fn hashes(root: &Path, name: &str, rels: &[String], pear: &[String]) -> Result<Hashes, String> {
-    let dir = message_dir(root, name)?;
-    let lib = root.join(SUBFOLDER);
-    let mut out = Hashes::default();
-    for rel in rels {
-        out.message.push(message_file(&dir, rel).ok().filter(|p| p.is_file()).and_then(|p| sha256_hex(&p)));
-    }
-    for p in pear {
-        let path = Path::new(p);
-        if !path.is_absolute() || !contains(&lib, path) {
-            return Err(format!("{p} is not inside the library"));
+/// Content candidates for each title, from one listing of the library.
+pub fn content_scan(root: &Path, dirs: &[ScanDir], titles: &[ScanTitle]) -> Result<Vec<TitleScan>, String> {
+    let index = raws_by_size(root, dirs)?;
+    let mut out = Vec::with_capacity(titles.len());
+    for t in titles {
+        let allow: HashSet<&str> = t.allow.iter().map(String::as_str).collect();
+        // Round robin over the chapters: the first raw of each, then the second...
+        let mut lists: Vec<(PathBuf, &[String])> = Vec::new();
+        for m in &t.messages {
+            if let Ok(dir) = message_dir(root, &m.name) {
+                lists.push((dir, &m.rels));
+            }
         }
-        out.pear.push(Some(path).filter(|p| p.is_file()).and_then(sha256_hex));
+        let longest = lists.iter().map(|(_, r)| r.len()).max().unwrap_or(0);
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut pear_sha: std::collections::HashMap<PathBuf, Option<String>> = std::collections::HashMap::new();
+        let mut hashed = 0usize;
+        'scan: for i in 0..longest {
+            for (dir, rels) in &lists {
+                let Some(rel) = rels.get(i) else { continue };
+                let Ok(file) = message_file(dir, rel) else { continue };
+                let Some(size) = file_size(&file) else { continue };
+                let Some(same_size) = index.get(&size) else { continue };
+                let cands: Vec<&(String, PathBuf)> = same_size.iter().filter(|(p, _)| allow.contains(p.as_str())).collect();
+                if cands.is_empty() {
+                    continue;
+                }
+                if hashed >= BUDGET {
+                    break 'scan;
+                }
+                hashed += 1;
+                let Some(mine) = sha256_hex(&file) else { continue };
+                let mut matched: HashSet<&str> = HashSet::new();
+                for (project, path) in cands {
+                    if matched.contains(project.as_str()) {
+                        continue;
+                    }
+                    let sha = match pear_sha.get(path) {
+                        Some(v) => v.clone(),
+                        None => {
+                            if hashed >= BUDGET {
+                                break 'scan;
+                            }
+                            hashed += 1;
+                            let v = sha256_hex(path);
+                            pear_sha.insert(path.clone(), v.clone());
+                            v
+                        }
+                    };
+                    if sha.as_deref() == Some(mine.as_str()) {
+                        matched.insert(project.as_str());
+                        let n = counts.entry(project.clone()).or_default();
+                        *n += 1;
+                        if *n >= ENOUGH {
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+        }
+        let mut found: Vec<Found> = counts.into_iter().map(|(project, identical)| Found { project, identical }).collect();
+        found.sort_by_key(|f| std::cmp::Reverse(f.identical));
+        out.push(TitleScan { id: t.id.clone(), found, hashed });
     }
     Ok(out)
 }
@@ -651,21 +718,9 @@ pub async fn handoff_facts<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: St
 }
 
 #[tauri::command]
-pub async fn handoff_sizes<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, name: String, rels: Vec<String>) -> Result<Vec<Option<u64>>, String> {
+pub async fn handoff_content_scan<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, dirs: Vec<ScanDir>, titles: Vec<ScanTitle>) -> Result<Vec<TitleScan>, String> {
     let root = shared_root(&app, &root)?;
-    tauri::async_runtime::spawn_blocking(move || sizes(&root, &name, &rels)).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn handoff_raw_sizes<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, dirs: Vec<String>) -> Result<Vec<Vec<RawSize>>, String> {
-    let root = shared_root(&app, &root)?;
-    tauri::async_runtime::spawn_blocking(move || raw_sizes(&root, &dirs)).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn handoff_hashes<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String, name: String, rels: Vec<String>, pear: Vec<String>) -> Result<Hashes, String> {
-    let root = shared_root(&app, &root)?;
-    tauri::async_runtime::spawn_blocking(move || hashes(&root, &name, &rels, &pear)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || content_scan(&root, &dirs, &titles)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -693,55 +748,100 @@ mod tests {
         .unwrap();
     }
 
+    fn content_title(root: &Path, key: &str, pages: usize, seed: usize) -> ScanMessage {
+        let m = inbox(root).join(key);
+        fs::create_dir_all(m.join("raws")).unwrap();
+        let mut rels = Vec::new();
+        for i in 0..pages {
+            fs::write(m.join("raws").join(format!("{i:03}.png")), vec![(seed + i) as u8; 2000 + seed * 64 + i]).unwrap();
+            rels.push(format!("raws/{i:03}.png"));
+        }
+        ScanMessage { name: key.into(), rels }
+    }
+
     #[test]
-    fn sizes_raw_index_and_hashes_for_content_candidates() {
+    fn content_scan_finds_the_title_stops_early_and_keeps_to_its_budget() {
         let root = scratch("handoff-content");
-        message(&root, "cleaner-L-p1-c1");
-        let ch = root.join(SUBFOLDER).join("S").join("001");
-        fs::create_dir_all(ch.join("raws")).unwrap();
-        fs::copy(inbox(&root).join("cleaner-L-p1-c1").join("raws").join("001.png"), ch.join("raws").join("001.png")).unwrap();
-        fs::write(ch.join("raws").join("002.png"), b"not the same").unwrap();
-        fs::write(ch.join("raws").join(".DS_Store"), b"x").unwrap();
-        let key = "cleaner-L-p1-c1";
-        let rels = vec!["raws/001.png".to_string(), "raws/../../x".to_string(), "raws/009.png".to_string()];
-        let sz = sizes(&root, key, &rels).unwrap();
-        let own = fs::metadata(ch.join("raws").join("001.png")).unwrap().len();
-        assert_eq!(sz, vec![Some(own), None, None]);
-        assert!(sizes(&root, "../x", &rels).is_err());
-
-        let dirs = vec![ch.to_string_lossy().into_owned(), root.join(SUBFOLDER).join("S").join("none").to_string_lossy().into_owned()];
-        let index = raw_sizes(&root, &dirs).unwrap();
-        assert_eq!(index[0], vec![RawSize { name: "001.png".into(), size: own }, RawSize { name: "002.png".into(), size: 12 }]);
-        assert!(index[1].is_empty());
-        assert!(raw_sizes(&root, &[root.to_string_lossy().into_owned()]).is_err(), "only folders inside the library");
-
-        let pear = vec![ch.join("raws").join("001.png").to_string_lossy().into_owned(), ch.join("raws").join("002.png").to_string_lossy().into_owned()];
-        let h = hashes(&root, key, &rels[..1], &pear).unwrap();
-        assert_eq!(h.message[0], h.pear[0]);
-        assert!(h.message[0].is_some() && h.pear[1].is_some() && h.pear[1] != h.pear[0]);
-        assert!(hashes(&root, key, &rels[..1], &[root.join("x").to_string_lossy().into_owned()]).is_err());
+        // Pear: project A holds copies of the message's raws, B has the same
+        // sizes and other bytes, C is not allowed.
+        let a = content_title(&root, "cleaner-L-p1-c1", 10, 1);
+        let lib = root.join(SUBFOLDER);
+        let mut dirs = Vec::new();
+        for (project, bytes_of) in [("A", true), ("B", false), ("C", true)] {
+            let ch = lib.join(project).join("001");
+            fs::create_dir_all(ch.join("raws")).unwrap();
+            for (i, rel) in a.rels.iter().enumerate() {
+                let src = inbox(&root).join(&a.name).join(rel);
+                let mut bytes = fs::read(&src).unwrap();
+                if !bytes_of {
+                    bytes[0] ^= 0xff;
+                }
+                fs::write(ch.join("raws").join(format!("{i:03}.png")), bytes).unwrap();
+            }
+            fs::write(ch.join("raws").join(".DS_Store"), b"x").unwrap();
+            dirs.push(ScanDir { project: project.into(), dir: ch.to_string_lossy().into_owned() });
+        }
+        let title = ScanTitle { id: "L|p1".into(), allow: vec!["A".into(), "B".into()], messages: vec![a] };
+        let r = content_scan(&root, &dirs, std::slice::from_ref(&title)).unwrap();
+        assert_eq!(r[0].found, vec![Found { project: "A".into(), identical: ENOUGH }], "stops once A has enough");
+        assert!(r[0].hashed <= BUDGET, "{}", r[0].hashed);
+        // No size in common: nothing hashed.
+        let other = content_title(&root, "cleaner-L-p2-c1", 5, 9);
+        let none = ScanTitle { id: "L|p2".into(), allow: vec!["A".into(), "B".into()], messages: vec![other] };
+        let r = content_scan(&root, &dirs, &[none]).unwrap();
+        assert_eq!((r[0].found.len(), r[0].hashed), (0, 0));
+        // Only folders inside the library.
+        let bad = vec![ScanDir { project: "A".into(), dir: root.to_string_lossy().into_owned() }];
+        assert!(content_scan(&root, &bad, &[title]).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// `cargo test --lib handoff::tests::raw_index_time -- --ignored --nocapture`
+    /// `MT_BENCH_DIR=/some/dir cargo test --release --lib handoff::tests::content_scan_time -- --ignored --nocapture`
+    /// A 3,000-raw library and a 68-chapter send of 40 pages: no match (every
+    /// message raw is stat'ed) and a match on the last chapters' raws.
     #[test]
     #[ignore]
-    fn raw_index_time_on_3000_raws() {
-        let root = scratch("handoff-3000");
+    fn content_scan_time_68_chapters_against_3000_raws() {
+        let base = std::env::var("MT_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+        let root = base.join(format!("pear-bench-{}", std::process::id()));
+        let lib = root.join(SUBFOLDER);
         let mut dirs = Vec::new();
         for c in 0..100 {
-            let ch = root.join(SUBFOLDER).join("S").join(format!("{c:03}"));
+            let ch = lib.join("S").join(format!("{c:03}"));
             fs::create_dir_all(ch.join("raws")).unwrap();
             for i in 0..30 {
-                fs::write(ch.join("raws").join(format!("{i:03}.png")), vec![0u8; 1000 + c * 30 + i]).unwrap();
+                fs::write(ch.join("raws").join(format!("{i:03}.png")), vec![7u8; 400_000 + c * 30 + i]).unwrap();
             }
-            dirs.push(ch.to_string_lossy().into_owned());
+            dirs.push(ScanDir { project: format!("P{}", c / 10), dir: ch.to_string_lossy().into_owned() });
         }
+        let mut messages = Vec::new();
+        for c in 0..68 {
+            let m = inbox(&root).join(format!("cleaner-L-p9-c{c}"));
+            fs::create_dir_all(m.join("raws")).unwrap();
+            let mut rels = Vec::new();
+            for i in 0..40 {
+                fs::write(m.join("raws").join(format!("{i:03}.png")), vec![9u8; 300_000 + c * 40 + i]).unwrap();
+                rels.push(format!("raws/{i:03}.png"));
+            }
+            messages.push(ScanMessage { name: format!("cleaner-L-p9-c{c}"), rels });
+        }
+        let allow: Vec<String> = (0..10).map(|p| format!("P{p}")).collect();
+        let title = ScanTitle { id: "L|p9".into(), allow: allow.clone(), messages: messages.clone() };
+        // What was just written goes down first, so the timing is the scan's.
+        let _ = std::process::Command::new("sync").status();
         let t = std::time::Instant::now();
-        let index = raw_sizes(&root, &dirs).unwrap();
-        let took = t.elapsed();
-        assert_eq!(index.iter().map(Vec::len).sum::<usize>(), 3000);
-        println!("raw index of 3000 raws in 100 chapters: {took:?}");
+        let r = content_scan(&root, &dirs, &[title]).unwrap();
+        println!("no match: {:?}, hashed {}", t.elapsed(), r[0].hashed);
+        // Same-size, same-bytes copies of chapter 67's raws in P3.
+        let ch = lib.join("S").join("030");
+        for i in 0..40 {
+            fs::write(ch.join("raws").join(format!("m{i:03}.png")), vec![9u8; 300_000 + 67 * 40 + i]).unwrap();
+        }
+        let title = ScanTitle { id: "L|p9".into(), allow, messages };
+        let _ = std::process::Command::new("sync").status();
+        let t = std::time::Instant::now();
+        let r = content_scan(&root, &dirs, &[title]).unwrap();
+        println!("match: {:?}, hashed {}, found {:?}", t.elapsed(), r[0].hashed, r[0].found);
         fs::remove_dir_all(root).unwrap();
     }
 

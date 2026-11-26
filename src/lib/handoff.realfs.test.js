@@ -810,9 +810,11 @@ describe('content candidates', () => {
     expect(await checkHandoffs(dataRoot)).toEqual([]);
     expect(library.projects).toHaveLength(1);
     expect(handoffMatch.rows).toHaveLength(1);
-    expect(wizardRow().candidates).toEqual([theirs.id]);
+    // A bulk title's scan runs behind the poll; its row then learns the title.
+    await vi.waitFor(() => expect(wizardRow()).toMatchObject({ scanning: false, candidates: [theirs.id] }));
     expect(wizardRow().messages).toHaveLength(2);
     expect(await inboxNames()).toHaveLength(2);
+    expect(library.projects).toHaveLength(1);
   });
 
   it('a Save with no candidate still files as version 1 did', async () => {
@@ -821,9 +823,8 @@ describe('content candidates', () => {
     expect(library.projects.map((p) => p.name)).toEqual(['wizard who killed 10k']);
   });
 
-  it('builds the size index once and judges a message against 3,000 raws quickly', async () => {
+  it('a 68-chapter bulk send: one scan for its title, at most 24 hashes, polls that never wait on it', async () => {
     const big = await createProject('Big library');
-    // 3,000 raws: synthetic chapters written straight to disk, then read in.
     for (let c = 0; c < 100; c++) {
       const pages = [];
       for (let i = 0; i < 30; i++) pages.push({ raw: (c * 30 + i) % 250, w: 10 + (i % 7), h: 12 + ((c + i) % 11) });
@@ -832,21 +833,60 @@ describe('content candidates', () => {
     const theirs = await createProject(WIZ);
     await pearChapter(theirs, 3, PLAIN3);
     await scanLibrary();
-    await send({ sentAt: T1, pages: PLAIN3, name: 'wizard who killed 10k', number: 3, label: '3' });
+    for (let c = 0; c < 68; c++) {
+      const pages = c === 67 ? PLAIN3 : [{ src: 0, raw: 90 + (c % 50), cleaned: 1, w: 50 + c, h: 70 }];
+      await send({ chapterId: `c${100 + c}`, sentAt: T1, pages, name: 'wizard who killed 10k', number: c + 1, label: String(c + 1), kind: 'bulk' });
+    }
+    // The scan is held open: the poll returns at once and the row looks.
+    let release;
+    io.scanGate = new Promise((r) => (release = r));
     const t0 = performance.now();
-    await checkHandoffs(dataRoot);
-    const first = performance.now() - t0;
-    expect(handoffMatch.rows[0].candidates[0]).toBe(theirs.id);
-    const indexStats = io.statCalls;
-    expect(indexStats).toBeGreaterThanOrEqual(3003);
-    // A second message: the index is not built again.
-    await send({ chapterId: 'c8', sentAt: T1, pages: PLAIN3, name: 'wizard who killed 10k', number: 4, label: '4' });
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    const poll = performance.now() - t0;
+    expect(poll).toBeLessThan(500);
+    expect(handoffMatch.rows).toHaveLength(1);
+    expect(handoffMatch.rows[0]).toMatchObject({ scanning: true });
+    expect(handoffMatch.rows[0].messages).toHaveLength(68);
+    // A poll while it runs starts no second scan and does not wait either.
     const t1 = performance.now();
     await checkHandoffs(dataRoot);
-    const second = performance.now() - t1;
-    expect(io.statCalls - indexStats).toBeLessThan(20);
-    console.info(`[content candidates] 3,006 raws: first judge ${first.toFixed(0)} ms (index built), next ${second.toFixed(0)} ms`);
-  }, 60000);
+    const poll2 = performance.now() - t1;
+    expect(io.scans).toBe(1);
+    io.scanGate = null;
+    const t2 = performance.now();
+    release();
+    await vi.waitFor(() => expect(handoffMatch.rows[0].scanning).toBe(false));
+    const scanMs = performance.now() - t2;
+    expect(handoffMatch.rows[0].candidates[0]).toBe(theirs.id);
+    expect(io.hashCalls).toBeLessThanOrEqual(24);
+    // Nothing new: no scan again.
+    await checkHandoffs(dataRoot);
+    await checkHandoffs(dataRoot);
+    expect(io.scans).toBe(1);
+    expect(library.projects).toHaveLength(2);
+    console.info(`[content candidates] 68 messages, 3,003 raws here: polls ${poll.toFixed(0)} and ${poll2.toFixed(0)} ms, scan ${scanMs.toFixed(0)} ms, ${io.hashCalls} hashes`);
+  }, 120000);
+
+  it('a single Save is answered in its own pass; one held past the wait files on the pass after the scan', async () => {
+    const theirs = await createProject(WIZ);
+    await pearChapter(theirs, 3, PLAIN3);
+    // Answered at once: it waits for the title with identical raws.
+    await ch3();
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(handoffMatch.rows[0]).toMatchObject({ scanning: false, candidates: [theirs.id] });
+    // A Save of another title whose scan is held: it waits (looking), and
+    // files by itself once the scan says there is nothing.
+    let release;
+    io.scanGate = new Promise((r) => (release = r));
+    await send({ projectId: 'p5', chapterId: 'c50', sentAt: T1, pages: OWN, name: 'Nothing like it' });
+    expect(await checkHandoffs(dataRoot)).toEqual([]);
+    expect(handoffMatch.rows.find((r) => r.name === 'Nothing like it')).toMatchObject({ scanning: true });
+    expect(library.projects).toHaveLength(1);
+    io.scanGate = null;
+    release();
+    await vi.waitFor(() => expect(library.projects.map((p) => p.name).sort()).toEqual(['Nothing like it', WIZ].sort()));
+    expect(handoffMatch.rows.map((r) => r.name)).toEqual(['wizard who killed 10k']);
+  });
 });
 
 describe('the match screen applies', () => {
