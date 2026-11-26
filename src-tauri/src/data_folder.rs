@@ -2465,6 +2465,24 @@ pub mod tests {
     }
 
     #[test]
+    fn adopt_with_nothing_to_move_fills_an_empty_subfolder() {
+        // Section 5.1: a v1 setup with nothing to move (or a crash) left an
+        // empty Typesetter/; the app that set it up fills it without asking.
+        let d = scratch("fill-empty");
+        let paths = paths_in(&d);
+        let root = d.join("Manga Library");
+        fs::create_dir_all(root.join(SUBFOLDER)).unwrap();
+        write_marker(&root, "id-1").unwrap();
+        write_pointer(&paths.pointer, &ptr(&root, "id-1")).unwrap();
+        assert_eq!(status(&paths).typesetter, "none");
+        adopt(&paths, None, &MoveOpts::default()).unwrap();
+        let st = status(&paths);
+        assert_eq!((st.state, st.typesetter, st.typesetter_ready), ("ok", "ready", true));
+        assert!(root.join(SUBFOLDER).join(LIBRARY_FILE).is_file());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
     fn an_empty_subfolder_is_none_and_one_with_things_but_no_library_file_is_damaged() {
         let d = scratch("subfolder");
         let paths = paths_in(&d);

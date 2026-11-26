@@ -236,6 +236,46 @@ describe('the start table', () => {
     expect([dataFolder.mode, dataFolder.start]).toEqual(['pending', null]);
   });
 
+  it('an empty subfolder after this app set up or joined is filled without asking', async () => {
+    // Section 5.1: a v1 setup with nothing to move (or a crash) leaves the
+    // pointer and an empty Typesetter/. v1 `moved`, setup or join accepted.
+    for (const answer of ['moved', { setup: 'accepted', join: null }, { setup: null, join: 'accepted' }]) {
+      _resetDataFolderForTests();
+      calls = [];
+      const { root, target } = await fixture();
+      await mkdir(target, { recursive: true });
+      setPref('dataFolderFirstRun', answer);
+      status = { ...ok(root, false), typesetter: 'none' };
+      replies.data_folder_adopt = (args) => {
+        expect(args).toEqual({ legacy: null });
+        status = { ...ok(root, true), typesetter: 'ready' };
+        return { method: 'none' };
+      };
+      await initDataFolder();
+      expect([dataFolder.mode, dataFolder.start]).toEqual(['shared', null]);
+      expect(names().filter((c) => c === 'data_folder_adopt')).toHaveLength(1);
+      expect(library.root).toBe(target);
+    }
+  });
+
+  it('an accepted answer never fills the subfolder while the old place holds titles', async () => {
+    const { root } = await fixture({ legacyProject: true });
+    setPref('dataFolderFirstRun', { setup: 'accepted', join: null });
+    status = { ...ok(root, false), typesetter: 'none' };
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.start]).toEqual(['pending', 'join']);
+    expect(names()).not.toContain('data_folder_adopt');
+    // No answer stored: the empty subfolder is row D, asked, never filled.
+    _resetDataFolderForTests();
+    calls = [];
+    const again = await fixture();
+    setPref('dataFolderFirstRun', { setup: null, join: null });
+    status = { ...ok(again.root, false), typesetter: 'none' };
+    await initDataFolder();
+    expect(dataFolder.start).toBe('join');
+    expect(names()).not.toContain('data_folder_adopt');
+  });
+
   it('D: a setup declined does not block the Join question', async () => {
     const { root } = await fixture({ legacyProject: true });
     setPref('dataFolderFirstRun', { setup: 'declined', join: null });

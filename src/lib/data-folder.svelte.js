@@ -181,7 +181,16 @@ async function settle(st) {
   const here = samePath(library.root, target);
   const legacyHolds = !here && (await holdsLibrary(library.root));
   if (st.typesetterReady && (here || !legacyHolds)) return openShared(root, target);
-  if (here) {
+  // Section 5.1: this app set up or joined this folder before (a stored
+  // accepted answer, or v1 `moved`), but its subfolder is empty, as a v1
+  // setup with nothing to move (or a crash) can leave it. Its library file
+  // is made without asking. Not when the old place still holds titles:
+  // those are offered as a move (row D), never left behind.
+  const accepted = () => {
+    const a = startAnswers();
+    return a.setup === 'accepted' || a.join === 'accepted';
+  };
+  if (here || (st.typesetter === 'none' && !legacyHolds && accepted())) {
     // Switched to a data folder whose Typesetter library is not made yet:
     // made now, empty. Anything else in its place is never run on.
     try {
