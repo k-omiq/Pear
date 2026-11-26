@@ -1237,7 +1237,9 @@ async function copyInto(dir, name, bytes, used) {
 // `typesetting` is the record's field for a chapter that already had one - an
 // imported package - and undefined for a new chapter, which starts 'smart'
 // (`newTypesetting`).
-// `extra.fields` are more record fields (the handoff's `cleanerLink`), and
+// `extra.patchRecord` sets only the keys it changes in project.json (a
+// chapter filed from Manga Cleaner, section 8.4.3). `extra.fields` are more
+// record fields (the handoff's `cleanerLink`), and
 // `extra.rollback` runs first on the failure path, before the directory goes:
 // a handoff moves files in rather than copying them, and moves them back.
 async function buildChapter(p, number, title, copy, mode = 'typeset', typesetting, extra = null) {
@@ -1328,7 +1330,16 @@ async function buildChapter(p, number, title, copy, mode = 'typeset', typesettin
     // The whole-record rewrite every project.json write is, merged with any
     // other window's (`writeProjectRecord`): the layout, the language, the tag
     // registry and the series guide ride on it with the new cover.
-    await writeProjectRecord(p, { coverChapterId, coverPageId, updatedAt });
+    if (extra?.patchRecord) {
+      // A chapter filed from Manga Cleaner into a title here (section
+      // 8.4.3): only the keys this sets, the rest of project.json as on disk.
+      const patch = willHaveCover ? { coverChapterId, coverPageId, updatedAt } : { updatedAt };
+      const turn = recordMutex.then(() => patchProjectRecordOnDisk(p, patch));
+      recordMutex = turn.catch(() => {});
+      await turn;
+    } else {
+      await writeProjectRecord(p, { coverChapterId, coverPageId, updatedAt });
+    }
 
     p.chapters = [...p.chapters, chapter].sort((a, b) => a.number - b.number);
     p.coverChapterId = coverChapterId;
@@ -2329,7 +2340,7 @@ export async function createChapterFromHandoff({ projectId, number, title, pages
     },
     mode,
     undefined,
-    { fields: { cleanerLink: sentLink(link, linkPages) }, rollback: () => giveBack(mover, moved) },
+    { fields: { cleanerLink: sentLink(link, linkPages) }, rollback: () => giveBack(mover, moved), patchRecord: true },
   );
 }
 
@@ -2527,6 +2538,14 @@ export async function setProjectCleanerLink(projectId, link) {
 // record in the current form (tags, export scale, guide), and a title that
 // was only matched must not come back rewritten. No new `updatedAt` either.
 async function writeCleanerLinkOnly(p, next) {
+  await patchProjectRecordOnDisk(p, { cleanerLink: next }, ['cleanerLink']);
+}
+
+// Sets only the keys in `patch` in project.json as it is on disk; every
+// other key and value stays as it is. A key in `dropWhenNull` whose value is
+// null is removed instead. Under the same lock as the whole-record writer,
+// so another window's write is never lost; the merge base learns the keys.
+async function patchProjectRecordOnDisk(p, patch, dropWhenNull = []) {
   const path = await fsx.join(p.dir, 'project.json');
   return withRecordLock(path, async () => {
     let raw;
@@ -2536,12 +2555,18 @@ async function writeCleanerLinkOnly(p, next) {
       throw new Error(`This title's record could not be read: ${e?.message ?? e}`);
     }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error("This title's record could not be read");
-    if (next) raw.cleanerLink = next;
-    else delete raw.cleanerLink;
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null && dropWhenNull.includes(k)) delete raw[k];
+      else raw[k] = v;
+    }
     await writeJson(path, raw);
     const base = recordBase.get(p.dir);
-    if (base) recordBase.set(p.dir, { ...base, cleanerLink: next });
+    if (base) {
+      const { updatedAt, ...fields } = patch;
+      recordBase.set(p.dir, { ...base, ...fields });
+    }
     announceRecord(p.dir);
+    return raw;
   });
 }
 

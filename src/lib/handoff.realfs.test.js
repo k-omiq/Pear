@@ -844,6 +844,36 @@ describe('the match screen applies', () => {
     expect(library.projects.find((p) => p.id === theirs.id).cleanerLink).toEqual({ libraryId: LIB, projectId: 'p3' });
   });
 
+  it('a chapter filed into a title here patches only the keys it sets in project.json', async () => {
+    // An older record again; filing sets the cover (first chapter) or only
+    // the time (a later one), and nothing else changes.
+    const theirs = await createProject('Series Name');
+    const path = join(theirs.dir, 'project.json');
+    const { exportScale, guide, tagSizes, ocrLanguage, ...kept } = JSON.parse(await readFile(path, 'utf8'));
+    const old = {
+      ...kept,
+      updatedAt: '2026-01-02T03:04:05.000Z',
+      tags: [{ id: 't1', name: 'Speech', style: { fontSize: 30, strokes: [{ width: 3, color: '#ffffff' }] } }],
+      somethingNewer: { kept: true },
+    };
+    await writeFile(path, JSON.stringify(old, null, 2));
+    await scanLibrary();
+    const without = (o, keys) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
+    // Through the match screen: link, then the first chapter sets the cover.
+    await send({ sentAt: T1, pages: THREE });
+    await checkHandoffs(dataRoot);
+    expect((await applyMatch(dataRoot, planFor(theirs.id))).map((r) => r.outcome)).toEqual(['created']);
+    const first = JSON.parse(await readFile(path, 'utf8'));
+    expect(first.coverChapterId).toBe(library.projects.find((p) => p.id === theirs.id).chapters[0].id);
+    expect(without(first, ['cleanerLink', 'coverChapterId', 'coverPageId', 'updatedAt'])).toEqual(without(old, ['coverChapterId', 'coverPageId', 'updatedAt']));
+    // The 3-second check files the next chapter: only updatedAt changes.
+    await send({ chapterId: 'c8', sentAt: T2, pages: THREE, number: 13, label: '13' });
+    expect((await checkHandoffs(dataRoot)).map((r) => r.outcome)).toEqual(['created']);
+    const second = JSON.parse(await readFile(path, 'utf8'));
+    expect(without(second, ['updatedAt'])).toEqual(without(first, ['updatedAt']));
+    expect(Object.keys(second)).toEqual(Object.keys(first));
+  });
+
   it('link, keep Pear’s pages: the page map, no image, box or lettering changed, a missing cleaned page taken', async () => {
     const theirs = await createProject('Series Name');
     const c = await pearChapter(theirs, 12, [
