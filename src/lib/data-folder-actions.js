@@ -19,10 +19,10 @@ import {
   useSharedLibrary,
   deleteOldCopy,
   oldCopySize,
-  revealDataFolder,
 } from './data-folder.svelte.js';
 import { plainError, shownPath, homePath } from './data-folder-words.js';
 import { fsx } from './fsx.js';
+import { addNotice } from './data-folder-notices.svelte.js';
 
 async function dialog() {
   return import('@tauri-apps/plugin-dialog');
@@ -60,16 +60,14 @@ const moved = (r) =>
   r?.oldCopy ? ` The old copy is kept at ${shownPath(r.oldCopy)} until you delete it in Settings.` : '';
 
 // After a quiet setup (section 5.2), once: "Your library now lives in
-// ~/Manga Library." with "Show", which opens the folder.
+// ~/Manga Library." with "Show", which opens the folder. A notice that stays
+// (data-folder-notices.svelte.js), never a passing toast.
 export async function quietSetupNotice() {
   const root = dataFolder.quietRoot;
   if (!root) return;
   dataFolder.quietRoot = '';
   const home = await fsx.homeDir().catch(() => '');
-  toast(`Your library now lives in ${homePath(root, home)}.`, 'info', {
-    label: 'Show',
-    run: () => revealDataFolder(root).catch((e) => toastError(`Could not open the folder: ${plainError(e)}`)),
-  });
+  addNotice({ id: `quiet:${root}`, text: `Your library now lives in ${homePath(root, home)}.`, reveal: root });
 }
 
 // Legacy mode: "Set up shared folder…".

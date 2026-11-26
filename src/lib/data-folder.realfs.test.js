@@ -5,7 +5,7 @@
 // temp folder, and the library must never create a missing root once a
 // pointer is in force (SHARED_DATA_FOLDER.md section 5).
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile, readdir, stat, rename } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readdir, stat, rename, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -380,6 +380,16 @@ describe('setting up', () => {
     expect((await rootForPick(base)).root).toBe(join(base, 'Manga Library'));
     expect(await readdir(base)).toEqual(['Documents']);
   });
+
+  it('puts it inside an empty pick too (a drive’s top folder), as Manga Cleaner does; a data folder is used as it is', async () => {
+    const { base } = await fixture();
+    const mount = join(base, 'mnt-d2');
+    replies.data_folder_inspect = ({ path }) =>
+      path === mount ? { exists: true, isDir: true, empty: true, marker: false } : { exists: false, isDir: false, empty: false, marker: false };
+    expect((await rootForPick(mount)).root).toBe(join(mount, 'Manga Library'));
+    replies.data_folder_inspect = () => ({ exists: true, isDir: true, empty: false, marker: true });
+    expect((await rootForPick(mount)).root).toBe(mount);
+  });
 });
 
 describe('a move that did not finish', () => {
@@ -397,6 +407,43 @@ describe('a move that did not finish', () => {
     expect(dataFolder.mode).toBe('shared');
     expect(dataFolder.notice).toMatch(/finished/);
     expect(dataFolder.oldCopies).toEqual([{ path: '/old.moved-2026-11-25-1000' }]);
+  });
+
+  it('says "Finishing the move" while the folder opens after a recovery, never "not found"', async () => {
+    const { root, target } = await fixture();
+    await mkdir(target, { recursive: true });
+    await setRoot(target);
+    status = { state: 'moving', pointer: { schema: 1, path: root, folderId: 'f1' }, detail: 'Manga Cleaner is moving the data folder. Wait for it to finish.' };
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.finishing]).toEqual(['unavailable', false]);
+    let release;
+    const seen = [];
+    replies.data_folder_open = () => {
+      seen.push([dataFolder.mode, dataFolder.state, dataFolder.finishing]);
+      return new Promise((r) => (release = r));
+    };
+    status = ok(root, true);
+    const done = recheckDataFolder();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]).toEqual(['unavailable', 'ok', true]);
+    release();
+    await done;
+    expect([dataFolder.mode, dataFolder.finishing]).toEqual(['shared', false]);
+  });
+
+  it('a failure after a recovery is shown as it is, not as finishing', async () => {
+    const { root, target } = await fixture();
+    await mkdir(target, { recursive: true });
+    await setRoot(target);
+    status = { state: 'moving', pointer: { schema: 1, path: root, folderId: 'f1' } };
+    await initDataFolder();
+    replies.data_folder_open = () => {
+      throw new Error('Another copy of the typesetter is using this data folder.');
+    };
+    status = ok(root, true);
+    await recheckDataFolder();
+    expect([dataFolder.mode, dataFolder.finishing]).toEqual(['unavailable', false]);
+    expect(dataFolder.detail).toMatch(/Another copy/);
   });
 
   it('never runs on the shared library when its lock cannot be taken', async () => {
@@ -427,6 +474,47 @@ describe('a move that did not finish', () => {
     expect(names()).toEqual(['data_folder_move_busy', 'data_folder_move', 'data_folder_status']);
     expect(dataFolder.mode).toBe('unavailable');
     expect(dataFolder.busy).toBe(false);
+  });
+});
+
+describe('the pointer wins', () => {
+  it('over a Shared root the other app moved away while this app was closed', async () => {
+    // The data folder was at old/Manga Library; Manga Cleaner moved it.
+    const { base, root, target } = await fixture();
+    const stale = join(base, 'old', 'Manga Library', 'Typesetter');
+    await mkdir(target, { recursive: true });
+    await setRoot(stale);
+    status = ok(root, true);
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.bothLibraries, dataFolder.start]).toEqual(['shared', false, null]);
+    expect(library.root).toBe(target);
+  });
+
+  it('over an old Shared root still there with its marker', async () => {
+    const { base, root, target } = await fixture();
+    const oldRoot = join(base, 'old', 'Manga Library');
+    await mkdir(join(oldRoot, 'Typesetter', 'series'), { recursive: true });
+    await writeFile(join(oldRoot, 'manga-library.json'), '{}');
+    await writeFile(join(oldRoot, 'Typesetter', 'series', 'project.json'), JSON.stringify({ schema: 1, id: 'p_1', name: 'Series' }));
+    await mkdir(target, { recursive: true });
+    await setRoot(join(oldRoot, 'Typesetter'));
+    status = ok(root, true);
+    await initDataFolder();
+    expect([dataFolder.mode, dataFolder.bothLibraries]).toEqual(['shared', false]);
+    expect(library.root).toBe(target);
+  });
+
+  it('a library that cannot be read is never "a library to keep"', async () => {
+    const { legacy, root, target } = await fixture({ legacyProject: true });
+    await mkdir(target, { recursive: true });
+    await chmod(legacy, 0o000);
+    try {
+      status = ok(root, true);
+      await initDataFolder();
+      expect([dataFolder.mode, dataFolder.bothLibraries]).toEqual(['shared', false]);
+    } finally {
+      await chmod(legacy, 0o755);
+    }
   });
 });
 

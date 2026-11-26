@@ -29,6 +29,8 @@
   import { dataFolder, initDataFolder, recheckDataFolder } from './lib/data-folder.svelte.js';
   import { watchHandoffs, handoffMatch, openMatch } from './lib/handoff.svelte.js';
   import { quietSetupNotice } from './lib/data-folder-actions.js';
+  import { loadNotices } from './lib/data-folder-notices.svelte.js';
+  import DataFolderNotices from './lib/home/DataFolderNotices.svelte';
   import { onboarding, offerOnboardingAtBoot, finishOnboarding } from './lib/onboarding/onboarding.svelte.js';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { app, byId, page, selectBox, settleEdits, deleteBox, duplicateBox, copyBox, pasteBox, hasCopiedBox, nudgeBox, deselect, nextPage, prevPage, setTool, resetBoxRotation, refuseLocked, toggleBalloonFit, refitBalloon, approveOutline, toggleBoxLock, placeDetectedOnPage, checks, goNextCheck, closeBulk, toast, toastError, setPageSwitchHook, flushSidebar, noteFontsChanged, chapterSetIn, isLongstrip, isTranslateMode, isTranslateChapter, stepLine, chapterSaveCycle } from './lib/store.svelte.js';
@@ -157,8 +159,10 @@
     } else {
       // The AI door opens only if the user left it on (Settings, AI).
       initDoor();
-      if (dataFolder.notice) toast(dataFolder.notice);
-      // After a quiet setup (row E), once: where the library now lives.
+      // One-time notices that stay until closed, shown once the first-run
+      // setup is closed: a stopped move's recovery (noted when it ran), and
+      // after a quiet setup (row E) where the library now lives.
+      loadNotices();
       quietSetupNotice();
       // Chapters Manga Cleaner sends: main window only.
       releaseHandoffs = watchHandoffs();
@@ -806,3 +810,4 @@
 {/if}
 {/if}
 <Toast />
+{#if !onboarding.open}<DataFolderNotices />{/if}

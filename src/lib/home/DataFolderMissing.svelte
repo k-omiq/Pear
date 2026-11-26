@@ -53,8 +53,13 @@
     }, RETRY_MS);
     return () => clearInterval(timer);
   });
-  const heading = $derived(moving ? 'Data folder move not finished' : dataFolder.state === 'damaged' ? 'Data folder damaged' : 'Data folder not found');
-  const why = $derived(WHY[dataFolder.state] ?? WHY.missing);
+  // Leaving a stopped move, the folder is being opened: never "not found"
+  // for that moment (section 11).
+  const finishing = $derived(dataFolder.finishing);
+  const heading = $derived(
+    finishing ? 'Finishing the move…' : moving ? 'Data folder move not finished' : dataFolder.state === 'damaged' ? 'Data folder damaged' : 'Data folder not found',
+  );
+  const why = $derived(finishing ? 'The data folder opens in a moment.' : (WHY[dataFolder.state] ?? WHY.missing));
 </script>
 
 <main class="df-block" aria-labelledby="df-title">
@@ -62,13 +67,15 @@
     <h1 id="df-title">{heading}</h1>
     <p class="df-path">{dataFolder.root ? shownPath(dataFolder.root) : 'No folder'}</p>
     <p>{why}</p>
-    {#if dataFolder.detail && !why.startsWith(dataFolder.detail.replace(/\.$/, ''))}<p class="df-detail" data-testid="df-detail">{dataFolder.detail}</p>{/if}
-    <div class="df-actions">
-      <button class="btn" bind:this={first} disabled={busy} onclick={retry}>Try again</button>
-      {#if !moving}
-        <button class="btn" disabled={busy} onclick={() => act(pickInstead)}>Choose another folder…</button>
-      {/if}
-    </div>
+    {#if !finishing && dataFolder.detail && !why.startsWith(dataFolder.detail.replace(/\.$/, ''))}<p class="df-detail" data-testid="df-detail">{dataFolder.detail}</p>{/if}
+    {#if !finishing}
+      <div class="df-actions">
+        <button class="btn" bind:this={first} disabled={busy} onclick={retry}>Try again</button>
+        {#if !moving}
+          <button class="btn" disabled={busy} onclick={() => act(pickInstead)}>Choose another folder…</button>
+        {/if}
+      </div>
+    {/if}
   </div>
 </main>
 
